@@ -119,6 +119,7 @@ import {
   type PipelineLedgerCodexTools,
 } from './pipeline-ledger';
 import { createDesktopPipelineHostActions } from './host-actions';
+import { createWorkerPipelineHostActions } from './pipeline-host-requests';
 import {
   assertPipelineHostTargetOwner,
   createDesktopPipelineOwnershipPort,
@@ -1020,10 +1021,13 @@ export function createElectronExecutionRuntime(
     },
     resolvePipelineTarget: resolveDesktopPipelineTarget,
     pipelineLedger: createDesktopPipelineLedgerPort(),
-    pipelineHostActions: createDesktopPipelineHostActions({
-      assertTargetOwner: assertPipelineHostTargetOwner,
-      ...(getWindow ? { getWindow } : {}),
-    }),
+    // Host steps reach core as worker-to-core requests.
+    pipelineHostActions: createWorkerPipelineHostActions(
+      createDesktopPipelineHostActions({
+        assertTargetOwner: assertPipelineHostTargetOwner,
+        ...(getWindow ? { getWindow } : {}),
+      }),
+    ),
     pipelineOwnership: createDesktopPipelineOwnershipPort(),
     codexPromptRunner: {
       runCodexPrompt: runCodexPipelinePrompt,

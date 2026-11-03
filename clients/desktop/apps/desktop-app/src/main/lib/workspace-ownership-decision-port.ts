@@ -33,10 +33,9 @@ import type {
 
 // The ownership and organization private memory members of
 // `W5RecordDecisionPort` (W5c2), applied by the writers the records used,
-// with each record's own updater logic as a pure apply. The Cowork and seed
-// members are in `cowork-record-decision-port.ts` and
-// `workspace-index-seed-decision-port.ts`, so these records keep their
-// import graphs.
+// with each record's own updater logic as a pure apply. The Cowork members
+// are in `cowork-record-decision-port.ts`, so these records keep their import
+// graphs.
 
 /**
  * Applies one owner decision through the single ownership writer (CAN-3415),

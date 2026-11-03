@@ -132,9 +132,16 @@ function counterDeltas(before, after) {
  * observer snapshot taken at the interval start; when its route is `null`
  * (first use: the lazy route did not exist), `after` must have been read with
  * cursor `{ observerId, sequence: 0 }` so the whole journal is covered.
- * `operations` lists the Files operations the workload may issue.
+ * `operations` lists the Files operations the workload may issue, and
+ * `platform` is the host's `process.platform`.
  */
-export function admitMainInterval({ before, after, arm, operations }) {
+export function admitMainInterval({
+  before,
+  after,
+  arm,
+  operations,
+  platform,
+}) {
   if (
     before?.source !== MAIN_SOURCE ||
     after?.source !== MAIN_SOURCE ||
@@ -150,11 +157,12 @@ export function admitMainInterval({ before, after, arm, operations }) {
     after.route,
     arm,
     operations,
+    platform,
   );
   const reasons = [
     ...journalReasons(before, after, arm),
     ...readReasons,
-    ...counterReasons(before.counters, after.counters, arm, starts),
+    ...counterReasons(before.counters, after.counters, arm, platform, starts),
   ];
   return verdict(reasons, { starts });
 }
@@ -200,23 +208,56 @@ function journalReasons(before, after, arm) {
   return reasons;
 }
 
-// Reads the route can send to the daemon. Others (CAN-4099's `file`,
-// CAN-5037's `search`, CAN-5038's `link`) are journaled as direct in both
-// arms and are not part of the treatment.
-const SELECTABLE_OPERATIONS = new Set(['roots', 'directory']);
+// Every Files read the route journals. Production selects all of them since
+// CAN-5556; the read-route table (daemon-read-route-guard.ts) keeps `file`,
+// `search` and `link` direct on Windows until CAN-4732.
+const MEASURED_OPERATIONS = Object.freeze([
+  'roots',
+  'directory',
+  'file',
+  'search',
+  'link',
+]);
+const HOST_PLATFORMS = new Set(['darwin', 'linux', 'win32']);
+const DIRECT_ON_PLATFORMS = Object.freeze({
+  file: ['win32'],
+  search: ['win32'],
+  link: ['win32'],
+});
 
-/** Every start has one successful finish on the arm's backend. */
-function pairedReads(route, arm, operations) {
+/**
+ * The backend the arm's reads of `operation` must use on `platform`, or
+ * `null` when that depends on a host platform the trial did not name.
+ */
+export function armBackend(operation, arm, platform) {
+  if (arm !== 'on') return 'direct';
+  const direct = DIRECT_ON_PLATFORMS[operation];
+  if (!direct) return 'daemon';
+  if (!HOST_PLATFORMS.has(platform)) return null;
+  return direct.includes(platform) ? 'direct' : 'daemon';
+}
+
+/**
+ * Every start has one successful finish on the arm's backend. The journal
+ * carries no caller or scope, so an on-arm read the guard keeps direct for
+ * those (an excluded workspace, a host-base link) rejects like a misrouted
+ * one: neither is treatment evidence.
+ */
+function pairedReads(route, arm, operations, platform) {
   const reasons = [];
-  const expected = arm === 'on' ? 'daemon' : 'direct';
-  const starts = { roots: 0, directory: 0 };
+  const starts = Object.fromEntries(
+    MEASURED_OPERATIONS.map((operation) => [operation, 0]),
+  );
   const open = new Map();
   const seen = new Set();
   for (const entry of route.entries) {
-    if (!SELECTABLE_OPERATIONS.has(entry.operation)) continue;
+    if (!MEASURED_OPERATIONS.includes(entry.operation)) continue;
     if (!operations.includes(entry.operation))
       reasons.push(`unexpected ${entry.operation} read`);
-    if (entry.backend !== expected)
+    const expected = armBackend(entry.operation, arm, platform);
+    if (expected === null)
+      reasons.push(`${entry.operation} read without a host platform`);
+    else if (entry.backend !== expected)
       reasons.push(`${entry.backend} read in ${arm} arm`);
     if (entry.generation !== route.generation)
       reasons.push('read spans a route generation');
@@ -224,7 +265,7 @@ function pairedReads(route, arm, operations) {
       if (seen.has(entry.request)) reasons.push('duplicate read start');
       seen.add(entry.request);
       open.set(entry.request, entry.operation);
-      starts[entry.operation] = (starts[entry.operation] ?? 0) + 1;
+      starts[entry.operation] += 1;
     } else if (open.get(entry.request) !== entry.operation) {
       reasons.push('read finish without its start');
     } else {
@@ -236,29 +277,41 @@ function pairedReads(route, arm, operations) {
   return { reasons, starts };
 }
 
+/**
+ * Whether the invocation delta explains `count` routed reads. Roots and
+ * directory invocations all reach the route. `file` and `link` also count
+ * calls the route never sees (unscoped and sealed-viewer reads). One
+ * `file-index:get` call can search several pages or none, but a page outside
+ * every call in the interval belongs to a walk that began before it.
+ */
+function explainsReads(operation, invocations, count) {
+  if (operation === 'search') return count === 0 || invocations > 0;
+  if (operation === 'file' || operation === 'link') return invocations >= count;
+  return invocations === count;
+}
+
 /** Invocation and route counters must account for exactly the observed reads. */
-function counterReasons(before, after, arm, starts) {
+function counterReasons(before, after, arm, platform, starts) {
   const reasons = [];
   const invocations = counterDeltas(before.invocations, after.invocations);
   const routeDelta = counterDeltas(before.route, after.route);
-  for (const operation of ['roots', 'directory']) {
-    const count = starts[operation];
-    if (invocations[operation] !== count)
+  for (const operation of MEASURED_OPERATIONS) {
+    const count = starts[operation] ?? 0;
+    if (!explainsReads(operation, invocations[operation] ?? 0, count))
       reasons.push(`unexplained ${operation} invocations`);
     const prefix = `files.${operation}.`;
+    const daemon = armBackend(operation, arm, platform) === 'daemon';
     // At most one bounded conflict refresh per read, each sending one more query.
     const observed = routeDelta[`${prefix}daemon.retries`] ?? 0;
-    const retries =
-      arm === 'on' && observed >= 0 && observed <= count ? observed : 0;
-    const wanted =
-      arm === 'on'
-        ? {
-            daemon: count,
-            'daemon.served': count,
-            'daemon.queries': count + retries,
-            'daemon.retries': retries,
-          }
-        : { direct: count };
+    const retries = daemon && observed >= 0 && observed <= count ? observed : 0;
+    const wanted = daemon
+      ? {
+          daemon: count,
+          'daemon.served': count,
+          'daemon.queries': count + retries,
+          'daemon.retries': retries,
+        }
+      : { direct: count };
     const keys = new Set([
       ...Object.keys(wanted).map((outcome) => prefix + outcome),
       ...Object.keys(routeDelta).filter((key) => key.startsWith(prefix)),
@@ -267,7 +320,7 @@ function counterReasons(before, after, arm, starts) {
       if (routeDelta[key] !== (wanted[key.slice(prefix.length)] ?? 0))
         reasons.push(`route counter ${key} changed by ${routeDelta[key]}`);
   }
-  if (starts.roots + starts.directory === 0)
+  if (MEASURED_OPERATIONS.every((operation) => !starts[operation]))
     reasons.push('no Files invocation in interval');
   return reasons;
 }

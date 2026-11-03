@@ -19,7 +19,15 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, ThinkingSpinner } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Button,
+  EmptyState,
+  ErrorState,
+  TextArea,
+  ThinkingSpinner,
+} from '@canopy/ui-shared/components';
+import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type { PlanDiagramArtifact } from '@canopy/desktop-shared/types/plan-diagrams';
 import type { ParsedPlanGraph } from '@canopy/desktop-shared/types/plan-diagrams';
 import {
@@ -88,15 +96,9 @@ function PlanFlowNodeView({ data }: NodeProps<PlanFlowNode>): JSX.Element {
         </>
       )}
       <div className="flex items-center gap-1.5">
-        <span
-          className={`shrink-0 rounded-sm px-1 py-0.5 text-3xs font-medium ${
-            isPhase
-              ? 'bg-accent-subtle fg-accent'
-              : 'bg-fg-primary/[0.08] fg-secondary'
-          }`}
-        >
+        <Badge size="compact" muted={!isPhase}>
           {data.kind}
-        </span>
+        </Badge>
         <span className="min-w-0 truncate text-xs font-semibold fg-primary">
           {data.title}
         </span>
@@ -115,27 +117,6 @@ function PlanFlowNodeView({ data }: NodeProps<PlanFlowNode>): JSX.Element {
 }
 
 const NODE_TYPES: NodeTypes = { plan: PlanFlowNodeView };
-
-function DiagramOverlayBadge({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: 'info' | 'error';
-}): JSX.Element {
-  return (
-    <div
-      className={`pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-medium ${
-        tone === 'error'
-          ? 'border-line-destructive/40 bg-destructive-subtle fg-destructive'
-          : 'bg-card/90 fg-secondary'
-      }`}
-    >
-      {tone === 'info' && <ThinkingSpinner />}
-      {label}
-    </div>
-  );
-}
 
 function SelectedNodeDetail({
   node,
@@ -220,14 +201,14 @@ function SelectedNodeDetail({
         <div className="mt-3 border-t pt-2">
           {composing ? (
             <div className="flex flex-col gap-1.5">
-              <textarea
+              <TextArea
+                aria-label="Comment"
                 value={body}
                 onChange={(e): void => setBody(e.target.value)}
                 placeholder="Comment on this node…"
                 rows={3}
                 autoFocus
                 data-testid="plan-node-comment-input"
-                className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="flex items-center justify-end gap-1.5">
                 <Button
@@ -261,18 +242,6 @@ function SelectedNodeDetail({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function CenteredMessage({
-  children,
-}: {
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-      {children}
     </div>
   );
 }
@@ -400,19 +369,24 @@ export const PlanSequenceDiagram = forwardRef<
         data-testid="plan-sequence-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
-          <p className="text-s fg-secondary">No sequence diagram yet.</p>
-          {onGenerate && (
-            <Button
-              size="compact"
-              data-testid="plan-sequence-generate"
-              onClick={onGenerate}
-              disabled={isGenerating}
-            >
-              {isGenerating ? 'Generating…' : 'Generate diagram'}
-            </Button>
-          )}
-        </CenteredMessage>
+        <DiagramCenteredMessage>
+          <EmptyState
+            inset="none"
+            title="No sequence diagram yet."
+            action={
+              onGenerate ? (
+                <Button
+                  size="compact"
+                  data-testid="plan-sequence-generate"
+                  onClick={onGenerate}
+                  disabled={isGenerating}
+                >
+                  {isGenerating ? 'Generating…' : 'Generate diagram'}
+                </Button>
+              ) : undefined
+            }
+          />
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -428,10 +402,10 @@ export const PlanSequenceDiagram = forwardRef<
         data-testid="plan-sequence-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
+        <DiagramCenteredMessage>
           <ThinkingSpinner />
           <p className="text-s fg-secondary">Generating diagram…</p>
-        </CenteredMessage>
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -443,24 +417,24 @@ export const PlanSequenceDiagram = forwardRef<
         data-testid="plan-sequence-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
-          <p className="text-s font-medium fg-destructive">
-            Failed to generate diagram
-          </p>
-          {artifact?.error && (
-            <p className="max-w-sm text-xs fg-secondary">{artifact.error}</p>
-          )}
-          {onGenerate && (
-            <Button
-              size="compact"
-              data-testid="plan-sequence-retry"
-              onClick={onGenerate}
-              disabled={isGenerating}
-            >
-              {isGenerating ? 'Generating…' : 'Retry'}
-            </Button>
-          )}
-        </CenteredMessage>
+        <DiagramCenteredMessage>
+          <ErrorState
+            space="panel"
+            message={
+              <>
+                Couldn’t generate the diagram.
+                {artifact?.error && (
+                  <span className="mt-1 block max-w-sm text-xs fg-secondary">
+                    {artifact.error}
+                  </span>
+                )}
+              </>
+            }
+            onRetry={onGenerate}
+            retrying={isGenerating}
+            retryTestId="plan-sequence-retry"
+          />
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -472,9 +446,9 @@ export const PlanSequenceDiagram = forwardRef<
         data-testid="plan-sequence-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
+        <DiagramCenteredMessage>
           <p className="text-s fg-secondary">No diagram content available.</p>
-        </CenteredMessage>
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -487,9 +461,19 @@ export const PlanSequenceDiagram = forwardRef<
       data-testid="plan-sequence-diagram"
       className="relative flex min-h-0 flex-1 flex-col"
     >
-      {isUpdating && <DiagramOverlayBadge label="Updating…" tone="info" />}
+      {isUpdating && (
+        <Badge className="pointer-events-none absolute right-3 top-3 z-10">
+          <ThinkingSpinner />
+          Updating…
+        </Badge>
+      )}
       {hasErrorOverlay && (
-        <DiagramOverlayBadge label="Update failed" tone="error" />
+        <Badge
+          tone="danger"
+          className="pointer-events-none absolute right-3 top-3 z-10"
+        >
+          Update failed
+        </Badge>
       )}
       <ReactFlow<PlanFlowNode>
         nodes={nodes}

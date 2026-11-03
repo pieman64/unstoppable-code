@@ -11,6 +11,8 @@ export interface ChatToolStepLive {
   readonly label: ReactNode;
   readonly icon: ReactNode;
   readonly waiting?: boolean;
+  /** Activity not already represented by a visible running tool row. */
+  readonly showWhenUngrouped?: boolean;
 }
 
 /**

@@ -5,7 +5,6 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  BUBBLE_ACTION_BADGE_CLASS,
   BUBBLE_ACTION_GLYPH_PX,
   BUBBLE_INDICATOR_BADGE_CLASS,
   BUBBLE_INFO_SURFACE_CLASS,
@@ -14,6 +13,7 @@ import {
 } from './bubble-badge';
 import type { ChatMessageContextMenuTargetProps } from './ChatMessageContextMenu';
 import { BubbleCopyBadge } from './BubbleCopyBadge';
+import { Button } from './Button';
 import { getWindow } from '../panels/window-registry';
 import { Tooltip } from './Tooltip';
 import { useIsPhone } from './useMediaQuery';
@@ -227,8 +227,8 @@ export function UserBubble({
   // Keyboard focus reveals them too, so a tabbed-to badge is never invisible.
   const badgeClusterClass =
     isPhone && !actionsOnCorner
-      ? 'absolute right-1 top-1 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100'
-      : 'absolute -right-2 -top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100';
+      ? 'absolute right-1 top-1 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:gap-4 pointer-coarse:opacity-100'
+      : 'absolute -right-2 -top-2 z-10 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:gap-4 pointer-coarse:opacity-100';
 
   // CLEARANCE FOR THE IN-BUBBLE CLUSTER. Once the cluster moves inside the
   // bubble's bounds on the phone tier, it overlaps the text: the bubble shrinks
@@ -245,6 +245,11 @@ export function UserBubble({
   // 4px breathing room on top. Copy is always rendered, so the one-badge case is
   // the floor rather than zero.
   //
+  // On a coarse pointer the gap widens to `gap-4` (16px): each Button's touch
+  // hit area reaches 8px past its 28px disc, so 16px lets the two 44px targets
+  // meet without overlapping. Two badges then need 4 + 28 + 16 + 28 = 76px,
+  // plus the same 4px.
+  //
   // Padding applies to the whole box, so a message long enough to wrap carries
   // the reservation on every line, not just the one that needs it. That is the
   // deliberate trade: a float/`shape-outside` spacer would confine it to the
@@ -253,7 +258,11 @@ export function UserBubble({
   //
   // Both candidates are spelled out literally so Tailwind's scanner emits them.
   const phoneBadgeClearanceClass =
-    !isPhone || actionsOnCorner ? '' : onRevert ? ' pr-17' : ' pr-9';
+    !isPhone || actionsOnCorner
+      ? ''
+      : onRevert
+        ? ' pr-17 pointer-coarse:pr-20'
+        : ' pr-9';
 
   return (
     <div
@@ -277,11 +286,12 @@ export function UserBubble({
       <div className={badgeClusterClass} data-bubble-actions="">
         {onRevert && (
           <Tooltip label="Revert this turn">
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="compact"
+              iconOnly
               onClick={onRevert}
               aria-label="Revert this turn"
-              className={BUBBLE_ACTION_BADGE_CLASS}
               data-testid="reset-to-point-button"
             >
               <AppCatalogRevertIcon
@@ -289,7 +299,7 @@ export function UserBubble({
                 height={BUBBLE_ACTION_GLYPH_PX}
                 aria-hidden="true"
               />
-            </button>
+            </Button>
           </Tooltip>
         )}
         <BubbleCopyBadge copyText={copyText} dataTestId="user-bubble-copy" />

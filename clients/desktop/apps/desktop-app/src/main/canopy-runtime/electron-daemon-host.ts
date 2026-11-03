@@ -16,6 +16,7 @@ import {
   createCanopyDaemonHostLaunch,
   createRecoverableCanopyStartupClaim,
   type CanopyConnectOptions,
+  type CanopyDaemonBeforeSpawn,
 } from '@canopy/core-client/node';
 import {
   createOwnedChildServices,
@@ -36,6 +37,8 @@ import {
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -64,8 +67,14 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
       WORKER_QUERY_DEFINITIONS['worker.filesystem.search'],
     'worker.filesystem.link.resolve':
       WORKER_QUERY_DEFINITIONS['worker.filesystem.link.resolve'],
+    // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
+    // so production's manifest refuses each call capability_unavailable.
+    ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   },
-  instructions: CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  instructions: {
+    ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+    ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+  },
   streams: {
     'core.runtime.events':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.runtime.events'],
@@ -93,6 +102,11 @@ export interface ElectronDaemonHostInputs {
   readonly executable?: string;
   readonly ownedChildNativePath?: string;
   readonly windowsProcessPath?: string;
+  /**
+   * The flip launch (CAN-5543): every spawn opens the W5 host, after
+   * `beforeSpawn` where the platform has a startup claim.
+   */
+  readonly w5?: { readonly beforeSpawn?: CanopyDaemonBeforeSpawn };
 }
 const unavailable = (message: string): CanopyClientError =>
   new CanopyClientError({
@@ -102,7 +116,9 @@ const unavailable = (message: string): CanopyClientError =>
   });
 
 /** Fixed install or build location only; empty when neither is defined. */
-function selectWindowsProcessPath(inputs: ElectronDaemonHostInputs): string {
+export function selectWindowsProcessPath(
+  inputs: ElectronDaemonHostInputs,
+): string {
   if (inputs.windowsProcessPath !== undefined) return inputs.windowsProcessPath;
   if (app.isPackaged)
     return join(process.resourcesPath, 'bin', WINDOWS_PROCESS_FILE);
@@ -238,6 +254,8 @@ export async function createElectronDaemonHost(
               'core-owned-child.node',
             )),
     }),
+    ...(inputs.w5 && { w5Host: true }),
+    ...(inputs.w5?.beforeSpawn && { beforeSpawn: inputs.w5.beforeSpawn }),
     environmentSource: getEnhancedEnv({
       includeCanopySecrets: false,
       environment: false,

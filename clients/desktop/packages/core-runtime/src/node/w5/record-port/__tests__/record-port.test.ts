@@ -1,6 +1,7 @@
 // W6g (CAN-5498): the W5 record port's wire carries targets only, and each
 // side projects them onto its own root.
 import { createHash } from 'node:crypto';
+import { join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import type * as Storage from '../../../../storage';
 jest.mock('../../../../storage', () => {
@@ -46,7 +47,11 @@ import {
 } from '../../commit-log-file-store';
 import type { W5FileRead } from '../../file-store';
 import { createW5RecordAuthority } from '../authority';
-import { w5RecordTargetFor, type W5RecordPortTransport } from '../contract';
+import {
+  w5RecordTargetFor,
+  w5UnnameableRecordFor,
+  type W5RecordPortTransport,
+} from '../contract';
 import { createW5RecordHostPort } from '../host-port';
 
 const ELECTRON = '/electron/data/workspaces';
@@ -264,6 +269,39 @@ describe('targets', () => {
   ])('refuses %s', (path) => {
     expect(w5RecordTargetFor(ELECTRON, path)).toBeUndefined();
   });
+
+  // CAN-5531: the workspace files a target cannot name, told apart from foreign paths.
+  it.each([
+    [
+      `${ELECTRON}/a.b/worktrees.json`,
+      { kind: 'worktrees', workspaceId: 'a.b' },
+    ],
+    [
+      `${ELECTRON}/aux/workspace.json`,
+      { kind: 'manifest', workspaceId: 'aux' },
+    ],
+    [
+      `${ELECTRON}/${'w'.repeat(129)}/worktrees.json`,
+      { kind: 'worktrees', workspaceId: 'w'.repeat(129) },
+    ],
+  ])('names %s as a workspace the capture cannot name', (path, file) => {
+    expect(w5UnnameableRecordFor(ELECTRON, path)).toEqual(file);
+  });
+
+  it.each([
+    `${ELECTRON}/a/worktrees.json`,
+    `${ELECTRON}/index.json`,
+    `${ELECTRON}/a.b/settings.json`,
+    `${ELECTRON}/a.b/c/worktrees.json`,
+    `${ELECTRON}/../workspace.json`,
+    '/electron/data/workspace.json',
+    `${ELECTRON}/./worktrees.json`,
+    '/elsewhere/a.b/worktrees.json',
+    `${ELECTRON}-other/a.b/worktrees.json`,
+    `${ELECTRON}`,
+  ])('does not call %s an unnameable workspace file', (path) => {
+    expect(w5UnnameableRecordFor(ELECTRON, path)).toBeUndefined();
+  });
 });
 
 describe('the host port', () => {
@@ -345,6 +383,41 @@ describe('the host port', () => {
       await expect(port.revision(resource)).rejects.toMatchObject(unavailable);
     }
     expect(wire).toEqual([]);
+  });
+
+  it('meters each workspace it cannot name, by operation, and nothing else', async () => {
+    const { transport } = connect(daemonHost());
+    const unserved: unknown[] = [];
+    const port = createW5RecordHostPort({
+      root: ELECTRON,
+      transport,
+      onUnserved: (event) => unserved.push(event),
+    });
+    const resource: W5Resource = { kind: 'worktrees', workspaceId: 'a.b' };
+    await expect(
+      port.commit({
+        operation: 'w6g.test.unnameable',
+        advance: [resource],
+        files: [],
+        outcome: null,
+      }),
+    ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+    await expect(port.revision(resource)).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+    // An unnameable worktree id is refused, but is not the workspace-id class.
+    await expect(
+      port.revision({
+        kind: 'worktree',
+        workspaceId: 'a',
+        worktreeId: '\uD800',
+      }),
+    ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+    await port.commit(listChange(`${ELECTRON}/a/worktrees.json`));
+    expect(unserved).toEqual([
+      { operation: 'w6g.test.unnameable', reason: 'unsupported-id' },
+      { operation: 'core.workspaceRecords.capture', reason: 'unsupported-id' },
+    ]);
   });
 
   it('reads revisions from the captured evidence, and refuses a workspace the capture cannot name', async () => {
@@ -1164,9 +1237,11 @@ describe('refusals cross as typed codes and come back with this host’s paths',
         code: 'ENOENT',
       }),
     );
+    const unserved: unknown[] = [];
     const port = createW5RecordHostPort({
       root: ELECTRON,
       transport: connect(host).transport,
+      onUnserved: (event) => unserved.push(event),
     });
     await expect(
       port.capture({ files: [], discoverWorkspaces: true }),
@@ -1174,6 +1249,41 @@ describe('refusals cross as typed codes and come back with this host’s paths',
       reason: 'invalid-state',
       details: { capture: 'root-unavailable' },
     });
+    // Only the two capture classes the record port cannot serve are metered.
+    expect(unserved).toEqual([]);
+  });
+
+  it('meters an over-limit revision read, not a capture whose host reads its files one at a time, and keeps the typed refusal', async () => {
+    const host = daemonHost();
+    host.capture.mockRejectedValue(
+      new W5CommitRefusedError(
+        'invalid-state',
+        'The W5 capture exceeds its limits.',
+        { capture: 'limit-exceeded' },
+      ),
+    );
+    const unserved: unknown[] = [];
+    const port = createW5RecordHostPort({
+      root: ELECTRON,
+      transport: connect(host).transport,
+      onUnserved: (event) => unserved.push(event),
+    });
+    const refused = {
+      reason: 'invalid-state',
+      details: { capture: 'limit-exceeded' },
+    };
+    await expect(
+      port.capture({
+        files: [{ kind: 'worktrees', workspaceId: 'a' }],
+        discoverWorkspaces: false,
+      }),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      port.revision({ kind: 'worktrees', workspaceId: 'a' }),
+    ).rejects.toMatchObject(refused);
+    expect(unserved).toEqual([
+      { operation: 'core.workspaceRecords.capture', reason: 'limit-exceeded' },
+    ]);
   });
 
   it('a capture over one frame is refused as over its limits', async () => {
@@ -1205,4 +1315,66 @@ describe('refusals cross as typed codes and come back with this host’s paths',
       details: { capture: 'limit-exceeded' },
     });
   });
+});
+
+it('round trips null record contents through core.workspaceRecords.commit without leaking host paths', async () => {
+  const electronRoot = resolve('electron', 'data', 'workspaces');
+  const daemonRoot = resolve('daemon', 'data', 'workspaces');
+  const host = { ...daemonHost(), root: daemonRoot };
+  const { transport, wire } = connect(host, () =>
+    Promise.resolve({ state: 'present', raw: '{}' }),
+  );
+  const port = createW5RecordHostPort({ root: electronRoot, transport });
+  const { createW5CommitLogFileStore } =
+    await import('../../commit-log-file-store');
+  const store = createW5CommitLogFileStore({
+    getHost: () => port,
+    readFile: () => Promise.resolve({ state: 'present', raw: '{}' }),
+    warn: () => {},
+    admit: (_targets, work) => work(),
+    admitWrite: (_target, work) => work(),
+  });
+  await store.withCommit(
+    { operation: 'w5.workspace_records.remove' },
+    async () => {
+      await store.remove(
+        join(electronRoot, 'a', 'workspace.json'),
+        { namespace: 'workspace_manifest', writer: 'daemon' },
+        {
+          operation: 'w5.workspace_manifest.remove',
+          advance: [{ kind: 'workspace', workspaceId: 'a' }],
+          previousRaw: '{}',
+        },
+      );
+      await store.remove(
+        join(electronRoot, 'a', 'worktrees.json'),
+        { namespace: 'worktree_list', writer: 'daemon' },
+        {
+          operation: 'w5.worktree_list.remove',
+          advance: [{ kind: 'worktrees', workspaceId: 'a' }],
+          previousRaw: '{}',
+        },
+      );
+    },
+  );
+  expect(host.commits).toHaveLength(1);
+  expect(transport.commit).toHaveBeenCalledTimes(1);
+  expect(host.commits[0]?.files).toEqual([
+    {
+      path: join(daemonRoot, 'a', 'workspace.json'),
+      contents: null,
+      previousFingerprint: fingerprint('{}'),
+    },
+    {
+      path: join(daemonRoot, 'a', 'worktrees.json'),
+      contents: null,
+      previousFingerprint: fingerprint('{}'),
+    },
+  ]);
+  const commitTraffic = wire.slice(-2).join('');
+  expect(commitTraffic).toContain('"contents":null');
+  expect(commitTraffic).not.toContain(
+    JSON.stringify(electronRoot).slice(1, -1),
+  );
+  expect(commitTraffic).not.toContain(JSON.stringify(daemonRoot).slice(1, -1));
 });

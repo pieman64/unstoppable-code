@@ -17,7 +17,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from '@playwright/test';
 import { CanopyAppDriver } from '../canopyApp.mjs';
-import { closeCanopy, launchCanopy } from '../launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from '../launchCanopy.mjs';
 import { writeJson } from '../seeders/fsHelpers.mjs';
 
 const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
@@ -304,6 +308,7 @@ export async function quitGracefullyKeepingData(
   userDataDir,
   timeoutMs = 20_000,
 ) {
+  await captureDaemonDryRunEvidence(electronApp);
   const exited = new Promise((resolve) => {
     electronApp.once('close', () => resolve('exited'));
   });

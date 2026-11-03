@@ -1371,8 +1371,10 @@ const REVIEWED_PR_RELEASE_HELPER_IDENTITIES = Object.freeze({
   // opt-in --chat-switch-hover-ms switch; the graduation removes the
   // --foreground-first-delivery switch.
   // Preserve the closed study's original/installed pair.
+  // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+  // refresh-rate pairing) changes this helper; the frozen study pair stays.
   'apps/desktop-app/tests/performance/profiles.mjs':
-    '8505542582d823d84ef7483af94111e9f6328c6ea88541259bb77feb7735da51',
+    '8e40d177bd24791467c57eb9e5dc5a0172225cb97493a2386e7738d8cb6b5b87',
   // CAN-3696 enables OpenCode while retaining the merged launcher defaults
   // and Linux isolation; CAN-4019 also pins the account proxy flag on. The
   // frozen study identities remain unchanged.
@@ -1383,6 +1385,10 @@ const REVIEWED_PR_RELEASE_HELPER_IDENTITIES = Object.freeze({
   'apps/desktop-app/tests/electron/launchCanopy.mjs':
     // CAN-4386 pins the hosted settings flag on in the E2E defaults.
     '9c185c5345361d44a33d7f7064e1c5b4fab3d3cf1e9c9f7ff0d17e1c9d4e49fc',
+  // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+  // refresh-rate pairing) changes this helper; the frozen study pair stays.
+  'apps/desktop-app/tests/performance/monitor.mjs':
+    'f1a2da5367253ac41fb590b607ee6fda8f2f2896f8e1912961377889410f376b',
 });
 
 // Later reviewed changes to study-owned helpers, keyed by the study's installed
@@ -1403,7 +1409,9 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
   // bracketed or a metric.
   'apps/desktop-app/tests/performance/monitor.mjs': Object.freeze({
     '909b52498c7a3ade1f4d6eb9e2fa5ee742e50dd85ad55e2833741b505de7eba3':
-      '078c8f8ab1627b82c22047d9cbc781944fbf194ac3b6437b7998b72143685d27',
+      // CAN-5532 keeps the window's W5 store counters as `summary.w5Work`
+      // evidence beside route evidence; never bracketed or a metric.
+      'cbdfd30337304ea951e4b08b7322e8fa22992899d7c01f945fba3645698c1584',
   }),
   // Transcript reference previews add the opt-in linear-reference-transcripts
   // scenario and its scoped sizing keys to the profiles; the opt-in
@@ -1421,7 +1429,9 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
       // Sidebar reorder is opt-in; every existing workload default is unchanged.
       // CAN-4495 adds the opt-in Code Review registry scenarios and their
       // scoped sizing keys; existing defaults are unchanged.
-      '6c025906738df9b1e3e83afe25098a3077b6110e74f03d3eea511fe5e38b3778',
+      // CAN-5532 adds the opt-in W5 store scenarios, their scoped sizing
+      // keys and the --w5-store treatment; existing defaults are unchanged.
+      '957d2270ade21034e96fe681b98b21c5fffd03b1b54051c7f51b36bc0bdeab69',
   }),
   // Phase 17 adds the local-only CANOPY_E2E_RENDERER_CODE_CACHE_SCHEME switch
   // that seeds the code-cache scheme experiment, expects its window URL and
@@ -1461,7 +1471,14 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
       // test's stderr; launch behavior is unchanged.
       // CAN-4551 pins the chat automation pipelines experiment to offered so
       // ordinary E2E saves chat automations natively.
-      '7e309a3641f379a8eb6395d45fdafee72f43b445eddb4f6c33d5b7bc62ff7663',
+      // CAN-5544 resolves Files reads `on` only for the opt-in dry run and
+      // records that run's per-launch evidence before any close or abrupt
+      // kill, a direct electronApp.close() included, and rejects a snapshot
+      // outside main's Files evidence contract and a read that failed
+      // without a message; launch behavior is otherwise unchanged. The dry
+      // run also counts a GA3 (CAN-5541) latched `daemon.bypassed` read as a
+      // fallback.
+      '67459afa256fddb1626cf266f51783e324884768ea15c79ba26bc7ff278133fd',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and

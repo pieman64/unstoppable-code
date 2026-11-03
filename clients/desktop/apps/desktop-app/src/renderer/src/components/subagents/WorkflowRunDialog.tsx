@@ -57,7 +57,7 @@ export function WorkflowRunDialog({
       maxWidth="3xl"
       dataTestId="subagent-workflow-dialog"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-5 pt-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         <WorkflowRunView
           run={workflow.run}
           transcriptDir={target.transcriptDir}

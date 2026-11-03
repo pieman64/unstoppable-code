@@ -4,7 +4,6 @@ import {
   listExecutionSummaries,
   listExecutionSummariesForArchival,
   loadExecutionState,
-  requestExecutionCancellation,
   saveExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import type {
@@ -13,9 +12,6 @@ import type {
 } from '@canopy/desktop-shared/node/pipelines/executor/types';
 import type { ArchiveIoOperationRequest } from '../archive/archive-io-protocol';
 import { relocateExecutionStateArtifactPaths } from './execution-state-relocation';
-import { getActiveExecutionHandle } from './pipeline-execution-registry';
-
-const CANCEL_TIMEOUT_MS = 10_000;
 
 interface CleanupResult {
   warnings: string[];
@@ -32,14 +28,6 @@ export interface CleanupWorktreePipelinesOptions {
       { type: 'copy-payload' }
     >['input'],
   ) => Promise<void>;
-}
-
-function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error('cancel timeout')), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 export async function deleteExecutionArtifacts(
@@ -86,41 +74,17 @@ function isCleanableStatus(status: ExecutionSummary['status']): boolean {
 
 async function cancelRunningExecutions(
   running: ExecutionSummary[],
-  runtime: ExecutionRuntime,
 ): Promise<PromiseSettledResult<ExecutionSummary>[]> {
+  // Local import: the dispatch path reaches back into the desktop runtime.
+  const { drainPipelineThroughLocalWorker } =
+    await import('./pipeline-worker-dispatch');
   return Promise.allSettled(
     running.map(async (summary) => {
       try {
-        const handle = getActiveExecutionHandle(summary.id);
-        if (handle) {
-          await requestExecutionCancellation(summary.id, runtime.executionsDir);
-          // The handle resolves only after the executor has aborted and awaited
-          // its child processes. If this bounded wait expires, leave both the
-          // durable cancellation marker and running state intact: the still-live
-          // handle owns eventual settlement, and a later archive retry must not
-          // mistake a force-written terminal snapshot for a completed drain.
-          await raceWithTimeout(handle.cancel(), CANCEL_TIMEOUT_MS);
-        } else {
-          // Nested pipeline executions do not have renderer registry handles,
-          // and a just-settled execution may lose its handle after the summary
-          // scan. Re-read first so that race is already drained; otherwise use
-          // the executor's durable cancellation path, which polls the marker
-          // before applying its bounded recovered-execution fallback.
-          const current = await loadExecutionState(
-            summary.id,
-            runtime.executionsDir,
-          );
-          if (
-            current &&
-            !['success', 'failure', 'cancelled'].includes(current.status)
-          ) {
-            const { cancelPipelineExecution } =
-              await import('@canopy/desktop-shared/node/pipelines/executor/pipeline-executor');
-            await cancelPipelineExecution(summary.id, runtime, {
-              allowRecoveredFallback: false,
-            });
-          }
-        }
+        // The worker's drain waits a bounded time and never force-writes a
+        // terminal state, so a run still stopping keeps its cancellation
+        // marker and running state for a later archive retry.
+        await drainPipelineThroughLocalWorker(summary.id);
         return summary;
       } catch {
         throw new Error(summary.id);
@@ -144,7 +108,7 @@ export async function drainWorktreePipelines(
       summary.worktree_id === worktreeId &&
       summary.status === 'running',
   );
-  const results = await cancelRunningExecutions(running, runtime);
+  const results = await cancelRunningExecutions(running);
   const failed = results.find((result) => result.status === 'rejected');
   if (failed?.status === 'rejected') {
     const executionId =
@@ -207,7 +171,7 @@ export async function cleanupWorktreePipelines(
   );
 
   // Cancel running executions concurrently, each with a 10s timeout
-  const cancelResults = await cancelRunningExecutions(running, runtime);
+  const cancelResults = await cancelRunningExecutions(running);
 
   for (const result of cancelResults) {
     if (result.status === 'fulfilled') {

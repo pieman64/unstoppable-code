@@ -45,7 +45,6 @@ import {
   MoreHorizontalIcon,
   ExperimentIcon,
   PeopleIdCardIcon,
-  SearchIcon,
   CheckIcon as AppCatalogCheckIcon,
   StarIcon as AppCatalogStarIcon,
 } from '../icons/AppIcons';
@@ -75,6 +74,7 @@ import {
 } from './PickerMenu';
 import { Button } from './Button';
 import { RichHoverTooltip } from './RichHoverTooltip';
+import { SearchField } from './SearchField';
 import {
   AI_CREDITS_LABEL,
   FREE_AI_CREDITS_LABEL,
@@ -2203,7 +2203,7 @@ export function ModelPickerMenu({
                 catalogStatus.onRetry?.();
               }}
             >
-              Retry
+              Try again
             </Button>
           ) : null}
         </div>
@@ -3133,16 +3133,18 @@ export function ModelPickerMenu({
                   </div>
                 </div>
               ) : (
-                <label className="mx-3 flex h-11 shrink-0 items-center gap-2 border-b px-1 fg-tertiary focus-within:ring-[length:var(--border-hairline)] focus-within:ring-inset focus-within:ring-line-accent focus-within:fg-secondary">
-                  <SearchIcon width={15} height={15} aria-hidden="true" />
-                  <span className="sr-only">Search models</span>
-                  <input
+                <div className="mx-3 shrink-0 border-b">
+                  <SearchField
                     ref={searchRef}
-                    type="search"
+                    size="lg"
+                    // The 44px header's own inset, less this row's margin,
+                    // keeps the glyph where the picker's rows start.
+                    className="-ml-3"
+                    aria-label="Search models"
                     value={modelSearch}
-                    onChange={(event): void =>
-                      setModelSearch(event.target.value)
-                    }
+                    onValueChange={setModelSearch}
+                    // Escape closes the picker, as it does from its rows.
+                    clearOnEscape={false}
                     onKeyDown={(event): void => {
                       if (
                         event.key === 'ArrowDown' ||
@@ -3170,9 +3172,8 @@ export function ModelPickerMenu({
                     }}
                     placeholder="Search models"
                     data-testid={`${testIdPrefix}-search`}
-                    className="min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-tertiary"
                   />
-                </label>
+                </div>
               )}
               {harnessTabs.emptyCatalog &&
               catalog.every((option) => resolveOptionState(option).disabled) &&

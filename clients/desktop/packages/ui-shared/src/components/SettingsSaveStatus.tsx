@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { StatusLabel } from './StatusLabel';
 import { CheckIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
 
@@ -35,11 +36,7 @@ export function SettingsSaveStatus({
       data-testid={dataTestId}
       data-state={state}
       className={`inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap text-xs transition-colors ${
-        state === 'idle'
-          ? 'fg-tertiary'
-          : state === 'error'
-            ? 'fg-destructive'
-            : 'fg-secondary'
+        state === 'idle' ? 'fg-tertiary' : 'fg-secondary'
       }`}
     >
       {state === 'saving' ? (
@@ -58,7 +55,7 @@ export function SettingsSaveStatus({
           Saved
         </>
       ) : state === 'error' ? (
-        errorLabel
+        <StatusLabel>{errorLabel}</StatusLabel>
       ) : (
         idleLabel
       )}

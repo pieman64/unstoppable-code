@@ -97,8 +97,8 @@ test('Customize sections share installed search, expansion, details and Workflow
       installed.getByTestId(
         'customize-row-subtitle-skill:custom:app:section-skill-0',
       ),
-      // CAN-4844: the approved custom skill subtitle shows its updated age.
-    ).toHaveText(/^Updated\s\d+[smhd] ago$/);
+      // CAN-4844: compact rows show the creator; the edited date is in the source tooltip.
+    ).toHaveText('You');
     const skill = installed.getByTestId(
       'customize-row-skill:custom:app:section-skill-0',
     );

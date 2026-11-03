@@ -7,7 +7,12 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import { Button, TextInput } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SettingsRowsRow,
+  TextInput,
+  CopyDetailsButton,
+} from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
@@ -197,33 +202,41 @@ export function ProfileSection({
         </div>
       </div>
       <form className={SETTINGS_CARD_ROW_CLASS} onSubmit={handleNameSubmit}>
-        <div className="min-w-0">
-          <label htmlFor="profile-name-input" className={ROW_LABEL_CLASS}>
-            Name
-          </label>
-          <p className={ROW_DESCRIPTION_CLASS}>
-            How you appear on your profile and in organizations.
-          </p>
-        </div>
-        <div className={withPrivacyClass('w-52 shrink-0', blockClassName)}>
-          <TextInput
-            id="profile-name-input"
-            density="settings"
-            required
-            maxLength={PROFILE_NAME_MAX_LENGTH}
-            value={draft}
-            disabled={editor.busy}
-            onChange={(event) => setDraft(event.target.value)}
-            onFocus={editor.clearError}
-            onBlur={saveName}
-            data-testid="profile-name-input"
+        <div className="min-w-0 flex-1">
+          <SettingsRowsRow
+            label="Name"
+            htmlFor="profile-name-input"
+            description="How you appear on your profile and in organizations."
+            control={
+              <div
+                className={withPrivacyClass('w-52 shrink-0', blockClassName)}
+              >
+                <TextInput
+                  id="profile-name-input"
+                  density="settings"
+                  required
+                  maxLength={PROFILE_NAME_MAX_LENGTH}
+                  value={draft}
+                  disabled={editor.busy}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onFocus={editor.clearError}
+                  onBlur={saveName}
+                  data-testid="profile-name-input"
+                />
+              </div>
+            }
           />
         </div>
       </form>
       {editor.error ? (
         <p className="pb-3 text-xs fg-destructive" role="alert">
-          {editor.error}
+          {editor.error.copy}
         </p>
+      ) : null}
+      {editor.error?.details !== undefined ? (
+        <div className="pb-3">
+          <CopyDetailsButton details={editor.error.details} />
+        </div>
       ) : null}
     </>
   );

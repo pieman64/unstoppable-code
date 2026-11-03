@@ -246,7 +246,7 @@ describe('paused pipeline resume controls', () => {
     );
 
     try {
-      const button = rendered.container.querySelector(
+      const button = document.body.querySelector(
         '[data-testid="pause-input-resume"]',
       );
 
@@ -263,7 +263,7 @@ describe('paused pipeline resume controls', () => {
         ],
       });
       expect((button as HTMLButtonElement).disabled).toBe(false);
-      expect(rendered.container.textContent).toContain('IPC timeout');
+      expect(document.body.textContent).toContain('IPC timeout');
     } finally {
       rendered.cleanup();
     }
@@ -289,7 +289,7 @@ describe('paused pipeline resume controls', () => {
     );
 
     try {
-      const button = rendered.container.querySelector(
+      const button = document.body.querySelector(
         '[data-testid="pause-input-resume"]',
       );
 
@@ -306,7 +306,7 @@ describe('paused pipeline resume controls', () => {
         ],
       });
       expect((button as HTMLButtonElement).disabled).toBe(false);
-      expect(rendered.container.textContent).toContain('IPC timeout');
+      expect(document.body.textContent).toContain('IPC timeout');
     } finally {
       rendered.cleanup();
     }
@@ -356,7 +356,7 @@ describe('paused pipeline resume controls', () => {
     );
 
     try {
-      const button = rendered.container.querySelector(
+      const button = document.body.querySelector(
         '[data-testid="pause-formless-resume"]',
       );
       await click(button);
@@ -394,7 +394,7 @@ describe('paused pipeline resume controls', () => {
     );
 
     try {
-      const button = rendered.container.querySelector(
+      const button = document.body.querySelector(
         '[data-testid="pause-input-resume"]',
       );
       await click(button);
@@ -442,9 +442,7 @@ describe('paused pipeline resume controls', () => {
 
     try {
       expect(
-        rendered.container.querySelector(
-          '[data-testid="pause-formless-resume"]',
-        ),
+        document.body.querySelector('[data-testid="pause-formless-resume"]'),
       ).toBeNull();
     } finally {
       rendered.cleanup();

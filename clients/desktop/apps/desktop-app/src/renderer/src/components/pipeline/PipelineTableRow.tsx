@@ -33,6 +33,7 @@ import {
   TableActionButton,
   TableActionsCell,
 } from '@canopy/ui-shared';
+import { Badge } from '@canopy/ui-shared/components';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 
 function ExecutionScopeBadge({
@@ -189,11 +190,7 @@ export function PipelineTableRow({
       {/* Source */}
       <td className="px-3 py-2.5 align-middle">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span
-            className={`shrink-0 px-1.5 py-0.5 text-3xs font-medium rounded ${sourceMeta.badgeClass}`}
-          >
-            {sourceMeta.label}
-          </span>
+          <Badge className="shrink-0">{sourceMeta.label}</Badge>
           {isShared && (
             <PipelineShareLabel
               shareScope={pipeline.shareScope}

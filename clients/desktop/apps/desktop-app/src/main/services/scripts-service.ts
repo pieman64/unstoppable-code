@@ -7,9 +7,6 @@ import type {
   PortalScriptRun,
   PortalScriptSummary,
   ScriptRunSnapshot,
-  SaveProjectScriptsRequest,
-  SaveWorkspaceRepoScriptsRequest,
-  SaveWorkspaceScriptsRequest,
   ScriptDescriptor,
   ScriptCompleteEvent,
   ScriptOutputEvent,
@@ -69,8 +66,6 @@ import {
   isTrackedShellScriptRunning,
   listTrackedShellScripts,
   listTrackedShellScriptsForWorktree,
-  runShellScript,
-  stopTrackedShellScript,
   drainTrackedShellScriptRunsForWorktree,
 } from '../lib/script-runner';
 import { readPreferencesFile } from '../lib/preferences-store';
@@ -85,15 +80,15 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
 import {
   CORE_SCRIPT_GRANTS,
   type CanopyCallerDescriptor,
+  type WorkerScriptContext,
+  type WorkerScriptExecution,
 } from '@canopy/protocol/canopy-core';
 import {
-  appendScriptRunLogLines,
-  completeScriptRunLog,
-  listScriptRunLogTails,
-  readScriptRunLogTail,
-  startScriptRunLog,
-  type PersistedScriptRunFile,
-} from '../lib/script-log-store';
+  cancelScriptRuns,
+  listScriptRuns as listWorkerScriptRuns,
+  readScriptRun,
+  runDesktopScript,
+} from '../lib/script-execution';
 import {
   createProjectScriptDescriptor,
   createScriptCompleteEvent,
@@ -104,9 +99,6 @@ import {
   type ScriptInvocation,
 } from '../lib/script-events';
 import { readWorkspaceRepoOrThrow } from '../lib/workspace-script-config';
-import { updateWorkspaceScripts } from '../lib/workspace-script-hook-settings';
-import { buildWorktreeDataEnv } from '../lib/worktree-data-env';
-import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
 import { emitPortalFeatureUpsert } from './portal-feature-event-service';
 import {
   acquireSharedContainerRunLifecycle,
@@ -118,14 +110,11 @@ import {
   ensureSharedContainerRunCopy,
   getSharedContainerRunCopyState,
 } from '../shared-containers/run/run-copy';
-import { readSharedContainerRunEnvironment } from '../shared-containers/run-env-store';
-import { buildSharedContainerRunEnv } from '../lib/shared-container-run-env';
 import { getFeatureFlagService } from '../feature-flags';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   settleAll,
   settleEach,
-  trackDetachedWork,
 } from '@canopy/desktop-shared/node/lib/detached-work';
 
 // Script actions read source info as the trusted main process.
@@ -151,11 +140,12 @@ interface ScriptExecution {
   worktreeId: string;
   script: ScriptDescriptor;
   invocation: ScriptInvocation;
+  /** The checkout the worker projects `context` onto, for host prechecks. */
   cwd: string;
+  context: WorkerScriptContext;
   command: string;
   shell?: CommandShellDefinition;
   timeoutSeconds: number | null;
-  env?: NodeJS.ProcessEnv;
 }
 
 export interface RunScriptOptions {
@@ -290,7 +280,9 @@ async function resolveScriptExecution(
         'The shared-container run-copy repository is unavailable.',
       );
     }
-    const values = await readSharedContainerRunEnvironment(request.containerId);
+    // Published commands are interactive, so they run on a host terminal
+    // (CAN-5082) with exactly the declared variables the recipient assigned,
+    // which the shared context projection reads.
     const declared = new Set(run.requiredEnv);
     return {
       projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
@@ -304,12 +296,13 @@ async function resolveScriptExecution(
       ),
       invocation: 'manual-run',
       cwd,
+      context: {
+        kind: 'shared-container',
+        repoId: published.repoId,
+        environmentKeys: Array.from(declared),
+      },
       command: published.command,
       timeoutSeconds: defaultTimeoutSeconds,
-      env: buildSharedContainerRunEnv(
-        request.containerId,
-        values.filter((entry) => declared.has(entry.key)),
-      ),
     };
   }
 
@@ -334,6 +327,7 @@ async function resolveScriptExecution(
       ),
       invocation: 'manual-run',
       cwd,
+      context: { kind: 'project' },
       command,
       shell: definition.shell,
       timeoutSeconds: resolveEffectiveScriptTimeoutSeconds({
@@ -341,14 +335,6 @@ async function resolveScriptExecution(
         configuredTimeoutSeconds: definition.timeoutSeconds,
         defaultTimeoutSeconds,
       }),
-      env: buildWorktreeDataEnv(
-        request.projectId,
-        request.worktreeId,
-        undefined,
-        {
-          runtime: 'canopy',
-        },
-      ),
     };
   }
 
@@ -377,6 +363,7 @@ async function resolveScriptExecution(
       ),
       invocation: 'manual-lifecycle',
       cwd,
+      context: { kind: 'workspace-root' },
       command,
       shell: definition.shell,
       timeoutSeconds: resolveEffectiveScriptTimeoutSeconds({
@@ -384,12 +371,6 @@ async function resolveScriptExecution(
         configuredTimeoutSeconds: definition.timeoutSeconds,
         defaultTimeoutSeconds,
       }),
-      env: buildWorktreeDataEnv(
-        request.workspaceId,
-        request.worktreeId,
-        undefined,
-        { runtime: 'canopy' },
-      ),
     };
   }
 
@@ -418,8 +399,6 @@ async function resolveScriptExecution(
   const definition = getResolvedScriptDefinition(scripts, scriptName);
   if (!definition) return null;
   const command = definition.command;
-  const childRepoEnv: NodeJS.ProcessEnv = {};
-  setBrandEnv(childRepoEnv, 'WORKSPACE_CHILD_REPO_ID', request.repoId);
 
   return {
     projectId: request.workspaceId,
@@ -435,6 +414,7 @@ async function resolveScriptExecution(
     ),
     invocation: 'manual-run',
     cwd,
+    context: { kind: 'workspace-repo', repoId: request.repoId },
     command,
     shell: definition.shell,
     timeoutSeconds: resolveEffectiveScriptTimeoutSeconds({
@@ -442,12 +422,6 @@ async function resolveScriptExecution(
       configuredTimeoutSeconds: definition.timeoutSeconds,
       defaultTimeoutSeconds,
     }),
-    env: buildWorktreeDataEnv(
-      request.workspaceId,
-      request.worktreeId,
-      childRepoEnv,
-      { runtime: 'canopy' },
-    ),
   };
 }
 
@@ -505,13 +479,14 @@ async function runScriptWithLifecycle(
     }
   }
   let outputTail = '';
-  const ref = await startScriptRunLog({
+  const runId = randomUUID();
+  // The worker writes the run log; this names the run it starts.
+  const ref = {
     projectId: execution.projectId,
     worktreeId: execution.worktreeId,
     script: execution.script,
-    invocation: execution.invocation,
-  }).catch(() => null);
-  const runId = ref?.runId ?? randomUUID();
+    runId,
+  };
   options.onRendererStarted?.(
     createScriptStartedEvent(
       execution.projectId,
@@ -521,17 +496,15 @@ async function runScriptWithLifecycle(
       runId,
     ),
   );
-  if (ref) {
-    notifyScriptRunUpdate(
-      buildPortalScriptRun({
-        execution,
-        runId: ref.runId,
-        status: 'running',
-        outputTail,
-      }),
-      options,
-    );
-  }
+  notifyScriptRunUpdate(
+    buildPortalScriptRun({
+      execution,
+      runId,
+      status: 'running',
+      outputTail,
+    }),
+    options,
+  );
   let executionError: unknown;
   let response: ScriptRunResponse;
   try {
@@ -546,62 +519,57 @@ async function runScriptWithLifecycle(
     const processStarted = new Promise<void>((resolve) => {
       markProcessStarted = resolve;
     });
-    const completion = runShellScript({
-      script: execution.command,
-      cwd: execution.cwd,
-      env: execution.env,
-      shell: execution.shell,
-      timeoutSeconds: interactive ? null : execution.timeoutSeconds,
-      interactive,
-      onChunk: (lines) => {
-        if (ref)
-          trackDetachedWork(() =>
-            appendScriptRunLogLines({ ref, lines }).catch(() => {}),
-          );
-        options.onRendererOutput?.(
-          createScriptOutputEvent(
-            execution.projectId,
-            execution.worktreeId,
-            execution.script,
-            execution.invocation,
-            lines,
-            runId,
-          ),
-        );
-        const text = lines.join('\n');
-        outputTail = trimUtf8Tail(
-          `${outputTail}${outputTail && text ? '\n' : ''}${text}`,
-          RUN_TAIL_MAX_BYTES,
-        );
-        options.onChunk?.({ stream: 'stdout', text });
-        if (ref) {
-          notifyScriptRunUpdate(
-            buildPortalScriptRun({
-              execution,
-              runId: ref.runId,
-              status: 'running',
-              outputTail,
-            }),
-            options,
-          );
-        }
-      },
-      tracking: {
+    const completion = runDesktopScript(
+      {
         projectId: execution.projectId,
         worktreeId: execution.worktreeId,
-        scriptKey: execution.script.scriptKey,
-        runId,
+        context: execution.context,
         script: execution.script,
         invocation: execution.invocation,
-        logRef: ref ?? undefined,
+        command: execution.command,
+        ...(execution.shell ? { shell: execution.shell } : {}),
+        timeoutSeconds: interactive ? null : execution.timeoutSeconds,
+        interactive,
+        runId,
       },
-      // Execution starts once the process spawns; a launch failure resolves
-      // the run without signalling a start.
-      onProcessStarted: (): void => {
-        markProcessStarted();
-        options.onExecutionStarted?.();
+      {
+        observer: {
+          onLines: (lines) => {
+            options.onRendererOutput?.(
+              createScriptOutputEvent(
+                execution.projectId,
+                execution.worktreeId,
+                execution.script,
+                execution.invocation,
+                lines,
+                runId,
+              ),
+            );
+            const text = lines.join('\n');
+            outputTail = trimUtf8Tail(
+              `${outputTail}${outputTail && text ? '\n' : ''}${text}`,
+              RUN_TAIL_MAX_BYTES,
+            );
+            options.onChunk?.({ stream: 'stdout', text });
+            notifyScriptRunUpdate(
+              buildPortalScriptRun({
+                execution,
+                runId: ref.runId,
+                status: 'running',
+                outputTail,
+              }),
+              options,
+            );
+          },
+          // Execution starts once the process spawns; a launch failure
+          // resolves the run without signalling a start.
+          onProcessStarted: (): void => {
+            markProcessStarted();
+            options.onExecutionStarted?.();
+          },
+        },
       },
-    });
+    ).then((outcome) => outcome.response);
     if (releaseLifecycle) {
       await Promise.race([
         processStarted,
@@ -623,22 +591,16 @@ async function runScriptWithLifecycle(
       durationMs: 0,
     };
   }
-  if (ref)
-    trackDetachedWork(() =>
-      completeScriptRunLog({ ref, response }).catch(() => {}),
-    );
-  if (ref) {
-    notifyScriptRunUpdate(
-      buildPortalScriptRun({
-        execution,
-        runId: ref.runId,
-        status: scriptRunStatus(response),
-        outputTail,
-        finishedAt: new Date().toISOString(),
-      }),
-      options,
-    );
-  }
+  notifyScriptRunUpdate(
+    buildPortalScriptRun({
+      execution,
+      runId: ref.runId,
+      status: scriptRunStatus(response),
+      outputTail,
+      finishedAt: new Date().toISOString(),
+    }),
+    options,
+  );
   options.onRendererComplete?.(
     createScriptCompleteEvent(
       execution.projectId,
@@ -771,35 +733,47 @@ export async function stopScript(
 ): Promise<ScriptRunResponse | null> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
-  const stopped = await stopTrackedShellScript({
+  const tracked = listTrackedShellScripts().filter(
+    (tracking) =>
+      tracking.projectId === request.projectId &&
+      tracking.worktreeId === request.worktreeId &&
+      tracking.scriptKey === request.scriptKey,
+  );
+  const { stopped } = await cancelScriptRuns({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
     scriptKey: request.scriptKey,
   });
-  if (!stopped) {
+  const first = stopped[0];
+  if (!first) {
     return null;
   }
-  reportStoppedScript(request, stopped, options);
+  const response: ScriptRunResponse = {
+    success: first.status === 'success',
+    exitCode: first.exitCode,
+    output: '',
+    timedOut: first.timedOut,
+    durationMs: first.durationMs,
+  };
+  reportStoppedScript(
+    request,
+    {
+      response,
+      tracking: tracked.find(({ runId }) => runId === first.executionId),
+    },
+    options,
+  );
   await emitCancelledScriptRun(request, options);
-  return stopped.response;
+  return response;
 }
 
-/** Close a stopped run's log and tell the renderer the run completed. */
+/** Tell the renderer a stopped run completed; the worker closed its log. */
 function reportStoppedScript(
   request: ScriptStopRequest,
   stopped: StoppedTrackedShellScript,
   options: StopScriptOptions,
 ): void {
-  const ref = stopped.tracking?.logRef;
-  if (ref) {
-    trackDetachedWork(() =>
-      completeScriptRunLog({
-        ref,
-        response: stopped.response,
-      }).catch(() => {}),
-    );
-  }
-  const script = ref?.script ?? stopped.tracking?.script;
+  const script = stopped.tracking?.logRef?.script ?? stopped.tracking?.script;
   if (script) {
     options.onRendererComplete?.(
       createScriptCompleteEvent(
@@ -836,26 +810,31 @@ async function emitCancelledScriptRun(
 function resolveScriptRunLogStatus(args: {
   projectId: string;
   worktreeId: string;
-  meta: PersistedScriptRunFile;
+  execution: WorkerScriptExecution;
 }): {
   snapshotStatus: ScriptRunSnapshot['status'];
   portalStatus: PortalScriptRun['status'];
   completedAt?: string;
 } {
+  const { execution } = args;
+  // A lost run (a restart interrupted it) shows as cancelled, as a stale
+  // running run always has; `worker.script.*` reports it as lost.
   const isStaleRunning =
-    args.meta.status === 'running' &&
-    !isTrackedShellScriptRunning({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      scriptKey: args.meta.script.scriptKey,
-    });
-  const status = isStaleRunning ? 'cancelled' : args.meta.status;
+    execution.status === 'lost' ||
+    (execution.status === 'running' &&
+      !isTrackedShellScriptRunning({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        scriptKey: execution.script.scriptKey,
+      }));
+  const status =
+    isStaleRunning || execution.status === 'lost'
+      ? 'cancelled'
+      : execution.status;
   return {
     snapshotStatus: status,
-    portalStatus: args.meta.timedOut ? 'timed_out' : status,
-    completedAt:
-      args.meta.completedAt ??
-      (isStaleRunning ? args.meta.updatedAt : undefined),
+    portalStatus: execution.timedOut ? 'timed_out' : status,
+    completedAt: execution.completedAt ?? undefined,
   };
 }
 
@@ -867,17 +846,18 @@ export async function readScriptRunTail(request: {
 }): Promise<{ lines: string[]; run?: PortalScriptRun }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
-  const { meta, lines } = await readScriptRunLogTail({
+  const { run } = await readScriptRun({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
     scriptKey: request.scriptKey,
-    maxLines: request.maxLines ?? 500,
+    tailLines: request.maxLines ?? 500,
   });
-  if (!meta) return { lines };
+  if (!run) return { lines: [] };
+  const { execution: meta, lines } = run;
   const { portalStatus, completedAt } = resolveScriptRunLogStatus({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
-    meta,
+    execution: meta,
   });
   const outputTail = trimUtf8Tail(lines.join('\n'), RUN_TAIL_MAX_BYTES);
   return {
@@ -885,8 +865,8 @@ export async function readScriptRunTail(request: {
     run: {
       workspaceLocalId: request.projectId,
       worktreeLocalId: request.worktreeId,
-      localId: meta.runId,
-      runId: meta.runId,
+      localId: meta.executionId,
+      runId: meta.executionId,
       scriptId: meta.script.scriptKey,
       // Transport plan §1.2: scriptKey is canonical; scriptId is a legacy
       // alias that MUST equal scriptKey while the rollout is in flight.
@@ -927,18 +907,18 @@ export async function loadWorktreeScriptRuns(request: {
 }): Promise<ScriptRunSnapshot[]> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
-  const runs = await listScriptRunLogTails({
+  const { runs } = await listWorkerScriptRuns({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
-    maxLines: request.maxLines ?? 1000,
+    tailLines: request.maxLines ?? 1000,
   });
 
   return runs
-    .map(({ meta, lines }): ScriptRunSnapshot => {
+    .map(({ execution: meta, lines }): ScriptRunSnapshot => {
       const { snapshotStatus, completedAt } = resolveScriptRunLogStatus({
         projectId: request.projectId,
         worktreeId: request.worktreeId,
-        meta,
+        execution: meta,
       });
 
       return {
@@ -1261,23 +1241,24 @@ export async function listScriptRuns(input?: {
   const scripts = await listScripts(input);
   const runs = await settleAll(
     scripts.map(async (script) => {
-      const { meta, lines } = await readScriptRunLogTail({
+      const { run } = await readScriptRun({
         projectId: workspaceLocalId,
         worktreeId: worktreeLocalId,
         scriptKey: script.scriptId,
-        maxLines: 80,
-      }).catch(() => ({ meta: null, lines: [] }));
-      if (!meta) return null;
+        tailLines: 80,
+      }).catch(() => ({ run: null }));
+      if (!run) return null;
+      const { execution: meta, lines } = run;
       const { portalStatus, completedAt } = resolveScriptRunLogStatus({
         projectId: workspaceLocalId,
         worktreeId: worktreeLocalId,
-        meta,
+        execution: meta,
       });
       return {
         workspaceLocalId,
         worktreeLocalId,
-        localId: meta.runId,
-        runId: meta.runId,
+        localId: meta.executionId,
+        runId: meta.executionId,
         scriptId: script.scriptId,
         // Transport plan §1.2 canonical fields, mirrored from the descriptor
         // we already carry on the summary row.
@@ -1312,43 +1293,4 @@ export function scriptToPortalEntity(
     ),
     payload: script,
   };
-}
-
-/**
- * `project:save-scripts`, `workspace:save-scripts` and
- * `workspace:save-repo-scripts`: compatibility adapters over the W5
- * `core.workspace.scripts.update` boundary (CAN-3816), which keeps the
- * workspace type and refuses a workspace without readable settings.
- */
-export async function saveProjectScriptsFromService(
-  request: SaveProjectScriptsRequest,
-): Promise<void> {
-  validateId(request.projectId, 'projectId');
-  await updateWorkspaceScripts({
-    workspaceId: request.projectId,
-    change: { kind: 'replace', scripts: request.scripts },
-    source: 'desktop',
-  });
-}
-
-export async function saveWorkspaceScriptsFromService(
-  request: SaveWorkspaceScriptsRequest,
-): Promise<void> {
-  validateId(request.workspaceId, 'workspaceId');
-  await updateWorkspaceScripts({
-    workspaceId: request.workspaceId,
-    change: { kind: 'replace', scripts: request.scripts },
-    source: 'desktop',
-  });
-}
-
-export async function saveWorkspaceRepoScriptsFromService(
-  request: SaveWorkspaceRepoScriptsRequest,
-): Promise<void> {
-  validateId(request.workspaceId, 'workspaceId');
-  await updateWorkspaceScripts({
-    workspaceId: request.workspaceId,
-    change: { kind: 'repositories', repos: request.repos },
-    source: 'desktop',
-  });
 }

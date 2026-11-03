@@ -2181,6 +2181,9 @@ for (const draft of ['blank', 'scheduled']) {
         'data-workspace-selected',
         'true',
       );
+      // Home resets the submitted draft only after the scheduled send settles;
+      // a draft typed before that keeps its schedule (CAN-3933).
+      await expect(home.getByTestId('home-scheduled-send-pill')).toHaveCount(0);
       await home
         .getByTestId('home-composer-editor')
         .fill('Actual immediate message');

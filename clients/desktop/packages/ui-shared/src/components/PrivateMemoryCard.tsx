@@ -1,7 +1,9 @@
 import { useId, type JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
 import { AdvancedDisclosure } from './AdvancedDisclosure';
-import { ToggleSwitch } from './ToggleSwitch';
+import { SettingsRowsRow } from './settings/SettingsRows';
+import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
+import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 
 const PRIVATE_MEMORY_LABEL = 'Private memory';
@@ -62,42 +64,35 @@ export function PrivateMemoryCard({
       data-managed={managed ? 'true' : undefined}
       className={surface === 'card' ? 'rounded-lg border p-4' : ''}
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <label htmlFor={switchId} className="text-s font-medium fg-primary">
-            {PRIVATE_MEMORY_LABEL}
-          </label>
-          {/* `text-pretty`: a narrow form wraps without a one-word last line. */}
-          <p className="mt-1 text-pretty text-xs fg-secondary">
-            {PRIVATE_MEMORY_EXPLANATION}
-          </p>
-          {managed && (
-            <p
-              className="mt-1 text-xs fg-secondary"
-              data-testid={`${dataTestId}-managed`}
-            >
-              {privateMemoryManagedLabel(organizationName)}
-            </p>
-          )}
-        </div>
-        <ToggleSwitch
-          id={switchId}
-          checked={checked}
-          disabled={disabled || managed}
-          label={PRIVATE_MEMORY_LABEL}
-          onChange={onChange}
-          dataTestId={`${dataTestId}-toggle`}
-        />
-      </div>
-      {error && (
-        <p
-          role="alert"
-          className="mt-2 text-xs fg-destructive"
-          data-testid={`${dataTestId}-error`}
-        >
-          {error}
-        </p>
-      )}
+      <SettingsRowsRow
+        label={PRIVATE_MEMORY_LABEL}
+        htmlFor={switchId}
+        description={
+          <>
+            <p>{PRIVATE_MEMORY_EXPLANATION}</p>
+            {managed && (
+              <p className="mt-1" data-testid={`${dataTestId}-managed`}>
+                {privateMemoryManagedLabel(organizationName)}
+              </p>
+            )}
+          </>
+        }
+        control={
+          <ToggleSwitch
+            id={switchId}
+            checked={checked}
+            disabled={disabled || managed}
+            label={PRIVATE_MEMORY_LABEL}
+            onChange={onChange}
+            dataTestId={`${dataTestId}-toggle`}
+          />
+        }
+      />
+      <ErrorBanner
+        className="mt-2"
+        error={error}
+        testId={`${dataTestId}-error`}
+      />
     </div>
   );
 }
@@ -149,20 +144,15 @@ export function PrivateMemoryInlineToggle({
   disabled = false,
   dataTestId = 'private-memory',
 }: PrivateMemoryInlineToggleProps): JSX.Element {
-  const switchId = useId();
   return (
     <div data-testid={dataTestId} className="flex min-w-0 items-center gap-2">
-      <ToggleSwitch
-        id={switchId}
+      <ToggleSwitchField
         checked={checked}
         disabled={disabled}
-        label={PRIVATE_MEMORY_LABEL}
+        caption={PRIVATE_MEMORY_LABEL}
         onChange={onChange}
         dataTestId={`${dataTestId}-toggle`}
       />
-      <label htmlFor={switchId} className="text-xs fg-secondary">
-        {PRIVATE_MEMORY_LABEL}
-      </label>
       <Tooltip label={PRIVATE_MEMORY_EXPLANATION}>
         <button
           type="button"

@@ -60,7 +60,14 @@ import { extractIpcErrorMessage } from '@/lib/errors';
 import { pointRefsAt } from '@/lib/mcpServerRefs';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { type JSX, type ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import { useMcpServerList } from '../../hooks/useMcpServerList';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { useCuratedMcpServers } from '../../hooks/useCuratedMcpServers';
@@ -73,14 +80,13 @@ import {
   runCancellableModalLoad,
   runEntityEditOperation,
 } from './entityEditModalUtils';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '../shared/DialogModal';
 import { McpBrowseDialog } from '../mcp/McpBrowseDialog';
+import { ErrorBanner, EmptyState } from '../shared/StatusBlocks';
 import {
-  ErrorBanner,
-  LoadingPlaceholder,
-  EmptyState,
-} from '../shared/StatusBlocks';
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import {
@@ -110,13 +116,21 @@ import { Button, Tooltip } from '@canopy/ui-shared';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
+  Checkbox,
+  ChoiceField,
+  DialogFormField,
   FloatingMenu,
   McpClientSetupDetails,
+  McpConnectionFacts,
   McpConnectionStatusBadge,
   Notice,
+  Select,
+  TextInput,
   overlayGeneration,
   SegmentedControl,
+  StandaloneConfigsSection,
   type ActionMenuItem,
+  CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import {
   deriveMcpConnectionBadge,
@@ -496,18 +510,17 @@ function KeyValueEditor({
     <div className="space-y-2">
       {Object.entries(entries).map(([key, value]) => (
         <div key={key} className="flex items-center gap-2">
-          <input
-            type="text"
-            value={key}
-            readOnly
-            className="flex-1 rounded-md border bg-secondary/50 px-2 py-1 text-xs fg-primary"
-          />
-          <input
-            type={valueType}
-            value={value}
-            readOnly
-            className="flex-1 rounded-md border bg-secondary/50 px-2 py-1 text-xs fg-primary"
-          />
+          <div className="min-w-0 flex-1">
+            <TextInput value={key} readOnly aria-label={keyPlaceholder} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <TextInput
+              type={valueType}
+              value={value}
+              readOnly
+              aria-label={`${key} ${valuePlaceholder}`}
+            />
+          </div>
           <Button
             variant="ghost-destructive"
             size="compact"
@@ -520,24 +533,27 @@ function KeyValueEditor({
         </div>
       ))}
       <div className="flex items-center gap-2">
-        <input
-          type="text"
-          value={newKey}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setNewKey(e.target.value)
-          }
-          placeholder={keyPlaceholder}
-          className="focus-ring flex-1 rounded-md border bg-base px-2 py-1 text-xs"
-        />
-        <input
-          type={valueType}
-          value={newValue}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            setNewValue(e.target.value)
-          }
-          placeholder={valuePlaceholder}
-          className="focus-ring flex-1 rounded-md border bg-base px-2 py-1 text-xs"
-        />
+        <div className="min-w-0 flex-1">
+          <TextInput
+            value={newKey}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setNewKey(e.target.value)
+            }
+            placeholder={keyPlaceholder}
+            aria-label={`New ${keyPlaceholder}`}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <TextInput
+            type={valueType}
+            value={newValue}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setNewValue(e.target.value)
+            }
+            placeholder={valuePlaceholder}
+            aria-label={`New ${valuePlaceholder}`}
+          />
+        </div>
         <Button
           size="compact"
           onClick={handleAdd}
@@ -569,18 +585,17 @@ function ConfigEditor({
 }: ConfigEditorProps): JSX.Element {
   const [expanded, setExpanded] = useState(initialExpanded);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const fieldId = useId();
 
   return (
     <div className="rounded-lg border bg-secondary/20">
       {/* Header row */}
       <div className="flex items-center gap-3 px-3 py-2">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={config.enabled}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
             onChange({ ...config, enabled: e.target.checked })
           }
-          className="rounded"
           aria-label={`Enable ${config.name || 'config'}`}
         />
         <span className="flex-1 text-sm fg-primary truncate">
@@ -605,32 +620,31 @@ function ConfigEditor({
       {expanded && (
         <div className="border-t px-3 py-3 space-y-3">
           {/* Name */}
-          <label className="block text-xs">
-            <span className="mb-1 block fg-secondary">Name</span>
-            <input
-              type="text"
+          <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
+            <TextInput
+              id={`${fieldId}-name`}
               value={config.name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 onChange({ ...config, name: e.target.value })
               }
               placeholder="Config name"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
             />
-          </label>
+          </DialogFormField>
 
           {/* Description */}
-          <label className="block text-xs">
-            <span className="mb-1 block fg-secondary">Description</span>
-            <input
-              type="text"
+          <DialogFormField
+            label="Description (optional)"
+            htmlFor={`${fieldId}-description`}
+          >
+            <TextInput
+              id={`${fieldId}-description`}
               value={config.description}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 onChange({ ...config, description: e.target.value })
               }
               placeholder="Optional description"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
             />
-          </label>
+          </DialogFormField>
 
           {/* Env vars */}
           <div className="text-xs">
@@ -648,10 +662,9 @@ function ConfigEditor({
           </div>
 
           {/* Extra args */}
-          <label className="block text-xs">
-            <span className="mb-1 block fg-secondary">Extra arguments</span>
-            <input
-              type="text"
+          <DialogFormField label="Extra arguments" htmlFor={`${fieldId}-args`}>
+            <TextInput
+              id={`${fieldId}-args`}
               value={config.extraArgs.join(' ')}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 onChange({
@@ -662,9 +675,8 @@ function ConfigEditor({
                 })
               }
               placeholder="Space-separated extra args"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
             />
-          </label>
+          </DialogFormField>
 
           {/* Extra headers */}
           <div className="text-xs">
@@ -680,18 +692,17 @@ function ConfigEditor({
           </div>
 
           {/* Auth token */}
-          <label className="block text-xs">
-            <span className="mb-1 block fg-secondary">Auth token</span>
-            <input
+          <DialogFormField label="Auth token" htmlFor={`${fieldId}-token`}>
+            <TextInput
+              id={`${fieldId}-token`}
               type="password"
               value={config.authToken ?? ''}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 onChange({ ...config, authToken: e.target.value || undefined })
               }
               placeholder="Bearer token"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
             />
-          </label>
+          </DialogFormField>
 
           {/* Delete config */}
           <div className="pt-1">
@@ -805,6 +816,7 @@ export function McpServerDialog({
 }: McpServerDialogProps): JSX.Element {
   const cloudOnly = serverId === null && accountConnection !== undefined;
   const isCreate = serverId === null && !cloudOnly;
+  const fieldId = useId();
   const [accountFields, setAccountFields] = useState<Record<string, string>>(
     {},
   );
@@ -1648,12 +1660,12 @@ export function McpServerDialog({
         selectedConfigId || undefined,
       );
       setHealthResult(result);
-    } catch (err) {
+    } catch {
       setHealthResult({
         serverId,
         configId: selectedConfigId || undefined,
         status: 'unhealthy',
-        message: err instanceof Error ? err.message : String(err),
+        message: "Couldn't check the server. Try again.",
         checkedAt: new Date().toISOString(),
       });
     } finally {
@@ -1954,15 +1966,7 @@ export function McpServerDialog({
         maxWidth="xl"
         closeOnBackdrop
       >
-        <div
-          className="flex flex-col gap-4 p-5"
-          data-testid="mcp-account-setup"
-        >
-          {initialCurated.setupInstructions && (
-            <p className="text-sm fg-secondary">
-              {initialCurated.setupInstructions}
-            </p>
-          )}
+        <div className="flex flex-col gap-4" data-testid="mcp-account-setup">
           {requiresOAuthClient && !clientSetup && (
             <p className="text-sm fg-secondary">
               {mcpConnectErrorMessage('client_credentials_required')}
@@ -1979,34 +1983,35 @@ export function McpServerDialog({
             />
           )}
           {initialCurated.urlOptions?.length ? (
-            <label className="block text-sm">
-              <span className="mb-1.5 block fg-secondary">Endpoint</span>
-              <select
+            <DialogFormField label="Endpoint" htmlFor={`${fieldId}-endpoint`}>
+              <Select
+                id={`${fieldId}-endpoint`}
+                options={initialCurated.urlOptions.map((option) => ({
+                  value: option.url,
+                  label: option.label,
+                }))}
                 value={url}
-                onChange={(event): void => setUrl(event.target.value)}
+                onValueChange={setUrl}
                 data-testid="mcp-curated-url-option"
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
-              >
-                {initialCurated.urlOptions.map(
-                  (option): JSX.Element => (
-                    <option key={option.url} value={option.url}>
-                      {option.label}
-                    </option>
-                  ),
-                )}
-              </select>
-            </label>
+              />
+            </DialogFormField>
           ) : null}
           {supportedFields ? (
             formFields.map(
               (field): JSX.Element => (
-                <label key={field.kind} className="block text-sm">
-                  <span className="mb-1.5 block fg-secondary">
-                    {field.kind === 'oauth-client-id'
+                <DialogFormField
+                  key={field.kind}
+                  label={
+                    field.kind === 'oauth-client-id'
                       ? 'OAuth client ID'
-                      : 'OAuth client secret'}
-                  </span>
-                  <input
+                      : optionalSecret
+                        ? 'OAuth client secret (optional)'
+                        : 'OAuth client secret'
+                  }
+                  htmlFor={`${fieldId}-${field.kind}`}
+                >
+                  <TextInput
+                    id={`${fieldId}-${field.kind}`}
                     type={
                       field.kind === 'oauth-client-secret' ? 'password' : 'text'
                     }
@@ -2019,14 +2024,8 @@ export function McpServerDialog({
                       })
                     }
                     data-testid={`mcp-account-${field.kind}`}
-                    className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                   />
-                  {optionalSecret && field.kind === 'oauth-client-secret' && (
-                    <span className="mt-1 block text-xs fg-secondary">
-                      Optional.
-                    </span>
-                  )}
-                </label>
+                </DialogFormField>
               ),
             )
           ) : (
@@ -2054,6 +2053,7 @@ export function McpServerDialog({
   return (
     <>
       <DialogModal
+        inset="flush"
         onClose={onClose}
         title={isCreate ? 'New MCP server' : 'Edit MCP server'}
         titleId="mcp-server-dialog-title"
@@ -2065,7 +2065,7 @@ export function McpServerDialog({
         <EntityEditModalContent
           loading={loading}
           error={error}
-          bodyClassName="flex flex-1 min-h-0 flex-col gap-4 px-5 pb-5 overflow-y-auto"
+          bodyClassName="flex flex-1 min-h-0 flex-col gap-4 px-6 pb-6 overflow-y-auto"
           footerProps={footerProps}
         >
           {isCreate &&
@@ -2095,30 +2095,27 @@ export function McpServerDialog({
           {/* Health / Test buttons for existing servers */}
           {serverId && (
             <div className="flex flex-wrap items-end gap-3">
-              <label className="min-w-55 text-xs">
-                <span className="mb-1 block fg-secondary">
-                  Config to validate
-                </span>
-                <select
-                  value={selectedConfigId}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                    setSelectedConfigId(e.target.value)
-                  }
-                  disabled={configs.length === 0}
-                  className="focus-ring w-full rounded-md border bg-base px-3 py-1.5 text-xs fg-primary disabled:opacity-50"
+              <div className="min-w-55">
+                <DialogFormField
+                  label="Config to validate"
+                  htmlFor={`${fieldId}-validate-config`}
                 >
-                  {configs.length === 0 ? (
-                    <option value="">No configs available</option>
-                  ) : (
-                    configs.map((config) => (
-                      <option key={config.id} value={config.id}>
-                        {config.name}
-                        {config.enabled ? '' : ' (disabled)'}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
+                  <Select
+                    id={`${fieldId}-validate-config`}
+                    options={
+                      configs.length === 0
+                        ? [{ value: '', label: 'No configs available' }]
+                        : configs.map((config) => ({
+                            value: config.id,
+                            label: `${config.name}${config.enabled ? '' : ' (disabled)'}`,
+                          }))
+                    }
+                    value={selectedConfigId}
+                    onValueChange={setSelectedConfigId}
+                    disabled={configs.length === 0}
+                  />
+                </DialogFormField>
+              </div>
               <Button
                 size="compact"
                 onClick={() => void handleHealthCheck()}
@@ -2158,56 +2155,48 @@ export function McpServerDialog({
 
           {/* Health check result */}
           {healthResult && (
-            <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
+            <Notice
+              intent={
                 healthResult.status === 'healthy'
-                  ? 'border-line-positive bg-success-subtle fg-success'
+                  ? 'positive'
                   : healthResult.status === 'needs_auth'
-                    ? 'border-line-attention bg-warning-subtle fg-warning'
-                    : 'border-line-destructive/30 bg-destructive-subtle fg-destructive'
-              }`}
-            >
-              <span className="font-medium">
-                {capitalizeFirstLetter(healthResult.status.replace(/_/g, ' '))}
-              </span>
-              {' \u2014 '}
-              {healthResult.message}
-              {healthResult.responseTime != null && (
-                <span className="ml-2 fg-secondary">
-                  ({healthResult.responseTime}ms)
-                </span>
+                    ? 'attention'
+                    : 'destructive'
+              }
+              title={capitalizeFirstLetter(
+                healthResult.status.replace(/_/g, ' '),
               )}
-            </div>
+              detail={
+                healthResult.responseTime != null
+                  ? `Response time: ${healthResult.responseTime}ms`
+                  : undefined
+              }
+            >
+              {healthResult.message}
+            </Notice>
           )}
 
           {/* Test connection result */}
           {testResult && (
-            <div
-              className={`rounded-lg border px-3 py-2 text-xs ${
-                testResult.success
-                  ? 'border-line-positive bg-success-subtle fg-success'
-                  : 'border-line-destructive/30 bg-destructive-subtle fg-destructive'
-              }`}
-            >
-              <p className="font-medium">
-                {testResult.success ? 'Connected' : 'Failed'}
-                {' \u2014 '}
+            <div className="space-y-2">
+              <Notice
+                intent={testResult.success ? 'positive' : 'destructive'}
+                title={testResult.success ? 'Connected' : "Couldn't connect"}
+                actions={
+                  !testResult.success && testResult.error ? (
+                    <CopyDetailsButton details={testResult.error} />
+                  ) : undefined
+                }
+                detail={
+                  testResult.responseTime != null
+                    ? `Response time: ${testResult.responseTime}ms`
+                    : undefined
+                }
+              >
                 {testResult.message}
-              </p>
-              {testResult.error && (
-                <p
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 fg-destructive`}
-                >
-                  {testResult.error}
-                </p>
-              )}
-              {testResult.responseTime != null && (
-                <p className="mt-1 fg-secondary">
-                  Response time: {testResult.responseTime}ms
-                </p>
-              )}
+              </Notice>
               {testResult.tools && testResult.tools.length > 0 && (
-                <div className="mt-2">
+                <div className="text-xs">
                   <p className="fg-secondary mb-1">
                     Available tools ({testResult.tools.length}):
                   </p>
@@ -2253,71 +2242,63 @@ export function McpServerDialog({
           )}
 
           {/* Name */}
-          <label className="block text-sm">
-            <span className="mb-1.5 block fg-secondary">
-              Name <span className="fg-destructive">*</span>
-            </span>
-            <input
-              type="text"
+          <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
+            <TextInput
+              id={`${fieldId}-name`}
               value={name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                 setName(e.target.value)
               }
               placeholder="My MCP server"
               maxLength={CLOUD_DISPLAY_NAME_MAX}
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
               autoFocus
             />
-          </label>
+          </DialogFormField>
 
           {/* Description */}
           {!cloudOnlyInCloud && (
-            <label className="block text-sm">
-              <span className="mb-1.5 block fg-secondary">Description</span>
-              <input
-                type="text"
+            <DialogFormField
+              label="Description (optional)"
+              htmlFor={`${fieldId}-description`}
+            >
+              <TextInput
+                id={`${fieldId}-description`}
                 value={description}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setDescription(e.target.value)
                 }
                 placeholder="Optional description"
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
               />
-            </label>
+            </DialogFormField>
           )}
 
           {/* Command fields */}
           {serverType === 'command' && (
             <>
-              <label className="block text-sm">
-                <span className="mb-1.5 block fg-secondary">
-                  Command <span className="fg-destructive">*</span>
-                </span>
-                <input
-                  type="text"
+              <DialogFormField label="Command" htmlFor={`${fieldId}-command`}>
+                <TextInput
+                  id={`${fieldId}-command`}
                   value={command}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setCommand(e.target.value)
                   }
                   placeholder="npx"
-                  className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                 />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1.5 block fg-secondary">Arguments</span>
-                <input
-                  type="text"
+              </DialogFormField>
+              <DialogFormField
+                label="Arguments"
+                htmlFor={`${fieldId}-args`}
+                description="Space-separated arguments"
+              >
+                <TextInput
+                  id={`${fieldId}-args`}
                   value={args}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setArgs(e.target.value)
                   }
                   placeholder="-y @modelcontextprotocol/server-postgres"
-                  className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                 />
-                <span className="mt-1 block text-xs fg-secondary">
-                  Space-separated arguments
-                </span>
-              </label>
+              </DialogFormField>
               {accountConnectionsEnabled && (
                 <div className="flex flex-col gap-1.5 text-sm">
                   <span className="fg-secondary">Scope</span>
@@ -2340,46 +2321,46 @@ export function McpServerDialog({
           {/* HTTP fields */}
           {serverType === 'http' && (
             <>
-              {initialCurated?.setupInstructions && isCreate && (
-                <div
-                  className="rounded-lg border bg-secondary/30 px-3 py-2 text-sm fg-secondary"
-                  data-testid="mcp-curated-setup-instructions"
-                >
-                  {initialCurated.setupInstructions}
-                </div>
-              )}
-
               {initialCurated?.urlOptions?.length && isCreate ? (
-                <label className="block text-sm">
-                  <span className="mb-1.5 block fg-secondary">
-                    Endpoint <span className="fg-destructive">*</span>
-                  </span>
-                  <select
+                <DialogFormField
+                  label="Endpoint"
+                  htmlFor={`${fieldId}-endpoint`}
+                >
+                  <Select
+                    id={`${fieldId}-endpoint`}
+                    options={initialCurated.urlOptions.map((option) => ({
+                      value: option.url,
+                      label: option.description
+                        ? `${option.label} — ${option.description}`
+                        : option.label,
+                    }))}
                     value={url}
-                    onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                      setUrl(e.target.value)
-                    }
+                    onValueChange={setUrl}
                     data-testid="mcp-curated-url-option"
-                    className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
-                  >
-                    {initialCurated.urlOptions.map((option) => (
-                      <option key={option.url} value={option.url}>
-                        {option.label}
-                        {option.description ? ` — ${option.description}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  />
+                </DialogFormField>
               ) : (
-                <label className="block text-sm">
-                  <span className="mb-1.5 block fg-secondary">
-                    URL{' '}
-                    {!(cloudOnly && effectiveScope === 'cloud') && (
-                      <span className="fg-destructive">*</span>
-                    )}
-                  </span>
-                  <input
-                    type="text"
+                <DialogFormField
+                  label={
+                    cloudOnly && effectiveScope === 'cloud'
+                      ? 'URL (optional)'
+                      : 'URL'
+                  }
+                  htmlFor={`${fieldId}-url`}
+                  description={
+                    cloudOnly ? (
+                      <span data-testid="mcp-server-url-hint">
+                        {effectiveScope === 'device'
+                          ? 'Enter the full URL to run it on this device.'
+                          : cloudConnection?.upstreamHost
+                            ? `Leave it empty to keep ${cloudConnection.upstreamHost}.`
+                            : 'Leave it empty to keep the current address.'}
+                      </span>
+                    ) : undefined
+                  }
+                >
+                  <TextInput
+                    id={`${fieldId}-url`}
                     value={url}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setUrl(e.target.value)
@@ -2390,21 +2371,8 @@ export function McpServerDialog({
                         : 'https://mcp.example.com/sse'
                     }
                     data-testid="mcp-server-url"
-                    className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                   />
-                  {cloudOnly && (
-                    <span
-                      className="mt-1 block text-xs fg-secondary"
-                      data-testid="mcp-server-url-hint"
-                    >
-                      {effectiveScope === 'device'
-                        ? 'Enter the full URL to run it on this device.'
-                        : cloudConnection?.upstreamHost
-                          ? `Leave it empty to keep ${cloudConnection.upstreamHost}.`
-                          : 'Leave it empty to keep the current address.'}
-                    </span>
-                  )}
-                </label>
+                </DialogFormField>
               )}
 
               {scopeAvailable && (
@@ -2426,46 +2394,52 @@ export function McpServerDialog({
               )}
 
               {effectiveScope === 'device' && (
-                <label className="block text-sm">
-                  <span className="mb-1.5 block fg-secondary">
-                    Auth handling
-                  </span>
-                  <select
+                <DialogFormField
+                  label="Auth handling"
+                  htmlFor={`${fieldId}-auth-handler`}
+                  description={
+                    deviceHandler === 'provider'
+                      ? 'The agent provider receives this server directly and handles auth.'
+                      : deviceHandler === 'canopy'
+                        ? `${brandText.appName} routes this server through its local proxy and owns auth.`
+                        : `Inherit the global default for how this server's auth is handled.`
+                  }
+                >
+                  <Select
+                    id={`${fieldId}-auth-handler`}
+                    options={[
+                      ...(globalAuthHandler !== 'account'
+                        ? [
+                            {
+                              value: '',
+                              label: 'Use default',
+                              disabled: curatedRequiresProvider,
+                            },
+                          ]
+                        : []),
+                      {
+                        value: 'canopy',
+                        label: `${brandText.appName} proxy`,
+                        disabled: curatedRequiresProvider,
+                      },
+                      { value: 'provider', label: 'Agent provider' },
+                    ]}
                     value={deviceHandler}
-                    onChange={(
-                      e: React.ChangeEvent<HTMLSelectElement>,
-                    ): void => {
-                      const value = e.currentTarget.value;
+                    onValueChange={(value): void => {
                       if (isAuthHandlerChoice(value)) setAuthHandler(value);
                     }}
                     data-testid="mcp-server-auth-handler"
                     disabled={curatedRequiresProvider}
-                    className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm fg-primary"
-                  >
-                    {globalAuthHandler !== 'account' && (
-                      <option value="" disabled={curatedRequiresProvider}>
-                        Use default
-                      </option>
-                    )}
-                    <option value="canopy" disabled={curatedRequiresProvider}>
-                      {brandText.appName} proxy
-                    </option>
-                    <option value="provider">Agent provider</option>
-                  </select>
-                  <span className="mt-1 block text-xs fg-secondary">
-                    {deviceHandler === 'provider'
-                      ? 'The agent provider receives this server directly and handles auth.'
-                      : deviceHandler === 'canopy'
-                        ? `${brandText.appName} routes this server through its local proxy and owns auth.`
-                        : `Inherit the global default for how this server's auth is handled.`}
-                  </span>
-                </label>
+                  />
+                </DialogFormField>
               )}
 
               {effectiveScope === 'cloud' && curatedMeta?.key && (
                 <div className="text-sm" data-testid="mcp-account-binding">
                   {accountConnectionsLoading ? (
-                    <LoadingPlaceholder label="Loading account connections…" />
+                    <DelayedLoadingPlaceholder slowNote="Still loading account connections…">
+                      <CenteredLoadingSpinner className="my-12" />
+                    </DelayedLoadingPlaceholder>
                   ) : accountConnectionsError ? (
                     <ErrorBanner error={accountConnectionsError} />
                   ) : (
@@ -2521,11 +2495,19 @@ export function McpServerDialog({
                       )}
                     </div>
                   )}
-                  <label className="block">
-                    <span className="mb-1.5 block fg-secondary">
-                      Access token
-                    </span>
-                    <input
+                  <DialogFormField
+                    label="Access token"
+                    htmlFor={`${fieldId}-cloud-token`}
+                    description={
+                      !editsCloudConnection
+                        ? 'Optional. The token is stored in your cloud account.'
+                        : cloudConnection?.authMode === 'BEARER'
+                          ? 'Leave it empty to keep the stored token.'
+                          : 'Optional. Connects with this token instead of signing in.'
+                    }
+                  >
+                    <TextInput
+                      id={`${fieldId}-cloud-token`}
                       ref={accessTokenRef}
                       type="password"
                       autoComplete="off"
@@ -2540,16 +2522,8 @@ export function McpServerDialog({
                           : 'Optional'
                       }
                       data-testid="mcp-cloud-access-token"
-                      className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                     />
-                    <span className="mt-1 block text-xs fg-secondary">
-                      {!editsCloudConnection
-                        ? 'Optional. The token is stored in your cloud account.'
-                        : cloudConnection?.authMode === 'BEARER'
-                          ? 'Leave it empty to keep the stored token.'
-                          : 'Optional. Connects with this token instead of signing in.'}
-                    </span>
-                  </label>
+                  </DialogFormField>
                   {cloudUrlWarning && (
                     <Notice
                       role="none"
@@ -2569,11 +2543,13 @@ export function McpServerDialog({
                   data-testid="mcp-device-placement"
                 >
                   <p className="fg-primary">Will move to this device</p>
-                  <label className="block">
-                    <span className="mb-1.5 block fg-secondary">
-                      Access token
-                    </span>
-                    <input
+                  <DialogFormField
+                    label="Access token"
+                    htmlFor={`${fieldId}-device-token`}
+                    description="Optional. Stored on this device. Or turn on OAuth below and connect after you save."
+                  >
+                    <TextInput
+                      id={`${fieldId}-device-token`}
                       type="password"
                       autoComplete="off"
                       value={cloudToken}
@@ -2582,13 +2558,8 @@ export function McpServerDialog({
                       ): void => setCloudToken(e.target.value)}
                       placeholder="Optional"
                       data-testid="mcp-device-access-token"
-                      className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
                     />
-                    <span className="mt-1 block text-xs fg-secondary">
-                      Optional. Stored on this device. Or turn on OAuth below
-                      and connect after you save.
-                    </span>
-                  </label>
+                  </DialogFormField>
                 </div>
               )}
 
@@ -2677,32 +2648,18 @@ export function McpServerDialog({
               {/* OAuth section (HTTP only, for locally managed public clients) */}
               {!curatedRequiresProvider && !cloudOnlyInCloud && (
                 <div className="space-y-3 rounded-lg border bg-secondary/20 p-3">
-                  <label className="flex items-start gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={oauthForm.enabled}
-                      onChange={(
-                        e: React.ChangeEvent<HTMLInputElement>,
-                      ): void =>
-                        setOauthForm({
-                          ...oauthForm,
-                          enabled: e.target.checked,
-                        })
-                      }
-                      className="mt-0.5 rounded"
-                      data-testid="mcp-server-use-oauth"
-                    />
-                    <span>
-                      <span className="block font-medium fg-primary">
-                        Use OAuth
-                      </span>
-                      <span className="mt-0.5 block text-xs fg-secondary">
-                        {brandText.appName} discovers OAuth settings from the
-                        HTTP MCP server, uses a local loopback callback, and
-                        stores tokens in secure local storage.
-                      </span>
-                    </span>
-                  </label>
+                  <ChoiceField
+                    checked={oauthForm.enabled}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                      setOauthForm({
+                        ...oauthForm,
+                        enabled: e.target.checked,
+                      })
+                    }
+                    label={<span className="font-medium">Use OAuth</span>}
+                    description={`${brandText.appName} discovers OAuth settings from the HTTP MCP server, uses a local loopback callback, and stores tokens in secure local storage.`}
+                    data-testid="mcp-server-use-oauth"
+                  />
 
                   {oauthForm.enabled && (
                     <div className="space-y-3 border-t pt-3">
@@ -2745,15 +2702,18 @@ export function McpServerDialog({
                             registration is unavailable for this MCP server.
                           </p>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Client ID
-                              {curatedEntry?.requiredConfigFields?.some(
+                          <DialogFormField
+                            label={
+                              curatedEntry?.requiredConfigFields?.some(
                                 (field) => field.kind === 'oauth-client-id',
-                              ) && <span className="fg-destructive"> *</span>}
-                            </span>
-                            <input
-                              type="text"
+                              )
+                                ? 'Client ID'
+                                : 'Client ID (optional)'
+                            }
+                            htmlFor={`${fieldId}-oauth-client-id`}
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-client-id`}
                               value={oauthForm.clientId}
                               onChange={(
                                 e: React.ChangeEvent<HTMLInputElement>,
@@ -2764,26 +2724,45 @@ export function McpServerDialog({
                                 })
                               }
                               placeholder="optional client id"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                          </label>
+                          </DialogFormField>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
+                          <div className="text-xs">
+                            <p className="fg-secondary">
                               Standalone saved client secrets are not supported.
-                            </span>
-                            <span className="mt-1 block text-2xs fg-secondary">
+                            </p>
+                            <p className="mt-1 text-2xs fg-secondary">
                               {brandText.appName} stores standalone MCP server
                               definitions on disk, so this editor only supports
                               public-client OAuth metadata plus PKCE.
-                            </span>
-                          </label>
+                            </p>
+                          </div>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Callback port
-                            </span>
-                            <input
+                          <DialogFormField
+                            label="Callback port (optional)"
+                            htmlFor={`${fieldId}-oauth-callback-port`}
+                            description={
+                              <>
+                                Uses a dedicated loopback listener instead of
+                                the shared MCP proxy port. Register{' '}
+                                {/* The shape depends on who owns the OAuth
+                                  client. A catalog entry pins a port because
+                                  the vendor registered the redirect; anything
+                                  typed here is the user's own client, and
+                                  Canopy keeps its own shape for it. Stating
+                                  one unconditionally sent half the users to
+                                  register a URI Canopy would never send. */}
+                                <code>
+                                  {oauthForm.vendorRegisteredRedirect === true
+                                    ? 'http://localhost:<port>/callback'
+                                    : 'http://127.0.0.1:<port>/oauth/callback'}
+                                </code>{' '}
+                                with the OAuth provider.
+                              </>
+                            }
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-callback-port`}
                               type="number"
                               min={1}
                               max={65_535}
@@ -2802,33 +2781,15 @@ export function McpServerDialog({
                               }}
                               placeholder="e.g. 3118"
                               data-testid="mcp-server-oauth-callback-port"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                            <span className="mt-1 block text-2xs fg-secondary">
-                              Optional. Uses a dedicated loopback listener
-                              instead of the shared MCP proxy port. Register{' '}
-                              {/* The shape depends on who owns the OAuth client.
-                                A catalog entry pins a port because the vendor
-                                registered the redirect; anything typed here is
-                                the user's own client, and Canopy keeps its own
-                                shape for it. Stating one unconditionally sent
-                                half the users to register a URI Canopy would
-                                never send. */}
-                              <code>
-                                {oauthForm.vendorRegisteredRedirect === true
-                                  ? 'http://localhost:<port>/callback'
-                                  : 'http://127.0.0.1:<port>/oauth/callback'}
-                              </code>{' '}
-                              with the OAuth provider.
-                            </span>
-                          </label>
+                          </DialogFormField>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Authorization URL
-                            </span>
-                            <input
-                              type="text"
+                          <DialogFormField
+                            label="Authorization URL (optional)"
+                            htmlFor={`${fieldId}-oauth-authorizationUrl`}
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-authorizationUrl`}
                               value={oauthForm.authorizationUrl}
                               onChange={(
                                 e: React.ChangeEvent<HTMLInputElement>,
@@ -2839,16 +2800,15 @@ export function McpServerDialog({
                                 })
                               }
                               placeholder="optional authorization endpoint"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                          </label>
+                          </DialogFormField>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Token URL
-                            </span>
-                            <input
-                              type="text"
+                          <DialogFormField
+                            label="Token URL (optional)"
+                            htmlFor={`${fieldId}-oauth-tokenUrl`}
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-tokenUrl`}
                               value={oauthForm.tokenUrl}
                               onChange={(
                                 e: React.ChangeEvent<HTMLInputElement>,
@@ -2859,16 +2819,15 @@ export function McpServerDialog({
                                 })
                               }
                               placeholder="optional token endpoint"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                          </label>
+                          </DialogFormField>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Scopes
-                            </span>
-                            <input
-                              type="text"
+                          <DialogFormField
+                            label="Scopes (optional)"
+                            htmlFor={`${fieldId}-oauth-scopes`}
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-scopes`}
                               value={oauthForm.scopes}
                               onChange={(
                                 e: React.ChangeEvent<HTMLInputElement>,
@@ -2879,16 +2838,15 @@ export function McpServerDialog({
                                 })
                               }
                               placeholder="optional scopes"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                          </label>
+                          </DialogFormField>
 
-                          <label className="block text-xs">
-                            <span className="mb-1 block fg-secondary">
-                              Audience
-                            </span>
-                            <input
-                              type="text"
+                          <DialogFormField
+                            label="Audience (optional)"
+                            htmlFor={`${fieldId}-oauth-audience`}
+                          >
+                            <TextInput
+                              id={`${fieldId}-oauth-audience`}
                               value={oauthForm.audience}
                               onChange={(
                                 e: React.ChangeEvent<HTMLInputElement>,
@@ -2899,9 +2857,8 @@ export function McpServerDialog({
                                 })
                               }
                               placeholder="optional audience"
-                              className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
                             />
-                          </label>
+                          </DialogFormField>
                         </div>
                       )}
                     </div>
@@ -3113,129 +3070,28 @@ export function McpServerDetailOverlay({
 
           {/* Connection details */}
           <div className="rounded-lg border bg-secondary/30 px-4 py-3 mb-4">
-            <dl className="space-y-1.5 text-sm">
-              <div className="flex gap-2">
-                <dt className="font-medium fg-primary whitespace-nowrap">
-                  Type:
-                </dt>
-                <dd className="fg-secondary">
-                  {def.type === 'command' ? 'Command (stdio)' : 'HTTP'}
-                </dd>
-              </div>
-              {def.type === 'command' && def.command && (
-                <div className="flex gap-2">
-                  <dt className="font-medium fg-primary whitespace-nowrap">
-                    Command:
-                  </dt>
-                  {/* Args often carry API keys inline. */}
-                  <dd
-                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} fg-secondary font-mono text-xs break-all`}
-                  >
-                    {def.command}
-                    {def.args && def.args.length > 0
-                      ? ` ${def.args.join(' ')}`
-                      : ''}
-                  </dd>
-                </div>
-              )}
-              {def.type === 'http' && def.url && (
-                <div className="flex gap-2">
-                  <dt className="font-medium fg-primary whitespace-nowrap">
-                    URL:
-                  </dt>
-                  <dd className="fg-secondary font-mono text-xs break-all">
-                    {def.url}
-                  </dd>
-                </div>
-              )}
-              {def.type === 'http' && (
-                <div className="flex gap-2">
-                  <dt className="font-medium fg-primary whitespace-nowrap">
-                    OAuth:
-                  </dt>
-                  <dd className="fg-secondary">
-                    {def.oauth ? 'configured' : 'not configured'}
-                  </dd>
-                </div>
-              )}
-            </dl>
+            <McpConnectionFacts
+              type={def.type === 'command' ? 'command' : 'http'}
+              url={def.type === 'http' ? def.url : undefined}
+              commandLine={
+                def.type === 'command' && def.command
+                  ? `${def.command}${
+                      def.args && def.args.length > 0
+                        ? ` ${def.args.join(' ')}`
+                        : ''
+                    }`
+                  : undefined
+              }
+              oauth={def.type === 'http' ? Boolean(def.oauth) : undefined}
+            />
           </div>
 
           {/* Configurations */}
-          <h3 className="text-sm font-medium fg-primary mb-2">
-            Configurations ({server?.configs.length ?? 0})
-          </h3>
-          {server?.configs.length === 0 && (
-            <p className="text-xs fg-secondary italic">No configurations.</p>
-          )}
-          <div className="space-y-2">
-            {server?.configs.map((c) => (
-              <div
-                key={c.id}
-                className="rounded-lg border bg-secondary/20 px-4 py-3"
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium fg-primary">
-                    {c.name}
-                  </span>
-                  <span
-                    className={`px-1.5 py-0.5 text-3xs font-medium rounded ${
-                      c.enabled
-                        ? 'bg-success-subtle fg-success'
-                        : 'bg-secondary fg-secondary'
-                    }`}
-                  >
-                    {c.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-                {c.description && (
-                  <p className="text-xs fg-secondary mb-2">{c.description}</p>
-                )}
-                <dl className="space-y-1 text-xs">
-                  {Object.keys(c.envVars).length > 0 && (
-                    <div className="flex gap-2">
-                      <dt className="font-medium fg-primary whitespace-nowrap">
-                        Env vars:
-                      </dt>
-                      <dd className="fg-secondary">
-                        {Object.keys(c.envVars).join(', ')}
-                      </dd>
-                    </div>
-                  )}
-                  {c.extraArgs.length > 0 && (
-                    <div className="flex gap-2">
-                      <dt className="font-medium fg-primary whitespace-nowrap">
-                        Extra args:
-                      </dt>
-                      <dd
-                        className={`${POSTHOG_REPLAY_BLOCK_CLASS} fg-secondary font-mono`}
-                      >
-                        {c.extraArgs.join(' ')}
-                      </dd>
-                    </div>
-                  )}
-                  {Object.keys(c.extraHeaders).length > 0 && (
-                    <div className="flex gap-2">
-                      <dt className="font-medium fg-primary whitespace-nowrap">
-                        Extra headers:
-                      </dt>
-                      <dd className="fg-secondary">
-                        {Object.keys(c.extraHeaders).join(', ')}
-                      </dd>
-                    </div>
-                  )}
-                  {c.authToken && (
-                    <div className="flex gap-2">
-                      <dt className="font-medium fg-primary whitespace-nowrap">
-                        Auth token:
-                      </dt>
-                      <dd className="fg-secondary">configured</dd>
-                    </div>
-                  )}
-                </dl>
-              </div>
-            ))}
-          </div>
+          <StandaloneConfigsSection
+            loading={false}
+            error={null}
+            serverData={server}
+          />
         </>
       )}
     </BackDetailOverlayShell>
@@ -4083,7 +3939,9 @@ export function McpServersTab({
 
       {/* Loading */}
       {loading && servers.length === 0 && (
-        <LoadingPlaceholder label="Loading MCP servers…" space="page" />
+        <DelayedLoadingPlaceholder slowNote="Still loading MCP servers…">
+          <CenteredLoadingSpinner className="my-16" />
+        </DelayedLoadingPlaceholder>
       )}
 
       {/* Table */}

@@ -1,3 +1,4 @@
+import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   parseProjectDiscoveryAction,
   type ProjectDiscoveryAction,
@@ -231,6 +232,19 @@ export async function dispatchProjectDiscoveryAction(
       );
     return { ok: true, result: toDiscoveryJson(result) };
   } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.kind === 'unavailable'
+    ) {
+      return {
+        ok: false,
+        error: {
+          code: 'surface_unavailable',
+          message: error.payload.message,
+          retryable: error.payload.retry.kind !== 'never',
+        },
+      };
+    }
     if (error instanceof DiscoveryError) {
       if (
         input.cursor &&

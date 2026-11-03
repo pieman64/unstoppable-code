@@ -7,7 +7,11 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { seedWorktreeChat } from './seeders/index.mjs';
 import path from 'node:path';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { createLinuxUiActions } from './linuxUiActions.mjs';
 
 // The sidebar update prompt (UpdatePrompt.tsx) renders the full update
@@ -241,6 +245,7 @@ test('restart to update finishes when a network server never acknowledges shutdo
     });
     const prompt = window.getByTestId('update-prompt');
     await expect(prompt).toHaveText('Restart to update');
+    await captureDaemonDryRunEvidence(electronApp);
     const finished = electronApp.waitForEvent('close', { timeout: 25_000 });
     // A click may lose its acknowledgement when the native app exits.
     await prompt.click().catch(() => undefined);

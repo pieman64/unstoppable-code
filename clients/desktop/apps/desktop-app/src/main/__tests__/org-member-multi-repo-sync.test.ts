@@ -2,12 +2,15 @@
 import type { OrgProjectSummary } from '@canopy/protocol/org-projects';
 import type {
   DesktopOrgProjectCatalogSnapshot,
+  WorkspaceApplySourceChangesRequest,
   WorkspaceConfigFile,
   WorkspaceRepoData,
 } from '@canopy/desktop-shared/types';
 import {
   createOrgMemberMultiRepoSync,
+  OrgMultiRepoSyncRefusedError,
   type OrgMemberMultiRepoSyncDeps,
+  type OrgMultiRepoSyncRefusal,
 } from '../lib/org-member-multi-repo-sync';
 
 const organizationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -415,6 +418,52 @@ describe('adding a repository to source control in settings (CAN-3546)', (): voi
   });
 });
 
+describe('checking a source change without repository folders (W7b-4)', (): void => {
+  const change = (
+    remoteUrl: string,
+    repoName: string,
+  ): WorkspaceApplySourceChangesRequest => ({
+    workspaceId: 'acme-platform',
+    target: { mode: 'new', existingWorktreeIds: [] },
+    repoAdds: [{ repoName, remoteUrl }],
+  });
+
+  it("refuses by applySourceChanges' rule and never updates the organization", async () => {
+    const deps = fixture(orgConfig());
+    const sync = createOrgMemberMultiRepoSync(deps);
+    await expect(
+      sync.checkSourceChanges(
+        'acme-platform',
+        change('git@github.com:skywinder/web3swift.git', 'web3swift'),
+      ),
+    ).rejects.toMatchObject({ reason: 'organization-repository-outside' });
+    await expect(
+      sync.checkSourceChanges(
+        'acme-platform',
+        change('https://github.com/acme/billing.git', 'billing'),
+      ),
+    ).resolves.toBeUndefined();
+    expect(deps.updateRepositories).not.toHaveBeenCalled();
+  });
+
+  it('refuses a change adding a repository by its folder', async () => {
+    const deps = fixture(orgConfig());
+    await expect(
+      createOrgMemberMultiRepoSync(deps).checkSourceChanges('acme-platform', {
+        ...change('https://github.com/acme/billing.git', 'billing'),
+        repoAdds: [
+          {
+            repoName: 'billing',
+            remoteUrl: 'https://github.com/acme/billing.git',
+            repoPath: '/repos/billing',
+          },
+        ],
+      }),
+    ).rejects.toThrow('use applySourceChanges');
+    expect(deps.catalog.refresh).not.toHaveBeenCalled();
+  });
+});
+
 describe('checking repositories before one is chosen (CAN-3546)', (): void => {
   it('marks each repository by the rule adding it refuses by', async () => {
     const deps = fixture(orgConfig([repo('payments')]));
@@ -623,4 +672,88 @@ describe('automatically converted mixed projects', () => {
     expect(apply).not.toHaveBeenCalled();
     expect(deps.updateRepositories).not.toHaveBeenCalled();
   });
+});
+
+describe('refusal reasons (CAN-5552)', (): void => {
+  const failRemote =
+    (path: string) =>
+    (deps: OrgMemberMultiRepoSyncDeps): void => {
+      const readRemote = deps.readRemoteUrl;
+      deps.readRemoteUrl = jest.fn((candidate: string) =>
+        candidate === path
+          ? Promise.reject(new Error('not a git repository'))
+          : readRemote(candidate),
+      );
+    };
+  const cases: Array<
+    [
+      OrgMultiRepoSyncRefusal,
+      string,
+      string,
+      (deps: OrgMemberMultiRepoSyncDeps) => void,
+    ]
+  > = [
+    [
+      'organization-catalog-unavailable',
+      '/repos/payments',
+      "Couldn't check this repository with Acme. Try again.",
+      (deps) => {
+        deps.catalog.refresh = jest.fn(() => Promise.reject(new Error('down')));
+      },
+    ],
+    [
+      'organization-remote-unreadable',
+      '/repos/payments',
+      "Couldn't read the git remote of payments. Try again.",
+      failRemote('/repos/payments'),
+    ],
+    [
+      'organization-repository-outside',
+      '/repos/web3swift',
+      "web3swift doesn't belong to Acme. Choose repositories that belong to Acme.",
+      () => {},
+    ],
+    [
+      'organization-repository-mismatch',
+      '/repos/payments',
+      "Some repositories don't belong to Acme. Choose repositories that belong to Acme.",
+      (deps) => {
+        deps.updateRepositories = jest.fn(() =>
+          Promise.resolve('repository-mismatch' as const),
+        );
+      },
+    ],
+    [
+      'organization-sync-failed',
+      '/repos/payments',
+      "Couldn't update this project in Acme. Try again.",
+      (deps) => {
+        deps.updateRepositories = jest.fn(() =>
+          Promise.resolve('failed' as const),
+        );
+      },
+    ],
+  ];
+
+  it.each(cases)(
+    'a %s refusal is typed and keeps its plain Error text',
+    async (reason, repoPath, message, arrange) => {
+      const deps = fixture(orgConfig());
+      arrange(deps);
+      let refusal: unknown;
+      try {
+        await createOrgMemberMultiRepoSync(deps).addRepo(
+          'acme-platform',
+          repoPath,
+          () => Promise.resolve(repo('payments')),
+        );
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(OrgMultiRepoSyncRefusedError);
+      expect(refusal).toMatchObject({ reason, message });
+      // The IPC rejection text is built from the name and message.
+      expect(String(refusal)).toBe(`Error: ${message}`);
+    },
+  );
 });

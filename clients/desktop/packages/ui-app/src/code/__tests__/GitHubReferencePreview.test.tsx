@@ -15,16 +15,11 @@ import {
   LINEAR_PREVIEW_CACHE_LIMITS,
 } from '@canopy/app-state';
 import { PrHoverCardsProvider } from '@canopy/ui-shared/components';
-import { useWordBoundaryTruncation } from '@canopy/ui-shared/lib/useWordBoundaryTruncation';
 import {
   GitHubReferencePreview,
   useGitHubOriginRepository,
   useGitHubPreviewConnected,
 } from '../GitHubReferencePreview';
-
-jest.mock('@canopy/ui-shared/lib/useWordBoundaryTruncation', () => ({
-  useWordBoundaryTruncation: jest.fn(),
-}));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -236,8 +231,11 @@ describe('GitHubReferencePreview enrichment modes', () => {
       'https://github.com/acme/website/pull/12/files?diff=split#r1',
       'the pull request',
     ]);
-    expect(container.querySelector('svg')).toBeNull();
-    expect(placeholderIn(references()[0])).toBeNull();
+    // Hover keeps the label but still marks each chip with its icon.
+    for (const reference of references()) {
+      expect(reference.querySelectorAll('svg')).toHaveLength(1);
+      expect(reference.className).toContain('bg-accent-subtle');
+    }
     expect(
       query.mock.calls.some(([name]) => name === 'referencePreview.github'),
     ).toBe(false);
@@ -280,10 +278,13 @@ async function settle(ms: number): Promise<void> {
   });
 }
 
-const placeholderIn = (reference: Element): Element | null =>
-  reference.querySelector('[data-testid="github-reference-title-placeholder"]');
-const titleIn = (reference: Element): Element | null =>
-  reference.querySelector('[data-testid="github-reference-title"]');
+// The chip carries no inline title or title placeholder in any state.
+const expectIdOnly = (reference: Element): void => {
+  expect(reference.querySelectorAll('svg')).toHaveLength(1);
+  expect(
+    reference.querySelector('[data-testid^="github-reference-title"]'),
+  ).toBeNull();
+};
 
 describe('GitHubReferencePreview without the capability', () => {
   it('renders plain text and an ordinary link, and never reads', () => {
@@ -312,13 +313,13 @@ describe('GitHubReferencePreview without the capability', () => {
   });
 });
 
-describe('GitHubReferencePreview inline titles', () => {
+describe('GitHubReferencePreview inline labels', () => {
   async function connected(query: jest.Mock): Promise<void> {
     renderReferences(SUPPORTED, query);
     await settle(0);
   }
 
-  it('adds an aria-hidden icon and reserves an inert title slot before resolution', async () => {
+  it('adds an aria-hidden icon and shortens a URL label before resolution', async () => {
     const query = githubQuery();
     await connected(query);
     const [bare, url, custom] = references();
@@ -326,17 +327,12 @@ describe('GitHubReferencePreview inline titles', () => {
       expect(reference.querySelector('svg')?.getAttribute('aria-hidden')).toBe(
         'true',
       );
+      expectIdOnly(reference);
     }
     // A raw URL label shortens to the generated label.
     expect(url.textContent).toBe('acme/website#12');
     expect(bare.textContent).toBe('#12');
     expect(custom.textContent).toBe('the pull request');
-    for (const reference of [bare, url]) {
-      const placeholder = placeholderIn(reference);
-      expect(placeholder?.getAttribute('aria-hidden')).toBe('true');
-      expect(placeholder?.hasAttribute('data-active')).toBe(false);
-    }
-    expect(placeholderIn(custom)).toBeNull();
     expect(reads(query)).toEqual([]);
   });
 
@@ -357,7 +353,7 @@ describe('GitHubReferencePreview inline titles', () => {
     expect(reads(query)).toEqual([ITEM]);
   });
 
-  it('expands generated labels with the full title, cropped at five words', async () => {
+  it('labels resolved references by short ID only, keeping custom labels', async () => {
     const query = githubQuery();
     await connected(query);
     const [bare, url, custom] = references();
@@ -366,22 +362,13 @@ describe('GitHubReferencePreview inline titles', () => {
     setVisible(custom, true);
     await settle(150);
     await settle(0);
-    expect(bare.textContent).toBe(`#12: ${LONG_TITLE}`);
-    expect(url.textContent).toBe('acme/website#12: Website item');
+    expect(bare.textContent).toBe('#12');
+    expect(url.textContent).toBe('acme/website#12');
     expect(custom.textContent).toBe('the pull request');
-    expect(titleIn(custom)).toBeNull();
-    const title = titleIn(bare);
-    expect(title?.className).toContain('truncate');
-    expect(title?.className).toContain('max-w-[min(40ch,100%)]');
-    // One whole text node keeps copy and the accessible name on the full title.
-    expect(title?.childNodes).toHaveLength(1);
-    expect(title?.firstChild?.textContent).toBe(LONG_TITLE);
-    expect(jest.mocked(useWordBoundaryTruncation)).toHaveBeenCalledWith(
-      expect.anything(),
-      LONG_TITLE,
-      expect.objectContaining({ maxWords: 5 }),
-    );
-    expect(placeholderIn(bare)).toBeNull();
+    for (const reference of [bare, url, custom]) {
+      expectIdOnly(reference);
+      expect(reference.textContent).not.toContain(LONG_TITLE);
+    }
     // Two repositories that share a number read separately.
     expect(reads(query)).toEqual([ITEM, OTHER_ITEM]);
   });
@@ -395,7 +382,7 @@ describe('GitHubReferencePreview inline titles', () => {
     setVisible(url, true);
     await settle(150);
     await settle(0);
-    expect(titleIn(bare)).not.toBeNull();
+    expect(bare.textContent).toBe('#12');
     expect(bare.getAttribute('data-link-url')).toBe(
       'https://github.com/acme/canopy/pull/12',
     );
@@ -454,40 +441,34 @@ describe('GitHubReferencePreview inline titles', () => {
     }
   });
 
-  it('animates the placeholder while reading and collapses it when unavailable', async () => {
-    let answer: ((value: unknown) => void) | null = null;
-    const query = githubQuery(
-      () =>
-        new Promise<unknown>((resolve) => {
-          answer = resolve;
-        }),
+  it('gives a URL label its original text back when the item is unavailable', async () => {
+    const query = githubQuery(() =>
+      Promise.resolve({ status: 'unavailable', scope: 'github-a' }),
     );
     await connected(query);
-    const [bare] = references();
+    const [bare, url] = references();
     setVisible(bare, true);
+    setVisible(url, true);
     await settle(150);
     await settle(0);
-    expect(placeholderIn(bare)?.getAttribute('data-active')).toBe('true');
-    await act(async () => {
-      answer?.({ status: 'unavailable', scope: 'github-a' });
-      for (let index = 0; index < 12; index += 1) await Promise.resolve();
-    });
-    expect(placeholderIn(bare)).toBeNull();
     expect(bare.textContent).toBe('#12');
-    expect(bare.querySelector('svg')).not.toBeNull();
+    expect(url.textContent).toBe(
+      'https://github.com/acme/website/pull/12/files?diff=split#r1',
+    );
+    for (const reference of [bare, url]) {
+      expectIdOnly(reference);
+      expect(reference.hasAttribute('data-link-url')).toBe(false);
+    }
   });
 
-  it('keeps the original URL text, icon and no placeholder when GitHub is disconnected', async () => {
+  it('keeps the original URL text and icon when GitHub is disconnected', async () => {
     const query = githubQuery(
       () => Promise.resolve({ status: 'disconnected' }),
       null,
     );
     await connected(query);
     const [bare, url] = references();
-    for (const reference of [bare, url]) {
-      expect(placeholderIn(reference)).toBeNull();
-      expect(reference.querySelector('svg')).not.toBeNull();
-    }
+    for (const reference of [bare, url]) expectIdOnly(reference);
     expect(url.textContent).toBe(
       'https://github.com/acme/website/pull/12/files?diff=split#r1',
     );
@@ -498,7 +479,7 @@ describe('GitHubReferencePreview inline titles', () => {
     expect(bare.hasAttribute('data-link-url')).toBe(false);
   });
 
-  it('removes the placeholder after a disconnect result', async () => {
+  it('gives a URL label its original text back after a disconnect result', async () => {
     let scope: string | null = 'github-a';
     const query = jest.fn((name: string) => {
       if (name === 'referencePreview.githubScope') {
@@ -509,20 +490,20 @@ describe('GitHubReferencePreview inline titles', () => {
     });
     await connected(query);
     const [bare, url] = references();
-    expect(placeholderIn(bare)).not.toBeNull();
+    expect(url.textContent).toBe('acme/website#12');
     setVisible(bare, true);
     setVisible(url, true);
     await settle(150);
     await settle(0);
     await settle(0);
-    for (const reference of [bare, url]) {
-      expect(placeholderIn(reference)).toBeNull();
-      expect(reference.querySelector('svg')).not.toBeNull();
-    }
+    for (const reference of [bare, url]) expectIdOnly(reference);
     expect(bare.textContent).toBe('#12');
+    expect(url.textContent).toBe(
+      'https://github.com/acme/website/pull/12/files?diff=split#r1',
+    );
   });
 
-  it('shows a repository description as its title, and the label alone without one', async () => {
+  it('labels repositories by name and keeps the description for the card', async () => {
     const query = githubQuery((target) =>
       Promise.resolve(
         itemResult(
@@ -557,23 +538,38 @@ describe('GitHubReferencePreview inline titles', () => {
     setVisible(plain, true);
     await settle(150);
     await settle(0);
-    expect(described.textContent).toBe('acme/canopy: Agentic desktop');
+    // A resolved repository shortens to its name, with or without a description.
+    expect(described.textContent).toBe('acme/canopy');
     expect(plain.textContent).toBe('acme/bare');
-    expect(placeholderIn(plain)).toBeNull();
-    expect(titleIn(plain)).toBeNull();
+    for (const reference of [described, plain]) expectIdOnly(reference);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+      );
+      described.focus();
+    });
+    await settle(0);
+    expect(
+      document.body.querySelector('[role="tooltip"]')?.textContent,
+    ).toContain('Agentic desktop');
   });
 
   it('reverts to the original text when the GitHub identity resets', async () => {
     const query = githubQuery();
     await connected(query);
-    const [bare] = references();
+    const [bare, url] = references();
     setVisible(bare, true);
+    setVisible(url, true);
     await settle(150);
     await settle(0);
-    expect(bare.textContent).toBe(`#12: ${LONG_TITLE}`);
+    expect(bare.textContent).toBe('#12');
+    expect(url.textContent).toBe('acme/website#12');
     expect(bare.hasAttribute('data-link-url')).toBe(true);
     act(() => invalidateReferencePreviews(window.localStorage, 'github'));
     expect(bare.textContent).toBe('#12');
+    expect(url.textContent).toBe(
+      'https://github.com/acme/website/pull/12/files?diff=split#r1',
+    );
     expect(bare.hasAttribute('data-link-url')).toBe(false);
   });
 

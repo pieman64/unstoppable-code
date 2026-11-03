@@ -524,9 +524,9 @@ describe('ImportProjectsPanel', () => {
     ).not.toBeNull();
     expect(
       container
-        .querySelector('[data-testid="import-projects-error"] > p')
-        ?.classList.contains('fg-destructive'),
-    ).toBe(true);
+        .querySelector('[data-testid="import-projects-error"]')
+        ?.querySelector('[role="alert"]'),
+    ).not.toBeNull();
     click(container, 'import-projects-skip');
     expect(onSkip).toHaveBeenCalledTimes(1);
   });
@@ -585,44 +585,32 @@ describe('ImportProjectsPanel', () => {
     click(container, 'import-projects-done');
   });
 
-  function chooseNote(): HTMLParagraphElement | undefined {
-    return Array.from(container.querySelectorAll('p')).find((node) =>
-      node.textContent?.includes('can be added.'),
+  function chooseNote(): Element | null {
+    return container.querySelector(
+      '[data-testid="import-projects-choose-note"]',
     );
   }
 
-  it('warns that Code project chats start from the remote default branch', async () => {
+  it('says briefly that folders stay put and Code chats need a push first', async () => {
     await mount(createApi(scan([candidate('alpha')])));
-    const note = chooseNote()?.textContent ?? '';
-    expect(note).toContain('1 project can be added.');
-    expect(note).toContain('Source folders stay where they are.');
-    expect(note).toContain(
-      'Chats from a Code project open in a new worktree based on the default branch from your remote when available.',
+    expect(chooseNote()?.textContent).toBe(
+      'Your folders stay put and nothing changes until you say so. Chats from Code projects open in a new worktree, so commit and push your work before you import.',
     );
-    expect(note).toContain(
-      'Uncommitted or unpushed changes stay in the original folder.',
-    );
-    expect(note).toMatch(/Nothing from the project runs until you start it\.$/);
   });
 
   it('omits the choose note when nothing can be added', async () => {
     await mount(
       createApi(scan([candidate('alpha', { status: 'already-imported' })])),
     );
-    expect(chooseNote()).toBeUndefined();
-    expect(container.textContent).not.toContain('Uncommitted or unpushed');
+    expect(chooseNote()).toBeNull();
+    expect(container.textContent).not.toContain('commit and push your work');
   });
 
   it('keeps the classification and import behavior for Cowork-only candidates', async () => {
     const api = createApi(scan([candidate('notes', { kind: 'folder' })]));
     await mount(api);
 
-    expect(chooseNote()?.textContent).toContain(
-      'Code projects keep working in Git; other folders become Cowork projects.',
-    );
-    expect(chooseNote()?.textContent).toContain(
-      'Uncommitted or unpushed changes stay in the original folder.',
-    );
+    expect(chooseNote()?.textContent).toContain('commit and push your work');
     expect(
       container.querySelector('[data-testid="import-projects-row-notes"]')
         ?.textContent,
@@ -702,8 +690,228 @@ describe('ImportProjectsPanel', () => {
     expect(
       container
         .querySelector('[data-testid="import-projects-plugins-error"]')
-        ?.classList.contains('fg-destructive'),
-    ).toBe(true);
+        ?.querySelector('[role="alert"]'),
+    ).toBeTruthy();
+  });
+
+  describe('a picked folder holding repositories (CAN-5487)', () => {
+    const PARENT = '/Users/me/AndroidStudioProjects';
+    const parent = (
+      overrides: Partial<ExternalProjectCandidate> = {},
+    ): ExternalProjectCandidate =>
+      candidate('parent', {
+        displayName: 'AndroidStudioProjects',
+        rootPath: PARENT,
+        kind: 'folder',
+        surfaces: ['custom-folder'],
+        providers: [],
+        nestedRepositories: { count: 3, complete: true },
+        ...overrides,
+      });
+    const nested = (name: string): ExternalProjectCandidate =>
+      candidate(name, {
+        rootPath: `${PARENT}/${name}`,
+        surfaces: ['nested-repository'],
+        providers: [],
+        parentCandidateIds: ['parent'],
+      });
+    const ticketScan = (
+      parentOverrides: Partial<ExternalProjectCandidate> = {},
+    ): ExternalProjectDiscoverResponse =>
+      scan([
+        parent(parentOverrides),
+        nested('compose-playground'),
+        nested('pantry-android'),
+        nested('wear-timer'),
+      ]);
+    const box = (id: string): HTMLInputElement => {
+      const node = container.querySelector(
+        `[data-testid="import-projects-row-checkbox-${id}"]`,
+      );
+      if (!(node instanceof HTMLInputElement)) throw new Error(`missing ${id}`);
+      return node;
+    };
+    const REPOS = ['compose-playground', 'pantry-android', 'wear-timer'];
+
+    it('selects the repositories by default and leaves the folder for an explicit choice', async () => {
+      await mount(createApi(ticketScan()));
+
+      for (const id of REPOS) expect(box(id).checked).toBe(true);
+      expect(box('parent').checked).toBe(false);
+      expect(box('parent').disabled).toBe(false);
+      const row = container.querySelector(
+        '[data-testid="import-projects-row-parent"]',
+      );
+      expect(row?.textContent).toContain('Plain folder');
+      expect(row?.textContent).not.toContain('not a code repository');
+      expect(row?.textContent).toContain('Contains 3 code repositories');
+    });
+
+    it('keeps the folder and its repositories exclusive', async () => {
+      const api = createApi(ticketScan());
+      await mount(api);
+
+      click(container, 'import-projects-row-checkbox-parent');
+      expect(box('parent').checked).toBe(true);
+      for (const id of REPOS) expect(box(id).checked).toBe(false);
+
+      click(container, 'import-projects-row-checkbox-wear-timer');
+      expect(box('parent').checked).toBe(false);
+      expect(box('wear-timer').checked).toBe(true);
+
+      click(container, 'import-projects-row-checkbox-parent');
+      click(container, 'import-projects-select-all');
+      expect(box('parent').checked).toBe(false);
+      for (const id of REPOS) expect(box(id).checked).toBe(true);
+
+      click(container, 'import-projects-submit');
+      await flush();
+      expect(
+        api.externalProjects.importProjects.mock.calls[0]?.[0].selections.map(
+          (selection) => selection.candidateId,
+        ),
+      ).toEqual(expect.arrayContaining(REPOS));
+      expect(
+        api.externalProjects.importProjects.mock.calls[0]?.[0].selections,
+      ).toHaveLength(3);
+    });
+
+    it('explains an incomplete, capped scan on the folder row', async () => {
+      await mount(
+        createApi(
+          ticketScan({ nestedRepositories: { count: 37, complete: false } }),
+        ),
+      );
+      const row = container.querySelector(
+        '[data-testid="import-projects-row-parent"]',
+      );
+      expect(row?.textContent).toContain(
+        'Contains 37 or more code repositories',
+      );
+      // One run of sentences, not a line per note.
+      expect(row?.textContent).toContain(
+        'Could not finish checking for repositories. Choose a repository folder directly to import one that is not listed.',
+      );
+    });
+
+    it('does not default-select an uncertain picked folder', async () => {
+      await mount(
+        createApi(
+          scan([parent({ nestedRepositories: { count: 0, complete: false } })]),
+        ),
+      );
+      expect(box('parent').checked).toBe(false);
+    });
+
+    it('replaces an automatic provider parent selection when a pick discovers repositories', async () => {
+      const api = createApi(
+        scan([
+          parent({ surfaces: ['claude-code'], nestedRepositories: undefined }),
+        ]),
+      );
+      await mount(api);
+      expect(box('parent').checked).toBe(true);
+      api.externalProjects.pickFolder.mockResolvedValueOnce(PARENT);
+      api.externalProjects.discover.mockResolvedValueOnce(ticketScan());
+      click(container, 'import-projects-pick-folder');
+      await flush();
+      expect(box('parent').checked).toBe(false);
+      for (const id of REPOS) expect(box(id).checked).toBe(true);
+    });
+
+    it('retains a manual parent choice on rescan rather than restoring repository defaults', async () => {
+      const api = createApi(ticketScan());
+      await mount(api);
+      click(container, 'import-projects-row-checkbox-parent');
+      click(container, 'import-projects-rescan');
+      await flush();
+      expect(box('parent').checked).toBe(true);
+      for (const id of REPOS) expect(box(id).checked).toBe(false);
+    });
+
+    it('retains opt-outs and drops newly unavailable selections on rescan', async () => {
+      const api = createApi(ticketScan());
+      await mount(api);
+      click(container, 'import-projects-row-checkbox-wear-timer');
+      const response = ticketScan();
+      const pantry = response.candidates.find(
+        (entry) => entry.id === 'pantry-android',
+      );
+      if (!pantry) throw new Error('fixture');
+      pantry.status = 'unavailable';
+      api.externalProjects.discover.mockResolvedValueOnce(response);
+      click(container, 'import-projects-rescan');
+      await flush();
+      expect(box('wear-timer').checked).toBe(false);
+      expect(box('pantry-android').checked).toBe(false);
+      expect(box('compose-playground').checked).toBe(true);
+    });
+
+    it('explains absent scan metadata from an older host without selecting the folder', async () => {
+      await mount(createApi(scan([parent({ nestedRepositories: undefined })])));
+      expect(box('parent').checked).toBe(false);
+      expect(container.textContent).toContain(
+        'Could not finish checking for repositories',
+      );
+    });
+
+    it('keeps chat opt-outs and defaults only newly discovered repositories', async () => {
+      const repository = candidate('known', { importableSessionCount: 1 });
+      const api = createApi(scan([repository]));
+      await mount(api);
+      click(container, 'import-projects-row-chats-known');
+      api.externalProjects.discover.mockResolvedValueOnce(
+        scan([repository, candidate('new')]),
+      );
+      click(container, 'import-projects-rescan');
+      await flush();
+      expect(box('known').checked).toBe(true);
+      expect(box('new').checked).toBe(true);
+      const chats = container.querySelector(
+        '[data-testid="import-projects-row-chats-known"]',
+      );
+      expect(chats).toHaveProperty('checked', false);
+    });
+
+    it('ignores a stale scan and accumulates concurrent folder picks without losing provenance', async () => {
+      const api = createApi(scan([]));
+      await mount(api);
+      api.externalProjects.pickFolder
+        .mockResolvedValueOnce(PARENT)
+        .mockResolvedValueOnce('/Users/me/other');
+      let resolveOlder: (value: ExternalProjectDiscoverResponse) => void = () =>
+        undefined;
+      api.externalProjects.discover
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveOlder = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(ticketScan());
+      act(() => {
+        const picker = container.querySelector(
+          '[data-testid="import-projects-pick-folder"]',
+        );
+        if (!(picker instanceof HTMLElement)) throw new Error('missing picker');
+        picker.click();
+        picker.click();
+      });
+      await flush();
+      expect(api.externalProjects.discover).toHaveBeenLastCalledWith({
+        customRoots: [PARENT, '/Users/me/other'],
+      });
+      click(container, 'import-projects-row-checkbox-parent');
+      await act(async () => {
+        resolveOlder(scan([candidate('stale')]));
+        await Promise.resolve();
+      });
+      await flush();
+      expect(box('parent').checked).toBe(true);
+      expect(
+        container.querySelector('[data-testid="import-projects-row-stale"]'),
+      ).toBeNull();
+    });
   });
 
   describe('import telemetry (CAN-4635)', () => {

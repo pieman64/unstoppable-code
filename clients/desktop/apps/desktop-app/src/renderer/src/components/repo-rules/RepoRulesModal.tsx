@@ -79,6 +79,7 @@ export function RepoRulesModal({
   );
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Cursor rules"
       subtitle="Use a project's Cursor rules in new chats"
@@ -86,7 +87,7 @@ export function RepoRulesModal({
       dataTestId="repo-rules-modal"
     >
       {/* DialogModal pads only its header; the body inset matches it. */}
-      <div className="p-5">
+      <div className="p-6">
         <RepoRulesReview
           appName={brandText.appName}
           workspaces={workspaces}

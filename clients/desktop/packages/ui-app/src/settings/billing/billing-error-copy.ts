@@ -5,9 +5,11 @@ import { BILLING_CARD_DECLINED_ERROR } from '@canopy/app-state/billing';
 import {
   logSettingsError,
   settingsActionErrorCopy,
+  settingsFailure,
   settingsLoadErrorCopy,
   type KnownSettingsError,
   type SettingsErrorCopy,
+  type SettingsFailure,
 } from '../errors';
 import { useOptionalSettingsHost } from '../host/settings-host';
 
@@ -50,20 +52,20 @@ export const ORG_BILLING_KNOWN_ERRORS: readonly KnownSettingsError[] = [
  * `useSettingsErrorCopy` for billing controls that also render outside a
  * settings host (web billing slots under test, checkout surfaces). It logs
  * through the host's `logger(scope)` when there is one and returns the same
- * copy either way. Call it where the failure is caught, not during render.
+ * failure (our sentence and the raw reason as `details`) either way. Call it where the failure is caught, not during render.
  */
 export function useBillingErrorCopy(scope: string): SettingsErrorCopy {
   const host = useOptionalSettingsHost();
   return useMemo((): SettingsErrorCopy => {
     const logger = host?.logger(scope) ?? null;
     return {
-      loadCopy: (error, known): string => {
+      loadFailure: (error, known): SettingsFailure => {
         if (logger !== null) logSettingsError(logger, 'load', error);
-        return settingsLoadErrorCopy(error, known);
+        return settingsFailure(error, settingsLoadErrorCopy(error, known));
       },
-      actionCopy: (error, options): string => {
+      actionFailure: (error, options): SettingsFailure => {
         if (logger !== null) logSettingsError(logger, options.action, error);
-        return settingsActionErrorCopy(error, options);
+        return settingsFailure(error, settingsActionErrorCopy(error, options));
       },
     };
   }, [host, scope]);

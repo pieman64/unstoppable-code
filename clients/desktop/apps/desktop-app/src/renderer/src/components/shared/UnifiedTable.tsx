@@ -9,7 +9,7 @@ import type {
   SourceOption,
   UnifiedTableRow,
 } from '../../hooks/useUnifiedTableData';
-import { CanopyLogo } from '../CanopyLogo';
+import { BrandLogo } from '../BrandLogo';
 import { McpServerLogo } from './McpServerLogo';
 
 export interface UnifiedTableProps {
@@ -42,9 +42,7 @@ function renderMcpLogo(row: SharedUnifiedTableRow): JSX.Element {
 }
 
 function renderAppLogo(): JSX.Element {
-  return (
-    <CanopyLogo className="shrink-0 fg-secondary" width={12} height={12} />
-  );
+  return <BrandLogo className="shrink-0 fg-secondary" width={12} height={12} />;
 }
 
 /** Desktop compatibility facade over the shared pure display component. */

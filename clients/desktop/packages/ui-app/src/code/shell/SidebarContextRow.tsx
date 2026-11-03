@@ -17,6 +17,8 @@ import {
   DropdownMenuLabel,
   FloatingMenu,
   SidebarAiCreditsMenuItem,
+  Notice,
+  NoticeButton,
 } from '@canopy/ui-shared/components';
 import {
   BuildingIcon,
@@ -624,13 +626,13 @@ function InvitationAlert({
   if (placement === 'menu') {
     return (
       <>
-        <div
-          role="alert"
+        <Notice
+          intent="destructive"
+          className="mx-1 my-1"
           data-testid="sidebar-context-invitations-error"
-          className="px-2 py-1 text-xs fg-destructive"
         >
           {error.message}
-        </div>
+        </Notice>
         {error.kind === 'follow-up' ? (
           <ActionMenuRowStyle>
             <DropdownMenuItem
@@ -638,7 +640,7 @@ function InvitationAlert({
               onClick={onReview}
             >
               <DropdownMenuItemIcon>
-                <BuildingIcon />
+                <BuildingIcon size="xl" />
               </DropdownMenuItemIcon>
               Open organizations
             </DropdownMenuItem>
@@ -648,17 +650,16 @@ function InvitationAlert({
     );
   }
   return (
-    <div
-      role="alert"
+    <Notice
+      intent="destructive"
+      className="mt-1"
       data-testid="sidebar-context-invitations-error"
-      className="mt-1 flex flex-col gap-1 rounded-row px-2 py-1 text-xs fg-destructive"
-    >
-      <span>{error.message}</span>
-      <span className="flex gap-3">
-        {error.kind === 'follow-up' ? (
-          <button
-            type="button"
-            className="focus-ring rounded-sm fg-accent hover:underline"
+      actionsPlacement="below"
+      onDismiss={onDismiss}
+      dismissTestId="sidebar-context-invitations-dismiss"
+      actions={
+        error.kind === 'follow-up' ? (
+          <NoticeButton
             data-testid="sidebar-context-invitations-open-organizations"
             onClick={(): void => {
               onDismiss();
@@ -666,18 +667,12 @@ function InvitationAlert({
             }}
           >
             Open organizations
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="focus-ring rounded-sm fg-secondary hover:underline"
-          data-testid="sidebar-context-invitations-dismiss"
-          onClick={onDismiss}
-        >
-          Dismiss
-        </button>
-      </span>
-    </div>
+          </NoticeButton>
+        ) : undefined
+      }
+    >
+      {error.message}
+    </Notice>
   );
 }
 

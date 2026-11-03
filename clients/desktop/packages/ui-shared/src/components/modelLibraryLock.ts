@@ -75,7 +75,7 @@ export const MODEL_LIBRARY_UNLOCK_COPY = {
   dismissAction: 'Not now',
   confirmed: 'Advanced models are unlocked.',
   selectionFailed: 'Your model could not be selected. Try selecting it again.',
-  retrySelection: 'Retry model selection',
+  retrySelection: 'Try again',
   waitingInBrowser: `${AI_CREDITS_HANDOFF_COPY.waiting.title}. We'll check when the payment goes through.`,
   pendingTitle: AI_CREDITS_HANDOFF_COPY.waiting.title,
   timedOutTitle: 'Automatic payment checks have stopped',

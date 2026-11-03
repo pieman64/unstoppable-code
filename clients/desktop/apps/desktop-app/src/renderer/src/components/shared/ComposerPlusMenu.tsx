@@ -305,7 +305,7 @@ function ComposerPlusMenuContent({
                 : linearSettingsReachableHere
                   ? `Check your Linear API key. Update it in ${linearSettingsLocation}.`
                   : 'Check your Linear API key. Update it in Account settings in the main window.',
-            icon: <LinearIcon />,
+            icon: <LinearIcon size="md" />,
             group: 'Add',
             disabled: !linearAvailable,
             popupRole: 'dialog' as const,

@@ -30,6 +30,8 @@
     "./components/ShareInstallDialog": "./src/components/ShareInstallDialog.tsx",
     "./components/PageHeader": "./src/components/PageHeader.tsx",
     "./components/settings/SettingsCard": "./src/components/settings/SettingsCard.tsx",
+    "./components/settings/SettingsRows": "./src/components/settings/SettingsRows.tsx",
+    "./components/settings/ValueRows": "./src/components/settings/ValueRows.tsx",
     "./components/DescriptionMarkdown": "./src/components/DescriptionMarkdown.tsx",
     "./components/Markdown": "./src/components/Markdown.tsx",
     "./components/RemoteControlMobileAppPromo": "./src/components/RemoteControlMobileAppPromo.tsx",
@@ -104,7 +106,8 @@
     "./components/chat/PlanApprovalPrompt": "./src/components/chat/PlanApprovalPrompt.tsx",
     "./components/chat/ComposerPrompt": "./src/components/chat/ComposerPrompt.ts",
     "./components/chat/ComposerPromptTextRow": "./src/components/chat/ComposerPromptTextRow.tsx",
-    "./components/chat/ComposerIconButton": "./src/components/chat/ComposerIconButton.tsx"
+    "./components/chat/ComposerIconButton": "./src/components/chat/ComposerIconButton.tsx",
+    "./lib/github-workflow-display": "./src/lib/github-workflow-display.ts"
   },
   "peerDependencies": {
     "react": ">=18",

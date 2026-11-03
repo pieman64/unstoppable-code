@@ -13,7 +13,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { computeCodexObservedCost } from '../openai-pricing/cost-calculator';
 import type { OpenAiPricingCacheState } from '../openai-pricing/pricing-client';
 import { writeFileAtomically } from '../lib/atomic-file';
-import { normalizeAuditEntry } from './audit-entry-parser';
+import { normalizeAuditEntry } from '@canopy/core-runtime/observability';
 import {
   ClaudeSessionCostLedger,
   readClaudeMainLoopUsage,

@@ -15188,6 +15188,7 @@ describe('claude-session Claude integration', () => {
         expect(onEvent).toHaveBeenCalledWith({
           type: 'canopy_ai_credits_no_billing_source',
           provider: 'claude',
+          canopy_turn_user_message_id: 'failed-turn',
         });
         const delivered = onEvent.mock.calls
           .map(([event]): unknown => event)

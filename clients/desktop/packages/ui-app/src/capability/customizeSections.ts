@@ -64,6 +64,8 @@ export interface CustomizeSectionModel {
   readonly footnote?: string;
 }
 
+/** Kinds whose Updates the host surfaces; applying may still be capability-gated by the host. */
+export type CustomizeUpdateKind = 'skill' | 'automation' | 'collection';
 /** Under the Workflows tab's Installed list (CAN-4845). */
 export const WORKFLOW_INSTALLED_FOOTNOTE =
   'Pipelines run when you start them or their trigger fires. Automations run on their schedule.';
@@ -77,7 +79,7 @@ export interface CustomizeTabModelInput {
   readonly installedInventory: CustomizeInventoryState;
   readonly ownershipAvailable?: boolean;
   /** Initial web hosts pass no supported updates. */
-  readonly supportedUpdateKinds?: readonly ('skill' | 'automation')[];
+  readonly supportedUpdateKinds?: readonly CustomizeUpdateKind[];
   readonly pipelineFilters?: PipelineFilterValues;
   readonly pipelineCategory?: string | null;
   readonly installedExpanded?: boolean;
@@ -252,10 +254,23 @@ const BROWSE_TITLES: Record<MarketplaceCatalogTabId, string> = {
   app: 'Browse MCP servers',
   skill: 'Browse skills',
   workflow: 'Browse workflows',
-  collection: 'Browse collections',
+  collection: 'Shared with you',
   agent: 'Shared with you',
   blueprint: 'Browse project templates',
 };
+
+/** Footnotes under a tab's installed section. */
+export const INSTALLED_FOOTNOTES: Partial<
+  Record<MarketplaceCatalogTabId, string>
+> = {
+  workflow: WORKFLOW_INSTALLED_FOOTNOTE,
+  collection:
+    'Adding a collection adds everything in it. Removing it keeps what you already use.',
+};
+
+function isInstalled(entry: UnifiedPluginEntry): boolean {
+  return entry.state === 'installed' || entry.state === 'needs-auth';
+}
 
 function allBrowseGroups(
   entries: UnifiedPluginEntry[],
@@ -413,7 +428,10 @@ export function buildCustomizeTabModel(
         input.supportedUpdateKinds?.includes('skill')) ||
         (entry.kind === 'automation' &&
           entry.ref.type === 'automation' &&
-          input.supportedUpdateKinds?.includes('automation'))),
+          input.supportedUpdateKinds?.includes('automation')) ||
+        (entry.kind === 'collection' &&
+          entry.ref.type === 'local-collection' &&
+          input.supportedUpdateKinds?.includes('collection'))),
   );
   if (updates.length) section('updates', 'Updates', updates);
   if (
@@ -421,6 +439,7 @@ export function buildCustomizeTabModel(
     (installed.length ||
       input.installedInventory !== 'ready' ||
       input.keepInstalledVisible ||
+      (input.tab === 'collection' && !searchActive) ||
       statusFilter)
   ) {
     const previewLimit =
@@ -442,11 +461,11 @@ export function buildCustomizeTabModel(
       installed,
       {
         inventoryState: input.installedInventory,
+        ...(INSTALLED_FOOTNOTES[input.tab]
+          ? { footnote: INSTALLED_FOOTNOTES[input.tab] }
+          : {}),
         ...(visibleInstalled.some(isBundledSkill)
           ? { installedFootnote: BUNDLED_SKILL_FOOTNOTE }
-          : {}),
-        ...(input.tab === 'workflow'
-          ? { footnote: WORKFLOW_INSTALLED_FOOTNOTE }
           : {}),
         ...(previewLimit !== undefined ? { previewLimit } : {}),
       },
@@ -465,7 +484,8 @@ export function buildCustomizeTabModel(
       : [];
   if (owned.length) section('shared-by-me', 'Shared by me', owned);
   // Browse is what is not installed (CAN-5272): a status filter only applies
-  // to installs, so it hides Browse, and an install never repeats there.
+  // to installs, so it hides Browse. Collection shares retain their Installed
+  // label in Shared with you, as required by the collections tab.
   if (!statusFilter) {
     const filters = input.pipelineFilters ?? DEFAULT_PIPELINE_FILTERS;
     const category = input.pipelineCategory?.trim().toLowerCase();
@@ -474,21 +494,29 @@ export function buildCustomizeTabModel(
     const installedKeys = searchActive
       ? canonicalInstallsOf(tabEntries)
       : canonicalInstalls;
+    const installedCollectionShares = entries.filter(
+      (entry) =>
+        entry.ref.type === 'shared-collection' &&
+        entry.origin === 'shared' &&
+        isInstalled(entry),
+    );
     const browse = marketplaceBrowseEntries(
       entries,
       new Set(installedKeys.keys()),
-    ).filter(
-      (entry) =>
-        !isBundledSkill(entry) &&
-        ['curated', 'marketplace', 'shared'].includes(entry.origin) &&
-        (entry.origin !== 'shared' || entry.isShared !== false) &&
-        (entry.kind !== 'pipeline' ||
-          (pipelineMatchesFilters(entry, filters) &&
-            (!category ||
-              entry.categories.some(
-                (value) => value.toLowerCase() === category,
-              )))),
-    );
+    )
+      .concat(installedCollectionShares)
+      .filter(
+        (entry) =>
+          !isBundledSkill(entry) &&
+          ['curated', 'marketplace', 'shared'].includes(entry.origin) &&
+          (entry.origin !== 'shared' || entry.isShared !== false) &&
+          (entry.kind !== 'pipeline' ||
+            (pipelineMatchesFilters(entry, filters) &&
+              (!category ||
+                entry.categories.some(
+                  (value) => value.toLowerCase() === category,
+                )))),
+      );
     const groups =
       input.tab === 'all'
         ? allBrowseGroups(browse, searchActive, input.suggestedNames)

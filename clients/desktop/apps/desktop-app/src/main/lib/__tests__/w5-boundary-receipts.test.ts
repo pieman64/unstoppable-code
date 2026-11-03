@@ -706,11 +706,14 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
 
   it('multi-repo deferred repair uses the existing event and keeps the returned receipt', async () => {
     useMultiRepoWorkspace(repo);
-    let settle: () => void = () => {};
-    const settled = new Promise<void>((resolve) => {
-      settle = resolve;
+    let reportRepair: () => void = () => {};
+    const repairReported = new Promise<void>((resolve) => {
+      reportRepair = resolve;
     });
-    const onNeedsRepair = jest.fn();
+    const onNeedsRepair = jest.fn(() => reportRepair());
+    // A needs-repair detour is not terminal: the repair or the worktree's
+    // teardown settles the Git setup, so this create never reports it.
+    const onGitSetupSettled = jest.fn();
     const request = {
       workspaceId: 'a',
       workspaceKind: 'multi-repo',
@@ -721,7 +724,7 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
       allowBaseBranchNetwork: false,
       seedPanelLayoutMode: false,
       idempotencyKey: 'deferred-repair-key',
-      onGitSetupSettled: settle,
+      onGitSetupSettled,
       onNeedsRepair,
     } as const;
     const first = await createWorktreeFromSelection(request);
@@ -729,8 +732,12 @@ describe.each(W5_STORE_SIDES)('over the %s store', (side) => {
       status: 'created',
       response: { setupPhase: 'git-pending' },
     });
-    await settled;
+    await repairReported;
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     expect(onNeedsRepair).toHaveBeenCalledTimes(1);
+    expect(onGitSetupSettled).not.toHaveBeenCalled();
     const before = snapshot();
     const commits = jest.spyOn(host, 'commit');
     expect(await createWorktreeFromSelection(request)).toEqual(first);

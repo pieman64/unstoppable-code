@@ -1,8 +1,9 @@
 'use client';
 
 import { memo, useEffect, useRef, type JSX } from 'react';
-import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
+import { Notice, NoticeButton } from '../Notice';
+import { TRY_AGAIN_LABEL } from '../useRetry';
 
 export interface TranscriptPagingControlsProps {
   loading: boolean;
@@ -72,17 +73,21 @@ export const TranscriptPagingControls = memo(function TranscriptPagingControls({
           Loading messages…
         </span>
       ) : error ? (
-        <>
-          <span role="alert">{error}</span>
-          <Button
-            variant="secondary"
-            size="compact"
-            data-testid="chat-transcript-retry"
-            onClick={needsLoad ? onReload : onLoadEarlier}
-          >
-            Reload messages
-          </Button>
-        </>
+        <Notice
+          intent="destructive"
+          className="my-2 w-full"
+          liveRegionScope="content"
+          actions={
+            <NoticeButton
+              data-testid="chat-transcript-retry"
+              onClick={needsLoad ? onReload : onLoadEarlier}
+            >
+              {TRY_AGAIN_LABEL}
+            </NoticeButton>
+          }
+        >
+          {error}
+        </Notice>
       ) : null}
     </div>
   );

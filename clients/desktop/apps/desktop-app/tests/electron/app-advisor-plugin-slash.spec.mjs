@@ -12,6 +12,7 @@ import {
 } from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { composerIdleAction } from './composerIdleAction.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const CUSTOM_SOURCE_ID = 'custom:app';
 const CODEX_MODEL = 'gpt-6.1-sol';
@@ -233,9 +234,10 @@ async function enableSelectedSkill(advisor, skillName) {
     .filter({ hasText: 'Plugins' });
   await expect(dialog).toBeVisible();
   await dialog.getByPlaceholder('Search by name…').fill(skillName);
-  await dialog
-    .getByRole('combobox', { name: 'Kind filter' })
-    .selectOption('skill');
+  await chooseSettingsOption(
+    dialog.getByRole('combobox', { name: 'Kind filter' }),
+    'skill',
+  );
 
   const checkbox = dialog.getByRole('checkbox', {
     name: `Select ${skillName}`,
@@ -326,9 +328,10 @@ async function expectDefaultSkillSelections(advisor, providerConfig) {
     .locator('[role="dialog"]')
     .filter({ hasText: 'Plugins' });
   await expect(dialog).toBeVisible();
-  await dialog
-    .getByRole('combobox', { name: 'Kind filter' })
-    .selectOption('skill');
+  await chooseSettingsOption(
+    dialog.getByRole('combobox', { name: 'Kind filter' }),
+    'skill',
+  );
 
   const selectedSkill = dialog.getByRole('checkbox', {
     name: `Select ${providerConfig.selectedSkill}`,

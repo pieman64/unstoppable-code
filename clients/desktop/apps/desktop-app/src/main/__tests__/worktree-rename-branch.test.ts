@@ -151,6 +151,7 @@ import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { updateWorkspaceWorktree } from '../lib/workspace-persistence';
 import { updateWorktree } from '../lib/worktree-update';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
+import { createWorkspaceMetadataTestDispatcher } from './fixtures/workspace-metadata-dispatcher';
 import type {
   WorkerGitDispatcher,
   WorkerGitWriteDispatcher,
@@ -280,8 +281,22 @@ beforeEach(() => {
   gitInstruction.mockReset();
   gitInstruction.mockResolvedValue({ branch: 'renamed' });
 
+  // worktree:set-label projects the registered core.worktree.update
+  // (W7b-1b) and the rename channel core.worktree.branch.rename (W7b-4);
+  // their Git effects still reach the worker through the stub.
+  const workspaceInstruction = createWorkspaceMetadataTestDispatcher()
+    .instruction as unknown as (...args: unknown[]) => Promise<unknown>;
+  const instruction = (name: string, ...rest: unknown[]): Promise<unknown> =>
+    name.startsWith('worker.git.')
+      ? Promise.resolve(gitInstruction(name, ...rest))
+      : workspaceInstruction(name, ...rest);
   registerWorktreeHandlers(() => null, {
-    dispatcher: { query: gitQuery, instruction: gitInstruction },
+    dispatcher: {
+      query: gitQuery,
+      instruction,
+    } as unknown as Parameters<
+      typeof registerWorktreeHandlers
+    >[1]['dispatcher'],
     resolveCaller: () => desktopCaller,
   });
 

@@ -18,6 +18,7 @@ import { createPortal } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
 import { Kbd } from './Kbd';
+import { useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
 
 const TOOLTIP_GAP = 6;
@@ -213,6 +214,9 @@ export function Tooltip({
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  // Escape closed the tip: it stays closed until the pointer leaves or focus
+  // moves, so the resting pointer's next movement does not reopen it.
+  const escapeDismissedRef = useRef(false);
   const [tooltipMounted, setTooltipMounted] = useState(false);
   const [position, setPosition] = useState<{
     top: number;
@@ -306,17 +310,27 @@ export function Tooltip({
     setPosition(null);
   }, [clearOpenTimer, clearHideTimer]);
 
+  const showing = tooltipMounted && !disabled && !suppressed;
   const handoff = useTooltipHandoff({
-    open: tooltipMounted && !disabled && !suppressed,
+    open: showing,
     positioned: position !== null,
     close: hideTooltip,
     triggerRef: wrapperRef,
     surfaceRef: tooltipRef,
   });
 
+  useTooltipEscape({
+    active: showing,
+    triggerRef: wrapperRef,
+    onEscape: (): void => {
+      escapeDismissedRef.current = true;
+      hideTooltip();
+    },
+  });
+
   const showTooltipAfter = useCallback(
     (delayMs: number): void => {
-      if (suppressed) {
+      if (suppressed || escapeDismissedRef.current) {
         return;
       }
       clearHideTimer();
@@ -369,6 +383,7 @@ export function Tooltip({
   // close delay (longer for a link, so the pointer can reach it); a
   // neighbour that opens meanwhile replaces it at once.
   const requestHide = useCallback((): void => {
+    escapeDismissedRef.current = false;
     clearOpenTimer();
     clearHideTimer();
     const linger = Math.max(
@@ -396,6 +411,7 @@ export function Tooltip({
       ) {
         return;
       }
+      escapeDismissedRef.current = false;
       hideTooltip();
     },
     [hideTooltip],
@@ -468,11 +484,14 @@ export function Tooltip({
     if (doc) trackInputModality(doc);
   }, [disabled]);
 
+  // `disabled` unmounts the wrapper, which never sees the pointer leave: an
+  // open tip would come back at its old coordinates, unhovered, once the
+  // caller enables it again.
   useEffect((): void => {
-    if (suppressed) {
+    if (suppressed || disabled) {
       hideTooltip();
     }
-  }, [hideTooltip, suppressed]);
+  }, [disabled, hideTooltip, suppressed]);
 
   // Resolve the portal target and viewport from the TRIGGER's realm: a
   // wrapper mounted in an auxiliary window must portal into THAT window's

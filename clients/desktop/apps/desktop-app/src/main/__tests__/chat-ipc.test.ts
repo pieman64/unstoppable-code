@@ -827,6 +827,15 @@ jest.mock('../services/chat-state-service', () => ({
       Promise.resolve(request),
     restoreRetainedTerminalAgentInputAfterFailedNativeAdmission:
       (): Promise<void> => Promise.resolve(),
+    // No worktree Git setup is pending in these sends.
+    holdLocalSendForWorktreeSetup: async (
+      _request: DesktopSharedTypesModule.ChatSendMessageRequest,
+      _userMessage: () => unknown,
+      submit: () => Promise<void>,
+    ): Promise<'dispatch-now'> => {
+      await submit();
+      return 'dispatch-now';
+    },
     get answerPendingQuestion() {
       return mockAnswerPendingQuestion;
     },
@@ -3138,6 +3147,42 @@ describe('chat IPC sendMessage', () => {
     expect(mockEnsureChatForTrustedSend).not.toHaveBeenCalled();
     expect(mockIngestProviderEvent).not.toHaveBeenCalled();
     expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  // CAN-5379 moved Cowork automations onto the shared port, which reaches this
+  // main-owned dispatch instead of the native standalone send.
+  it('hands a Cowork session its automation package overlay', async () => {
+    const packageOverlay = {
+      packageDigest: 'pp:v1:automation-package',
+      resources: [
+        {
+          virtualSourceId: 'pipeline-package:automation-package',
+          resourceId: 'packaged-skill',
+          provider: 'codex' as const,
+          rootPath: '/packages/automation-package/codex/packaged-skill',
+          kind: 'standalone_skill' as const,
+          displayName: 'Packaged skill',
+          invocationKeys: ['packaged-skill'],
+        },
+      ],
+    };
+    mockedGetOrCreateSession.mockResolvedValue(makeMockSession());
+    await dispatchHostQueuedWorktreeChatMessage(
+      {
+        projectId: 'cowork-default',
+        worktreeId: 'home',
+        chatId: 'chat-package-overlay',
+        userMessageId: 'package-overlay-prompt',
+        text: 'Summarize today.',
+        providerType: 'claude',
+        packageOverlay,
+      },
+      'desktop',
+      true,
+    );
+    expect(mockedGetOrCreateSession.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({ packageOverlay }),
+    );
   });
 
   it('runs a model-less Copilot Cowork send with the validated live model', async () => {

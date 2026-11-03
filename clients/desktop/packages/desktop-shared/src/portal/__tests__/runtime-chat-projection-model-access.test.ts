@@ -1,3 +1,4 @@
+import type { PortalChatMessage } from '@canopy/protocol/portal';
 import type { CodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
 import { runtimeChatEventToPortalMessage } from '../runtime-chat-projection';
 
@@ -10,6 +11,50 @@ const failure: CodexAccountModelAccessFailure = {
 };
 
 describe('live Codex account model rejection (CAN-4716)', () => {
+  it.each(['error', 'canopy_ai_credits_no_billing_source'])(
+    'preserves exact composer refusal identity for %s',
+    (type) => {
+      const project = (
+        extra: Record<string, unknown> = {},
+      ): PortalChatMessage | null =>
+        runtimeChatEventToPortalMessage({
+          scope: 'worktree',
+          chatId: 'chat',
+          data: {
+            type,
+            error_code: 'no_billing_source',
+            error: 'No billing source',
+            canopy_turn_user_message_id: 'submitted-user',
+            ...extra,
+          },
+        });
+      expect(project()?.parts).toContainEqual({
+        kind: 'text',
+        data: {
+          text: '',
+          composerRefusal: {
+            code: 'no_billing_source',
+            userMessageId: 'submitted-user',
+          },
+          errorText: 'No billing source',
+        },
+      });
+      for (const scope of [
+        { parent_tool_use_id: 'child' },
+        { canopy_turn_user_message_id: undefined },
+      ]) {
+        const parts = project(scope)?.parts ?? [];
+        expect(
+          parts.some(
+            (part) =>
+              typeof part.data === 'object' &&
+              part.data !== null &&
+              'composerRefusal' in part.data,
+          ),
+        ).toBe(false);
+      }
+    },
+  );
   it('carries the notice in a text part and keeps the raw text out of the row', () => {
     const projected = runtimeChatEventToPortalMessage({
       scope: 'worktree',

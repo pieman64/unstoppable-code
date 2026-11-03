@@ -34,7 +34,7 @@ test('failed StartForkedAgent removes the new tab and preserves the original cha
   test.setTimeout(180_000);
   await runSplitAgentFailure();
 });
-test('failed initial setup-queued StartBranchedAgent closes only its child and permits retry', async () => {
+test('failed initial setup-held StartBranchedAgent reports the failure, closes only its child and permits retry', async () => {
   test.setTimeout(180_000);
   await runSplitAgentFailure({ branched: true });
 });

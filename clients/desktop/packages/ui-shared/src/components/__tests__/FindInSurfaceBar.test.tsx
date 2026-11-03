@@ -483,10 +483,12 @@ describe('FindInSurfaceBar', () => {
     render(props({ error: { message: 'Search failed.', onRetry } }));
 
     const error = document.querySelector('[data-testid="surface-find-error"]');
+    expect(error?.querySelector('[role="alert"]')).toBeTruthy();
     expect(error?.textContent).toContain('Search failed.');
     const retry = Array.from(error?.querySelectorAll('button') ?? []).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
+    expect(retry).toBeDefined();
     act(() => {
       retry?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });

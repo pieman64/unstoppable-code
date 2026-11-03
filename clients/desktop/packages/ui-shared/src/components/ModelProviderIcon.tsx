@@ -46,20 +46,20 @@ export function ModelProviderIcon({
   // An organization's own models group under `org-gateway:<id>`; a neutral
   // building stands for the organization rather than a guessed initial.
   if (provider.startsWith('org-gateway:')) {
-    return <BuildingIcon {...centralProps} />;
+    return <BuildingIcon size="xl" {...centralProps} />;
   }
   switch (provider) {
     case 'anthropic':
     case 'claude':
       return central ? (
-        <ClaudeIcon {...centralProps} />
+        <ClaudeIcon size="md" {...centralProps} />
       ) : (
         <ClaudeLogo {...svgProps} />
       );
     case 'openai':
     case 'codex':
       return central ? (
-        <CodexIcon {...centralProps} />
+        <CodexIcon size="md" {...centralProps} />
       ) : (
         <CodexLogo {...svgProps} />
       );
@@ -69,26 +69,26 @@ export function ModelProviderIcon({
       return <GitHubIcon {...centralProps} />;
     case 'cursor':
       return central ? (
-        <CursorIcon {...centralProps} />
+        <CursorIcon size="md" {...centralProps} />
       ) : (
         <CursorLogo {...svgProps} />
       );
     case 'ollama':
       return central ? (
-        <OllamaIcon {...centralProps} />
+        <OllamaIcon size="md" {...centralProps} />
       ) : (
         <OllamaLogo {...svgProps} />
       );
     case 'deepseek':
-      return <DeepSeekIcon {...centralProps} />;
+      return <DeepSeekIcon size="md" {...centralProps} />;
     case 'moonshot':
     case 'kimi':
-      return <MoonshotIcon {...centralProps} />;
+      return <MoonshotIcon size="md" {...centralProps} />;
     case 'minimax':
-      return <MiniMaxIcon {...centralProps} />;
+      return <MiniMaxIcon size="md" {...centralProps} />;
     case 'zai':
     case 'z.ai':
-      return <ZaiIcon {...centralProps} />;
+      return <ZaiIcon size="md" {...centralProps} />;
     default:
       return (
         <svg

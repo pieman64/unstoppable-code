@@ -21,7 +21,6 @@ import {
   useCapabilities,
   useLinearPreviewStore,
   type GitHubRepositoryName,
-  type ReferenceTitleSlot,
 } from '@canopy/app-state';
 import type {
   GitHubPreviewTarget,
@@ -30,11 +29,12 @@ import type {
 } from '@canopy/protocol/reference-previews';
 import {
   chatMessageLinkUrlProps,
-  InlineTextSkeleton,
   PREVIEW_CARD_SURFACE,
   RichHoverTooltip,
   usePrHoverCards,
-  WordBoundaryTruncatedText,
+  TRANSCRIPT_LINK_CLASS,
+  INLINE_CHIP_CLASS,
+  INLINE_CHIP_ICON_CLASS,
 } from '@canopy/ui-shared/components';
 import {
   GitHubReferencePreviewCard,
@@ -45,8 +45,6 @@ import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useWatchWhileVisible } from './reference-preview-visibility';
 
 const OPEN_DELAY_MS = 250;
-const TITLE_MAX_WORDS = 5;
-const NO_TITLE: ReferenceTitleSlot = { kind: 'none' };
 
 /**
  * Whether the host holds a GitHub credential; `null` on hosts without the
@@ -145,12 +143,11 @@ function GitHubReferencePreviewContent({
 }
 
 /**
- * `[icon] label: Title` once the item resolves (a repository shows its
- * description). While a title is expected, the label and a text-free
- * placeholder reserve its width; a reference that can't resolve, or a
- * disconnected GitHub, keeps its original text. The title stays whole in the
- * DOM for selection and the accessible name; CSS crops it at five words or
- * the width, on a word boundary. Text without a URL keeps its text node.
+ * `[icon] label`: the chip names the item by its short ID (`#12`,
+ * `owner/repo#12`, `owner/repo`) and the hover card carries the title. A raw
+ * URL label becomes the short ID once the item is expected to resolve; a
+ * reference that can't resolve, or a disconnected GitHub, keeps its original
+ * text. Text without a URL keeps its text node.
  */
 function GitHubReferenceLabel({
   target,
@@ -167,57 +164,20 @@ function GitHubReferenceLabel({
   connected: boolean;
   children: ReactNode;
 }): JSX.Element {
-  // The title string, or the shared pending/none slot: a refreshed view with
-  // the same title does not re-render the label.
-  const expected = useLinearPreviewStore((state) => {
-    if (!expandTitle) return null;
-    const next = githubTitleSlot(state.githubViews[githubPreviewKey(target)]);
-    return next.kind === 'title' ? next.title : next;
+  // Only whether the item resolves (or will) matters here, so a refreshed
+  // view does not re-render the label.
+  const resolvable = useLinearPreviewStore((state) => {
+    if (!expandTitle) return false;
+    const view = state.githubViews[githubPreviewKey(target)];
+    if (view?.status === 'ready') return true;
+    const slot = githubTitleSlot(view);
+    // Without a credential nothing will resolve; keep the original text.
+    return slot.kind === 'title' || (slot.kind === 'pending' && connected);
   });
-  const resolved = useLinearPreviewStore(
-    (state) =>
-      expandTitle &&
-      state.githubViews[githubPreviewKey(target)]?.status === 'ready',
-  );
-  // Without a credential no title will come; reserve nothing.
-  const slot =
-    typeof expected !== 'string' && expected?.kind === 'pending' && !connected
-      ? NO_TITLE
-      : expected;
-  const title = typeof slot === 'string' ? slot : null;
-  const pending =
-    slot !== null && typeof slot !== 'string' && slot.kind === 'pending'
-      ? slot
-      : null;
-  const shortened = !bare && (title !== null || pending !== null || resolved);
   return (
     <>
-      <GitHubIcon
-        width={13}
-        height={13}
-        aria-hidden="true"
-        className="mr-0.5 inline-block shrink-0 align-text-bottom"
-      />
-      {shortened ? label : children}
-      {title !== null && (
-        <>
-          {': '}
-          <WordBoundaryTruncatedText
-            text={title}
-            maxWords={TITLE_MAX_WORDS}
-            data-testid="github-reference-title"
-            className="inline-block max-w-[min(40ch,100%)] align-bottom"
-          />
-        </>
-      )}
-      {pending && (
-        // Same reservation as Linear: the margin stands in for `: `.
-        <InlineTextSkeleton
-          active={pending.reading}
-          data-testid="github-reference-title-placeholder"
-          className="ml-2 w-[min(36ch,100%)]"
-        />
-      )}
+      <GitHubIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+      {resolvable && !bare ? label : children}
     </>
   );
 }
@@ -248,7 +208,7 @@ const GeneratedReferenceLink = forwardRef<
       role="link"
       tabIndex={0}
       data-testid="github-reference"
-      className="focus-ring cursor-pointer rounded-sm fg-accent hover:underline"
+      className={INLINE_CHIP_CLASS}
       onClick={openReference}
       onKeyDown={(event) => {
         if (event.key === 'Enter') openReference(event);
@@ -268,7 +228,7 @@ export interface GitHubReferencePreviewProps {
   readonly href?: string;
   readonly mode?: ReferenceEnrichmentMode;
   /**
-   * Replace the text with `[icon] label: title` once resolved; false keeps an
+   * Replace a raw URL label with the short ID once resolved; false keeps an
    * author-written link label. Default: true.
    */
   readonly expandTitle?: boolean;
@@ -277,8 +237,8 @@ export interface GitHubReferencePreviewProps {
 
 /**
  * A GitHub repository, issue or pull request reference in transcript prose:
- * an inline icon, a title resolved while the reference is visible, and a
- * hover/focus preview card. A URL stays an ordinary external link to what was
+ * a chip with an icon and the short ID, read while the reference is visible,
+ * and a hover/focus preview card with the title. A URL stays an ordinary external link to what was
  * written; generated text opens the canonical URL GitHub returns. Hosts
  * without the capability render the text unchanged.
  */
@@ -293,7 +253,12 @@ export function GitHubReferencePreview({
   const supported = useCapabilities().referencePreviews === true;
   if (!supported || mode === 'off') {
     return href ? (
-      <a href={href} target="_blank" rel="noopener noreferrer">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={TRANSCRIPT_LINK_CLASS}
+      >
         {children}
       </a>
     ) : (
@@ -348,7 +313,10 @@ function SupportedGitHubReference({
   );
   const content =
     mode === 'hover' ? (
-      children
+      <>
+        <GitHubIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+        {children}
+      </>
     ) : (
       <GitHubReferenceLabel
         target={stableTarget}
@@ -367,6 +335,7 @@ function SupportedGitHubReference({
       target="_blank"
       rel="noopener noreferrer"
       data-testid="github-reference"
+      className={INLINE_CHIP_CLASS}
     >
       {content}
     </a>

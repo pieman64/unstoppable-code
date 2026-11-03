@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useState, type JSX } from 'react';
 import { useCapabilities } from '@canopy/app-state';
 import {
   AgentVisualFrame,
+  ErrorBanner,
   useAgentVisualHostTheme,
 } from '@canopy/ui-shared/components';
 import { pickAgentVisualHeightHint } from '@canopy/ui-shared/lib';
@@ -182,13 +183,11 @@ function ChatVisualBlockContent({
         </div>
       ) : null}
       {error ? (
-        <p
-          role="alert"
-          data-testid={CHAT_VISUAL_TEST_IDS.errorState}
-          className="text-xs fg-destructive"
-        >
-          Couldn't load this visual. Try again later.
-        </p>
+        <ErrorBanner
+          className=""
+          testId={CHAT_VISUAL_TEST_IDS.errorState}
+          error="Couldn't load this visual. Try again later."
+        />
       ) : null}
       {document !== undefined && document.length === 0 ? (
         <p

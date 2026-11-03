@@ -107,6 +107,7 @@ export function CloudSyncModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={
         <span className="flex items-center gap-2">

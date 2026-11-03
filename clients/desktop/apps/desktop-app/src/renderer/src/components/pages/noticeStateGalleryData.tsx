@@ -485,13 +485,6 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         dismissible: true,
       },
       {
-        id: 'no-billing-source-recovered',
-        title: 'No billing source: credits arrived',
-        intent: 'attention',
-        heading: 'Credits available again',
-        message: 'You can send it now.',
-      },
-      {
         id: 'org-lapsed',
         title: 'Organization plan lapsed',
         intent: 'attention',
@@ -767,7 +760,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
             </span>
           </>
         ),
-        actions: [{ label: 'Copy id' }, { label: 'Retry', variant: 'primary' }],
+        actions: [
+          { label: 'Copy id' },
+          { label: 'Try again', variant: 'primary' },
+        ],
       },
       {
         id: 'chat-state-refreshing',

@@ -11,6 +11,7 @@ jest.mock('@/hooks/useCurrentUiStateReporter', (): object => ({
   useCurrentUiStateReporter: jest.fn(),
 }));
 import { act } from 'react';
+import { brandText } from '@/lib/brand';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   CanopyCloudAccountPublicState,
@@ -817,17 +818,11 @@ it('reopens the catalog setup for the endpoint it chose when that endpoint regis
   });
   await flush((): void => root.render(<McpServersTab />));
   await flush((): void => button('Make available in cloud').click());
-  const endpoint = document.querySelector<HTMLSelectElement>(
-    '[data-testid="mcp-curated-url-option"]',
+  chooseSelectOption(
+    document.querySelector('[data-testid="mcp-curated-url-option"]'),
+    'Europe',
   );
-  if (!endpoint) throw new Error('Missing endpoint choice');
-  await flush((): void => {
-    Object.getOwnPropertyDescriptor(
-      HTMLSelectElement.prototype,
-      'value',
-    )?.set?.call(endpoint, europe);
-    endpoint.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  await flush((): void => undefined);
   await flush((): void => setupDialogConnect().click());
   await flush((): void => undefined);
   await flush((): void => undefined);
@@ -849,10 +844,8 @@ it('reopens the catalog setup for the endpoint it chose when that endpoint regis
       ?.textContent,
   ).toBe(spotifyClientSetup.redirectUri);
   expect(
-    setup?.querySelector<HTMLSelectElement>(
-      '[data-testid="mcp-curated-url-option"]',
-    )?.value,
-  ).toBe(europe);
+    setup?.querySelector('[data-testid="mcp-curated-url-option"]')?.textContent,
+  ).toBe('Europe');
   await fillAccountInput('oauth-client-id', 'my-linear-app');
   await flush((): void => setupDialogConnect().click());
   expect(start).toHaveBeenCalledTimes(2);
@@ -917,17 +910,13 @@ describe('a start the cloud refuses for want of an endpoint', (): void => {
     expect(container.textContent).not.toContain(
       'Choose an endpoint for this server, then sign in again.',
     );
-    const endpoint = document.querySelector<HTMLSelectElement>(
-      '[data-testid="mcp-account-setup"] [data-testid="mcp-curated-url-option"]',
+    chooseSelectOption(
+      document.querySelector(
+        '[data-testid="mcp-account-setup"] [data-testid="mcp-curated-url-option"]',
+      ),
+      'EU',
     );
-    if (!endpoint) throw new Error('Missing endpoint choice');
-    await flush((): void => {
-      Object.getOwnPropertyDescriptor(
-        HTMLSelectElement.prototype,
-        'value',
-      )?.set?.call(endpoint, europe);
-      endpoint.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    await flush((): void => undefined);
     await flush((): void => setupDialogConnect().click());
     expect(start).toHaveBeenCalledTimes(2);
     expect(start).toHaveBeenLastCalledWith({
@@ -1608,7 +1597,8 @@ it('records the device server detail card and its labels, blocking the command a
   if (card === null) throw new Error('Detail card not rendered');
   // The card, its title, and its static labels stay recorded.
   expect(card.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
-  const title = card.querySelector('h2');
+  // The title holds the name, then the server type badge.
+  const title = card.querySelector('h2 .truncate');
   expect(title?.textContent).toBe('Local tools');
   const entries = Array.from(card.querySelectorAll('dd'));
   const command = entries.find(
@@ -1617,7 +1607,9 @@ it('records the device server detail card and its labels, blocking the command a
   // Command args often carry API keys inline, so the value is blocked; its
   // "Command:" label stays recorded.
   expect(command).toBeDefined();
-  expect(command?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
+  expect(
+    command?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)?.textContent,
+  ).toBe('npx local-tools');
   expect(
     command?.previousElementSibling?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`),
   ).toBeNull();
@@ -1746,15 +1738,13 @@ it.each(['oauth', 'url', 'both'] as const)(
       document.querySelector('[data-testid="mcp-account-setup"]'),
     ).not.toBeNull();
     if (kind !== 'oauth') {
-      const endpoint = document.querySelector<HTMLSelectElement>(
+      const endpoint = document.querySelector(
         '[data-testid="mcp-curated-url-option"]',
       );
       if (!endpoint) throw new Error('Missing endpoint selector');
-      expect(endpoint.value).toBe('https://us.example.test/mcp');
-      await flush((): void => {
-        endpoint.value = 'https://eu.example.test/mcp';
-        endpoint.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      expect(endpoint.textContent).toBe('US');
+      chooseSelectOption(endpoint, 'Europe');
+      await flush((): void => undefined);
     }
     if (kind !== 'url') {
       await flush((): void => button('Connect').click());
@@ -2087,14 +2077,11 @@ it.each([
       await fillAccountInput('oauth-client-secret', 'new-secret');
     }
     if (kind !== 'oauth') {
-      const endpoint = document.querySelector<HTMLSelectElement>(
-        '[data-testid="mcp-curated-url-option"]',
+      chooseSelectOption(
+        document.querySelector('[data-testid="mcp-curated-url-option"]'),
+        'Europe',
       );
-      if (!endpoint) throw new Error('Missing endpoint selector');
-      await flush((): void => {
-        endpoint.value = 'https://eu.example.test/mcp';
-        endpoint.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await flush((): void => undefined);
     }
     const setup = document.querySelector('[data-testid="mcp-account-setup"]');
     const submit = setup?.querySelector<HTMLButtonElement>('button:last-child');
@@ -2223,16 +2210,43 @@ function setValue(element: HTMLInputElement, value: string): void {
   element.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+/**
+ * The shared `Select` is a Canopy-drawn listbox, not a native `<select>`:
+ * open its combobox trigger and press the option with `label`.
+ */
+function chooseSelectOption(trigger: Element | null, label: string): void {
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`Missing select for ${label}`);
+  }
+  act(() => trigger.click());
+  const listId = trigger.getAttribute('aria-controls');
+  const listbox = listId ? document.getElementById(listId) : null;
+  const option = Array.from(
+    listbox?.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
+  ).find((row) => row.textContent === label);
+  if (!option) throw new Error(`Missing option ${label}`);
+  act(() => option.click());
+}
+
 function input(selector: string): HTMLInputElement {
   const found = document.querySelector<HTMLInputElement>(selector);
   if (!found) throw new Error(`Missing input: ${selector}`);
   return found;
 }
 
+const HANDLER_VALUES: Record<string, string> = {
+  'Use default': '',
+  [`${brandText.appName} proxy`]: 'canopy',
+  'Agent provider': 'provider',
+};
+
 function handlerChoice(): string | undefined {
-  return document.querySelector<HTMLSelectElement>(
+  const label = document.querySelector(
     '[data-testid="mcp-server-auth-handler"]',
-  )?.value;
+  )?.textContent;
+  return label === null || label === undefined
+    ? undefined
+    : (HANDLER_VALUES[label] ?? label);
 }
 
 function scopeChoice(): string | undefined {

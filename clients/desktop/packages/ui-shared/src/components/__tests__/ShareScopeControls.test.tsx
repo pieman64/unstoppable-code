@@ -132,7 +132,8 @@ describe('SharedTargetPicker', () => {
     const list = container.querySelector('ul');
     const search = container.querySelector('input[type="search"]');
     expect(list).not.toBeNull();
-    expect(search?.className).toContain('bg-base');
+    // The search is the shared field: its box draws the field edge.
+    expect(search?.closest('[class*="shadow-field"]')).not.toBeNull();
     const listClass = list?.className ?? '';
     expect(listClass).not.toContain('bg-base');
     expect(listClass).not.toContain('border');

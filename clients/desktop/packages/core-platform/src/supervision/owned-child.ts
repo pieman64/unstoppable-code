@@ -157,7 +157,7 @@ const WIN32_FULLY_QUALIFIED =
   /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![?.][\\/])[^\\/]+[\\/]+[^\\/])/;
 /** Hosts with an owned-child backend; the launcher channel is Darwin's alone. */
 const SPAWN_HOSTS: ReadonlySet<PlatformOperatingSystem> =
-  new Set<PlatformOperatingSystem>(['darwin', 'win32']);
+  new Set<PlatformOperatingSystem>(['darwin', 'linux', 'win32']);
 /** Package-internal: a drive/UNC path on win32, an absolute path on POSIX. */
 export const fullyQualified = (
   os: PlatformOperatingSystem,
@@ -1092,12 +1092,12 @@ function createOwnedChildHost(options: {
 }
 
 /**
- * Owned daemon roots for startup rollback, on Darwin (a process group held
- * by its unreaped root) and Windows (a kill-on-close job held with the root's
- * process handle). Linux rejects every spawn with `capability_unavailable`, and
- * so does `spawnWithChannel` off Darwin. Executables and the addon path must
- * be fully qualified for `os`; Windows refuses `stdin`. The addon loads on
- * first spawn.
+ * Owned daemon roots for startup rollback, on Darwin and Linux (a process
+ * group held by its unreaped root) and Windows (a kill-on-close job held with
+ * the root's process handle). `spawnWithChannel` off Darwin, and any other
+ * host, reject with `capability_unavailable`. Executables and the addon path
+ * must be fully qualified for `os`; Windows refuses `stdin`. The addon loads
+ * on first spawn.
  */
 export function createOwnedChildServices(options: {
   readonly os: PlatformOperatingSystem;

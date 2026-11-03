@@ -110,7 +110,7 @@ import {
   W5RevisionConflictError,
 } from '../w5-commit-log-file-store';
 import { ownsW5RepositoryLock } from '../w5-repository-locks';
-import { startW5DaemonRecordHarness } from './fixtures/w5-daemon-record-harness';
+import { startW5DaemonRecordHarness } from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-daemon-record-harness';
 import { installW5StoreSide, W5_STORE_SIDES } from './fixtures/w5-store-sides';
 import {
   createW5DaemonRecordStore,

@@ -16,6 +16,7 @@ import {
   createCoreScriptDefinitionHandlers,
   type CoreScriptDefinitionsHost,
 } from '@canopy/core-runtime/node/script/core-script-definitions';
+import { ScriptHookSettingsRefusedError } from '@canopy/core-runtime/node/w5/workspace-metadata/settings';
 import { PortalServiceError } from '../../services/portal-service-error';
 import {
   readScriptSourceInfo,
@@ -42,6 +43,7 @@ function dispatcher(
   const handlers = createCoreScriptDefinitionHandlers({
     resolve: () => Promise.resolve({}),
     readLocal: () => Promise.resolve(undefined),
+    localRevision: () => Promise.resolve(undefined),
     inspect: () => Promise.resolve({ resolved: {}, layers: [] }),
     change: () => Promise.resolve(),
     errorCode: () => undefined,
@@ -63,6 +65,20 @@ function dispatcher(
 }
 
 describe('readWorkspaceScriptCommands', () => {
+  it('keeps answering an absent or unreadable manifest with no scripts', async () => {
+    const readLocal = jest.fn(() =>
+      Promise.reject(
+        new ScriptHookSettingsRefusedError(
+          'configuration-unavailable',
+          'Settings could not be read.',
+        ),
+      ),
+    );
+    await expect(
+      readWorkspaceScriptCommands(dispatcher({ readLocal }), CALLER, 'ws-1'),
+    ).resolves.toEqual({});
+  });
+
   it('flattens string and definition settings to commands and drops disables', async () => {
     const readLocal = jest.fn(() =>
       Promise.resolve({

@@ -1,5 +1,5 @@
 import type { JSX, RefObject } from 'react';
-import { Button, DialogModal } from '@canopy/ui-shared/components';
+import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   removePublicLinkMessage,
   type RemovePublicLinkRemainingAudience,
@@ -56,6 +56,7 @@ export function RemovePublicLinkConfirmDialog({
   const p = testIdPrefix;
   return (
     <DialogModal
+      inset="flush"
       onClose={busy ? (): void => {} : onCancel}
       title={TITLE}
       maxWidth="sm"
@@ -65,21 +66,17 @@ export function RemovePublicLinkConfirmDialog({
       trapFocus={trapFocus}
       restoreFocusRef={restoreFocusRef}
     >
-      <div className="px-5 py-4">
+      <div className="px-6 py-4">
         <p className="text-s fg-secondary">
           {removePublicLinkMessage(remainingAudience)}
         </p>
-        {errorMessage && (
-          <p
-            role="alert"
-            data-testid={`${p}-remove-public-link-error`}
-            className="mt-3 text-s fg-destructive"
-          >
-            {errorMessage}
-          </p>
-        )}
+        <ErrorBanner
+          className="mt-3"
+          error={errorMessage}
+          testId={`${p}-remove-public-link-error`}
+        />
       </div>
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         <Button
           type="button"
           variant="secondary"

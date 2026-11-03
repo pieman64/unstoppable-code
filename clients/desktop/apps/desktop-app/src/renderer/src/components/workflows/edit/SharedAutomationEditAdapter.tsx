@@ -8,7 +8,9 @@ import {
   resolveWorkflowEditPlan,
 } from '@canopy/ui-app/workflows';
 import {
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  EmptyState,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
@@ -117,7 +119,7 @@ export function SharedAutomationEditAdapter({
           data-testid="automation-source-error"
           actions={
             <NoticeButton onClick={(): void => setReloadKey((n) => n + 1)}>
-              Retry
+              Try again
             </NoticeButton>
           }
         >
@@ -126,14 +128,14 @@ export function SharedAutomationEditAdapter({
       );
     }
     if (id === 'runs') {
-      return (
-        <p className="text-s fg-tertiary" data-testid="workflow-edit-no-runs">
-          No runs yet
-        </p>
-      );
+      return <EmptyState testId="workflow-edit-no-runs" title="No runs yet" />;
     }
     if (detail === null) {
-      return <LoadingPlaceholder label="Loading automation…" space="section" />;
+      return (
+        <DelayedLoadingPlaceholder slowNote="Still loading automation…">
+          <CenteredLoadingSpinner className="my-8" />
+        </DelayedLoadingPlaceholder>
+      );
     }
     if (id === 'trigger') {
       return (

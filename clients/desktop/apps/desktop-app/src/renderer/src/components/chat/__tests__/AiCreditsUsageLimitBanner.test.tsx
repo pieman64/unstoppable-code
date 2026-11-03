@@ -36,6 +36,10 @@ import {
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  resetAiCreditsHandoffsForTests,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
 
 const mockHostedSettingsOpenable = jest.fn<boolean, []>();
 jest.mock('@/components/settings/hosted/hosted-settings-availability', () => ({
@@ -115,6 +119,14 @@ async function flushAsyncEffects(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+// The retained checkout outlives a render (CAN-5534); never leak it across cases.
+beforeEach(() => {
+  resetAiCreditsHandoffsForTests();
+});
+afterEach(() => {
+  resetAiCreditsHandoffsForTests();
+});
 
 describe('AiCreditsUsageLimitBanner (native coverage branches)', () => {
   const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
@@ -1068,10 +1080,11 @@ describe('AiCreditsUsageLimitBanner (native coverage branches)', () => {
     loadNativeAiCreditsAvailability.mockResolvedValue(
       native({ personalEligible: true }),
     );
+    // Past the 60s re-probe throttle, inside the hand-off's lifetime.
     const realNow = Date.now();
     const nowSpy = jest
       .spyOn(Date, 'now')
-      .mockReturnValue(realNow + 10 * 60_000);
+      .mockReturnValue(realNow + 2 * 60_000);
     try {
       await act(async () => {
         window.dispatchEvent(new Event('focus'));
@@ -1265,7 +1278,9 @@ describe('AiCreditsUsageLimitBanner (native coverage branches)', () => {
       ).not.toBeNull();
     });
 
-    it('does not restore old feedback when its CTA disappears and returns', async () => {
+    // CAN-5534: the hand-off is retained for the purchase scope, so hiding
+    // the banner no longer cancels it.
+    it('keeps the hand-off and its feedback when the banner hides and returns', async () => {
       await handOffAndCheck();
       await renderBanner(
         <AiCreditsUsageLimitBanner
@@ -1277,15 +1292,21 @@ describe('AiCreditsUsageLimitBanner (native coverage branches)', () => {
       expect(feedback()).toBeNull();
       await renderBanner(<Harness />);
       await settle();
-      expect(feedback()).toBeNull();
-      expect(query('chat-input-usage-limit-view-plans')).not.toBeNull();
+      expect(query('chat-input-usage-limit-banner')?.textContent).toContain(
+        UNCOVERED_COPY,
+      );
+      expect(query('chat-input-usage-limit-view-plans')).toBeNull();
+      expect(
+        query('chat-input-usage-limit-view-plans-check-again'),
+      ).not.toBeNull();
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
     });
 
-    it('drops the feedback when the chat owner changes', async () => {
+    it('keeps the hand-off for its own scope when the worktree changes, and restores it on return', async () => {
       await handOffAndCheck();
       expect(feedback()).not.toBeNull();
 
-      const other: ChatBannerTarget = { ...TARGET, chatId: 'other-chat' };
+      const other: ChatBannerTarget = { ...TARGET, worktreeId: 'other-wt' };
       useAiCreditsBannerStore
         .getState()
         .setUsageLimit(other, { provider: 'claude' });
@@ -1297,9 +1318,115 @@ describe('AiCreditsUsageLimitBanner (native coverage branches)', () => {
         />,
       );
       await settle();
-
+      // Another worktree is another purchase scope.
       expect(feedback()).toBeNull();
+      expect(query('chat-input-usage-limit-view-plans')).not.toBeNull();
+
+      await renderBanner(<Harness />);
+      await settle();
+      expect(query('chat-input-usage-limit-banner')?.textContent).toContain(
+        UNCOVERED_COPY,
+      );
+      expect(
+        query('chat-input-usage-limit-view-plans-check-again'),
+      ).not.toBeNull();
       useAiCreditsBannerStore.getState().clearForChat(other);
+    });
+
+    it('shows the return controls in a sibling chat instead of a second purchase', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(native({}));
+      await renderBanner(<Harness />);
+      await press('chat-input-usage-limit-view-plans');
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+
+      const sibling: ChatBannerTarget = { ...TARGET, chatId: 'sibling' };
+      useAiCreditsBannerStore
+        .getState()
+        .setUsageLimit(sibling, { provider: 'claude' });
+      await renderBanner(
+        <AiCreditsUsageLimitBanner
+          target={sibling}
+          modelRoutability="routable"
+          onUseJustThisTime={() => {}}
+        />,
+      );
+      await settle();
+
+      expect(query('chat-input-usage-limit-banner')?.textContent).toContain(
+        WAITING_COPY,
+      );
+      expect(query('chat-input-usage-limit-view-plans')).toBeNull();
+      expect(
+        query('chat-input-usage-limit-view-plans-check-again'),
+      ).not.toBeNull();
+      const reopen = query('chat-input-usage-limit-reopen-billing');
+      expect(reopen).not.toBeNull();
+      expect(reopen?.hasAttribute('disabled')).toBe(false);
+
+      await renderBanner(<Harness />);
+      await settle();
+      expect(query('chat-input-usage-limit-banner')?.textContent).toContain(
+        WAITING_COPY,
+      );
+      expect(query('chat-input-usage-limit-view-plans')).toBeNull();
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      useAiCreditsBannerStore.getState().clearForChat(sibling);
+    });
+
+    it('ends the hand-off only from the notice that started it', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(native({}));
+      await renderBanner(<Harness />);
+      await press('chat-input-usage-limit-view-plans');
+
+      const sibling: ChatBannerTarget = { ...TARGET, chatId: 'sibling' };
+      useAiCreditsBannerStore
+        .getState()
+        .setUsageLimit(sibling, { provider: 'claude' });
+      await renderBanner(
+        <AiCreditsUsageLimitBanner
+          target={sibling}
+          modelRoutability="routable"
+        />,
+      );
+      await settle();
+      await press('chat-input-usage-limit-dismiss');
+      expect(
+        Object.keys(useAiCreditsHandoffStore.getState().records),
+      ).toHaveLength(1);
+
+      await renderBanner(<Harness />);
+      await settle();
+      expect(query('chat-input-usage-limit-banner')?.textContent).toContain(
+        WAITING_COPY,
+      );
+      await press('chat-input-usage-limit-dismiss');
+      expect(useAiCreditsHandoffStore.getState().records).toEqual({});
+      useAiCreditsBannerStore.getState().clearForChat(sibling);
+    });
+
+    it('finds credits bought while away on return, without Check again', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(native({}));
+      await renderBanner(<Harness />);
+      await press('chat-input-usage-limit-view-plans');
+      await renderBanner(
+        <AiCreditsUsageLimitBanner
+          modelRoutability="routable"
+          target={TARGET}
+          aiCreditsCardVisible
+        />,
+      );
+
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      await renderBanner(<Harness />);
+      await settle();
+
+      expect(useAiCreditsHandoffStore.getState().records).toEqual({});
+      expect(query('chat-input-usage-limit-view-plans')).toBeNull();
+      expect(
+        query('chat-input-usage-limit-ai-credits-always-on-quota'),
+      ).not.toBeNull();
     });
   });
 

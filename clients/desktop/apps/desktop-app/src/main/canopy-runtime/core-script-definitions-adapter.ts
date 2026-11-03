@@ -20,6 +20,7 @@ function loadHost(): Promise<CoreScriptDefinitionsHost> {
 export const desktopScriptDefinitionsHost: CoreScriptDefinitionsHost = {
   resolve: async (target) => (await loadHost()).resolve(target),
   readLocal: async (target) => (await loadHost()).readLocal(target),
+  localRevision: async (target) => (await loadHost()).localRevision(target),
   inspect: async (target, name) => (await loadHost()).inspect(target, name),
   change: async (input) => (await loadHost()).change(input),
   errorCode: (error) => loadedHost?.errorCode(error),

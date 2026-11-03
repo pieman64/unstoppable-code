@@ -1,10 +1,12 @@
 import { type JSX, useCallback, useRef, useState } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import {
+  ActionMenuRowStyle,
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuLabel,
+  FloatingMenu,
 } from '@canopy/ui-shared';
 import {
   EyeOffIcon,
@@ -12,7 +14,6 @@ import {
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
-import { AnchoredMenu } from '@/components/shared/AnchoredMenu';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
 import { useShareRunAction } from '@/hooks/useShareRunAction';
 import { useActivityStore } from '@/stores/activityStore';
@@ -284,52 +285,54 @@ export function ShareSessionControl({
           signals. The count still reaches this control's manage menu through
           the "Comments (N)" item below. */}
       {isShared && (
-        <AnchoredMenu
+        <FloatingMenu
           open={manageOpen}
-          onClose={(): void => {
-            setManageOpen(false);
-            buttonRef.current?.focus();
-          }}
+          onOpenChange={setManageOpen}
           anchorRef={buttonRef}
-          placement="above-start"
-          portal
-          testId={`${resolvedTestId}-manage`}
+          placement="top-left"
+          interaction="menu"
+          // Each row closes the menu itself; Unshare keeps it open on
+          // "Unsharing…" until the request settles.
+          closeOnSelect={false}
+          data-testid={`${resolvedTestId}-manage`}
           className="w-56"
         >
-          <DropdownMenuLabel>{manageHeader}</DropdownMenuLabel>
-          <DropdownMenuDivider />
-          <DropdownMenuItem
-            onClick={(event): void =>
-              openShareModal(event.currentTarget.ownerDocument)
-            }
-          >
-            <DropdownMenuItemIcon>
-              <ShareIcon />
-            </DropdownMenuItemIcon>
-            {RESHARE_LABEL}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={openComments}
-            data-testid={`${resolvedTestId}-comments`}
-          >
-            <DropdownMenuItemIcon>
-              <MessageIcon />
-            </DropdownMenuItemIcon>
-            {commentsLabel(unreadComments)}
-          </DropdownMenuItem>
-          <DropdownMenuDivider />
-          <DropdownMenuItem
-            disabled={unsharing}
-            onClick={handleUnshare}
-            data-testid={`${resolvedTestId}-unshare`}
-            tone="destructive"
-          >
-            <DropdownMenuItemIcon>
-              <EyeOffIcon />
-            </DropdownMenuItemIcon>
-            {unsharing ? UNSHARING_LABEL : UNSHARE_LABEL}
-          </DropdownMenuItem>
-        </AnchoredMenu>
+          <ActionMenuRowStyle>
+            <DropdownMenuLabel>{manageHeader}</DropdownMenuLabel>
+            <DropdownMenuDivider />
+            <DropdownMenuItem
+              onClick={(event): void =>
+                openShareModal(event.currentTarget.ownerDocument)
+              }
+            >
+              <DropdownMenuItemIcon>
+                <ShareIcon />
+              </DropdownMenuItemIcon>
+              {RESHARE_LABEL}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={openComments}
+              data-testid={`${resolvedTestId}-comments`}
+            >
+              <DropdownMenuItemIcon>
+                <MessageIcon />
+              </DropdownMenuItemIcon>
+              {commentsLabel(unreadComments)}
+            </DropdownMenuItem>
+            <DropdownMenuDivider />
+            <DropdownMenuItem
+              disabled={unsharing}
+              onClick={handleUnshare}
+              data-testid={`${resolvedTestId}-unshare`}
+              tone="destructive"
+            >
+              <DropdownMenuItemIcon>
+                <EyeOffIcon />
+              </DropdownMenuItemIcon>
+              {unsharing ? UNSHARING_LABEL : UNSHARE_LABEL}
+            </DropdownMenuItem>
+          </ActionMenuRowStyle>
+        </FloatingMenu>
       )}
 
       {modal}

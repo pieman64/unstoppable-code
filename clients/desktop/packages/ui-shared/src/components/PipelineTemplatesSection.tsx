@@ -8,6 +8,8 @@ import {
 } from './CuratedPipelineCatalog';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
+import { Notice, NoticeButton } from './Notice';
+import { TRY_AGAIN_LABEL } from './useRetry';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
 
 export interface PipelineTemplatesSectionProps {
@@ -20,20 +22,21 @@ function CatalogStatus({
   catalog: CuratedPipelineCatalogProps;
 }): JSX.Element {
   return catalog.error ? (
-    <div className="flex flex-wrap items-center gap-3">
-      <p role="alert" className="break-words text-sm fg-destructive">
-        {catalog.error}
-      </p>
-      <Button
-        variant="ghost"
-        size="compact"
-        disabled={catalog.loading}
-        onClick={catalog.onRefresh}
-        data-testid="pipeline-templates-retry"
-      >
-        Try again
-      </Button>
-    </div>
+    <Notice
+      intent="destructive"
+      liveRegionScope="content"
+      actions={
+        <NoticeButton
+          disabled={catalog.loading}
+          onClick={catalog.onRefresh}
+          data-testid="pipeline-templates-retry"
+        >
+          {TRY_AGAIN_LABEL}
+        </NoticeButton>
+      }
+    >
+      <span className="break-words">{catalog.error}</span>
+    </Notice>
   ) : (
     <p role="status" className="text-sm fg-secondary">
       Loading workflow templates…
@@ -169,7 +172,7 @@ export function PipelineTemplatesSection({
           restoreFocusRef={viewAllRef}
           dataTestId="pipeline-templates-dialog"
         >
-          <div className="px-5 pb-5">
+          <div className="">
             <CuratedPipelineCatalog {...catalog} />
           </div>
         </DialogModal>

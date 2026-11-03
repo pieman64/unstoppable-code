@@ -243,6 +243,26 @@ export interface BrandWebMarketing {
   footerLinkGroups: BrandWebMarketingLinkGroup[];
   footerUtilityLinks: BrandWebMarketingLink[];
   socialLinks: BrandWebMarketingLink[];
+  /**
+   * Public source repository for the brand's client apps. When declared, the
+   * marketing surface links to it and claims the apps are open source; when
+   * omitted, every brand-gated open-source surface is hidden. The FAQ answer
+   * is part of the brand-owned marketing copy and is not gated on this field
+   * (see docs/branding.md).
+   *
+   * OPTIONAL, so existing schema-v4 marketing packs stay valid without a
+   * {@link BrandSchemaVersion} bump, for the same reason given on
+   * {@link BrandWebMarketing.copyrightHolder}.
+   */
+  sourceRepository?: BrandSourceRepository;
+}
+
+/** Public client source repository declared by a marketing brand. */
+export interface BrandSourceRepository {
+  /** https URL of the public client source repository. */
+  url: string;
+  /** SPDX license identifier of the published client source, e.g. `MIT`. */
+  license: string;
 }
 
 export interface BrandLinuxPackaging {

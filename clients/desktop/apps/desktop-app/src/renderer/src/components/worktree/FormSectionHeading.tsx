@@ -4,8 +4,11 @@ interface FormSectionHeadingProps {
   readonly title: ReactNode;
   /** Optional one-line explanation directly under the heading. */
   readonly subtitle?: ReactNode;
-  /** Renders the title as the `<label>` of this control instead of a heading. */
-  readonly htmlFor?: string;
+  /**
+   * Id for the heading, so the control it names can point at it with
+   * `aria-labelledby`.
+   */
+  readonly id?: string;
 }
 
 /**
@@ -18,18 +21,13 @@ interface FormSectionHeadingProps {
 export function FormSectionHeading({
   title,
   subtitle,
-  htmlFor,
+  id,
 }: FormSectionHeadingProps): JSX.Element {
-  const titleClassName = 'block text-s font-semibold fg-primary';
   return (
     <div className="mb-2">
-      {htmlFor === undefined ? (
-        <h3 className={titleClassName}>{title}</h3>
-      ) : (
-        <label htmlFor={htmlFor} className={titleClassName}>
-          {title}
-        </label>
-      )}
+      <h3 id={id} className="block text-s font-semibold fg-primary">
+        {title}
+      </h3>
       {subtitle !== undefined && (
         <p className="mt-0.5 text-xs fg-secondary">{subtitle}</p>
       )}

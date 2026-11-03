@@ -68,7 +68,7 @@ export function coworkProjectMenuItems({
     items.push({
       key: 'move-to-organization',
       label: 'Move to org…',
-      icon: <BuildingIcon />,
+      icon: <BuildingIcon size="xl" />,
       onSelect: onMoveToOrganization,
       testId: 'workspace-move-to-organization-menu-item',
     });

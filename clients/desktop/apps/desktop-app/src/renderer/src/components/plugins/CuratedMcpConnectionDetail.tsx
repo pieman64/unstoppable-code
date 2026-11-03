@@ -33,6 +33,7 @@ import {
 import {
   DetailPageActions,
   PluginConfigurationButton,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { McpWorkspaceDefaultsSection } from '@canopy/ui-app';
 import {
@@ -345,13 +346,11 @@ function FoldedPluginStatus({
     );
   if (pluginInstall.status === 'error' && pluginInstall.message)
     return (
-      <p
-        className="text-xs fg-destructive"
-        role="alert"
-        data-testid="mcp-browse-detail-skills-error"
-      >
-        {pluginInstall.message}
-      </p>
+      <ErrorBanner
+        className=""
+        error={pluginInstall.message}
+        testId="mcp-browse-detail-skills-error"
+      />
     );
   return null;
 }

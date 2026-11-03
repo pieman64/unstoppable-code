@@ -1537,7 +1537,7 @@ describe('ShareResourceDialog', () => {
       .mockResolvedValueOnce({
         status: 'blocked',
         body: <p>The existing share could not be loaded.</p>,
-        action: { label: 'Retry', retry: true },
+        action: { label: 'Try again', retry: true },
       })
       .mockResolvedValueOnce({ status: 'ready' });
     renderDialog({
@@ -1587,7 +1587,7 @@ describe('ShareResourceDialog', () => {
     expect(
       document.querySelector('[data-testid="share-skill-retry-public"]')
         ?.textContent,
-    ).toBe('Retry public link');
+    ).toBe('Try the public link again');
 
     click('[data-testid="share-skill-retry-public"]');
     await settle();

@@ -77,6 +77,7 @@ export function PaymentMethodModal({
 }: PaymentMethodModalProps): JSX.Element {
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       dataTestId={dataTestId}
@@ -155,12 +156,12 @@ export function PaymentMethodCapture({
   return (
     <>
       {status === 'loading' && (
-        <p className="px-5 pb-5 pt-4 text-s fg-secondary">
+        <p className="px-6 pb-6 pt-4 text-s fg-secondary">
           Loading payment form…
         </p>
       )}
       {status === 'error' && (
-        <div className="px-5 pb-5 pt-4">
+        <div className="px-6 pb-6 pt-4">
           <ErrorBanner error={error} className="" />
         </div>
       )}
@@ -257,11 +258,11 @@ function PaymentForm({
   // region — not the whole modal — is what scrolls.
   return (
     <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 pb-5 pt-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6 pt-4">
         <PaymentElement onChange={handleElementChange} />
         <ErrorBanner error={error} className="" />
       </div>
-      <div className="flex shrink-0 items-center gap-2 border-t px-5 py-4">
+      <div className="flex shrink-0 items-center gap-2 border-t px-6 py-4">
         <Button
           type="submit"
           variant="primary"

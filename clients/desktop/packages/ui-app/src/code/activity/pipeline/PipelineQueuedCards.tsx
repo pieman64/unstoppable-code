@@ -3,6 +3,7 @@ import { Button } from '@canopy/ui-shared/components';
 import { HookIcon } from '@canopy/ui-shared/icons';
 import { formatTimingTimestamp } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { StatusLabel } from '@canopy/ui-shared/components';
 
 export interface PipelineHookTriggerSource {
   readonly kind: 'hook';
@@ -132,8 +133,10 @@ export function FailedQueuedHookPipelineCard({
           </span>
           <HookTriggerBadge triggerSource={entry.trigger_source} />
         </div>
-        <div className="truncate text-2xs fg-destructive" title={entry.error}>
-          Queue failed: {entry.error}
+        <div className="truncate">
+          <StatusLabel size="2xs" title={entry.error}>
+            Queue failed: {entry.error}
+          </StatusLabel>
         </div>
       </div>
       <Button
@@ -190,8 +193,10 @@ export function FailedPendingExecutionCard({
         <div className="truncate text-s font-medium fg-primary">
           {entry.pipelineName}
         </div>
-        <div className="truncate text-2xs fg-destructive" title={entry.error}>
-          Queue failed: {entry.error}
+        <div className="truncate">
+          <StatusLabel size="2xs" title={entry.error}>
+            Queue failed: {entry.error}
+          </StatusLabel>
         </div>
       </div>
       <Button

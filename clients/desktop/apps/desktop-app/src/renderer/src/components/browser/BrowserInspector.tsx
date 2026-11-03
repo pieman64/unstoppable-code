@@ -3,7 +3,7 @@ import {
   useBrowserStore,
   type BrowserInspectorTabId,
 } from '@/stores/browserStore';
-import { HeaderActionButton } from '@canopy/ui-shared/components';
+import { HeaderActionButton, TabBar } from '@canopy/ui-shared/components';
 import { CloseMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useEffect, useRef, type JSX } from 'react';
 import { BrowserConsolePanel } from './BrowserConsolePanel';
@@ -39,12 +39,12 @@ export function BrowserInspector({
   const acknowledgeNetworkFailures = useBrowserStore(
     (s) => s.acknowledgeNetworkFailures,
   );
-  const selectedTabRef = useRef<HTMLButtonElement | null>(null);
+  const tabRowRef = useRef<HTMLDivElement | null>(null);
 
   // The tab row scrolls when the column is too narrow for every label; keep
   // the selected tab in view, including one opened from the browser bar.
   useEffect(() => {
-    const tab = selectedTabRef.current;
+    const tab = tabRowRef.current?.querySelector('[aria-selected="true"]');
     if (tab && typeof tab.scrollIntoView === 'function') {
       tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
@@ -63,38 +63,26 @@ export function BrowserInspector({
     browserId,
   ]);
 
-  const renderTabList = (className: string): JSX.Element => (
-    <div role="tablist" aria-label="Browser details" className={className}>
-      {TABS.map((tab) => (
-        <button
-          key={tab.id}
-          type="button"
-          role="tab"
-          data-testid={`browser-inspector-tab-${tab.id}`}
-          ref={activeTab === tab.id ? selectedTabRef : undefined}
-          aria-selected={activeTab === tab.id}
-          onClick={(): void => setInspectorTab(browserId, tab.id)}
-          className={`canopy-tab-trigger shrink-0 whitespace-nowrap px-2.5 py-1 text-2xs font-medium transition-colors ${
-            activeTab === tab.id
-              ? 'fg-primary'
-              : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          {tab.label}
-        </button>
-      ))}
-    </div>
-  );
-
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col border-l bg-card/40">
       {
         // Early access: the tabs and, at the row's end, a way to close the
         // details.
         <div className="flex min-w-0 items-center">
-          {renderTabList(
-            'canopy-tab-list flex min-w-0 flex-1 items-center overflow-x-auto px-1',
-          )}
+          <div ref={tabRowRef} className="min-w-0 flex-1">
+            <TabBar
+              items={TABS.map((tab) => ({
+                id: tab.id,
+                label: tab.label,
+                dataTestId: `browser-inspector-tab-${tab.id}`,
+              }))}
+              value={activeTab}
+              onChange={(next): void => setInspectorTab(browserId, next)}
+              label="Browser details"
+              density="compact"
+              scrollable
+            />
+          </div>
           <HeaderActionButton
             iconOnly
             tone="neutral"

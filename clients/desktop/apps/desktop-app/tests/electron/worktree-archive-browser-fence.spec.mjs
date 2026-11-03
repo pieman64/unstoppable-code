@@ -8,7 +8,11 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { chatPanelLocator } from './panelHarness.mjs';
 import { seedArchiveActivityFixture } from './seeders/archiveActivityFixture.mjs';
 import { seedBrowserProfileState } from './seeders/browser-profile-state.mjs';
@@ -93,6 +97,7 @@ test('a crashed deletion fences only its own browser profile and never blocks wo
         { timeout: 60_000 },
       )
       .toBe(true);
+    await captureDaemonDryRunEvidence(first.electronApp);
     const mainPid = await first.electronApp.evaluate(() => process.pid);
     process.kill(mainPid, 'SIGKILL');
   } finally {

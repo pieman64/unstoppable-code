@@ -1,7 +1,6 @@
 import type { QueuedChatMessage } from '@/stores/chatStore';
 import type { ScheduledQueuedMessage } from '@/lib/worktreeSessionPromptAutomations';
 import type { DisplayMessage } from '../chat/types';
-import type { QueuedMessageSetupWait } from '@canopy/ui-shared/components';
 
 /**
  * Fixture data for the dev-only Message Bubble States gallery page. Every
@@ -25,8 +24,6 @@ export interface QueuedGalleryState {
   title: string;
   description: string;
   message: QueuedChatMessage;
-  /** The setup wait shown, read at {@link GALLERY_FIXED_NOW}. */
-  setupWait?: QueuedMessageSetupWait;
   canForce?: boolean;
   scheduled?: boolean;
   /** The row offers Steer as well as Interrupt. */
@@ -208,7 +205,7 @@ export const QUEUED_BUBBLE_STATES: QueuedGalleryState[] = [
     id: 'queued-background',
     title: 'Still queued with no turn running',
     description:
-      'The turn has ended and only background agents are working, so there is nothing to steer or interrupt. Retry sends the message now.',
+      'The turn has ended and only background agents are working, so there is nothing to steer or interrupt. Try again sends the message now.',
     message: {
       text: 'Then summarize what the agents found.',
       hostQueueEntryId: 'demo-host-queue-entry-background',
@@ -216,32 +213,6 @@ export const QUEUED_BUBBLE_STATES: QueuedGalleryState[] = [
       enqueuedAtMs: NOW,
     },
     canForce: true,
-  },
-  {
-    id: 'queued-setup',
-    title: 'Queued for setup, first time',
-    description:
-      "The chat's copy of the project is still being set up and this project has no earlier setup to estimate from: the setup sentence and the promise that the message sends by itself, then a spinner with the elapsed time, then the message quoted under a left rule.",
-    message: {
-      text: 'Start by mapping the existing coverage.',
-      enqueuedAtMs: NOW - 12_000,
-    },
-    setupWait: { projectName: 'canopy', startedAtMs: NOW - 12_000 },
-  },
-  {
-    id: 'queued-setup-estimate',
-    title: 'Queued for setup, with an estimate',
-    description:
-      'An earlier setup of the same project finished, so the clock on its own row under the setup sentence counts down an estimate, rounded up to five seconds, until it runs out. The message stays quoted under a left rule.',
-    message: {
-      text: 'Start by mapping the existing coverage.',
-      enqueuedAtMs: NOW - 10_000,
-    },
-    setupWait: {
-      projectName: 'canopy',
-      startedAtMs: NOW - 10_000,
-      estimateMs: 25_000,
-    },
   },
   {
     id: 'queued-hook',
@@ -260,7 +231,7 @@ export const QUEUED_BUBBLE_STATES: QueuedGalleryState[] = [
     id: 'queued-retry',
     title: 'Kept after a failed launch',
     description:
-      'The Claude Code terminal did not start, so the prompt stays queued on this device. Retry sends it again.',
+      'The Claude Code terminal did not start, so the prompt stays queued on this device. Try again resends it.',
     message: {
       text: 'Rerun the migration check.',
       enqueuedAtMs: NOW,

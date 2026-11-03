@@ -1,5 +1,5 @@
-import { Button } from '@canopy/ui-shared/components';
-import { type JSX, useEffect, useState } from 'react';
+import { Button, DialogModal } from '@canopy/ui-shared/components';
+import { type JSX, useState } from 'react';
 import type { ShareablePluginRef } from '@canopy/desktop-shared/plugin-refs';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import {
@@ -9,13 +9,11 @@ import {
 } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { ShareablePluginSelector } from '../shared/ShareablePluginSelector';
 import { PluginSelector } from '../shared/PluginSelector';
-import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 interface BasePluginSelectorModalProps {
   onClose: () => void;
   title?: string;
   helperText?: string;
-  overlayClassName?: string;
   ownerDocument?: Document;
 }
 
@@ -51,7 +49,6 @@ export function HookChatPluginSelectorModal(
     onClose,
     title = 'Select hook chat plugins',
     helperText = HOOK_HELPER_COPY,
-    overlayClassName = 'z-modal',
     ownerDocument,
   } = props;
   const fullMode = props.mode === 'full';
@@ -68,97 +65,69 @@ export function HookChatPluginSelectorModal(
     ? countPluginSelections(fullSelections)
     : portableSelections.length;
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        onClose();
-      }
-    }
-    const modalDocument = ownerDocument ?? document;
-    modalDocument.addEventListener('keydown', onKeyDown);
-    return (): void => modalDocument.removeEventListener('keydown', onKeyDown);
-  }, [onClose, ownerDocument]);
-
   return (
-    <div
-      className={`fixed inset-0 flex items-center justify-center bg-overlay-scrim p-4 ${overlayClassName}`}
-    >
-      {/* The selector's table blocks its capability rows (names and
-          descriptions). */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="flex w-full max-w-4xl flex-col rounded-xl bg-card shadow-xl"
-        style={{ maxHeight: '85vh' }}
-      >
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <div>
-            <h2 className="text-m font-semibold fg-primary">{title}</h2>
-            <p className="mt-1 text-xs fg-secondary">{helperText}</p>
-          </div>
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <AppCatalogCloseIcon width="14" height="14" />
-          </Button>
-        </div>
-
-        {fullMode ? (
-          <div className="flex min-h-0 flex-1 flex-col">
-            <p className="px-5 pt-3 text-xs fg-secondary">{helperText}</p>
-            <div className="flex min-h-0 flex-1 flex-col px-5 py-3">
-              <PluginSelector
-                selections={fullSelections}
-                onChange={(nextSelections) =>
-                  setFullSelections((previousSelections) => ({
-                    ...previousSelections,
-                    ...nextSelections,
-                    mcpHttpAuthPreferences:
-                      previousSelections.mcpHttpAuthPreferences,
-                  }))
-                }
-                inset={false}
-              />
-            </div>
-          </div>
-        ) : (
-          <ShareablePluginSelector
-            selections={portableSelections}
-            onChange={setPortableSelections}
-            helperText={helperText}
-          />
-        )}
-
-        <div className="flex items-center justify-between border-t px-5 py-3">
-          <div className="text-xs fg-secondary">
+    <DialogModal
+      onClose={onClose}
+      title={title}
+      subtitle={helperText}
+      maxWidth="4xl"
+      maxHeight="85vh"
+      inset="flush"
+      scrollableBody={false}
+      ownerDocument={ownerDocument}
+      footer={
+        <>
+          <span className="mr-auto text-xs fg-secondary">
             {selectionCount === 0
               ? 'No plugins selected'
               : `${selectionCount} selected`}
-          </div>
-          <div className="flex items-center gap-2">
-            <Button size="compact" onClick={onClose}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="compact"
-              onClick={() => {
-                if (props.mode === 'full') {
-                  props.onSave(normalizePluginSelections(fullSelections));
-                } else {
-                  props.onSave(portableSelections);
-                }
-              }}
-            >
-              Save
-            </Button>
+          </span>
+          <Button size="compact" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={() => {
+              if (props.mode === 'full') {
+                props.onSave(normalizePluginSelections(fullSelections));
+              } else {
+                props.onSave(portableSelections);
+              }
+            }}
+          >
+            Save
+          </Button>
+        </>
+      }
+    >
+      {/* The selector's table blocks its capability rows (names and
+          descriptions). */}
+      {fullMode ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <p className="px-6 pt-3 text-xs fg-secondary">{helperText}</p>
+          <div className="flex min-h-0 flex-1 flex-col px-6 py-3">
+            <PluginSelector
+              selections={fullSelections}
+              onChange={(nextSelections) =>
+                setFullSelections((previousSelections) => ({
+                  ...previousSelections,
+                  ...nextSelections,
+                  mcpHttpAuthPreferences:
+                    previousSelections.mcpHttpAuthPreferences,
+                }))
+              }
+              inset={false}
+            />
           </div>
         </div>
-      </div>
-    </div>
+      ) : (
+        <ShareablePluginSelector
+          selections={portableSelections}
+          onChange={setPortableSelections}
+          helperText={helperText}
+        />
+      )}
+    </DialogModal>
   );
 }

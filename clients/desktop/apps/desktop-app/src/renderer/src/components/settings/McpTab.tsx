@@ -24,6 +24,7 @@ import {
   MCP_HTTP_AUTH_PROVIDER_DESCRIPTION,
   MCP_HTTP_AUTH_PROVIDER_LABEL,
   MCP_PORT_VALIDATION_ERROR,
+  MCP_PROXY_ERROR_COPY,
   MCP_SAVE_ERROR_FALLBACK,
   MCP_SAVED_TEXT,
   parseMcpProxyPort,
@@ -36,6 +37,7 @@ import {
   SlowLoadNote,
   StatusBadge,
   type StatusBadgeVariant,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { useLoadingPhase } from '@canopy/ui-shared/lib';
 import {
@@ -138,6 +140,8 @@ export function McpTab(): JSX.Element {
   );
   const [saving, setSaving] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // The failure's own text: copied by Copy details, never shown.
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [proxyState, setProxyState] = useState<McpProxyState | null>(null);
   const unsubscribeProxyStatusRef = useRef<(() => void) | null>(null);
@@ -208,6 +212,7 @@ export function McpTab(): JSX.Element {
   async function applySettings(port: number): Promise<void> {
     setSuccessMessage(null);
     setErrorMessage(null);
+    setErrorDetails(null);
     setSaving(true);
     try {
       const state = await window.mcpServers.applyProxyPort(port);
@@ -218,11 +223,10 @@ export function McpTab(): JSX.Element {
       setAppliedPort(port);
       setSuccessMessage(MCP_SAVED_TEXT);
     } catch (err: unknown) {
-      const message =
-        err instanceof Error && err.message.length > 0
-          ? err.message
-          : MCP_SAVE_ERROR_FALLBACK;
-      setErrorMessage(message);
+      setErrorMessage(MCP_SAVE_ERROR_FALLBACK);
+      setErrorDetails(
+        err instanceof Error && err.message.length > 0 ? err.message : null,
+      );
     } finally {
       setSaving(false);
     }
@@ -233,6 +237,7 @@ export function McpTab(): JSX.Element {
     if (parsed === null) {
       setSuccessMessage(null);
       setErrorMessage(MCP_PORT_VALIDATION_ERROR);
+      setErrorDetails(null);
       return;
     }
     await applySettings(parsed);
@@ -264,11 +269,14 @@ export function McpTab(): JSX.Element {
     !portLocked &&
     (appliedPort !== DEFAULT_MCP_PROXY_PORT ||
       inputPort !== DEFAULT_MCP_PROXY_PORT);
-  const proxyError =
-    errorMessage ??
-    (proxyState?.status === 'error' && proxyState.error
+  const proxyStateError =
+    proxyState?.status === 'error' && proxyState.error
       ? proxyState.error
-      : null);
+      : null;
+  const proxyError =
+    errorMessage ?? (proxyStateError !== null ? MCP_PROXY_ERROR_COPY : null);
+  const proxyErrorDetails =
+    errorMessage !== null ? errorDetails : proxyStateError;
 
   return (
     <SettingsPage
@@ -454,15 +462,12 @@ export function McpTab(): JSX.Element {
                 {successMessage}
               </p>
             )}
-            {proxyError !== null && (
-              <p
-                role="alert"
-                className="text-xs fg-destructive"
-                data-testid="settings-mcp-error"
-              >
-                {proxyError}
-              </p>
-            )}
+            <ErrorBanner
+              className=""
+              error={proxyError}
+              testId="settings-mcp-error"
+              {...(proxyErrorDetails ? { details: proxyErrorDetails } : {})}
+            />
           </SettingsRow>
 
           {loading && proxyState === null && (

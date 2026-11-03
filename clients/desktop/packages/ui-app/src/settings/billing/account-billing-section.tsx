@@ -28,6 +28,7 @@ import {
   buttonClassName,
   CreditLedgerTable as SharedCreditLedgerTable,
   ErrorBanner,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_CLASS,
@@ -83,6 +84,7 @@ import {
   type CreditsSummary,
   type InvoicePage,
 } from '@canopy/protocol/settings/billing';
+import type { SettingsFailure } from '../errors';
 
 const HISTORY_LOAD_MORE_ERROR = 'Unable to load more history.';
 
@@ -167,7 +169,7 @@ export function BillingSection({
   const [summarySettled, setSummarySettled] = useState(false);
   const [charges, setCharges] = useState<ChargeHistoryItem[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [creditsReloadSignal, setCreditsReloadSignal] = useState(0);
   const planCardRef = useRef<HTMLElement | null>(null);
@@ -207,7 +209,7 @@ export function BillingSection({
       setStatus('ready');
     } catch (err) {
       setStatus('error');
-      setError(errorCopy.loadCopy(err));
+      setError(errorCopy.loadFailure(err));
     }
   }, [reloadSummary, loadHistoryPage, errorCopy]);
 
@@ -346,8 +348,9 @@ export function BillingSection({
           error={
             coverageView || status !== 'error'
               ? null
-              : (error ?? SETTINGS_LOAD_ERROR_COPY)
+              : (error?.copy ?? SETTINGS_LOAD_ERROR_COPY)
           }
+          details={error?.details}
           onRetry={retryLoad}
         />
 
@@ -928,11 +931,7 @@ function BillingTransactions({
       <div className="mt-2">
         <SharedBillingHistoryTable charges={charges} formatDate={formatDate} />
       </div>
-      {loadMoreError && (
-        <p className="mt-2 text-s fg-destructive" role="alert">
-          {loadMoreError}
-        </p>
-      )}
+      <ErrorBanner className="mt-2" error={loadMoreError} />
       {hasMore && (
         <Button
           size="compact"
@@ -994,7 +993,7 @@ function AiCreditsCard({
   const [status, setStatus] = useState<Status>('loading');
   const [summary, setSummary] = useState<CreditsSummary | null>(null);
   const [entries, setEntries] = useState<AiCreditsLedgerEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const errorCopy = useSettingsErrorCopy('billing:account-credits');
 
   const load = useCallback(
@@ -1015,7 +1014,7 @@ function AiCreditsCard({
         // fallback, so the card is never worse than before.
         if (!options?.silent) {
           setStatus('error');
-          setError(errorCopy.loadCopy(err));
+          setError(errorCopy.loadFailure(err));
         }
       }
     },
@@ -1110,7 +1109,8 @@ function AiCreditsCard({
     return shell(
       <ErrorBanner
         className=""
-        error={error ?? SETTINGS_LOAD_ERROR_COPY}
+        error={error?.copy ?? SETTINGS_LOAD_ERROR_COPY}
+        details={error?.details}
         onRetry={() => {
           setStatus('loading');
           void load();
@@ -1301,7 +1301,7 @@ function CreditsLedgerTable({
     <div className="mt-4" data-testid="billing-ai-credits-ledger">
       <p className="text-s font-medium fg-primary">Credit activity</p>
       {entries.length === 0 ? (
-        <p className="mt-2 text-s fg-secondary">No credit activity yet.</p>
+        <EmptyStateRow title="No credit activity yet." />
       ) : (
         <div className="mt-2">
           <SharedCreditLedgerTable entries={entries} formatDate={formatDate} />

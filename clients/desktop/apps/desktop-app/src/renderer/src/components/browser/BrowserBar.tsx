@@ -20,6 +20,7 @@ import {
   SunIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { BrowserDownloadsButton } from './BrowserDownloadsButton';
+import { TextInput } from '@canopy/ui-shared/components';
 
 interface BrowserBarProps {
   browserId: string;
@@ -115,9 +116,10 @@ export function BrowserBar({
         </div>
 
         <div className="browser-bar-url">
-          <input
+          <TextInput
             ref={urlInputRef}
             type="text"
+            density="compact"
             data-testid="browser-url-input"
             value={urlDraft}
             spellCheck={false}
@@ -127,7 +129,7 @@ export function BrowserBar({
             aria-label="Browser URL"
             aria-invalid={urlError !== null}
             aria-describedby={urlError !== null ? errorId : undefined}
-            className="w-full min-w-0 rounded border bg-base/70 px-2 py-1 text-xs outline-none focus:border-line-accent"
+            className="min-w-0"
           />
         </div>
 

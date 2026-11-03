@@ -1,15 +1,7 @@
-import {
-  useCallback,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type JSX,
-  type RefObject,
-} from 'react';
-import { createPortal } from 'react-dom';
+import { type JSX } from 'react';
+import { RichHoverTooltip } from '@canopy/ui-shared/components';
 import { AgentAssistantIcon } from '@canopy/ui-shared/icons';
 import { statusBadgeClassName } from '@canopy/ui-shared/lib';
-import { useWindowPositionInvalidation } from '@/hooks/useWindowPositionInvalidation';
 import type {
   ExecutionSummary,
   PipelineAdvisorInefficiency,
@@ -18,7 +10,6 @@ import type {
 } from '@canopy/desktop-shared/types/pipeline';
 import {
   advisorErrorIsStale,
-  computeAdvisorPreviewPosition,
   formatAdvisorEta,
   usePipelineAdvisorEtaNow,
 } from './PipelineAdvisorEta';
@@ -33,9 +24,6 @@ export function AdvisorEtaBadge({
   pipelineStatus?: ExecutionSummary['status'];
   interactive?: boolean;
 }): JSX.Element | null {
-  const [hoverOpen, setHoverOpen] = useState(false);
-  const [focusOpen, setFocusOpen] = useState(false);
-  const badgeRef = useRef<HTMLSpanElement>(null);
   const etaNowMs = usePipelineAdvisorEtaNow(Boolean(snapshot?.latestReport));
   if (!snapshot) {
     return null;
@@ -46,59 +34,31 @@ export function AdvisorEtaBadge({
   // Shared pipeline-row status badge: active tint while the advisor is
   // healthy, the warning tint once its last update failed.
   const className = statusBadgeClassName(stale ? 'warning' : 'active');
-  const showPreview = interactive && (hoverOpen || focusOpen);
+  // Hover or keyboard focus shows the health/inefficiency preview.
   return (
-    <span
-      className="relative inline-flex"
-      onMouseEnter={
-        interactive
-          ? (): void => {
-              setHoverOpen(true);
-            }
-          : undefined
+    <RichHoverTooltip
+      disabled={!interactive}
+      content={
+        <AdvisorPreviewContent
+          snapshot={snapshot}
+          pipelineStatus={pipelineStatus}
+          currentTimeMs={etaNowMs}
+        />
       }
-      onMouseLeave={
-        interactive
-          ? (): void => {
-              setHoverOpen(false);
-            }
-          : undefined
-      }
+      surfacePadding="card"
+      surfaceClassName="w-70"
     >
       <span
         tabIndex={interactive ? 0 : undefined}
         role="status"
         aria-label="Workflow Advisor ETA"
-        ref={badgeRef}
         className={interactive ? `${className} focus-ring` : className}
-        onFocus={
-          interactive
-            ? (): void => {
-                setFocusOpen(true);
-              }
-            : undefined
-        }
-        onBlur={
-          interactive
-            ? (): void => {
-                setFocusOpen(false);
-              }
-            : undefined
-        }
       >
         <AgentAssistantIcon className="h-3 w-3" />
         <span>{etaText}</span>
         {stale ? <span aria-hidden="true">!</span> : null}
       </span>
-      {showPreview ? (
-        <AdvisorPreviewPopover
-          snapshot={snapshot}
-          pipelineStatus={pipelineStatus}
-          anchorRef={badgeRef}
-          currentTimeMs={etaNowMs}
-        />
-      ) : null}
-    </span>
+    </RichHoverTooltip>
   );
 }
 
@@ -116,22 +76,15 @@ function severityLabel(
   }
 }
 
-export function AdvisorPreviewPopover({
+function AdvisorPreviewContent({
   snapshot,
   pipelineStatus,
-  anchorRef,
-  currentTimeMs = Date.now(),
+  currentTimeMs,
 }: {
   snapshot: PipelineAdvisorSnapshot;
   pipelineStatus?: ExecutionSummary['status'];
-  anchorRef?: RefObject<HTMLElement | null>;
-  currentTimeMs?: number;
+  currentTimeMs: number;
 }): JSX.Element {
-  const popoverRef = useRef<HTMLSpanElement>(null);
-  const [position, setPosition] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
   const report: PipelineAdvisorReport | undefined = snapshot.latestReport;
   const stale = advisorErrorIsStale(snapshot);
   const healthSummary =
@@ -145,55 +98,8 @@ export function AdvisorPreviewPopover({
   const inefficiencies = report?.inefficiencies ?? [];
   const errorMessage = stale ? snapshot.lastError?.message : undefined;
 
-  const updatePosition = useCallback((): void => {
-    const anchorEl = anchorRef?.current;
-    if (!anchorEl) {
-      return;
-    }
-    const popoverEl = popoverRef.current;
-    const next = computeAdvisorPreviewPosition({
-      anchorRect: anchorEl.getBoundingClientRect(),
-      popoverWidth: popoverEl?.offsetWidth || undefined,
-      popoverHeight: popoverEl?.offsetHeight ?? 0,
-    });
-    setPosition((previous) => {
-      if (
-        previous &&
-        previous.top === next.top &&
-        previous.left === next.left
-      ) {
-        return previous;
-      }
-      return next;
-    });
-  }, [anchorRef]);
-
-  useLayoutEffect((): void => {
-    if (!anchorRef) {
-      return;
-    }
-    updatePosition();
-  }, [anchorRef, updatePosition]);
-
-  useWindowPositionInvalidation(Boolean(anchorRef), updatePosition);
-
-  const tooltip = (
-    <span
-      ref={popoverRef}
-      role="tooltip"
-      className={
-        anchorRef
-          ? 'pointer-events-none fixed z-tooltip w-70 rounded-md bg-popover px-3 py-2 text-left text-2xs leading-snug shadow-tooltip fg-primary'
-          : 'pointer-events-none absolute right-0 top-full z-30 mt-1 w-70 rounded-md bg-popover px-3 py-2 text-left text-2xs leading-snug shadow-tooltip fg-primary'
-      }
-      style={
-        anchorRef
-          ? position
-            ? { top: position.top, left: position.left }
-            : { visibility: 'hidden' }
-          : undefined
-      }
-    >
+  return (
+    <span className="block leading-snug">
       <span className="block text-2xs font-semibold fg-secondary">
         Workflow Advisor
       </span>
@@ -244,8 +150,4 @@ export function AdvisorPreviewPopover({
       ) : null}
     </span>
   );
-
-  return anchorRef && typeof document !== 'undefined'
-    ? createPortal(tooltip, document.body)
-    : tooltip;
 }

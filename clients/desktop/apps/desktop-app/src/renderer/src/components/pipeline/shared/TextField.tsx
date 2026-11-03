@@ -1,15 +1,11 @@
-import type { JSX } from 'react';
+import { forwardRef, type JSX } from 'react';
+import { TextInput, type TextInputProps } from '@canopy/ui-shared/components';
 
-type TextFieldProps = React.InputHTMLAttributes<HTMLInputElement>;
+type TextFieldProps = Omit<TextInputProps, 'density'>;
 
-export function TextField(props: TextFieldProps): JSX.Element {
-  return (
-    <input
-      {...props}
-      className={`w-full px-3 py-2 text-s bg-base border rounded-md
- fg-primary placeholder:fg-secondary
- focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
- transition-colors ${props.className || ''}`}
-    />
-  );
-}
+/** The pipeline editor's single-line field: the shared 36px `TextInput`. */
+export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
+  function TextField(props, ref): JSX.Element {
+    return <TextInput ref={ref} {...props} />;
+  },
+);

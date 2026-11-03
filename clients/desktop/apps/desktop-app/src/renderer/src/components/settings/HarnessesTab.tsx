@@ -629,7 +629,7 @@ function ManagedHarnessRow({
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
       <span className="flex h-6 w-6 shrink-0 items-center justify-center fg-tertiary">
-        <Lock width={12} height={12} aria-hidden="true" />
+        <Lock size="sm" aria-hidden="true" />
         <span className="sr-only">{managedBy}</span>
       </span>
     </div>
@@ -740,7 +740,7 @@ function ConfigurableHarnessRow({
             setMenuOpen((open) => !open);
           }}
         >
-          <MoreHorizontalIcon width={14} height={14} aria-hidden="true" />
+          <MoreHorizontalIcon size="sm" aria-hidden="true" />
         </Button>
       </span>
       <FloatingMenu

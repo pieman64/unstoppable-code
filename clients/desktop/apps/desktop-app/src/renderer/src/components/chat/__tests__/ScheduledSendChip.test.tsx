@@ -278,8 +278,10 @@ describe('TerminalModeLabel', () => {
     const error = container.querySelector(
       '[data-testid="chat-input-terminal-mode-error"]',
     );
-    expect(error?.getAttribute('role')).toBe('alert');
+    expect(error?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't send to terminal",
+    );
     expect(error?.textContent).toBe("Couldn't send to terminal");
-    expect(error?.classList.contains('fg-destructive')).toBe(true);
+    expect(error?.getAttribute('data-notice-intent')).toBe('destructive');
   });
 });

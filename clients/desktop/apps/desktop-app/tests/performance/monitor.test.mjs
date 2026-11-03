@@ -11,10 +11,13 @@ import {
   buildFrameBudgetReport,
   buildSummary,
   diffWorkCounters,
+  effectiveRefresh,
   evaluateMainWithRetry,
+  frameAreaLines,
   frameBudgetForWindow,
   normalizeAppMetrics,
   openRendererWorkSession,
+  refreshRateMismatch,
   selectChromiumWorkMetrics,
   startPerformanceMonitor,
   summarizeLongAnimationFrames,
@@ -1032,6 +1035,37 @@ test('the window keeps the routed-read counters as evidence of each read backend
   assert.deepEqual(result.summary.workErrors, []);
 });
 
+test('the window keeps the W5 store counters as evidence, apart from the judged sources', async () => {
+  const main = fakeMainWorkCounters();
+  let w5 = { 'host.capture': 3 };
+  const withW5 = {
+    snapshot: () => ({ ...main.query.snapshot(), w5: { ...w5 } }),
+    reset: (options) => {
+      w5 = {};
+      return { ...main.query.reset(options), w5: {} };
+    },
+  };
+  const { page } = await fakeRendererPage({ reactWork: fakeReactWork().query });
+  const { session } = fakeWorkSession();
+  const monitor = await startPerformanceMonitor({
+    page,
+    electronApp: fakeMainProcess({ workCounters: withW5 }),
+    sampleIntervalMs: 60_000,
+    workCounters: true,
+    newCDPSession: async () => session,
+  });
+  w5['host.capture'] = 2;
+  w5['host.commit.w5.worktree_list.write'] = 1;
+  const result = await monitor.stop();
+  assert.deepEqual(plain(result.summary.w5Work), {
+    'host.capture': 2,
+    'host.commit.w5.worktree_list.write': 1,
+  });
+  assert.equal(result.summary.appWork.w5, undefined);
+  assert.equal(Object.hasOwn(result.summary, 'routeWork'), true);
+  assert.deepEqual(result.summary.workErrors, []);
+});
+
 test('a build without routed-read counters records no route evidence and no error', async () => {
   const main = fakeMainWorkCounters();
   const withoutRoute = (snapshot) => {
@@ -1900,6 +1934,152 @@ test('the frame-budget report is advisory and records the display refresh rate',
   assert.equal(report.replies[0].label, 'reply');
   assert.equal(report.replies[0].over16_7Ms, 1);
   assert.equal(report.unmeasuredReplies, 1);
+});
+
+test('frame windows judge main-thread frame work against 120 Hz whatever the display ran at', () => {
+  const vsyncMs = 1_000 / 120;
+  // Frame work is render end minus the frame's own timestamp.
+  const budget = frameBudgetForWindow(
+    [
+      { timestampMs: 0, renderEndMs: 3 },
+      { timestampMs: 8.3, renderEndMs: 12 },
+      { timestampMs: 16.6, renderEndMs: 30 },
+      // 25 ms after the previous frame: two refreshes passed with no frame.
+      { timestampMs: 41.6, renderEndMs: 44 },
+      // 10 ms: jitter, not a drop.
+      { timestampMs: 51.6 },
+    ],
+    { startAtMs: 0, endAtMs: 60 },
+    [],
+    {
+      vsyncMs,
+      longTasks: [
+        { startTime: 20, duration: 55 },
+        { startTime: 70, duration: 80 },
+      ],
+      inputEvents: [
+        {
+          type: 'pointerdown',
+          eventAtMs: 5,
+          handledAtMs: 6,
+          nextFrameObservedAtMs: 9,
+        },
+        { type: 'keydown', eventAtMs: 90, handledAtMs: 91 },
+      ],
+    },
+  );
+  assert.equal(budget.frameWorkMs.count, 4);
+  assert.ok(Math.abs(budget.frameWorkMs.max - 13.4) < 1e-9);
+  assert.equal(budget.framesOverWorkBudget, 1);
+  assert.equal(budget.droppedFrames, 2);
+  assert.deepEqual(budget.longTasks, { count: 1, totalMs: 55, maxMs: 55 });
+  assert.equal(budget.input.count, 1);
+  assert.equal(budget.input.delayMs.max, 1);
+  assert.equal(budget.input.toNextFrameMs.max, 4);
+});
+
+test('the effective refresh rate comes from the observed frame interval', () => {
+  assert.deepEqual(effectiveRefresh({ refreshRateHz: 120 }, 8.3), {
+    displayHz: 120,
+    effectiveHz: 1_000 / 8.3,
+    vsyncMs: 8.3,
+    matchesBudget: true,
+  });
+  // A 120 Hz display whose window rendered at 60 Hz.
+  const halved = effectiveRefresh({ refreshRateHz: 120 }, 16.7);
+  assert.equal(halved.matchesBudget, false);
+  assert.match(
+    refreshRateMismatch(effectiveRefresh({ refreshRateHz: 120 }, 8.3), halved),
+    /effective 120\.5 Hz vs 59\.9 Hz/,
+  );
+  assert.equal(
+    refreshRateMismatch(
+      effectiveRefresh({ refreshRateHz: 120 }, 8.3),
+      effectiveRefresh({ refreshRateHz: 120 }, 8.4),
+    ),
+    null,
+  );
+  assert.equal(effectiveRefresh(null, null).effectiveHz, null);
+});
+
+test('focus areas hold 120 Hz only when frame work, drops and long tasks all fit', () => {
+  const steady = Array.from({ length: 200 }, (_, index) => ({
+    timestampMs: index * 8.3,
+    renderEndMs: index * 8.3 + 2,
+  }));
+  const raw = (frames, longTasks = []) => ({
+    display: { refreshRateHz: 120 },
+    renderer: {
+      frames,
+      frameGapsMs: frames
+        .slice(1)
+        .map((f, i) => f.timestampMs - frames[i].timestampMs),
+      longAnimationFrames: [],
+      longTasks,
+      inputEvents: [],
+    },
+  });
+  const window = (area, label, startAtMs, endAtMs) => ({
+    area,
+    label,
+    start: { atMs: startAtMs },
+    end: { atMs: endAtMs },
+  });
+  const smooth = buildFrameBudgetReport(
+    raw(steady),
+    [],
+    [
+      window('scroll', 'transcript', 0, 800),
+      window('chat', 'stream', 800, 1_600),
+    ],
+  );
+  assert.equal(smooth.refresh.matchesBudget, true);
+  assert.deepEqual(Object.keys(smooth.areas).sort(), ['chat', 'scroll']);
+  assert.equal(smooth.areas.scroll.holds120Hz, true);
+  assert.equal(smooth.areas.scroll.droppedFrames, 0);
+
+  // Heavy frames in the chat window, and a long task.
+  const heavy = steady.map((frame) =>
+    frame.timestampMs > 900
+      ? { ...frame, renderEndMs: frame.timestampMs + 12 }
+      : frame,
+  );
+  const janky = buildFrameBudgetReport(
+    raw(heavy, [{ startTime: 1_000, duration: 60 }]),
+    [],
+    [
+      window('scroll', 'transcript', 0, 800),
+      window('chat', 'stream', 800, 1_600),
+    ],
+  );
+  assert.equal(janky.areas.scroll.holds120Hz, true);
+  assert.equal(janky.areas.chat.holds120Hz, false);
+  assert.equal(janky.areas.chat.longTasks, 1);
+  assert.ok(janky.areas.chat.framesOverWorkBudget > 0);
+});
+
+test('the runner prints one 120 Hz line per focus area', () => {
+  const lines = frameAreaLines({
+    refresh: { displayHz: 120, effectiveHz: 119.6 },
+    areas: {
+      chat: {
+        holds120Hz: false,
+        frameWorkMs: { p50: 3, p95: 9.5, p99: 14 },
+        framesOverWorkBudget: 12,
+        frames: 400,
+        droppedFrames: 6,
+        longTasks: 1,
+        inputToNextFrameMs: { p95: 11 },
+      },
+    },
+  });
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /display 120 Hz, effective 119\.6 Hz/);
+  assert.match(
+    lines[1],
+    /chat: MISSES 120 Hz; frame work p50 3\.0ms p95 9\.5ms p99 14\.0ms, 12\/400 over 8\.33ms, dropped 6, long tasks 1/,
+  );
+  assert.deepEqual(frameAreaLines(undefined), []);
 });
 
 /**

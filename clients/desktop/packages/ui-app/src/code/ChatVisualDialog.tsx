@@ -67,6 +67,8 @@ export function ChatVisualDialog({
       maxWidth="full"
       maxHeight="100%"
       height="min(90vh, 90dvh)"
+      // The tabs stay put and the Source view scrolls inside the card.
+      scrollableBody={false}
       trapFocus
       ownerDocument={ownerDocument}
       topRightActions={
@@ -81,7 +83,7 @@ export function ChatVisualDialog({
         </Button>
       }
     >
-      <div className="flex h-full min-h-0 flex-col gap-3 px-5 pb-5 pt-3">
+      <div className="flex h-full min-h-0 flex-col gap-3">
         {/* A row, so the track keeps its own width. */}
         <div className="flex">
           <SegmentedControl

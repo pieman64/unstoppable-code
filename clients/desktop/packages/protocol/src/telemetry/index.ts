@@ -60,6 +60,7 @@ export const TELEMETRY_API_VERSION = 1;
 // ===========================================================================
 
 export * from './subscription-plan-catalog';
+export * from './tool-category-labels';
 
 // ===========================================================================
 // Union constants — single source of truth for the wire vocabularies.

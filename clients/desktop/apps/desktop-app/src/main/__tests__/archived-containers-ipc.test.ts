@@ -109,6 +109,8 @@ import {
   registerArchivedContainerHandlers,
   type ArchivedContainerChangesService,
 } from '../ipc/archived-containers';
+import { createWorkspaceLifecycleTestDispatcher } from './fixtures/workspace-lifecycle-dispatcher';
+import { TEST_IPC_CALLER } from './fixtures/workspace-metadata-dispatcher';
 import {
   purgeArchivedContainer,
   readArchivedContainerManifest,
@@ -162,7 +164,14 @@ describe('archived container IPC handlers', () => {
   beforeEach(() => {
     handlers.clear();
     jest.clearAllMocks();
-    registerArchivedContainerHandlers(changesService);
+    registerArchivedContainerHandlers(
+      {
+        // The restore channel projects core.archive.container.restore (W7b-2a).
+        dispatcher: createWorkspaceLifecycleTestDispatcher(),
+        resolveCaller: () => TEST_IPC_CALLER,
+      },
+      changesService,
+    );
   });
 
   it('registers the changed-file paging and diff channels', () => {

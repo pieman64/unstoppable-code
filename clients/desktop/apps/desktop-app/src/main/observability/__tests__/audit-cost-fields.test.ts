@@ -1,4 +1,4 @@
-import { normalizeAuditEntry } from '../audit-entry-parser';
+import { normalizeAuditEntry } from '@canopy/core-runtime/observability';
 
 function baseEntry(
   overrides: Record<string, unknown>,

@@ -18,7 +18,6 @@ import {
   assertStoredPipelineContext,
   readStoredPipelineContext,
   recordSharedPipelineInstall,
-  copyPipelineInstallOrigin,
   filterStoredPipelineContexts,
   filterProjectPipelineContexts,
 } from './pipeline-install-context';
@@ -33,7 +32,6 @@ import {
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
 import {
   getManagedCuratedPipeline,
-  listManagedCuratedPipelines,
   startManagedCuratedPipelineSync,
   stopManagedCuratedPipelineSync,
 } from './curated-pipeline-catalog';
@@ -70,6 +68,7 @@ import {
 } from '../lib/main-process-logging';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import * as service from './pipeline-service';
+import { getStoredPipelineIndexEntry } from '@canopy/desktop-shared/pipelines/store';
 import {
   createSharedPipeline,
   deleteSharedPipeline,
@@ -148,9 +147,7 @@ import { getDefaultShellTypeForCurrentProcess } from '@canopy/desktop-shared/nod
 import { listBuiltinActions, resolveAction } from './action-resolver';
 import {
   beginExecutionPause,
-  cancelPipelineExecution,
   createPipelineExecutionId,
-  executePipeline,
   getGlobalExecutionWorkspaceDir,
   getStepLogFilePath,
   isKnownOrphanedExecution,
@@ -190,6 +187,7 @@ import { validateId } from '../lib/validation';
 import { enqueueKnownPrFastRefresh } from '../lib/github-poller';
 import { buildPipelinePreferenceEnv } from './preference-env';
 import { getObservabilityService } from '../observability';
+import { createDesktopPipelineObservabilityFeed } from '../observability/ingest';
 import { readTrackedPlanData, updatePlan } from '../services/plans-service';
 import { CURSOR_PLAN_EXECUTION_UNAVAILABLE } from '@canopy/desktop-shared/plan-review';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
@@ -243,7 +241,6 @@ import {
   trackExecution,
   tryReserveExecution,
 } from './pipeline-execution-registry';
-import { retireLedgerPipelineExecutionTree } from '../ledger/pipeline-agent-owners';
 import { getResourceMonitorService } from '../resource-monitor';
 import { createPipelineRunObservers } from './pipeline-run-observers';
 import { getPipelineAdvisorService } from './pipeline-advisor';
@@ -265,16 +262,26 @@ import {
 import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { admitStoredRunDefinition } from './run-definition-admission';
+import { setPipelineCancelBroadcast } from './pipeline-worker-host';
+import {
+  cancelPipelineThroughLocalWorker,
+  followExecutionHandle,
+  startPipelineThroughLocalWorker,
+} from './pipeline-worker-dispatch';
 import { isSharedPipelineLocalId } from '@canopy/protocol/pipelines';
 import {
   deleteUserPipeline,
+  duplicatePipelineDefinition,
+  listDesktopPipelines,
+  PIPELINE_DEFINITION_DESKTOP_CALLER,
+  pipelineWriteErrorMessage,
+  readDesktopPipeline,
   saveUserPipeline,
 } from '../canopy-runtime/pipeline-definition-dispatch';
 import { recordSharedItemInstall } from '../canopy-cloud/shared-item-subscriptions';
 import {
   analyzePackageRequest,
   cancelPackageAnalysis,
-  copyPackageInstall,
   createPackagedSharedPipeline,
   getPackageReadiness,
   installPublicPackageShare,
@@ -439,6 +446,9 @@ function trackExecutionWithAdvisor(
   reservationId: string = handle.id,
 ): void {
   trackExecution(handle, onSettled, reservationId);
+  // A started or resumed execution's subscribers and run record follow its
+  // handle. Retry, rerun and start-over get run records with CAN-4141.
+  followExecutionHandle(handle);
   getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
   attachPipelineRunObservers(handle);
 }
@@ -624,34 +634,6 @@ function buildSharedPipelinePreferenceLocator(
   };
 }
 
-function buildSharedPipelineInfo(args: {
-  pipeline: SharedPipelineSummary;
-  scopes?: PipelineInfo['scopes'];
-}): PipelineInfo {
-  const { pipeline } = args;
-  return {
-    id: buildSharedPipelineId(CANOPY_CLOUD_SERVER_ID, pipeline.id),
-    name: pipeline.name,
-    filename: '',
-    description: pipeline.description,
-    icon: pipeline.icon,
-    createdAt: pipeline.createdAt,
-    updatedAt: pipeline.updatedAt,
-    triggerTypes: pipeline.triggerTypes,
-    scopes: args.scopes ?? pipeline.scopes ?? ['directory'],
-    source: 'shared',
-    readonly: !pipeline.canUpdate,
-    serverId: CANOPY_CLOUD_SERVER_ID,
-    serverName: CANOPY_CLOUD_DISPLAY_NAME,
-    remoteId: pipeline.id,
-    canUpdate: pipeline.canUpdate,
-    canDelete: pipeline.canDelete,
-    shareScope: pipeline.shareScope ?? 'private',
-    distributionMode: pipeline.distributionMode ?? 'definition_only',
-    ...(pipeline.owner ? { owner: pipeline.owner } : {}),
-  };
-}
-
 function withDefaultSharedPipelineScopes<T extends SharedPipelineSummary>(
   pipeline: T,
 ): T {
@@ -674,40 +656,6 @@ function hydrateSharedPipelineDetailScopes(
     return { ...detail, scopes: normalized.scope };
   } catch {
     return withDefaultSharedPipelineScopes(detail);
-  }
-}
-
-async function loadSharedPipelineData(request: SharedPipelineRequest): Promise<
-  | {
-      success: true;
-      data: PipelineData;
-    }
-  | {
-      success: false;
-      error: string;
-    }
-> {
-  try {
-    const detail = await getSharedPipeline(request.remoteId);
-    const content = parsePipelineText(detail.rawPipeline);
-    const normalized = normalizePipeline(content, {
-      defaultShell: getDefaultShellTypeForCurrentProcess(),
-    });
-    return {
-      success: true,
-      data: {
-        info: buildSharedPipelineInfo({
-          pipeline: detail,
-          scopes: normalized.scope,
-        }),
-        content,
-      },
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: toErrorMessage(error),
-    };
   }
 }
 
@@ -780,6 +728,52 @@ async function cacheSharedPipelineForExecution(args: {
         }
       : {}),
   };
+}
+
+/**
+ * The definition a lookup names: a store lookup resolves only a user or
+ * bundled id, one with a source only that source.
+ */
+function pipelineLookupDefinition(
+  request: PipelineLookupRequest,
+):
+  | { definitionId: string; stored: boolean; source?: 'user' | 'bundled' }
+  | undefined {
+  if (isCuratedPipelineLookup(request))
+    return { definitionId: request.id, stored: false };
+  if (typeof request === 'string')
+    return { definitionId: request, stored: !request.startsWith('curated:') };
+  if (isSharedPipelineRequest(request))
+    return {
+      definitionId: buildSharedPipelineId(
+        CANOPY_CLOUD_SERVER_ID,
+        request.remoteId,
+      ),
+      stored: false,
+    };
+  if (isStoredPipelineLookupRequest(request))
+    return {
+      definitionId: request.id,
+      stored: true,
+      source: request.source === 'bundled' ? 'bundled' : 'user',
+    };
+  return undefined;
+}
+
+function isStoredDefinitionId(definitionId: string): boolean {
+  return (
+    !isSharedPipelineLocalId(definitionId) &&
+    !definitionId.startsWith('project--')
+  );
+}
+
+/** The definition a duplicate request copies through core; project files by host path are not one. */
+function duplicateSourceId(request: PipelineLookupRequest): string | undefined {
+  if (typeof request === 'string') return request;
+  if (isCuratedPipelineLookup(request)) return request.id;
+  if (isSharedPipelineRequest(request))
+    return buildSharedPipelineId(CANOPY_CLOUD_SERVER_ID, request.remoteId);
+  return undefined;
 }
 
 function isCuratedPipelineLookup(
@@ -969,47 +963,6 @@ async function loadProjectPipelineData(
   }
 }
 
-/** Keep the fixed definition identity and its provenance in one transaction. */
-async function createScopedPipelineDuplicate(
-  input: PipelineSaveInput,
-  recordOrigin: (
-    id: string,
-    onRollback: (undo: () => Promise<void>) => void,
-  ) => Promise<void>,
-  afterCreate?: (id: string) => Promise<void>,
-): Promise<ReturnType<typeof service.savePipeline>> {
-  const id = randomUUID();
-  let savedId: string | undefined;
-  let undoReceipt: (() => Promise<void>) | undefined;
-  try {
-    await recordOrigin(id, (undo) => {
-      undoReceipt = undo;
-    });
-    const saved = service.savePipeline({ ...input, id }, { id });
-    if (!saved.success || !saved.data)
-      throw new Error(saved.error ?? 'Failed to save the workflow');
-    savedId = saved.data.id;
-    if (savedId !== id) throw new Error('Pipeline create identity mismatch');
-    await afterCreate?.(id);
-    return saved;
-  } catch (error) {
-    try {
-      if (savedId) {
-        const removed = service.deletePipeline(savedId);
-        if (!removed.success)
-          throw new Error(removed.error ?? 'Failed to roll back workflow');
-      }
-      await undoReceipt?.();
-    } catch (rollbackError) {
-      return {
-        success: false,
-        error: `${toErrorMessage(error)}; ${toErrorMessage(rollbackError)}`,
-      };
-    }
-    return { success: false, error: toErrorMessage(error) };
-  }
-}
-
 function persistPipelineRemoteMetadata(
   request: Pick<
     SharedPipelineWriteRequest,
@@ -1050,13 +1003,21 @@ export function registerPipelineHandlers(): void {
   registerIpcHandler(PIPELINE_CHANNELS.LIST, () =>
     withPipelineCrudTelemetry(
       { action: 'list', source: 'unknown' },
-      async () => {
-        const local = service.listPipelines();
-        if (!local.success || !local.data) return local;
+      async (): Promise<IPCResult<PipelineInfo[]>> => {
         startManagedCuratedPipelineSync();
-        // An unavailable account/catalog must never hide local pipelines.
-        const curated = await listManagedCuratedPipelines().catch(() => []);
-        const rows = [...local.data, ...curated];
+        // Core lists the stored and catalog definitions, in its order. An
+        // unavailable account or catalog never hides local pipelines.
+        let rows: PipelineInfo[];
+        try {
+          rows = (
+            await listDesktopPipelines(
+              { sources: ['bundled', 'user', 'curated'] },
+              PIPELINE_DEFINITION_DESKTOP_CALLER,
+            )
+          ).rows;
+        } catch (error) {
+          return { success: false, error: pipelineWriteErrorMessage(error) };
+        }
         if (!pipelineResourceContextEnabled())
           return { success: true, data: rows };
         return {
@@ -1120,44 +1081,45 @@ export function registerPipelineHandlers(): void {
             }
           }
 
+          // A project file named by host path is read where it was found;
+          // core reads project definitions by worktree scope.
+          if (isProjectPipelineRequest(request))
+            return loadProjectPipelineData(request);
+          const lookup = pipelineLookupDefinition(request);
+          if (!lookup)
+            return { success: false, error: 'Invalid pipeline lookup request' };
+          // Store lookups never resolve a share or a project file.
+          if (lookup.stored && !isStoredDefinitionId(lookup.definitionId))
+            return {
+              success: false,
+              error: `Workflow not found: ${lookup.definitionId}`,
+            };
+          // Core's get takes no source, so a bundled definition a user one
+          // shadows is read from the bundled store directly, without
+          // touching the shadow.
           if (
-            isCuratedPipelineLookup(request) ||
-            (typeof request === 'string' && request.startsWith('curated:'))
-          ) {
-            try {
-              return {
-                success: true,
-                data: await getManagedCuratedPipeline(
-                  typeof request === 'string' ? request : request.id,
-                ),
-              };
-            } catch (error) {
-              return { success: false, error: toErrorMessage(error) };
-            }
+            lookup.source === 'bundled' &&
+            getStoredPipelineIndexEntry(lookup.definitionId, 'user')
+          )
+            return withLocalRunOwner(
+              service.getStoredPipelineBySource('bundled', lookup.definitionId),
+            );
+          let data: PipelineData;
+          try {
+            data = await readDesktopPipeline(
+              lookup.definitionId,
+              {},
+              PIPELINE_DEFINITION_DESKTOP_CALLER,
+            );
+          } catch (error) {
+            return { success: false, error: pipelineWriteErrorMessage(error) };
           }
-          if (isSharedPipelineRequest(request)) {
-            return loadSharedPipelineData(request);
-          }
-
-          if (!isProjectPipelineRequest(request)) {
-            if (isStoredPipelineLookupRequest(request)) {
-              return withLocalRunOwner(
-                service.getStoredPipelineBySource(
-                  request.source === 'bundled' ? 'bundled' : 'user',
-                  request.id,
-                ),
-              );
-            }
-            if (typeof request !== 'string') {
-              return {
-                success: false,
-                error: 'Invalid pipeline lookup request',
-              };
-            }
-            return withLocalRunOwner(service.getPipeline(request));
-          }
-
-          return loadProjectPipelineData(request);
+          if (lookup.source !== undefined && data.info.source !== lookup.source)
+            return {
+              success: false,
+              error: `Workflow not found: ${lookup.definitionId}`,
+            };
+          return withLocalRunOwner({ success: true, data });
         },
       );
     },
@@ -1359,114 +1321,32 @@ export function registerPipelineHandlers(): void {
             }
           }
 
-          if (
-            isCuratedPipelineLookup(request) ||
-            (typeof request === 'string' && request.startsWith('curated:'))
-          ) {
-            try {
-              const loaded = await getManagedCuratedPipeline(
-                typeof request === 'string' ? request : request.id,
-              );
-              const content = { ...loaded.content };
-              delete content.readonly;
-              const saved = service.savePipeline({
-                name: `${loaded.content.name} (Copy)`,
-                description: loaded.content.description ?? '',
-                icon: loaded.content.icon ?? '',
-                content,
-              });
-              if (saved.success) notifyDesktopInventoryChanged(['pipelines']);
-              return saved;
-            } catch (error) {
-              return { success: false, error: toErrorMessage(error) };
-            }
-          }
-          if (isSharedPipelineRequest(request)) {
-            try {
-              const detail = await getSharedPipeline(request.remoteId);
-              const content = parsePipelineText(detail.rawPipeline);
-              delete content.readonly;
-              if (pipelineResourceContextEnabled()) {
-                return createScopedPipelineDuplicate(
-                  {
-                    name: `${content.name} (Copy)`,
-                    description: content.description ?? '',
-                    icon: content.icon ?? '',
-                    content,
-                  },
-                  (id, onRollback) =>
-                    recordSharedPipelineInstall(detail, id, onRollback),
-                );
-              }
-              const localId = randomUUID();
-              await recordSharedPipelineInstall(detail, localId);
-              return service.savePipeline({
-                id: localId,
-                name: `${content.name} (Copy)`,
-                description: content.description ?? '',
-                icon: content.icon ?? '',
-                content,
-              });
-            } catch (error) {
-              return {
-                success: false,
-                error: toErrorMessage(error),
-              };
-            }
-          }
-
-          if (!isProjectPipelineRequest(request)) {
-            if (typeof request !== 'string') {
-              return {
-                success: false,
-                error: 'Invalid pipeline lookup request for duplication',
-              };
-            }
-            if (pipelineResourceContextEnabled()) {
-              const loaded = service.getPipeline(request);
-              if (!loaded.success || !loaded.data) return loaded;
-              const content = { ...loaded.data.content };
-              delete content.readonly;
-              return createScopedPipelineDuplicate(
-                {
-                  curatedOrigin: loaded.data.info.curatedOrigin,
-                  name: `${loaded.data.info.name} (Copy)`,
-                  description: loaded.data.info.description,
-                  icon: loaded.data.info.icon,
-                  content,
-                },
-                (id, onRollback) =>
-                  copyPipelineInstallOrigin(request, id, onRollback),
-                (id) => copyPackageInstall(request, id),
-              );
-            }
-            const duplicated = service.duplicatePipeline(request);
-            if (duplicated.success && duplicated.data) {
-              await copyPackageInstall(request, duplicated.data.id);
-            }
-            return duplicated;
-          }
-
+          const sourceId = duplicateSourceId(request);
+          if (sourceId !== undefined)
+            return duplicatePipelineDefinition(sourceId, {});
+          if (!isProjectPipelineRequest(request))
+            return {
+              success: false,
+              error: 'Invalid pipeline lookup request for duplication',
+            };
+          // Core reads project definitions by worktree scope; this request
+          // names the file by host path, so its copy is saved through core
+          // from the checked file.
           const loaded = await loadProjectPipelineData(request);
-          if (!loaded.success) {
-            return loaded;
-          }
-
-          return service.savePipeline({
-            name: `${loaded.data.content.name} (Copy)`,
+          if (!loaded.success) return loaded;
+          const name = `${loaded.data.content.name} (Copy)`;
+          const content = { ...loaded.data.content, name };
+          delete content.readonly;
+          return saveUserPipeline({
+            name,
             description: loaded.data.content.description ?? '',
             icon: loaded.data.content.icon ?? '',
-            content: loaded.data.content,
+            content,
           });
         },
       );
       if (duplicated.success && duplicated.data)
-        recordUserPipelineOwner(
-          'info' in duplicated.data
-            ? duplicated.data.info.id
-            : duplicated.data.id,
-          copyOwner,
-        );
+        recordUserPipelineOwner(duplicated.data.id, copyOwner);
       return duplicated;
     },
   );
@@ -2273,7 +2153,7 @@ function emitExecutionEvent(
   event: Parameters<NonNullable<ExecutionOptions['onEvent']>>[0],
 ): void {
   notePipelineExecutionEvent(event, getWindow);
-  getObservabilityService().syncPipelineExecutionState(event.state);
+  createDesktopPipelineObservabilityFeed().onExecutionEvent(event);
   recordPipelineUsageEvent(event);
   noteAutomationPipelineEvent(event);
   if (
@@ -2306,7 +2186,7 @@ function emitStepOutputEvent(
   getWindow: () => BrowserWindow | null,
   event: Parameters<NonNullable<ExecutionOptions['onStepOutput']>>[0],
 ): void {
-  getObservabilityService().observePipelineOutput(event);
+  createDesktopPipelineObservabilityFeed().onStepOutput(event);
   void getWindow;
   sendToAllWindows(PIPELINE_CHANNELS.STEP_OUTPUT_EVENT, event);
 }
@@ -2326,64 +2206,33 @@ function getCancelExecutionEventType(
 }
 
 /** The nested pipeline executions an execution started. */
-function nestedPipelineExecutionIds(state: ExecutionState): string[] {
-  const ids = new Set<string>();
-  for (const job of Object.values(state.jobs)) {
-    for (const step of Object.values(job.steps)) {
-      if (step.child_execution_id) ids.add(step.child_execution_id);
-    }
-  }
-  for (const reason of state.status_reasons) {
-    if (reason.source.child_execution_id) {
-      ids.add(reason.source.child_execution_id);
-    }
-  }
-  return Array.from(ids);
-}
-
 export async function cancelPipelineExecutionFromMain(args: {
   executionId: string;
   getWindow: () => BrowserWindow | null;
 }): Promise<ExecutionState> {
-  const runtime = createMonitoredElectronExecutionRuntime(args.getWindow);
-  // The paused agents of the execution and of the nested pipelines it
-  // started stop being assignable Ledger owners before the cancellation
-  // starts: each retirement waits for any owner commit already checking one
-  // of them, and later commits find them gone.
-  await retireLedgerPipelineExecutionTree(
-    args.executionId,
-    async (executionId) => {
-      const state = await loadExecutionState(
-        executionId,
-        runtime.executionsDir,
-      );
-      return state === null ? [] : nestedPipelineExecutionIds(state);
-    },
-  );
-  const active = getActiveExecutionHandle(args.executionId);
-  if (active) {
-    // Request the fastest in-process path, but do not let a wedged handle keep
-    // the renderer's Cancel action pending forever. The persisted cancellation
-    // path below also signals the executor and force-finalizes its state after
-    // the bounded cooperative cancellation window when it remains running.
-    void active.cancel().catch(() => undefined);
-  }
+  // The local worker retires the execution tree's paused agents as Ledger
+  // owners, asks a live handle to stop, and takes the durable cancellation
+  // path, which force-finalizes a wedged run after its bounded window.
+  // The worker broadcasts the settled cancel to windows and watchers.
+  return cancelPipelineThroughLocalWorker(args.executionId);
+}
 
-  const cancelledState = await cancelPipelineExecution(
-    args.executionId,
-    runtime,
-  );
-  const eventType = getCancelExecutionEventType(cancelledState.status);
-  if (eventType !== null) {
-    emitExecutionEvent(args.getWindow, {
-      executionId: cancelledState.id,
+function broadcastCancelledExecution(
+  getWindow: () => BrowserWindow | null,
+): (state: ExecutionState) => void {
+  return (state) => {
+    const eventType = getCancelExecutionEventType(state.status);
+    if (eventType === null) return;
+    emitExecutionEvent(getWindow, {
+      executionId: state.id,
       type: eventType,
-      state: cancelledState,
+      state,
       timestamp: new Date().toISOString(),
     });
-  }
-  return cancelledState;
+  };
 }
+
+setPipelineCancelBroadcast(broadcastCancelledExecution(() => null));
 
 // Renderer EXECUTE is also tunneled for Portal remote control, so `portal`
 // stays a foreground usage source here. Its recorded identity is still `user`:
@@ -2870,7 +2719,7 @@ export async function cancelMatrixVariantFromMain(args: {
     if (
       state.owner_pid !== undefined &&
       state.owner_pid !== process.pid &&
-      !isKnownOrphanedExecution(state)
+      !(await isKnownOrphanedExecution(state))
     ) {
       throw new Error(
         encodeMatrixIpcErrorMessage(
@@ -3427,23 +3276,6 @@ async function startPipelineExecutionFromMainInternal(args: {
       projectPipelineSourcePath = path.resolve(validated.data.filePath);
     }
 
-    // A stored run executes the definition core validates, never the copy
-    // its caller sent; an id core doesn't know is an inline definition. Only
-    // a source main has itself loaded above opts out, never a caller's
-    // preference locator.
-    if (
-      !curatedId &&
-      !sharedPipeline &&
-      !pipelineFilePath &&
-      !executionOptions.pipelineId.startsWith('project--') &&
-      !isSharedPipelineLocalId(executionOptions.pipelineId)
-    ) {
-      const admitted = await admitStoredRunDefinition(
-        executionOptions.pipelineId,
-      );
-      if (admitted) pipelineContent = admitted.pipeline;
-    }
-
     const runContextResources = (): ReturnType<
       typeof pipelineContextResources
     > => {
@@ -3557,6 +3389,28 @@ async function startPipelineExecutionFromMainInternal(args: {
     const ownerContext = parseWorkspaceContext(ownerResult.owner);
     if (!ownerContext)
       throw new Error(backgroundExecutionDeniedMessage('unsupported-target'));
+    // A stored run executes the definition core validates, never the copy
+    // its caller sent; an id core doesn't know is an inline definition. Only
+    // a source main has itself loaded above opts out, never a caller's
+    // preference locator. A global run's definition is read for its owner,
+    // any other through the navigation context its start was checked in.
+    if (
+      !curatedId &&
+      !sharedPipeline &&
+      !pipelineFilePath &&
+      !executionOptions.pipelineId.startsWith('project--') &&
+      !isSharedPipelineLocalId(executionOptions.pipelineId)
+    ) {
+      const admitted = await admitStoredRunDefinition(
+        executionOptions.pipelineId,
+        topLevelGlobal
+          ? { owner: ownerResult.owner }
+          : targetProjectId === undefined
+            ? {}
+            : { projectId: targetProjectId },
+      );
+      if (admitted) pipelineContent = admitted.pipeline;
+    }
     if (storedPipelineId !== undefined && topLevelGlobal) {
       const resource = await readStoredPipelineContext(
         storedPipelineId,
@@ -3662,8 +3516,10 @@ async function startPipelineExecutionFromMainInternal(args: {
     if (!assetResolution.ok) throw new Error(assetResolution.message);
     if (resourceContextSnapshot !== undefined)
       await assertPipelineContextSnapshot(resourceContextSnapshot);
-    const handle = await executePipeline(pipelineContent, {
+    // Core records the run and dispatches its start to the local worker.
+    const handle = await startPipelineThroughLocalWorker(pipelineContent, {
       ...executionOptions,
+      executionContext: ownerResult.owner,
       ...assetResolution.options,
       pipelinePreferenceLocator,
       pipelineFileDir,
@@ -3867,6 +3723,7 @@ export async function rerunPipelineExecutionFromMain(args: {
 export function registerExecutionHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
+  setPipelineCancelBroadcast(broadcastCancelledExecution(getWindow));
   registerIpcHandler(
     PIPELINE_CHANNELS.EXECUTE,
     async (

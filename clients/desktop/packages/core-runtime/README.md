@@ -42,6 +42,27 @@ composes it with atomic-file durability through
 `@canopy/desktop-shared/node/w5-commit-log`; the core daemon composes it only
 in a W5 qualification build (W5b, CAN-5450).
 
+## W5 workspace metadata commands
+
+`/node/w5/workspace-metadata/` holds the policy of seven W5 commands
+(CAN-5520): `metadata` (`core.workspace.update` and `.reorder`), `settings`
+(`.scripts.update` and `.planDetection.update`), `private-memory` and
+`repositories` (`.repository.add` and `.remove`). Each factory takes its host
+through the `/ports` contracts: the one-decision bindings, revision check,
+commit, path projection, id check, index repository and a manifest edit port.
+A manifest edit returns only the fields its command changes, never plugin
+defaults. The host also supplies outcome decoders and post-commit hooks.
+`/manifest-keys` lists the manifest's known fields in write order. Desktop
+main hosts the commands in process. The W5 qualification daemon also hosts
+them (CAN-5522, W7a-3): `/daemon-binding` binds the cores to its W5 host with
+the `daemon` writer and `daemon:<principalId>:<source>` receipts, addressing
+each wire call before any reservation, `/manifest-edit` writes only the keys a
+change names into the stored document, and `/module` serves the registered
+`core.workspace.*` handlers (`/node/workspace/metadata-commands`) over a
+daemon host, with its bounded retry (`retry`), stored-outcome decoders
+(`projectors`), the decided-workspace projection (`decided-workspace`) and
+the path-free message rule (`wire-errors`).
+
 ## Vault migration sessions (inert)
 
 `src/node/vault/` holds the ADR 7 legacy-store migration session state machine
@@ -201,6 +222,21 @@ It runs over a `LocalWorkerTransport`: Electron main's direct call
 (`createDirectLocalWorkerTransport`) or the bundled binding
 (`localWorkerTransportOf`, exposed as the graph's `localWorker`), and both
 write identical records.
+
+## Script execution
+
+`@canopy/core-runtime/node/script/execution` (CAN-4143) is the worker side of
+script runs: `ScriptExecutionWorker` holds the run registry, the durable run
+log (`ScriptRunLogStore`: each script key's latest run, at most 2000 lines and
+1 MiB, a run another store instance left running read as lost) and the
+non-interactive process runner, and `createWorkerScriptHandlers` serves
+`worker.script.execute`, `.execution.cancel`, `.execution.get` and
+`.execution.list` over it. `CoreScriptRuns` is the core side: each run is a
+`core.script.run` operation (restart class `lost`) whose child is the
+`worker.script.execute` dispatch through `LocalWorkerExecution`. The package
+creates no process: process creation and its kill, drain and priority, the
+run-log location and durability, and the projection of a scope and context
+onto a checkout and environment are host ports.
 
 ## Execution accounting
 

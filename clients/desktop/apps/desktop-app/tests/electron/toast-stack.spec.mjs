@@ -571,49 +571,47 @@ test('a new profile receives stacked notifications without an opt-in', async () 
 });
 
 /**
- * Sends one horizontal wheel event per animation frame on the card under
+ * Sends one horizontal wheel event per display frame on the card under
  * `point`, as a two-finger trackpad swipe does. Negative deltas move the
- * fingers toward the right edge. The events are dispatched in the page:
- * round trips from the test can stall past the swipe's idle gap on a loaded
- * host, which reads as the fingers lifting.
+ * fingers toward the right edge. The whole swipe plays in one page task, with
+ * `performance.now()` stepping a frame per event and ending at the real time:
+ * on a loaded host any real gap over the swipe's idle wait reads as the
+ * fingers lifting, mid-swipe.
  */
 function trackpadSwipe(window, point, deltas) {
   return window.evaluate(
-    ({ x, y, deltas: frames }) =>
-      new Promise((resolve) => {
-        let index = 0;
-        const step = () => {
+    ({ x, y, deltas: frames }) => {
+      const realNow = performance.now.bind(performance);
+      const end = realNow();
+      let frame = 0;
+      performance.now = () => end - (frames.length - frame) * 16;
+      try {
+        for (; frame < frames.length; frame += 1) {
           const target = document.elementFromPoint(x, y);
-          if (index >= frames.length || target === null) {
-            const card = document.querySelector(
-              '[data-testid="toast-stack-card"]',
-            );
-            resolve({
-              fingers: window.__toastSwipe.fingers,
-              wheelX: Number.parseFloat(
-                card?.style.getPropertyValue('--toast-swipe-x') || '0',
-              ),
-              swiping: card?.hasAttribute('data-swipe-dragging') ?? false,
-            });
-            return;
-          }
+          if (target === null) break;
           target.dispatchEvent(
             new WheelEvent('wheel', {
               bubbles: true,
               cancelable: true,
               clientX: x,
               clientY: y,
-              deltaX: frames[index],
+              deltaX: frames[frame],
               deltaY: 0,
             }),
           );
-          index += 1;
-          // Read in the final wheel dispatch task, before the idle release timer.
-          if (index === frames.length) step();
-          else requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
-      }),
+        }
+      } finally {
+        delete performance.now;
+      }
+      const card = document.querySelector('[data-testid="toast-stack-card"]');
+      return {
+        fingers: window.__toastSwipe.fingers,
+        wheelX: Number.parseFloat(
+          card?.style.getPropertyValue('--toast-swipe-x') || '0',
+        ),
+        swiping: card?.hasAttribute('data-swipe-dragging') ?? false,
+      };
+    },
     { x: point.x, y: point.y, deltas },
   );
 }

@@ -262,7 +262,9 @@ test('the curated automation catalog says when it could not load, and retries', 
     await expect(window.getByTestId(CURATED_ENTRY)).toHaveCount(0);
 
     cloud.state.offline = false;
-    await notice.getByRole('button', { name: 'Retry', exact: true }).click();
+    await notice
+      .getByRole('button', { name: 'Try again', exact: true })
+      .click();
     await expect(window.getByTestId(CURATED_ENTRY)).toBeVisible();
     await expect(notice).toHaveCount(0);
   } finally {

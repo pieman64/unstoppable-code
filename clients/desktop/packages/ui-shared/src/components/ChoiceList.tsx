@@ -1,4 +1,11 @@
-import type { ButtonHTMLAttributes, JSX, ReactNode } from 'react';
+import {
+  useLayoutEffect,
+  useRef,
+  type ButtonHTMLAttributes,
+  type JSX,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { HAIRLINE_INSET_RING_CLASS } from '../lib/row-chips';
 import { ChoiceMark } from './Choice';
 
@@ -9,9 +16,14 @@ import { ChoiceMark } from './Choice';
  *
  * - Box: a hairline inset edge on the 8px radius, with hairline dividers
  *   between rows. It scrolls when the caller caps its height.
- * - Row: a whole-row button that toggles one choice, its `ChoiceMark` leading.
- *   Selection is the mark alone (a neutral fill and a check); the row takes
- *   no accent and no selected fill. Hover and keyboard focus still highlight.
+ * - Row: a whole-row control that toggles one choice, its `ChoiceMark`
+ *   leading. It is a checkbox or a radio to assistive technology and UI
+ *   automation (`role` + `aria-checked`), never a pressed button. Selection
+ *   is the mark alone; the row takes no selected fill. Hover and keyboard
+ *   focus still highlight.
+ * - `kind="radio"` makes the list a radiogroup: one tab stop (the chosen row,
+ *   or the first) and arrow keys that move and choose, skipping disabled
+ *   rows and wrapping.
  */
 export interface ChoiceListProps {
   /** Accessible name of the group: `Projects`, `Owners`. */
@@ -20,6 +32,17 @@ export interface ChoiceListProps {
   readonly 'data-testid'?: string;
   /** Placement and height only (`max-h-72`, margins). */
   readonly className?: string;
+  /** `radio` when the rows are one choice: a radiogroup with arrow keys. */
+  readonly kind?: 'checkbox' | 'radio';
+}
+
+const NEXT_KEYS = new Set(['ArrowDown', 'ArrowRight']);
+const PREVIOUS_KEYS = new Set(['ArrowUp', 'ArrowLeft']);
+
+function enabledRadios(group: HTMLElement): HTMLButtonElement[] {
+  return Array.from(
+    group.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+  ).filter((radio) => !radio.disabled);
 }
 
 export function ChoiceList({
@@ -27,11 +50,50 @@ export function ChoiceList({
   children,
   'data-testid': dataTestId,
   className = '',
+  kind = 'checkbox',
 }: ChoiceListProps): JSX.Element {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const radio = kind === 'radio';
+
+  // Roving tab stop: the chosen radio, or the first enabled one.
+  useLayoutEffect(() => {
+    const group = groupRef.current;
+    if (!radio || !group) return;
+    const radios = enabledRadios(group);
+    const stop =
+      radios.find((row) => row.getAttribute('aria-checked') === 'true') ??
+      radios[0];
+    for (const row of group.querySelectorAll<HTMLButtonElement>(
+      '[role="radio"]',
+    )) {
+      row.tabIndex = row === stop ? 0 : -1;
+    }
+  });
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    const group = groupRef.current;
+    if (!radio || !group) return;
+    const step = NEXT_KEYS.has(event.key)
+      ? 1
+      : PREVIOUS_KEYS.has(event.key)
+        ? -1
+        : 0;
+    if (step === 0) return;
+    const radios = enabledRadios(group);
+    const current = radios.findIndex((row) => row === event.target);
+    if (current === -1 || radios.length === 0) return;
+    event.preventDefault();
+    const next = radios[(current + step + radios.length) % radios.length];
+    next?.focus();
+    next?.click();
+  };
+
   return (
     <div
-      role="group"
+      ref={groupRef}
+      role={radio ? 'radiogroup' : 'group'}
       aria-label={ariaLabel}
+      onKeyDown={onKeyDown}
       data-testid={dataTestId}
       className={`flex flex-col divide-y overflow-y-auto rounded-lg ${HAIRLINE_INSET_RING_CLASS} ring-line-base ${className}`}
     >
@@ -42,7 +104,7 @@ export function ChoiceList({
 
 export interface ChoiceListRowProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
-  'type' | 'aria-pressed' | 'className' | 'children'
+  'type' | 'aria-pressed' | 'aria-checked' | 'role' | 'className' | 'children'
 > {
   readonly selected: boolean;
   /** `checkbox` (default) for many choices, `radio` for one. */
@@ -65,15 +127,18 @@ export function ChoiceListRow({
   disabled,
   ...props
 }: ChoiceListRowProps): JSX.Element {
+  // The focus ring sits inside the full-width row: the list scrolls, and
+  // would cut an outside ring off at its sides and the first row's top.
   return (
     <button
       {...props}
       type="button"
-      aria-pressed={selected}
+      role={kind}
+      aria-checked={selected}
       disabled={disabled}
-      className="focus-ring flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
+      className="group/choice-row focus-ring focus-ring-inset flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
     >
-      <ChoiceMark kind={kind} checked={selected} />
+      <ChoiceMark kind={kind} checked={selected} disabled={disabled} />
       {leading}
       <span className="min-w-0 flex-1">{children}</span>
       {trailing ? (

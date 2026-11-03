@@ -116,7 +116,7 @@ interface PluginSelectorProps {
    */
   unavailable?: readonly CapabilityUnavailable[];
   /**
-   * Pads the selector inside its own `px-5 py-3` gutter. Defaults to `true`
+   * Pads the selector inside its own `px-6 py-3` gutter. Defaults to `true`
    * for full-bleed dialogs; pass `false` when the host panel already pads.
    */
   inset?: boolean;
@@ -812,7 +812,7 @@ export function PluginSelector({
     <>
       {/* Unified table */}
       <div
-        className={`flex flex-1 flex-col min-h-0${inset ? ' px-5 py-3' : ''}`}
+        className={`flex flex-1 flex-col min-h-0${inset ? ' px-6 py-3' : ''}`}
       >
         <UnifiedTable
           rows={tableRows}

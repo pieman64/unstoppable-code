@@ -54,7 +54,6 @@ import {
   updatePreferencesFileWithPrevious,
 } from '../lib/preferences-store';
 import { validateId } from '../lib/validation';
-import { seedWorkspaceIndex } from '../lib/workspace-index-seed';
 import { pluginSelectionsEqual } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   bumpGlobalPluginDefaultsRevision,
@@ -544,17 +543,12 @@ export function registerPreferenceHandlers(): void {
   });
 
   registerIpcHandler(IPC_CHANNELS.preferencesCreatePrimaryDataDir, async () => {
-    // Seed an empty workspace index and the adoption marker so data-aware
-    // resolution treats the explicitly created primary directory as a real
-    // install after restart. A bare directory — or one holding only
-    // boot-created files — would otherwise lose to a data-bearing fallback.
+    // The adoption marker alone makes data-aware resolution select this
+    // directory over a data-bearing fallback after restart; no automatic
+    // startup path writes it. The first W5 commit on this root creates the
+    // workspace index.
     const primaryDataDir = getPrimaryBrandDataDir();
-    await seedWorkspaceIndex({
-      source: 'preferences_create_primary_data_dir',
-      primaryDataDir,
-    });
-    // The marker is the durable record of the user's explicit choice — the
-    // only install-data evidence an automatic startup path can never write.
+    await mkdir(primaryDataDir, { recursive: true });
     await writeFile(
       join(primaryDataDir, DATA_DIR_ADOPTION_MARKER_FILENAME),
       JSON.stringify(
@@ -1017,15 +1011,13 @@ export function registerPreferenceHandlers(): void {
     IPC_CHANNELS.preferencesSetPipelineDisabled,
     async (_event, request: unknown) => {
       const { id, disabled } = normalizeSetPipelineDisabledRequest(request);
-      const normalized = await updatePreferencesFile((previous) => {
-        const disabledPipelineIds = new Set(previous.disabledPipelineIds);
-        if (disabled) {
-          disabledPipelineIds.add(id);
-        } else {
-          disabledPipelineIds.delete(id);
-        }
-        return { disabledPipelineIds: Array.from(disabledPipelineIds) };
-      });
+      // Core records it for any source, in order with the definition's
+      // writes; loaded here, as the dispatch module reaches the pipeline store.
+      const { setPipelineDefinitionEnabled } =
+        await import('../canopy-runtime/pipeline-definition-dispatch');
+      const normalized =
+        (await setPipelineDefinitionEnabled(id, !disabled)) ??
+        (await readPreferencesFile());
       ++preferencesSaveGeneration;
       broadcastPreferencesSynced(preferencesSaveResult(normalized));
       await applyPreferenceSideEffects(normalized, {

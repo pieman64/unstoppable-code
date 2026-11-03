@@ -4,10 +4,14 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import type { MarketplaceSource } from '@canopy/app-core/client';
 import {
   Button,
+  EmptyState,
+  ErrorBanner,
+  ErrorState,
   LoadingSpinner,
   MissingPluginsBadge,
   RefreshButton,
   ProviderSupportIcons,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -106,31 +110,22 @@ export function MarketplaceSourcesList({
     );
   } else if (sources === null) {
     body = (
-      <div
-        role="alert"
-        className="flex flex-col items-start gap-3 py-8"
-        data-testid="marketplace-sources-load-error"
-      >
-        <p className={`text-s fg-destructive ${REPLAY_MASK_CLASS}`}>
-          {listError ?? 'Marketplaces could not be loaded.'}
-        </p>
-        <Button
-          size="compact"
-          variant="secondary"
-          onClick={() => void state.reload()}
-        >
-          Try again
-        </Button>
-      </div>
+      <ErrorState
+        testId="marketplace-sources-load-error"
+        message={
+          <span className={REPLAY_MASK_CLASS}>
+            {listError ?? "Couldn't load marketplaces."}
+          </span>
+        }
+        onRetry={() => void state.reload()}
+      />
     );
   } else if (sources.length === 0) {
     body = (
-      <p
-        className="py-8 text-s fg-secondary"
-        data-testid="marketplace-sources-empty"
-      >
-        No marketplaces yet.
-      </p>
+      <EmptyState
+        testId="marketplace-sources-empty"
+        title="No marketplaces yet"
+      />
     );
   } else {
     body = (
@@ -165,14 +160,13 @@ export function MarketplaceSourcesList({
       data-testid="marketplace-sources"
     >
       {header}
-      {sources !== null && listError && (
-        <p
-          role="alert"
-          className={`rounded-md bg-destructive-subtle px-3 py-2 text-xs fg-destructive ${REPLAY_MASK_CLASS}`}
-          data-testid="marketplace-sources-refresh-error"
-        >
-          {listError}
-        </p>
+      {sources !== null && (
+        <ErrorBanner
+          className=""
+          error={listError}
+          blockMessageFromReplay
+          testId="marketplace-sources-refresh-error"
+        />
       )}
       {body}
       {pendingRemoval && confirmation && (
@@ -335,10 +329,12 @@ function MarketplaceSourceRow({
       {(error || warning) && (
         <p
           role="alert"
-          className={`text-xs ${error ? 'fg-destructive' : 'fg-warning'} ${REPLAY_MASK_CLASS}`}
+          className={REPLAY_MASK_CLASS}
           data-testid="marketplace-source-message"
         >
-          {error ?? warning}
+          <StatusLabel tone={error ? 'destructive' : 'attention'} size="xs">
+            {error ?? warning}
+          </StatusLabel>
         </p>
       )}
     </li>

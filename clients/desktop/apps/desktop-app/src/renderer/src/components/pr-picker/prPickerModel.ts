@@ -1,7 +1,12 @@
 import type { PrPickerOption } from '@/stores/navigationStore';
 
-function matchesPrPickerQuery(option: PrPickerOption, query: string): boolean {
-  if (query.length === 0) {
+/** Whether a pull request matches the picker's search text. */
+export function prPickerOptionMatches(
+  option: PrPickerOption,
+  query: string,
+): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (normalized.length === 0) {
     return true;
   }
 
@@ -14,25 +19,5 @@ function matchesPrPickerQuery(option: PrPickerOption, query: string): boolean {
     .join(' ')
     .toLowerCase();
 
-  return haystack.includes(query);
-}
-
-export function getFilteredPrPickerOptions(
-  options: PrPickerOption[],
-  query: string,
-): PrPickerOption[] {
-  const normalized = query.trim().toLowerCase();
-  return options.filter((option) => matchesPrPickerQuery(option, normalized));
-}
-
-export function getSelectedPrPickerOption(
-  options: PrPickerOption[],
-  query: string,
-  selectedIndex: number,
-): PrPickerOption | undefined {
-  if (selectedIndex < 0) {
-    return undefined;
-  }
-
-  return getFilteredPrPickerOptions(options, query)[selectedIndex];
+  return haystack.includes(normalized);
 }

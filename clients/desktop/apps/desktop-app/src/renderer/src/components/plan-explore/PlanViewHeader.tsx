@@ -9,6 +9,7 @@ import {
   PipelineDispatchedTime,
   PlanReviewStatusBadge,
   PlanStatusNote,
+  SettingsSelect,
 } from '@canopy/ui-shared/components';
 import type { TrackedPlanData } from '@canopy/desktop-shared/types';
 import { PipelineIcon } from '@canopy/ui-shared/icons';
@@ -145,28 +146,25 @@ function RevisionSelect({
   testId,
 }: RevisionSelectProps): JSX.Element {
   return (
-    <select
+    <SettingsSelect
+      width="fit"
       data-testid={testId}
+      aria-label="Plan revision"
       value={viewedRevision === null ? 'latest' : String(viewedRevision)}
-      onChange={(e): void => {
-        const value = e.target.value;
+      onValueChange={(value): void => {
         onChange(value === 'latest' ? null : Number(value));
       }}
-      className="focus-ring shrink-0 rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
-    >
-      <option value="latest">Latest</option>
-      {plan.revisions
-        .slice()
-        .reverse()
-        .map((revision) => (
-          <option
-            key={`${plan.id}-${revision.revisionNumber}`}
-            value={String(revision.revisionNumber)}
-          >
-            Revision {revision.revisionNumber}
-          </option>
-        ))}
-    </select>
+      options={[
+        { value: 'latest', label: 'Latest' },
+        ...plan.revisions
+          .slice()
+          .reverse()
+          .map((revision) => ({
+            value: String(revision.revisionNumber),
+            label: `Revision ${revision.revisionNumber}`,
+          })),
+      ]}
+    />
   );
 }
 
@@ -259,6 +257,10 @@ export function PlanViewHeader({
     : implementation.notes.filter(
         (note) => note.target.kind === 'run' || onOpenChat !== undefined,
       );
+  const openTarget = implementation.openTarget;
+  const canOpen =
+    openTarget !== undefined &&
+    (openTarget.kind === 'run' || onOpenChat !== undefined);
 
   return (
     <>
@@ -277,7 +279,7 @@ export function PlanViewHeader({
         />
         {notes.map((note) => (
           <PlanStatusNote
-            key={`${note.target.kind}-${note.target.kind === 'run' ? note.target.executionId : note.target.chatId}`}
+            key={`${note.target.kind}-${note.target.kind === 'run' ? note.target.executionId : note.target.chatId}-${note.text ?? ''}`}
             text={note.text}
             className="shrink-0"
             data-testid={`${testIdPrefix}-status-note${note.text ? '-outcome' : ''}`}
@@ -331,6 +333,13 @@ export function PlanViewHeader({
               planContent={plan.content}
               {...planExecuteAvailability(plan, implementation)}
               executeEmphasis={implementation.status.executeEmphasis}
+              primaryAction={
+                canOpen ? implementation.status.primaryAction : 'execute'
+              }
+              openVenue={openTarget?.kind === 'run' ? 'pipeline' : 'chat'}
+              onOpen={
+                openTarget ? (): void => openNoteTarget(openTarget) : undefined
+              }
               onExplore={(): void => {}}
               onImplement={actions.implement}
               onPipeline={actions.openPipelineModal}

@@ -1,3 +1,7 @@
+import {
+  W5_UNREACHABLE_READ_MESSAGE,
+  W5AuthorityUnreachableError,
+} from '../lib/w5-file-store';
 import { WorkspaceConfigUnreadableError } from '../lib/workspace-manifest-repository';
 
 const mockGetRemoteUrl = jest.fn();
@@ -157,6 +161,24 @@ describe('resolveUnambiguousGitHubRepository', () => {
     await expect(resolveUnambiguousGitHubRepository(origin)).rejects.toThrow(
       WorkspaceConfigUnreadableError,
     );
+    expect(mockGetRemoteUrlStrict).not.toHaveBeenCalled();
+  });
+
+  it('GB4: a read that could not reach the background service never says a save failed', async () => {
+    const config = { version: 1, type: 'single-repo', repos: [] };
+    mockReadWorkspaceConfigDetailed.mockResolvedValue({
+      config,
+      authority: 'unreadable',
+      ownerMalformed: false,
+      memoryMalformed: false,
+      unserved: new W5AuthorityUnreachableError('refused', 'connect'),
+    });
+    const refusal: unknown = await resolveUnambiguousGitHubRepository(
+      origin,
+    ).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(WorkspaceConfigUnreadableError);
+    expect(refusal).toHaveProperty('message', W5_UNREACHABLE_READ_MESSAGE);
+    expect(String(refusal)).not.toMatch(/save/i);
     expect(mockGetRemoteUrlStrict).not.toHaveBeenCalled();
   });
 

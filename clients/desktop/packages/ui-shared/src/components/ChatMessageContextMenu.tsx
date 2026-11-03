@@ -22,6 +22,7 @@ import {
   DEFAULT_COPIED_DURATION_MS,
 } from './copy-to-clipboard';
 import { DropdownMenuStatusRow, DropdownMenuSurface } from './DropdownMenu';
+import { ErrorBanner } from './StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
 import { CopyIcon, GlobeIcon, LinkIcon } from '../icons/AppIcons';
@@ -562,7 +563,7 @@ export function ChatMessageContextMenu({
   }, [linkActions, onCopy, state]);
 
   const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLDivElement>): void => {
+    (event: KeyboardEvent<HTMLSpanElement>): void => {
       // Stopping propagation also keeps the key from the menu's own document
       // listener, so Escape is handled here.
       event.stopPropagation();
@@ -595,12 +596,13 @@ export function ChatMessageContextMenu({
     };
   }, [state, onClose]);
 
-  const body = state.ownerDocument.body;
-  if (!body) return null;
   // The boundary keeps the menu's React events (clicks, keys, context menus)
-  // from bubbling into the message row or transcript that rendered it.
-  return createPortal(
-    <div
+  // from bubbling into the message row or transcript that rendered it. The
+  // menu portals itself, but React bubbles its events through this tree; the
+  // span is hidden and holds none of the menu's nodes.
+  return (
+    <span
+      hidden
       data-chat-message-context-menu-boundary=""
       onClick={stopPropagation}
       onMouseDown={stopPropagation}
@@ -616,8 +618,7 @@ export function ChatMessageContextMenu({
         dataTestId="chat-message-context-menu"
         focusOnOpen
       />
-    </div>,
-    body,
+    </span>
   );
 }
 
@@ -700,30 +701,32 @@ function ChatMessageCopyStatus({
   const body = ownerDocument.body;
   if (!body) return null;
   return createPortal(
-    <DropdownMenuSurface
-      ref={surfaceRef}
-      role="presentation"
-      data-testid={
-        kind === 'copied' ? 'chat-message-copied' : 'chat-message-copy-failed'
-      }
-      className="z-dropdown"
-      style={{ position: 'fixed', ...position }}
-    >
-      {kind === 'copied' ? (
-        <>
-          <DropdownMenuStatusRow role="presentation" aria-hidden="true">
-            Copied
-          </DropdownMenuStatusRow>
-          <span role="status" className="sr-only">
-            {announced ? 'Copied' : ''}
-          </span>
-        </>
-      ) : (
-        <DropdownMenuStatusRow role="alert">
-          {"Couldn't copy to clipboard"}
+    kind === 'copied' ? (
+      <DropdownMenuSurface
+        ref={surfaceRef}
+        role="presentation"
+        data-testid="chat-message-copied"
+        className="z-dropdown"
+        style={{ position: 'fixed', ...position }}
+      >
+        <DropdownMenuStatusRow role="presentation" aria-hidden="true">
+          Copied
         </DropdownMenuStatusRow>
-      )}
-    </DropdownMenuSurface>,
+        <span role="status" className="sr-only">
+          {announced ? 'Copied' : ''}
+        </span>
+      </DropdownMenuSurface>
+    ) : (
+      // The failure is the shared error notice, which brings its own tray.
+      <div
+        ref={surfaceRef}
+        data-testid="chat-message-copy-failed"
+        className="z-dropdown"
+        style={{ position: 'fixed', ...position }}
+      >
+        <ErrorBanner className="" error="Couldn't copy to clipboard" />
+      </div>
+    ),
     body,
   );
 }

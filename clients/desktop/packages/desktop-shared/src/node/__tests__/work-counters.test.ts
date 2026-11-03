@@ -3,6 +3,7 @@ import {
   takeChatStorageActivity,
 } from '../chat-storage-activity';
 import { serialize } from 'node:v8';
+import { BACKGROUND_SERVICE_UNREACHABLE_REASONS } from '../../lib/background-service-status';
 import {
   WORK_COUNTERS_QUERY_KEY,
   WORK_COUNTER_KEY_LIMIT,
@@ -29,6 +30,7 @@ import {
   recordProviderEventIngested,
   recordFilesRouteOutcome,
   recordFilesRouteSelected,
+  recordW5Work,
   resetWorkCounters,
   snapshotWorkCounters,
   snapshotFilesWorkCounters,
@@ -324,6 +326,7 @@ describe('work counters', () => {
       chatStorage: {},
       provider: {},
       route: {},
+      w5: {},
     });
     before.provider.eventsIngested = 99;
     expect(snapshotWorkCounters().provider).toEqual({});
@@ -356,6 +359,21 @@ describe('work counters', () => {
     });
     expect(snapshot.ipc).toEqual({});
     expect(resetWorkCounters().route).toEqual({});
+  });
+
+  it('counts W5 store work outside E2E builds, apart from the other sources', () => {
+    resetWorkCounters();
+    recordW5Work('host.commit.w5.worktree_list.write');
+    recordW5Work('host.commit.us', 120);
+    recordW5Work('host.commit.us', 30);
+
+    const snapshot = snapshotWorkCounters();
+    expect(snapshot.w5).toEqual({
+      'host.commit.w5.worktree_list.write': 1,
+      'host.commit.us': 150,
+    });
+    expect(snapshot.route).toEqual({});
+    expect(resetWorkCounters().w5).toEqual({});
   });
 
   it('exposes the snapshot and reset query only in E2E builds', () => {
@@ -414,6 +432,16 @@ describe('production Files projection', () => {
     expect(
       evidence.route['files.directory.daemon.failed.permission_denied'],
     ).toBe(1);
+    // Unreachable-daemon fallbacks and latched bypasses, one key per reason.
+    for (const reason of BACKGROUND_SERVICE_UNREACHABLE_REASONS)
+      expect(evidence.route[`files.roots.daemon.fallback.${reason}`]).toBe(0);
+    expect(evidence.route['files.roots.daemon.bypassed']).toBe(0);
+    recordFilesRouteOutcome('directory', 'daemon.fallback.start_failed');
+    recordFilesRouteOutcome('directory', 'daemon.bypassed');
+    expect(snapshotFilesWorkCounters().route).toMatchObject({
+      'files.directory.daemon.fallback.start_failed': 1,
+      'files.directory.daemon.bypassed': 1,
+    });
     expect(JSON.stringify(evidence)).not.toContain('private');
     expect(installWorkCountersQuery()).toBe(false);
     evidence.route['files.roots.daemon'] = 99;

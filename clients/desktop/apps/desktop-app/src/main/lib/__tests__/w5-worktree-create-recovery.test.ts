@@ -47,6 +47,16 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
+import type * as CoreRuntimeNode from '@canopy/core-runtime/node';
+jest.mock('@canopy/core-runtime/node', () => {
+  const actual = jest.requireActual<typeof CoreRuntimeNode>(
+    '@canopy/core-runtime/node',
+  );
+  return {
+    ...actual,
+    createBranchObserver: jest.fn(actual.createBranchObserver),
+  };
+});
 jest.mock('node:worker_threads', () =>
   jest
     .requireActual<
@@ -101,6 +111,13 @@ import { WorktreeCreationRefusedError } from '../worktree-creation-selection';
 import { createWorktreeFromSelection } from '../worktree-creation';
 import { __resetSidebarItemsStateForTests } from '../sidebar-items';
 import { setBeforeProjectPluginDefaultsChangeHandler } from '../workspace-persistence';
+import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
+import { W5AuthorityUnreachableError } from '@canopy/core-runtime/node/w5/file-store';
+import { createBranchObserver } from '@canopy/core-runtime/node';
+import {
+  startWorktreeBranchObserver,
+  stopWorktreeBranchWatchers,
+} from '../worktree-branch-watcher';
 
 jest.setTimeout(60_000);
 let dir: string;
@@ -141,6 +158,65 @@ function restartHost(): void {
   __setDesktopW5FileStoreForTests(createW5CommitLogFileStore(() => host));
   __resetSidebarItemsStateForTests();
 }
+
+it('refuses workspaceRepairWorktree before filesystem or Git effects when W5 is unreachable', async () => {
+  const runtime = createDesktopRuntime();
+  const lost = new W5AuthorityUnreachableError('refused', 'lost');
+  const capture = jest.spyOn(host, 'capture').mockRejectedValue(lost);
+  const repairCheckout = jest.spyOn(
+    sourceControl,
+    'repairWorkspaceRootWorktree',
+  );
+  const commit = jest.spyOn(host, 'commit');
+  registerWorkspaceHandlers(() => null, {
+    dispatcher: runtime,
+    resolveCaller: () => ({
+      principalId: 'test-user',
+      clientInstanceId: 'test-client',
+      authorityId: 'local-desktop',
+      interfaceKind: 'test',
+      grants: ['core.worktree.read'],
+    }),
+  });
+  const repair = mockRepairHandlers.get(IPC_CHANNELS.workspaceRepairWorktree);
+  if (!repair) throw new Error('Repair handler was not registered');
+  try {
+    const repairing = repair(
+      {},
+      { workspaceId: 'a', worktreeId: 'unreachable' },
+    );
+    await repairing.catch(() => undefined);
+    expect(capture).toHaveBeenCalledTimes(1);
+    await expect(repairing).rejects.toMatchObject({ runtimeCause: lost });
+    expect(repairCheckout).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(existsSync(paths.getWorktreeDataDir('a', 'unreachable'))).toBe(
+      false,
+    );
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+it('keeps the branch observer listCheckouts decision fail-closed during a W5 outage', async () => {
+  const runtime = createDesktopRuntime();
+  const lost = new W5AuthorityUnreachableError('refused', 'lost');
+  const capture = jest.spyOn(host, 'capture').mockRejectedValue(lost);
+  const commit = jest.spyOn(host, 'commit');
+  startWorktreeBranchObserver({ dispatcher: runtime, getWindow: () => null });
+  const ports = jest.mocked(createBranchObserver).mock.lastCall?.[0];
+  if (!ports) throw new Error('Branch observer ports were not composed');
+  try {
+    const listing = ports.listCheckouts();
+    await listing.catch(() => undefined);
+    expect(capture).toHaveBeenCalledTimes(1);
+    await expect(listing).rejects.toMatchObject({ runtimeCause: lost });
+    expect(commit).not.toHaveBeenCalled();
+  } finally {
+    stopWorktreeBranchWatchers();
+    await runtime.shutdown();
+  }
+});
 
 function invoke(
   name = 'reserved',

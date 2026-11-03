@@ -30,6 +30,79 @@ function classesOf(host: HTMLElement, testId: string): DOMTokenList {
 }
 
 describe('PlanActionControls buttons', () => {
+  it('keeps portaled overflow retries keyboard-operable after Execute becomes Open', () => {
+    Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const implement = jest.fn();
+    const button = (testId: string): HTMLButtonElement => {
+      const found = document.querySelector<HTMLButtonElement>(
+        `[data-testid="${testId}"]`,
+      );
+      if (!found) throw new Error(`Missing ${testId}`);
+      return found;
+    };
+    const press = (key: string): void => {
+      act(() => {
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true }),
+        );
+      });
+    };
+    const explore = jest.fn();
+    const pipeline = jest.fn();
+    const open = jest.fn();
+    try {
+      act(() =>
+        root.render(
+          <PlanActionControls
+            dataTestIdPrefix="plan"
+            planContent="Implement the plan."
+            onExplore={explore}
+            onImplement={implement}
+            onPipeline={pipeline}
+            primaryAction="execute"
+            openVenue="chat"
+            onOpen={open}
+          />,
+        ),
+      );
+      expect(button('plan-execute')).toBeDefined();
+      act(() =>
+        root.render(
+          <PlanActionControls
+            dataTestIdPrefix="plan"
+            planContent="Implement the plan."
+            onExplore={explore}
+            onImplement={implement}
+            onPipeline={pipeline}
+            primaryAction="open"
+            openVenue="chat"
+            onOpen={open}
+          />,
+        ),
+      );
+      const trigger = button('plan-more');
+      act(() => trigger.focus());
+      press('ArrowDown');
+      expect(document.activeElement).toBe(button('plan-execute-pipeline'));
+      press('ArrowDown');
+      expect(document.activeElement).toBe(button('plan-execute-implement'));
+      press('Escape');
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      press('ArrowUp');
+      expect(document.activeElement).toBe(button('plan-execute-implement'));
+      act(() => button('plan-execute-implement').click());
+      expect(implement).toHaveBeenCalledTimes(1);
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it('uses the shared compact buttons: Explore and Share secondary, Execute primary', () => {
     const host = controls();
     for (const [testId, variant] of [
@@ -99,7 +172,8 @@ describe('PlanActionControls buttons', () => {
         'plan-execute-pipeline',
         'plan-execute-implement',
       ]) {
-        const row = container.querySelector(`[data-testid="${testId}"]`);
+        // The menu portals to the document body.
+        const row = document.body.querySelector(`[data-testid="${testId}"]`);
         expect(row?.classList.contains('text-xs')).toBe(true);
         expect(
           row

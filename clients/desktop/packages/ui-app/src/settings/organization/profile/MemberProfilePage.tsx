@@ -8,6 +8,7 @@ import {
   Newspaper,
   Workflow,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { TabBar } from '@canopy/ui-shared/components';
 import type { MemberProfileHeader } from '@canopy/protocol/team';
 import type { OrganizationMember } from '@canopy/protocol/settings';
 import {
@@ -17,7 +18,6 @@ import {
   useSettingsSearchParams,
 } from '../../host';
 import { TeamLapsedState } from '../team-lapsed-state';
-import { ScrollableTabStrip } from '../ScrollableTabStrip';
 import { useViewerDataSharing } from '../use-viewer-data-sharing';
 import { OrganizationDataSharingOptIn } from '../web-data-sharing-opt-in';
 import { ProfileHeader } from './ProfileHeader';
@@ -223,45 +223,24 @@ export function MemberProfilePage({
                 sharing={viewerSharing}
               />
             )}
-            {/*
-            Wrapped in the shared scroll strip: Digests makes this a FIVE-tab
-            row of icon-plus-label buttons, which no longer fits a 390px
-            viewport. Without it the row either overflows the page horizontally
-            or leaves the trailing tabs unreachable. Same treatment the admin
-            nav already uses; `w-max` keeps the tabs on one line so the
-            container scrolls instead of the tabs compressing, and `shrink-0`
-            stops the labels from being squeezed.
-          */}
-            <ScrollableTabStrip frame="underline">
-              <nav
-                className="flex w-max gap-1"
-                data-testid="profile-tabs"
-                aria-label="Member profile views"
-              >
-                {visibleTabs.map((tab) => {
-                  const isActive = tab.key === activeTab;
-                  const Icon = tab.icon;
-                  return (
-                    <button
-                      key={tab.key}
-                      type="button"
-                      data-settings-control="chip"
-                      onClick={() => selectTab(tab.key)}
-                      data-testid={`profile-tab-${tab.key}`}
-                      aria-current={isActive ? 'page' : undefined}
-                      className={`-mb-px inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-2 text-s font-medium transition-colors ${
-                        isActive
-                          ? 'tab-accent-line fg-primary'
-                          : 'border-transparent fg-secondary hover:fg-primary'
-                      }`}
-                    >
-                      <Icon size={15} />
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </nav>
-            </ScrollableTabStrip>
+            {/* Digests makes this five icon-and-label tabs, past what a
+                390px viewport fits, so the strip scrolls sideways. */}
+            <TabBar
+              items={visibleTabs.map((tab) => {
+                const Icon = tab.icon;
+                return {
+                  id: tab.key,
+                  label: tab.label,
+                  icon: <Icon size={15} />,
+                  dataTestId: `profile-tab-${tab.key}`,
+                };
+              })}
+              value={activeTab}
+              onChange={(next): void => selectTab(next)}
+              label="Member profile views"
+              scrollable
+              dataTestId="profile-tabs"
+            />
 
             {activeTab === 'overview' && (
               <ProfileOverviewSection

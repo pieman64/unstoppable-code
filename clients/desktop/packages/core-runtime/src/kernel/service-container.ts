@@ -8,6 +8,8 @@ export type RuntimeHealthCheck = {
   name: string;
   status: 'pass' | 'warn' | 'fail';
   message: string | null;
+  /** A service's own machine-readable cause; `message` stays prose. */
+  reason?: string;
 };
 
 export type RuntimeHealth = {
@@ -179,7 +181,12 @@ export function createServiceContainer(
       const check = source.health?.();
       return check === undefined
         ? { name, status: 'pass', message: null }
-        : { name, status: check.status, message: check.message };
+        : {
+            name,
+            status: check.status,
+            message: check.message,
+            ...(check.reason !== undefined && { reason: check.reason }),
+          };
     } catch (error) {
       const message = `Health check threw: ${describe(error)}`;
       return { name, status: 'warn', message };

@@ -8,8 +8,8 @@ import {
 import { useStepTense } from '../chat-look';
 
 /**
- * A step's file, search target or command in a small code badge (chat
- * detail `detailed`): the shared code chip on tokens, one radius, one
+ * A step's file, search target or command in a small code badge at every chat
+ * detail level: the shared code chip on tokens, one radius, one
  * padding, mono at `text-2xs` in secondary ink. The badge shrinks with its
  * row (`min-w-0`) so its four corners and right padding always show; only
  * the text inside truncates, with one "…".
@@ -79,8 +79,8 @@ export function StepBadge({
   const paddingRef = useRef(0);
   paddingRef.current = padding;
   const text = typeof children === 'string' ? children : null;
-  // A finished step's verb changes length ("Reading" → "Read") and so the
-  // badge's room, while the line keeps its size: measure again then too.
+  // Status details can change the room beside a badge without resizing its
+  // containing line, so remeasure when the step settles too.
   const tense = useStepTense();
 
   useLayoutEffect(() => {

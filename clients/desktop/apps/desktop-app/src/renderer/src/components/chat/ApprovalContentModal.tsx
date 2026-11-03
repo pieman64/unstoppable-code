@@ -37,6 +37,7 @@ export function ApprovalContentModal({
 }: ApprovalContentModalProps): JSX.Element {
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       subtitle={
@@ -58,14 +59,14 @@ export function ApprovalContentModal({
       {content.kind === 'text' ? (
         <pre
           data-testid="tool-approval-content-modal-body"
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} m-5 mt-4 select-text whitespace-pre-wrap break-all rounded-md bg-fg-primary/[0.06] px-3 py-2.5 font-mono text-xs fg-primary/90`}
+          className={`${POSTHOG_REPLAY_BLOCK_CLASS} m-6 mt-4 select-text whitespace-pre-wrap break-all rounded-md bg-fg-primary/[0.06] px-3 py-2.5 font-mono text-xs fg-primary/90`}
         >
           {content.text}
         </pre>
       ) : (
         <div
           data-testid="tool-approval-content-modal-body"
-          className={`${POSTHOG_REPLAY_BLOCK_CLASS} m-5 mt-4 select-text`}
+          className={`${POSTHOG_REPLAY_BLOCK_CLASS} m-6 mt-4 select-text`}
         >
           <ApprovalFileChangePreview change={content.change} mode="expanded" />
         </div>

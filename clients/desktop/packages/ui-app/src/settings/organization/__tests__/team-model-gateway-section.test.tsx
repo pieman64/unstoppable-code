@@ -237,6 +237,18 @@ describe('TeamModelGatewaySection', () => {
     return el;
   }
 
+  /** An on/off setting that saves at once: a `role="switch"` button. */
+  function toggle(testId: string): HTMLButtonElement {
+    const el = find(testId);
+    if (
+      !(el instanceof HTMLButtonElement) ||
+      el.getAttribute('role') !== 'switch'
+    ) {
+      throw new Error(`No switch for ${testId}`);
+    }
+    return el;
+  }
+
   async function click(testId: string): Promise<void> {
     const el = findDoc(testId);
     if (!el) throw new Error(`No element for ${testId}`);
@@ -276,8 +288,12 @@ describe('TeamModelGatewaySection', () => {
   it('lets an entitled admin configure an inactive gateway before enabling it', async () => {
     await render();
 
-    expect(input('enforce-member-model-gateway-checkbox').checked).toBe(false);
-    expect(input('enforce-member-model-gateway-checkbox').disabled).toBe(true);
+    expect(
+      toggle('enforce-member-model-gateway-checkbox').getAttribute(
+        'aria-checked',
+      ),
+    ).toBe('false');
+    expect(toggle('enforce-member-model-gateway-checkbox').disabled).toBe(true);
     expect(find('model-gateway-base-url-input')).not.toBeNull();
     expect(find('model-gateway-models-empty')).not.toBeNull();
     expect(patches).toHaveLength(0);
@@ -401,11 +417,13 @@ describe('TeamModelGatewaySection', () => {
 
     expect(find('model-gateway-relax-only-note')).not.toBeNull();
     // Softening the boundary and turning it off stay live...
-    expect(input('model-gateway-enforced-checkbox').disabled).toBe(false);
-    expect(input('enforce-member-model-gateway-checkbox').disabled).toBe(false);
+    expect(toggle('model-gateway-enforced-checkbox').disabled).toBe(false);
+    expect(toggle('enforce-member-model-gateway-checkbox').disabled).toBe(
+      false,
+    );
     // ...while re-pointing it or dropping a model would 403, so they are inert.
     expect(input('model-gateway-base-url-input').disabled).toBe(true);
-    expect(input('model-gateway-prompt-cache-checkbox').disabled).toBe(true);
+    expect(toggle('model-gateway-prompt-cache-checkbox').disabled).toBe(true);
     // Authoring is locked shut: neither the form nor the way to open it.
     expect(find('model-gateway-add-model')).toBeNull();
     expect(find('model-gateway-add-model-toggle')).toBeNull();
@@ -532,8 +550,10 @@ describe('TeamModelGatewaySection', () => {
     });
     await render();
 
+    // Session replay masks an element's whole subtree, so the mask class may
+    // sit on the field or on the box around it.
     const input = find('model-gateway-base-url-input');
-    expect(input?.classList.contains('replay-mask')).toBe(true);
+    expect(input?.closest('.replay-mask')).not.toBeNull();
   });
 
   it('adds no class token for the endpoint when the host records no replay', async () => {
@@ -544,7 +564,9 @@ describe('TeamModelGatewaySection', () => {
     });
     await render();
 
-    const className = find('model-gateway-base-url-input')?.className ?? '';
+    const field = find('model-gateway-base-url-input');
+    expect(field?.closest('[class*="replay"]')).toBeNull();
+    const className = field?.parentElement?.className ?? '';
     expect(className).toBe(className.trim());
     expect(className).not.toContain('  ');
   });

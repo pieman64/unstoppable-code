@@ -133,6 +133,7 @@ import {
   drainTrackedShellScriptRunsForWorktree,
   stopAllRunningShellScripts,
 } from '../lib/script-runner';
+import { getExecutionAccounting } from '../execution-accounting';
 
 const pathLookupMock = jest.requireMock<{
   findExecutableOnPath: jest.MockedFunction<(name: string) => string | null>;
@@ -933,6 +934,53 @@ describe('script-runner', () => {
     });
     expect(mockResourceRegistrationUnregister).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['exit', 'error', 'timeout', 'abort'] as const)(
+    'holds one script lease until a tracked script settles by %s',
+    async (settle) => {
+      const { child } = createMockChildProcess(6161);
+      mockedSpawn.mockReturnValue(child);
+      const stop = new AbortController();
+      const activeScripts = (): number =>
+        getExecutionAccounting().familyStatus().script.active;
+      const before = activeScripts();
+
+      const pending = runShellScript({
+        script: 'npm run dev',
+        cwd: '/tmp',
+        timeoutSeconds: 1,
+        signal: stop.signal,
+        tracking: {
+          projectId: 'project-1',
+          worktreeId: 'worktree-1',
+          scriptKey: 'project:dev',
+          script: {
+            scriptKey: 'project:dev',
+            scriptName: 'dev',
+            label: 'Dev',
+            command: 'npm run dev',
+            lifecycle: 'custom',
+            target: 'project',
+          },
+        },
+      });
+      expect(activeScripts()).toBe(before + 1);
+
+      if (settle === 'exit') child.emit('close', 0);
+      if (settle === 'error') child.emit('error', new Error('spawn failed'));
+      if (settle === 'timeout') {
+        jest.advanceTimersByTime(1_000);
+        child.emit('close', null);
+      }
+      if (settle === 'abort') {
+        stop.abort();
+        child.emit('close', null);
+      }
+      await pending;
+
+      expect(activeScripts()).toBe(before);
+    },
+  );
 
   it('does not trigger a timeout when timeoutSeconds is null', async () => {
     const { child } = createMockChildProcess();

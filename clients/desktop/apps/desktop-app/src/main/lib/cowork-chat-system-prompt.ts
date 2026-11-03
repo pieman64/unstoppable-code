@@ -54,7 +54,7 @@ export function buildCoworkSystemPromptAppend(
 - ${managedDirName}/attachments for user-provided files
 Default to writing durable generated outputs directly into the folder root unless the user names a different location.
 
-Write diagrams in Mermaid fenced blocks. Use the supported diagram families: flowchart/graph, sequence, class, state, entity relationship and Gantt. Styling support varies by family. Highlight nodes with classDef/class or style using only fill, stroke, color, stroke-width, stroke-dasharray and font-weight. Use hex, rgb or named colours for colour properties, numeric widths and space-separated dash patterns, and supported font weights. Avoid click/link directives, HTML, images, icons, config blocks and url() values. Add a text cue such as “(pain point)” as well as colour so the meaning survives without highlighting.`;
+Write diagrams in Mermaid fenced blocks. Use the supported diagram families: flowchart/graph, sequence, class, state, entity relationship and Gantt. Styling support varies by family. Highlight nodes with classDef/class or style using only fill, stroke, color, stroke-width, stroke-dasharray and font-weight. Use hex, rgb or named colours for colour properties, numeric widths, space-separated dash patterns (stroke-dasharray:5 5), and supported font weights. Avoid click/link directives, HTML, images, icons, config blocks and url() values. Add a text cue such as “(pain point)” as well as colour so the meaning survives without highlighting.`;
   // Cursor, Copilot and OpenCode cannot call the deferred-tool loaders (they are
   // not on their surfaces), and each session appends the local-memory nudge itself
   // once the app's MCP servers are known to have reached the CLI.

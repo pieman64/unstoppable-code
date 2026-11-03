@@ -18,6 +18,7 @@ import { preserveRuntimeCauseError } from '../canopy-runtime/runtime-cause-error
 import { PortalServiceError } from '../services/portal-service-error';
 import { toScriptSourceLayer } from './script-resolver';
 import { validateId } from './validation';
+import { ScriptHookSettingsRefusedError } from '@canopy/core-runtime/node/w5/workspace-metadata/settings';
 
 /*
  * Compatibility projections of the script settings reads over
@@ -130,13 +131,24 @@ export async function readWorkspaceScriptCommands(
   workspaceId: string,
 ): Promise<Record<string, string>> {
   validateId(workspaceId, 'workspaceId');
-  return toScriptCommands(
-    await preserveRuntimeCauseError(
-      dispatcher.query(
-        'core.script.definition.list',
-        { target: { kind: 'workspace-root', workspaceId }, layer: 'local' },
-        reading(caller),
+  try {
+    return toScriptCommands(
+      await preserveRuntimeCauseError(
+        dispatcher.query(
+          'core.script.definition.list',
+          { target: { kind: 'workspace-root', workspaceId }, layer: 'local' },
+          reading(caller),
+        ),
       ),
-    ),
-  );
+    );
+  } catch (error) {
+    // These reads always answered an absent or unreadable manifest with no
+    // scripts.
+    if (
+      error instanceof ScriptHookSettingsRefusedError &&
+      error.reason === 'configuration-unavailable'
+    )
+      return {};
+    throw error;
+  }
 }

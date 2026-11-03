@@ -18,6 +18,17 @@ export {
 } from '@canopy/core-runtime/node/w5/boundary-operation';
 
 /**
+ * A registered wire call of a keyed lifecycle boundary (W7b-2a): its
+ * principal-scoped receipt caller (A13), and its addressing, which runs for a
+ * new key only, before the reservation (RR5). In-process callers pass none
+ * and keep their `desktop-host:*` receipts.
+ */
+export interface W5WireCall {
+  readonly caller: string;
+  readonly admit?: () => Promise<void>;
+}
+
+/**
  * The core preflight over desktop main's revision reads, resolved at call
  * time so test injection and spies still intercept.
  */

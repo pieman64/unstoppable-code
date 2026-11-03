@@ -417,7 +417,9 @@ describe('OrgProjectCatalogList', () => {
 
   it('separates loading, empty, and lost access', () => {
     render({ projects: undefined });
-    expect(container.textContent).toContain('Loading projects');
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     render({ projects: [] });
     expect(container.textContent).toContain('Nothing in Acme yet');
     render({ projects: [project('payments')], unauthorized: true });
@@ -461,7 +463,9 @@ describe('OrgProjectCatalogList', () => {
       expect(byTestId('add-workspace-org-catalog-setup-checking')).not.toBe(
         null,
       );
-      expect(container.textContent).toContain('Checking GitHub connection');
+      expect(
+        container.querySelector('[data-testid="centered-loading-spinner"]'),
+      ).not.toBeNull();
       expect(container.querySelector('button')).toBeNull();
     });
 
@@ -502,7 +506,9 @@ describe('OrgProjectCatalogList', () => {
 
     it('lets loading, offline, and lost access take precedence', () => {
       renderManaged('not-connected', { projects: undefined });
-      expect(container.textContent).toContain('Loading projects');
+      expect(
+        container.querySelector('[data-testid="centered-loading-spinner"]'),
+      ).not.toBeNull();
       expect(byTestId('add-workspace-org-catalog-setup')).toBeNull();
       renderManaged('not-connected', { stale: true });
       expect(container.textContent).toContain('Offline');

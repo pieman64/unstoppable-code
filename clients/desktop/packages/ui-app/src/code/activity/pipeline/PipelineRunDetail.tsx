@@ -4,6 +4,7 @@ import { useMemo, type JSX } from 'react';
 import {
   AnsiOutput,
   ExecutionActionButton,
+  Notice,
   PauseResumeIcon,
 } from '@canopy/ui-shared/components';
 import {
@@ -137,7 +138,7 @@ export function PipelineRunDetail({
 
   const containerClassName =
     layout === 'overlay'
-      ? 'flex h-full min-h-0 flex-col gap-3 px-5 pb-5'
+      ? 'flex h-full min-h-0 flex-col gap-3 px-6 pb-6'
       : 'flex min-h-0 flex-col gap-3';
 
   return (
@@ -170,9 +171,9 @@ export function PipelineRunDetail({
         )}
         {showRetry && (
           <ExecutionActionButton
-            label={retrying ? 'Retrying…' : 'Retry'}
+            label={retrying ? 'Trying again…' : 'Try again'}
             icon={<RetryIcon />}
-            ariaLabel="Retry run"
+            ariaLabel="Try the run again"
             disabled={mutationPending || retrying}
             stopKeyDownPropagation={false}
             dataTestId="pipeline-run-detail-retry"
@@ -197,13 +198,13 @@ export function PipelineRunDetail({
       )}
 
       {errorMessage !== undefined && (
-        <p
-          className="rounded-md bg-card px-2.5 py-2 text-2xs fg-destructive inset-ring inset-ring-line-accent"
-          data-testid="pipeline-run-detail-error"
+        <Notice
+          intent="destructive"
           role="status"
+          data-testid="pipeline-run-detail-error"
         >
           {errorMessage}
-        </p>
+        </Notice>
       )}
 
       {showPauseForm && (

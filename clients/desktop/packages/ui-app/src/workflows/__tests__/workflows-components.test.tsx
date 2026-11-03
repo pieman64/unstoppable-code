@@ -306,8 +306,9 @@ describe('WorkflowsRunsToolbar and empty state', () => {
     }
   });
 
-  it('offers Run a workflow alone when there is a workflow to run', () => {
+  it('offers Run a workflow, with Browse Customize behind it, when there is a workflow to run', () => {
     const onRunWorkflow = jest.fn();
+    const onBrowseMarketplace = jest.fn();
     render(
       <WorkflowsRunsEmptyState
         query=""
@@ -315,14 +316,33 @@ describe('WorkflowsRunsToolbar and empty state', () => {
         onClearFilters={jest.fn()}
         onRunWorkflow={onRunWorkflow}
         onNewWorkflow={jest.fn()}
-        onBrowseMarketplace={jest.fn()}
+        onBrowseMarketplace={onBrowseMarketplace}
       />,
     );
     expect(get('workflows-runs-empty').textContent).toContain('No runs yet');
-    expect(get('workflows-runs-empty-run').textContent).toBe('Run a workflow');
-    click(get('workflows-runs-empty-run'));
+    const run = get('workflows-runs-empty-run');
+    expect(run.textContent).toBe('Run a workflow');
+    expect(run.classList.contains('bg-accent')).toBe(true);
+    click(run);
     expect(onRunWorkflow).toHaveBeenCalledTimes(1);
     expect(query('workflows-runs-empty-new')).toBeNull();
+    // Customize stays reachable while the Library has something to run.
+    const customize = get('workflows-runs-empty-marketplace');
+    expect(customize.textContent).toBe('Browse Customize');
+    expect(customize.classList.contains('bg-accent')).toBe(false);
+    click(customize);
+    expect(onBrowseMarketplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves Browse Customize out when the host does not offer it', () => {
+    render(
+      <WorkflowsRunsEmptyState
+        query=""
+        filters={EMPTY_WORKFLOW_RUN_FILTERS}
+        onClearFilters={jest.fn()}
+        onRunWorkflow={jest.fn()}
+      />,
+    );
     expect(query('workflows-runs-empty-marketplace')).toBeNull();
   });
 
@@ -348,6 +368,122 @@ describe('WorkflowsRunsToolbar and empty state', () => {
     expect(onBrowseMarketplace).toHaveBeenCalledTimes(1);
   });
 
+  it('previews Library workflows and leads with See your library', () => {
+    const onRunWorkflow = jest.fn();
+    const onOpenRow = jest.fn();
+    const onSeeLibrary = jest.fn();
+    render(
+      <WorkflowsRunsEmptyState
+        query=""
+        filters={EMPTY_WORKFLOW_RUN_FILTERS}
+        onClearFilters={jest.fn()}
+        onRunWorkflow={onRunWorkflow}
+        onNewWorkflow={jest.fn()}
+        onBrowseMarketplace={jest.fn()}
+        libraryPreview={{
+          rows: [automationRow, eventPipelineRow],
+          onOpenRow,
+          onSeeLibrary,
+        }}
+      />,
+    );
+    const empty = get('workflows-runs-empty');
+    expect(empty.textContent).toContain('No runs yet');
+    const previewRows = all('workflows-runs-library-preview-row');
+    expect(previewRows.map((row) => row.dataset.rowKey)).toEqual([
+      automationRow.key,
+      eventPipelineRow.key,
+    ]);
+    expect(previewRows.map((row) => row.tagName)).toEqual(['BUTTON', 'BUTTON']);
+    expect(previewRows[0]?.textContent).toContain('Morning PR triage');
+    expect(previewRows[1]?.textContent).toContain('Built-in');
+    // A workflow name is the user's content, so replay masks it.
+    expect(
+      previewRows[0]
+        ?.querySelector('[data-testid="workflows-runs-library-preview-name"]')
+        ?.classList.contains(REPLAY_MASK_CLASS),
+    ).toBe(true);
+    const [, pipelinePreview] = previewRows;
+    if (!pipelinePreview) throw new Error('Expected a second preview row');
+    click(pipelinePreview);
+    expect(onOpenRow).toHaveBeenCalledWith(eventPipelineRow);
+
+    const seeLibrary = get('workflows-runs-empty-library');
+    expect(seeLibrary.textContent).toBe('See your library');
+    // The Library leads: it is the one primary action.
+    expect(seeLibrary.classList.contains('bg-accent')).toBe(true);
+    click(seeLibrary);
+    expect(onSeeLibrary).toHaveBeenCalledTimes(1);
+    // Run a workflow stays, behind the Library.
+    const run = get('workflows-runs-empty-run');
+    expect(run.classList.contains('bg-accent')).toBe(false);
+    click(run);
+    expect(onRunWorkflow).toHaveBeenCalledTimes(1);
+    // So does Customize, last.
+    const actions = Array.from(
+      get('workflows-runs-empty').querySelectorAll<HTMLElement>(
+        '[data-testid^="workflows-runs-empty-"]',
+      ),
+    ).map((element) => element.dataset.testid);
+    expect(actions).toEqual([
+      'workflows-runs-empty-library',
+      'workflows-runs-empty-run',
+      'workflows-runs-empty-marketplace',
+    ]);
+  });
+
+  it('blocks a person named in a preview source from session replay', () => {
+    const sharedByPerson: WorkflowLibraryRow = {
+      ...automationRow,
+      key: 'shared-automation:s1',
+      source: 'shared',
+      sourceLabel: 'Shared by Dana Lee',
+      sourceIsPerson: true,
+    };
+    render(
+      <WorkflowsRunsEmptyState
+        query=""
+        filters={EMPTY_WORKFLOW_RUN_FILTERS}
+        onClearFilters={jest.fn()}
+        libraryPreview={{
+          rows: [sharedByPerson, eventPipelineRow],
+          onOpenRow: jest.fn(),
+          onSeeLibrary: jest.fn(),
+        }}
+      />,
+    );
+    const [personSource, builtInSource] = all(
+      'workflows-runs-library-preview-source',
+    );
+    expect(personSource?.textContent).toBe('Shared by Dana Lee');
+    expect(personSource?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
+    // A source that names no one stays recorded.
+    expect(builtInSource?.textContent).toBe('Built-in');
+    expect(builtInSource?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(false);
+    expect(builtInSource?.classList.contains(REPLAY_MASK_CLASS)).toBe(false);
+  });
+
+  it('keeps the plain actions when the preview has no rows', () => {
+    render(
+      <WorkflowsRunsEmptyState
+        query=""
+        filters={EMPTY_WORKFLOW_RUN_FILTERS}
+        onClearFilters={jest.fn()}
+        onRunWorkflow={jest.fn()}
+        libraryPreview={{
+          rows: [],
+          onOpenRow: jest.fn(),
+          onSeeLibrary: jest.fn(),
+        }}
+      />,
+    );
+    expect(query('workflows-runs-library-preview')).toBeNull();
+    expect(query('workflows-runs-empty-library')).toBeNull();
+    expect(
+      get('workflows-runs-empty-run').classList.contains('bg-accent'),
+    ).toBe(true);
+  });
+
   it('shows the no-matches state with Clear filters when a search hides all', () => {
     const onClearFilters = jest.fn();
     render(
@@ -355,9 +491,15 @@ describe('WorkflowsRunsToolbar and empty state', () => {
         query="deploy"
         filters={EMPTY_WORKFLOW_RUN_FILTERS}
         onClearFilters={onClearFilters}
+        libraryPreview={{
+          rows: [automationRow],
+          onOpenRow: jest.fn(),
+          onSeeLibrary: jest.fn(),
+        }}
       />,
     );
     expect(query('workflows-runs-empty')).toBeNull();
+    expect(query('workflows-runs-library-preview')).toBeNull();
     expect(get('workflows-runs-no-matches').textContent).toContain(
       'No runs match "deploy"',
     );

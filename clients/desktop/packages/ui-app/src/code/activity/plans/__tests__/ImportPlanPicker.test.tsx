@@ -81,12 +81,13 @@ function rerender(overrides: Partial<ImportPlanPickerProps>): void {
   });
 }
 
+// The picker is a DialogModal, which portals to the document body.
 function q<T extends Element = HTMLElement>(selector: string): T | null {
-  return container.querySelector<T>(selector);
+  return document.querySelector<T>(selector);
 }
 
 function options(): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'));
+  return Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'));
 }
 
 function importedNames(): string[] {
@@ -144,7 +145,7 @@ describe('ImportPlanPicker', () => {
       'Import plan',
     );
     expect(q('[role="listbox"]')).not.toBeNull();
-    const groups = Array.from(container.querySelectorAll('[role="group"]'));
+    const groups = Array.from(document.querySelectorAll('[role="group"]'));
     expect(groups).toHaveLength(2);
     expect(groups[0]?.textContent).toContain('From your chats');
     expect(groups[1]?.textContent).toContain('All files');
@@ -314,6 +315,22 @@ describe('ImportPlanPicker', () => {
     render({ files: [file('plan.md')] });
 
     key(q('[data-testid="import-plan-input"]'), 'Escape');
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on Escape from a control outside the search box', () => {
+    render({ files: [file('plan.md')] });
+
+    key(q('[data-testid="import-plan-primary"]'), 'Escape');
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on a backdrop press but not a press inside the card', () => {
+    render({ files: [file('plan.md')] });
+
+    click(q('[data-testid="import-plan-modal"]'));
+    expect(props.onClose).not.toHaveBeenCalled();
+    click(q('[data-canopy-overlay-root="modal"]'));
     expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 

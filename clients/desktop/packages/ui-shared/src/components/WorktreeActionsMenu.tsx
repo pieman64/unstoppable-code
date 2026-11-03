@@ -1,49 +1,29 @@
 'use client';
 
 import {
-  Fragment,
   forwardRef,
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
-import { focusMenuRow } from '../lib/input-modality';
 import type { AppIcon } from '../icons/AppIcons';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
 import {
-  DropdownMenuDivider,
-  DropdownMenuItem,
-  DropdownMenuItemIcon,
-  DropdownMenuLabel,
-  DropdownMenuSurface,
-} from './DropdownMenu';
-import {
   ActionMenuItems,
-  ActionMenuLabelRow,
-  ActionMenuRichTooltip,
   ActionMenuRowStyle,
-  ActionMenuShortcut,
-  actionMenuRowIcon,
   type ActionMenuItem,
 } from './ActionMenuItems';
-import {
-  SpaceNotificationMenuStatusLine,
-  type SpaceNotificationMenuChoiceKey,
-} from './SpaceNotificationMenu';
+import type { SpaceNotificationMenuChoiceKey } from './SpaceNotificationMenu';
 import { RailIconButton } from './RailIconButton';
 import {
-  placeContextMenuAtPoint,
+  CONTEXT_MENU_POINTER_OFFSET,
   useContextMenuPlacement,
 } from './context-menu-placement';
-import { useOverlayEscape } from './useOverlayEscape';
+import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
 import { WorktreeRowActionChip } from './WorktreeRow';
-import { NestedMenuFlyout } from './NestedMenuFlyout';
 
 export type WorktreeMenuItemKey =
   | 'set-label'
@@ -174,31 +154,6 @@ export function worktreeActionsMenuButtonCount({
   return directActions.length + (items.length > 0 ? 1 : 0);
 }
 
-function enabledIndex(
-  items: readonly WorktreeMenuItem[],
-  edge: 'first' | 'last',
-): number {
-  if (edge === 'first')
-    return items.findIndex((item) => !item.disabled && item.kind !== 'label');
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (!items[index]?.disabled && items[index]?.kind !== 'label') return index;
-  }
-  return -1;
-}
-
-function adjacentEnabledIndex(
-  items: readonly WorktreeMenuItem[],
-  from: number,
-  step: 1 | -1,
-): number {
-  for (let offset = 1; offset <= items.length; offset += 1) {
-    const index =
-      (((from + step * offset) % items.length) + items.length) % items.length;
-    if (!items[index]?.disabled && items[index]?.kind !== 'label') return index;
-  }
-  return -1;
-}
-
 export const WorktreeActionsMenu = forwardRef<
   HTMLButtonElement,
   WorktreeActionsMenuProps
@@ -219,29 +174,16 @@ export const WorktreeActionsMenu = forwardRef<
 ): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const contextMenuPlacement = useContextMenuPlacement();
-  const [activeKey, setActiveKey] = useState<WorktreeMenuItemKey | null>(null);
-  const [position, setPosition] = useState<{
-    top: number;
-    right: number;
-  } | null>(null);
   // Set only for a right-click/context-menu-key open (`openAtPoint`); a
-  // button-triggered open (`openAt`) clears it so the menu re-anchors to the
-  // trigger the next time it opens normally.
+  // button-triggered open clears it so the menu re-anchors to the trigger
+  // the next time it opens normally.
   const [pointerAnchor, setPointerAnchor] = useState<{
     x: number;
     y: number;
   } | null>(null);
   const menuId = useId();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const activeIndexFromKey = items.findIndex(
-    (item) => item.key === activeKey && !item.disabled,
-  );
-  const activeIndex =
-    activeIndexFromKey === -1
-      ? enabledIndex(items, 'first')
-      : activeIndexFromKey;
+  const pointAnchorRef = useRef<HTMLSpanElement | null>(null);
   const itemCount = items.length;
 
   const setTriggerRef = useCallback(
@@ -252,129 +194,18 @@ export const WorktreeActionsMenu = forwardRef<
     },
     [forwardedRef],
   );
-  // Mirrors the legacy desktop rail's `updateActionsMenuPosition`
-  // (`WorktreeItem.tsx`) exactly: a right-click anchor is treated as a
-  // zero-height "trigger rect" at the pointer, then the same vertical-flip
-  // and horizontal-clamp math applies to both anchor kinds. Without the
-  // horizontal clamp, anchoring the menu's right edge directly at the
-  // pointer pushed it off the left edge of the viewport for any right-click
-  // on a left-docked rail (CAN-3053 follow-up).
-  const updatePosition = useCallback((): void => {
-    const VIEWPORT_PADDING = 8;
-    const GAP = 4;
-    // `position: fixed; right` resolves against the viewport minus any
-    // reserved scrollbar gutter. The web portal sets
-    // `html { scrollbar-gutter: stable }`, which narrows that box without
-    // shrinking `window.innerWidth` or (in Chromium, while no scrollbar is
-    // shown) `documentElement.clientWidth`; the root element's own layout
-    // width is the one that matches. Height follows the viewport, not the
-    // root's content height. jsdom lays nothing out, so fall back to
-    // `window.inner*` when a measurement is zero.
-    const viewportWidth =
-      document.documentElement.getBoundingClientRect().width ||
-      window.innerWidth;
-    const viewportHeight =
-      document.documentElement.clientHeight || window.innerHeight;
-    // Early access: a right-click opens the menu at the pointer, flipping
-    // where it would not fit (`placeContextMenuAtPoint`).
-    if (pointerAnchor && contextMenuPlacement === 'cursor') {
-      const menu = menuRef.current;
-      if (!menu) return;
-      const menuWidth = menu.offsetWidth;
-      const { left, top } = placeContextMenuAtPoint({
-        x: pointerAnchor.x,
-        y: pointerAnchor.y,
-        menuWidth,
-        menuHeight: menu.offsetHeight,
-        viewportWidth,
-        viewportHeight,
-      });
-      const right = viewportWidth - left - menuWidth;
-      setPosition((previous) =>
-        previous && previous.top === top && previous.right === right
-          ? previous
-          : { top, right },
-      );
-      return;
-    }
-    let triggerRect: { top: number; bottom: number; right: number };
-    if (pointerAnchor) {
-      triggerRect = {
-        top: pointerAnchor.y,
-        bottom: pointerAnchor.y,
-        right: pointerAnchor.x,
-      };
-    } else {
-      const trigger = triggerRef.current;
-      if (!trigger) return;
-      triggerRect = trigger.getBoundingClientRect();
-    }
-    const menuHeight = menuRef.current?.offsetHeight ?? 0;
-    const spaceBelow = viewportHeight - triggerRect.bottom - VIEWPORT_PADDING;
-    const spaceAbove = triggerRect.top - VIEWPORT_PADDING;
-    // Flip up only when the menu has been measured (menuHeight > 0) AND it
-    // doesn't fit below AND it does fit above. Falls through to "drop down"
-    // on the first render before the menu has measurable dimensions.
-    const flipUp =
-      menuHeight > 0 && menuHeight > spaceBelow && menuHeight <= spaceAbove;
-    const unclampedTop = flipUp
-      ? triggerRect.top - menuHeight - GAP
-      : triggerRect.bottom + GAP;
-    // Clamp vertically once measured, so a menu that fits neither fully
-    // below nor fully above still stays entirely on-screen.
-    const top =
-      menuHeight > 0
-        ? Math.min(
-            Math.max(VIEWPORT_PADDING, unclampedTop),
-            Math.max(
-              VIEWPORT_PADDING,
-              viewportHeight - menuHeight - VIEWPORT_PADDING,
-            ),
-          )
-        : unclampedTop;
-    // Clamp horizontally so the menu is always fully visible: the right
-    // offset may not push the menu's LEFT edge past the viewport padding
-    // (left edge = viewportWidth - right - menuWidth). Falls through
-    // unclamped on the first render before the menu has measurable width.
-    const menuWidth = menuRef.current?.offsetWidth ?? 0;
-    const maxRight =
-      menuWidth > 0
-        ? viewportWidth - menuWidth - VIEWPORT_PADDING
-        : Number.POSITIVE_INFINITY;
-    const right = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(viewportWidth - triggerRect.right, maxRight),
-    );
-    setPosition((previous) => {
-      if (previous && previous.top === top && previous.right === right) {
-        return previous;
-      }
-      return { top, right };
-    });
-  }, [pointerAnchor, contextMenuPlacement]);
   const closeAndReturnFocus = useCallback((): void => {
     setOpen(false);
     triggerRef.current?.focus();
   }, []);
-  const openAt = useCallback(
-    (index: number): void => {
-      const item = items[index];
-      if (items.length === 0) return;
-      setPointerAnchor(null);
-      setActiveKey(item?.key ?? null);
-      setOpen(true);
-    },
-    [items],
-  );
   // Opens the menu anchored at an arbitrary point (a right-click, or the
   // ContextMenu key, on the row rather than this trigger button).
   // Registered per trigger element in `OPEN_AT_POINT_BY_TRIGGER` below so a
   // host holding only the row's DOM node can still reach it.
   const openAtPoint = useCallback(
     (point: { x: number; y: number }): void => {
-      const first = enabledIndex(items, 'first');
+      if (items.length === 0) return;
       setPointerAnchor(point);
-      setActiveKey(first >= 0 ? (items[first]?.key ?? null) : null);
       setOpen(true);
     },
     [items],
@@ -400,98 +231,21 @@ export const WorktreeActionsMenu = forwardRef<
     if (open) onOpenRef.current?.();
   }, [open]);
 
-  useOverlayEscape(open, closeAndReturnFocus);
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    updatePosition();
-    const handlePointerDown = (event: MouseEvent): void => {
-      const target = event.target;
-      if (
-        !(target instanceof Node) ||
-        triggerRef.current?.contains(target) ||
-        menuRef.current?.contains(target) ||
-        (target instanceof Element &&
-          target.closest('[data-floating-menu-nested="true"]'))
-      ) {
-        return;
-      }
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return (): void => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [itemCount, open, updatePosition]);
-
-  // A click open leaves the row unpainted until the first arrow; see
-  // `focusMenuRow`.
-  useEffect(() => {
-    if (open && position) {
-      const row = activeIndex >= 0 ? itemRefs.current[activeIndex] : null;
-      if (row) focusMenuRow(row);
-      else menuRef.current?.focus();
-    }
-  }, [activeIndex, open, position]);
+  const handleOpenChange = useCallback((next: boolean): void => {
+    if (next) setPointerAnchor(null);
+    setOpen(next);
+  }, []);
 
   const selectItem = (item: WorktreeMenuItem): void => {
     if (item.disabled || !item.onSelect) return;
     item.onSelect();
     if (item.role !== 'menuitemradio') closeAndReturnFocus();
   };
-  const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    if (event.key === 'ArrowUp') {
-      const last = enabledIndex(items, 'last');
-      event.preventDefault();
-      openAt(last);
-    } else if (
-      event.key === 'ArrowDown' ||
-      event.key === 'Enter' ||
-      event.key === ' '
-    ) {
-      const first = enabledIndex(items, 'first');
-      event.preventDefault();
-      openAt(first);
-    }
-  };
-  const onMenuKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (
-      !(event.target instanceof Node) ||
-      !menuRef.current?.contains(event.target)
-    )
-      return;
-    let nextIndex = -1;
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      nextIndex = adjacentEnabledIndex(
-        items,
-        activeIndex,
-        event.key === 'ArrowDown' ? 1 : -1,
-      );
-    } else if (event.key === 'Home' || event.key === 'End') {
-      nextIndex = enabledIndex(items, event.key === 'Home' ? 'first' : 'last');
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      const item = items[activeIndex];
-      if (item) selectItem(item);
-      return;
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      closeAndReturnFocus();
-      return;
-    } else if (event.key === 'Tab') {
-      setOpen(false);
-      return;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    const next = items[nextIndex];
-    if (next) setActiveKey(next.key);
-  };
+
+  // Early access: a right-click opens the menu with its top-left corner at
+  // the pointer, as desktop context menus do. Otherwise a pointer open keeps
+  // the button-anchored shape: the menu's right edge at the pointer.
+  const atCursor = pointerAnchor !== null && contextMenuPlacement === 'cursor';
 
   // Nothing to trigger, so no trigger. A host that withholds every row command
   // — the web rail on any route but `/chat`, which is navigation-only by
@@ -553,107 +307,43 @@ export const WorktreeActionsMenu = forwardRef<
           data-testid={triggerTestId}
           onClick={(event) => {
             event.stopPropagation();
-            if (open) setOpen(false);
-            else openAt(enabledIndex(items, 'first'));
+            handleOpenChange(!open);
           }}
-          onKeyDown={onTriggerKeyDown}
         />
       )}
-      {open &&
-        createPortal(
-          <DropdownMenuSurface
-            ref={menuRef}
-            id={menuId}
-            aria-label={accessibleLabel}
-            aria-orientation="vertical"
-            tabIndex={-1}
-            data-testid={menuTestId}
-            // A fixed compact width, as the sidebar's other menus have: a
-            // long status line wraps rather than widening the menu.
-            className="z-dropdown w-45"
-            onClick={(event) => event.stopPropagation()}
-            onKeyDown={onMenuKeyDown}
-            style={
-              position
-                ? {
-                    position: 'fixed',
-                    top: position.top,
-                    right: position.right,
-                  }
-                : { position: 'fixed', visibility: 'hidden' }
-            }
-          >
-            <ActionMenuRowStyle>
-              {items.map((item, index) => {
-                const menuItem =
-                  item.kind === 'label' ? (
-                    <ActionMenuLabelRow label={item.label} />
-                  ) : item.kind === 'submenu' ? (
-                    <NestedMenuFlyout
-                      triggerRef={(node): void => {
-                        itemRefs.current[index] = node;
-                      }}
-                      disabled={item.disabled}
-                      tabIndex={index === activeIndex ? 0 : -1}
-                      onTriggerFocus={(): void => setActiveKey(item.key)}
-                      label={item.label}
-                      leading={actionMenuRowIcon(items, index)}
-                      triggerTestId={item.testId ?? item.key}
-                      menuTestId={`${item.testId ?? item.key}-menu`}
-                    >
-                      <WorktreeActionMenuItems
-                        items={item.submenu}
-                        onSelect={selectItem}
-                      />
-                    </NestedMenuFlyout>
-                  ) : (
-                    <DropdownMenuItem
-                      ref={(node) => {
-                        itemRefs.current[index] = node;
-                      }}
-                      disabled={item.disabled}
-                      title={item.tooltip}
-                      tabIndex={index === activeIndex ? 0 : -1}
-                      data-testid={item.testId}
-                      tone={item.tone}
-                      role={item.role}
-                      aria-checked={
-                        item.role === 'menuitemradio'
-                          ? item.checked === true
-                          : undefined
-                      }
-                      aria-busy={item.busy === true ? true : undefined}
-                      onClick={() => selectItem(item)}
-                    >
-                      <DropdownMenuItemIcon>
-                        {actionMenuRowIcon(items, index)}
-                      </DropdownMenuItemIcon>
-                      {item.label}
-                      <ActionMenuShortcut shortcut={item.shortcut} />
-                    </DropdownMenuItem>
-                  );
-                return (
-                  <Fragment key={item.key}>
-                    {item.separatorBefore && <DropdownMenuDivider />}
-                    {item.sectionLabel !== undefined && (
-                      <DropdownMenuLabel>{item.sectionLabel}</DropdownMenuLabel>
-                    )}
-                    <ActionMenuRichTooltip item={item}>
-                      {menuItem}
-                    </ActionMenuRichTooltip>
-                    {item.sectionStatus && (
-                      <SpaceNotificationMenuStatusLine
-                        status={item.sectionStatus}
-                        testId={item.sectionStatusTestId}
-                      />
-                    )}
-                  </Fragment>
-                );
-              })}
-            </ActionMenuRowStyle>
-          </DropdownMenuSurface>,
-          document.body,
-        )}
+      {open && pointerAnchor ? (
+        <FloatingMenuPointAnchor
+          ref={pointAnchorRef}
+          x={pointerAnchor.x}
+          y={pointerAnchor.y}
+          ownerDocument={triggerRef.current?.ownerDocument ?? document}
+        />
+      ) : null}
+      <FloatingMenu
+        open={open}
+        onOpenChange={handleOpenChange}
+        anchorRef={pointerAnchor ? pointAnchorRef : triggerRef}
+        {...(pointerAnchor ? { anchorPoint: pointerAnchor } : {})}
+        returnFocusRef={triggerRef}
+        placement={atCursor ? 'bottom-left' : 'bottom-right'}
+        {...(atCursor ? { gap: CONTEXT_MENU_POINTER_OFFSET } : {})}
+        closeOnWindowChange={pointerAnchor !== null}
+        // Rows close the menu themselves; a radio row keeps it open.
+        closeOnSelect={false}
+        id={menuId}
+        aria-label={accessibleLabel}
+        data-testid={menuTestId}
+        // A fixed compact width, as the sidebar's other menus have: a long
+        // status line wraps rather than widening the menu.
+        className="w-45"
+        // The menu portals to the body, but React bubbles its clicks
+        // through the row, where a click would select the worktree.
+        onClick={(event) => event.stopPropagation()}
+      >
+        <ActionMenuRowStyle>
+          <WorktreeActionMenuItems items={items} onSelect={selectItem} />
+        </ActionMenuRowStyle>
+      </FloatingMenu>
     </WorktreeRowActionChip>
   );
 });

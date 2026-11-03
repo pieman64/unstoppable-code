@@ -1,0 +1,176 @@
+/*
+ * The components lab's stageshow look: the kit's tokens mapped to Canopy's
+ * (references/looks.md, From a codebase). Canopy's theme tokens switch with
+ * the lab's Light and Dark toggle, so one mapping serves both themes. Scoped
+ * under .canopy-lab-stage, the class every lab Stage carries.
+ */
+.canopy-lab-stage .ss-stage {
+  --ss-canvas: var(--bg-base);
+  --ss-surface: var(--bg-secondary);
+  --ss-chrome: var(--bg-base);
+  --ss-well: var(--bg-depth);
+  --ss-raised: var(--bg-tertiary);
+  --ss-line: var(--line-tertiary);
+  --ss-line-faint: var(--line-quaternary);
+  --ss-text-strong: var(--fg-primary);
+  --ss-text: var(--fg-secondary);
+  --ss-text-faint: var(--fg-tertiary);
+  --ss-icon: var(--fg-secondary);
+  --ss-icon-faint: var(--fg-quaternary);
+  --ss-accent: var(--bg-accent);
+  --ss-accent-soft: var(--bg-accent-muted);
+  --ss-accent-text: var(--fg-accent);
+  --ss-success: var(--bg-positive);
+  --ss-success-soft: var(--bg-positive-muted);
+  --ss-success-text: var(--fg-positive);
+  --ss-danger: var(--bg-destructive);
+  --ss-danger-soft: var(--bg-destructive-muted);
+  --ss-danger-text: var(--fg-destructive);
+  --ss-warning: var(--bg-attention);
+  --ss-warning-soft: var(--bg-attention-muted);
+  --ss-warning-text: var(--fg-attention);
+  --ss-font: var(--font-sans);
+  --ss-mono: var(--font-mono);
+  --ss-radius-sm: var(--radius-sm);
+  --ss-radius-md: var(--radius-row);
+  --ss-radius-lg: var(--radius-lg);
+
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--ss-well);
+  color: var(--fg-primary);
+  font-family: var(--font-sans);
+}
+
+/* Canopy's default border color (`* { border-color: var(--line-base) }` in
+   canopy-tokens-core.css) is unlayered, and the kit's unlayered guard loads
+   after it and hands borders back to the layers, so inside a stage a divider
+   with no color of its own fell back to the text color. Restating the
+   default in Tailwind's base layer puts it where the guard falls back to:
+   color utilities and the kit's own parts still win over it. */
+@layer base {
+  .canopy-lab-stage .ss-stage * {
+    border-color: var(--line-base);
+  }
+}
+
+/* Pinned top and sides, off the bottom (references/framing.md, Fade crop
+   and Close-up): one gutter of 40px, 16px in the phone column. */
+.canopy-lab-stage .canopy-lab-window {
+  position: absolute;
+  top: 28px;
+  bottom: -24px;
+  left: 40px;
+  width: 480px;
+  /* The hero window takes Canopy's own large shadow role. */
+  box-shadow: var(--shadow-xl);
+}
+
+.canopy-lab-stage .ss-stage[data-layout='compact'] .canopy-lab-window {
+  top: 16px;
+  left: 16px;
+  width: 326px;
+}
+
+/* The window's content column: Canopy's main surface at its page inset. */
+.canopy-lab-stage .canopy-lab-body {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  background: var(--bg-secondary);
+}
+
+.canopy-lab-stage .ss-stage[data-layout='compact'] .canopy-lab-body {
+  padding: 16px;
+}
+
+/* A sidebar column on the canvas, as Canopy's own sidebar sits. */
+.canopy-lab-stage .canopy-lab-sidebar-body {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  background: var(--bg-base);
+}
+
+/* A chip leaving its row: its width closes as it fades, so the chips after
+   it slide over instead of jumping. */
+.canopy-lab-stage .canopy-lab-reveal-x {
+  display: inline-grid;
+  grid-template-columns: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-columns 0.32s cubic-bezier(0.45, 0, 0.1, 1),
+    opacity 0.2s ease;
+}
+
+.canopy-lab-stage .canopy-lab-reveal-x[data-closed] {
+  grid-template-columns: 0fr;
+  opacity: 0;
+}
+
+.canopy-lab-stage .canopy-lab-reveal-x > * {
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Two states of one slot, crossfaded in place. */
+.canopy-lab-stage .canopy-lab-swap {
+  display: grid;
+}
+
+.canopy-lab-stage .canopy-lab-swap > * {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+
+.canopy-lab-stage .canopy-lab-swap > [data-on] {
+  opacity: 1;
+  transition-delay: 0.06s;
+}
+
+/* The window's notification corner, where the real ToastStack sits (16px
+   inside the window's edge); the stack draws the cards. */
+.canopy-lab-stage .canopy-lab-toast-corner {
+  position: absolute;
+  right: 56px;
+  bottom: 28px;
+  width: 300px;
+}
+
+.canopy-lab-stage .ss-stage[data-layout='compact'] .canopy-lab-toast-corner {
+  right: 32px;
+  bottom: 16px;
+  left: 32px;
+  width: auto;
+}
+
+/* The layer a stage's dialog opens in: the window's own box, transformed so
+   the real dialog's fixed overlay dims only the window (as it dims only the
+   app), and faded out before the dialog unmounts. */
+.canopy-lab-stage .canopy-lab-dialog-layer {
+  position: absolute;
+  top: 28px;
+  bottom: -24px;
+  left: 40px;
+  width: 480px;
+  overflow: hidden;
+  border-radius: var(--ss-radius-window);
+  transform: translateZ(0);
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+
+.canopy-lab-stage .ss-stage[data-layout='compact'] .canopy-lab-dialog-layer {
+  top: 16px;
+  left: 16px;
+  width: 326px;
+}
+
+.canopy-lab-stage .canopy-lab-dialog-layer[data-open] {
+  opacity: 1;
+}

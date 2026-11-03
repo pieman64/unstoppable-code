@@ -59,8 +59,8 @@ import type {
 } from '../lib/worktree-service';
 import { runProjectWorktreePostCreateSetup } from '../lib/project-worktree-runtime';
 import { runWorkspaceWorktreePostCreateSetup } from '../lib/workspace-worktree-runtime';
+import { readScriptRun } from '../lib/script-execution';
 import {
-  readScriptRunMeta,
   snapshotScriptRunLog,
   type ScriptRunLogRef,
 } from '../lib/script-log-store';
@@ -1295,12 +1295,21 @@ class CreateWorktreeOperation {
     this.repoOrder = [];
     for (let index = 0; index < record.scripts.length; index += 1) {
       const script = record.scripts[index];
-      const meta = await readScriptRunMeta({
-        projectId: script.logProjectId ?? workspaceId,
-        worktreeId: worktree.taskId,
-        scriptKey: script.scriptKey,
-      });
-      if (!meta || meta.runId !== script.runId || meta.status === 'running') {
+      const meta = (
+        await readScriptRun({
+          projectId: script.logProjectId ?? workspaceId,
+          worktreeId: worktree.taskId,
+          scriptKey: script.scriptKey,
+          tailLines: 0,
+        })
+      ).run?.execution;
+      // A run still running, or lost to a restart, did not settle setup.
+      if (
+        !meta ||
+        meta.executionId !== script.runId ||
+        meta.status === 'running' ||
+        meta.status === 'lost'
+      ) {
         return interrupted();
       }
       const ref: WorktreeSetupScriptRef = {

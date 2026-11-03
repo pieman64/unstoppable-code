@@ -4,6 +4,7 @@ import { useMemo, useState, type JSX } from 'react';
 import {
   Button,
   Checkbox,
+  FormField,
   Select,
   TextArea,
   TextInput,
@@ -123,52 +124,52 @@ function PipelineRunPauseField({
 }): JSX.Element {
   const testId = `portal-pipeline-pause-field-${field.key}`;
   return (
-    <label className="flex flex-col gap-1 text-xs fg-primary">
-      {field.label}
-      {field.type === 'boolean' ? (
-        <Checkbox
-          checked={value === true}
-          data-testid={testId}
-          onChange={(event): void => onChange(event.target.checked)}
-        />
-      ) : field.type === 'choice' ? (
-        <Select
-          value={choiceValue(field, value)}
-          data-testid={testId}
-          placeholder="No selection"
-          options={choiceOptions(field)}
-          onValueChange={onChange}
-        />
-      ) : field.multiline ? (
-        <TextArea
-          value={String(value ?? '')}
-          data-testid={testId}
-          onChange={(event): void => onChange(event.target.value)}
-        />
-      ) : (
-        <TextInput
-          type={field.type === 'number' ? 'number' : 'text'}
-          min={field.min}
-          max={field.max}
-          value={String(value ?? '')}
-          data-testid={testId}
-          onChange={(event): void =>
-            onChange(
-              field.type === 'number'
-                ? event.target.value === ''
-                  ? ''
-                  : Number(event.target.value)
-                : event.target.value,
-            )
-          }
-        />
-      )}
-      {error && (
-        <span className="text-2xs fg-destructive" role="alert">
-          {error}
-        </span>
-      )}
-    </label>
+    <FormField label={field.label} error={error}>
+      {(control) =>
+        field.type === 'boolean' ? (
+          <Checkbox
+            {...control}
+            checked={value === true}
+            data-testid={testId}
+            onChange={(event): void => onChange(event.target.checked)}
+          />
+        ) : field.type === 'choice' ? (
+          <Select
+            {...control}
+            value={choiceValue(field, value)}
+            data-testid={testId}
+            placeholder="No selection"
+            options={choiceOptions(field)}
+            onValueChange={onChange}
+          />
+        ) : field.multiline ? (
+          <TextArea
+            {...control}
+            value={String(value ?? '')}
+            data-testid={testId}
+            onChange={(event): void => onChange(event.target.value)}
+          />
+        ) : (
+          <TextInput
+            {...control}
+            type={field.type === 'number' ? 'number' : 'text'}
+            min={field.min}
+            max={field.max}
+            value={String(value ?? '')}
+            data-testid={testId}
+            onChange={(event): void =>
+              onChange(
+                field.type === 'number'
+                  ? event.target.value === ''
+                    ? ''
+                    : Number(event.target.value)
+                  : event.target.value,
+              )
+            }
+          />
+        )
+      }
+    </FormField>
   );
 }
 

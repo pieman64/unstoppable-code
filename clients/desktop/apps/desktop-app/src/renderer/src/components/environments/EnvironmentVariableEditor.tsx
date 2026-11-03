@@ -547,7 +547,7 @@ function KeyValueRow({
           aria-label="Value"
           data-testid={`environment-editor-value-${row.id}`}
         />
-        <label className="flex items-center justify-center">
+        <div className="flex items-center justify-center">
           <Checkbox
             checked={row.secret}
             disabled={disabled}
@@ -557,7 +557,7 @@ function KeyValueRow({
             aria-label={`Mark ${row.key || 'variable'} as secret`}
             data-testid={`environment-editor-secret-${row.id}`}
           />
-        </label>
+        </div>
         <Button
           size="compact"
           variant="secondary"

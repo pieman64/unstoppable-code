@@ -193,6 +193,7 @@ import { deleteWorkspace } from '../lib/workspace-deletion';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { publishWorktreeLifecycleChange } from '../lib/worktree-lifecycle-signals';
 import { syncWorktreesFileWatchers } from '../lib/worktrees-file-watcher';
+import { allowsW5ProjectionOnlyRead } from '../lib/w5-fallback-read';
 
 const mockedReadFile = jest.mocked(readFile);
 const mockedDeleteWorkspace = jest.mocked(deleteWorkspace);
@@ -485,11 +486,12 @@ beforeEach(() => {
         typeof DesktopRuntimeModule
       >('../canopy-runtime/desktop-runtime')
       .createDesktopRuntime(),
+    // An IPC caller, as the lifecycle projections admit it (W7b-2a, Q8).
     () => ({
-      principalId: 'test',
+      principalId: 'local-desktop-user',
       clientInstanceId: 'test',
       authorityId: 'local-desktop',
-      interfaceKind: 'test',
+      interfaceKind: 'desktop',
       grants: callerGrants,
     }),
   );
@@ -1468,6 +1470,96 @@ describe('load handler', () => {
     expect(mockReconcileGitPendingWorktrees).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['initial', 'refreshed'] as const)(
+    'delivers a stale %s projects:load without remembering it or consuming startup work',
+    async (stage) => {
+      const runtime = jest
+        .requireActual<
+          typeof DesktopRuntimeModule
+        >('../canopy-runtime/desktop-runtime')
+        .createDesktopRuntime();
+      const stale: SidebarItemsFile = {
+        version: 1,
+        stale: true,
+        items: [makeProject({ id: 'disk-only' })],
+      };
+      const workspace = jest
+        .spyOn(runtime, 'queryWorkspaceListForLegacyIpc')
+        .mockImplementation(() => {
+          expect(allowsW5ProjectionOnlyRead()).toBe(true);
+          return Promise.resolve({
+            canonicalResult: null,
+            legacyResult:
+              stage === 'initial' ? stale : { version: 1, items: [] },
+          });
+        });
+      const worktrees = jest
+        .spyOn(runtime, 'queryWorktreeListForLegacyIpc')
+        .mockImplementation(() => {
+          expect(allowsW5ProjectionOnlyRead()).toBe(true);
+          return Promise.resolve({
+            canonicalResult: null,
+            legacyResult: stale,
+          });
+        });
+      registerProjectHandlers(mockGetWindow, runtime, () => ({
+        principalId: 'test',
+        clientInstanceId: 'test',
+        authorityId: 'local-desktop',
+        interfaceKind: 'test',
+        grants: callerGrants,
+      }));
+      const load = mockedRegisterIpcHandler.mock.calls.findLast(
+        ([channel]) => channel === 'projects:load',
+      )?.[1];
+      const save = mockedRegisterIpcHandler.mock.calls.findLast(
+        ([channel]) => channel === 'projects:save',
+      )?.[1];
+      assertIsLoadHandler(load);
+      assertIsSaveHandler(save);
+      const route = jest
+        .spyOn(sidebarSaveAdapter, 'saveSidebarItems')
+        .mockResolvedValue({
+          version: 1,
+          items: [],
+          preservedWorkspaceIds: [],
+        });
+      try {
+        const event = { sender: {} };
+        await expect(load(event)).resolves.toEqual(stale);
+        expect(mockReconcileGitPendingWorktrees).not.toHaveBeenCalled();
+        expect(
+          mockedRepairExistingWorkspaceRootWorktrees,
+        ).not.toHaveBeenCalled();
+        const authoritativeSyncs = stage === 'initial' ? 0 : 1;
+        expect(mockedSyncTrackedWorkspaces).toHaveBeenCalledTimes(
+          authoritativeSyncs,
+        );
+        expect(mockedSyncTrackedWorktrees).toHaveBeenCalledTimes(
+          authoritativeSyncs,
+        );
+        expect(mockedSyncCodeGraphBaseRepositories).toHaveBeenCalledTimes(
+          authoritativeSyncs,
+        );
+        expect(mockedSyncWorktreesFileWatchers).not.toHaveBeenCalled();
+        expect(mockedPublishWorktreeLifecycleChange).not.toHaveBeenCalled();
+        await save(event, stale.items);
+        expect(route).toHaveBeenCalledWith(
+          expect.objectContaining({ previousItems: undefined }),
+        );
+        workspace.mockRestore();
+        worktrees.mockRestore();
+        await load(event);
+        expect(mockReconcileGitPendingWorktrees).toHaveBeenCalledTimes(1);
+      } finally {
+        workspace.mockRestore();
+        worktrees.mockRestore();
+        route.mockRestore();
+        await runtime.shutdown();
+      }
+    },
+  );
+
   it('loads projects while startup archive recovery is still pending', async () => {
     let finishRecovery = (): void => {};
     const recovery = new Promise<void>((resolve) => {
@@ -1966,24 +2058,36 @@ describe('save handler', () => {
     const event = { sender: {} };
     const loaded = await loadHandler(event);
     const route = jest.spyOn(sidebarSaveAdapter, 'saveSidebarItems');
+    /** The last save, which also carries each update's IPC projection. */
+    const lastSave = (): Omit<
+      sidebarSaveAdapter.SidebarSaveRequest,
+      'updateWorkspaceMetadata'
+    > => {
+      const request = route.mock.lastCall?.[0];
+      if (!request) throw new Error('Expected a save');
+      const { updateWorkspaceMetadata, updateWorktree, ...rest } = request;
+      expect(updateWorkspaceMetadata).toBeInstanceOf(Function);
+      expect(updateWorktree).toBeInstanceOf(Function);
+      return rest;
+    };
     const submitted = [staleProject];
     const options = { preserveWorkspaceIds: ['project-deleted'] };
     const result = await saveHandler(event, submitted, options);
-    expect(route).toHaveBeenLastCalledWith({
+    expect(lastSave()).toEqual({
       source: 'projects_save',
       items: submitted,
       options,
       previousItems: loaded.items,
     });
     await saveHandler(event, submitted);
-    expect(route).toHaveBeenLastCalledWith({
+    expect(lastSave()).toEqual({
       source: 'projects_save',
       items: submitted,
       options: undefined,
       previousItems: submitted,
     });
     await saveHandler({ sender: {} }, submitted);
-    expect(route).toHaveBeenLastCalledWith({
+    expect(lastSave()).toEqual({
       source: 'projects_save',
       items: submitted,
       options: undefined,

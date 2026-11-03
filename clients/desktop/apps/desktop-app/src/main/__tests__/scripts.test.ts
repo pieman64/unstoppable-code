@@ -1,3 +1,4 @@
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import type {
   ScriptCompleteEvent,
@@ -130,6 +131,11 @@ jest.mock('../lib/workspace-registry', () => ({
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
 }));
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('../lib/script-runner', () => ({
   isTrackedShellScriptRunning: jest.fn(() => true),
   listTrackedShellScripts: jest.fn(() => []),
@@ -165,7 +171,7 @@ jest.mock('../services/portal-feature-event-service', () => ({
   emitPortalFeatureUpsert: jest.fn(),
 }));
 
-import { lstat, readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { registerIpcHandler } from '../ipc/register';
 import { registerScriptHandlers } from '../ipc/scripts';
 import {
@@ -192,10 +198,12 @@ import {
   startScriptRunLog,
 } from '../lib/script-log-store';
 import { resetPreferencesLoadErrorForTests } from '../lib/preferences-store';
+import { TEST_IPC_CALLER } from './fixtures/workspace-metadata-dispatcher';
+import { scriptDefinitionsDispatcher } from './helpers/script-definitions-dispatcher';
+import type { CoreScriptLocalChange } from '@canopy/core-runtime/node/script/core-script-definitions';
 import { emitPortalFeatureUpsert } from '../services/portal-feature-event-service';
 
 const mockedReadFile = jest.mocked(readFile);
-const mockedWriteFile = jest.mocked(writeFile);
 const mockedLstat = jest.mocked(lstat);
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedRunShellScript = jest.mocked(runShellScript);
@@ -309,6 +317,7 @@ function mockSidebarItems(items: SingleRepoSidebarItem[]): void {
 }
 
 const fakeEvent = { sender: { send: jest.fn() } };
+const savedScriptChanges: CoreScriptLocalChange[] = [];
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -320,16 +329,22 @@ beforeEach(() => {
     isSymbolicLink: (): boolean => false,
   } as Awaited<ReturnType<typeof lstat>>);
 
+  savedScriptChanges.length = 0;
+  // Script saves go through core.script.definition.* (CAN-5369); this host
+  // records the changes a save sends instead of committing them.
   registerScriptHandlers({
-    // These suites never read script definitions through core.
-    dispatcher: {
-      query: (): never => {
-        throw new Error('The script handler tests dispatch no core query.');
+    dispatcher: scriptDefinitionsDispatcher({
+      resolve: () => Promise.resolve({}),
+      readLocal: () => Promise.resolve({ setup: 'npm ci', launch: 'dev' }),
+      localRevision: () => Promise.resolve(undefined),
+      inspect: () => Promise.resolve({ resolved: {}, layers: [] }),
+      change: ({ change }) => {
+        savedScriptChanges.push(change);
+        return Promise.resolve();
       },
-    },
-    resolveCaller: (): never => {
-      throw new Error('The script handler tests resolve no IPC caller.');
-    },
+      errorCode: () => undefined,
+    }),
+    resolveCaller: () => TEST_IPC_CALLER,
   });
 
   const calls = mockedRegisterIpcHandler.mock.calls;
@@ -346,26 +361,18 @@ beforeEach(() => {
 describe('scripts IPC handlers', () => {
   describe('normalizeScript', () => {
     it('strips empty/whitespace-only scripts when saving', async () => {
-      mockSidebarItems([makeProject()]);
-
       const request: SaveProjectScriptsRequest = {
         projectId: 'project-1',
         scripts: {
           setup: '   ',
           teardown: '',
+          launch: ' dev ',
         },
       };
 
       await saveProjectScriptsHandler(fakeEvent, request);
 
-      const writeCall = mockedWriteFile.mock.calls.find(
-        ([p]) => p === '/mock/workspaces/project-1/workspace.json',
-      );
-      expect(writeCall).toBeDefined();
-      const written = JSON.parse(writeCall![1] as string) as {
-        scripts?: Record<string, string>;
-      };
-      expect(written.scripts).toBeUndefined();
+      expect(savedScriptChanges).toEqual([{ kind: 'remove', name: 'setup' }]);
     });
   });
 
@@ -967,9 +974,7 @@ describe('scripts IPC handlers', () => {
         }),
       );
       expect(mockedCompleteScriptRunLog).toHaveBeenCalled();
-      const completeArg = mockedCompleteScriptRunLog.mock.calls[0]?.[0] as
-        | { response: ScriptRunResponse }
-        | undefined;
+      const completeArg = mockedCompleteScriptRunLog.mock.calls[0]?.[0];
       expect(completeArg).toBeDefined();
       if (!completeArg) {
         throw new Error('Expected completeScriptRunLog to be called');
@@ -1821,31 +1826,34 @@ describe('scripts IPC handlers', () => {
 
   describe('script:stop', () => {
     it('stops the tracked script for the requested worktree', async () => {
+      const tracking = {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        scriptKey: 'project:setup',
+        runId: 'run-1',
+        logRef: {
+          projectId: 'project-1',
+          worktreeId: 'wt-1',
+          script: {
+            scriptKey: 'project:setup',
+            scriptName: 'setup',
+            label: 'Setup',
+            command: 'npm install',
+            lifecycle: 'setup' as const,
+            target: 'project' as const,
+          },
+          runId: 'run-1',
+        },
+      };
+      mockedListTrackedShellScripts.mockReturnValue([tracking]);
       mockedStopTrackedShellScript.mockResolvedValue({
+        tracking,
         response: {
           success: false,
           exitCode: null,
           output: '',
           timedOut: false,
           durationMs: 10,
-        },
-        tracking: {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          scriptKey: 'project:setup',
-          logRef: {
-            projectId: 'project-1',
-            worktreeId: 'wt-1',
-            script: {
-              scriptKey: 'project:setup',
-              scriptName: 'setup',
-              label: 'Setup',
-              command: 'npm install',
-              lifecycle: 'setup',
-              target: 'project',
-            },
-            runId: 'run-1',
-          },
         },
       });
 
@@ -1871,14 +1879,27 @@ describe('scripts IPC handlers', () => {
       expect(event.result.success).toBe(false);
       expect(event.result.exitCode).toBeNull();
       expect(event.script.scriptKey).toBe('project:setup');
-      const completeCall = mockedCompleteScriptRunLog.mock.calls[0]?.[0] as
-        | { ref: { runId: string }; response: ScriptRunResponse }
-        | undefined;
-      expect(completeCall?.ref.runId).toBe('run-1');
-      expect(completeCall?.response.exitCode).toBeNull();
+      // The worker closes the stopped run's log.
+      expect(mockedCompleteScriptRunLog).not.toHaveBeenCalled();
     });
 
     it('emits script complete when the tracked script has no log ref', async () => {
+      const tracking = {
+        projectId: 'project-1',
+        worktreeId: 'wt-1',
+        scriptKey: 'project:setup',
+        runId: 'run-1',
+        script: {
+          scriptKey: 'project:setup',
+          scriptName: 'setup',
+          label: 'Setup',
+          command: 'npm install',
+          lifecycle: 'setup' as const,
+          target: 'project' as const,
+        },
+        invocation: 'manual-run' as const,
+      };
+      mockedListTrackedShellScripts.mockReturnValue([tracking]);
       mockedStopTrackedShellScript.mockResolvedValue({
         response: {
           success: false,
@@ -1887,20 +1908,7 @@ describe('scripts IPC handlers', () => {
           timedOut: false,
           durationMs: 10,
         },
-        tracking: {
-          projectId: 'project-1',
-          worktreeId: 'wt-1',
-          scriptKey: 'project:setup',
-          script: {
-            scriptKey: 'project:setup',
-            scriptName: 'setup',
-            label: 'Setup',
-            command: 'npm install',
-            lifecycle: 'setup',
-            target: 'project',
-          },
-          invocation: 'manual-run',
-        },
+        tracking,
       });
 
       await stopHandler(fakeEvent, {
@@ -2127,25 +2135,17 @@ describe('scripts IPC handlers', () => {
 
   describe('normalizeScript for launch scripts', () => {
     it('strips empty launch scripts when saving', async () => {
-      mockSidebarItems([makeProject()]);
-
       const request: SaveProjectScriptsRequest = {
         projectId: 'project-1',
         scripts: {
+          setup: 'npm ci',
           launch: '   ',
         },
       };
 
       await saveProjectScriptsHandler(fakeEvent, request);
 
-      const writeCall = mockedWriteFile.mock.calls.find(
-        ([p]) => p === '/mock/workspaces/project-1/workspace.json',
-      );
-      expect(writeCall).toBeDefined();
-      const written = JSON.parse(writeCall![1] as string) as {
-        scripts?: Record<string, string>;
-      };
-      expect(written.scripts).toBeUndefined();
+      expect(savedScriptChanges).toEqual([{ kind: 'remove', name: 'launch' }]);
     });
   });
 });

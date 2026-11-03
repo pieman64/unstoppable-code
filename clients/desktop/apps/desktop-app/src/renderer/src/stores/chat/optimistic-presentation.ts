@@ -76,58 +76,14 @@ export function reconcilePendingQueueMessages(
       : undefined;
 }
 
-/**
- * The echo of a Home first send whose new worktree is still setting up. It
- * is presented as the setup queue row it is about to become, so the chat
- * never shows a starting turn that the queue then replaces.
- */
-export function setupQueuedFirstSend(tab: ChatTab): ChatMessage | undefined {
-  const record = tab.provisionalFirstSend;
-  if (
-    !record?.queuedForSetup ||
-    record.phase !== 'preparing' ||
-    tab.status === 'error'
-  )
-    return undefined;
-  return tab.pendingUserMessages?.find(
-    (message) => message.id === record.userMessageId,
-  );
-}
-
-// One row per echo, so the bubble keeps its identity across tab updates.
-const setupQueueRows = new WeakMap<ChatMessage, QueuedChatMessage>();
-function setupQueueRow(echo: ChatMessage): QueuedChatMessage {
-  const cached = setupQueueRows.get(echo);
-  if (cached) return cached;
-  const fileReferences = echo.blocks.flatMap((block) =>
-    block.type === 'file_references' ? block.references : [],
-  );
-  const row: QueuedChatMessage = {
-    text: echo.blocks
-      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-      .join('\n'),
-    ...(fileReferences.length ? { fileReferences } : {}),
-    ...(echo.attachmentPaths?.length
-      ? { attachmentPaths: echo.attachmentPaths }
-      : {}),
-    // Its controls belong to the real row that replaces it.
-    pendingSend: true,
-  };
-  setupQueueRows.set(echo, row);
-  return row;
-}
-
 const projectedQueues = new WeakMap<ChatTab, QueuedChatMessage[]>();
 export function presentedQueueMessages(tab: ChatTab): QueuedChatMessage[] {
-  const setupEcho = setupQueuedFirstSend(tab);
-  if (!tab.pendingQueueMessages?.length && !setupEcho)
-    return tab.queuedMessages;
+  if (!tab.pendingQueueMessages?.length) return tab.queuedMessages;
   const cached = projectedQueues.get(tab);
   if (cached) return cached;
   const result = [
     ...tab.queuedMessages,
     ...(tab.pendingQueueMessages ?? []).map((entry) => entry.message),
-    ...(setupEcho ? [setupQueueRow(setupEcho)] : []),
   ];
   projectedQueues.set(tab, result);
   return result;
@@ -238,17 +194,6 @@ export function presentedMessages(tab: ChatTab): ChatMessage[] {
   if (tab.status === 'error') return tab.messages;
   const cached = projectedMessages.get(tab);
   if (cached) return cached;
-  const setupEcho = setupQueuedFirstSend(tab);
-  if (setupEcho) {
-    // The echo shows as a queue row; its turn has not started.
-    const messages = tab.messages.filter(
-      (message) =>
-        message.id !== setupEcho.id &&
-        message.id !== tab.pendingTurn?.timerMessage.id,
-    );
-    projectedMessages.set(tab, messages);
-    return messages;
-  }
   const base = firstSendTimestamps(tab);
   if (!tab.pendingTurn) {
     projectedMessages.set(tab, base);
@@ -260,6 +205,61 @@ export function presentedMessages(tab: ChatTab): ChatMessage[] {
     : [...base, timer];
   projectedMessages.set(tab, messages);
   return messages;
+}
+
+/** A turn main started that has no visible output or timer yet. */
+export interface StartingCanonicalTurn {
+  userMessageId: string;
+  startedAt: number;
+}
+
+export function startingTurnTimerMessageId(userMessageId: string): string {
+  return `${userMessageId}:starting-timer`;
+}
+
+const startingTimerProjections = new WeakMap<
+  ChatMessage[],
+  { turn: StartingCanonicalTurn; messages: ChatMessage[] }
+>();
+
+/**
+ * Gives a starting canonical turn its timer slot when the renderer minted no
+ * provisional send for it (a turn main holds for its worktree's setup, or a
+ * Portal or agent send), so the turn renders its starting status. Display
+ * only: the canonical timer replaces it when the turn runs.
+ */
+export function withStartingTurnTimer(
+  messages: ChatMessage[],
+  turn: StartingCanonicalTurn,
+): ChatMessage[] {
+  const cached = startingTimerProjections.get(messages);
+  if (
+    cached &&
+    cached.turn.userMessageId === turn.userMessageId &&
+    cached.turn.startedAt === turn.startedAt
+  )
+    return cached.messages;
+  const start = messages.findIndex(
+    (message) => message.id === turn.userMessageId,
+  );
+  if (start < 0) return messages;
+  let end = start + 1;
+  while (end < messages.length && messages[end].role !== 'user') {
+    if (messages[end].blocks.some((block) => block.type === 'turn_timer'))
+      return messages;
+    end += 1;
+  }
+  const timer: ChatMessage = {
+    id: startingTurnTimerMessageId(turn.userMessageId),
+    role: 'system',
+    timestamp: turn.startedAt,
+    blocks: [
+      { type: 'turn_timer', startedAt: turn.startedAt, completedAt: null },
+    ],
+  };
+  const projected = [...messages.slice(0, end), timer, ...messages.slice(end)];
+  startingTimerProjections.set(messages, { turn, messages: projected });
+  return projected;
 }
 
 /** Reused prompts reconcile by the host's canonical identity. Ordinary queue

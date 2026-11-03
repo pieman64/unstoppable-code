@@ -132,6 +132,7 @@ import type {
 import * as transcriptRewriteDiagnostics from '../chat-transcript-rewrite-diagnostics';
 import {
   ChatStateService,
+  WorktreeSetupEndedError,
   createShowVisualToolKeyResolver,
   isInitialChatTitleEligible,
   isNativeVisualToolResultEvent,
@@ -1252,6 +1253,10 @@ describe('chat state service', () => {
       },
       onInputPickup: async () => undefined,
       authorizeSend: async () => undefined,
+      withPlanImplementationRevision: async (_request, commit) => ({
+        accepted: true,
+        result: await commit('codex'),
+      }),
       approvePlanReview: async () => true,
       withPlanReviewRevision: async (_request, commit) => ({
         accepted: true,
@@ -16773,6 +16778,529 @@ describe('chat state service', () => {
       expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
       expect(queue.holdsUserMessage(CHAT, 'user-held')).toBe(true);
     });
+
+    describe('from the desktop composer', () => {
+      function composerRequest(
+        userMessageId: string,
+        chatId = 'chat-1',
+      ): ChatSendMessageRequest {
+        return {
+          ...SCOPE,
+          chatId,
+          userMessageId,
+          text: `Run ${userMessageId} once the worktree exists`,
+          model: 'claude-opus-4-6',
+          approvalMode: 'full-access',
+          attachmentPaths: ['/tmp/screenshot.png'],
+          hiddenContext: {
+            kind: 'plan-explore-comment-instructions',
+            text: 'Hidden instructions ride the held request.',
+          },
+        };
+      }
+
+      function userMessage(
+        request: ChatSendMessageRequest,
+      ): PersistedChatMessage {
+        return {
+          id: request.userMessageId,
+          role: 'user',
+          timestamp: 1_786_104_000_000,
+          blocks: [{ type: 'text', text: request.text }],
+        };
+      }
+
+      /** Commits the prompt as the desktop dispatch does. */
+      function commitPrompt(
+        target: ChatStateService,
+        request: ChatSendMessageRequest,
+      ): Promise<boolean> {
+        return target.ingestProviderEvent({
+          ...SCOPE,
+          chatId: request.chatId,
+          mutationId: `${request.chatId}:${request.userMessageId}:user-prompt`,
+          data: {
+            type: 'canopy_user_prompt',
+            original_text: request.text,
+            canopy_turn_user_message_id: request.userMessageId,
+            canopy_persisted_messages: [userMessage(request)],
+          },
+          turnUserMessageId: request.userMessageId,
+        });
+      }
+
+      /** What `dispatchLocalWorktreeChatMessage` does with the hold. */
+      async function sendFromComposer(
+        target: ChatStateService,
+        queue: ChatQueueService,
+        request: ChatSendMessageRequest,
+        onHeldDispatchFailed?: () => Promise<void>,
+      ): Promise<'dispatch-now' | 'held' | 'queued-behind-hold'> {
+        return target.holdLocalSendForWorktreeSetup(
+          request,
+          () => userMessage(request),
+          () => queue.submit(request, 'desktop').then(() => undefined),
+          onHeldDispatchFailed,
+        );
+      }
+
+      function composerService(
+        options: Parameters<typeof heldService>[0] = {},
+      ): ReturnType<typeof heldService> {
+        const service: { target?: ChatStateService } = {};
+        const held = heldService({
+          // The desktop dispatch commits the prompt again; it must not
+          // commit a second copy of a prompt committed at hold time.
+          provider: async (request) => {
+            if (service.target) await commitPrompt(service.target, request);
+          },
+          ...options,
+        });
+        service.target = held.target;
+        return held;
+      }
+
+      it('dispatches as usual when no setup is pending', async () => {
+        const { target, queue } = composerService({ setupPending: false });
+        await createChat(target);
+        const prompt = jest.fn(() => userMessage(composerRequest('user-now')));
+        const submit = jest.fn(() => Promise.resolve());
+
+        await expect(
+          target.holdLocalSendForWorktreeSetup(
+            composerRequest('user-now'),
+            prompt,
+            submit,
+          ),
+        ).resolves.toBe('dispatch-now');
+
+        expect(prompt).not.toHaveBeenCalled();
+        expect(submit).toHaveBeenCalledTimes(1);
+        expect(queue.holdsUserMessage(CHAT, 'user-now')).toBe(false);
+      });
+
+      it('holds the first send as the starting turn, its prompt committed, and dispatches its request unchanged when setup is ready', async () => {
+        const { target, queue, notices, settle } = composerService();
+        await createChat(target);
+        const request = composerRequest('user-held');
+
+        await expect(sendFromComposer(target, queue, request)).resolves.toBe(
+          'held',
+        );
+
+        expect(target.isAwaitingWorktreeSetup(turn('user-held'))).toBe(true);
+        await expect(runtimeOf(target)).resolves.toMatchObject({
+          status: 'starting',
+          activeTurn: { userMessageId: 'user-held' },
+        });
+        expect(await transcriptOf(target)).toEqual([['user', 'user-held']]);
+        expect(dispatched).toEqual([]);
+
+        settle('ready');
+        await released(target, 'user-held');
+        await settled();
+
+        expect(dispatched).toEqual([request]);
+        expect(notices).toEqual([]);
+        expect(await transcriptOf(target)).toEqual([['user', 'user-held']]);
+        // The provider reports the dispatched turn's start.
+        await reportTurn(target, 'start', 'user-held');
+        await expect(runtimeOf(target)).resolves.toMatchObject({
+          status: 'streaming',
+          activeTurn: { userMessageId: 'user-held' },
+        });
+      });
+
+      it('ends the held turn as failed when its dispatch fails after setup is ready, and lets the caller undo its admission', async () => {
+        const { target, queue, notices, settle } = composerService({
+          provider: () => Promise.reject(new Error('The provider is offline')),
+        });
+        const warning = jest
+          .spyOn(mainProcessLogging, 'logMainProcessWarn')
+          .mockImplementation(() => {});
+        try {
+          await createChat(target);
+          const onHeldDispatchFailed = jest.fn(() => Promise.resolve());
+          await sendFromComposer(
+            target,
+            queue,
+            composerRequest('user-held'),
+            onHeldDispatchFailed,
+          );
+
+          settle('ready');
+          await released(target, 'user-held');
+          await until(() => onHeldDispatchFailed.mock.calls.length === 1);
+          await settled();
+
+          expect(notices).toEqual([
+            endNotice('user-held', 'failed', 'The provider is offline'),
+          ]);
+          await expect(target.turnOutcome(turn('user-held'))).resolves.toBe(
+            'failed',
+          );
+          await expect(runtimeOf(target)).resolves.not.toMatchObject({
+            status: 'starting',
+          });
+          // The hold did settle; only the dispatch failed.
+          expect(
+            warning.mock.calls.some(([message]) =>
+              String(message).includes('did not settle'),
+            ),
+          ).toBe(false);
+        } finally {
+          warning.mockRestore();
+        }
+      });
+
+      it('runs a send queued behind the held turn when the held dispatch fails after setup is ready', async () => {
+        // Unlike a failed setup, a failed dispatch leaves a usable worktree,
+        // so the queue moves on as it does after any failed turn.
+        const { target, queue, notices, settle } = composerService({
+          provider: async (request) => {
+            if (request.userMessageId === 'user-held')
+              throw new Error('The provider is offline');
+            await commitPrompt(target, request);
+          },
+        });
+        const warning = jest
+          .spyOn(mainProcessLogging, 'logMainProcessWarn')
+          .mockImplementation(() => {});
+        try {
+          await createChat(target);
+          const onHeldDispatchFailed = jest.fn(() => Promise.resolve());
+          await sendFromComposer(
+            target,
+            queue,
+            composerRequest('user-held'),
+            onHeldDispatchFailed,
+          );
+          await expect(
+            sendFromComposer(target, queue, composerRequest('user-next')),
+          ).resolves.toBe('queued-behind-hold');
+
+          settle('ready');
+          await released(target, 'user-held');
+          await until(() => onHeldDispatchFailed.mock.calls.length === 1);
+          await until(() => dispatched.length === 2);
+
+          expect(dispatchedIds()).toEqual(['user-held', 'user-next']);
+          expect(notices).toEqual([
+            endNotice('user-held', 'failed', 'The provider is offline'),
+          ]);
+        } finally {
+          warning.mockRestore();
+        }
+      });
+
+      it('queues a later send behind the held turn, locked from Run now, and runs it after', async () => {
+        const { target, queue, settle } = composerService();
+        await createChat(target);
+        await sendFromComposer(target, queue, composerRequest('user-held'));
+
+        await expect(
+          sendFromComposer(target, queue, composerRequest('user-next')),
+        ).resolves.toBe('queued-behind-hold');
+
+        expect(target.isAwaitingWorktreeSetup(turn('user-next'))).toBe(false);
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
+        await expect(queuedUserMessageIds(target)).resolves.toEqual([
+          'user-next',
+        ]);
+        const rows = (): unknown[] =>
+          queue
+            .getWorktreeSnapshots(SCOPE.projectId, SCOPE.worktreeId)
+            .flatMap((snapshot) => snapshot.queue);
+        expect(rows()).toEqual([
+          expect.objectContaining({ forceLocked: true }),
+        ]);
+        expect(rows()[0]).not.toHaveProperty('canSteer');
+        // Main enforces the lock too: Run now cannot jump the held turn into
+        // a worktree with no checkout.
+        await expect(
+          queue.force(CHAT, await rowIdOf(target, 'user-next')),
+        ).resolves.toBe('busy');
+        expect(dispatched).toEqual([]);
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
+
+        settle('ready');
+        await released(target, 'user-held');
+        await settled();
+        expect(dispatchedIds()).toEqual(['user-held']);
+
+        queue.onTurnTerminal(CHAT, 'complete', 'user-held');
+        await until(() => dispatched.length === 2);
+        expect(dispatchedIds()).toEqual(['user-held', 'user-next']);
+      });
+
+      it.each(['ready', 'failed'] as const)(
+        'settles a held send exactly once when its setup ended %s before the hold began',
+        async (outcome) => {
+          const { target, queue, notices } = composerService({
+            setupPending: false,
+            overrides: {
+              awaitWorktreeSetup: () => Promise.resolve(outcome),
+            },
+          });
+          await createChat(target);
+
+          await expect(
+            sendFromComposer(target, queue, composerRequest('user-first')),
+          ).resolves.toBe('held');
+          await released(target, 'user-first');
+          await settled();
+
+          if (outcome === 'ready') {
+            expect(dispatchedIds()).toEqual(['user-first']);
+            expect(notices).toEqual([]);
+          } else {
+            expect(dispatched).toEqual([]);
+            expect(notices).toEqual([endNotice('user-first', 'failed')]);
+          }
+          expect(await transcriptOf(target)).toEqual(
+            outcome === 'ready'
+              ? [['user', 'user-first']]
+              : [
+                  ['user', 'user-first'],
+                  [
+                    'system',
+                    'turn_timer',
+                    1_786_104_000_000,
+                    1_786_104_000_000,
+                  ],
+                ],
+          );
+        },
+      );
+
+      it('fails a send waiting for the hold when the setup fails first, never dispatching it', async () => {
+        let openGate: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          openGate = resolve;
+        });
+        const service: { queue?: ChatQueueService } = {};
+        const { target, queue, notices, settle } = composerService({
+          overrides: {
+            worktreeSetupQueue: {
+              hold: async (holdTarget, turnUserMessageId) => {
+                // The held turn's queue hold is slow to land.
+                if (turnUserMessageId !== undefined) await gate;
+                service.queue?.holdForWorktreeSetup(
+                  holdTarget,
+                  turnUserMessageId,
+                );
+              },
+              release: async (releaseTarget, releaseOptions) =>
+                service.queue?.releaseWorktreeSetupHold(
+                  releaseTarget,
+                  releaseOptions,
+                ),
+              takeHeld: async (heldTarget, outcome) =>
+                service.queue?.takeWorktreeSetupHeldSends(
+                  heldTarget,
+                  outcome,
+                ) ?? [],
+            },
+          },
+        });
+        service.queue = queue;
+        await createChat(target);
+        const first = sendFromComposer(
+          target,
+          queue,
+          composerRequest('user-held'),
+        );
+        await until(() => target.isAwaitingWorktreeSetup(turn('user-held')));
+        const next = sendFromComposer(
+          target,
+          queue,
+          composerRequest('user-next'),
+        );
+        const nextOutcome = next.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+
+        settle('failed');
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+        openGate();
+
+        await expect(first).resolves.toBe('held');
+        const error = await nextOutcome;
+        expect(error).toBeInstanceOf(WorktreeSetupEndedError);
+        expect(error).toMatchObject({ outcome: 'failed' });
+        await until(() => notices.length === 1);
+        await settled();
+        expect(dispatched).toEqual([]);
+        expect(notices).toEqual([endNotice('user-held', 'failed')]);
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(false);
+      });
+
+      it('ends a follow-up whose queue row lands after setup failed, never dispatching it', async () => {
+        const { target, queue, notices, settle } = composerService();
+        await createChat(target);
+        await sendFromComposer(target, queue, composerRequest('user-held'));
+        let openGate: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+          openGate = resolve;
+        });
+        const next = composerRequest('user-next');
+        // The follow-up passes the hold, but its queue row is slow to land.
+        const followUp = target.holdLocalSendForWorktreeSetup(
+          next,
+          () => userMessage(next),
+          () =>
+            gate
+              .then(() => queue.submit(next, 'desktop'))
+              .then(() => undefined),
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+        settle('failed');
+        // The hold waits for the row instead of ending without it.
+        await settled();
+        expect(notices).toEqual([]);
+        openGate();
+        await expect(followUp).resolves.toBe('queued-behind-hold');
+        await until(() => notices.length === 2);
+        await settled();
+
+        expect(dispatched).toEqual([]);
+        expect(notices).toEqual([
+          endNotice('user-held', 'failed'),
+          endNotice('user-next', 'failed'),
+        ]);
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(false);
+      });
+
+      it('ends the held turn and its queued sends in one failure when setup fails, undoing its admission', async () => {
+        const { target, queue, notices, settle } = composerService();
+        await createChat(target);
+        const onHeldDispatchFailed = jest.fn(() => Promise.resolve());
+        await sendFromComposer(
+          target,
+          queue,
+          composerRequest('user-held'),
+          onHeldDispatchFailed,
+        );
+        await sendFromComposer(target, queue, composerRequest('user-next'));
+
+        settle('failed');
+        await until(() => notices.length === 2);
+        await settled();
+
+        expect(dispatched).toEqual([]);
+        expect(notices).toEqual([
+          endNotice('user-held', 'failed'),
+          endNotice('user-next', 'failed'),
+        ]);
+        await expect(queuedUserMessageIds(target)).resolves.toEqual([]);
+        expect(onHeldDispatchFailed).toHaveBeenCalledTimes(1);
+      });
+
+      it('stops only the held turn before it reaches the agent; a queued send waits for setup', async () => {
+        const { target, queue, notices, settle } = composerService();
+        await createChat(target);
+        const onHeldDispatchFailed = jest.fn(() => Promise.resolve());
+        await sendFromComposer(
+          target,
+          queue,
+          composerRequest('user-held'),
+          onHeldDispatchFailed,
+        );
+        await sendFromComposer(target, queue, composerRequest('user-next'));
+
+        await cancelChatTurnPreparations(CHAT);
+        queue.onTurnTerminal(CHAT, 'cancelled');
+        await settled();
+
+        // A turn the user stopped was admitted; nothing undoes it.
+        expect(onHeldDispatchFailed).not.toHaveBeenCalled();
+        expect(notices).toEqual([endNotice('user-held', 'cancelled')]);
+        await expect(target.turnOutcome(turn('user-held'))).resolves.toBe(
+          'cancelled',
+        );
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
+
+        settle('ready');
+        await until(() => dispatched.length === 1);
+        expect(dispatchedIds()).toEqual(['user-next']);
+      });
+
+      it('interrupts a held turn a restart orphaned, and a send after the restart does not wait', async () => {
+        const { target, queue } = composerService();
+        await createChat(target);
+        await sendFromComposer(target, queue, composerRequest('user-held'));
+        await expect(runtimeOf(target)).resolves.toMatchObject({
+          status: 'starting',
+        });
+
+        // The hold and the setup record are in memory; only the prompt and
+        // the starting runtime survive the restart.
+        const restarted = serviceWithRepository(
+          {},
+          copyDurableFilesAtBoundary(),
+        ).target;
+        Object.defineProperty(restarted, 'reconcileHostRuntime', {
+          value: true,
+        });
+        expect(
+          (await restarted.getState(SCOPE)).runtimeByChatId['chat-1'],
+        ).toMatchObject({ status: 'interrupted' });
+        const after = composerRequest('user-after');
+        const submit = jest.fn(() => Promise.resolve());
+        await expect(
+          restarted.holdLocalSendForWorktreeSetup(
+            after,
+            () => userMessage(after),
+            submit,
+          ),
+        ).resolves.toBe('dispatch-now');
+        expect(submit).toHaveBeenCalledTimes(1);
+        expect(dispatched).toEqual([]);
+      });
+
+      it('releases every chat held on one worktree setup', async () => {
+        const { target, queue, settle } = composerService();
+        await createChat(target);
+        await expect(
+          target.command(
+            envelope('create-2', {
+              type: 'chat.create_tab',
+              tabId: 'chat-2',
+              title: 'Second chat',
+              providerType: 'claude',
+              model: 'claude-opus-4-6',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+
+        await expect(
+          sendFromComposer(target, queue, composerRequest('user-one')),
+        ).resolves.toBe('held');
+        await expect(
+          sendFromComposer(
+            target,
+            queue,
+            composerRequest('user-two', 'chat-2'),
+          ),
+        ).resolves.toBe('held');
+
+        settle('ready');
+        await until(() => dispatched.length === 2);
+        expect(
+          dispatched.map(({ chatId, userMessageId }) => [
+            chatId,
+            userMessageId,
+          ]),
+        ).toEqual(
+          expect.arrayContaining([
+            ['chat-1', 'user-one'],
+            ['chat-2', 'user-two'],
+          ]),
+        );
+      });
+    });
   });
 
   it("changes a chat's approval-state revision only when its mode, grants, or repository change", async () => {
@@ -23733,6 +24261,573 @@ describe('chat state service', () => {
     ).toBeUndefined();
   });
 
+  describe('tracked plan implementation admission', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'implement-1',
+      startedAt: '2026-08-07T12:00:00.000Z',
+    };
+    const send = {
+      type: 'chat.send_message' as const,
+      chatId: 'chat-1',
+      userMessageId: link.userMessageId,
+      text: 'Implement.',
+      trackedPlanImplementation: link,
+    };
+
+    it('acknowledges duplicate terminal starts without rewriting runtime or rebinding a settled attempt', async () => {
+      const target = service();
+      await createChat(target);
+      await target.command(envelope('terminal-replay', send));
+      const turn = {
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: link.userMessageId,
+      };
+      expect(
+        await target.recordTerminalPlanImplementation(turn, 'started'),
+      ).toBe(true);
+      const runtime = (await target.getState(SCOPE)).runtimeByChatId['chat-1'];
+      expect(
+        await target.recordTerminalPlanImplementation(turn, 'started'),
+      ).toBe(true);
+      expect((await target.getState(SCOPE)).runtimeByChatId['chat-1']).toEqual(
+        runtime,
+      );
+      await target.recordTerminalPlanImplementation(turn, 'completed');
+      expect(
+        await target.recordTerminalPlanImplementation(turn, 'started'),
+      ).toBe(false);
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toMatchObject({ outcome: 'completed' });
+    });
+
+    it('keeps admitted terminal progress while handing its gate off from the host queue', async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      await repository.transactWith(
+        SCOPE,
+        (current) => {
+          const tab = current.tabsFile.tabs[0];
+          if (!tab) throw new Error('Missing chat');
+          return [
+            {
+              type: 'tab.created',
+              tab: {
+                ...tab,
+                providerType: 'claude',
+                interfaceMode: 'claude-code',
+              },
+            },
+          ];
+        },
+        { source: 'terminal' },
+      );
+      await target.command(envelope('terminal-admission', send));
+      await target.reconcileHostQueue(
+        { ...SCOPE, chatId: 'chat-1' },
+        [],
+        false,
+      );
+      const state = await target.getState(SCOPE);
+      expect(state.runtimeByChatId['chat-1']).toMatchObject({
+        status: 'starting',
+        activeTurn: { userMessageId: link.userMessageId },
+      });
+      expect(state.tabsFile.tabs[0]?.trackedPlanImplementation).toEqual(link);
+    });
+
+    it.each([
+      { providerType: 'claude', interfaceMode: 'canopy' },
+      { providerType: 'codex', interfaceMode: 'auto' },
+    ] as const)(
+      'does not treat a native pending turn as a renderer terminal delivery refusal ($providerType/$interfaceMode)',
+      async (settings) => {
+        const { target, repository } = serviceWithRepository();
+        await createChat(target);
+        await repository.transactWith(
+          SCOPE,
+          (current) => {
+            const tab = current.tabsFile.tabs[0];
+            if (!tab) throw new Error('Missing chat');
+            return [{ type: 'tab.created', tab: { ...tab, ...settings } }];
+          },
+          { source: 'terminal' },
+        );
+        await target.command(envelope('native-admission', send));
+        await target.command(
+          envelope('native-refusal', {
+            type: 'chat.reject_plan_implementation_delivery',
+            chatId: 'chat-1',
+            userMessageId: link.userMessageId,
+          }),
+        );
+        expect(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toEqual(link);
+      },
+    );
+
+    it('settles only an exact pending terminal delivery rejection and allows retry without ending a started turn', async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      await repository.transactWith(
+        SCOPE,
+        (current) => {
+          const tab = current.tabsFile.tabs[0];
+          if (!tab) throw new Error('Missing chat');
+          return [
+            {
+              type: 'tab.created',
+              tab: {
+                ...tab,
+                providerType: 'claude',
+                interfaceMode: 'claude-code',
+              },
+            },
+          ];
+        },
+        { source: 'terminal' },
+      );
+      await target.command(envelope('pending-rejection', send));
+      const reject = {
+        type: 'chat.reject_plan_implementation_delivery' as const,
+        chatId: 'chat-1',
+        userMessageId: link.userMessageId,
+      };
+      await target.command(
+        envelope('unrelated-rejection', {
+          ...reject,
+          userMessageId: 'unrelated',
+        }),
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(link);
+      expect(
+        (await target.command(envelope('reject-delivery', reject))).outcome,
+      ).toBe('applied');
+      expect(
+        (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
+      ).toBe('failed');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toMatchObject({ outcome: 'failed' });
+      const retry = {
+        ...link,
+        userMessageId: 'retry-after-transition-refusal',
+      };
+      expect(
+        (
+          await target.command(
+            envelope('retry-refused-delivery', {
+              ...send,
+              userMessageId: retry.userMessageId,
+              trackedPlanImplementation: retry,
+            }),
+          )
+        ).outcome,
+      ).toBe('applied');
+      await target.command(envelope('late-rejection', reject));
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(retry);
+      await target.recordTerminalPlanImplementation(
+        { ...SCOPE, chatId: 'chat-1', userMessageId: retry.userMessageId },
+        'started',
+      );
+      await target.command(
+        envelope('started-rejection', {
+          ...reject,
+          userMessageId: retry.userMessageId,
+        }),
+      );
+      expect(
+        (await target.getState(SCOPE)).runtimeByChatId['chat-1']?.status,
+      ).toBe('streaming');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(retry);
+    });
+
+    it('releases canonical retry eligibility after a terminal delivery fails before its prompt hook', async () => {
+      const target = service();
+      await createChat(target);
+      await target.command(envelope('terminal-refused', send));
+      await target.recordTerminalPlanImplementation(
+        {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: link.userMessageId,
+        },
+        'failed',
+      );
+      const failed = await target.getState(SCOPE);
+      expect(failed.runtimeByChatId['chat-1']?.status).toBe('failed');
+      expect(failed.tabsFile.tabs[0]?.trackedPlanImplementation).toMatchObject({
+        outcome: 'failed',
+      });
+      const retry = { ...link, userMessageId: 'retry-after-refused-paste' };
+      expect(
+        (
+          await target.command(
+            envelope('terminal-retry', {
+              ...send,
+              userMessageId: retry.userMessageId,
+              trackedPlanImplementation: retry,
+            }),
+          )
+        ).outcome,
+      ).toBe('applied');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(retry);
+    });
+
+    it.each(['completed', 'failed', 'cancelled'] as const)(
+      'durably binds and settles the exact managed terminal implementation as %s',
+      async (outcome) => {
+        const target = service();
+        await createChat(target);
+        await target.command(envelope('terminal-implement', send));
+        const turn = {
+          ...SCOPE,
+          chatId: 'chat-1',
+          userMessageId: link.userMessageId,
+        };
+        expect(
+          await target.recordTerminalPlanImplementation(
+            { ...turn, userMessageId: 'unrelated' },
+            'started',
+          ),
+        ).toBe(false);
+        expect(
+          await target.recordTerminalPlanImplementation(turn, 'started'),
+        ).toBe(true);
+        expect(
+          (await target.getState(SCOPE)).runtimeByChatId['chat-1'],
+        ).toMatchObject({
+          status: 'streaming',
+          activeTurn: { userMessageId: link.userMessageId },
+        });
+        await target.recordTerminalPlanImplementation(turn, outcome);
+        const settled = (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation;
+        expect(settled).toMatchObject({
+          ...link,
+          outcome,
+          endedAt: expect.any(String),
+        });
+        expect(
+          await target.recordTerminalPlanImplementation(turn, 'failed'),
+        ).toBe(false);
+        await readThroughFreshRepository(target, async (reader) => {
+          expect(
+            (await reader.getState(SCOPE)).tabsFile.tabs[0]
+              ?.trackedPlanImplementation,
+          ).toEqual(settled);
+        });
+      },
+    );
+
+    it('durably registers before dispatch and settles the exact turn across reload', async () => {
+      const target: ChatStateService = serviceWithRepository({
+        dispatch: async () => {
+          expect((await target.getState(SCOPE)).tabsFile.tabs[0]).toMatchObject(
+            {
+              trackedPlanId: link.planId,
+              latestRevisionNumber: 2,
+              trackedPlanImplementation: link,
+            },
+          );
+        },
+      }).target;
+      await createChat(target);
+      expect((await target.command(envelope('implement', send))).outcome).toBe(
+        'applied',
+      );
+      await reportTurn(target, 'start', link.userMessageId);
+      await reportTurn(target, 'end', link.userMessageId, {
+        outcome: 'completed',
+      });
+      const settled = (await target.getState(SCOPE)).tabsFile.tabs[0]
+        ?.trackedPlanImplementation;
+      expect(settled).toMatchObject({
+        ...link,
+        outcome: 'completed',
+        endedAt: expect.any(String),
+      });
+      await target.command(envelope('repeat-implement', send));
+      await target.command(
+        envelope('late-link', {
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { trackedPlanImplementation: link },
+        }),
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(settled);
+      await readThroughFreshRepository(target, async (reader) => {
+        expect(
+          (await reader.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toEqual(settled);
+      });
+    });
+
+    it.each(['failed', 'cancelled'] as const)(
+      'settles a matching %s turn only',
+      async (outcome) => {
+        const target = service();
+        await createChat(target);
+        await target.command(envelope('implement', send));
+        await reportTurn(target, 'start', 'unrelated');
+        await reportTurn(target, 'end', 'unrelated', { outcome });
+        expect(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toEqual(link);
+        await reportTurn(target, 'start', link.userMessageId);
+        await reportTurn(target, 'end', link.userMessageId, { outcome });
+        expect(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toMatchObject({ ...link, outcome });
+      },
+    );
+
+    it('keeps an unsettled link on reload without inventing completion and supports clear', async () => {
+      const target = service();
+      await createChat(target);
+      await target.command(envelope('implement', send));
+      await readThroughFreshRepository(target, async (reader) => {
+        expect(
+          (await reader.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toEqual(link);
+      });
+      await target.command(
+        envelope('clear-link', {
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { trackedPlanImplementation: null },
+        }),
+      );
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toBeUndefined();
+    });
+
+    it('retains settled evidence after terminal records are evicted and storage reloads', async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      await target.command(envelope('implement', send));
+      await reportTurn(target, 'start', link.userMessageId);
+      await reportTurn(target, 'end', link.userMessageId, {
+        outcome: 'completed',
+      });
+      await repository.transactWith(
+        SCOPE,
+        () => [
+          {
+            type: 'tab.metadata_patched',
+            tabId: 'chat-1',
+            patch: { turnEnds: null },
+          },
+        ],
+        { source: 'provider' },
+      );
+      await readThroughFreshRepository(target, async (reader) => {
+        expect(
+          (await reader.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation,
+        ).toMatchObject({ ...link, outcome: 'completed' });
+      });
+    });
+
+    it('settles an admitted turn that fails before provider acceptance as failed', async () => {
+      const target = serviceWithRepository({
+        dispatch: async () => {
+          throw new Error('Provider refused');
+        },
+      }).target;
+      await createChat(target);
+      await target.command(envelope('implement', send));
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toMatchObject({
+        ...link,
+        outcome: 'failed',
+        endedAt: expect.any(String),
+      });
+    });
+
+    it('rejects a changed approved revision before registering or dispatching', async () => {
+      const target = serviceWithRepository({
+        withPlanImplementationRevision: async () => ({ accepted: false }),
+      }).target;
+      await createChat(target);
+      expect(
+        (await target.command(envelope('stale-implement', send))).outcome,
+      ).toBe('rejected');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toBeUndefined();
+      expect(dispatched).toHaveLength(0);
+    });
+
+    it('preserves prior tracking when dispatch refuses before prompt admission', async () => {
+      let refuse = false;
+      const target = serviceWithRepository({
+        submit: async (_request, _origin, beforeDispatch) => {
+          if (refuse) throw new Error('Dispatch refused');
+          await beforeDispatch({
+            cancelledBeforeDispatch: false,
+            startsTurn: true,
+          });
+        },
+      }).target;
+      await createChat(target);
+      await target.command(envelope('implement', send));
+      await reportTurn(target, 'start', link.userMessageId);
+      await reportTurn(target, 'end', link.userMessageId, {
+        outcome: 'completed',
+      });
+      const before = (await target.getState(SCOPE)).tabsFile.tabs[0];
+      refuse = true;
+      expect(
+        (
+          await target.command(
+            envelope('refused-retry', {
+              ...send,
+              userMessageId: 'refused',
+              trackedPlanImplementation: { ...link, userMessageId: 'refused' },
+            }),
+          )
+        ).outcome,
+      ).toBe('rejected');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(before?.trackedPlanImplementation);
+    });
+
+    it('does not dispatch when link admission cannot commit', async () => {
+      const { target, repository } = serviceWithRepository();
+      await createChat(target);
+      const fail = jest
+        .spyOn(repository, 'transactWith')
+        .mockRejectedValueOnce(new Error('Durability unavailable'));
+      await expect(
+        target.command(envelope('storage-refused', send)),
+      ).rejects.toThrow('Durability unavailable');
+      expect(dispatched).toHaveLength(0);
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toBeUndefined();
+      fail.mockRestore();
+    });
+
+    it('settles a turn that ends before the send returns and publishes canonical outcome', async () => {
+      const target: ChatStateService = serviceWithRepository({
+        dispatch: async () => {
+          await reportTurn(target, 'start', link.userMessageId);
+          await reportTurn(target, 'end', link.userMessageId, {
+            outcome: 'completed',
+          });
+        },
+      }).target;
+      await createChat(target);
+      const changes: ChatStateChange[] = [];
+      const unsubscribe = target.subscribe((event) => {
+        changes.push(...event.changes);
+      });
+      try {
+        await target.command(envelope('fast-implement', send));
+        expect(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]
+            ?.trackedPlanImplementation?.outcome,
+        ).toBe('completed');
+        expect(changes).toContainEqual(
+          expect.objectContaining({
+            type: 'tab.metadata_patched',
+            patch: expect.objectContaining({
+              trackedPlanImplementation: expect.objectContaining({
+                outcome: 'completed',
+              }),
+            }),
+          }),
+        );
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it('preserves prior evidence on rejected and older settings registrations', async () => {
+      const target = service();
+      await createChat(target);
+      await target.command(envelope('implement', send));
+      await reportTurn(target, 'start', link.userMessageId);
+      await reportTurn(target, 'end', link.userMessageId, {
+        outcome: 'completed',
+      });
+      const before = (await target.getState(SCOPE)).tabsFile.tabs[0]
+        ?.trackedPlanImplementation;
+      const invalid = { ...link, userMessageId: 'retry' };
+      expect(
+        (
+          await target.command(
+            envelope('late-registration', {
+              type: 'chat.patch_tab_settings',
+              tabId: 'chat-1',
+              patch: { trackedPlanImplementation: invalid },
+            }),
+          )
+        ).outcome,
+      ).toBe('rejected');
+      await target.command(
+        envelope('busy-start', {
+          ...send,
+          userMessageId: 'retry-active',
+          trackedPlanImplementation: { ...link, userMessageId: 'retry-active' },
+        }),
+      );
+      const accepted = (await target.getState(SCOPE)).tabsFile.tabs[0]
+        ?.trackedPlanImplementation;
+      expect(
+        (
+          await target.command(
+            envelope('retry', {
+              ...send,
+              userMessageId: 'retry',
+              trackedPlanImplementation: invalid,
+            }),
+          )
+        ).outcome,
+      ).toBe('rejected');
+      expect(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]
+          ?.trackedPlanImplementation,
+      ).toEqual(accepted);
+      expect(before?.outcome).toBe('completed');
+    });
+  });
+
   describe('accepted plan revision turns (CAN-5431)', () => {
     const send = {
       type: 'chat.send_message' as const,
@@ -24426,6 +25521,12 @@ describe('chat state service', () => {
         chatId: 'plan-chat',
         userMessageId: 'implementation-message',
         text: 'Approved. Implement the plan.',
+        trackedPlanImplementation: {
+          planId: 'tracked-plan',
+          revisionNumber: 2,
+          userMessageId: 'implementation-message',
+          startedAt: '2026-08-07T12:00:00.000Z',
+        },
         planReviewApproval: {
           requestId: 'proposal-request',
           planId: 'tracked-plan',
@@ -24439,6 +25540,7 @@ describe('chat state service', () => {
       const tab = state.tabsFile.tabs.find((entry) => entry.id === 'plan-chat');
       expect(tab).toMatchObject({
         planMode: false,
+        trackedPlanImplementation: send.trackedPlanImplementation,
         trackedPlanReviewStatus: 'approved',
         hasOutstandingProposal: false,
       });

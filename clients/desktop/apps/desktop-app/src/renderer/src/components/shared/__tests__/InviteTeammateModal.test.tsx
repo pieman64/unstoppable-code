@@ -1127,7 +1127,7 @@ describe('InviteTeammateModal', () => {
     });
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     expect(retry?.getAttribute('aria-busy')).toBe('true');
-    expect(retry?.textContent).toContain('Retrying');
+    expect(retry?.textContent).toContain('Trying again');
 
     await act(async () => {
       resolveSave?.({ fileScope: { includedPaths: ['src/a.ts'] } });
@@ -1572,7 +1572,7 @@ describe('InviteTeammateModal', () => {
     const budget = q('shared-container-invite-modal-artifact-budget');
     expect(budget?.textContent).toContain('205 of 200 shareable items used.');
     expect(budget?.textContent).toContain('Publishing refuses over the limit');
-    expect(budget?.getAttribute('role')).toBe('alert');
+    expect(budget?.querySelector('[role="alert"]')).toBeTruthy();
   });
 
   it('refreshes the artifact budget after a scope save when tracked changes cross the limit', async () => {
@@ -1617,7 +1617,7 @@ describe('InviteTeammateModal', () => {
     expect(preview).toHaveBeenCalledTimes(2);
     const budget = q('shared-container-invite-modal-artifact-budget');
     expect(budget?.textContent).toContain('201 of 200 shareable items used.');
-    expect(budget?.getAttribute('role')).toBe('alert');
+    expect(budget?.querySelector('[role="alert"]')).toBeTruthy();
   });
 
   it('hides stale scope controls when the post-save preview refresh fails', async () => {
@@ -1671,7 +1671,7 @@ describe('InviteTeammateModal', () => {
     // so the modal must not imply the rest publishes without it.
     expect(notice?.textContent).toContain('nothing publishes until that is');
     expect(notice?.textContent).not.toContain('left out');
-    expect(notice?.getAttribute('role')).toBe('alert');
+    expect(notice?.querySelector('[role="alert"]')).toBeTruthy();
   });
 
   it('omits the excluded-repository notice when every repo is disclosable', async () => {
@@ -3627,7 +3627,7 @@ describe('InviteTeammateModal', () => {
 
       const push = q('shared-container-invite-push-github');
       expect(push?.textContent).toBe('Pushing…');
-      expect((push as HTMLButtonElement | null)?.disabled).toBe(true);
+      expect(push?.getAttribute('aria-disabled')).toBe('true');
       expect(
         q('shared-container-invite-blocked')?.getAttribute('aria-busy'),
       ).toBe('true');
@@ -3650,7 +3650,7 @@ describe('InviteTeammateModal', () => {
       await clickPush();
 
       const alert = q('shared-container-invite-github-error');
-      expect(alert?.getAttribute('role')).toBe('alert');
+      expect(alert?.querySelector('[role="alert"]')).toBeTruthy();
       expect(alert?.textContent).toBe(
         'Could not push to GitHub. Check your connection and repository access, then try again.',
       );
@@ -4222,16 +4222,16 @@ describe('InviteTeammateModal', () => {
       `shared-container-invite-modal-file-review-${deepPath}`,
     ) as HTMLInputElement;
     expect(checkbox).not.toBeNull();
+    // The whole row is the label, so clicking the path toggles the file.
     const label = checkbox.closest('label');
-    const pathLabel = label?.querySelector('span');
+    const pathLabel = label?.querySelector('.break-all');
     expect(pathLabel?.textContent).toBe(deepPath);
     expect(pathLabel?.className).not.toContain('truncate');
-    expect(pathLabel?.className).toContain('break-all');
-    // Without `min-w-0` the span refuses to shrink below its content width, so
-    // the row — not the label — is what overflows the dialog.
-    expect(pathLabel?.className).toContain('min-w-0');
+    // Without `min-w-0` the text column refuses to shrink below its content
+    // width, so the row — not the label — is what overflows the dialog.
+    expect(pathLabel?.closest('.min-w-0')).not.toBeNull();
     // The box stays a box and stays on the first line once the path wraps.
-    expect(checkbox.className).toContain('shrink-0');
+    expect(checkbox.closest('.shrink-0')).not.toBeNull();
     expect(label?.className).toContain('items-start');
   });
 
@@ -4259,11 +4259,10 @@ describe('InviteTeammateModal', () => {
     ) as HTMLInputElement;
     expect(folderCheckbox).not.toBeNull();
     const label = folderCheckbox.closest('label');
-    const folderLabel = label?.querySelector('span');
+    const folderLabel = label?.querySelector('.break-all');
     expect(folderLabel?.className).not.toContain('truncate');
-    expect(folderLabel?.className).toContain('break-all');
-    expect(folderLabel?.className).toContain('min-w-0');
-    expect(folderCheckbox.className).toContain('shrink-0');
+    expect(folderLabel?.closest('.min-w-0')).not.toBeNull();
+    expect(folderCheckbox.closest('.shrink-0')).not.toBeNull();
     expect(label?.className).toContain('items-start');
   });
 
@@ -5714,7 +5713,7 @@ describe('InviteTeammateModal', () => {
       // Labelled through the same helper the Scripts panel uses, so the
       // publisher reads the same title in both places. The raw key stays the
       // wire name; only the label is prettified.
-      expect(custom?.parentElement?.textContent).toContain(
+      expect(custom?.closest('label')?.textContent).toContain(
         'Launch UD Mobile Simulator',
       );
       expect(q('shared-container-invite-modal-run-scope-setup')).not.toBeNull();

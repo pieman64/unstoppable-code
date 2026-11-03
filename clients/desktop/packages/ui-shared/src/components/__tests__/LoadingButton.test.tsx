@@ -58,7 +58,7 @@ describe('LoadingButton presentation', () => {
     expect(lander).toContain('mt-2');
   });
 
-  it('reports and disables while loading in both presentations', () => {
+  it('reports busy and unavailable while loading in both presentations', () => {
     const lander = renderToStaticMarkup(
       <LoadingButton
         presentation="share-lander"
@@ -71,7 +71,8 @@ describe('LoadingButton presentation', () => {
     );
 
     expect(lander).toContain('aria-busy="true"');
-    expect(lander).toContain('disabled=""');
+    expect(lander).toContain('aria-disabled="true"');
+    expect(lander).not.toContain('disabled=""');
     expect(lander).toContain('data-testid="spinner"');
     expect(lander).toContain('Installing…');
   });
@@ -150,7 +151,9 @@ describe('LoadingButton width', () => {
   it('shows the spinner and the verb in progress in the same cell', () => {
     const button = renderStart(true);
     expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.disabled).toBe(true);
+    // Unavailable but still focusable, so focus never drops to the page.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.textContent).toBe('Starting…');
     expect(layer('rest').classList.contains('invisible')).toBe(true);
     expect(layer('rest').getAttribute('aria-hidden')).toBe('true');
@@ -184,5 +187,46 @@ describe('LoadingButton width', () => {
     expect(container.querySelector('button')?.textContent).toBe(
       'Create 3 projects',
     );
+  });
+
+  it('does not start the work again while busy', () => {
+    const onClick = jest.fn();
+    act(() => {
+      root.render(
+        <LoadingButton loading onClick={onClick}>
+          Apply
+        </LoadingButton>,
+      );
+    });
+    container.querySelector('button')?.click();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('does not submit its form again while busy', () => {
+    const onSubmit = jest.fn((event: SubmitEvent) => event.preventDefault());
+    act(() => {
+      root.render(
+        <form>
+          <LoadingButton type="submit" loading>
+            Save
+          </LoadingButton>
+        </form>,
+      );
+    });
+    const form = container.querySelector('form');
+    form?.addEventListener('submit', onSubmit);
+    container.querySelector('button')?.click();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('stays disabled when the caller disables it', () => {
+    act(() => {
+      root.render(
+        <LoadingButton loading disabled>
+          Apply
+        </LoadingButton>,
+      );
+    });
+    expect(container.querySelector('button')?.disabled).toBe(true);
   });
 });

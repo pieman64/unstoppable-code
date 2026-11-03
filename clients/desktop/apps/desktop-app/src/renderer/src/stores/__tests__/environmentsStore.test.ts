@@ -464,8 +464,8 @@ describe('environmentsStore', () => {
         })
         .mockImplementationOnce(() =>
           retryFailure === 'rejected promise'
-            ? Promise.reject(new Error('Retry failed.'))
-            : Promise.resolve({ ok: false, error: 'Retry failed.' }),
+            ? Promise.reject(new Error('The retry failed.'))
+            : Promise.resolve({ ok: false, error: 'The retry failed.' }),
         )
         .mockResolvedValueOnce({
           ok: true,
@@ -484,7 +484,7 @@ describe('environmentsStore', () => {
       useEnvironmentsStore.getState().setLocal(laterDraft);
       await expect(
         useEnvironmentsStore.getState().retryStorageFailure(),
-      ).rejects.toThrow('Retry failed.');
+      ).rejects.toThrow('The retry failed.');
       expect(useEnvironmentsStore.getState()).toMatchObject({
         data: laterDraft,
         pendingSave: {

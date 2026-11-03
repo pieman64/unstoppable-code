@@ -132,7 +132,7 @@ describe('PipelineExecutionDetailModal Debug action', () => {
         );
       });
 
-      const debugButton = container.querySelector(
+      const debugButton = document.body.querySelector(
         '[data-testid="pipeline-detail-debug-failure-execution-1"]',
       );
       expect(debugButton).toBeInstanceOf(HTMLButtonElement);

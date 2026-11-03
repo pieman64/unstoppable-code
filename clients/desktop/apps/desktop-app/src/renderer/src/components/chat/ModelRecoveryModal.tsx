@@ -67,6 +67,7 @@ import {
   dailyFreeCreditsTurnOnAction,
   displayableDailyFreeCreditsCap,
   formatCreditCount,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { GetAiCreditsCta } from './GetAiCreditsCta';
 import { CreditsRecoveryView } from './CreditsRecoveryView';
@@ -1659,7 +1660,7 @@ function ModelRecoveryAttempt({
       dataTestId="model-recovery-modal"
       ownerDocument={ownerDocument}
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+      <div className="flex flex-col gap-4">
         <div className="text-s leading-relaxed fg-secondary">{body}</div>
         {actions ? <div className="flex flex-col gap-2">{actions}</div> : null}
       </div>
@@ -1886,6 +1887,7 @@ function ModelRecoveryAttempt({
     });
     return (
       <DialogModal
+        inset="flush"
         onClose={(): void => {
           if (!commitInFlightRef.current && !dailyCreditsInFlightRef.current)
             onCancel();
@@ -2145,13 +2147,11 @@ function ModelRecoveryAttempt({
           </span>
           {unlockAttempt.status === 'adopted' &&
           unlockAttempt.newPurchaseFailed === true ? (
-            <span
-              role="alert"
-              className="fg-destructive"
-              data-testid="model-recovery-unlock-failed"
-            >
-              We couldn’t open your browser. Try again.
-            </span>
+            <ErrorBanner
+              error="We couldn’t open your browser. Try again."
+              className=""
+              testId="model-recovery-unlock-failed"
+            />
           ) : null}
         </span>,
         <>
@@ -2206,13 +2206,11 @@ function ModelRecoveryAttempt({
       <span data-testid="model-recovery-unlock" className="flex flex-col gap-2">
         <span>{MODEL_LIBRARY_UNLOCK_COPY.purchaseBody}</span>
         {unlockAttempt.status === 'failed' ? (
-          <span
-            role="alert"
-            className="fg-destructive"
-            data-testid="model-recovery-unlock-failed"
-          >
-            We couldn’t open your browser. Try again.
-          </span>
+          <ErrorBanner
+            error="We couldn’t open your browser. Try again."
+            className=""
+            testId="model-recovery-unlock-failed"
+          />
         ) : null}
       </span>,
       <>{purchaseButton(MODEL_LIBRARY_UNLOCK_COPY.purchaseAction)}</>,
@@ -2352,13 +2350,11 @@ function ModelRecoveryAttempt({
           </span>
         </span>
         {dailyDrip === 'error' ? (
-          <span
-            role="alert"
-            className="fg-destructive"
-            data-testid="model-recovery-daily-credits-error"
-          >
-            Couldn't save. Try again.
-          </span>
+          <ErrorBanner
+            error="Couldn't save. Try again."
+            className=""
+            testId="model-recovery-daily-credits-error"
+          />
         ) : null}
         {creditsRecoveryView}
       </span>,

@@ -1,4 +1,5 @@
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
+import { ErrorBanner, ErrorState } from '@canopy/ui-shared/components';
 import {
   type JSX,
   type ReactNode,
@@ -86,7 +87,12 @@ import { WatcherFollowUpButton } from '@/components/watchers/WatcherFollowUpButt
 import type { PipelineWatcherSelection } from './usePipelineRunWatcher';
 import type { AppAdvisorWatcherDestination } from '@canopy/desktop-shared/types';
 import { stableStringify } from './pipelineTriggerModalUtils';
-import { Tooltip } from '@canopy/ui-shared';
+import {
+  ChoiceField,
+  DialogFormField,
+  SearchField,
+  Tooltip,
+} from '@canopy/ui-shared';
 import { pipelineSourceBadgeClassName } from '@canopy/ui-shared/lib';
 import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 import { Button, SegmentedControl } from '@canopy/ui-shared/components';
@@ -343,11 +349,7 @@ function SharedPipelineSelector({
             Loading shared workflows…
           </div>
         )}
-        {state.error && (
-          <div className="rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-s fg-destructive">
-            {state.error}
-          </div>
-        )}
+        <ErrorBanner error={state.error} className="" />
         {state.loaded &&
           rows.length === 0 &&
           !state.error &&
@@ -415,11 +417,7 @@ function SharedPipelineSelector({
           </div>
         )}
       </div>
-      {hydrateError && (
-        <div className="mt-2 rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-xs fg-destructive">
-          {hydrateError}
-        </div>
-      )}
+      <ErrorBanner error={hydrateError} className="mt-2" />
     </div>
   );
 }
@@ -1874,6 +1872,7 @@ export function PipelineTriggerModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={isRunning ? (): void => {} : onClose}
       title={labels.title}
       subtitle={subtitle}
@@ -1883,7 +1882,7 @@ export function PipelineTriggerModal({
       ownerDocument={ownerDocument}
     >
       <div
-        className="flex-1 overflow-y-auto px-5 py-3"
+        className="flex-1 overflow-y-auto px-6 py-3"
         style={{ minHeight: 120 }}
         data-testid="pipeline-trigger-modal-body"
       >
@@ -1897,9 +1896,7 @@ export function PipelineTriggerModal({
             )}
 
             {loadState.status === 'error' && (
-              <div className="py-8 text-center text-s fg-destructive">
-                {loadState.message}
-              </div>
+              <ErrorState space="panel" message={loadState.message} />
             )}
 
             {loadState.status === 'loaded' &&
@@ -1921,31 +1918,30 @@ export function PipelineTriggerModal({
                       className="mb-3"
                       data-testid="pipeline-trigger-modal-repo-select"
                     >
-                      <label
+                      <DialogFormField
+                        label="Working directory"
                         htmlFor="pipeline-trigger-modal-repo"
-                        className="mb-1 block text-xs font-medium fg-secondary"
                       >
-                        Working directory
-                      </label>
-                      <SelectField
-                        id="pipeline-trigger-modal-repo"
-                        value={selectedRepoId ?? ''}
-                        onChange={(e) => setSelectedRepoId(e.target.value)}
-                        options={repoChoices.map((choice) => ({
-                          value: choice.repoId,
-                          label: choice.repoName,
-                        }))}
-                        disabled={isRunning}
-                      />
+                        <SelectField
+                          id="pipeline-trigger-modal-repo"
+                          value={selectedRepoId ?? ''}
+                          onChange={(e) => setSelectedRepoId(e.target.value)}
+                          options={repoChoices.map((choice) => ({
+                            value: choice.repoId,
+                            label: choice.repoName,
+                          }))}
+                          disabled={isRunning}
+                        />
+                      </DialogFormField>
                     </div>
                   )}
 
-                  <input
-                    type="text"
+                  <SearchField
+                    className="mb-2"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onValueChange={setSearchQuery}
+                    aria-label="Search workflows"
                     placeholder="Search workflows…"
-                    className="mb-2 w-full rounded-lg border bg-fg-primary/[0.04] px-3 py-2 text-s fg-primary placeholder:fg-secondary focus:border-line-accent/50 focus:outline-none"
                     autoFocus
                   />
 
@@ -2071,21 +2067,19 @@ export function PipelineTriggerModal({
                             )}
                         </div>
                       )}
-                      {sharedHydrateError && (
-                        <div className="mt-2 rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-xs fg-destructive">
-                          {sharedHydrateError}
-                        </div>
-                      )}
+                      <ErrorBanner
+                        error={sharedHydrateError}
+                        className="mt-2"
+                      />
                     </div>
                   )}
 
                   {selectedPipeline && selectedPipelineError && (
-                    <div
-                      className="mt-3 rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-s fg-destructive"
-                      data-testid="pipeline-trigger-modal-selection-error"
-                    >
-                      This workflow cannot be run: {selectedPipelineError}
-                    </div>
+                    <ErrorBanner
+                      error={`This workflow can’t run: ${selectedPipelineError}`}
+                      className="mt-3"
+                      testId="pipeline-trigger-modal-selection-error"
+                    />
                   )}
                 </>
               )}
@@ -2165,11 +2159,7 @@ export function PipelineTriggerModal({
 
             {hasCollections && (
               <div className="mt-4">
-                {collectionError && (
-                  <div className="mb-2 rounded-lg border border-line-destructive bg-destructive-subtle px-3 py-2 text-xs fg-destructive">
-                    {collectionError}
-                  </div>
-                )}
+                <ErrorBanner error={collectionError} className="mb-2" />
                 <PipelinePluginCollectionsSection
                   pipeline={selectedPipeline.content}
                   previewItems={collectionPreview}
@@ -2211,9 +2201,7 @@ export function PipelineTriggerModal({
                   </span>
                 )}
                 {saveDefaultsState.status === 'error' && (
-                  <span className="text-xs fg-destructive">
-                    {saveDefaultsState.message}
-                  </span>
+                  <ErrorBanner error={saveDefaultsState.message} className="" />
                 )}
               </div>
             )}
@@ -2222,30 +2210,22 @@ export function PipelineTriggerModal({
               label="Fast mode consumes 2x usage."
               className="mt-4 w-full"
             >
-              <label className="flex w-full items-start gap-2 text-s fg-primary">
-                <input
-                  type="checkbox"
-                  checked={fastMode}
-                  onChange={(event) => setFastMode(event.target.checked)}
-                  disabled={isRunning}
-                  className="mt-0.5 h-4 w-4 rounded bg-base"
-                />
-                <span>
-                  <span className="block">Fast mode</span>
-                  <span className="block text-xs fg-secondary">
-                    Runs supported model providers in fast mode.
-                  </span>
-                </span>
-              </label>
+              <ChoiceField
+                checked={fastMode}
+                onChange={(event) => setFastMode(event.target.checked)}
+                disabled={isRunning}
+                label="Fast mode"
+                description="Runs supported model providers in fast mode."
+              />
             </Tooltip>
           </>
         )}
       </div>
 
       {/* Footer */}
-      <div className="flex flex-col gap-2 border-t px-5 py-3">
-        {selectedPipelineError && step === 'configure' && (
-          <div className="text-xs fg-destructive">{selectedPipelineError}</div>
+      <div className="flex flex-col gap-2 border-t px-6 py-3">
+        {step === 'configure' && (
+          <ErrorBanner error={selectedPipelineError} className="" />
         )}
         {selectedPipeline && runContextBlockedReason && (
           <div
@@ -2298,7 +2278,7 @@ export function PipelineTriggerModal({
             Complete the required setup above before running this workflow.
           </div>
         )}
-        {runError && <div className="text-xs fg-destructive">{runError}</div>}
+        <ErrorBanner error={runError} className="" />
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             {watcherSupported && watcherRecipientGroups && (

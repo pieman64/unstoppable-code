@@ -74,7 +74,7 @@ import {
   INLINE_PLAN_MARKDOWN_OPTIONS,
   PLAN_MARKDOWN_OPTIONS,
   stripPlanTitleLine,
-} from '@/components/activity/plan-markdown';
+} from '@canopy/ui-app/plan-markdown';
 import { PlanSourceMark } from '@/components/activity/PlanSourceMark';
 import { ArchivedExecutionRow } from './ArchivedExecutionRow';
 import { PipelineExecutionDetailModal } from '@/components/activity/PipelineExecutionDetailModal';
@@ -964,9 +964,9 @@ export function ArchivedContainerView({
             disabled={archiveActions.restoring}
             title={
               gitCleanupOnly
-                ? 'Retry cleaning up the archived Git worktree registration'
+                ? 'Try cleaning up the archived Git worktree registration again'
                 : partiallyRestored
-                  ? 'Retry importing the workflow runs into the restored worktree'
+                  ? 'Try importing the workflow runs into the restored worktree again'
                   : 'Bring this item back as a live worktree or chat'
             }
           >
@@ -978,9 +978,9 @@ export function ArchivedContainerView({
             {archiveActions.restoring
               ? 'Restoring…'
               : gitCleanupOnly
-                ? 'Retry Git cleanup'
+                ? 'Try Git cleanup again'
                 : partiallyRestored
-                  ? 'Retry workflow import'
+                  ? 'Try workflow import again'
                   : 'Restore'}
           </HeaderActionButton>
           {confirmingDelete ? (

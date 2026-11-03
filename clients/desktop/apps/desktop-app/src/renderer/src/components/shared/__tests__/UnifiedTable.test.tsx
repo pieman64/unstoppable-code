@@ -248,7 +248,7 @@ describe('UnifiedTable provider scoping', () => {
     expect(body?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
     for (const selector of [
       'input[aria-label="Search by name"]',
-      'select[aria-label="Kind filter"]',
+      '[role="combobox"][aria-label="Kind filter"]',
       'thead',
     ]) {
       const element = container.querySelector(selector);

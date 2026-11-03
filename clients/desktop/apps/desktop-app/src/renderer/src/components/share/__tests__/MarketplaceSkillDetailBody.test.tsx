@@ -231,7 +231,9 @@ describe('MarketplaceSkillDetailBody plugin page', () => {
         landing({ state: { phase: 'loading' }, snapshot: null }),
       );
     });
-    expect(body()?.textContent).toContain('Loading shared plugin…');
+    expect(
+      body()?.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     expect(actionRow()).toBeNull();
   });
 });
@@ -442,7 +444,9 @@ describe('MarketplaceSkillDetailBody skill page', () => {
       document.getElementById('plugin-detail-title')?.parentElement
         ?.nextElementSibling,
     ).toBe(body());
-    expect(body()?.textContent).toContain('Loading shared skill…');
+    expect(
+      body()?.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     expect(actionRow()).toBeNull();
   });
 
@@ -641,7 +645,7 @@ describe('MarketplaceSkillDetailBody failures (CAN-5222)', () => {
   it('offers Retry when the service could not be reached', () => {
     const value = renderFailure('cloud-unreachable');
     const retry = button('deep-link-share-retry');
-    expect(retry?.textContent).toBe('Retry');
+    expect(retry?.textContent).toBe('Try again');
     act(() => retry?.click());
     expect(value.retryResolve).toHaveBeenCalledTimes(1);
   });

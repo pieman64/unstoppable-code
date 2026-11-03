@@ -26,6 +26,7 @@ import {
   getOrganizationDetail,
   startGitHubConnect,
 } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 interface TeamGitHubConnectionSectionProps {
   detail: OrganizationDetail;
@@ -53,7 +54,7 @@ export function TeamGitHubConnectionSection({
   const { followGitHubInstallUrl } = useOrganizationSettingsSubtabSlots();
   const [busy, setBusy] = useState(false);
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // The install opened in the browser; the card waits for "Check again".
   const [continuingInBrowser, setContinuingInBrowser] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -82,7 +83,7 @@ export function TeamGitHubConnectionSection({
       setBusy(false);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'connect GitHub',
           known: GITHUB_CONNECT_KNOWN_ERRORS,
         }),
@@ -100,7 +101,7 @@ export function TeamGitHubConnectionSection({
       if (updated.githubConnection.connected) setContinuingInBrowser(false);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, { action: 'check the GitHub connection' }),
+        errorCopy.actionFailure(err, { action: 'check the GitHub connection' }),
       );
     } finally {
       setChecking(false);
@@ -118,7 +119,7 @@ export function TeamGitHubConnectionSection({
       });
       setConfirmingDisconnect(false);
     } catch (err) {
-      setError(errorCopy.actionCopy(err, { action: 'disconnect GitHub' }));
+      setError(errorCopy.actionFailure(err, { action: 'disconnect GitHub' }));
     } finally {
       setBusy(false);
     }
@@ -198,7 +199,7 @@ export function TeamGitHubConnectionSection({
         </div>
         {error ? (
           <div className="pb-3">
-            <ErrorBanner error={error} />
+            <ErrorBanner error={error?.copy} details={error?.details} />
           </div>
         ) : null}
       </div>

@@ -8,6 +8,7 @@ import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { writeJson } from './seeders/index.mjs';
 import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -439,9 +440,10 @@ test('historical turn comparison uses a pill beside the layout toggle', async ()
       'aria-pressed',
       'true',
     );
-    await panel
-      .getByRole('combobox', { name: 'Diff source' })
-      .selectOption('uncommitted');
+    await chooseSettingsOption(
+      panel.getByRole('combobox', { name: 'Diff source' }),
+      'uncommitted',
+    );
     await expect(all).toHaveAttribute('aria-pressed', 'true');
   } finally {
     await closeCanopy(electronApp, userDataDir);

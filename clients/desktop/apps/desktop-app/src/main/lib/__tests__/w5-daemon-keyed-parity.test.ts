@@ -121,7 +121,7 @@ import {
   W5FileWriteRefusedError,
   W5RevisionConflictError,
 } from '../w5-commit-log-file-store';
-import { nodeW5FileStore } from '../w5-file-store';
+import { nodeW5FileStore, W5AuthorityUnreachableError } from '../w5-file-store';
 import { createWorkspace } from '../workspace-creation';
 import { deleteWorkspace } from '../workspace-deletion';
 import {
@@ -139,13 +139,17 @@ jest.setTimeout(180_000);
 
 const NOW = new Date('2026-10-31T12:00:00.000Z');
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-/** A journal's directory identity: device, inode and birth time. */
-const IDENTITY = /\b\d{5,}:\d+:\d+(?:\.\d+)?/g;
+/**
+ * A journal's directory identity: device, inode and birth time. Devices can
+ * be short (2049 on Linux runners), so the epoch-ms birth time anchors it.
+ */
+const IDENTITY = /\b\d+:\d+:\d{12,}(?:\.\d+)?/g;
 /**
  * The content-free name a failed attempt records: the injected error's
  * in-process, the uncertain transport failure's on the daemon side.
  */
-const UNCERTAIN_NAME = /"errorName":"(?:Error|CanopyClientError)"/g;
+const UNCERTAIN_NAME =
+  /"errorName":"(?:Error|CanopyClientError|W5AuthorityUnreachableError)"/g;
 const W5_FILES = [
   'index.json',
   'a/workspace.json',
@@ -258,6 +262,9 @@ interface Scenario {
 
 /** One step's portable result: its value, or its typed failure. */
 function settled(error: unknown, root: string): unknown {
+  // Daemon side only: the in-process store has no unreachable authority.
+  if (error instanceof W5AuthorityUnreachableError)
+    return { error: 'unreachable', certainty: error.certainty };
   if (error instanceof W5RevisionConflictError)
     return {
       error: 'revision-conflict',
@@ -791,6 +798,21 @@ beforeEach(() => {
 });
 afterEach(() => jest.useRealTimers());
 
+it('normalizes directory identities on short devices but not clock times', () => {
+  const journal = (identity: string): string =>
+    `"directoryIdentity":"${identity}:<uuid>","at":"2026-10-31T12:00:00.000Z"`;
+  // The identities a Linux runner (device 2049) gave the two sides.
+  expect(
+    journal('2049:9481349:1793643510806.576').replace(IDENTITY, '<identity>'),
+  ).toBe(journal('<identity>'));
+  expect(
+    journal('2049:9481064:1793643517338.911').replace(IDENTITY, '<identity>'),
+  ).toBe(journal('<identity>'));
+  expect(
+    journal('16777232:9481064:1793643517338').replace(IDENTITY, '<identity>'),
+  ).toBe(journal('<identity>'));
+});
+
 it.each(SCENARIOS.map((scenario) => [scenario.name, scenario]))(
   '%s: the daemon record port matches the in-process store',
   async (_name, scenario) => {
@@ -869,6 +891,48 @@ it('a lost keyed response is sent once and replays the saved outcome without a s
   // The keyed decision crossed once: the replay came from receipt.lookup.
   expect(sent).toHaveLength(1);
   expect(observed).toMatchObject({ receipts: [{ status: 'replay' }] });
+});
+
+it('GB4: a keyed response lost as outcome-unknown is typed on the daemon side only, and otherwise matches the in-process store', async () => {
+  const scenario = SCENARIOS.find((entry) => entry.name.startsWith('a lost'));
+  if (!scenario) throw new Error('Expected the lost-response scenario');
+  const lost: Scenario = {
+    ...scenario,
+    // What the record-port guard throws for an instruction lost in flight.
+    wrapTransport: (transport) => {
+      let dropped = false;
+      return {
+        ...transport,
+        commit: async (request) => {
+          const result = await transport.commit(request);
+          if (!dropped && request.receipt) {
+            dropped = true;
+            throw new W5AuthorityUnreachableError(
+              'outcome-unknown',
+              'lost',
+              new Error('Connection closed.'),
+            );
+          }
+          return result;
+        },
+      };
+    },
+  };
+  const inProcess = (await run(lost, 'in-process')) as { results: unknown[] };
+  const daemon = (await run(lost, 'daemon')) as { results: unknown[] };
+  expect(inProcess.results[0]).toEqual({ error: 'uncertain' });
+  expect(daemon.results[0]).toEqual({
+    error: 'unreachable',
+    certainty: 'outcome-unknown',
+  });
+  // The same replay, bytes, receipts and hooks on both sides.
+  expect({ ...daemon, results: daemon.results.slice(1) }).toEqual({
+    ...inProcess,
+    results: inProcess.results.slice(1),
+  });
+  expect(daemon.results[1]).toMatchObject({
+    value: { worktree: { id: 'one', label: 'Edited' } },
+  });
 });
 
 interface WireString {

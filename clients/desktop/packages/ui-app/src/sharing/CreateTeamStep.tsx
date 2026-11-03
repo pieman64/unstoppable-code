@@ -3,7 +3,12 @@
 import { type JSX, useId } from 'react';
 import type { PersonalProject } from '@canopy/protocol/organizations';
 import type { PersonalProjectListState } from '@canopy/app-state/personal-organization-upgrade';
-import { Notice, NoticeButton, TextInput } from '@canopy/ui-shared/components';
+import {
+  FormField,
+  Notice,
+  NoticeButton,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import { ShareCheckbox } from './ShareCheckbox';
 import { TEAM_UPGRADE_COPY as COPY } from './personal-organization-upgrade-copy';
 
@@ -153,20 +158,19 @@ export function CreateTeamStep({
 
   return (
     <div className="space-y-4" data-testid={`${p}-create-team`}>
-      <div className="space-y-1.5">
-        <label htmlFor={nameId} className="block text-s font-medium fg-primary">
-          {COPY.nameLabel}
-        </label>
-        <TextInput
-          id={nameId}
-          value={name}
-          maxLength={256}
-          placeholder={COPY.namePlaceholder}
-          autoComplete="organization"
-          onChange={(event) => onNameChange(event.target.value)}
-          data-testid={`${p}-team-name`}
-        />
-      </div>
+      <FormField id={nameId} label={COPY.nameLabel}>
+        {(control) => (
+          <TextInput
+            {...control}
+            value={name}
+            maxLength={256}
+            placeholder={COPY.namePlaceholder}
+            autoComplete="organization"
+            onChange={(event) => onNameChange(event.target.value)}
+            data-testid={`${p}-team-name`}
+          />
+        )}
+      </FormField>
       {projectSection}
     </div>
   );

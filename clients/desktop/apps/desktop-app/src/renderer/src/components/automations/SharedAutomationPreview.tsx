@@ -1,4 +1,10 @@
 import type { JSX } from 'react';
+import {
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+  SettingsRowsValue,
+} from '@canopy/ui-shared/components';
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
   SharedAutomationAction,
@@ -144,61 +150,69 @@ export function SharedAutomationPreview({
         )}
       </div>
 
-      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-s sm:grid-cols-2">
-        <div>
-          <dt className="text-xs fg-secondary">Trigger</dt>
-          <dd
-            className="fg-primary"
-            data-testid="shared-automation-preview-trigger"
-          >
-            {describeTrigger(automation.trigger)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs fg-secondary">Action</dt>
-          <dd
-            className="fg-primary"
-            data-testid="shared-automation-preview-action"
-          >
-            {describeSharedAction(automation.action)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs fg-secondary">Owner</dt>
-          <dd className="fg-primary">
-            {/* A person owner's name is blocked from replay; a team's or
+      <SettingsRowsSection title="Details">
+        <SettingsRowsGroup>
+          <SettingsRowsRow
+            fact
+            label="Trigger"
+            control={
+              <SettingsRowsValue dataTestId="shared-automation-preview-trigger">
+                {describeTrigger(automation.trigger)}
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Action"
+            control={
+              <SettingsRowsValue dataTestId="shared-automation-preview-action">
+                {describeSharedAction(automation.action)}
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Owner"
+            control={
+              <SettingsRowsValue>
+                {/* A person owner's name is blocked from replay; a team's or
                 organization's is recorded. */}
-            {'name' in detail.owner && detail.owner.name !== null ? (
-              <span
-                className={
-                  detail.owner.type === 'user'
-                    ? POSTHOG_REPLAY_BLOCK_CLASS
-                    : undefined
-                }
-              >
-                {detail.owner.name}
-              </span>
-            ) : (
-              detail.owner.type
-            )}{' '}
-            · {capitalizeFirstLetter(detail.shareScope)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs fg-secondary">Shared by</dt>
-          <dd className="fg-primary">
-            {/* The sharer is a person: replay records a box for the name. */}
-            {detail.createdBy.name === null &&
-            detail.createdBy.email === null ? (
-              'Unknown'
-            ) : (
-              <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
-                {detail.createdBy.name ?? detail.createdBy.email}
-              </span>
-            )}
-          </dd>
-        </div>
-      </dl>
+                {'name' in detail.owner && detail.owner.name !== null ? (
+                  <span
+                    className={
+                      detail.owner.type === 'user'
+                        ? POSTHOG_REPLAY_BLOCK_CLASS
+                        : undefined
+                    }
+                  >
+                    {detail.owner.name}
+                  </span>
+                ) : (
+                  detail.owner.type
+                )}{' '}
+                · {capitalizeFirstLetter(detail.shareScope)}
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Shared by"
+            control={
+              <SettingsRowsValue>
+                {/* The sharer is a person: replay records a box for the name. */}
+                {detail.createdBy.name === null &&
+                detail.createdBy.email === null ? (
+                  'Unknown'
+                ) : (
+                  <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                    {detail.createdBy.name ?? detail.createdBy.email}
+                  </span>
+                )}
+              </SettingsRowsValue>
+            }
+          />
+        </SettingsRowsGroup>
+      </SettingsRowsSection>
 
       {/* The public link belongs to the share, not to the local automation,
           so it is managed from the shared-resource preview — the same

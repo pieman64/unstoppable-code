@@ -8,6 +8,7 @@ import {
   type InstalledShareProvenanceOptions,
   type InstalledShareSource,
 } from '@canopy/ui-app/capability';
+import { sharedResourceInstallLink } from '@/lib/sharedResourceInstallLink';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
@@ -24,7 +25,8 @@ type SourceRead =
  * The installed page's provenance for a receipted shared install (CAN-5018):
  * reads the source once per open, account, context and installed hash, and
  * reports `Update available` only when that read shows a changed source.
- * A failed read keeps the receipt's names; it never blocks the page.
+ * A failed read keeps the receipt's names; it never blocks the page. Only
+ * the current read for a team or organization share offers Update.
  */
 export function useInstalledShareProvenance(
   installedSkill:
@@ -97,12 +99,34 @@ export function useInstalledShareProvenance(
         .openSkillViewer({ kind: 'shared', skillId: remoteId }),
   };
   if (current?.status === 'loaded') {
+    const updateAvailable = shareSourceHashChanged(
+      installedHash,
+      current.sourceHash,
+    );
+    // Update opens the same reviewed replacement as the shared skill's own
+    // page (CAN-5306). A private or unknown scope has no review here, so its
+    // copy shows the status without the action.
+    const updateLink = updateAvailable
+      ? sharedResourceInstallLink({
+          entity: 'skill',
+          externalId: remoteId,
+          scope: origin.shareScope,
+        })
+      : null;
     return {
       names: current.names,
-      updateAvailable: shareSourceHashChanged(
-        installedHash,
-        current.sourceHash,
-      ),
+      updateAvailable,
+      ...(updateLink && installedSkill
+        ? {
+            onUpdate: (): void =>
+              useNavigationStore
+                .getState()
+                .openShareInstall(updateLink, 'in-app', {
+                  sourceId: installedSkill.sourceId,
+                  skillName: installedSkill.name,
+                }),
+          }
+        : {}),
       source,
     };
   }

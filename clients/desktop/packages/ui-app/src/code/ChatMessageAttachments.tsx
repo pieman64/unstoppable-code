@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { PortalChatMessageAttachment } from '@canopy/protocol/portal';
-import { FileAttachmentChip } from '@canopy/ui-shared/components';
+import { FileAttachmentChip, ErrorBanner } from '@canopy/ui-shared/components';
 
 /**
  * Host-owned behavior for the files a user attached to a message. ui-app stays
@@ -161,16 +161,7 @@ export function ChatAssetImage({
         </span>
       )}
       {image.error && (
-        <span role="alert" className="text-xs fg-secondary">
-          {image.error}{' '}
-          <button
-            type="button"
-            className="focus-ring fg-accent"
-            onClick={image.retry}
-          >
-            Try again
-          </button>
-        </span>
+        <ErrorBanner className="" error={image.error} onRetry={image.retry} />
       )}
     </div>
   );
@@ -332,27 +323,14 @@ const ChatMessageAttachmentChip = memo(function ChatMessageAttachmentChip({
         </span>
       )}
       {image.error && (
-        <span role="alert" className="text-2xs fg-secondary">
-          {image.error}{' '}
-          <button
-            type="button"
-            className="focus-ring fg-accent"
-            onClick={image.retry}
-          >
-            Try again
-          </button>
-        </span>
+        <ErrorBanner className="" error={image.error} onRetry={image.retry} />
       )}
       {downloading && (
         <span role="status" className="text-2xs fg-secondary">
           Downloading {filename}…
         </span>
       )}
-      {downloadError !== null && (
-        <span role="alert" className="text-2xs fg-destructive">
-          {downloadError}
-        </span>
-      )}
+      <ErrorBanner className="" error={downloadError} />
     </div>
   );
 });

@@ -32,6 +32,10 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import {
+  chooseSettingsOption,
+  settingsOptionLabels,
+} from './helpers/settingsSelect.mjs';
 import { acceptSharedContainerInvitation } from './sharedContainerRecipientActions.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
@@ -1170,9 +1174,10 @@ test('copies into an existing Personal project moved back from an organization',
     await window
       .getByTestId('shared-container-fork-destination-existing')
       .click();
-    await window
-      .getByTestId('shared-container-fork-workspace')
-      .selectOption(workspaceId);
+    await chooseSettingsOption(
+      window.getByTestId('shared-container-fork-workspace'),
+      workspaceId,
+    );
     await window.getByTestId('shared-container-fork-continue').click();
     await expect(
       window.getByTestId('shared-container-fork-disclosures-destination'),
@@ -1402,13 +1407,12 @@ test('filters existing-project fork destinations to the share owning context', a
       .getByTestId('shared-container-fork-destination-existing')
       .click();
     const select = window.getByTestId('shared-container-fork-workspace');
-    await expect(select).toHaveValue('');
-    await expect(select.locator('option').first()).toHaveText(
-      'Choose a project',
-    );
-    await expect(select).toContainText('Acme repository');
-    await expect(select).not.toContainText('Personal repository');
-    await expect(select).not.toContainText('Other organization repository');
+    await expect(select).not.toHaveAttribute('data-value');
+    await expect(select).toHaveText('Choose a project');
+    const offered = await settingsOptionLabels(select);
+    expect(offered).toContain('Acme repository');
+    expect(offered).not.toContain('Personal repository');
+    expect(offered).not.toContain('Other organization repository');
     await expect(
       window.getByTestId('shared-container-fork-workspace-context'),
     ).toHaveText('Projects in Share owner org');

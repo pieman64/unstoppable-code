@@ -1028,7 +1028,7 @@ export function BrowserPane({
                 onClick={handleRetry}
               >
                 <RefreshIcon size={14} />
-                Retry
+                Try again
               </Button>
             </div>
           ) : !hasUrl ? (

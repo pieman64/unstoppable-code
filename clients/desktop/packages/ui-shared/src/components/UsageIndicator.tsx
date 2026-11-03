@@ -14,7 +14,6 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { getDocument } from '../panels/window-registry';
 import { aiCreditsLabel } from './aiCreditsLabel';
@@ -792,6 +791,8 @@ export function UsageIndicator({
     setOpen((previous) => !previous);
   }, []);
 
+  const closePopover = useCallback((): void => setOpen(false), []);
+
   // Escape closes the popover from anywhere and hands focus back to the ring.
   useEffect(() => {
     if (!open) return undefined;
@@ -894,35 +895,38 @@ export function UsageIndicator({
         )}
       </button>
 
-      {open &&
-        createPortal(
-          <Suspense fallback={null}>
-            <UsagePopover
-              usage={usage}
-              modelLabel={modelLabel ?? usage.model}
-              percentage={percentage}
-              isCodex={isCodex}
-              showContextWindow={showContextWindow}
-              responseUsage={responseUsage}
-              accountUsage={accountSection}
-              contextBreakdown={contextBreakdown}
-              costPreview={costPreview}
-              hideCost={hideCost}
-              onSeeDetails={
-                onSeeDetails
-                  ? (): void => {
-                      setOpen(false);
-                      onSeeDetails();
-                    }
-                  : undefined
-              }
-              anchorRef={containerRef}
-              {...(alignRef ? { alignRef } : {})}
-              popoverRef={popoverRef}
-            />
-          </Suspense>,
-          getDocument(containerRef.current).body,
-        )}
+      {open && (
+        // The details load on first open; the shared menu surface places
+        // and dismisses them once they arrive. Until then Escape and a press
+        // outside are handled above.
+        <Suspense fallback={null}>
+          <UsagePopover
+            usage={usage}
+            modelLabel={modelLabel ?? usage.model}
+            percentage={percentage}
+            isCodex={isCodex}
+            showContextWindow={showContextWindow}
+            responseUsage={responseUsage}
+            accountUsage={accountSection}
+            contextBreakdown={contextBreakdown}
+            costPreview={costPreview}
+            hideCost={hideCost}
+            onSeeDetails={
+              onSeeDetails
+                ? (): void => {
+                    setOpen(false);
+                    onSeeDetails();
+                  }
+                : undefined
+            }
+            onClose={closePopover}
+            anchorRef={containerRef}
+            {...(alignRef ? { alignRef } : {})}
+            returnFocusRef={triggerRef}
+            popoverRef={popoverRef}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }

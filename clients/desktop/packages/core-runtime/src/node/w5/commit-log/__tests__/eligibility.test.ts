@@ -537,7 +537,7 @@ it('classifies migrated v1 evidence by the images v1 retained', async () => {
   writeFileSync(path('manifest'), '{}');
   log = W5CommitLog.open(dbPath);
   const result = await capture();
-  expect(result.log.schemaVersion).toBe(2);
+  expect(result.log.schemaVersion).toBe(3);
   expect(label(result, workspaces)).toBe(2);
   expect(label(result, workspace)).toBe('pre-log');
   writeFileSync(path('index'), before);

@@ -918,13 +918,10 @@ for (const surface of ['Home', 'chat']) {
       const creditsTag = exhausted.getByTestId(
         `chat-model-row-credits-${ALLOWED_CLAUDE_MODEL}`,
       );
-      // With no persisted credits route, chat billing now resolves an empty
-      // balance to a native attempt (CAN-4272). Home has no billing intent yet.
-      if (surface === 'Home') {
-        await expect(creditsTag).toContainText('AI Credits');
-      } else {
-        await expect(creditsTag).toHaveCount(0);
-      }
+      // With no persisted credits route, billing resolves an empty balance to
+      // a native attempt (CAN-4272). Home uses the same resolver as a chat
+      // (CAN-5349), so neither surface tags the row as AI Credits.
+      await expect(creditsTag).toHaveCount(0);
       await expect(
         exhausted.getByTestId(
           `chat-model-option-lock-label-${ALLOWED_CLAUDE_MODEL}`,

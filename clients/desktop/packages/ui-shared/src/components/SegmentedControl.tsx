@@ -2,8 +2,11 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type Dispatch,
   type JSX,
+  type KeyboardEvent,
   type ReactNode,
+  type SetStateAction,
 } from 'react';
 import { useFlipBox } from '../lib/flip-box';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
@@ -59,6 +62,12 @@ export interface SegmentedControlProps<T extends string> {
    */
   readonly shape?: SegmentedControlShape;
   readonly disabled?: boolean;
+  /**
+   * Give every segment a 44px touch target on coarse pointers, for a picker
+   * in a mobile drawer. The track grows around its inset; fine pointers keep
+   * the 28px track.
+   */
+  readonly touchTarget?: boolean;
   /** The track's test id; the sliding surface takes it with `-indicator`. */
   readonly dataTestId?: string;
 }
@@ -138,6 +147,54 @@ function offsetLeftWithin(element: HTMLElement, track: HTMLElement): number {
 interface SurfacePlacement {
   readonly left: number;
   readonly width: number;
+  /** Slide to this place: a new choice. A resize lands without motion. */
+  readonly slide: boolean;
+}
+
+/**
+ * Places the surface under the selected segment, keeping the current
+ * placement when the segment has not moved so an unchanged measure does not
+ * render again.
+ */
+function placeSurface(
+  track: HTMLElement,
+  slide: boolean,
+  setSurface: Dispatch<SetStateAction<SurfacePlacement | null>>,
+): void {
+  const selected = track.querySelector('[data-segment-selected="true"]');
+  const next =
+    selected && isHtmlElement(selected)
+      ? {
+          left: offsetLeftWithin(selected, track),
+          width: selected.offsetWidth,
+          slide,
+        }
+      : null;
+  setSurface((previous) =>
+    previous &&
+    next &&
+    previous.left === next.left &&
+    previous.width === next.width
+      ? previous
+      : next,
+  );
+}
+
+/**
+ * What the segments are laid out from, so a caller's fresh but equal options
+ * array on every render does not measure the track again. A segment's own
+ * content (an icon, a count) resizes it, which the observer sees.
+ */
+function optionsLayoutKey(
+  options: readonly SegmentedControlOption<string>[],
+): string {
+  return options
+    .map((option) =>
+      [option.value, option.label, option.tooltip ? 'tooltip' : ''].join(
+        '\u0001',
+      ),
+    )
+    .join('\u0000');
 }
 
 /**
@@ -164,55 +221,92 @@ export function SegmentedControl<T extends string>({
   width = 'control',
   shape = 'rounded',
   disabled,
+  touchTarget = false,
   dataTestId,
 }: SegmentedControlProps<T>): JSX.Element {
   const trackRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLSpanElement>(null);
   const [surface, setSurface] = useState<SurfacePlacement | null>(null);
-  useFlipBox(surfaceRef, SURFACE_SLIDE);
+  useFlipBox(surfaceRef, { ...SURFACE_SLIDE, snap: surface?.slide !== true });
+  const layoutKey = optionsLayoutKey(options);
+  const measuredValueRef = useRef(value);
 
   // Measured rather than computed from the option count: segments under a
   // tooltip size to their labels, so they are not equal. The surface is
-  // first drawn already in place, so it never slides in on mount.
+  // first drawn already in place, so it never slides in on mount; after that
+  // a new choice slides, and new options only re-place it.
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    placeSurface(track, measuredValueRef.current !== value, setSurface);
+    measuredValueRef.current = value;
+  }, [value, layoutKey]);
+
+  // The track resizing with its panel, or a segment with its content, moves
+  // the surface with it at once rather than trailing behind in a slide.
   useLayoutEffect(() => {
     const track = trackRef.current;
     if (!track) return undefined;
-    const measure = (): void => {
-      const selected = track.querySelector('[data-segment-selected="true"]');
-      const next =
-        selected && isHtmlElement(selected)
-          ? {
-              left: offsetLeftWithin(selected, track),
-              width: selected.offsetWidth,
-            }
-          : null;
-      setSurface((previous) =>
-        previous &&
-        next &&
-        previous.left === next.left &&
-        previous.width === next.width
-          ? previous
-          : next,
-      );
-    };
-    measure();
     const view = getWindow(track);
-    const observer =
-      typeof view.ResizeObserver === 'function'
-        ? new view.ResizeObserver(measure)
-        : null;
-    observer?.observe(track);
-    return (): void => observer?.disconnect();
-  }, [value, options]);
+    if (typeof view.ResizeObserver !== 'function') return undefined;
+    const observer = new view.ResizeObserver(() =>
+      placeSurface(track, false, setSurface),
+    );
+    observer.observe(track);
+    for (const segment of track.querySelectorAll('[data-segment-index]')) {
+      observer.observe(segment);
+    }
+    return (): void => observer.disconnect();
+  }, [layoutKey]);
 
   const tabs = semantics === 'tabs';
+  // As tabs, only the selected tab (or the first, while loading) is in the
+  // Tab order, and the arrow keys, Home and End move between tabs. A tab the
+  // arrows land on is selected, unless it is unavailable: then it only takes
+  // focus, so its tooltip can say why.
+  const tabbableValue = options.some((option) => option.value === value)
+    ? value
+    : options[0]?.value;
+  const onTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ): void => {
+    const count = options.length;
+    let next: number;
+    switch (event.key) {
+      case 'ArrowRight':
+        next = (index + 1) % count;
+        break;
+      case 'ArrowLeft':
+        next = (index - 1 + count) % count;
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = count - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const option = options[next];
+    if (option === undefined) return;
+    const segments = trackRef.current?.querySelectorAll<HTMLButtonElement>(
+      '[data-segment-index]',
+    );
+    segments?.[next]?.focus();
+    if (option.unavailable !== true && option.value !== value) {
+      onChange(option.value);
+    }
+  };
   return (
     <div
       ref={trackRef}
       role={tabs ? 'tablist' : 'group'}
       aria-label={label}
       data-testid={dataTestId}
-      className={`${TRACK_CLASS_NAME} ${TRACK_CORNER_CLASS_NAME[shape]} ${TRACK_WIDTH_CLASS_NAME[width]}`.trim()}
+      className={`${TRACK_CLASS_NAME} ${TRACK_CORNER_CLASS_NAME[shape]} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
     >
       {surface && (
         <span
@@ -223,7 +317,7 @@ export function SegmentedControl<T extends string>({
           style={{ left: surface.left, width: surface.width }}
         />
       )}
-      {options.map((option) => {
+      {options.map((option, index) => {
         const selected = option.value === value;
         const unavailable = option.unavailable === true;
         const iconOnly = option.icon !== undefined;
@@ -245,11 +339,19 @@ export function SegmentedControl<T extends string>({
             aria-disabled={unavailable || undefined}
             disabled={disabled}
             data-segment-selected={selected}
+            data-segment-index={index}
+            {...(tabs
+              ? {
+                  tabIndex: option.value === tabbableValue ? 0 : -1,
+                  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>): void =>
+                    onTabKeyDown(event, index),
+                }
+              : {})}
             data-testid={option.dataTestId}
             onClick={(): void => {
               if (!unavailable) onChange(option.value);
             }}
-            className={segmentClassName(selected, unavailable, shape, iconOnly)}
+            className={`${segmentClassName(selected, unavailable, shape, iconOnly)}${touchTarget ? ' pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}`}
           >
             {iconOnly ? (
               option.icon

@@ -15,6 +15,7 @@ interface ModalProps {
   skill: { sourceId: string; name: string };
   updateAction?: SkillUpdateAction;
   loadErrorPrefix?: string;
+  contentRevision?: number;
   notice?: ReactNode;
 }
 
@@ -36,11 +37,12 @@ jest.mock('../../pages/SkillsTab', () => {
     SkillDetailModal: (props: ModalProps): ReactElement => {
       modalProps = props;
       const { name } = props.skill;
-      // Counts mounts: InstalledSkillDetail remounts the viewer to reload.
+      // The real viewer reloads content on revision changes, retaining its
+      // launch controller. Identity changes are handled by its own reader.
       useEffect(() => {
         modalMounts(name);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, []);
+      }, [props.contentRevision]);
       return <div>{props.notice}</div>;
     },
   };
@@ -343,5 +345,73 @@ describe('InstalledSkillDetail updates (CAN-4264)', () => {
     // The page shows this skill again, so it reads the updated content.
     expect(modalMounts).toHaveBeenCalledTimes(mounts + 1);
     expect(modalProps?.skill.name).toBe(first.name);
+  });
+});
+
+describe('InstalledSkillDetail shared copy replacement (CAN-5306)', () => {
+  const HASH_A = 'a'.repeat(64);
+  const HASH_B = 'b'.repeat(64);
+  const HASH_C = 'c'.repeat(64);
+  function sharedCopy(
+    contentHash: string | undefined,
+    name = 'shared-copy',
+  ): InstalledSkillInfo {
+    return makeSkill({
+      name,
+      sourceId: 'custom:app',
+      source: 'Custom skills',
+      custom: true,
+      installedFromShare: {
+        remoteId: 'share-1',
+        shareScope: 'team',
+        ...(contentHash ? { contentHash } : {}),
+      },
+    });
+  }
+
+  it('reloads once when the same copy advances its receipt hash', () => {
+    render(sharedCopy(HASH_A));
+    expect(modalMounts).toHaveBeenCalledTimes(1);
+    // An inventory refresh with the same receipt is not a replacement.
+    render(sharedCopy(HASH_A));
+    expect(modalMounts).toHaveBeenCalledTimes(1);
+    render(sharedCopy(HASH_B.toUpperCase()));
+    expect(modalMounts).toHaveBeenCalledTimes(2);
+    // Case is not significant in a SHA-256.
+    render(sharedCopy(HASH_B));
+    expect(modalMounts).toHaveBeenCalledTimes(2);
+    // A later replacement reloads again.
+    render(sharedCopy(HASH_C));
+    expect(modalMounts).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not treat a switch, a first receipt, or a removal as a replacement', () => {
+    render(sharedCopy(HASH_A, 'first'));
+    // Switching skills re-reads through the viewer's own skill key.
+    render(sharedCopy(HASH_B, 'second'));
+    render(sharedCopy(undefined, 'second'));
+    render(sharedCopy(HASH_B, 'second'));
+    render(sharedCopy(undefined, 'third'));
+    render(sharedCopy(HASH_C, 'third'));
+    expect(modalMounts).toHaveBeenCalledTimes(1);
+    expect(modalProps?.loadErrorPrefix).toBeUndefined();
+  });
+
+  it('compares a record that returns after a refresh gap with the shown receipt', () => {
+    const shown = sharedCopy(HASH_A);
+    render(shown);
+    act(() =>
+      root.render(
+        <InstalledSkillDetail
+          skill={{ sourceId: shown.sourceId, name: shown.name }}
+          installedSkill={undefined}
+          presentation="page"
+          onClose={() => {}}
+        />,
+      ),
+    );
+    expect(modalMounts).toHaveBeenCalledTimes(1);
+    render(sharedCopy(HASH_B));
+    expect(modalMounts).toHaveBeenCalledTimes(2);
   });
 });

@@ -418,25 +418,27 @@ describe('ScriptConfigEditor shell selection', () => {
     });
 
     try {
-      const windows = rendered.container.querySelector(
-        'select[aria-label="Script Windows shell"]',
-      );
-      const mac = rendered.container.querySelector(
-        'select[aria-label="Script Mac shell"]',
-      );
-      if (!(windows instanceof HTMLSelectElement)) {
-        throw new Error('Expected Windows shell select');
-      }
-      if (!(mac instanceof HTMLSelectElement)) {
-        throw new Error('Expected Mac shell select');
-      }
+      // The shells are the shared Settings dropdown: open the trigger, then
+      // choose the option by its value.
+      const choose = (ariaLabel: string, value: string): void => {
+        const trigger = rendered.container.querySelector(
+          `[role="combobox"][aria-label="${ariaLabel}"]`,
+        );
+        if (!(trigger instanceof HTMLElement)) {
+          throw new Error(`Expected ${ariaLabel} dropdown`);
+        }
+        act(() => trigger.click());
+        const option = document.querySelector(
+          `[role="option"][data-value="${value}"]`,
+        );
+        if (!(option instanceof HTMLElement)) {
+          throw new Error(`Expected ${value} option`);
+        }
+        act(() => option.click());
+      };
 
-      act(() => {
-        windows.value = 'bash';
-        windows.dispatchEvent(new Event('change', { bubbles: true }));
-        mac.value = 'zsh';
-        mac.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      choose('Script Windows shell', 'bash');
+      choose('Script Mac shell', 'zsh');
 
       expect(onShellChange).toHaveBeenNthCalledWith(1, {
         windows: 'bash',

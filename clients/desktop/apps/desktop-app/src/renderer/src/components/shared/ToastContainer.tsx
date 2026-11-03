@@ -31,7 +31,6 @@ import { CopyLinkButton } from '@canopy/ui-shared/components';
 import { ExternalIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type { JSX, MouseEvent } from 'react';
 import { useState } from 'react';
-import { createPortal } from 'react-dom';
 import { dismissPageLikeViewers } from '@/lib/dismissPageLikeViewers';
 import { ProjectIcon } from './ProjectIcon';
 import { toastTrackpadSwipe } from './toastTrackpadSwipe';
@@ -591,23 +590,21 @@ function ToastStackHost({
           )}
         />
       </div>
-      {expandedToast &&
-        createPortal(
-          <ToastDetailModal
-            toast={expandedToast}
-            onClose={(): void => setExpandedToast(null)}
-            onActionDone={(): void => {
-              // A slow action can finish after its dialog closed and another
-              // toast's opened: close only the dialog it was started from.
-              const { id } = expandedToast;
-              dismissToast(id);
-              setExpandedToast((current) =>
-                current?.id === id ? null : current,
-              );
-            }}
-          />,
-          document.body,
-        )}
+      {expandedToast && (
+        <ToastDetailModal
+          toast={expandedToast}
+          onClose={(): void => setExpandedToast(null)}
+          onActionDone={(): void => {
+            // A slow action can finish after its dialog closed and another
+            // toast's opened: close only the dialog it was started from.
+            const { id } = expandedToast;
+            dismissToast(id);
+            setExpandedToast((current) =>
+              current?.id === id ? null : current,
+            );
+          }}
+        />
+      )}
     </>
   );
 }

@@ -14,6 +14,7 @@ import {
   requests,
   reservations,
 } from './fixtures/schema-v2-base-scenario';
+import { schemaV2Chains } from './fixtures/schema-v2-capture-oracle';
 
 // A v2 log the base library wrote before CAN-4408 moved it (see
 // fixtures/generate-schema-v2-base.mjs) opens unchanged and reads, retries
@@ -105,23 +106,71 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** Schema 3's additions (CAN-5563); everything else is the base library's. */
+const SCHEMA_V3_OBJECTS = new Set([
+  'w5_file_chains',
+  'sqlite_autoindex_w5_file_chains_1',
+  'w5_commit_totals',
+  'w5_file_chains_insert',
+  'w5_file_chains_delete',
+  'w5_file_chains_update',
+  'w5_commit_totals_insert',
+  'w5_commit_totals_delete',
+]);
+
+/** The base library's objects and rows, less the schema version it bumps. */
+function withoutSchemaV3(
+  tables: Record<string, unknown>,
+): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(tables)) {
+    if (name === 'w5_meta' || SCHEMA_V3_OBJECTS.has(name)) continue;
+    kept[name] =
+      name === 'schema' && Array.isArray(value)
+        ? value.filter(
+            (entry: unknown) =>
+              !SCHEMA_V3_OBJECTS.has(
+                String(Reflect.get(Object(entry), 'name')),
+              ),
+          )
+        : value;
+  }
+  return kept;
+}
+
 describe('a v2 commit log written by the base library (CAN-4408)', () => {
-  it('opens without changing its schema, rows or stored diagnostics bytes', () => {
+  it('upgrades to schema 3 keeping every v2 row and stored diagnostics byte', () => {
     const before = contents();
     const bytes = diagnosticsBytes();
-    expect(
-      withRaw((db) => db.prepare('SELECT key, value FROM w5_meta').all()),
-    ).toEqual([
-      { key: 'schema_version', value: String(W5_COMMIT_LOG_SCHEMA_VERSION) },
-    ]);
+    const chains = withRaw(schemaV2Chains);
+    expect(before.w5_meta).toEqual([{ key: 'schema_version', value: '2' }]);
 
     open().close();
 
-    expect(contents()).toEqual(before);
+    const after = contents();
+    expect(withoutSchemaV3(after)).toEqual(withoutSchemaV3(before));
+    expect(after.w5_meta).toEqual([
+      { key: 'schema_version', value: String(W5_COMMIT_LOG_SCHEMA_VERSION) },
+    ]);
+    expect(W5_COMMIT_LOG_SCHEMA_VERSION).toBe(3);
+    expect(after.w5_commit_totals).toEqual([{ singleton: 1, retained: 4 }]);
+    expect(after.w5_file_chains).toEqual(
+      Array.from(chains, ([path, chain]) => ({
+        path,
+        decisions: chain.decisions,
+        starts_absent: chain.startsAbsent ? 1 : 0,
+        discontinuities: chain.discontinuities,
+      })),
+    );
+    expect(chains.size).toBe(5);
     expect(diagnosticsBytes()).toEqual(bytes);
+
+    open().close();
+    expect(contents()).toEqual(after);
   });
 
   it('refuses a second writer while one holds it, writing nothing', () => {
+    open().close();
     const before = contents();
     const log = open();
     try {
@@ -172,6 +221,7 @@ describe('a v2 commit log written by the base library (CAN-4408)', () => {
   });
 
   it('stores the base library bytes when the same diagnostics update repeats', () => {
+    open().close();
     const before = contents();
     const bytes = diagnosticsBytes();
     const log = open();

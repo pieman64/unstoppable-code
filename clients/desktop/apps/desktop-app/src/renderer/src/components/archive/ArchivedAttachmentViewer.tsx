@@ -8,7 +8,10 @@ import { fileViewerKey, useFileViewerStore } from '@canopy/app-state';
 import { FileViewer, type FileViewerProps } from '@canopy/ui-app';
 import { Button } from '@canopy/ui-shared/components';
 import { registerLocalFileRootOverride } from '@/client/ipc-canopy-client';
-import { LoadingPlaceholder } from '@/components/shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 
 interface ArchivedAttachmentViewerProps {
   workspaceId: string;
@@ -170,7 +173,9 @@ export function ArchivedAttachmentViewer({
         />
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center">
-          <LoadingPlaceholder />
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       )}
     </div>

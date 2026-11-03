@@ -9,9 +9,11 @@ import {
 } from '@canopy/protocol/portal';
 import {
   Button,
+  DialogFormField,
   DialogModal,
   LoadingSpinner,
   RepositoryCloneError,
+  TextInput,
 } from '@canopy/ui-shared/components';
 
 export interface CreateWorkspaceDialogTestIds {
@@ -39,6 +41,7 @@ export function CreateWorkspaceDialog({
   const [remoteUrl, setRemoteUrl] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const remoteUrlId = useId();
   const generatedErrorId = useId();
   const errorId = testIds?.error ?? generatedErrorId;
   const trimmedUrl = remoteUrl.trim();
@@ -73,10 +76,14 @@ export function CreateWorkspaceDialog({
       maxWidth="md"
       dataTestId={testIds?.dialog}
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
-        <label className="flex flex-col gap-1.5 text-s">
-          <span className="font-medium fg-primary">Git repository URL</span>
-          <input
+      <div className="flex flex-col gap-4">
+        <DialogFormField
+          label="Git repository URL"
+          htmlFor={remoteUrlId}
+          description="The desktop clones the repo into its default repositories folder and names the project after it."
+        >
+          <TextInput
+            id={remoteUrlId}
             type="text"
             value={remoteUrl}
             onChange={(event) => {
@@ -92,13 +99,8 @@ export function CreateWorkspaceDialog({
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? errorId : undefined}
             data-testid={testIds?.remoteUrl}
-            className="rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none focus:border-line-focus focus:ring-1 focus:ring-line-focus disabled:cursor-not-allowed disabled:opacity-60"
           />
-          <span className="text-xs fg-secondary">
-            The desktop clones the repo into its default repositories folder and
-            names the project after it.
-          </span>
-        </label>
+        </DialogFormField>
         {error && (
           <RepositoryCloneError id={errorId} testId={errorId} message={error} />
         )}

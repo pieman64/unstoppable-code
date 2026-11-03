@@ -1,5 +1,8 @@
 import { useState, type JSX } from 'react';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { workflowEditBackLabel } from '@/lib/workflows/edit-back';
 import {
   workflowEditKey,
@@ -58,7 +61,9 @@ export function WorkflowEditHost({
           className="flex min-h-0 flex-1 flex-col"
         >
           {waiting ? (
-            <LoadingPlaceholder space="section" />
+            <DelayedLoadingPlaceholder>
+              <CenteredLoadingSpinner className="my-8" />
+            </DelayedLoadingPlaceholder>
           ) : (
             <PipelineEditAdapter
               key={targetKey}

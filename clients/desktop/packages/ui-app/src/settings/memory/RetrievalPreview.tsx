@@ -3,12 +3,25 @@
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
 import { buildPreviewQuery } from '@canopy/protocol/settings/memory-preview-query';
-import { Button, CopyButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceList,
+  ChoiceListRow,
+  CopyButton,
+  SearchField,
+  TextInput,
+  EmptyState,
+  ErrorBanner,
+  Notice,
+  ValueRow,
+  ValueRows,
+} from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
 import { previewMemorySearch } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import { FactCard } from './FactCard';
+import type { SettingsFailure } from '../errors';
 
 interface RetrievalPreviewProps {
   orgId: string;
@@ -41,7 +54,7 @@ export function RetrievalPreview({
   const [repo, setRepo] = useState('');
   const [worktree, setWorktree] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [preview, setPreview] = useState<ExplorerRetrievalPreview | null>(null);
   const requestSequence = useRef(0);
 
@@ -62,7 +75,7 @@ export function RetrievalPreview({
       }
     } catch (caught) {
       if (requestSequence.current === sequence) {
-        setError(errorCopy.actionCopy(caught, 'preview retrieval'));
+        setError(errorCopy.actionFailure(caught, 'preview retrieval'));
       }
     } finally {
       if (requestSequence.current === sequence) {
@@ -83,13 +96,12 @@ export function RetrievalPreview({
           see. Each preview counts against the shared search rate limit.
         </p>
         <div className="mt-3 flex gap-2">
-          <input
-            type="search"
+          <SearchField
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onValueChange={setQuery}
             placeholder="Query text, as an agent turn would send it"
             aria-label="Preview query"
-            className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+            className="min-w-0 flex-1"
           />
           <Button
             type="submit"
@@ -100,70 +112,55 @@ export function RetrievalPreview({
             {loading ? 'Previewing…' : 'Preview'}
           </Button>
         </div>
-        <label className="mt-3 flex items-center gap-2 text-xs fg-secondary">
-          <input
-            type="checkbox"
-            checked={usePrefix}
-            onChange={(event) => setUsePrefix(event.target.checked)}
-          />
-          Add context prefix (real turns send “repo — worktree — query”)
-        </label>
+        <ChoiceList aria-label="Context prefix" className="mt-3">
+          <ChoiceListRow
+            selected={usePrefix}
+            onClick={() => setUsePrefix((current) => !current)}
+          >
+            Add context prefix (real turns send “repo — worktree — query”)
+          </ChoiceListRow>
+        </ChoiceList>
         {usePrefix && (
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <input
+            <TextInput
+              density="settings"
               type="text"
               value={repo}
               onChange={(event) => setRepo(event.target.value)}
               placeholder="Repo label"
               aria-label="Context repo label"
-              className="rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
             />
-            <input
+            <TextInput
+              density="settings"
               type="text"
               value={worktree}
               onChange={(event) => setWorktree(event.target.value)}
               placeholder="Worktree name"
               aria-label="Context worktree name"
-              className="rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
             />
           </div>
         )}
       </form>
 
-      {error !== null && (
-        <p className="rounded-lg bg-destructive-subtle px-3 py-2 text-s fg-destructive">
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error?.copy} details={error?.details} />
 
       {preview === null ? (
         !loading &&
         error === null && (
-          <div className="rounded-xl border border-dashed py-16 text-center">
-            <p className="text-s fg-secondary">
-              Submit a query to preview what would be injected.
-            </p>
-          </div>
+          <EmptyState
+            titleWeight="normal"
+            title="Submit a query to preview what would be injected."
+          />
         )
       ) : (
         <div className="space-y-4">
-          <div
-            className={`rounded-xl border p-4 ${
-              preview.gatePassed
-                ? 'border-line-positive/40 bg-success-subtle'
-                : 'border-line-attention/40 bg-warning-subtle'
-            }`}
+          <Notice
+            intent={preview.gatePassed ? 'positive' : 'attention'}
+            title={preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
             data-testid="retrieval-preview-gate"
           >
-            <p
-              className={`text-s font-semibold ${
-                preview.gatePassed ? 'fg-success' : 'fg-warning'
-              }`}
-            >
-              {preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
-            </p>
-            <p className="mt-1 text-s fg-primary">{gateSummary(preview)}</p>
-          </div>
+            {gateSummary(preview)}
+          </Notice>
 
           {preview.facts.length > 0 && (
             <div className="grid gap-3 lg:grid-cols-2">
@@ -209,55 +206,49 @@ export function RetrievalPreview({
 
           <section className="rounded-xl border bg-card p-4">
             <h3 className="text-s font-semibold fg-primary">Diagnostics</h3>
-            <dl className="mt-3 space-y-2 text-xs">
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="fg-secondary">Lane counts</dt>
-                <dd className="text-right font-mono fg-primary">
-                  vector {preview.diagnostics.laneCounts.vector} · fts{' '}
-                  {preview.diagnostics.laneCounts.fts} · trigram{' '}
-                  {preview.diagnostics.laneCounts.trigram} · graph{' '}
-                  {preview.diagnostics.laneCounts.graph}
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="fg-secondary">Reranker</dt>
-                <dd className="text-right font-mono fg-primary">
-                  {preview.diagnostics.rerankUsed
-                    ? `used · top ${preview.diagnostics.topRerankScore?.toFixed(4) ?? '—'}`
-                    : 'not used (cosine fallback)'}
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="fg-secondary">Top cosine</dt>
-                <dd className="text-right font-mono fg-primary">
-                  {preview.diagnostics.topCosineScore?.toFixed(4) ?? '—'}
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="fg-secondary">Latency</dt>
-                <dd className="text-right font-mono fg-primary">
-                  {preview.diagnostics.latencyMs} ms
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="shrink-0 fg-secondary">Rerank scores</dt>
-                <dd className="break-all text-right font-mono fg-primary">
-                  {formatScores(preview.diagnostics.topScores.rerank)}
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4 border-b pb-2">
-                <dt className="shrink-0 fg-secondary">Cosine scores</dt>
-                <dd className="break-all text-right font-mono fg-primary">
-                  {formatScores(preview.diagnostics.topScores.cosine)}
-                </dd>
-              </div>
-              <div className="flex items-start justify-between gap-4">
-                <dt className="shrink-0 fg-secondary">RRF scores</dt>
-                <dd className="break-all text-right font-mono fg-primary">
-                  {formatScores(preview.diagnostics.topScores.rrf)}
-                </dd>
-              </div>
-            </dl>
+            <div className="mt-2">
+              <ValueRows>
+                <ValueRow
+                  label="Lane counts"
+                  mono
+                  value={`vector ${preview.diagnostics.laneCounts.vector} · fts ${preview.diagnostics.laneCounts.fts} · trigram ${preview.diagnostics.laneCounts.trigram} · graph ${preview.diagnostics.laneCounts.graph}`}
+                />
+                <ValueRow
+                  label="Reranker"
+                  mono
+                  value={
+                    preview.diagnostics.rerankUsed
+                      ? `used · top ${preview.diagnostics.topRerankScore?.toFixed(4) ?? '—'}`
+                      : 'not used (cosine fallback)'
+                  }
+                />
+                <ValueRow
+                  label="Top cosine"
+                  mono
+                  value={preview.diagnostics.topCosineScore?.toFixed(4) ?? '—'}
+                />
+                <ValueRow
+                  label="Latency"
+                  mono
+                  value={`${preview.diagnostics.latencyMs} ms`}
+                />
+                <ValueRow
+                  label="Rerank scores"
+                  mono
+                  value={formatScores(preview.diagnostics.topScores.rerank)}
+                />
+                <ValueRow
+                  label="Cosine scores"
+                  mono
+                  value={formatScores(preview.diagnostics.topScores.cosine)}
+                />
+                <ValueRow
+                  label="RRF scores"
+                  mono
+                  value={formatScores(preview.diagnostics.topScores.rrf)}
+                />
+              </ValueRows>
+            </div>
           </section>
         </div>
       )}

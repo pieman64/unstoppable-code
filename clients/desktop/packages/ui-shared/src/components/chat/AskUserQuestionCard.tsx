@@ -22,7 +22,7 @@ import type {
 import { validateQuestionControlAnswers } from '@canopy/protocol/portal';
 import { MessagesSquare, ChevronDownMediumIcon } from '../../icons/AppIcons';
 import { Button } from '../Button';
-import { Checkbox, ChoiceMark, Radio } from '../Choice';
+import { ChoiceField, ChoiceMark } from '../Choice';
 import { Kbd } from '../Kbd';
 import { Select, TextArea, TextInput } from '../Field';
 import { Notice } from '../Notice';
@@ -351,6 +351,15 @@ function presentedControl(question: PortalAskUserQuestion): PresentedControl {
 // and the 44px coarse-pointer row takes 12px so its content stays centred.
 const OPTION_ROW_CLASSES = `group/option flex min-h-9 w-full cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2 pointer-coarse:py-3 text-left text-s fg-primary outline-none hover:bg-subtle focus-visible:bg-subtle has-[:focus-visible]:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled has-[:disabled]:cursor-not-allowed has-[:disabled]:fg-disabled ${TOUCH_TARGET}`;
 
+/**
+ * A row whose choice is a `ChoiceField`: the row keeps the hover and focus
+ * fill, and the field's `row` layout makes its label the padded, touch-sized
+ * row itself, so a click anywhere on the row (its padding and letter hint
+ * included) toggles the choice.
+ */
+const OPTION_FIELD_ROW_CLASSES =
+  'group/option flex w-full rounded-lg text-left hover:bg-subtle has-[:focus-visible]:bg-subtle';
+
 /** Letter shortcut, shown while the row is hovered or focused. */
 function ChoiceShortcut({ index }: { index: number }): JSX.Element | null {
   if (index >= 26) return null;
@@ -639,7 +648,6 @@ function AskUserQuestionCardImpl({
     validateQuestionControlAnswers([q], [answers[step]]) !== undefined;
   const selected: ReadonlySet<string> = selections.get(step) ?? new Set();
   const isMulti = q?.multiSelect === true;
-  const ChoiceControl = isMulti ? Checkbox : Radio;
   const groupName = `q-${state.requestId}-${step}`;
   const nativeField =
     q !== undefined && (isDirectField(q) || control === 'select');
@@ -862,9 +870,10 @@ function AskUserQuestionCardImpl({
               q.options.map((opt, optIdx) => {
                 const description = q.optionDescriptions?.[optIdx];
                 return (
-                  <label key={opt} className={OPTION_ROW_CLASSES}>
-                    <ChoiceControl
-                      className="mt-0.5"
+                  <div key={opt} className={OPTION_FIELD_ROW_CLASSES}>
+                    <ChoiceField
+                      kind={isMulti ? 'checkbox' : 'radio'}
+                      layout="row"
                       name={groupName}
                       aria-keyshortcuts={
                         optIdx < 26
@@ -874,33 +883,34 @@ function AskUserQuestionCardImpl({
                       checked={selected.has(opt)}
                       disabled={controlsDisabled}
                       onChange={() => toggleOption(step, opt, isMulti)}
+                      label={
+                        <QuestionOptionText
+                          label={opt}
+                          description={description}
+                          descriptionStyle="caption"
+                        />
+                      }
+                      end={<ChoiceShortcut index={optIdx} />}
                     />
-                    <span className="min-w-0">
-                      <QuestionOptionText
-                        label={opt}
-                        description={description}
-                        descriptionStyle="caption"
-                      />
-                    </span>
-                    <ChoiceShortcut index={optIdx} />
-                  </label>
+                  </div>
                 );
               })
             )}
 
             {offersOwnAnswer(q) && (
               <>
-                <label className={OPTION_ROW_CLASSES}>
-                  <ChoiceControl
-                    className="mt-0.5"
+                <div className={OPTION_FIELD_ROW_CLASSES}>
+                  <ChoiceField
+                    kind={isMulti ? 'checkbox' : 'radio'}
+                    layout="row"
                     name={groupName}
                     checked={otherSelected.has(step)}
                     disabled={controlsDisabled}
                     onChange={() => toggleOther(step, isMulti)}
+                    label="Other"
+                    end={<ChoiceShortcut index={q.options.length} />}
                   />
-                  <span className="min-w-0">Other</span>
-                  <ChoiceShortcut index={q.options.length} />
-                </label>
+                </div>
                 {otherSelected.has(step) && (
                   <div className="px-2 pt-1">
                     {q.secret ? (

@@ -162,6 +162,12 @@ test('activation quiet hours + close-to-tray persist across relaunch', async () 
     await expect(start).toBeVisible();
     await expect(end).toBeVisible();
 
+    // Each caption labels its dropdown: clicking "From" opens the start hours.
+    await window.locator('label[for="quiet-hours-start"]').click();
+    await expect(start).toHaveAttribute('aria-expanded', 'true');
+    await window.keyboard.press('Escape');
+    await expect(start).toHaveAttribute('aria-expanded', 'false');
+
     await chooseSettingsOption(start, '23');
     await chooseSettingsOption(end, '7');
     await expect(start).toHaveAttribute('data-value', '23');

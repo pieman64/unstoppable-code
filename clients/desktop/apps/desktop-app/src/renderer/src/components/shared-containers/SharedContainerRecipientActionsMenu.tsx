@@ -4,6 +4,7 @@ import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  FloatingMenu,
   RailIconButton,
 } from '@canopy/ui-shared/components';
 import {
@@ -12,7 +13,6 @@ import {
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { AnchoredMenu } from '@/components/shared/AnchoredMenu';
 import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
 import {
   useSharedContainerReplicasStore,
@@ -95,13 +95,13 @@ export function SharedContainerRecipientActionsMenu({
           setOpen((value) => !value);
         }}
       />
-      <AnchoredMenu
+      <FloatingMenu
         open={open}
-        onClose={(): void => setOpen(false)}
+        onOpenChange={setOpen}
         anchorRef={buttonRef}
-        placement="below-start"
-        portal
-        testId={`${testIdPrefix}-menu`}
+        placement="bottom-left"
+        interaction="menu"
+        data-testid={`${testIdPrefix}-menu`}
         className="w-40"
       >
         <ActionMenuRowStyle>
@@ -140,7 +140,7 @@ export function SharedContainerRecipientActionsMenu({
             Remove share
           </DropdownMenuItem>
         </ActionMenuRowStyle>
-      </AnchoredMenu>
+      </FloatingMenu>
       {forking && (
         <SharedContainerForkModal
           containerId={entry.container.id}

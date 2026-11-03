@@ -8,6 +8,7 @@ import type { CostScopeRef } from '@canopy/protocol/cost-view';
 import { SubagentCostDetails } from '@canopy/ui-shared/components/cost';
 import { useCostInsightsEnabled } from './CostInsightsGate';
 import { useCostSubagentStore } from './use-cost-view-store';
+import { EmptyStateRow } from '@canopy/ui-shared/components';
 
 export interface SubagentCostSectionProps {
   readonly client: CostClient;
@@ -51,7 +52,7 @@ function SubagentCostSectionContent({
   }
 
   if (problem?.kind === 'error' && problem.reason === 'NOT_FOUND') {
-    return <p className="text-xs fg-tertiary">No cost recorded yet.</p>;
+    return <EmptyStateRow title="No cost recorded yet." />;
   }
   if (problem !== null) {
     return <p className="text-xs fg-tertiary">Couldn't load cost.</p>;

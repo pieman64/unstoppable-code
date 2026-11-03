@@ -49,9 +49,7 @@ export function PipelinePluginCollectionsSection({
       className="space-y-1.5"
       data-testid="pipeline-plugin-collections-section"
     >
-      <label className="text-xs font-medium fg-secondary ">
-        Plugin collections
-      </label>
+      <h3 className="text-xs font-medium fg-secondary">Plugin collections</h3>
       <p className="text-xs fg-secondary">
         Workflow defaults are shown with a Workflow badge. Local collections and
         other extras are saved only on this machine.

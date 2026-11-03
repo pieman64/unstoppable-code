@@ -281,7 +281,7 @@ test('recovers a lost invitation reply as a definite failure and retries only on
         .organizationInvitation,
     ).toBe(1);
     await failure
-      .getByRole('button', { name: 'Retry invite', exact: true })
+      .getByRole('button', { name: 'Try the invite again', exact: true })
       .click();
     await expect(
       page.getByTestId('invite-to-organization-invite-outcome'),
@@ -473,7 +473,7 @@ test('reopens a conversion that failed before journaling and retries only select
     ).toBeVisible();
     await page
       .getByTestId('invite-to-organization-projects-failed')
-      .getByRole('button', { name: 'Retry projects', exact: true })
+      .getByRole('button', { name: 'Try projects again', exact: true })
       .click();
     await expectProjectOutcome(page, SELECTED, 'moved');
     expect(workspace(fixture, UNTICKED).owner).toBeUndefined();

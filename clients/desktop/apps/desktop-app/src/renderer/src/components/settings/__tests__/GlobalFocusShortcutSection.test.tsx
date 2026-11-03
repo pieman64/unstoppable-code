@@ -176,10 +176,8 @@ describe('GlobalFocusShortcutSection', () => {
     );
     expect(text('global-focus-shortcut-error')).toMatch(/couldn't use/i);
     expect(
-      query('global-focus-shortcut-error')?.classList.contains(
-        'fg-destructive',
-      ),
-    ).toBe(true);
+      query('global-focus-shortcut-error')?.querySelector('[role="alert"]'),
+    ).toBeTruthy();
     expect(query('global-focus-shortcut-recorder')).toBeNull();
     expect(query('global-focus-shortcut-change')).not.toBeNull();
   });

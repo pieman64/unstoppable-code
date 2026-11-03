@@ -9,9 +9,16 @@ import {
   offerProjectDeletionDiscard,
 } from '@canopy/app-state';
 import {
+  ChoiceField,
+  ErrorBanner,
+  FormField,
   Notice,
   NoticeButton,
   PluginSelectionScopeHelp,
+  Badge,
+  EmptyStateRow,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -57,7 +64,12 @@ import {
   type ArchiveRetentionDraft,
 } from '@/lib/archiveRetentionSettings';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
-import { extractIpcErrorMessage } from '@/lib/errors';
+import {
+  extractIpcErrorMessage,
+  detailsFor,
+  failureDetails,
+  type FailureDetails,
+} from '@/lib/errors';
 import {
   createEditableScripts,
   getEditableCustomScripts,
@@ -423,6 +435,7 @@ export function WorkspaceSettingsModal({
     ),
   );
   const [error, setError] = useState('');
+  const [errorFailure, setErrorFailure] = useState<FailureDetails | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1595,8 +1608,9 @@ export function WorkspaceSettingsModal({
       await loadProjects();
       onClose();
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : 'Failed to convert project',
+      setError('Couldn’t convert the project. Try again.');
+      setErrorFailure(
+        failureDetails('Couldn’t convert the project. Try again.', cause),
       );
     } finally {
       setIsConverting(false);
@@ -1645,10 +1659,9 @@ export function WorkspaceSettingsModal({
       setPendingAdds((prev) => [...prev, pendingAdd]);
       setAddStep('list');
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Unable to browse for repository',
+      setError('Couldn’t open the folder picker. Try again.');
+      setErrorFailure(
+        failureDetails('Couldn’t open the folder picker. Try again.', cause),
       );
     }
   };
@@ -1732,7 +1745,13 @@ export function WorkspaceSettingsModal({
       await performCloneAndAddRepo(normalizedUrl, normalizedDestination);
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : 'Unable to clone repository',
+        'Couldn’t clone the repository. Check the URL and your access, then try again.',
+      );
+      setErrorFailure(
+        failureDetails(
+          'Couldn’t clone the repository. Check the URL and your access, then try again.',
+          cause,
+        ),
       );
     } finally {
       setIsSubmitting(false);
@@ -1753,8 +1772,12 @@ export function WorkspaceSettingsModal({
       setReuseClonePrompt(null);
       setAddStep('list');
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : 'Unable to reuse repository',
+      setError('Couldn’t add the existing repository. Try again.');
+      setErrorFailure(
+        failureDetails(
+          'Couldn’t add the existing repository. Try again.',
+          cause,
+        ),
       );
     } finally {
       setIsSubmitting(false);
@@ -1772,7 +1795,13 @@ export function WorkspaceSettingsModal({
       );
     } catch (cause) {
       setError(
-        cause instanceof Error ? cause.message : 'Unable to clone repository',
+        'Couldn’t clone the repository. Check the URL and your access, then try again.',
+      );
+      setErrorFailure(
+        failureDetails(
+          'Couldn’t clone the repository. Check the URL and your access, then try again.',
+          cause,
+        ),
       );
     } finally {
       setIsSubmitting(false);
@@ -2010,7 +2039,10 @@ export function WorkspaceSettingsModal({
       offerLifecycleJournalQuarantine(cause);
       const message =
         cause instanceof Error ? cause.message : 'Failed to delete project';
-      setError(message);
+      setError('Couldn’t delete the project. Try again.');
+      setErrorFailure(
+        failureDetails('Couldn’t delete the project. Try again.', cause),
+      );
       // Any failure, the archive loop's included: CAN-5035 arrives as a plain
       // error. The description decides whether there is anything to discard.
       offerDeletionDiscard(message);
@@ -2067,6 +2099,7 @@ export function WorkspaceSettingsModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={workspace.name}
       titleId="workspace-settings-title"
@@ -2082,7 +2115,7 @@ export function WorkspaceSettingsModal({
 
       {/* Tab panels */}
       <div
-        className={`flex min-h-0 flex-1 flex-col ${activeTab === 'plugins' ? '' : 'overflow-y-auto'} p-5`}
+        className={`flex min-h-0 flex-1 flex-col ${activeTab === 'plugins' ? '' : 'overflow-y-auto'} p-6`}
       >
         {activeTab === 'details' && (
           <div className="space-y-4">
@@ -2155,20 +2188,22 @@ export function WorkspaceSettingsModal({
                         <p className="mt-1 text-xs fg-secondary">
                           This source repo does not have an origin remote yet.
                         </p>
-                        <label className="mt-3 block text-s">
-                          <span className="mb-1.5 block text-xs fg-secondary">
-                            Remote URL
-                          </span>
-                          <input
-                            type="url"
-                            value={attachRemoteUrl}
-                            onChange={(event) =>
-                              setAttachRemoteUrl(event.target.value)
-                            }
-                            placeholder="https://github.com/org/workspace.git"
-                            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-                          />
-                        </label>
+                        <div className="mt-3">
+                          <FormField label="Remote URL">
+                            {(control) => (
+                              <TextInput
+                                {...control}
+                                density="settings"
+                                type="url"
+                                value={attachRemoteUrl}
+                                onChange={(event) =>
+                                  setAttachRemoteUrl(event.target.value)
+                                }
+                                placeholder="https://github.com/org/workspace.git"
+                              />
+                            )}
+                          </FormField>
+                        </div>
                         <Button
                           size="compact"
                           onClick={() => {
@@ -2184,9 +2219,13 @@ export function WorkspaceSettingsModal({
                               })
                               .catch((cause: unknown) => {
                                 setError(
-                                  cause instanceof Error
-                                    ? cause.message
-                                    : 'Unable to attach origin remote',
+                                  'Couldn’t link the remote. Try again.',
+                                );
+                                setErrorFailure(
+                                  failureDetails(
+                                    'Couldn’t link the remote. Try again.',
+                                    cause,
+                                  ),
                                 );
                               })
                               .finally(() => setSourceActionPending(false));
@@ -2231,11 +2270,17 @@ export function WorkspaceSettingsModal({
                   {`Deleted worktrees are kept for ${pendingRetention.days} ${pendingRetention.days === 1 ? 'day' : 'days'} before they're removed. Archived worktrees are kept until you delete them.`}
                 </p>
                 <div className="mt-3 flex items-center gap-3">
-                  <label className="flex items-center gap-2">
-                    <span className="text-sm fg-primary">
-                      Keep deleted worktrees for
-                    </span>
-                    <input
+                  <span
+                    id="workspace-settings-retention-days-label"
+                    className="text-sm fg-primary"
+                  >
+                    Keep deleted worktrees for
+                  </span>
+                  <div className="w-28">
+                    <TextInput
+                      density="settings"
+                      trailing="days"
+                      aria-labelledby="workspace-settings-retention-days-label"
                       type="number"
                       value={pendingRetention.days}
                       onChange={(event) =>
@@ -2253,10 +2298,8 @@ export function WorkspaceSettingsModal({
                       min={1}
                       max={MAX_ARCHIVE_RETENTION_DAYS}
                       data-testid="workspace-settings-retention-days"
-                      className="w-20 rounded-lg border bg-secondary/30 px-3 py-2 text-sm fg-primary outline-none"
                     />
-                    <span className="text-sm fg-secondary">days</span>
-                  </label>
+                  </div>
                 </div>
                 <AutoArchiveSettingsControl
                   enabled={pendingAutoArchiveEnabled}
@@ -2269,20 +2312,14 @@ export function WorkspaceSettingsModal({
                   onEnabledChange={setPendingAutoArchiveEnabled}
                   onDaysChange={setPendingAutoArchiveDays}
                 >
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={pendingAutoArchiveDeleteBranch}
-                      onChange={(event) =>
-                        setPendingAutoArchiveDeleteBranch(event.target.checked)
-                      }
-                      data-testid="workspace-settings-auto-archive-delete-branch"
-                      className="rounded"
-                    />
-                    <span className="text-sm fg-primary">
-                      Delete local branches with the worktrees
-                    </span>
-                  </label>
+                  <ChoiceField
+                    checked={pendingAutoArchiveDeleteBranch}
+                    onChange={(event) =>
+                      setPendingAutoArchiveDeleteBranch(event.target.checked)
+                    }
+                    data-testid="workspace-settings-auto-archive-delete-branch"
+                    label="Delete local branches with the worktrees"
+                  />
                 </AutoArchiveSettingsControl>
               </div>
             </div>
@@ -2374,15 +2411,11 @@ export function WorkspaceSettingsModal({
                         Cancel
                       </Button>
                     </div>
-                    {addRepoRefusal && (
-                      <p
-                        role="alert"
-                        className="text-xs fg-destructive"
-                        data-testid="workspace-settings-add-repo-refusal"
-                      >
-                        {addRepoRefusal}
-                      </p>
-                    )}
+                    <ErrorBanner
+                      error={addRepoRefusal}
+                      className=""
+                      testId="workspace-settings-add-repo-refusal"
+                    />
                   </div>
                 )}
 
@@ -2418,49 +2451,48 @@ export function WorkspaceSettingsModal({
                         testId="workspace-settings-github-repo-list"
                       />
                     ) : (
-                      <label className="block text-xs">
-                        <span className="mb-1 block fg-secondary">
-                          Remote URL
-                        </span>
-                        <input
-                          type="url"
-                          value={remoteUrl}
-                          onChange={(event) => setRemoteUrl(event.target.value)}
-                          placeholder="https://github.com/org/repo.git"
-                          className="focus-ring w-full rounded-lg border bg-base px-3 py-1.5 text-xs"
-                        />
-                      </label>
+                      <FormField label="Remote URL">
+                        {(control) => (
+                          <TextInput
+                            {...control}
+                            density="settings"
+                            type="url"
+                            value={remoteUrl}
+                            onChange={(event) =>
+                              setRemoteUrl(event.target.value)
+                            }
+                            placeholder="https://github.com/org/repo.git"
+                          />
+                        )}
+                      </FormField>
                     )}
 
-                    {addRepoRefusal && (
-                      <p
-                        role="alert"
-                        className="text-xs fg-destructive"
-                        data-testid="workspace-settings-add-repo-refusal"
-                      >
-                        {addRepoRefusal}
-                      </p>
-                    )}
+                    <ErrorBanner
+                      error={addRepoRefusal}
+                      className=""
+                      testId="workspace-settings-add-repo-refusal"
+                    />
 
-                    <div className="text-xs">
-                      <span className="mb-1 block fg-secondary">
-                        Destination directory
-                      </span>
-                      <div className="flex gap-2">
-                        <input
-                          type="text"
-                          value={destinationDir}
-                          readOnly
-                          className="focus-ring min-w-0 flex-1 rounded-lg border bg-base px-3 py-1.5 text-xs"
-                        />
-                        <Button
-                          size="compact"
-                          onClick={() => void handleBrowseCloneDir()}
-                        >
-                          Browse
-                        </Button>
-                      </div>
-                    </div>
+                    <FormField label="Destination directory">
+                      {(control) => (
+                        <div className="flex gap-2">
+                          <TextInput
+                            {...control}
+                            density="settings"
+                            className="min-w-0 flex-1"
+                            type="text"
+                            value={destinationDir}
+                            readOnly
+                          />
+                          <Button
+                            size="compact"
+                            onClick={() => void handleBrowseCloneDir()}
+                          >
+                            Browse
+                          </Button>
+                        </div>
+                      )}
+                    </FormField>
 
                     {reuseClonePrompt ? (
                       <div className="rounded-md border border-line-attention bg-warning/5 p-2.5 text-xs">
@@ -2525,9 +2557,7 @@ export function WorkspaceSettingsModal({
             )}
 
             {workspace.repos.length === 0 && pendingAdds.length === 0 ? (
-              <p className="mt-2 text-xs fg-secondary">
-                No repos added yet. Add repos to start creating worktrees.
-              </p>
+              <EmptyStateRow title="No repos added yet. Add repos to start creating worktrees." />
             ) : (
               <div className="mt-2 space-y-1">
                 {workspace.repos.map((repo) => {
@@ -2546,30 +2576,18 @@ export function WorkspaceSettingsModal({
                       >
                         {repo.name}
                       </span>
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-3xs font-medium ${
-                          manifestRepoIds.has(repo.id)
-                            ? 'bg-accent-subtle fg-accent'
-                            : 'bg-secondary fg-secondary'
-                        }`}
-                      >
+                      <Badge>
                         {manifestRepoIds.has(repo.id)
                           ? 'Source controlled'
                           : 'Local'}
-                      </span>
-                      {markedForRemoval && (
-                        <span className="rounded bg-destructive-subtle px-1.5 py-0.5 text-3xs font-medium fg-destructive">
-                          Remove
-                        </span>
-                      )}
+                      </Badge>
+                      {markedForRemoval && <Badge tone="danger">Remove</Badge>}
                       {!markedForRemoval &&
                         workspace.sourceRepoPath &&
                         !isTemporaryWorkspace &&
                         !manifestRepoIds.has(repo.id) &&
                         pendingSourceControlAdd && (
-                          <span className="rounded bg-info-subtle px-1.5 py-0.5 text-3xs font-medium fg-info">
-                            Will add in worktree
-                          </span>
+                          <Badge tone="info">Will add in worktree</Badge>
                         )}
                       <span className="flex-1 truncate text-xs fg-secondary">
                         {repo.repoPath}
@@ -2626,23 +2644,15 @@ export function WorkspaceSettingsModal({
                     className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-s hover:bg-secondary"
                   >
                     <span className="font-medium fg-primary">{add.name}</span>
-                    <span className="rounded bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent">
-                      New
-                    </span>
+                    <Badge tone="info">New</Badge>
                     {workspace.sourceRepoPath && !isTemporaryWorkspace && (
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-3xs font-medium ${
-                          add.addToSourceControl
-                            ? 'bg-info-subtle fg-info'
-                            : 'bg-secondary fg-secondary'
-                        }`}
-                      >
+                      <Badge tone={add.addToSourceControl ? 'info' : 'neutral'}>
                         {add.addToSourceControl
                           ? 'Will add in worktree'
                           : add.canAddToSourceControl
                             ? 'Local'
                             : 'No origin remote'}
-                      </span>
+                      </Badge>
                     )}
                     <span className="flex-1 truncate text-xs fg-secondary">
                       {add.repoPath}
@@ -3241,22 +3251,22 @@ export function WorkspaceSettingsModal({
                     )}
                     <div className="rounded-lg border border-dashed p-3">
                       <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                        <label className="block text-s">
-                          <span className="mb-1.5 block text-xs fg-secondary">
-                            Script name
-                          </span>
-                          <input
-                            value={newWorkspaceScript.name}
-                            onChange={(event) =>
-                              setNewWorkspaceScript((prev) => ({
-                                ...prev,
-                                name: event.target.value,
-                              }))
-                            }
-                            placeholder="workspace-check"
-                            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-                          />
-                        </label>
+                        <FormField label="Script name">
+                          {(control) => (
+                            <TextInput
+                              {...control}
+                              density="settings"
+                              value={newWorkspaceScript.name}
+                              onChange={(event) =>
+                                setNewWorkspaceScript((prev) => ({
+                                  ...prev,
+                                  name: event.target.value,
+                                }))
+                              }
+                              placeholder="workspace-check"
+                            />
+                          )}
+                        </FormField>
                         <div className="flex items-end">
                           <Button
                             size="compact"
@@ -3747,25 +3757,25 @@ export function WorkspaceSettingsModal({
                             ))}
                             <div className="rounded-lg border border-dashed p-3">
                               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                                <label className="block text-s">
-                                  <span className="mb-1.5 block text-xs fg-secondary">
-                                    Script name
-                                  </span>
-                                  <input
-                                    value={draft.name}
-                                    onChange={(event) =>
-                                      setNewRepoScripts((prev) => ({
-                                        ...prev,
-                                        [repo.id]: {
-                                          ...draft,
-                                          name: event.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="dev-server"
-                                    className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-                                  />
-                                </label>
+                                <FormField label="Script name">
+                                  {(control) => (
+                                    <TextInput
+                                      {...control}
+                                      density="settings"
+                                      value={draft.name}
+                                      onChange={(event) =>
+                                        setNewRepoScripts((prev) => ({
+                                          ...prev,
+                                          [repo.id]: {
+                                            ...draft,
+                                            name: event.target.value,
+                                          },
+                                        }))
+                                      }
+                                      placeholder="dev-server"
+                                    />
+                                  )}
+                                </FormField>
                                 <div className="flex items-end">
                                   <Button
                                     size="compact"
@@ -4070,19 +4080,21 @@ export function WorkspaceSettingsModal({
                     disabled={claudeMdRetrying}
                     data-testid="workspace-instructions-load-retry"
                   >
-                    Retry
+                    Try again
                   </NoticeButton>
                 }
               >
                 Editing is off so the saved file isn't overwritten.
               </Notice>
             )}
-            <textarea
+            <TextArea
+              mono
+              aria-label="Project instructions"
               value={claudeMd}
               onChange={(event) => setClaudeMd(event.target.value)}
               readOnly={claudeMdUnavailable}
               aria-readonly={claudeMdUnavailable}
-              className="focus-ring mt-2 min-h-0 flex-1 w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs read-only:opacity-60"
+              className="mt-2 min-h-0 flex-1"
               data-testid="workspace-instructions-textarea"
               placeholder={
                 claudeMdUnavailable
@@ -4284,7 +4296,7 @@ export function WorkspaceSettingsModal({
       {/* Save footer */}
       {showAddToWorktreeFooter && (
         <div
-          className={`flex items-center border-t px-5 py-3 ${
+          className={`flex items-center border-t px-6 py-3 ${
             isTemporaryWorkspace ? 'justify-end' : 'justify-between'
           }`}
         >
@@ -4333,8 +4345,12 @@ export function WorkspaceSettingsModal({
       )}
 
       {error && (
-        <div className="border-t px-5 py-3">
-          <p className="text-s fg-destructive">{error}</p>
+        <div className="border-t px-6 py-3">
+          <ErrorBanner
+            error={error}
+            details={detailsFor(error, errorFailure)}
+            className=""
+          />
         </div>
       )}
 
@@ -4371,6 +4387,7 @@ function TemporaryWorkspacePromotionCard({
   const [name, setName] = useState(defaultName);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorFailure, setErrorFailure] = useState<FailureDetails | null>(null);
   const addToast = useGitHubStore((state) => state.addToast);
 
   useEffect(() => {
@@ -4391,11 +4408,13 @@ function TemporaryWorkspacePromotionCard({
       });
       onPromoted();
       addToast('Project made permanent', 'success');
-    } catch (cause: unknown) {
-      setErrorMessage(
-        cause instanceof Error
-          ? cause.message
-          : 'Failed to make project permanent.',
+    } catch (cause) {
+      setErrorMessage('Couldn’t make the project permanent. Try again.');
+      setErrorFailure(
+        failureDetails(
+          'Couldn’t make the project permanent. Try again.',
+          cause,
+        ),
       );
     } finally {
       setIsSaving(false);
@@ -4412,17 +4431,21 @@ function TemporaryWorkspacePromotionCard({
         This project was created for an adhoc multi-repo worktree. Make it
         permanent to keep it after its worktrees are deleted.
       </p>
-      <label className="mt-3 block text-s">
-        <span className="mb-1.5 block text-xs fg-secondary">Project name</span>
-        <input
-          type="text"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="my-multi-repo-project"
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-          data-testid="temporary-workspace-promotion-name"
-        />
-      </label>
+      <div className="mt-3">
+        <FormField label="Project name">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="text"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="my-multi-repo-project"
+              data-testid="temporary-workspace-promotion-name"
+            />
+          )}
+        </FormField>
+      </div>
       <div className="mt-3 flex items-center gap-2">
         <Button
           size="compact"
@@ -4433,14 +4456,12 @@ function TemporaryWorkspacePromotionCard({
           {isSaving ? 'Saving…' : 'Make permanent'}
         </Button>
       </div>
-      {errorMessage && (
-        <p
-          className="mt-2 text-xs fg-destructive"
-          data-testid="temporary-workspace-promotion-error"
-        >
-          {errorMessage}
-        </p>
-      )}
+      <ErrorBanner
+        error={errorMessage}
+        details={detailsFor(errorMessage, errorFailure)}
+        className="mt-2"
+        testId="temporary-workspace-promotion-error"
+      />
     </div>
   );
 }

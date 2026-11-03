@@ -67,6 +67,14 @@ jest.mock('../skills/canopy-server-client', () => ({
 jest.mock('../pipelines/curated-pipeline-catalog', () => ({
   getManagedCuratedPipeline: jest.fn(),
 }));
+// Agent pipeline reads reach the mocked store through core's stand-in.
+jest.mock(
+  '../canopy-runtime/pipeline-definition-dispatch',
+  (): object =>
+    jest.requireActual<{ pipelineWriteDispatchFake: object }>(
+      './helpers/pipeline-write-dispatch-fake',
+    ).pipelineWriteDispatchFake,
+);
 jest.mock('../pipelines/pipeline-service', () => ({
   listPipelines: jest.fn(),
   getPipeline: jest.fn(),

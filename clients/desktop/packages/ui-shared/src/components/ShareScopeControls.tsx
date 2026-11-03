@@ -7,6 +7,8 @@ import {
   shareAudienceLabel,
 } from '../lib/share-audience-label';
 import { DisplayAvatar } from './DisplayAvatar';
+import { TextInput } from './Field';
+import { ErrorBanner } from './StatusBlocks';
 import { Tooltip, type TooltipLink } from './Tooltip';
 
 export {
@@ -430,27 +432,19 @@ export function SharedTargetPicker<T>({
         The search box now announces itself, and the rows below dropped the
         box entirely.
       */}
-      <div className="relative">
-        <MagnifyingGlassIcon
-          aria-hidden="true"
-          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 fg-quaternary"
-        />
-        <input
-          type="search"
-          value={searchValue}
-          onChange={(e) => onSearchChange(e.target.value)}
-          placeholder={placeholder}
-          aria-label={placeholder}
-          disabled={disabled}
-          className="focus-ring w-full rounded-lg bg-base py-2 pl-8 pr-3 text-s fg-primary inset-ring-[length:var(--border-hairline)] inset-ring-line-base disabled:opacity-50"
-        />
-      </div>
+      <TextInput
+        type="search"
+        value={searchValue}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        disabled={disabled}
+        leading={
+          <MagnifyingGlassIcon aria-hidden="true" className="h-3.5 w-3.5" />
+        }
+      />
       {loading && <p className="text-xs fg-secondary">{loadingLabel}</p>}
-      {error && (
-        <p className="text-xs fg-destructive" role="alert">
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error} />
       {!loading &&
         !error &&
         items.length === 0 &&

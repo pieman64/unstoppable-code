@@ -9,6 +9,7 @@ import {
   FloatingMenu,
   type DropdownMenuRowStyle,
   HeaderActionDefaultToneContext,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { PlusMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -259,12 +260,12 @@ export function ActivityCardView({
         data-testid="activity-card-content"
       >
         {listed.length === 0 ? (
-          <p
-            className="px-2 py-1.5 text-xs fg-tertiary"
-            data-testid="activity-card-empty"
-          >
-            Nothing has happened here yet.
-          </p>
+          <div className="px-2">
+            <EmptyStateRow
+              testId="activity-card-empty"
+              title="Nothing has happened here yet."
+            />
+          </div>
         ) : (
           <div className="flex flex-col" data-testid="activity-card-overview">
             {listed.map((row) => (

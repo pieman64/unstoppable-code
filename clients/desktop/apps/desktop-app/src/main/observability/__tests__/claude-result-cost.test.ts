@@ -12,6 +12,7 @@ jest.mock('../../auth/provider-auth-state', () => ({
 }));
 
 import { ObservabilityService } from '../service';
+import { createDesktopObservabilityHost } from '../host';
 
 const getClaudeSessionCostLedgerSpy = jest.spyOn(
   claudeCostLedger,
@@ -127,7 +128,7 @@ function makeObservedTaskEntry(
 }
 
 function makeService(): ObservabilityService {
-  const service = new ObservabilityService();
+  const service = new ObservabilityService(createDesktopObservabilityHost());
   services.push(service);
   return service;
 }

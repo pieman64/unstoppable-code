@@ -69,6 +69,55 @@ function render(
 }
 
 describe('TurnGroupView', () => {
+  it('folds Detailed steps on completion and lets the reader reopen them', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const draw = (complete: boolean): void => {
+      act(() =>
+        root.render(
+          <ChatLookProvider value="clean">
+            <ChatDetailProvider value="detailed">
+              <TurnGroupView
+                turnGroup={{
+                  userMessageId: 'u1',
+                  intermediateMessageIds: ['work'],
+                  finalMessageIds: ['answer'],
+                  complete,
+                }}
+                messagesById={{
+                  u1: msg('u1', 'user', 'Check the project'),
+                  work: msg('work', 'assistant', 'Inspecting the project'),
+                  answer: msg('answer', 'assistant', 'The project is ready.'),
+                }}
+              />
+            </ChatDetailProvider>
+          </ChatLookProvider>,
+        ),
+      );
+    };
+    try {
+      draw(false);
+      expect(container.textContent).toContain('Inspecting the project');
+      draw(true);
+      expect(container.textContent).not.toContain('Inspecting the project');
+      expect(container.textContent).toContain('The project is ready.');
+      const toggle = container.querySelector<HTMLButtonElement>(
+        'button[aria-expanded]',
+      );
+      expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+      act(() => toggle?.click());
+      expect(container.textContent).toContain('Inspecting the project');
+      draw(true);
+      expect(container.textContent).toContain('Inspecting the project');
+      act(() => toggle?.click());
+      expect(container.textContent).not.toContain('Inspecting the project');
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+
   it.each([false, true])(
     'projects frozen paused wording in both web looks (clean=%s, CAN-4996)',
     (clean) => {
@@ -149,8 +198,9 @@ describe('TurnGroupView', () => {
         const status = host.querySelector(
           '[data-testid="turn-starting-status"]',
         );
-        expect(status?.getAttribute('role')).toBe('status');
-        expect(status?.textContent).toContain('Starting…');
+        expect(status?.querySelector('[role="status"]')?.textContent).toBe(
+          'Starting…',
+        );
         draw({ u1: user, t1: timer }, ['t1']);
         expect(host.querySelector('[data-testid="turn-starting-status"]')).toBe(
           status,
@@ -1445,6 +1495,13 @@ describe('TurnGroupView reply Copy (CAN-4704)', () => {
       expect(found).toHaveLength(1);
       expect(found[0]?.getAttribute('aria-label')).toBe('Copy message');
       expect(hiddenAtRest(found[0] ?? host)).toBe(false);
+      if (look === 'clean') {
+        expect(
+          host
+            .querySelector('[data-testid="chat-turn-feedback"]')
+            ?.classList.contains('gap-0.5'),
+        ).toBe(true);
+      }
     }
   });
 
@@ -1643,7 +1700,7 @@ describe('TurnGroupView clean chat steps between replies', () => {
     const after = lines();
     expect(after).toHaveLength(before.length);
     after.forEach((line, index) => expect(line).toBe(before[index]));
-    expect(words(after[1])).toBe('Reading toolbar.ts');
+    expect(words(after[1])).toBe('Read toolbar.ts');
   });
 
   it('puts "Thinking" in the timer row after a reply, in the same row', () => {
@@ -1693,7 +1750,7 @@ describe('TurnGroupView clean chat steps between replies', () => {
     expect(blocked?.tagName).toBe('SPAN');
   });
 
-  it('keeps an opened tool card open when the turn finishes', () => {
+  it('folds an opened Detailed tool card when the turn finishes', () => {
     const messages = streamingTurn();
     show(root, messages, false, false);
     const toggle = (): HTMLElement | null =>
@@ -1714,8 +1771,13 @@ describe('TurnGroupView clean chat steps between replies', () => {
       },
     ];
     show(root, done, true, false);
-    // Same card, still open: finishing the turn remounts nothing.
-    expect(toggle()).toBe(opener);
+    expect(toggle()).toBeNull();
+    const turnToggle = host.querySelector<HTMLButtonElement>(
+      '[data-testid="turn-work-header"] button[aria-expanded]',
+    );
+    act(() => turnToggle?.click());
+    expect(toggle()?.getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle()?.click());
     expect(toggle()?.getAttribute('aria-expanded')).toBe('true');
   });
 
@@ -1723,13 +1785,19 @@ describe('TurnGroupView clean chat steps between replies', () => {
     show(root, streamingTurn(), false, false);
     expect(
       lines().filter((line) => !line.closest('[data-testid="turn-timer"]')),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
     expect(
       host.querySelectorAll('[data-testid="chat-tool-call"]').length,
     ).toBeGreaterThan(2);
-    // The newest step is done, so the slot under the reply says "Thinking".
-    expect(host.querySelector('[data-testid="turn-timer"]')?.textContent).toBe(
+    // The fallback is a sibling of the steps, sharing their vertical rhythm.
+    const stack = host.querySelectorAll(
+      '[data-testid="chat-tool-step-detailed"]',
+    );
+    expect(stack[stack.length - 1]?.lastElementChild?.textContent).toBe(
       'Thinking',
+    );
+    expect(host.querySelector('[data-testid="turn-timer"]')?.textContent).toBe(
+      '',
     );
   });
 });
@@ -1771,7 +1839,11 @@ describe('TurnGroupView chat detail recent', () => {
     host.remove();
   });
 
-  function show(steps: PortalChatMessage[], complete = false): void {
+  function show(
+    steps: PortalChatMessage[],
+    complete = false,
+    detail: 'recent' | 'compact' = 'recent',
+  ): void {
     const messages = [
       msg('u1', 'user', 'Fix the toolbar test'),
       msg('n1', 'assistant', 'Looking at the test first.'),
@@ -1786,7 +1858,7 @@ describe('TurnGroupView chat detail recent', () => {
     act(() =>
       root.render(
         <ChatLookProvider value="clean">
-          <ChatDetailProvider value="recent">
+          <ChatDetailProvider value={detail}>
             <TurnGroupView
               turnGroup={{
                 userMessageId: 'u1',
@@ -1813,11 +1885,37 @@ describe('TurnGroupView chat detail recent', () => {
       .querySelector('[data-testid="chat-tool-step-live"]')
       ?.querySelectorAll('[data-testid="chat-tool-call"]').length ?? 0;
 
+  it('keeps Thinking after one completed compact call, without duplicating a running call', () => {
+    show([read('r1', 'a.ts')], false, 'compact');
+    expect(host.textContent?.match(/Thinking/g)).toHaveLength(1);
+    expect(
+      host.querySelector('[data-testid="chat-tool-step-summary"]'),
+    ).toBeNull();
+    show([read('r1', 'a.ts', false)], false, 'compact');
+    expect(host.textContent).not.toContain('Thinking');
+    expect(host.textContent?.match(/Read a\.ts/g)).toHaveLength(1);
+  });
+
+  it.each([1, 4, 8])(
+    'shows Thinking after %i completed recent calls while the turn runs',
+    (count) => {
+      const calls = Array.from({ length: count }, (_, index) =>
+        read(`r${index}`, `file${index}.ts`),
+      );
+      show(calls);
+      expect(host.textContent?.match(/Thinking/g)).toHaveLength(1);
+      const live = host.querySelector('[data-testid="chat-tool-step-live"]');
+      expect(live?.lastElementChild?.textContent).toBe('Thinking');
+      show([...calls, read('next', 'next.ts', false)]);
+      expect(host.textContent).not.toContain('Thinking');
+    },
+  );
+
   it('shows a short live run as its own rows, with no line to count', () => {
     show([read('r1', 'a.ts'), read('r2', 'b.ts', false)]);
     expect(lines()).toEqual([]);
     expect(liveRows()).toBe(2);
-    expect(host.textContent?.match(/Reading b\.ts/g)).toHaveLength(1);
+    expect(host.textContent?.match(/Read b\.ts/g)).toHaveLength(1);
   });
 
   it('keeps the newest three steps in view and counts the rest on the line', () => {
@@ -1831,13 +1929,13 @@ describe('TurnGroupView chat detail recent', () => {
     expect(lines()).toEqual(['Read 2 files']);
     expect(liveRows()).toBe(3);
     // The running step is said once, in its own row, not on the line too.
-    expect(host.textContent?.match(/Reading e\.ts/g)).toHaveLength(1);
+    expect(host.textContent?.match(/Read e\.ts/g)).toHaveLength(1);
     expect(
       host.querySelector('[data-testid="chat-tool-step-group"][data-live]'),
     ).toBeNull();
   });
 
-  it('folds every step once the turn is done', () => {
+  it('leaves the final standalone call visible once the turn is done', () => {
     show(
       [
         read('r1', 'a.ts'),
@@ -1847,9 +1945,10 @@ describe('TurnGroupView chat detail recent', () => {
       ],
       true,
     );
+    expect(host.querySelector('[data-tool-use-id="r4-tool"]')).not.toBeNull();
     expect(
-      host.querySelector('[data-testid="chat-tool-step-live"]'),
-    ).toBeNull();
+      host.querySelectorAll('[data-testid="chat-tool-step-summary"]'),
+    ).toHaveLength(0);
   });
 });
 
@@ -2446,7 +2545,7 @@ describe('TurnGroupView approval waiting from a paused timer (CAN-5291)', () => 
   it('says a paused turn’s unresolved call waits, without shimmer', () => {
     const html = renderTurn([bash('call-1'), timer({ pausedAt: 5_000 })]);
     expect(html).toContain('data-tool-approval="waiting"');
-    expect(html).toContain('Waiting to run');
+    expect(html).toContain('Waiting for approval');
     expect(html).not.toContain('Running pnpm test');
   });
 
@@ -2456,7 +2555,8 @@ describe('TurnGroupView approval waiting from a paused timer (CAN-5291)', () => 
       timer({ pausedAt: 5_000, resumedAt: 9_000 }),
     ]);
     expect(html).not.toContain('data-tool-approval');
-    expect(html).toContain('Running');
+    expect(html).toContain('Run');
+    expect(html).toContain('canopy-text-shimmer-strong');
   });
 
   it('never waits in a completed turn', () => {
@@ -2465,7 +2565,7 @@ describe('TurnGroupView approval waiting from a paused timer (CAN-5291)', () => 
       true,
     );
     expect(html).not.toContain('data-tool-approval');
-    expect(html).not.toContain('Waiting to run');
+    expect(html).not.toContain('Waiting for approval');
   });
 
   it('keeps a cloud turn without pause timestamps unchanged', () => {

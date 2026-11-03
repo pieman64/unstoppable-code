@@ -533,6 +533,217 @@ describe('W5 commit log host (CAN-3805)', () => {
     });
   });
 
+  describe('queued read deadlines (CAN-5566)', () => {
+    it('does not send an overdue read when a worker response beats the queued timer callback', async () => {
+      const host = scriptedHost('gated-commit');
+      await host.revision(WORKSPACES);
+      const gate = new Int32Array(new SharedArrayBuffer(4));
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      const clock = jest.spyOn(performance, 'now').mockReturnValue(0);
+      try {
+        const active = host.commit({
+          ...indexChange('v1', null),
+          outcome: gate.buffer,
+        });
+        const waiting = failureOf(host.revision(WORKSPACES));
+        // Model a delayed host timer: I/O can run after the deadline but before
+        // its timer callback. The enqueue deadline must still hold at send.
+        clock.mockReturnValue(30_000);
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        await expect(active).resolves.toMatchObject({ status: 'applied' });
+        await expect(waiting).resolves.toBe('unavailable');
+        await expect(host.revision(WORKSPACES)).resolves.toBe(3);
+      } finally {
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        clock.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('bounds admission waits too, without starting a worker after the only read expires', async () => {
+      let admit = (): void => undefined;
+      const admission = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      const host = createHost({
+        admission: () => admission,
+        queuedReadTimeoutMs: 100,
+      });
+      jest.useFakeTimers();
+      try {
+        const waiting = failureOf(host.revision(WORKSPACES));
+        await jest.advanceTimersByTimeAsync(100);
+        // Checking before awaiting the call makes a missing deadline fail promptly.
+        expect(jest.getTimerCount()).toBe(0);
+        let failure: string | undefined;
+        void waiting.then((reason) => {
+          failure = reason;
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        expect(failure).toBe('unavailable');
+        admit();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(host.workersStarted).toBe(0);
+      } finally {
+        admit();
+        jest.useRealTimers();
+      }
+    });
+
+    it.each([0, -1, NaN, Infinity])(
+      'rejects an invalid queued read bound %s',
+      (queuedReadTimeoutMs) => {
+        expect(() => createHost({ queuedReadTimeoutMs })).toThrow(RangeError);
+      },
+    );
+
+    it('expires only the three covered reads after 30 s, frees their queue slots, and keeps other calls waiting', async () => {
+      const host = scriptedHost('gated-commit', {
+        requestTimeoutMs: 120_000,
+        maxQueuedCalls: 6,
+      });
+      await expect(host.revision(WORKSPACES)).resolves.toBe(1);
+      const gate = new Int32Array(new SharedArrayBuffer(4));
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      try {
+        const active = host.commit({
+          ...indexChange('v1', null),
+          outcome: gate.buffer,
+        });
+        void active.catch(() => undefined);
+        let committed = false;
+        const queuedCommit = host
+          .commit(indexChange('v2', 'v1'))
+          .then((result) => {
+            committed = true;
+            return result;
+          });
+        void queuedCommit.catch(() => undefined);
+        let otherReadsCompleted = 0;
+        const snapshot = host.snapshot().then((result) => {
+          otherReadsCompleted += 1;
+          return result;
+        });
+        const receipt = host
+          .lookupReceipt({
+            caller: 'test',
+            operation: 'internal.repository.write',
+            idempotencyKey: 'queued',
+            fingerprint: 'test',
+          })
+          .then((result) => {
+            otherReadsCompleted += 1;
+            return result;
+          });
+        void snapshot.catch(() => undefined);
+        void receipt.catch(() => undefined);
+        const failures: unknown[] = [];
+        const reads = [
+          host.capture({ files: [], discoverWorkspaces: false }),
+          host.revision(WORKSPACES),
+          host.recoveryReport(),
+        ].map((read) =>
+          read.catch((error: unknown) => {
+            failures.push(error);
+          }),
+        );
+        await jest.advanceTimersByTimeAsync(29_999);
+        expect(failures).toEqual([]);
+        expect(committed).toBe(false);
+        await jest.advanceTimersByTimeAsync(1);
+        expect(failures).toHaveLength(3);
+        await Promise.all(reads);
+        for (const error of failures) {
+          expect(error).toBeInstanceOf(W5CommitLogHostError);
+          expect(error).toMatchObject({ reason: 'unavailable' });
+        }
+        // Uncovered calls must survive beyond the read deadline, not just to it.
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(committed).toBe(false);
+        expect(otherReadsCompleted).toBe(0);
+        expect(jest.getTimerCount()).toBe(1);
+        // All three expired reads release capacity; only the active timer remains.
+        const afterExpiry = Promise.all([
+          host.revision(WORKSPACES),
+          host.revision(WORKSPACES),
+          host.revision(WORKSPACES),
+        ]);
+        void afterExpiry.catch(() => undefined);
+        await expect(host.revision(WORKSPACES)).rejects.toMatchObject({
+          reason: 'unavailable',
+          message: 'The W5 commit log is busy',
+        });
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        // Keep one monotonic clock until the queued deadlines have drained.
+        await expect(active).resolves.toMatchObject({
+          status: 'applied',
+          commitId: 2,
+        });
+        await expect(queuedCommit).resolves.toMatchObject({
+          status: 'applied',
+          commitId: 3,
+        });
+        await expect(snapshot).resolves.toMatchObject({ commitId: 4 });
+        await expect(receipt).resolves.toEqual({ status: 'none' });
+        // Warm-up, two commits, two uncovered reads, and the replacement reads.
+        await expect(afterExpiry).resolves.toEqual([6, 7, 8]);
+        expect(jest.getTimerCount()).toBe(0);
+        expect(host.workersStarted).toBe(1);
+      } finally {
+        Atomics.store(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        jest.useRealTimers();
+      }
+    });
+
+    it.each([
+      { workerNumber: 1, loggingThrows: false },
+      { workerNumber: 2, loggingThrows: true },
+    ])(
+      'logs timeout context on worker $workerNumber and settles even if logging throws ($loggingThrows)',
+      async ({ workerNumber, loggingThrows }) => {
+        const warn = jest.fn(() => {
+          if (loggingThrows) throw new Error('logger unavailable');
+        });
+        const host = scriptedHost('gated-commit', { warn });
+        await host.revision(WORKSPACES);
+        if (workerNumber === 2) {
+          await retireWorker(host);
+          await host.revision(WORKSPACES);
+        }
+        const gate = new Int32Array(new SharedArrayBuffer(4));
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+        try {
+          const active = failureOf(
+            host.commit({
+              ...indexChange('private-bytes', null),
+              outcome: gate.buffer,
+            }),
+          );
+          // Queued commits retain their existing unavailable-on-worker-failure policy.
+          const queued = failureOf(host.commit(indexChange('v2', 'v1')));
+          await jest.advanceTimersByTimeAsync(30_000);
+          await expect(active).resolves.toBe('outcome-unknown');
+          await expect(queued).resolves.toBe('unavailable');
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalledWith('W5 commit log request timed out', {
+            method: 'commit',
+            elapsedMs: 30_000,
+            queueDepth: 1,
+            workerNumber,
+          });
+        } finally {
+          Atomics.store(gate, 0, 1);
+          Atomics.notify(gate, 0);
+          jest.useRealTimers();
+        }
+      },
+    );
+  });
+
   it('treats a result of the wrong shape as outcome unknown', async () => {
     const host = scriptedHost('unexpected-result');
     await expect(host.revision(WORKSPACES)).rejects.toMatchObject({

@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { CanopyRequestMetadataSchema } from '../../common';
+import {
+  CanopyRequestMetadataSchema,
+  CanopyWorkspaceScopeSchema,
+} from '../../common';
 import {
   defineCanopyInstruction,
   defineCanopyInstructionRegistry,
@@ -20,7 +23,9 @@ const keyedMeta = CanopyRequestMetadataSchema.extend({ idempotencyKey: id });
 
 export const CoreWorkspaceUpdateParamsSchema = z.strictObject({
   workspaceId: id,
-  expectedRevision: revision,
+  // Enforced when present (DM-3(a)): desktop reads publish no revision for a
+  // workspace W5 never wrote, and these field-scoped patches lose no edit.
+  expectedRevision: revision.optional(),
   patch: z
     .strictObject({
       name: z.string().min(1).max(256).regex(/\S/).optional(),
@@ -89,23 +94,50 @@ export type CoreWorkspaceUpdateParams = z.output<
 >;
 
 // The `core.workspace.get` projection, typed workspace fields included
-// (CAN-5373), with the update's bounded name and stamps always present.
+// (CAN-5373), with the update's bounded name. Its stamps follow the read
+// (DM-2): a host omits a revision or time it lacks. The web core returns all.
 export const CoreWorkspaceUpdateResultSchema = CoreWorkspaceSchema.safeExtend({
   name: z.string().min(1).max(256),
-  revision,
-  createdAt: timestamp,
-  updatedAt: timestamp,
 });
 export type CoreWorkspaceUpdateResult = z.output<
   typeof CoreWorkspaceUpdateResultSchema
 >;
 
+const workspaceErrorCodes = [
+  'core.workspace.invalidState',
+  'core.workspace.revisionConflict',
+  'core.workspace.notFound',
+] as const;
+
 const workspaceError = CanopyErrorPayloadSchema.extend({
+  code: z.enum(workspaceErrorCodes).optional(),
+});
+
+// #3 adds the W5 refusal, key and recovery codes (A7, q-14 D2(a)).
+const workspaceUpdateError = CanopyErrorPayloadSchema.extend({
   code: z
     .enum([
-      'core.workspace.invalidState',
-      'core.workspace.revisionConflict',
-      'core.workspace.notFound',
+      ...workspaceErrorCodes,
+      'core.workspace.idempotencyKeyReused',
+      'core.workspace.requestInProgress',
+      'core.workspace.recoveryRequired',
+      'core.workspace.outcomeExpired',
+      'core.workspace.configurationUnavailable',
+      'core.workspace.readOnly',
+    ])
+    .optional(),
+});
+
+// #1 and #2 add the keyed creates' key and recovery codes (W7b-3, A7, q-14
+// D2(a)).
+const workspaceCreateError = CanopyErrorPayloadSchema.extend({
+  code: z
+    .enum([
+      ...workspaceErrorCodes,
+      'core.workspace.idempotencyKeyReused',
+      'core.workspace.requestInProgress',
+      'core.workspace.recoveryRequired',
+      'core.workspace.outcomeExpired',
     ])
     .optional(),
 });
@@ -168,10 +200,12 @@ export const CoreWorkspaceCreateResultSchema = z.strictObject({
           .nullable(),
       }),
     ),
-    settingsRevision: revision,
-    revision,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    // D-2 (W7b-3): a host omits a revision or time it lacks, as the
+    // `core.workspace.get` read does. The web core returns all four.
+    settingsRevision: revision.optional(),
+    revision: revision.optional(),
+    createdAt: timestamp.optional(),
+    updatedAt: timestamp.optional(),
   }),
   operation: z
     .strictObject({
@@ -218,6 +252,41 @@ const operationReference = z
 export const CoreWorkspaceDeleteResultSchema = operationReference;
 export type CoreWorkspaceDeleteResult = z.output<
   typeof CoreWorkspaceDeleteResultSchema
+>;
+
+// The catalog's git remote forms; `.meta` keeps the page's unescaped pattern.
+const GIT_URL_PATTERN =
+  '^(?:[Hh][Tt][Tt][Pp][Ss]?://|[Ss][Ss][Hh]://|[^\\s/@-][^\\s/@]*@[^\\s/:]+:\\S)';
+
+// #2's page (W7b-3, B7): no owner or organization field; the host derives it.
+export const CoreWorkspaceImportParamsSchema = z.strictObject({
+  source: z.discriminatedUnion('kind', [
+    z.strictObject({
+      kind: z.literal('local_picker_selection'),
+      selectionId: id,
+    }),
+    z.strictObject({
+      kind: z.literal('git_url'),
+      value: z
+        .string()
+        .min(1)
+        .max(4096)
+        .regex(new RegExp(GIT_URL_PATTERN))
+        .meta({ pattern: GIT_URL_PATTERN }),
+    }),
+    z.strictObject({ kind: z.literal('provider_project'), value: id }),
+  ]),
+  name: z.string().min(1).max(256),
+  targetId: z.string().nullable().optional(),
+  _meta: keyedMeta,
+});
+export type CoreWorkspaceImportParams = z.output<
+  typeof CoreWorkspaceImportParamsSchema
+>;
+
+export const CoreWorkspaceImportResultSchema = operationReference;
+export type CoreWorkspaceImportResult = z.output<
+  typeof CoreWorkspaceImportResultSchema
 >;
 
 const branch = z.string().min(1).max(512).regex(/\S/);
@@ -297,9 +366,15 @@ export type CoreWorktreeCreateResult = z.output<
   typeof CoreWorktreeCreateResultSchema
 >;
 
+// The worktree read's `createdAt`, echoed so a recreated id is refused. It
+// keeps the read's loose string: historical rows hold date-only values.
+const expectedCreatedAt = z.string().min(1).max(512);
+
 export const CoreWorktreeDeleteParamsSchema = z.strictObject({
+  scope: CanopyWorkspaceScopeSchema.optional(),
   worktreeId: id,
   expectedRevision: revision,
+  expectedCreatedAt: expectedCreatedAt.optional(),
   force: z.boolean().optional(),
   _meta: keyedMeta,
 });
@@ -313,6 +388,7 @@ export type CoreWorktreeDeleteResult = z.output<
 >;
 
 export const CoreWorktreeUpdateParamsSchema = z.strictObject({
+  scope: CanopyWorkspaceScopeSchema.optional(),
   worktreeId: id,
   expectedRevision: revision,
   patch: z
@@ -348,26 +424,34 @@ export type CoreWorktreeUpdateParams = z.output<
 >;
 
 export const CoreWorktreeArchiveParamsSchema = z.strictObject({
+  scope: CanopyWorkspaceScopeSchema.optional(),
   worktreeId: id,
   expectedRevision: revision,
+  expectedCreatedAt: expectedCreatedAt.optional(),
+  // Web restores with false; the desktop refuses it (D-6(1)).
   archived: z.boolean(),
 });
 export type CoreWorktreeArchiveParams = z.output<
   typeof CoreWorktreeArchiveParamsSchema
 >;
 
+// Fields follow the desktop worktree read (D-2): a host omits a revision or
+// write time it lacks, nulls an untracked base, and keeps a historical
+// date-only createdAt. The web core returns every field. `name` takes the
+// branch's 512 bound because the desktop read's name is its stored label or
+// branch (W7b-1b, settled by the orchestrator; ref can5549-name-bound).
 export const CoreWorktreeCommandResultSchema = z
   .object({
     worktreeId: id,
     workspaceId: id,
-    name: z.string().min(1).max(256),
+    name: z.string().min(1).max(512),
     state: z.enum(['creating', 'ready', 'archived', 'deleting', 'error']),
-    revision,
-    baseBranch: id,
+    revision: revision.optional(),
+    baseBranch: id.nullable(),
     branch: id,
     targetId: z.string().nullable().optional(),
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    createdAt: z.string(),
+    updatedAt: timestamp.optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export type CoreWorktreeCommandResult = z.output<
@@ -380,6 +464,10 @@ const worktreeError = CanopyErrorPayloadSchema.extend({
       'core.worktree.invalidState',
       'core.worktree.revisionConflict',
       'core.worktree.notFound',
+      'core.worktree.idempotencyKeyReused',
+      'core.worktree.requestInProgress',
+      'core.worktree.recoveryRequired',
+      'core.worktree.outcomeExpired',
     ])
     .optional(),
 });
@@ -398,7 +486,9 @@ export const CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS =
       requiredGrants: ['core.workspace.write'],
       params: CoreWorkspaceCreateParamsSchema,
       result: CoreWorkspaceCreateResultSchema,
-      error: workspaceError.extend({ retry: CanopyKeyedRetryDirectiveSchema }),
+      error: workspaceCreateError.extend({
+        retry: CanopyKeyedRetryDirectiveSchema,
+      }),
     }),
     'core.workspace.delete': defineCanopyInstruction({
       plane: 'core',
@@ -442,7 +532,9 @@ export const CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS =
       requiredGrants: ['core.workspace.write'],
       params: CoreWorkspaceUpdateParamsSchema,
       result: CoreWorkspaceUpdateResultSchema,
-      error: workspaceError.extend({ retry: CanopyKeyedRetryDirectiveSchema }),
+      error: workspaceUpdateError.extend({
+        retry: CanopyKeyedRetryDirectiveSchema,
+      }),
     }),
     'core.worktree.update': defineCanopyInstruction({
       plane: 'core',
@@ -465,5 +557,25 @@ export const CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS =
       params: CoreWorktreeArchiveParamsSchema,
       result: CoreWorktreeCommandResultSchema,
       error: worktreeError.extend({ retry: CanopyQueryRetryDirectiveSchema }),
+    }),
+  });
+
+// `core.workspace.import` (#2, W7b-3): served by the in-process desktop
+// dispatcher only, so kept out of the web registry above and, like it, out of
+// CORE_INSTRUCTION_DEFINITIONS. It shares #1's error codes.
+export const CORE_WORKSPACE_IMPORT_INSTRUCTION_DEFINITIONS =
+  defineCanopyInstructionRegistry('core', {
+    'core.workspace.import': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'workspace',
+      version: 1,
+      placement: 'core-only',
+      idempotency: 'keyed',
+      requiredGrants: ['core.workspace.write'],
+      params: CoreWorkspaceImportParamsSchema,
+      result: CoreWorkspaceImportResultSchema,
+      error: workspaceCreateError.extend({
+        retry: CanopyKeyedRetryDirectiveSchema,
+      }),
     }),
   });

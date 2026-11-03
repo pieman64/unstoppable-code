@@ -46,9 +46,11 @@ import type {
 } from '../lib/workspace-index-repository';
 import { readEffectiveWorkspaceConfig } from '../lib/workspace-source';
 import { sanitizeRemoteUrl } from '../lib/plan-share-repos';
+import { isW5ProjectionOnlyView } from '../lib/w5-fallback-read';
 import { runW5ReadView } from '../lib/w5-commit-log-file-store';
 import type { W5ReadViewOutcome } from '../lib/w5-read-view';
 import type { W5CaptureRequest } from '../w5-commit-log/commit-log-worker-contract';
+import type { W5RevisionEligibility } from '@canopy/core-runtime/node/w5/commit-log/eligibility';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 import {
   coreWorkspaceResourceKey,
@@ -125,6 +127,8 @@ export interface CoreWorkspaceReadDetail {
    * project lowers it without the index itself being unreliable.
    */
   indexAuthority?: CoreWorkspaceReadAuthority;
+  /** Incomplete worktree membership from the same unscoped sidebar snapshot. */
+  worktreePreserveWorkspaceIds?: readonly string[];
   ownerMalformed?: boolean;
   /** Per-file and per-resource evidence, kept apart from `authority`. */
   provenance?: CoreWorkspaceReadProvenance;
@@ -289,8 +293,7 @@ async function checkWorktreeWorkspaceId(
   workspaceId: string,
   services: CoreWorkspaceReadServices,
 ): Promise<void> {
-  if (!(await services.readWorkspaceIndexEntry(workspaceId)))
-    throw worktreeNotFound();
+  if (!(await readIndexEntry(services, workspaceId))) throw worktreeNotFound();
 }
 
 function projectRepositorySources(
@@ -504,7 +507,8 @@ function projectWorkspace(
   };
 }
 
-function projectWorktree(
+/** The `core.worktree.get` projection of one row, before its revision. */
+export function projectWorktree(
   workspaceId: string,
   worktree: WorktreeData,
 ): CoreWorktree {
@@ -604,9 +608,25 @@ async function readSidebar(
     workspaceReads,
     storedFields,
   } = await services.readAllSidebarItemsSnapshot();
+  const projectedWorkspaceIds = new Set(file.items.map((item) => item.id));
+  const worktreePreserveWorkspaceIds = new Set(
+    (indexedWorkspaceIds ?? []).filter(
+      (workspaceId) => !projectedWorkspaceIds.has(workspaceId),
+    ),
+  );
+  for (const [workspaceId, reads] of workspaceReads ?? []) {
+    if (reads.worktrees === 'unreadable' || reads.worktrees === 'partial')
+      worktreePreserveWorkspaceIds.add(workspaceId);
+  }
   return {
     file,
-    detail: { authority, ...(indexAuthority ? { indexAuthority } : {}) },
+    detail: {
+      authority,
+      ...(indexAuthority ? { indexAuthority } : {}),
+      ...(worktreePreserveWorkspaceIds.size > 0
+        ? { worktreePreserveWorkspaceIds: [...worktreePreserveWorkspaceIds] }
+        : {}),
+    },
     ...(indexedWorkspaceIds ? { indexedWorkspaceIds } : {}),
     ...(workspaceReads ? { workspaceReads } : {}),
     ...(storedFields ? { storedFields } : {}),
@@ -614,7 +634,10 @@ async function readSidebar(
 }
 
 async function readIndexEntry(
-  services: CoreWorkspaceReadServices,
+  services: Pick<
+    CoreWorkspaceReadServices,
+    'readWorkspaceIndexEntry' | 'readWorkspaceIndexEntryDetailed'
+  >,
   workspaceId: string,
 ): Promise<{
   entry: WorkspaceIndexEntry;
@@ -627,7 +650,10 @@ async function readIndexEntry(
 }
 
 async function readConfig(
-  services: CoreWorkspaceReadServices,
+  services: Pick<
+    CoreWorkspaceReadServices,
+    'readWorkspaceConfig' | 'readWorkspaceConfigDetailed'
+  >,
   workspaceId: string,
 ): Promise<{
   config: WorkspaceConfigFile;
@@ -688,7 +714,12 @@ function withReadView<T>(
   request: W5CaptureRequest,
   work: (view?: W5ReadViewOutcome) => Promise<T>,
 ): Promise<T> {
-  return services.readView ? services.readView(request, work) : work();
+  return services.readView
+    ? services.readView(request, (view) => {
+        if (view?.status === 'uncaptured' && view.error) throw view.error;
+        return work(view);
+      })
+    : work();
 }
 
 type Filters = readonly (CoreWorkspaceReadFilter | false | undefined)[];
@@ -747,6 +778,59 @@ function sourceOverlayFields(config: {
     : [];
 }
 
+/** One workspace's `core.workspace.get` projection, before its revision. */
+async function projectIndexedWorkspace(
+  services: Pick<CoreWorkspaceReadServices, 'readEffectiveWorkspaceConfig'>,
+  indexRead: NonNullable<Awaited<ReturnType<typeof readIndexEntry>>>,
+  manifest: Awaited<ReturnType<typeof readConfig>>,
+): Promise<CoreWorkspace> {
+  const { entry: index } = indexRead;
+  const { config, detail, storedFields } = manifest;
+  const effective = await services.readEffectiveWorkspaceConfig(
+    index.id,
+    config,
+  );
+  return {
+    workspaceId: index.id,
+    name: index.name,
+    kind: index.type === 'cowork' ? 'cowork' : 'git',
+    repositorySources: projectRepositorySources(effective.repos),
+    settings: {},
+    ...projectTypedFields({
+      index,
+      indexStored: indexRead.storedFields,
+      ...(manifestProven(detail?.authority, detail !== undefined)
+        ? { manifest: config, manifestStored: storedFields }
+        : {}),
+    }),
+  };
+}
+
+/**
+ * The `core.workspace.get` projection of one workspace, without a read view
+ * or a revision, or null when the index has no such workspace: what
+ * `core.workspace.update` answers (W7a, DM-2). Inside a W5 decision's scope
+ * the reads see the files it staged.
+ */
+export async function readDecidedCoreWorkspace(
+  workspaceId: string,
+): Promise<CoreWorkspace | null> {
+  const services = {
+    readWorkspaceIndexEntry,
+    readWorkspaceIndexEntryDetailed,
+    readWorkspaceConfig,
+    readWorkspaceConfigDetailed,
+    readEffectiveWorkspaceConfig,
+  };
+  const indexRead = await readIndexEntry(services, workspaceId);
+  if (!indexRead) return null;
+  return projectIndexedWorkspace(
+    services,
+    indexRead,
+    await readConfig(services, workspaceId),
+  );
+}
+
 function worktreeResource(
   workspaceId: string,
   worktreeId: string,
@@ -754,9 +838,9 @@ function worktreeResource(
   return { resource: { kind: 'worktree', workspaceId, worktreeId } };
 }
 
-export function createCoreWorkspaceAdapter(
-  // Client reads never persist removal cleanup (RR1); list writes do.
-  services: CoreWorkspaceReadServices = {
+// Client reads never persist removal cleanup (RR1); list writes do.
+function defaultCoreWorkspaceReadServices(): CoreWorkspaceReadServices {
+  return {
     readAllSidebarItems: () =>
       readAllSidebarItems({ persistRemovalCleanup: false }),
     readWorkspaceIndexEntry: (workspaceId) =>
@@ -777,7 +861,64 @@ export function createCoreWorkspaceAdapter(
         persistRemovalCleanup: false,
       }),
     readView: runW5ReadView,
-  },
+  };
+}
+
+const UNVERIFIED_EVIDENCE: W5RevisionEligibility = {
+  status: 'unverified',
+  reason: 'evidence-unavailable',
+};
+
+export interface WorktreeRevisionEvidence {
+  readonly eligibility: W5RevisionEligibility;
+  /**
+   * The captured list's fingerprint when its provenance is canonical, which
+   * a decision's preimage must match; absent otherwise.
+   */
+  readonly listFingerprint?: string | null;
+}
+
+/**
+ * The revision eligibility a scoped `core.worktree.get` classifies for one
+ * row, from the same capture and list read, or null when the list has no
+ * such row. Read-only: a guarded command's DP-1 precondition (W7b-1b).
+ */
+export function readWorktreeRevisionEvidence(
+  workspaceId: string,
+  worktreeId: string,
+  services: CoreWorkspaceReadServices = defaultCoreWorkspaceReadServices(),
+): Promise<WorktreeRevisionEvidence | null> {
+  return withReadView(
+    services,
+    workspaceCapture(workspaceId, ['worktrees']),
+    async (view) => {
+      const { worktrees, detail } = await readWorktrees(services, workspaceId);
+      if (!worktrees.some((entry) => entry.id === worktreeId)) return null;
+      const provenance = withProvenance(
+        detail,
+        view,
+        [],
+        [worktreeResource(workspaceId, worktreeId)],
+      )?.provenance;
+      const list = provenance?.files.find(
+        ({ file }) =>
+          file.kind === 'worktrees' &&
+          'workspaceId' in file &&
+          file.workspaceId === workspaceId,
+      )?.provenance;
+      return {
+        eligibility:
+          provenance?.resources[0]?.eligibility ?? UNVERIFIED_EVIDENCE,
+        ...(list?.status === 'canonical' && {
+          listFingerprint: list.fingerprint,
+        }),
+      };
+    },
+  );
+}
+
+export function createCoreWorkspaceAdapter(
+  services: CoreWorkspaceReadServices = defaultCoreWorkspaceReadServices(),
   capture?: CoreWorkspaceProjectionCapture,
   snapshots: CoreWorkspaceReadSnapshots = createCoreWorkspaceReadSnapshots(),
 ): WorkspaceReadHandlers {
@@ -790,7 +931,9 @@ export function createCoreWorkspaceAdapter(
       pinned,
       0,
       binding.pageSize,
-      snapshots.open(binding, pinned, pinned.items.length),
+      isW5ProjectionOnlyView()
+        ? null
+        : snapshots.open(binding, pinned, pinned.items.length),
     );
   return {
     'core.workspace.list': async (
@@ -899,7 +1042,6 @@ export function createCoreWorkspaceAdapter(
           // The index lookup stays first: it keeps unknown ids off the config path.
           const indexRead = await readIndexEntry(services, workspaceId);
           if (!indexRead) throw workspaceNotFound();
-          const index = indexRead.entry;
           const { config, detail, storedFields } = await readConfig(
             services,
             workspaceId,
@@ -924,25 +1066,12 @@ export function createCoreWorkspaceAdapter(
           ) {
             throw workspaceNotFound();
           }
-          const effective = await services.readEffectiveWorkspaceConfig(
-            workspaceId,
-            config,
-          );
           return withRevision(
-            {
-              workspaceId,
-              name: index.name,
-              kind: index.type === 'cowork' ? 'cowork' : 'git',
-              repositorySources: projectRepositorySources(effective.repos),
-              settings: {},
-              ...projectTypedFields({
-                index,
-                indexStored: indexRead.storedFields,
-                ...(manifestProven(detail?.authority, detail !== undefined)
-                  ? { manifest: config, manifestStored: storedFields }
-                  : {}),
-              }),
-            },
+            await projectIndexedWorkspace(services, indexRead, {
+              config,
+              detail,
+              storedFields,
+            }),
             publishableRevisions(readDetail?.provenance).get(
               coreWorkspaceResourceKey(resource),
             ),

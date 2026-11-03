@@ -30,6 +30,9 @@ import {
 } from './commit-scope';
 import {
   createSerialQueue,
+  W5AuthorityUnreachableError,
+  w5ReadUnreachable,
+  type W5FileReplacement,
   type W5FileRead,
   type W5FileStore,
 } from './file-store';
@@ -193,6 +196,9 @@ export async function preflightW5Files(
 ): Promise<void> {
   for (const file of files) {
     const current = await readFile(file.path);
+    // A read that never reached the authority shows no conflict (CAN-5542).
+    const unreachable = w5ReadUnreachable(current);
+    if (unreachable) throw unreachable;
     if (
       current.state === 'unreadable' ||
       fingerprintW5File(current.state === 'present' ? current.raw : null) !==
@@ -263,6 +269,35 @@ export function createW5CommitLogFileStore(
     return attempt;
   }
 
+  // An unreachable authority may come back restarted, so the next call
+  // recovers again and reads that daemon's recovery warnings (CAN-5542).
+  // Only the recovery the failed call rode is forgotten, never a newer one.
+  const forgetRecoveryIfUnreachable = (
+    attempt: Promise<W5CommitLogHostPort> | undefined,
+    error: unknown,
+  ): void => {
+    if (error instanceof W5AuthorityUnreachableError && ready === attempt)
+      ready = undefined;
+  };
+  const readThroughHost = async (filePath: string): Promise<W5FileRead> => {
+    const attempt = ready;
+    const read = await readFile(filePath);
+    forgetRecoveryIfUnreachable(attempt, w5ReadUnreachable(read));
+    return read;
+  };
+  async function onHost<T>(
+    call: (host: W5CommitLogHostPort) => Promise<T>,
+  ): Promise<T> {
+    const attempt = recover();
+    const host = await attempt;
+    try {
+      return await call(host);
+    } catch (error) {
+      forgetRecoveryIfUnreachable(attempt, error);
+      throw error;
+    }
+  }
+
   // Only final preflight/decision/application is serialized. This queue
   // never acquires repository locks and is never held while work runs.
   async function commitFiles(
@@ -287,7 +322,7 @@ export function createW5CommitLogFileStore(
         contents,
         previousFingerprint: fingerprintW5File(previousRaw),
       }));
-      await preflightW5Files(readFile, changes);
+      await preflightW5Files(readThroughHost, changes);
       let outcome: W5CommitOutcome;
       try {
         options.beforeDecision?.();
@@ -338,11 +373,66 @@ export function createW5CommitLogFileStore(
       // Nested scopes retain the first observation or staged preimage.
       if (scope.observed.has(path) || scope.files.has(path)) continue;
       const read = await store.read(path);
-      if (read.state === 'unreadable') throw new W5FileWriteRefusedError(path);
+      if (read.state === 'unreadable')
+        throw w5ReadUnreachable(read) ?? new W5FileWriteRefusedError(path);
       const raw = read.state === 'present' ? read.raw : null;
       if (!scope.observed.has(path))
         scope.observed.set(path, { path, contents: raw, previousRaw: raw });
     }
+  }
+
+  async function stageFile(
+    filePath: string,
+    contents: string | null,
+    storage: W5StorageTarget,
+    replacement: W5FileReplacement,
+  ): Promise<void> {
+    assertWrite(storage);
+    await admitWrite(storage, async (): Promise<void> => {
+      await recover();
+      const files = [
+        { path: filePath, contents, previousRaw: replacement.previousRaw },
+        ...(replacement.backup ? [replacement.backup] : []),
+      ];
+      const scope = currentW5CommitScope();
+      if (!scope) {
+        await commitFiles(
+          { operation: replacement.operation },
+          files,
+          replacement.advance,
+        );
+        return;
+      }
+      if (scope.store !== store)
+        throw new Error('A W5 scope cannot span stores');
+      scope.storage.set(storage.namespace, storage);
+      // Preserve the fingerprint of the first read, while subsequent writes
+      // read their own staged image. Keep the original rolling backup.
+      for (const file of files) {
+        const staged = scope.files.get(file.path);
+        if (
+          staged &&
+          fingerprintW5File(staged.contents) !==
+            fingerprintW5File(file.previousRaw)
+        ) {
+          throw new W5FileWriteRefusedError(file.path);
+        }
+      }
+      for (const file of files) {
+        const staged = scope.files.get(file.path);
+        if (file.path !== filePath) {
+          const main = scope.files.get(filePath);
+          if (staged || main?.previousRaw === null) continue;
+          if (main) file.contents = main.previousRaw ?? file.contents;
+        }
+        scope.files.set(file.path, {
+          ...file,
+          previousRaw: staged ? staged.previousRaw : file.previousRaw,
+        });
+      }
+      for (const resource of replacement.advance)
+        scope.advance.set(w5ResourceKey(resource), resource);
+    });
   }
 
   const store: W5CommitLogFileStore = {
@@ -375,47 +465,44 @@ export function createW5CommitLogFileStore(
           );
         },
       ),
-    async lookupReceipt(receipt) {
-      return (await recover()).lookupReceipt(receipt);
-    },
+    lookupReceipt: (receipt) => onHost((host) => host.lookupReceipt(receipt)),
     async readReservations() {
-      return (await (await recover()).recoveryReport()).reservations ?? [];
+      return (await onHost((host) => host.recoveryReport())).reservations ?? [];
     },
-    async reserve(input) {
-      await (await recover()).reserve(input);
-    },
-    async updateReservationDiagnostics(reservationId, diagnostics) {
-      await (
-        await recover()
-      ).updateReservationDiagnostics(reservationId, diagnostics);
-    },
-    async releaseReservation(reservationId) {
-      await (await recover()).releaseReservation(reservationId);
-    },
-    async markReservationRecoveryRequired(reservationId, diagnostics) {
-      await (
-        await recover()
-      ).markReservationRecoveryRequired(reservationId, diagnostics);
-    },
-    async readRevisions(resources) {
-      const host = await recover();
-      return Promise.all(
-        resources.map(async (resource) => ({
-          resource,
-          revision: await host.revision(resource),
-        })),
-      );
-    },
-    async capture(request) {
-      const host = await recover();
-      return { capture: await host.capture(request), root: host.root };
-    },
+    reserve: (input) => onHost((host) => host.reserve(input)),
+    updateReservationDiagnostics: (reservationId, diagnostics) =>
+      onHost((host) =>
+        host.updateReservationDiagnostics(reservationId, diagnostics),
+      ),
+    releaseReservation: (reservationId) =>
+      onHost((host) => host.releaseReservation(reservationId)),
+    markReservationRecoveryRequired: (reservationId, diagnostics) =>
+      onHost((host) =>
+        host.markReservationRecoveryRequired(reservationId, diagnostics),
+      ),
+    readRevisions: (resources) =>
+      onHost((host) =>
+        Promise.all(
+          resources.map(async (resource) => ({
+            resource,
+            revision: await host.revision(resource),
+          })),
+        ),
+      ),
+    capture: (request) =>
+      onHost(async (host) => ({
+        capture: await host.capture(request),
+        root: host.root,
+      })),
     async read(filePath): Promise<W5FileRead> {
       const scope = currentW5CommitScope();
       if (scope && scope.store !== store)
         throw new Error('A W5 scope cannot span stores');
       const staged = scope?.files.get(filePath);
-      if (staged) return { state: 'present', raw: staged.contents };
+      if (staged)
+        return staged.contents === null
+          ? { state: 'absent' }
+          : { state: 'present', raw: staged.contents };
       try {
         await recover();
       } catch (error) {
@@ -424,56 +511,11 @@ export function createW5CommitLogFileStore(
           ...(error instanceof Error ? { error } : {}),
         };
       }
-      return readFile(filePath);
+      return readThroughHost(filePath);
     },
-    async replace(filePath, contents, storage, replacement): Promise<void> {
-      assertWrite(storage);
-      await admitWrite(storage, async (): Promise<void> => {
-        await recover();
-        const files = [
-          { path: filePath, contents, previousRaw: replacement.previousRaw },
-          ...(replacement.backup ? [replacement.backup] : []),
-        ];
-        const scope = currentW5CommitScope();
-        if (!scope) {
-          await commitFiles(
-            { operation: replacement.operation },
-            files,
-            replacement.advance,
-          );
-          return;
-        }
-        if (scope.store !== store)
-          throw new Error('A W5 scope cannot span stores');
-        scope.storage.set(storage.namespace, storage);
-        // Preserve the fingerprint of the first read, while subsequent writes
-        // read their own staged image. Keep the original rolling backup.
-        for (const file of files) {
-          const staged = scope.files.get(file.path);
-          if (
-            staged &&
-            fingerprintW5File(staged.contents) !==
-              fingerprintW5File(file.previousRaw)
-          ) {
-            throw new W5FileWriteRefusedError(file.path);
-          }
-        }
-        for (const file of files) {
-          const staged = scope.files.get(file.path);
-          if (file.path !== filePath) {
-            const main = scope.files.get(filePath);
-            if (staged || main?.previousRaw === null) continue;
-            if (main) file.contents = main.previousRaw ?? file.contents;
-          }
-          scope.files.set(file.path, {
-            ...file,
-            previousRaw: staged ? staged.previousRaw : file.previousRaw,
-          });
-        }
-        for (const resource of replacement.advance)
-          scope.advance.set(w5ResourceKey(resource), resource);
-      });
-    },
+    replace: stageFile,
+    remove: (filePath, storage, removal) =>
+      stageFile(filePath, null, storage, removal),
   };
   return store;
 }

@@ -25,6 +25,7 @@ import {
   InstalledItemStatusUnavailable,
 } from './InstalledItemStatusPicker';
 import { Notice } from './Notice';
+import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
 
@@ -412,15 +413,7 @@ export function InstalledItemStatusRow({
           })}
         </ul>
       )}
-      {error && (
-        <p
-          role="alert"
-          data-testid={`${testId}-error`}
-          className="text-s fg-destructive"
-        >
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error} testId={`${testId}-error`} />
       {ready && (
         <NoticeLines
           notices={[

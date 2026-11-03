@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   AdvancedDisclosure,
   Button,
+  ConfirmDialog,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared';
@@ -129,7 +130,6 @@ export function BrowserProfileDataSettings({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const dialog = useRef<HTMLDivElement>(null);
   const focusReturn = useRef<HTMLElement | null>(null);
   const generation = useRef(0);
   const { profileId, storageGeneration, metadataRevision } = profile;
@@ -175,9 +175,6 @@ export function BrowserProfileDataSettings({
   useEffect(() => {
     setPreview(undefined);
   }, [metadataRevision]);
-  useEffect(() => {
-    if (preview) dialog.current?.focus();
-  }, [preview]);
   useEffect(() => {
     if (!job || !isActive(job)) return;
     const epoch = generation.current;
@@ -287,7 +284,7 @@ export function BrowserProfileDataSettings({
               )
             }
           >
-            Retry cleanup
+            Try again
           </NoticeButton>
         ) : null,
       ].filter(Boolean)
@@ -486,80 +483,58 @@ export function BrowserProfileDataSettings({
           </AdvancedDisclosure>
         )}
         {preview && (
-          <div
-            ref={dialog}
-            tabIndex={-1}
-            role="alertdialog"
-            aria-label="Confirm browser data cleanup"
-            data-testid="browser-profile-clear-preview"
-            className="flex items-start justify-between gap-6 focus:outline-none"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !busy) {
-                event.preventDefault();
-                event.stopPropagation();
-                closePreview();
-              }
-            }}
-          >
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <p className="text-s font-medium fg-primary">
-                {preview.operation.kind === 'site'
-                  ? `Clear ${preview.operation.origin}?`
-                  : preview.operation.kind === 'cache'
-                    ? 'Clear HTTP cache?'
-                    : `Reset ${profile.displayName}?`}
-              </p>
-              <p className="text-xs text-pretty fg-secondary">
-                {preview.warning}
-              </p>
-              <p className="text-xs text-pretty fg-secondary">
-                Clears{' '}
-                {preview.dataClasses
-                  .map((name) => dataClassLabels[name] ?? name)
-                  .join(', ')}
-                . Affects {preview.tabs.length} saved{' '}
-                {preview.tabs.length === 1 ? 'tab' : 'tabs'}.
-                {preview.cookieDomains.length
-                  ? ` Cookies also clear across ports and subdomains in ${preview.cookieDomains.join(', ')}.`
-                  : ''}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                size="compact"
-                variant="secondary"
-                disabled={busy}
-                onClick={closePreview}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="compact"
-                variant="destructive"
-                disabled={busy}
-                data-testid="browser-profile-confirm-clear"
-                onClick={() =>
-                  void run(async () => {
-                    const epoch = generation.current;
-                    const result = await api.clear({
-                      operationId: crypto.randomUUID(),
-                      token: preview.token,
-                    });
-                    if (
-                      epoch === generation.current &&
-                      result.profileId === profileId &&
-                      result.storageGeneration === storageGeneration
-                    ) {
-                      setJob(result);
-                      closePreview();
-                    }
-                  })
+          <ConfirmDialog
+            dataTestId="browser-profile-clear-preview"
+            confirmTestId="browser-profile-confirm-clear"
+            title={
+              preview.operation.kind === 'site'
+                ? `Clear ${preview.operation.origin}?`
+                : preview.operation.kind === 'cache'
+                  ? 'Clear HTTP cache?'
+                  : `Reset ${profile.displayName}?`
+            }
+            message={
+              <div className="flex flex-col gap-1">
+                <p>{preview.warning}</p>
+                <p>
+                  Clears{' '}
+                  {preview.dataClasses
+                    .map((name) => dataClassLabels[name] ?? name)
+                    .join(', ')}
+                  . Affects {preview.tabs.length} saved{' '}
+                  {preview.tabs.length === 1 ? 'tab' : 'tabs'}.
+                  {preview.cookieDomains.length
+                    ? ` Cookies also clear across ports and subdomains in ${preview.cookieDomains.join(', ')}.`
+                    : ''}
+                </p>
+              </div>
+            }
+            confirmLabel="Confirm cleanup"
+            destructive
+            busy={busy}
+            errorMessage={error || null}
+            // The control that asked for the preview is disabled while the
+            // preview loads, so name it rather than restore to <body>.
+            restoreFocusRef={focusReturn}
+            onCancel={closePreview}
+            onConfirm={() =>
+              void run(async () => {
+                const epoch = generation.current;
+                const result = await api.clear({
+                  operationId: crypto.randomUUID(),
+                  token: preview.token,
+                });
+                if (
+                  epoch === generation.current &&
+                  result.profileId === profileId &&
+                  result.storageGeneration === storageGeneration
+                ) {
+                  setJob(result);
+                  closePreview();
                 }
-              >
-                Confirm cleanup
-              </Button>
-            </div>
-          </div>
+              })
+            }
+          />
         )}
       </SettingsGroup>
     </SettingsSection>

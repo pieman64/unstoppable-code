@@ -47,7 +47,7 @@ function Fixture(): JSX.Element {
       </FoldReveal>
       <aside
         data-testid="motion-sidebar"
-        className="sidebar-layout-transition transition-[width] duration-200"
+        className="sidebar-layout-transition transition-[width] duration-200 motion-reduce:transition-none"
         style={{ width: expanded ? 220 : 360 }}
       >
         Sidebar

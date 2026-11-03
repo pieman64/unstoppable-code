@@ -1,5 +1,10 @@
 import type { JSX, Ref } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  Button,
+  FormField,
+  TextInput,
+  type TextInputDensity,
+} from '@canopy/ui-shared/components';
 import { EyeIcon, EyeOffIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 export interface CanopyCloudApiKeyFieldProps {
@@ -9,8 +14,8 @@ export interface CanopyCloudApiKeyFieldProps {
   onToggleVisible: () => void;
   disabled?: boolean;
   inputRef?: Ref<HTMLInputElement>;
-  /** Extra classes on the `<input>`, for surfaces that need more contrast. */
-  inputClassName?: string;
+  /** `settings` (28px) in a Settings row; `default` (36px) elsewhere. */
+  density?: Exclude<TextInputDensity, 'compact'>;
 }
 
 /**
@@ -25,24 +30,23 @@ export function CanopyCloudApiKeyField({
   onToggleVisible,
   disabled = false,
   inputRef,
-  inputClassName = '',
+  density = 'default',
 }: CanopyCloudApiKeyFieldProps): JSX.Element {
   return (
-    <div>
-      <label className="block text-s">
-        <span className="mb-1.5 block fg-secondary">API key</span>
-        <div className="relative">
-          <input
-            ref={inputRef}
-            type={visible ? 'text' : 'password'}
-            value={value}
-            onChange={onChange}
-            disabled={disabled}
-            placeholder="csk_xxxxxxxxxxxxxxxxxxxx"
-            data-testid="settings-account-canopy-cloud-api-key-input"
-            className={`focus-ring w-full rounded-lg border bg-base px-3 py-2 pr-10 text-s font-mono disabled:opacity-50 ${inputClassName}`}
-          />
-          <span className="absolute right-1 top-1/2 flex -translate-y-1/2">
+    <FormField label="API key">
+      {(control) => (
+        <TextInput
+          {...control}
+          ref={inputRef}
+          density={density}
+          type={visible ? 'text' : 'password'}
+          mono
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          placeholder="csk_xxxxxxxxxxxxxxxxxxxx"
+          data-testid="settings-account-canopy-cloud-api-key-input"
+          trailing={
             <Button
               variant="ghost"
               size="compact"
@@ -57,9 +61,9 @@ export function CanopyCloudApiKeyField({
                 <EyeIcon size={16} aria-hidden />
               )}
             </Button>
-          </span>
-        </div>
-      </label>
-    </div>
+          }
+        />
+      )}
+    </FormField>
   );
 }

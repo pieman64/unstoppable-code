@@ -105,6 +105,11 @@
         "from": ".cache/cli/darwin-${arch}",
         "to": "cli",
         "filter": ["**/*"]
+      },
+      {
+        "from": ".cache/cli/darwin-${arch}/node_modules",
+        "to": "cli/node_modules",
+        "filter": ["**/*"]
       }
     ],
     "target": ["dmg", "zip"],
@@ -147,6 +152,11 @@
       {
         "from": ".cache/cli/win32-${arch}",
         "to": "cli",
+        "filter": ["**/*"]
+      },
+      {
+        "from": ".cache/cli/win32-${arch}/node_modules",
+        "to": "cli/node_modules",
         "filter": ["**/*"]
       }
     ],

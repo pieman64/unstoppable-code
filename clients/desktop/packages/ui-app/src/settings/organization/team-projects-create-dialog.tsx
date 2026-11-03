@@ -19,6 +19,12 @@ import {
   SettingsListSkeleton,
   StatusPill,
   buttonClassName,
+  ChoiceList,
+  ChoiceListRow,
+  DialogFormField,
+  SearchField,
+  TextInput,
+  CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import { SIDEBAR_INDICATOR_BLUE } from '@canopy/ui-shared/lib';
 import { FilterIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -32,7 +38,11 @@ import {
 import { GITHUB_REPOSITORY_QUERY_MAX_LENGTH } from '@canopy/protocol/settings/organization-repositories';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { SettingsLink, useSettingsClient, useSettingsPrivacy } from '../host';
-import { settingsErrorFacts, useSettingsErrorCopy } from '../errors';
+import {
+  settingsErrorFacts,
+  useSettingsErrorCopy,
+  type SettingsFailure,
+} from '../errors';
 import { GITHUB_PICKER_KNOWN_ERRORS } from '../github/github-organization-error-copy';
 import {
   createOrganizationProjects,
@@ -44,8 +54,6 @@ type RepositoryPage = Awaited<
   ReturnType<typeof listOrganizationGitHubRepositories>
 >;
 type Repository = RepositoryPage['repositories'][number];
-const FIELD_CLASS =
-  'w-full rounded-md border bg-card px-3 py-2 text-s fg-primary';
 
 /** Class tokens joined without stray whitespace when one is empty. */
 function joinClasses(...classes: string[]): string {
@@ -88,18 +96,19 @@ const NEEDS_CONNECTION_CODES: ReadonlySet<string> = new Set([
 export const PROJECTS_ERROR_SCOPE = 'settings.organization.projects';
 
 /** A failed projects request as its notice shows it. Never server text. */
-export interface RequestFailure {
-  /** Friendly copy from `settings/errors`. */
-  readonly copy: string;
+export interface RequestFailure extends SettingsFailure {
   /** The organization's GitHub connection needs fixing first. */
   readonly needsConnection: boolean;
 }
 
-/** The notice for a failed request, with `copy` already chosen. */
-export function requestFailure(error: unknown, copy: string): RequestFailure {
+/** The notice for a failed request, with its failure already chosen. */
+export function requestFailure(
+  error: unknown,
+  failure: SettingsFailure,
+): RequestFailure {
   const { serverCode } = settingsErrorFacts(error);
   return {
-    copy,
+    ...failure,
     needsConnection:
       serverCode !== undefined && NEEDS_CONNECTION_CODES.has(serverCode),
   };
@@ -117,8 +126,15 @@ export function RequestNotice({
     <Notice
       intent="attention"
       actions={
-        failure.needsConnection ? (
-          <GitHubConnectionLink orgId={orgId} />
+        failure.needsConnection || failure.details !== undefined ? (
+          <>
+            {failure.details !== undefined ? (
+              <CopyDetailsButton details={failure.details} />
+            ) : null}
+            {failure.needsConnection ? (
+              <GitHubConnectionLink orgId={orgId} />
+            ) : null}
+          </>
         ) : undefined
       }
     >
@@ -198,7 +214,7 @@ export function TeamProjectsCreateDialog({
         setError(
           requestFailure(
             err,
-            errorCopy.actionCopy(err, {
+            errorCopy.actionFailure(err, {
               action: 'create projects',
               known: GITHUB_PICKER_KNOWN_ERRORS,
             }),
@@ -219,7 +235,7 @@ export function TeamProjectsCreateDialog({
         if (!submitting.current) onClose();
       }}
     >
-      <div className="flex flex-col gap-5 p-5">
+      <div className="flex flex-col gap-5">
         {error && <RequestNotice failure={error} orgId={detail.id} />}
         <div hidden={step !== 'repositories'}>
           <RepositoryPicker
@@ -244,30 +260,29 @@ export function TeamProjectsCreateDialog({
           <>
             <h3 className="text-m fg-primary">Definition</h3>
             {selected.map((repository) => (
-              <label
-                key={repository.id}
-                className={joinClasses(
-                  'flex flex-col gap-2 text-s',
-                  blockClassName,
-                )}
-              >
-                {repository.fullName}
-                <input
-                  className={FIELD_CLASS}
-                  data-testid={`team-projects-name-${repository.id}`}
-                  aria-label={`Name for ${repository.fullName}`}
-                  placeholder={repository.name}
-                  maxLength={ORG_PROJECT_LIMITS.nameLength}
-                  disabled={busy}
-                  value={names[repository.id] ?? ''}
-                  onChange={(event): void =>
-                    setNames((current) => ({
-                      ...current,
-                      [repository.id]: event.target.value,
-                    }))
-                  }
-                />
-              </label>
+              <div key={repository.id} className={blockClassName}>
+                <DialogFormField
+                  label={repository.fullName}
+                  htmlFor={`team-projects-name-${repository.id}`}
+                >
+                  <TextInput
+                    id={`team-projects-name-${repository.id}`}
+                    density="settings"
+                    data-testid={`team-projects-name-${repository.id}`}
+                    aria-label={`Name for ${repository.fullName}`}
+                    placeholder={repository.name}
+                    maxLength={ORG_PROJECT_LIMITS.nameLength}
+                    disabled={busy}
+                    value={names[repository.id] ?? ''}
+                    onChange={(event): void =>
+                      setNames((current) => ({
+                        ...current,
+                        [repository.id]: event.target.value,
+                      }))
+                    }
+                  />
+                </DialogFormField>
+              </div>
             ))}
             <PrivateMemoryAdvancedOption
               checked={privateMemory}
@@ -543,7 +558,7 @@ function RepositoryPicker({
           setError(
             requestFailure(
               err,
-              errorCopy.loadCopy(err, GITHUB_PICKER_KNOWN_ERRORS),
+              errorCopy.loadFailure(err, GITHUB_PICKER_KNOWN_ERRORS),
             ),
           );
       } finally {
@@ -603,7 +618,7 @@ function RepositoryPicker({
         setError(
           requestFailure(
             err,
-            errorCopy.loadCopy(err, GITHUB_PICKER_KNOWN_ERRORS),
+            errorCopy.loadFailure(err, GITHUB_PICKER_KNOWN_ERRORS),
           ),
         );
     } finally {
@@ -624,28 +639,25 @@ function RepositoryPicker({
       className="flex flex-col gap-4"
     >
       <div className="flex items-end gap-2">
-        <label className="flex min-w-0 flex-1 flex-col gap-2 text-s">
-          Search repositories
-          <input
-            className={FIELD_CLASS}
-            aria-label="Search repositories"
-            placeholder="Search repositories"
-            maxLength={GITHUB_REPOSITORY_QUERY_MAX_LENGTH}
-            value={query}
-            disabled={disabled}
-            onChange={(event): void => {
-              const nextQuery = event.target.value.slice(
-                0,
-                GITHUB_REPOSITORY_QUERY_MAX_LENGTH,
-              );
-              if (nextQuery !== query) {
-                resetSearch();
-                searchEdited.current = true;
-                setQuery(nextQuery);
-              }
-            }}
-          />
-        </label>
+        <SearchField
+          aria-label="Search repositories"
+          placeholder="Search repositories"
+          maxLength={GITHUB_REPOSITORY_QUERY_MAX_LENGTH}
+          value={query}
+          disabled={disabled}
+          className="min-w-0 flex-1"
+          onValueChange={(value): void => {
+            const nextQuery = value.slice(
+              0,
+              GITHUB_REPOSITORY_QUERY_MAX_LENGTH,
+            );
+            if (nextQuery !== query) {
+              resetSearch();
+              searchEdited.current = true;
+              setQuery(nextQuery);
+            }
+          }}
+        />
         <RepositoryFilterMenu
           filters={filters}
           onChange={setFilters}
@@ -688,26 +700,35 @@ function RepositoryPicker({
           No repositories match these filters.
         </p>
       )}
-      <ul className="flex flex-col gap-3">
-        {filtered.map((repository) => {
-          const checked = selected.some((entry) => entry.id === repository.id);
-          return (
-            <li key={repository.id}>
-              <label className="flex items-center gap-3 text-s">
-                <input
-                  type="checkbox"
-                  data-testid={`team-projects-repo-${repository.id}`}
-                  checked={checked}
-                  disabled={disabled || (!checked && capped)}
-                  onChange={(): void => {
-                    if (checked)
-                      onSelectionChange(
-                        selected.filter((entry) => entry.id !== repository.id),
-                      );
-                    else if (!capped)
-                      onSelectionChange([...selected, repository]);
-                  }}
-                />
+      {filtered.length > 0 && (
+        <ChoiceList aria-label="Repositories">
+          {filtered.map((repository) => {
+            const checked = selected.some(
+              (entry) => entry.id === repository.id,
+            );
+            return (
+              <ChoiceListRow
+                key={repository.id}
+                data-testid={`team-projects-repo-${repository.id}`}
+                selected={checked}
+                disabled={disabled || (!checked && capped)}
+                onClick={(): void => {
+                  if (checked)
+                    onSelectionChange(
+                      selected.filter((entry) => entry.id !== repository.id),
+                    );
+                  else if (!capped)
+                    onSelectionChange([...selected, repository]);
+                }}
+                trailing={
+                  repository.private || repository.archived ? (
+                    <span className="flex items-center gap-2">
+                      {repository.private && <StatusPill>Private</StatusPill>}
+                      {repository.archived && <StatusPill>Archived</StatusPill>}
+                    </span>
+                  ) : undefined
+                }
+              >
                 <span
                   className={joinClasses(
                     'min-w-0 flex-1 break-words',
@@ -719,13 +740,11 @@ function RepositoryPicker({
                     Default branch: {repository.defaultBranch ?? 'Not set'}
                   </span>
                 </span>
-                {repository.private && <StatusPill>Private</StatusPill>}
-                {repository.archived && <StatusPill>Archived</StatusPill>}
-              </label>
-            </li>
-          );
-        })}
-      </ul>
+              </ChoiceListRow>
+            );
+          })}
+        </ChoiceList>
+      )}
       <p aria-live="polite">{selected.length} selected</p>
       {capped && (
         <Notice>

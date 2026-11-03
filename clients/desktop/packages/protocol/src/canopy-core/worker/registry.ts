@@ -40,6 +40,15 @@ import { WORKER_GIT_DIFF_QUERY_DEFINITIONS } from './git-changes';
 import { WORKER_GIT_EXECUTABLE_QUERY_DEFINITIONS } from './git-executable';
 import { WORKER_GIT_SYNC_WRITE_INSTRUCTION_DEFINITIONS } from './git-sync-writes';
 import { WORKER_GIT_WORKTREE_HEALTH_QUERY_DEFINITIONS } from './git-worktree-health';
+import {
+  WORKER_SCRIPT_INSTRUCTION_DEFINITIONS,
+  WORKER_SCRIPT_QUERY_DEFINITIONS,
+} from './script';
+import {
+  WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+  WORKER_PIPELINE_QUERY_DEFINITIONS,
+  WORKER_PIPELINE_STREAM_DEFINITIONS,
+} from './pipeline';
 
 export const WORKER_FILESYSTEM_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
   'worker',
@@ -109,6 +118,8 @@ export const WORKER_QUERY_DEFINITIONS = defineCanopyQueryRegistry('worker', {
   ...WORKER_GIT_REMOTE_QUERY_DEFINITIONS,
   ...WORKER_GIT_WORKTREE_HEALTH_QUERY_DEFINITIONS,
   ...WORKER_GIT_DIFF_QUERY_DEFINITIONS,
+  ...WORKER_SCRIPT_QUERY_DEFINITIONS,
+  ...WORKER_PIPELINE_QUERY_DEFINITIONS,
 });
 export const WORKER_INSTRUCTION_DEFINITIONS = defineCanopyInstructionRegistry(
   'worker',
@@ -117,6 +128,8 @@ export const WORKER_INSTRUCTION_DEFINITIONS = defineCanopyInstructionRegistry(
     ...WORKER_GIT_BRANCH_WRITE_INSTRUCTION_DEFINITIONS,
     ...WORKER_GIT_BRANCH_REF_INSTRUCTION_DEFINITIONS,
     ...WORKER_GIT_SYNC_WRITE_INSTRUCTION_DEFINITIONS,
+    ...WORKER_SCRIPT_INSTRUCTION_DEFINITIONS,
+    ...WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   },
 );
 export const WORKER_STREAM_DEFINITIONS = defineCanopyStreamRegistry('worker', {
@@ -133,4 +146,5 @@ export const WORKER_STREAM_DEFINITIONS = defineCanopyStreamRegistry('worker', {
     end: WorkerFilesystemWatchEndSchema,
     error: WorkerFilesystemWatchErrorSchema,
   }),
+  ...WORKER_PIPELINE_STREAM_DEFINITIONS,
 });

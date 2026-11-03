@@ -94,6 +94,37 @@ export function useStableAiCreditsScope(
   return { scope: stableScope, key };
 }
 
+/**
+ * The purchase scope a credits checkout hand-off belongs to (CAN-5534): the
+ * chat's project and worktree under one navigation context, without the chat.
+ * Every chat in it shares one pending hand-off, so a sibling chat offers the
+ * return controls instead of a second checkout.
+ *
+ * A suppression boundary, not proof of which billing wallet pays: two
+ * projects or worktrees funded by the same organization still get separate
+ * hand-offs. `null` for a target without a project.
+ */
+export function aiCreditsWalletKey(
+  target:
+    | { readonly projectId: string; readonly worktreeId?: string }
+    | null
+    | undefined,
+  navigationKey: string,
+): string | null {
+  const scope = chatAiCreditsScope(target?.projectId, target?.worktreeId);
+  return scope ? aiCreditsScopeKey(scope, navigationKey) : null;
+}
+
+/** {@link aiCreditsWalletKey} under the live navigation context. */
+export function useAiCreditsWalletKey(
+  target:
+    | { readonly projectId: string; readonly worktreeId?: string }
+    | null
+    | undefined,
+): string | null {
+  return aiCreditsWalletKey(target, useNavigationScopeKey());
+}
+
 /** Memoized scope for a chat banner target (`null` = navigation context). */
 export function useChatTargetAiCreditsScope(
   target:

@@ -214,9 +214,11 @@ function ManualHarness(): JSX.Element {
 function ClickThroughHarness({
   onSend,
   onOutside,
+  outsidePressSwallowsClick,
 }: {
   readonly onSend: () => void;
   readonly onOutside: () => void;
+  readonly outsidePressSwallowsClick?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(true);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
@@ -241,6 +243,9 @@ function ClickThroughHarness({
         anchorRef={anchorRef}
         outsidePressBoundaryRef={editorRef}
         outsidePressClickThroughRef={composerRef}
+        {...(outsidePressSwallowsClick === undefined
+          ? {}
+          : { outsidePressSwallowsClick })}
         interaction="manual"
         role="dialog"
         data-testid="click-through-menu"
@@ -271,6 +276,22 @@ describe('FloatingMenu', () => {
 
   function renderHarness(props: HarnessProps = {}): void {
     act(() => root.render(<Harness {...props} />));
+  }
+
+  function pressWithMouse(testId: string): void {
+    const target = container.querySelector(`[data-testid="${testId}"]`);
+    if (!target) throw new Error(`${testId} missing`);
+    act(() => {
+      target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      target.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+    });
+  }
+
+  function clickThroughMenu(): Element | null {
+    return document.body.querySelector('[data-testid="click-through-menu"]');
   }
 
   function trigger(): HTMLButtonElement {
@@ -419,19 +440,6 @@ describe('FloatingMenu', () => {
   it('dismisses on a click-through press without swallowing its click', () => {
     const onSend = jest.fn();
     const onOutside = jest.fn();
-    const pressWithMouse = (testId: string): void => {
-      const target = container.querySelector(`[data-testid="${testId}"]`);
-      if (!target) throw new Error(`${testId} missing`);
-      act(() => {
-        target.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
-        target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-        target.dispatchEvent(
-          new MouseEvent('click', { bubbles: true, cancelable: true }),
-        );
-      });
-    };
-    const clickThroughMenu = (): Element | null =>
-      document.body.querySelector('[data-testid="click-through-menu"]');
 
     act(() =>
       root.render(
@@ -455,6 +463,23 @@ describe('FloatingMenu', () => {
     pressWithMouse('outside');
     expect(clickThroughMenu()).toBeNull();
     expect(onOutside).not.toHaveBeenCalled();
+  });
+
+  it('lets every outside press through when it does not swallow clicks', () => {
+    const onSend = jest.fn();
+    const onOutside = jest.fn();
+    act(() =>
+      root.render(
+        <ClickThroughHarness
+          onSend={onSend}
+          onOutside={onOutside}
+          outsidePressSwallowsClick={false}
+        />,
+      ),
+    );
+    pressWithMouse('outside');
+    expect(clickThroughMenu()).toBeNull();
+    expect(onOutside).toHaveBeenCalledTimes(1);
   });
 
   it('uses the document that owns the trigger as its portal and event boundary', () => {

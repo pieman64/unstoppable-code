@@ -114,7 +114,7 @@ describe('SharePublishStatus', () => {
       document.querySelector(
         '[data-testid="shared-container-invite-modal-publication-retry"]',
       )?.textContent,
-    ).toBe('Retry');
+    ).toBe('Try again');
   });
 
   describe('the two not-published paths', () => {

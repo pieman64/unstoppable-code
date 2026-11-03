@@ -5,6 +5,12 @@ import {
   deriveExistingShare,
   type ExistingShareFacts,
 } from './deriveExistingShare';
+import {
+  scopedLinkForAudience,
+  type SharedByYouCopyLinkPort,
+  type SharedByYouScopedLink,
+  type SharedByYouScopedLinkTarget,
+} from './sharedByYouScopedLink';
 
 /**
  * Which audiences an owner shared a Marketplace item with, one "Shared by
@@ -30,6 +36,19 @@ export interface SharedByYouPorts {
   readonly deleteShare: HostAction<() => Promise<void>>;
   /** Removes only the public link; the account share stays. */
   readonly revokePublicLink: HostAction<() => Promise<void>>;
+  /**
+   * Copies the account audience's member link (CAN-5452). Without it, or
+   * when the share cannot form a link, the row offers no Copy link.
+   */
+  readonly copyLink?: SharedByYouCopyLinkPort & {
+    readonly target: SharedByYouScopedLinkTarget;
+  };
+}
+
+/** An account row's Copy link: the member link and the host's port. */
+export interface SharedByYouAccountCopyLink {
+  readonly link: SharedByYouScopedLink;
+  readonly port: SharedByYouCopyLinkPort;
 }
 
 export type SharedByYouAudience =
@@ -42,6 +61,8 @@ export type SharedByYouAudience =
       readonly action: HostAction<() => Promise<void>>;
       /** The share also has a public link, which stops working too. */
       readonly alsoRevokesPublicLink: boolean;
+      /** Copy link for the member link, when the host and share allow it. */
+      readonly copyLink?: SharedByYouAccountCopyLink;
     }
   | {
       readonly id: 'public';
@@ -60,7 +81,7 @@ export type SharedByYouAudience =
 
 type AccountAudienceRow = Omit<
   Extract<SharedByYouAudience, { id: 'account' }>,
-  'action'
+  'action' | 'copyLink'
 >;
 type PublicAudienceRow = Omit<
   Extract<SharedByYouAudience, { id: 'public' }>,
@@ -148,7 +169,24 @@ export function sharedByYouAudiences(
   const rows = audienceRows(facts, personalOrganizationId);
   const audiences: SharedByYouAudience[] = [];
   if (rows.account) {
-    audiences.push({ ...rows.account, action: ports.deleteShare });
+    const link = ports.copyLink
+      ? eligibleScopedLink(facts, rows.account, ports.copyLink.target)
+      : null;
+    audiences.push({
+      ...rows.account,
+      action: ports.deleteShare,
+      ...(link && ports.copyLink
+        ? {
+            copyLink: {
+              link,
+              port: {
+                write: ports.copyLink.write,
+                notify: ports.copyLink.notify,
+              },
+            },
+          }
+        : {}),
+    });
   }
   if (rows.public) {
     audiences.push({ ...rows.public, action: ports.revokePublicLink });
@@ -163,4 +201,35 @@ export function sharedByYouAudienceCount(
 ): number {
   const rows = audienceRows(facts, personalOrganizationId);
   return (rows.account ? 1 : 0) + (rows.public ? 1 : 0);
+}
+
+/**
+ * The owner's member link for the account audience, or `null` unless the
+ * viewer can delete a team or organization share whose id forms a link.
+ * The same facts decide the Shared by you row, so the row and a ⋯ menu's
+ * Copy link always agree (CAN-5452).
+ */
+export function sharedByYouScopedLink(
+  facts: SharedByYouFacts,
+  personalOrganizationId: string | null,
+  target: SharedByYouScopedLinkTarget,
+): SharedByYouScopedLink | null {
+  const { account } = audienceRows(facts, personalOrganizationId);
+  return account ? eligibleScopedLink(facts, account, target) : null;
+}
+
+/** Display rows may use fallback names; copy notices require stored identity. */
+function eligibleScopedLink(
+  facts: SharedByYouFacts,
+  account: AccountAudienceRow,
+  target: SharedByYouScopedLinkTarget,
+): SharedByYouScopedLink | null {
+  const owner = facts.owner;
+  if (
+    !owner?.id?.trim() ||
+    !owner.name?.trim() ||
+    owner.type !== facts.shareScope
+  )
+    return null;
+  return scopedLinkForAudience(account, target);
 }

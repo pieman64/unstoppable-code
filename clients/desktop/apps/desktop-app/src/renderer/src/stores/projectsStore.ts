@@ -124,7 +124,6 @@ import {
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { registerCoworkWorkspaceIds } from '@/lib/cowork-registry';
 import { resolveSidebarSortMode } from '@/lib/sidebar-ordering';
-import { recordWorktreeSetupFromRow } from '@/lib/worktreeSetupDurations';
 import {
   assertWorktreeRemovalAdmitted,
   throwIfArchiveRefused,
@@ -411,6 +410,13 @@ interface ProjectsState {
   projects: SidebarItem[];
   isLoading: boolean;
   hasHydratedProjects: boolean;
+  /** Whether the latest inventory read succeeded; includes silent refreshes. */
+  projectInventoryStatus: 'unhydrated' | 'loading' | 'ready' | 'error';
+  /** Last successful server list, before optimistic archive suppression. */
+  projectInventorySnapshot: {
+    projects: readonly SidebarItem[];
+    startedAt: number;
+  } | null;
   projectLoadWarningKeys: Set<string>;
   failedWorkspaceIds: Set<string>;
   appliedProjectWorktreeScripts: AppliedProjectWorktreeScripts;
@@ -2232,21 +2238,6 @@ function markWorktreeGitFailed(
   };
 }
 
-function findWorktreeRow(
-  projects: SidebarItem[],
-  projectId: string,
-  worktreeId: string,
-): WorktreeData | undefined {
-  for (const project of projects) {
-    if (project.id !== projectId || project.type === 'cowork') continue;
-    const row = project.worktrees.find(
-      (worktree) => worktree.id === worktreeId,
-    );
-    if (row) return row;
-  }
-  return undefined;
-}
-
 function hasWorktreeRow(
   projects: SidebarItem[],
   projectId: string,
@@ -2297,19 +2288,11 @@ function applyWorktreeGitReadyEvent(
     // project refresh has temporarily omitted the just-reserved row. Release
     // setup-gated work immediately; the buffered event and silent reload below
     // will reconcile the sidebar row independently.
-    useChatStore.getState().flushPendingChatsForWorktree(projectId, worktreeId);
     void usePipelineRunsStore
       .getState()
       .flushPendingForWorktree(projectId, worktreeId);
     return false;
   }
-
-  // Sample how long this setup took for the next setup's estimate. Only a
-  // row still `git-pending` counts, so a replayed event records nothing.
-  recordWorktreeSetupFromRow(
-    projectId,
-    findWorktreeRow(get().projects, projectId, worktreeId),
-  );
 
   set({
     projects: get().projects.map((project) => {
@@ -2354,7 +2337,6 @@ function applyWorktreeGitReadyEvent(
 
   drainPendingTaskBranchNaming(projectId, worktreeId, get);
 
-  useChatStore.getState().flushPendingChatsForWorktree(projectId, worktreeId);
   void usePipelineRunsStore
     .getState()
     .flushPendingForWorktree(projectId, worktreeId);
@@ -2476,7 +2458,8 @@ function applyWorktreeGitFailedEvent(
 ): boolean {
   const { projectId, worktreeId, error } = event;
 
-  useChatStore.getState().dropWorktreeQueuedState(projectId, worktreeId);
+  // Main ends a turn it held for this setup as failed, in the chat itself, so
+  // the chat state stays.
   usePipelineRunsStore.getState().dropPendingForWorktree(projectId, worktreeId);
   get().clearPendingTaskBranchNaming(projectId, worktreeId);
 
@@ -2515,10 +2498,10 @@ function applyWorktreeGitFailedEvent(
  * `repairPendingWorkspaceWorktree` flow repairs the root checkout and creates
  * the child repos).
  *
- * Pending setup state (chat tabs, queued messages, and queued pipeline runs)
- * is deliberately KEPT: the repair flow reuses
- * the same `worktreeId`, so a successful repair re-adds the row, re-selects it,
- * and flushes the still queued work. Only a cancelled repair
+ * Pending setup state (chat tabs and queued pipeline runs) is deliberately
+ * KEPT: the repair flow reuses the same `worktreeId`, so a successful repair
+ * re-adds the row, re-selects it, and flushes the queued pipeline runs, while
+ * main releases any chat turn it held for the setup. Only a cancelled repair
  * (`cancelPendingWorkspaceRepair`) tears the pending setup state down.
  */
 function applyWorktreeNeedsRepairEvent(
@@ -2569,7 +2552,7 @@ function applyWorktreeNeedsRepairEvent(
   useGitHubStore
     .getState()
     .addToast(
-      'Worktree needs repair before setup can finish. Your queued message will send once the repair completes.',
+      'Worktree needs repair before setup can finish.',
       'warning',
       undefined,
       { workspaceName },
@@ -4192,6 +4175,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     projects: [],
     isLoading: false,
     hasHydratedProjects: false,
+    projectInventoryStatus: 'unhydrated',
+    projectInventorySnapshot: null,
     projectLoadWarningKeys: new Set<string>(),
     failedWorkspaceIds: new Set<string>(),
     appliedProjectWorktreeScripts: {},
@@ -4655,6 +4640,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
 
     loadProjects: (options) => {
       const generation = ++projectsLoadGeneration;
+      const inventoryStartedAt = Date.now();
       const completionPromise = new Promise<void>((resolve, reject) => {
         projectsLoadCompletionResolvers.set(generation, (error) => {
           if (options?.requireSuccess && error) reject(error);
@@ -4682,9 +4668,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         const archiveSuppressedFilterKeys = new Set(
           archiveSuppressedWorktreeKeys,
         );
-        if (!options?.silent) {
-          set({ isLoading: true });
-        }
+        set({
+          projectInventoryStatus: 'loading',
+          ...(!options?.silent ? { isLoading: true } : {}),
+        });
 
         try {
           // Keep tracking removals until this load finishes applying its
@@ -4767,6 +4754,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             projects: normalized,
             isLoading: false,
             hasHydratedProjects: true,
+            projectInventoryStatus: 'ready',
+            projectInventorySnapshot: {
+              projects: filterVisibleWorkspaceItems(loadedProjects),
+              startedAt: inventoryStartedAt,
+            },
             projectLoadWarningKeys: nextWarningKeys,
             failedWorkspaceIds: new Set(
               loadWarnings.map((warning) => warning.workspaceId),
@@ -4834,6 +4826,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           set({
             isLoading: false,
             hasHydratedProjects: true,
+            projectInventoryStatus: 'error',
             failedWorkspaceIds: new Set([
               ...Array.from(current.failedWorkspaceIds),
               ...current.projects.map((project) => project.id),
@@ -5235,15 +5228,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           pendingWorkspaceRepair: null,
         });
         await finalizeCreatedWorktree(pending.workspaceId, repaired, get, set);
-        // A deferred-creation needs-repair detour keeps the chat state
-        // (queued message and its setup-wait state) for this worktree id alive
-        // through the repair. Completing a retained creation also emits
+        // A deferred-creation needs-repair detour keeps the chat state for
+        // this worktree id alive through the repair; main releases a turn it
+        // held for the setup. Completing a retained creation also emits
         // `worktree:git-ready`; a repair without one does not, so kick the
-        // setup-queue flushes here too. Both are idempotent once drained.
+        // pipeline flush here too. It is idempotent once drained.
         drainPendingTaskBranchNaming(pending.workspaceId, pending.id, get);
-        useChatStore
-          .getState()
-          .flushPendingChatsForWorktree(pending.workspaceId, pending.id);
         void usePipelineRunsStore
           .getState()
           .flushPendingForWorktree(pending.workspaceId, pending.id);

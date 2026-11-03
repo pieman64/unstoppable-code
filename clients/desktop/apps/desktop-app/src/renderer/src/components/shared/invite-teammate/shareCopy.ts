@@ -30,7 +30,6 @@ export const CLOUD_ACCOUNT_NAME = `${brandText.appName} Cloud`;
 /** The frame's primary, and its label while an invite is in flight. */
 export const SHARE_LABEL = 'Share';
 export const SHARING_LABEL = 'Sharing…';
-export const CANCEL_LABEL = 'Cancel';
 export const CHECKING_LABEL = 'Checking access…';
 /** The "open to my layout" row, which sits under "Opens to:". */
 export const LAYOUT_ROW_LABEL = 'Open to my layout';

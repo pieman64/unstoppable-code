@@ -68,8 +68,8 @@ export function MarketplaceSourceStatusNotice({
             >
               {legacy
                 ? updating
-                  ? 'Retrying…'
-                  : 'Retry refresh'
+                  ? 'Trying again…'
+                  : 'Try again'
                 : updating
                   ? 'Updating…'
                   : 'Update'}

@@ -1051,6 +1051,32 @@ test.describe('chat usage-limit banner', () => {
         expect(minted[0].searchParams.get('reason')).toBe('credits');
         expect(minted[0].searchParams.get('source')).toBe('banner');
 
+        // CAN-5534: a sibling shares this purchase, and returning keeps the
+        // original waiting state without another external open.
+        await window.getByTestId(`panel-tab-panel-chat-${otherChatId}`).click();
+        const siblingBanner = chatPanel(window, otherChatId).getByTestId(
+          'chat-input-usage-limit-banner',
+        );
+        await expect(siblingBanner).toContainText(
+          'Finish checkout in your browser',
+        );
+        await expect(
+          siblingBanner.getByTestId(
+            'chat-input-usage-limit-view-plans-check-again',
+          ),
+        ).toBeVisible();
+        await expect(
+          siblingBanner.getByTestId('chat-input-usage-limit-reopen-billing'),
+        ).toBeEnabled();
+        await expect(
+          siblingBanner.getByTestId('chat-input-usage-limit-view-plans'),
+        ).toHaveCount(0);
+        await window.getByTestId(`panel-tab-panel-chat-${chatId}`).click();
+        await expect(banner).toContainText('Finish checkout in your browser');
+        await expect(banner).toHaveAttribute('data-notice-intent', 'neutral');
+        await expect(checkAgain).toBeEnabled();
+        expect(externalOpen.opened).toHaveLength(1);
+
         // 2. 16 credits land, but the balance read is held: until coverage
         // settles the chat keeps its checkout step and is not routed.
         await registerScenario(DEFAULT_MOCK_BASE_URL, apiKey, {

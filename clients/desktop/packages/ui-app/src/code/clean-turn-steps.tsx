@@ -23,7 +23,6 @@ import {
   type ToolApprovalWait,
 } from '@canopy/ui-shared/components';
 import { AgentIcon } from '@canopy/ui-shared/icons';
-import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { normalizeChatMessageParts } from './ChatMessageView';
 
@@ -183,7 +182,7 @@ export function segmentCleanTurn(
   );
 }
 
-function stepParts(
+export function stepParts(
   segment: Extract<CleanTurnSegment, { kind: 'steps' }>,
 ): PortalChatPart[] {
   return segment.messages.flatMap(({ message }) =>
@@ -248,7 +247,7 @@ export function describeCleanTurnSteps(
   };
 }
 
-const THINKING = { label: 'Thinking', icon: <LightbulbIcon /> };
+const THINKING = { label: 'Thinking', icon: null, showWhenUngrouped: true };
 
 /**
  * What the running turn does now, from the last step of its live run. A call
@@ -260,7 +259,7 @@ export function cleanLiveActivity(
   approvalWait: ToolApprovalWait = NO_TOOL_APPROVAL_WAIT,
 ): ChatToolStepLive {
   const thinking = workingLabel
-    ? { label: workingLabel, icon: <LightbulbIcon /> }
+    ? { label: workingLabel, icon: null, showWhenUngrouped: true }
     : THINKING;
   if (!segment) return thinking;
   const parts = stepParts(segment);
@@ -290,7 +289,9 @@ export function cleanLiveActivity(
       icon: <AgentIcon />,
     };
   }
-  return thinking;
+  return last.kind === 'thinking'
+    ? { ...thinking, showWhenUngrouped: false }
+    : thinking;
 }
 
 type CleanStepsSegment = Extract<CleanTurnSegment, { kind: 'steps' }>;

@@ -11,7 +11,11 @@ import {
   w5ExpectedRevision,
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
-import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
+import { runW5DecisionOnlyUnit } from './w5-pre-effect-retry';
+import {
+  createW5SingleDecisionOperation,
+  type W5WireDecisionCall,
+} from './w5-single-decision-operation';
 import {
   W5FileWriteRefusedError,
   W5RevisionConflictError,
@@ -633,10 +637,23 @@ export interface CoworkSettingsUpdateOutcome {
 
 const coworkSettingsUpdateOutcomeSchema = z.object({ workspaceId: z.string() });
 
+const isCoworkRecordRefusal = (error: unknown): boolean =>
+  error instanceof CoworkWorkspaceRecordRefusedError;
+
 const runCoworkSettingsCommand =
-  createW5SingleDecisionOperation<'chat_project_update'>(
-    (error) => error instanceof CoworkWorkspaceRecordRefusedError,
-  );
+  createW5SingleDecisionOperation<'chat_project_update'>(isCoworkRecordRefusal);
+
+/** The runner for one call: a wire call's receipts name its principal. */
+function coworkSettingsRunner(
+  wire: W5WireDecisionCall<never> | undefined,
+): typeof runCoworkSettingsCommand {
+  return wire
+    ? createW5SingleDecisionOperation<'chat_project_update'>(
+        isCoworkRecordRefusal,
+        wire,
+      )
+    : runCoworkSettingsCommand;
+}
 
 /** A refused decision: nothing landed, so no refresh is owed. */
 function isRefusedCoworkSettingsDecision(error: unknown): boolean {
@@ -672,14 +689,18 @@ async function reconcileCoworkSettings(
  * workspace revision and retry key, through `updateCoworkWorkspace`'s
  * commit path. Name, color, Always show, explicit plugin defaults and an
  * enclosing commit scope are refused before reservation. Callers of
- * `updateCoworkWorkspace` stay unkeyed: it never reads retry fields.
+ * `updateCoworkWorkspace` stay unkeyed: it never reads retry fields. The
+ * renderer's `chat-project:update` projects the registered operation for a
+ * save's Cowork settings, unkeyed, and `wire` is its wire call (W7b-1c).
  *
  * Chat normalization and the Auto Delete Work Entry touch run before the
  * decision, so a refused attempt can leave fresher Work Entry recency.
- * A failed touch is a typed `activity-unavailable` refusal (CAN-4743).
+ * A failed touch is a typed `activity-unavailable` refusal (CAN-4743). A
+ * stale-file refusal reruns both within the decision-only bound (CAN-5535).
  */
 export async function updateCoworkWorkspaceSettings(
   request: CoworkSettingsUpdateRequest,
+  wire?: W5WireDecisionCall<CoworkSettingsUpdateOutcome>,
 ): Promise<CoworkSettingsUpdateOutcome> {
   const { projectId: workspaceId, expectedRevision, idempotencyKey } = request;
   if (currentW5CommitScope())
@@ -693,39 +714,43 @@ export async function updateCoworkWorkspaceSettings(
   let executed = false;
   let result: CoworkSettingsUpdateOutcome;
   try {
-    result = await runCoworkSettingsCommand(
-      {
-        operation: 'core.workspace.cowork.update',
-        source: 'chat_project_update',
-        idempotencyKey,
-        parameters: () => ({ workspaceId, settings }),
-        storage: PROJECT_W5_STORAGE,
-      },
-      () => Promise.resolve(),
-      (saved) => coworkSettingsUpdateOutcomeSchema.parse(saved),
-      // `updateCoworkWorkspace` takes these locks again (re-entrant); the early
-      // revision check under them refuses before the host steps run.
-      (_admitted, options) => {
-        executed = true;
-        return serializeWorkspaceMutation(() =>
-          withArchivedWorkspaceOperationLock(workspaceId, async () => {
-            await checkW5ExpectedRevision(resource, expectedRevision);
-            await updateCoworkWorkspace(
-              { projectId: workspaceId, ...settings },
-              {
-                ...options,
-                expectedRevisions: w5ExpectedRevision(
-                  resource,
-                  expectedRevision,
-                ),
-                ...(options.receipt ? { outcome } : {}),
-              },
-            );
-            return outcome;
-          }),
-        );
-      },
-    );
+    result = await runW5DecisionOnlyUnit('core.workspace.cowork.update', () => {
+      // A later attempt can replay a same-key decision made in between.
+      executed = false;
+      return coworkSettingsRunner(wire)(
+        {
+          operation: 'core.workspace.cowork.update',
+          source: 'chat_project_update',
+          idempotencyKey,
+          parameters: () => ({ workspaceId, settings }),
+          storage: PROJECT_W5_STORAGE,
+        },
+        () => Promise.resolve(),
+        (saved) => coworkSettingsUpdateOutcomeSchema.parse(saved),
+        // `updateCoworkWorkspace` takes these locks again (re-entrant); the early
+        // revision check under them refuses before the host steps run.
+        (_admitted, options) => {
+          executed = true;
+          return serializeWorkspaceMutation(() =>
+            withArchivedWorkspaceOperationLock(workspaceId, async () => {
+              await checkW5ExpectedRevision(resource, expectedRevision);
+              await updateCoworkWorkspace(
+                { projectId: workspaceId, ...settings },
+                {
+                  ...options,
+                  expectedRevisions: w5ExpectedRevision(
+                    resource,
+                    expectedRevision,
+                  ),
+                  ...(options.receipt ? { outcome } : {}),
+                },
+              );
+              return outcome;
+            }),
+          );
+        },
+      );
+    });
   } catch (error) {
     // Any other failure may follow a landed decision (a lost response) whose
     // post-commit refreshes were dropped with its scope.

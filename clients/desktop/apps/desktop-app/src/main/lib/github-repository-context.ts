@@ -74,7 +74,8 @@ export async function resolveUnambiguousGitHubRepository(options: {
   if (isCoworkWorkspace(options.projectId)) return null;
   const read = await readWorkspaceConfigDetailed(options.projectId);
   if (read.authority === 'absent') return null;
-  if (read.authority !== 'ok') throw new WorkspaceConfigUnreadableError();
+  if (read.authority !== 'ok')
+    throw new WorkspaceConfigUnreadableError(read.unserved, 'read');
   if (read.config.type !== 'single-repo') return null;
   const remote = await getRemoteUrlStrict(
     getWorktreeDir(options.projectId, options.worktreeId),

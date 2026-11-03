@@ -16,7 +16,6 @@ import {
   type Ref,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import {
   DropdownMenuDivider,
   DEFAULT_MENU_ROW_STYLE,
@@ -32,7 +31,7 @@ import {
   type SpaceNotificationMenuState,
 } from './SpaceNotificationMenu';
 import { ActionMenuRowStyle } from './ActionMenuItems';
-import { FloatingMenu } from './FloatingMenu';
+import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
 import { RailIconButton } from './RailIconButton';
 import { SharedWithTeammatesBadge } from './SharedWithTeammatesBadge';
 import {
@@ -1176,15 +1175,12 @@ function WorkEntryRowFloatingMenu({
   if (!anchorPoint) return menu;
   return (
     <>
-      {createPortal(
-        <span
-          ref={pointAnchorRef}
-          aria-hidden="true"
-          className="pointer-events-none fixed h-0 w-0"
-          style={{ left: anchorPoint.x, top: anchorPoint.y }}
-        />,
-        portalBody,
-      )}
+      <FloatingMenuPointAnchor
+        ref={pointAnchorRef}
+        x={anchorPoint.x}
+        y={anchorPoint.y}
+        ownerDocument={portalBody.ownerDocument}
+      />
       {menu}
     </>
   );

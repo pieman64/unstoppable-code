@@ -51,7 +51,7 @@ describe('Button', () => {
   it('keeps color feedback instant while retaining press motion', () => {
     const html = renderToStaticMarkup(<Button>Continue</Button>);
 
-    expect(html).toContain('transition-[opacity,transform]');
+    expect(html).toContain('transition-[opacity,transform,scale]');
     expect(html).not.toContain('background-color,color');
   });
 
@@ -136,7 +136,7 @@ describe('Button', () => {
     // A disabled ghost or link is a dimmed icon or label, never a grey disc.
     const link = renderToStaticMarkup(
       <Button variant="link" disabled>
-        Retry
+        Try again
       </Button>,
     );
     for (const [variant, html] of [
@@ -167,7 +167,7 @@ describe('Button', () => {
         <div role="presentation" onClick={onRowClick}>
           <Button disabled>Restore</Button>
           <Button variant="link" disabled>
-            Retry
+            Try again
           </Button>
         </div>,
       );
@@ -231,7 +231,7 @@ describe('Button', () => {
     expect(secondary).toContain('disabled:[background-image:none]');
     const link = renderToStaticMarkup(
       <Button variant="link" disabled>
-        Retry
+        Try again
       </Button>,
     );
     expect(link).toContain('disabled:no-underline');
@@ -270,6 +270,15 @@ describe('Button', () => {
     expect(html).toContain('px-2.5');
     expect(html).not.toContain('rounded-full');
     expect(html).not.toContain('text-s ');
+  });
+
+  it('renders the field size as the 28px dropdown trigger with 10px corners', () => {
+    const html = renderToStaticMarkup(<Button size="field">Member</Button>);
+
+    expect(html).toContain('h-7');
+    expect(html).toContain('rounded-row');
+    expect(html).toContain('text-xs');
+    expect(html).not.toContain('rounded-full');
   });
 
   it('renders a square control-size icon button', () => {
@@ -435,5 +444,50 @@ describe('Button', () => {
     expect(ref.current?.dataset.testid).toBe('save');
 
     act(() => root.unmount());
+  });
+
+  describe('aria-disabled', () => {
+    let container: HTMLDivElement;
+    let root: Root;
+
+    beforeEach(() => {
+      container = document.createElement('div');
+      document.body.append(container);
+      root = createRoot(container);
+    });
+
+    afterEach(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+
+    it('stays focusable but ignores clicks, like a disabled button', () => {
+      const onClick = jest.fn();
+      act(() => {
+        root.render(
+          <Button aria-disabled onClick={onClick}>
+            Connecting…
+          </Button>,
+        );
+      });
+      const button = container.querySelector('button');
+      button?.focus();
+      expect(document.activeElement).toBe(button);
+      button?.click();
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it('still runs the click when aria-disabled is false', () => {
+      const onClick = jest.fn();
+      act(() => {
+        root.render(
+          <Button aria-disabled={false} onClick={onClick}>
+            Connect
+          </Button>,
+        );
+      });
+      container.querySelector('button')?.click();
+      expect(onClick).toHaveBeenCalledTimes(1);
+    });
   });
 });

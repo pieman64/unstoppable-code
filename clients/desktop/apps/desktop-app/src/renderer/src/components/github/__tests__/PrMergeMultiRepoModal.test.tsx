@@ -36,7 +36,7 @@ describe('PrMergeMultiRepoModal', () => {
     );
 
     expect(markup).toContain('Couldn’t check pull requests');
-    expect(markup).toContain('Retry');
+    expect(markup).toContain('Try again');
   });
 
   it('labels a repo the main process refused as already queued', () => {

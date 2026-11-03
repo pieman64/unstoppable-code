@@ -26,7 +26,7 @@ import {
   type PdfSearchMatch,
   type PdfSearchTextItem,
 } from './pdf-search';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, SearchField } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import styles from './PdfPreview.module.css';
 
@@ -649,15 +649,15 @@ export function PdfPreview({
           {currentPage} / {Math.max(totalPages, pages.length)}
         </span>
         <form className={styles.search} onSubmit={runSearch}>
-          <input
-            type="search"
+          <SearchField
             aria-label="Search PDF"
             data-testid="pdf-search-input"
+            className="w-44"
             disabled={!searchReady}
             value={query}
-            onChange={(event) => {
+            onValueChange={(next) => {
               searchGeneration.current += 1;
-              setQuery(event.currentTarget.value);
+              setQuery(next);
               setMatches([]);
               setActiveMatchIndex(-1);
               setSearching(false);

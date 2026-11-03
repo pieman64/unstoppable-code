@@ -42,3 +42,20 @@ describe('ToggleSwitch', () => {
     expect(indicatorHtml).toContain('translate-x-3');
   });
 });
+
+describe('ToggleSwitch feedback', () => {
+  it('changes color at once: no color transition on the track', () => {
+    const markup = renderToStaticMarkup(
+      <ToggleSwitch checked={false} label="Email me" onChange={() => {}} />,
+    );
+    expect(markup).not.toContain('background-color');
+    expect(markup).not.toMatch(/transition-colors|transition-all/);
+  });
+
+  it('reaches a touch-sized hit area on a coarse pointer', () => {
+    const markup = renderToStaticMarkup(
+      <ToggleSwitch checked={false} label="Email me" onChange={() => {}} />,
+    );
+    expect(markup).toContain('pointer-coarse:before:-inset-y-3');
+  });
+});

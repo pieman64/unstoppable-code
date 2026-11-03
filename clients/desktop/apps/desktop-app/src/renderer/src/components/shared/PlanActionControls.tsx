@@ -1,33 +1,29 @@
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  type CSSProperties,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
 import {
   ActionMenuRowStyle,
   Button,
   DropdownMenuItem,
   DropdownMenuItemIcon,
-  DropdownMenuSurface,
+  FloatingMenu,
   PlanCopyAction,
+  PlanOpenImplementationAction,
   planCopyStateFromMarkdown,
 } from '@canopy/ui-shared';
 import { ChatIcon, PipelineIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ChevronDownMediumIcon,
+  MoreHorizontalIcon,
   SearchIcon,
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { Tooltip } from '@canopy/ui-shared';
 
-const EXECUTE_MENU_WIDTH = 160;
-const EXECUTE_MENU_GAP = 4;
-const VIEWPORT_PADDING = 8;
 /**
  * Below this control-row width the labelled Explore/Share buttons stop fitting
  * alongside the Execute dropdown, so they collapse to icon-only. The Execute
@@ -35,11 +31,6 @@ const VIEWPORT_PADDING = 8;
  * overflowing (see `flex-wrap` on the wrapper).
  */
 const COMPACT_WIDTH = 248;
-
-interface MenuPosition {
-  top: number;
-  left: number;
-}
 
 export interface PlanActionControlsProps {
   onExplore: () => void;
@@ -74,8 +65,16 @@ export interface PlanActionControlsProps {
    * only: eligibility and the disabled rules are unchanged.
    */
   executeEmphasis?: 'primary' | 'secondary';
-  /** Render the dropdown in document.body for controls inside overflow containers. */
-  menuPortal?: boolean;
+  /**
+   * `open` replaces Execute with Open for the selected implementation
+   * attempt, and its menu moves behind an overflow button as retries. Needs
+   * `onOpen` and `openVenue`; otherwise Execute stays.
+   */
+  primaryAction?: 'execute' | 'open';
+  /** Where the selected attempt runs, naming Open chat or Open run. */
+  openVenue?: 'chat' | 'pipeline';
+  /** Navigate to exactly the selected attempt. */
+  onOpen?: () => void;
   implementLabel?: string;
   dataTestIdPrefix: string;
 }
@@ -95,16 +94,21 @@ export function PlanActionControls({
   executeDisabled = false,
   executeTitle,
   executeEmphasis = 'primary',
-  menuPortal = false,
+  primaryAction = 'execute',
+  openVenue,
+  onOpen,
   implementLabel = 'Implement',
   dataTestIdPrefix,
 }: PlanActionControlsProps): JSX.Element {
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const positionFrameRef = useRef<number | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const [compact, setCompact] = useState(false);
+
+  const closeMenu = useCallback((): void => {
+    setMenuOpen(false);
+    triggerRef.current?.focus();
+  }, []);
 
   // Collapse Explore/Share to icon-only when the available row width narrows.
   // We measure the parent, not the wrapper itself: the wrapper is a shrink-to-fit
@@ -128,109 +132,6 @@ export function PlanActionControls({
     };
   }, []);
 
-  const updateMenuPosition = useCallback((): void => {
-    const wrapper = wrapperRef.current;
-    if (!wrapper) {
-      setMenuPosition(null);
-      return;
-    }
-
-    const rect = wrapper.getBoundingClientRect();
-    const maxLeft = window.innerWidth - EXECUTE_MENU_WIDTH - VIEWPORT_PADDING;
-    const left = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(rect.right - EXECUTE_MENU_WIDTH, maxLeft),
-    );
-    const menuHeight = menuRef.current?.offsetHeight ?? 0;
-    const belowTop = rect.bottom + EXECUTE_MENU_GAP;
-    const aboveTop = rect.top - EXECUTE_MENU_GAP - menuHeight;
-    const top =
-      menuHeight > 0 &&
-      belowTop + menuHeight > window.innerHeight - VIEWPORT_PADDING &&
-      aboveTop >= VIEWPORT_PADDING
-        ? aboveTop
-        : belowTop;
-
-    setMenuPosition((previous) => {
-      if (previous && previous.top === top && previous.left === left) {
-        return previous;
-      }
-      return { top, left };
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!menuOpen || !menuPortal) {
-      setMenuPosition(null);
-      return;
-    }
-
-    updateMenuPosition();
-  }, [menuOpen, menuPortal, updateMenuPosition]);
-
-  useEffect(() => {
-    if (!menuOpen || !menuPortal) {
-      return;
-    }
-
-    const scheduleMenuPositionUpdate = (): void => {
-      if (positionFrameRef.current !== null) {
-        return;
-      }
-
-      positionFrameRef.current = window.requestAnimationFrame((): void => {
-        positionFrameRef.current = null;
-        updateMenuPosition();
-      });
-    };
-
-    window.addEventListener('resize', scheduleMenuPositionUpdate);
-    window.addEventListener('scroll', scheduleMenuPositionUpdate, {
-      capture: true,
-      passive: true,
-    });
-    return (): void => {
-      window.removeEventListener('resize', scheduleMenuPositionUpdate);
-      window.removeEventListener('scroll', scheduleMenuPositionUpdate, {
-        capture: true,
-      });
-      if (positionFrameRef.current !== null) {
-        window.cancelAnimationFrame(positionFrameRef.current);
-        positionFrameRef.current = null;
-      }
-    };
-  }, [menuOpen, menuPortal, updateMenuPosition]);
-
-  useEffect(() => {
-    if (!menuOpen) {
-      return;
-    }
-    const handleMouseDown = (e: MouseEvent): void => {
-      const wrapper = wrapperRef.current;
-      const menu = menuRef.current;
-      if (
-        e.target instanceof Node &&
-        ((wrapper && wrapper.contains(e.target)) ||
-          (menu && menu.contains(e.target)))
-      ) {
-        return;
-      }
-      setMenuOpen(false);
-    };
-    const handleKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleMouseDown, true);
-    document.addEventListener('keydown', handleKeyDown);
-    return (): void => {
-      document.removeEventListener('mousedown', handleMouseDown, true);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [menuOpen]);
-
   const handleExplore = useCallback((): void => {
     if (exploreDisabled) {
       return;
@@ -246,17 +147,17 @@ export function PlanActionControls({
     if (executeDisabled) {
       return;
     }
+    closeMenu();
     onPipeline();
-    setMenuOpen(false);
-  }, [executeDisabled, onPipeline]);
+  }, [executeDisabled, onPipeline, closeMenu]);
 
   const handleImplement = useCallback((): void => {
     if (executeDisabled) {
       return;
     }
+    closeMenu();
     onImplement();
-    setMenuOpen(false);
-  }, [executeDisabled, onImplement]);
+  }, [executeDisabled, onImplement, closeMenu]);
 
   const handleShare = useCallback((): void => {
     if (shareDisabled || shareBusy) {
@@ -265,23 +166,19 @@ export function PlanActionControls({
     onShare?.();
   }, [onShare, shareBusy, shareDisabled]);
 
-  const menuStyle: CSSProperties | undefined = menuPortal
-    ? {
-        position: 'fixed',
-        width: EXECUTE_MENU_WIDTH,
-        ...(menuPosition
-          ? { top: menuPosition.top, left: menuPosition.left }
-          : { visibility: 'hidden', top: 0, left: 0 }),
-      }
-    : undefined;
+  const showOpen = primaryAction === 'open' && onOpen && openVenue;
 
+  // Shared placement and focus apply to Execute and the retry overflow trigger.
   const executeMenu = (
-    <DropdownMenuSurface
-      ref={menuRef}
-      className={`z-dropdown min-w-40 ${
-        menuPortal ? '' : 'absolute right-0 top-full mt-1'
-      }`}
-      style={menuStyle}
+    <FloatingMenu
+      key={showOpen ? 'retry' : 'execute'}
+      open={menuOpen}
+      onOpenChange={setMenuOpen}
+      anchorRef={triggerRef}
+      placement="bottom-right"
+      interaction="menu"
+      className="min-w-40"
+      data-testid={`${dataTestIdPrefix}-execute-menu`}
     >
       <ActionMenuRowStyle>
         <DropdownMenuItem
@@ -292,7 +189,7 @@ export function PlanActionControls({
           <DropdownMenuItemIcon>
             <PipelineIcon />
           </DropdownMenuItemIcon>
-          Workflow
+          {showOpen ? 'Run again as workflow' : 'Workflow'}
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={handleImplement}
@@ -302,10 +199,10 @@ export function PlanActionControls({
           <DropdownMenuItemIcon>
             <ChatIcon />
           </DropdownMenuItemIcon>
-          {implementLabel}
+          {showOpen ? 'Implement again in chat' : implementLabel}
         </DropdownMenuItem>
       </ActionMenuRowStyle>
-    </DropdownMenuSurface>
+    </FloatingMenu>
   );
 
   return (
@@ -389,31 +286,59 @@ export function PlanActionControls({
         dataTestId={`${dataTestIdPrefix}-copy`}
       />
 
-      <Tooltip label={executeTitle} suppressed={executeTitle === undefined}>
-        <Button
-          size="compact"
-          variant={
-            executeDisabled || executeEmphasis === 'secondary'
-              ? 'secondary'
-              : 'primary'
-          }
-          onClick={handleToggleMenu}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          data-testid={`${dataTestIdPrefix}-execute`}
-        >
-          Execute
-          <ChevronDownMediumIcon
-            width={16}
-            height={16}
-            aria-hidden
-            className={`shrink-0 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+      {showOpen ? (
+        <>
+          {/* Open goes to the selected attempt; retries keep Execute's
+              choices, restrictions and in-flight guards behind the menu. */}
+          <PlanOpenImplementationAction
+            venue={openVenue}
+            onOpen={onOpen}
+            compact={compact}
+            dataTestIdPrefix={dataTestIdPrefix}
           />
-        </Button>
-      </Tooltip>
+          <Tooltip label="More actions">
+            <Button
+              ref={triggerRef}
+              size="compact"
+              variant="secondary"
+              iconOnly
+              aria-label="More actions"
+              onClick={handleToggleMenu}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              data-testid={`${dataTestIdPrefix}-more`}
+            >
+              <MoreHorizontalIcon size="md" aria-hidden />
+            </Button>
+          </Tooltip>
+        </>
+      ) : (
+        <Tooltip label={executeTitle} suppressed={executeTitle === undefined}>
+          <Button
+            ref={triggerRef}
+            size="compact"
+            variant={
+              executeDisabled || executeEmphasis === 'secondary'
+                ? 'secondary'
+                : 'primary'
+            }
+            onClick={handleToggleMenu}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            data-testid={`${dataTestIdPrefix}-execute`}
+          >
+            Execute
+            <ChevronDownMediumIcon
+              width={16}
+              height={16}
+              aria-hidden
+              className={`shrink-0 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+            />
+          </Button>
+        </Tooltip>
+      )}
 
-      {menuOpen &&
-        (menuPortal ? createPortal(executeMenu, document.body) : executeMenu)}
+      {executeMenu}
     </div>
   );
 }

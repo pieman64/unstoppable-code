@@ -24,6 +24,12 @@ import {
 } from '@/lib/modelUnlockIntent';
 import { useGitHubStore } from '@/stores/githubStore';
 import {
+  beginAiCreditsHandoff,
+  completeAiCreditsHandoff,
+  resetAiCreditsHandoffsForTests,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
+import {
   beginAiCreditsArrivalHandoff,
   resetAiCreditsArrivalForTests,
   useAiCreditsArrivalStore,
@@ -302,5 +308,171 @@ describe('useModelUnlockReturn', () => {
     await confirm(intent());
     expect(addToast).not.toHaveBeenCalled();
     expect(useModelUnlockConfirmationStore.getState().confirmation).toBeNull();
+  });
+
+  describe('pending credits checkouts (CAN-5534)', () => {
+    const WALLET = 'work|project|worktree||personal';
+
+    async function startCheckout(): Promise<string> {
+      let id = '';
+      await act(async () => {
+        const record = beginAiCreditsHandoff({
+          walletKey: WALLET,
+          originChatKey: 'project/worktree/chat-1',
+          originScopeKey: 'work|project|worktree|chat-1|personal',
+          origin: 'no-billing-source',
+          accountGeneration:
+            useAiCreditsHandoffStore.getState().accountGeneration,
+          arrival: null,
+        });
+        id = record?.id ?? '';
+        for (let index = 0; index < 10; index++) await Promise.resolve();
+      });
+      return id;
+    }
+
+    function pending(): string | undefined {
+      return useAiCreditsHandoffStore.getState().records[WALLET]?.id;
+    }
+
+    beforeEach(() => {
+      resetAiCreditsHandoffsForTests();
+    });
+    afterEach(() => {
+      resetAiCreditsHandoffsForTests();
+    });
+
+    it('keeps a checkout through a same-account credits refresh', async () => {
+      const id = await startCheckout();
+      await accountChanged();
+      expect(pending()).toBe(id);
+    });
+
+    it('ends a checkout when another account signs in, with nothing else pending', async () => {
+      await startCheckout();
+      loadCanopyCloudAccount.mockResolvedValue({ account: { id: 'acct_2' } });
+      await accountChanged();
+      expect(pending()).toBeUndefined();
+    });
+
+    it('ends a checkout on sign-out', async () => {
+      await startCheckout();
+      loadCanopyCloudAccount.mockResolvedValue({ hasApiKey: false });
+      await accountChanged();
+      expect(pending()).toBeUndefined();
+    });
+
+    it('keeps a checkout, unattributed, when the account cannot be read', async () => {
+      const id = await startCheckout();
+      loadCanopyCloudAccount.mockRejectedValue(new Error('offline'));
+      await accountChanged();
+      expect(pending()).toBe(id);
+      expect(
+        useAiCreditsHandoffStore.getState().records[WALLET]?.identityUnverified,
+      ).toBe(true);
+    });
+
+    it('fences coverage during identity refresh and preserves the original arrival after a failed read', async () => {
+      const scope = {
+        kind: 'work',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-1',
+      } satisfies PendingModelUnlockIntent['scope'];
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: {
+          loadCanopyCloudAccount,
+          loadCanopyCloudAiCredits: () =>
+            Promise.resolve({
+              connected: true,
+              balance: { credits: 0, eligible: false, source: 'canopy' },
+              error: null,
+            }),
+        },
+      });
+      await act(async () => {
+        const arrival = beginAiCreditsArrivalHandoff(
+          scope,
+          'no-billing-source',
+        );
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        arrival?.markExternalOpen();
+        arrival?.retain();
+        beginAiCreditsHandoff({
+          walletKey: WALLET,
+          originChatKey: 'project/worktree/chat-1',
+          originScopeKey: 'scope',
+          origin: 'no-billing-source',
+          accountGeneration:
+            useAiCreditsHandoffStore.getState().accountGeneration,
+          arrival,
+        });
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      });
+      const original = useAiCreditsHandoffStore.getState().records[WALLET];
+      if (!original) throw new Error('Expected checkout');
+      let rejectRead: (error: Error) => void = () => {};
+      loadCanopyCloudAccount.mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectRead = reject;
+        }),
+      );
+      await accountChanged();
+      expect(
+        completeAiCreditsHandoff(
+          WALLET,
+          original.id,
+          original.accountGeneration,
+        ),
+      ).toBe(false);
+      expect(pending()).toBe(original.id);
+      await act(async () => {
+        rejectRead(new Error('offline'));
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      });
+      expect(pending()).toBe(original.id);
+      loadCanopyCloudAccount.mockResolvedValue({ account: { id: 'acct_1' } });
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      });
+      await act(async () => {
+        const current = useAiCreditsHandoffStore.getState().records[WALLET];
+        if (!current) throw new Error('Lost pending checkout');
+        expect(
+          completeAiCreditsHandoff(
+            WALLET,
+            current.id,
+            current.accountGeneration,
+          ),
+        ).toBe(true);
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+      });
+      expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+        'chat-1',
+      );
+    });
+
+    it('applies only the newest of out-of-order account reads', async () => {
+      await startCheckout();
+      let answerFirst: (value: unknown) => void = () => {};
+      loadCanopyCloudAccount
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            answerFirst = resolve;
+          }),
+        )
+        .mockResolvedValueOnce({ account: { id: 'acct_2' } });
+      await accountChanged();
+      await accountChanged();
+      expect(pending()).toBeUndefined();
+      // The older read names the original account; it must not revive it.
+      await act(async () => {
+        answerFirst({ account: { id: 'acct_1' } });
+        for (let index = 0; index < 10; index++) await Promise.resolve();
+      });
+      expect(pending()).toBeUndefined();
+    });
   });
 });

@@ -5,6 +5,7 @@ import type {
 } from '@canopy/protocol/cost-view';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { COST_NOT_PRICED_LABEL, formatCostAmount } from './cost-format';
+import { ValueRow, ValueRows } from '../settings/ValueRows';
 
 // Account-proxy accounts on cost surfaces (CAN-4021). Labels are often
 // emails, so session replay blocks them.
@@ -107,29 +108,23 @@ export function ProxyAccountCostList({
 }: ProxyAccountCostListProps): JSX.Element | null {
   if (accounts.length === 0) return null;
   return (
-    <dl data-testid={testId} className="flex flex-col gap-1">
+    <ValueRows dataTestId={testId}>
       {accounts.map((account) => {
         const name = proxyAccountName(account);
         return (
-          <div
+          <ValueRow
             key={account.accountKey}
-            data-testid={`${testId}-row`}
-            className="flex items-baseline gap-3 text-xs"
-          >
-            <dt className="min-w-0 truncate fg-secondary">
+            dataTestId={`${testId}-row`}
+            label={
               <span className={REPLAY_BLOCK_CLASS} title={name}>
                 {name}
               </span>
-            </dt>
-            <span className="shrink-0 tabular-nums fg-tertiary">
-              {formatProxyAccountShare(account.turnShare, total, noun)}
-            </span>
-            <dd className="ml-auto shrink-0 tabular-nums fg-primary">
-              {formatProxyAccountEstimate(account)}
-            </dd>
-          </div>
+            }
+            note={formatProxyAccountShare(account.turnShare, total, noun)}
+            value={formatProxyAccountEstimate(account)}
+          />
         );
       })}
-    </dl>
+    </ValueRows>
   );
 }

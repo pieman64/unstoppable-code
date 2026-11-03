@@ -36,11 +36,7 @@ import { GitBranchLineIcon } from '../../../icons/AppIcons';
 import { TurnMoreMenu } from '../TurnMoreMenu';
 import { TurnWorkHeader, formatWorkDuration } from '../TurnWorkHeader';
 import { describeStepCounts, describeStepKinds } from '../step-words';
-import {
-  getToolDisplayInfo,
-  hasTensedStepLabel,
-  readableToolInput,
-} from '../tool-display';
+import { getToolDisplayInfo, readableToolInput } from '../tool-display';
 
 // At the default chat detail level; Detailed's badges have their own tests.
 function render(look: ChatLook, node: ReactNode): string {
@@ -106,7 +102,7 @@ describe('clean chat look', () => {
         expect(html).not.toContain('tool-call-failed');
         expect(html).not.toContain('<b>No.</b>');
         if (look === 'clean') {
-          expect(html).toContain('Didn’t run');
+          expect(html).toContain('Run the icon tests');
           expect(html).not.toContain('Couldn’t run');
         }
       }
@@ -125,17 +121,87 @@ describe('clean chat look', () => {
       );
     }
 
-    it('says how a command went in its verb, without color', () => {
-      expect(render('clean', bashCard('success'))).toContain(
-        'Ran npx jest packages/ui-shared',
+    it.each(['Bash', 'PowerShell'])(
+      'keeps the %s description stable across outcomes',
+      (toolName) => {
+        const draw = (status: 'pending' | 'success' | 'error'): string =>
+          render(
+            'clean',
+            <ToolCallCard
+              toolName={toolName}
+              input={BASH_INPUT}
+              label={<Label name={toolName} input={BASH_INPUT} />}
+              status={status}
+            />,
+          );
+        for (const status of ['pending', 'success', 'error'] as const) {
+          const html = draw(status);
+          expect(html).toContain('Run the icon tests');
+          expect(html).not.toContain('npx jest');
+          expect(html).toContain(`data-tool-status="${status}"`);
+          expect(html.includes('canopy-text-shimmer-strong')).toBe(
+            status === 'pending',
+          );
+        }
+        expect(draw('error')).toContain('>Failed<');
+      },
+    );
+
+    it('keeps a full description without a command and falls back for blank descriptions', () => {
+      const description =
+        'Check the workspace dependencies and run every selected package test before preparing the review';
+      const raw = JSON.stringify({ description });
+      expect(render('clean', <Label name="Bash" input={raw} />)).toContain(
+        description,
       );
-      expect(render('clean', bashCard('pending'))).toContain(
-        'Running npx jest packages/ui-shared',
+      const blank = JSON.stringify({ command: 'pnpm test', description: '  ' });
+      const html = render('clean', <Label name="Bash" input={blank} />);
+      expect(html).toContain('Run');
+      expect(html).toContain('pnpm test');
+    });
+
+    it.each([
+      ['Read', { file_path: '/repo/a.ts' }, 'Read'],
+      ['Write', { file_path: '/repo/a.ts' }, 'Write'],
+      [
+        'Edit',
+        { file_path: '/repo/a.ts', old_string: 'x', new_string: 'y' },
+        'Edit',
+      ],
+      ['Bash', { command: 'pnpm test' }, 'Run'],
+      ['Grep', { pattern: 'needle' }, 'Search for'],
+      ['Glob', { pattern: '*.ts' }, 'Find files matching'],
+      ['file_change', 'delete: src/a.ts', 'Delete'],
+    ])('keeps %s words unchanged from running to done', (name, input, verb) => {
+      const raw = typeof input === 'string' ? input : JSON.stringify(input);
+      const draw = (status: 'pending' | 'success'): string =>
+        render(
+          'clean',
+          <ToolCallCard
+            toolName={name}
+            input={raw}
+            label={<Label name={name} input={raw} />}
+            status={status}
+          />,
+        );
+      const words = (html: string): string => html.replace(/<[^>]+>/g, '');
+      expect(words(draw('pending'))).toBe(words(draw('success')));
+      expect(words(draw('pending'))).toContain(verb);
+    });
+
+    it('keeps descriptions and commands available without repeating them', () => {
+      const html = render(
+        'clean',
+        <ToolCallCard
+          toolName="Bash"
+          input={BASH_INPUT}
+          label={<Label name="Bash" input={BASH_INPUT} />}
+          status="success"
+          defaultCollapsed={false}
+        />,
       );
-      const failed = render('clean', bashCard('error'));
-      expect(failed).toContain('Couldn’t run npx jest packages/ui-shared');
-      expect(failed).not.toContain('fg-destructive');
-      expect(failed).not.toContain('tool-call-failed');
+      expect(html).toContain('Run the icon tests');
+      expect(html).toContain('npx jest packages/ui-shared');
       expect(render('classic', bashCard('success'))).toContain(
         'Run the icon tests',
       );
@@ -155,7 +221,7 @@ describe('clean chat look', () => {
       );
       const clean = render('clean', card);
       expect(clean).toContain('data-tool-status="blocked"');
-      expect(clean).toContain('Didn’t run npx jest packages/ui-shared');
+      expect(clean).toContain('Run the icon tests');
       expect(clean).toContain('blocked by safety rule · force-push');
       expect(clean).not.toContain('Ran npx');
       expect(clean).not.toContain('Couldn’t run');
@@ -186,23 +252,8 @@ describe('clean chat look', () => {
       expect(render('classic', card)).not.toContain('tool-call-failed');
       const clean = render('clean', card);
       expect(clean).toContain('data-testid="tool-call-failed"');
-      expect(clean).toContain('>error<');
+      expect(clean).toContain('>Failed<');
       expect(clean).not.toContain('fg-destructive');
-    });
-
-    it('knows which tools say their own outcome', () => {
-      expect(hasTensedStepLabel('Bash', BASH_INPUT)).toBe(true);
-      expect(
-        hasTensedStepLabel('Read', JSON.stringify({ file_path: '/repo/a.ts' })),
-      ).toBe(true);
-      // A bare "Read" has no verb to say it failed.
-      expect(hasTensedStepLabel('Read', '{}')).toBe(false);
-      expect(hasTensedStepLabel('WebFetch')).toBe(false);
-      expect(hasTensedStepLabel('file_change', 'update: src/a.ts')).toBe(true);
-      // "File changes (2 files)" has no verb to say it failed.
-      expect(
-        hasTensedStepLabel('file_change', 'update: src/a.ts\nadd: src/b.ts'),
-      ).toBe(false);
     });
 
     it('judges a host-supplied label, as large-output steps pass no input', () => {
@@ -215,10 +266,10 @@ describe('clean chat look', () => {
             result={{ kind: 'error', content: 'exit 1' }}
           />,
         );
-      // "Couldn't run …" already says it: no second "failed".
+      // Host-supplied descriptions also retain a separate failure marker.
       const tensed = failed(getToolDisplayInfo('Bash', BASH_INPUT).label);
-      expect(tensed).toContain('Couldn’t run npx jest packages/ui-shared');
-      expect(tensed).not.toContain('data-testid="tool-call-failed"');
+      expect(tensed).toContain('Run the icon tests');
+      expect(tensed).toContain('data-testid="tool-call-failed"');
       // A plain label has no verb, so the row still names the failure.
       expect(failed('Bash')).toContain('data-testid="tool-call-failed"');
     });
@@ -292,7 +343,7 @@ describe('clean chat look', () => {
         <Label name="Grep" input={JSON.stringify({ pattern: 'RobotIcon' })} />
       );
       expect(render('classic', grep)).toContain('Grep');
-      expect(render('clean', grep)).toContain('Searched for');
+      expect(render('clean', grep)).toContain('Search for');
       expect(render('clean', grep)).not.toContain('Grep');
     });
   });
@@ -320,6 +371,42 @@ describe('clean chat look', () => {
   });
 
   describe('step groups', () => {
+    it.each([0, 1])(
+      'keeps %i hidden calls visible instead of making a summary',
+      (count) => {
+        const html = render(
+          'clean',
+          <ChatToolStepGroup summary="Read 1 file" collapsedStepCount={count}>
+            <span data-testid="single-call">Read package.json</span>
+          </ChatToolStepGroup>,
+        );
+        expect(html).toContain('single-call');
+        expect(html).not.toContain('chat-tool-step-summary');
+      },
+    );
+
+    it('compacts two calls and reveals only the hidden prefix above recent calls', () => {
+      const html = render(
+        'clean',
+        <ChatToolStepGroup
+          summary="Read 2 files"
+          collapsedStepCount={2}
+          forceExpanded
+          hiddenSteps={<span data-testid="hidden-prefix" />}
+          liveSteps={<span data-testid="recent-call" />}
+        >
+          <span data-testid="all-calls" />
+        </ChatToolStepGroup>,
+      );
+      expect(html).toContain('chat-tool-step-summary');
+      expect(html).toContain('hidden-prefix');
+      expect(html).toContain('recent-call');
+      expect(html).not.toContain('all-calls');
+      expect(html.indexOf('hidden-prefix')).toBeLessThan(
+        html.indexOf('recent-call'),
+      );
+    });
+
     const group = (
       <ChatToolStepGroup
         summary="Ran commands"
@@ -678,7 +765,7 @@ describe('clean chat look', () => {
         <AgentBlockCard subagentType="Explore" isError dataTestId="a" />
       );
       expect(render('classic', failed)).toContain('>error<');
-      expect(render('clean', failed)).toContain('>error<');
+      expect(render('clean', failed)).toContain('>Failed<');
       expect(render('clean', failed)).not.toContain('fg-destructive');
     });
   });
@@ -860,7 +947,7 @@ describe('clean chat look', () => {
     ).toHaveLength(2);
     expect(row).toContain('h-7 rounded-full');
     const stamp = html.slice(html.indexOf('data-testid="turn-timer-relative"'));
-    expect(stamp).toMatch(/class="[^"]*text-2xs[^"]*fg-tertiary/);
+    expect(stamp).toMatch(/class="[^"]*text-xs[^"]*fg-tertiary/);
   });
 
   it('orders the reply row: Copy, Fork, “•••”, thumbs, then the time', () => {
@@ -937,9 +1024,40 @@ describe('clean chat look', () => {
     expect(empty).not.toContain('Thinking');
   });
 
-  it('marks thinking with a lightbulb under either look', () => {
+  it.each(['detailed', 'recent', 'compact'] as const)(
+    'matches a %s thinking row to a tool row’s typography without an icon',
+    (detail) => {
+      const thinking = render(
+        'clean',
+        <ChatDetailProvider value={detail}>
+          <TurnTimer startedAt={1000} isStreaming />
+        </ChatDetailProvider>,
+      );
+      const tool = render(
+        'clean',
+        <ChatDetailProvider value={detail}>
+          <ToolCallCard
+            toolName="Bash"
+            label="Run the unit tests"
+            status="success"
+          />
+        </ChatDetailProvider>,
+      );
+      const rowClass = (html: string): string | undefined =>
+        /class="([^"]*)"/.exec(
+          /<(?:div|button)\b[^>]*data-step-row=""[^>]*>/.exec(html)?.[0] ?? '',
+        )?.[1];
+      expect(rowClass(thinking)).toContain('text-s');
+      expect(rowClass(tool)).toContain('text-s');
+      expect(thinking).not.toContain('data-glyph="lightbulb"');
+      expect(rowClass(thinking)).not.toContain('pl-5.5');
+    },
+  );
+
+  it('omits the thinking icon in clean chat and preserves the classic look', () => {
     const block = <CollapsibleBlock label="Thinking" content="Plan" running />;
-    expect(render('clean', block)).toContain('data-glyph="lightbulb"');
+    expect(render('clean', block)).not.toContain('data-glyph="lightbulb"');
+    expect(render('clean', block)).not.toContain('pl-5.5');
     expect(render('classic', block)).toContain('data-glyph="lightbulb"');
     expect(render('classic', block)).not.toContain(
       'data-glyph="brain-circuit"',

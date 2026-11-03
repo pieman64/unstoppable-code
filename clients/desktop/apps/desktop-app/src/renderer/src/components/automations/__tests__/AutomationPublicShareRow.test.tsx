@@ -134,9 +134,9 @@ it('keeps a published link visible when revocation fails', async (): Promise<voi
   expect(byTestId('automation-public-share-error').textContent).toContain(
     'Unable to revoke',
   );
-  expect(byTestId('automation-public-share-error').getAttribute('role')).toBe(
-    'alert',
-  );
+  expect(
+    byTestId('automation-public-share-error').querySelector('[role="alert"]'),
+  ).not.toBeNull();
   expect(byTestId('automation-public-share-row').textContent).toContain(
     publicShare.sharePath,
   );

@@ -198,6 +198,16 @@ function readLayout(window) {
 }
 
 /**
+ * The stored layout once a Save replaced `previous`. Save does not wait for
+ * the durable preferences write, and `loadPreferences` serves the prior
+ * layout until it commits.
+ */
+async function readSavedLayout(window, previous) {
+  await expect.poll(() => readLayout(window)).not.toEqual(previous);
+  return readLayout(window);
+}
+
+/**
  * The customizable keys the sidebar shows, per region, in order. Only keys of
  * the stored layout count: utility rows such as Customize sidebar are not
  * part of the comparison.
@@ -312,6 +322,7 @@ test('early access: App Advisor moves into More by pointer, opens there, and bot
   try {
     let { window, electronApp } = launched;
     await expect(window.getByTestId('sidebar-nav-app-advisor')).toBeVisible();
+    const defaults = await readLayout(window);
 
     const modal = await openCustomize(window);
     const before = await editorOrder(modal);
@@ -336,7 +347,7 @@ test('early access: App Advisor moves into More by pointer, opens there, and bot
     await expect(modal).toBeHidden();
 
     await expect(window.getByTestId('sidebar-nav-app-advisor')).toHaveCount(0);
-    const advisorLayout = await readLayout(window);
+    const advisorLayout = await readSavedLayout(window, defaults);
     const advisorRegions = await readRegions(window);
     expect(advisorRegions).toEqual(
       expectedRegions(advisorLayout, advisorRegions),
@@ -357,7 +368,7 @@ test('early access: App Advisor moves into More by pointer, opens there, and bot
       .toEqual(['plugins', 'app-advisor']);
     await window.getByTestId('customize-sidebar-save').click();
     await expect(pluginsModal).toBeHidden();
-    const saved = await readLayout(window);
+    const saved = await readSavedLayout(window, advisorLayout);
     const regions = await readRegions(window);
     expect(regions).toEqual(expectedRegions(saved, regions));
     expect(regions.more).toEqual(['plugins', 'app-advisor']);
@@ -401,6 +412,7 @@ test('early access: Marketplace moves into More and back by keyboard and opens f
   try {
     const sidebarRow = window.getByTestId('sidebar-nav-plugins');
     await expect(sidebarRow).toBeVisible();
+    const defaults = await readLayout(window);
     await app.openPluginsPage();
 
     let modal = await openCustomize(window);
@@ -419,7 +431,7 @@ test('early access: Marketplace moves into More and back by keyboard and opens f
     await expect(modal).toBeHidden();
 
     await expect(sidebarRow).toHaveCount(0);
-    const saved = await readLayout(window);
+    const saved = await readSavedLayout(window, defaults);
     const regions = await readRegions(window);
     expect(regions).toEqual(expectedRegions(saved, regions));
     expect(regions.more).toContain('plugins');
@@ -444,8 +456,9 @@ test('early access: Marketplace moves into More and back by keyboard and opens f
     await window.getByTestId('customize-sidebar-save').click();
     await expect(modal).toBeHidden();
     await expect(sidebarRow).toBeVisible();
+    const backLayout = await readSavedLayout(window, saved);
     const back = await readRegions(window);
-    expect(back).toEqual(expectedRegions(await readLayout(window), back));
+    expect(back).toEqual(expectedRegions(backLayout, back));
     expect(back.more).not.toContain('plugins');
   } finally {
     await closeCanopy(electronApp, userDataDir);
@@ -472,8 +485,7 @@ test('early access: Cancel discards edits, Reset then Cancel keeps the saved lay
     await dragRowOnto(window, 'app-advisor', '|');
     await window.getByTestId('customize-sidebar-save').click();
     await expect(modal).toBeHidden();
-    const custom = await readLayout(window);
-    expect(custom).not.toEqual(defaults);
+    const custom = await readSavedLayout(window, defaults);
     await expect(window.getByTestId('sidebar-nav-app-advisor')).toHaveCount(0);
 
     modal = await openCustomize(window);
@@ -486,7 +498,7 @@ test('early access: Cancel discards edits, Reset then Cancel keeps the saved lay
     await window.getByTestId('customize-sidebar-reset').click();
     await window.getByTestId('customize-sidebar-save').click();
     await expect(modal).toBeHidden();
-    expect(await readLayout(window)).toEqual(defaults);
+    await expect.poll(() => readLayout(window)).toEqual(defaults);
     await expect(window.getByTestId('sidebar-nav-app-advisor')).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);

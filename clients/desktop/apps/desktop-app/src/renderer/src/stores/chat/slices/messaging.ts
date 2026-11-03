@@ -1,10 +1,8 @@
+import { createChatCommandEnvelope } from '../revisioned-commands';
+import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { pendingEagerChatCreation } from '../hydration';
 import { newChatPluginDefaultsStamp } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { splitWorktreeKey, worktreeKey } from '../utils';
-import {
-  observeSetupQueueInputDispatch,
-  forgetSetupQueueInputDispatch,
-} from '../setup-queue-dispatch';
 import {
   selectChildToolLiveness,
   useLiveBackgroundTaskStore,
@@ -1119,6 +1117,10 @@ export const createMessagingSlice: StateCreator<
     // first turn finishes. Skip IPC, transcript writes, title generation, and
     // the save schedule — `toPersistedTabs` already filters placeholder tabs.
     if (tab.queuedHookPlaceholder === true) {
+      if (options?.terminalPlanImplementation) {
+        options.onPreDispatchRejected?.();
+        return;
+      }
       set((state) => {
         const currentWc = state.worktreeChats[key];
         if (!currentWc) return state;
@@ -1153,93 +1155,6 @@ export const createMessagingSlice: StateCreator<
           },
         };
       });
-      options?.onDispatchAccepted?.();
-      options?.onQueuedWithoutDispatch?.('renderer');
-      return;
-    }
-
-    // Two-phase worktree creation: while Phase B (git ops) is still running,
-    // queue the message rather than calling IPC. The projectsStore git-ready
-    // handler invokes flushPendingChatsForWorktree once the worktree directory
-    // exists. The `queuedForSetup` flag distinguishes this from the normal
-    // streaming queue so the UI can show a different label.
-    const project = useProjectsStore
-      .getState()
-      .projects.find((p) => p.id === sel.projectId);
-    const worktree =
-      project && project.type !== 'cowork'
-        ? project.worktrees.find((w) => w.id === sel.worktreeId)
-        : undefined;
-    const liveSetupPhase = worktree?.setupPhase;
-    // Queue when the worktree is still doing git ops, or when the caller
-    // explicitly requested the setup-queue treatment (Create Task → Chat/Plan).
-    // The explicit flag makes the behavior deterministic: those flows create
-    // the worktree and send in one action, and Phase B `git-ready` can win the
-    // race before this runs, which would otherwise skip the queued bubble.
-    const shouldQueueForSetup =
-      liveSetupPhase === 'git-pending' || options?.queueForSetup === true;
-    if (shouldQueueForSetup) {
-      set((state) => {
-        const currentWc = state.worktreeChats[key];
-        if (!currentWc) return state;
-        const updatedTabs = currentWc.tabs.map((t) => {
-          if (
-            t.id !== chatId ||
-            hasQueuedAcceptedInput(t, options?.acceptedInputId)
-          ) {
-            return t;
-          }
-          const withQueued = appendQueuedMessageToTab(
-            t,
-            {
-              text,
-              fileReferences,
-              attachmentPaths,
-              ...(attachmentPromptContexts ? { attachmentPromptContexts } : {}),
-              ...(options?.agentSent ? { agentSent: options.agentSent } : {}),
-              ...(adoptableProvisionalFirstSend(t, options?.userMessageId)
-                ? {
-                    dispatchOptions: {
-                      ...acceptedQueuedDispatchOptions,
-                      userMessageId: options?.userMessageId,
-                      submittedAt: t.provisionalFirstSend?.submittedAt,
-                    },
-                  }
-                : acceptedQueuedDispatchOptions
-                  ? { dispatchOptions: acceptedQueuedDispatchOptions }
-                  : {}),
-            },
-            executionHarnessForMessage,
-            options?.composerAttachmentsReserved === true,
-          );
-          // The queued row takes over from a presented Home first send in
-          // this same update, so the chat never shows an empty frame.
-          const handedOff = handOffProvisionalFirstSendToQueue(
-            withQueued,
-            options?.userMessageId,
-          );
-          // The queued bubble explains the wait; no setup annotation is added
-          // to the transcript.
-          return { ...handedOff, queuedForSetup: true };
-        });
-        const updated = { ...currentWc, tabs: updatedTabs };
-        return {
-          worktreeChats: { ...state.worktreeChats, [key]: updated },
-        };
-      });
-      // If the worktree already advanced past `git-pending`, the `git-ready`
-      // flush has already run (with nothing queued yet), so dispatch the
-      // message now to avoid stranding it. The set() above ran synchronously,
-      // so the queued entry is already in state and the git-ready event handler
-      // cannot have interleaved between the phase read and here.
-      // A concurrent project refresh can temporarily omit a just-reserved
-      // worktree row. Absence is not proof of readiness: keep an explicitly
-      // setup-queued Home message parked until git-ready (or git-failed)
-      // restores an authoritative lifecycle signal. Existing rows without a
-      // setupPhase are legacy/ready and retain the immediate-flush behavior.
-      if (worktree && liveSetupPhase !== 'git-pending') {
-        get().flushPendingChatsForWorktree(sel.projectId, sel.worktreeId);
-      }
       options?.onDispatchAccepted?.();
       options?.onQueuedWithoutDispatch?.('renderer');
       return;
@@ -1303,12 +1218,16 @@ export const createMessagingSlice: StateCreator<
         ? `watcher-${watcherDeliveryId}`
         : undefined;
       const terminalWriteIdempotencyKey =
-        options?.acceptedInputId ?? watcherTerminalWriteKey;
+        options?.acceptedInputId ??
+        watcherTerminalWriteKey ??
+        (terminalPresentationSource === 'automation'
+          ? options?.userMessageId
+          : undefined);
       const terminalWriteOptions =
         options?.acceptedInputId !== undefined
           ? { acceptedInputId: options.acceptedInputId }
-          : watcherTerminalWriteKey
-            ? { idempotencyKey: watcherTerminalWriteKey }
+          : terminalWriteIdempotencyKey
+            ? { idempotencyKey: terminalWriteIdempotencyKey }
             : undefined;
       // Mirror the Canopy-native send path's first-message title/status so
       // terminal-backed chats show the same tab/worktree activity indicators
@@ -1426,6 +1345,10 @@ export const createMessagingSlice: StateCreator<
               options?.acceptedInputId !== undefined) &&
             terminalState.turnState === 'running'
           ) {
+            if (options?.terminalPlanImplementation) {
+              options.onPreDispatchRejected?.();
+              return;
+            }
             // Scheduled prompts never interrupt or ride along with a running
             // turn — queue Canopy-side; the turn-completion flush drains the
             // queue once the terminal returns to idle.
@@ -1744,7 +1667,6 @@ export const createMessagingSlice: StateCreator<
             markAutoSurfacePending();
             applyTerminalSendUiState();
             scheduleAutoBranchNaming();
-            options?.onDispatchStarted?.();
             options?.onDispatchAccepted?.();
             return;
           }
@@ -1821,7 +1743,12 @@ export const createMessagingSlice: StateCreator<
       // TUI composer; otherwise the queue drains through the normal
       // force-queued path once the terminal is ready.
       const hadOtherQueuedMessages = tab.queuedMessages.length > 0;
-      const queuedMessage = {
+      if (options?.terminalPlanImplementation && hadOtherQueuedMessages) {
+        // An admitted implementation cannot join an unrelated local queue.
+        options.onPreDispatchRejected?.();
+        return;
+      }
+      const launchMessage = {
         text,
         fileReferences,
         attachmentPaths,
@@ -1834,30 +1761,33 @@ export const createMessagingSlice: StateCreator<
             ? { dispatchOptions: queuedDispatchOptions }
             : {}),
       };
-      set((state) => {
-        const currentWc = state.worktreeChats[key];
-        if (!currentWc) return state;
-        const updatedTabs = currentWc.tabs.map((t) =>
-          t.id === chatId &&
-          !hasQueuedAcceptedInput(t, options?.acceptedInputId)
-            ? handOffProvisionalFirstSendToQueue(
-                appendQueuedMessageToTab(
-                  t,
-                  queuedMessage,
-                  executionHarnessForMessage,
-                  options?.composerAttachmentsReserved === true,
-                ),
-                options?.userMessageId,
-              )
-            : t,
-        );
-        return {
-          worktreeChats: {
-            ...state.worktreeChats,
-            [key]: { ...currentWc, tabs: updatedTabs },
-          },
-        };
-      });
+      // Main already admitted the plan attempt. Its initial launch consumes
+      // this exact prompt; no cancellable local queue copy should outlive it.
+      if (!options?.terminalPlanImplementation)
+        set((state) => {
+          const currentWc = state.worktreeChats[key];
+          if (!currentWc) return state;
+          const updatedTabs = currentWc.tabs.map((t) =>
+            t.id === chatId &&
+            !hasQueuedAcceptedInput(t, options?.acceptedInputId)
+              ? handOffProvisionalFirstSendToQueue(
+                  appendQueuedMessageToTab(
+                    t,
+                    launchMessage,
+                    executionHarnessForMessage,
+                    options?.composerAttachmentsReserved === true,
+                  ),
+                  options?.userMessageId,
+                )
+              : t,
+          );
+          return {
+            worktreeChats: {
+              ...state.worktreeChats,
+              [key]: { ...currentWc, tabs: updatedTabs },
+            },
+          };
+        });
       markAutoSurfacePending();
       applyTerminalSendUiState();
       scheduleAutoBranchNaming();
@@ -1874,6 +1804,13 @@ export const createMessagingSlice: StateCreator<
         )
         .then(async (launched) => {
           launchAccepted = true;
+          if (
+            options?.terminalPlanImplementation &&
+            launched?.lastLaunchConsumedInitialPrompt !== true
+          ) {
+            options.onPreDispatchRejected?.();
+            return;
+          }
           const refreshedTab = get().worktreeChats[key]?.tabs.find(
             (entry) => entry.id === chatId,
           );
@@ -1886,7 +1823,9 @@ export const createMessagingSlice: StateCreator<
             // Claude's JSONL transcript can omit the initial prompt for some
             // launches, and without this durable local row the only visible
             // user bubble disappears as soon as the queued copy is cleared.
-            const queuedMessage = refreshedTab?.queuedMessages[0];
+            const queuedMessage = options?.terminalPlanImplementation
+              ? launchMessage
+              : refreshedTab?.queuedMessages[0];
             if (queuedMessage?.text === text) {
               const submittedAt = terminalSubmittedAt;
               const messageIds = watcherTerminalMessageIds ?? {
@@ -1949,41 +1888,42 @@ export const createMessagingSlice: StateCreator<
                   );
                 }
               }
-              set((state) => {
-                const wc2 = state.worktreeChats[key];
-                if (!wc2) return state;
-                let changed = false;
-                const tabs = wc2.tabs.map((entry) => {
-                  if (entry.id !== chatId) return entry;
-                  const queuedMessage = entry.queuedMessages[0];
-                  if (!queuedMessage || queuedMessage.text !== text) {
-                    return entry;
-                  }
-                  changed = true;
-                  const consumed = appendConsumedClaudeTerminalInitialPrompt(
-                    entry,
-                    queuedMessage,
-                    submittedAt,
-                    messageIds,
-                  );
+              if (!options?.terminalPlanImplementation)
+                set((state) => {
+                  const wc2 = state.worktreeChats[key];
+                  if (!wc2) return state;
+                  let changed = false;
+                  const tabs = wc2.tabs.map((entry) => {
+                    if (entry.id !== chatId) return entry;
+                    const queuedMessage = entry.queuedMessages[0];
+                    if (!queuedMessage || queuedMessage.text !== text) {
+                      return entry;
+                    }
+                    changed = true;
+                    const consumed = appendConsumedClaudeTerminalInitialPrompt(
+                      entry,
+                      queuedMessage,
+                      submittedAt,
+                      messageIds,
+                    );
+                    return {
+                      ...consumed,
+                      ...(entry.provisionalFirstSend
+                        ? {
+                            provisionalFirstSend: {
+                              ...entry.provisionalFirstSend,
+                              phase: 'dispatched' as const,
+                            },
+                          }
+                        : {}),
+                    };
+                  });
+                  if (!changed) return state;
+                  const updated: WorktreeChatState = { ...wc2, tabs };
                   return {
-                    ...consumed,
-                    ...(entry.provisionalFirstSend
-                      ? {
-                          provisionalFirstSend: {
-                            ...entry.provisionalFirstSend,
-                            phase: 'dispatched' as const,
-                          },
-                        }
-                      : {}),
+                    worktreeChats: { ...state.worktreeChats, [key]: updated },
                   };
                 });
-                if (!changed) return state;
-                const updated: WorktreeChatState = { ...wc2, tabs };
-                return {
-                  worktreeChats: { ...state.worktreeChats, [key]: updated },
-                };
-              });
             }
             const consumedInstructionIds = new Set(
               tab.pendingSystemInstructions?.map(
@@ -2033,7 +1973,6 @@ export const createMessagingSlice: StateCreator<
               chatId,
               set,
             );
-            options?.onDispatchStarted?.();
             options?.onDispatchAccepted?.();
             return;
           }
@@ -2057,6 +1996,10 @@ export const createMessagingSlice: StateCreator<
           }
         });
       const rejectTerminalLaunch = (): void => {
+        if (options?.terminalPlanImplementation) {
+          options.onDispatchRejected?.();
+          return;
+        }
         if (launchAccepted || !watcherDeliveryId) {
           // A composer send keeps its full prompt and attachments in the queue
           // for retry; so does a watcher delivery whose consumed prompt failed
@@ -2074,7 +2017,7 @@ export const createMessagingSlice: StateCreator<
           const tabs = currentWc.tabs.map((entry) => {
             if (entry.id !== chatId) return entry;
             const queuedMessages = entry.queuedMessages.filter(
-              (message) => message !== queuedMessage,
+              (message) => message !== launchMessage,
             );
             if (queuedMessages.length === entry.queuedMessages.length) {
               return entry;
@@ -2092,7 +2035,7 @@ export const createMessagingSlice: StateCreator<
         });
         options?.onDispatchRejected?.();
       };
-      if (watcherDeliveryId) {
+      if (watcherDeliveryId || options?.terminalPlanImplementation) {
         try {
           await terminalLaunch;
         } catch (error: unknown) {
@@ -2304,12 +2247,6 @@ export const createMessagingSlice: StateCreator<
       }
       const streamingProviderType = resolveTabProviderType(latestTabForSend);
       let authDependencyRefusalError: Error | undefined;
-      const setupDispatchTarget = { ...sel, chatId };
-      observeSetupQueueInputDispatch(
-        setupDispatchTarget,
-        userMessageId,
-        options?.onDispatchStarted,
-      );
       const hostQueueDispatch = window.api.chat
         .sendMessage({
           ...(options?.assistantMode
@@ -2381,13 +2318,6 @@ export const createMessagingSlice: StateCreator<
             : {}),
         })
         .then((sendResult) => {
-          if (
-            sendResult?.watcherDeliveryHeld ||
-            sendResult?.refusedAuthDependencies ||
-            sendResult?.disposition === 'already_accepted'
-          ) {
-            forgetSetupQueueInputDispatch(setupDispatchTarget, userMessageId);
-          }
           // CAN-1814 PR 7. The host refused this follow-up outright rather
           // than queueing it — its required dependency is known-broken. It
           // never entered the queue, so the composer attachments that produced
@@ -2481,7 +2411,6 @@ export const createMessagingSlice: StateCreator<
           options?.onQueuedWithoutDispatch?.('host');
         })
         .catch((error: unknown) => {
-          forgetSetupQueueInputDispatch(setupDispatchTarget, userMessageId);
           const current = get().worktreeChats[key]?.tabs.find(
             (entry) => entry.id === chatId,
           );
@@ -3067,11 +2996,6 @@ export const createMessagingSlice: StateCreator<
       }
 
       hostDispatchStarted = true;
-      observeSetupQueueInputDispatch(
-        { ...sel, chatId },
-        userMsg.id,
-        options?.onDispatchStarted,
-      );
       const sendResult = await window.api.chat.sendMessage({
         projectId: sel.projectId,
         worktreeId: sel.worktreeId,
@@ -3169,7 +3093,6 @@ export const createMessagingSlice: StateCreator<
       // blocker: the plural field is the one that survives a multi-blocker
       // refusal, and `readAuthDependencyFailures` reads both.
       if (sendResult?.watcherDeliveryHeld) {
-        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         watcherDeliveryHeld = true;
         clearPendingUserPresentation();
         await reconcileRejectedPlanExit();
@@ -3181,7 +3104,6 @@ export const createMessagingSlice: StateCreator<
       }
       refusedAuthDependencies = sendResult?.refusedAuthDependencies;
       if (refusedAuthDependencies) {
-        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         clearPendingUserPresentation();
         await reconcileRejectedPlanExit();
         applyAuthDependencyRefusal(set, key, chatId, refusedAuthDependencies, {
@@ -3207,7 +3129,6 @@ export const createMessagingSlice: StateCreator<
           .addToast(sendResult.modelRoutingNotice, 'info');
       }
       if (sendResult?.disposition === 'already_accepted') {
-        forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
         clearPendingUserPresentation();
         // This replay starts no turn. Keep a review published since the original send.
         await reconcileRejectedPlanExit();
@@ -3271,7 +3192,6 @@ export const createMessagingSlice: StateCreator<
       }
       options?.onDispatchAccepted?.();
     } catch (err) {
-      forgetSetupQueueInputDispatch({ ...sel, chatId }, userMsg.id);
       if (
         preparation.cancelled &&
         (!adoptedFirstSend || !hostDispatchStarted)
@@ -4064,6 +3984,38 @@ export const createMessagingSlice: StateCreator<
 
   handleScheduledTerminalPrompt: (event): void => {
     const key = `${event.projectId}/${event.worktreeId}`;
+    let rejectionReported = false;
+    const reportRejection = (): void => {
+      if (rejectionReported) return;
+      rejectionReported = true;
+      // Lifecycle replies must reach main even while the view is refreshing.
+      void window.api.chat
+        .command(
+          createChatCommandEnvelope(
+            { projectId: event.projectId, worktreeId: event.worktreeId },
+            {
+              type: 'chat.reject_plan_implementation_delivery',
+              chatId: event.chatId,
+              userMessageId: event.userMessageId,
+            },
+          ),
+        )
+        .then((result) => {
+          if (
+            result.outcome !== 'applied' &&
+            result.outcome !== 'already_applied'
+          )
+            throw new Error(
+              result.reason ?? 'Terminal plan delivery refusal was rejected.',
+            );
+        })
+        .catch((error: unknown) => {
+          reportRendererConsoleError(
+            'Failed to record terminal plan delivery refusal',
+            { error },
+          );
+        });
+    };
     void (async (): Promise<void> => {
       if (!get().worktreeChats[key]) {
         await get()
@@ -4071,6 +4023,7 @@ export const createMessagingSlice: StateCreator<
           .catch(() => undefined);
       }
       if (!get().worktreeChats[key]) {
+        reportRejection();
         return;
       }
       const fromAcceptedInput = event.acceptedInputId !== undefined;
@@ -4089,6 +4042,11 @@ export const createMessagingSlice: StateCreator<
             ? { automationName: event.automationName }
             : {}),
           userMessageId: event.userMessageId,
+          ...(event.terminalPlanImplementation
+            ? { terminalPlanImplementation: true }
+            : {}),
+          onPreDispatchRejected: reportRejection,
+          onDispatchRejected: reportRejection,
           ...(event.acceptedInputId !== undefined
             ? { acceptedInputId: event.acceptedInputId }
             : {}),
@@ -4104,6 +4062,11 @@ export const createMessagingSlice: StateCreator<
             : {}),
         },
       );
-    })();
+    })().catch((error: unknown) => {
+      reportRejection();
+      reportRendererConsoleError('Scheduled terminal delivery failed', {
+        error,
+      });
+    });
   },
 });

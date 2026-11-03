@@ -10,6 +10,7 @@ import type { MergePrVerifiedRepo } from '@canopy/desktop-shared/types/github';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
+import { Checkbox } from '@canopy/ui-shared/components';
 
 interface PrMergeMultiRepoModalProps {
   /** Freshly verified per-repo PR state for every repo with an open PR. */
@@ -107,13 +108,14 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={isSubmitting ? (): void => undefined : onClose}
       title="Merge pull requests"
       maxWidth="lg"
       closeOnBackdrop={!isSubmitting}
       dataTestId="pr-merge-multi-repo-modal"
     >
-      <div className="flex flex-col gap-2 p-5 text-s fg-primary">
+      <div className="flex flex-col gap-2 p-6 text-s fg-primary">
         {isChecking ? (
           <div
             className="flex min-h-28 flex-col items-center justify-center gap-3 text-center"
@@ -166,14 +168,12 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
                     key={repoId ?? repo.repoName}
                     className="flex items-center gap-3 rounded-md border bg-secondary/30 p-3"
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={isChecked}
                       disabled={!isSelectable || isSubmitting}
                       onChange={(): void => {
                         if (repoId !== undefined) toggle(repoId);
                       }}
-                      className="h-4 w-4 shrink-0"
                       aria-label={`Select ${repo.repoName} pull request #${repo.prNumber} for merge`}
                       data-testid={`pr-merge-multi-repo-checkbox-${repo.repoName}`}
                     />
@@ -238,7 +238,7 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
             onClick={onRetry}
             data-testid="pr-merge-multi-repo-retry"
           >
-            Retry
+            Try again
           </Button>
         ) : (
           <Button

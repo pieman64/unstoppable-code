@@ -1,6 +1,10 @@
 import { Button } from '@canopy/ui-shared/components';
 import type { JSX, ReactNode } from 'react';
-import { ErrorBanner, LoadingPlaceholder } from '../shared/StatusBlocks';
+import { ErrorBanner } from '../shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 
 export interface EntityEditModalFooterProps {
   isCreate: boolean;
@@ -25,14 +29,18 @@ interface EntityEditModalContentProps {
 export function EntityEditModalContent({
   loading,
   error,
-  bodyClassName = 'flex flex-1 min-h-0 flex-col gap-4 px-5 pb-5',
+  bodyClassName = 'flex flex-1 min-h-0 flex-col gap-4 px-6 pb-6',
   footerProps,
   children,
 }: EntityEditModalContentProps): JSX.Element {
   return (
     <>
       <div className={bodyClassName}>
-        {loading && <LoadingPlaceholder />}
+        {loading && (
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
+        )}
 
         {!loading && children}
 
@@ -56,7 +64,7 @@ export function EntityEditModalFooter({
   onSave,
 }: EntityEditModalFooterProps): JSX.Element {
   return (
-    <div className="flex items-center justify-between border-t px-5 py-3">
+    <div className="flex items-center justify-between border-t px-6 py-3">
       <div>
         {!isCreate && !confirmDelete && (
           <Button

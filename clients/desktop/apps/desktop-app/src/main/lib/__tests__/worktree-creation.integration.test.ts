@@ -29,7 +29,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
+import * as worktreeGit from '../git';
 import path from 'node:path';
+import { AutomationsService } from '../../automations/service';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type WorktreeData,
@@ -39,10 +41,12 @@ import {
   getWorkspaceConfigPath,
   getWorkspaceIndexFilePath,
   getWorkspaceWorktreeRepoDir,
+  getWorkspaceWorktreesFilePath,
   getWorktreeDir,
 } from '../paths';
 import {
   readWorkspaceWorktrees,
+  readWorkspaceWorktreesDetailed,
   setWorktreeRegistryReconciler,
 } from '../workspace-persistence';
 import { initializeSidebarItemGroups } from '../../services/sidebar-item-groups-service';
@@ -169,6 +173,134 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
+
+  it.each([
+    ['single-repo', SINGLE, 'creation'],
+    ['multi-repo', MULTI, 'creation'],
+    ['single-repo', SINGLE, 'automation'],
+    ['multi-repo', MULTI, 'automation'],
+    ['single-repo', SINGLE, 'automation after storage recovery'],
+    ['multi-repo', MULTI, 'automation after storage recovery'],
+  ] as const)(
+    'keeps real %s checkouts in %s when W5 becomes unreadable during %s setup',
+    async (workspaceKind, workspaceId, caller) => {
+      const createWorktree = worktreeGit.createWorktree;
+      const checkouts: { path: string; branch: string }[] = [];
+      let readableList: string | undefined;
+      let storageRecovered = false;
+      let storageFailed: () => void = () => {};
+      const unreadable = new Promise<void>((resolve) => {
+        storageFailed = resolve;
+      });
+      const gitSpy = jest
+        .spyOn(worktreeGit, 'createWorktree')
+        .mockImplementation(async (...args): Promise<string> => {
+          const branch = await createWorktree(...args);
+          checkouts.push({ path: args[1], branch });
+          readableList ??= await readFile(
+            getWorkspaceWorktreesFilePath(workspaceId),
+            'utf8',
+          );
+          await writeFile(
+            getWorkspaceWorktreesFilePath(workspaceId),
+            '{broken',
+          );
+          storageFailed();
+          return branch;
+        });
+      const failures: string[] = [];
+      let settle: (outcome: string) => void = () => {};
+      const settled = new Promise<string>((resolve) => {
+        settle = resolve;
+      });
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        if (caller !== 'creation') {
+          const service = new AutomationsService();
+          service.configure({
+            getMainWindow: () => null,
+            ensureAppAdvisorWindow: () =>
+              Promise.resolve({ open: false, focused: false }),
+            sendAppAdvisorWindowCommand: () => {},
+          });
+          if (caller === 'automation after storage recovery') {
+            const dispose = service['disposeFailedReadyWorktree'].bind(service);
+            service['disposeFailedReadyWorktree'] = async (
+              ...args
+            ): Promise<void> => {
+              if (readableList === undefined)
+                throw new Error('No saved W5 list');
+              await writeFile(
+                getWorkspaceWorktreesFilePath(workspaceId),
+                readableList,
+              );
+              const restoredList = await readWorkspaceWorktreesDetailed(
+                workspaceId,
+                { persistRemovalCleanup: false },
+              );
+              storageRecovered = restoredList.authority === 'ok';
+              expect(storageRecovered).toBe(true);
+              return dispose(...args);
+            };
+          }
+          const ready = service['createReadyWorktree']({
+            type: 'worktree_prompt',
+            workspaceId,
+            prompt: 'Implement',
+          });
+          void ready.catch(() => undefined);
+          await Promise.race([
+            unreadable,
+            ready.then(() => {
+              throw new Error('Storage failure was not injected');
+            }),
+          ]);
+          await expect(
+            Promise.race([
+              ready,
+              new Promise<never>((_resolve, reject) => {
+                deadline = setTimeout(
+                  () => reject(new Error('Setup did not fail promptly')),
+                  5000,
+                );
+              }),
+            ]),
+          ).rejects.toThrow(/storage.*unreadable/i);
+          if (caller === 'automation after storage recovery') {
+            // Disposal errors are swallowed by createReadyWorktree.
+            expect(storageRecovered).toBe(true);
+          }
+        } else {
+          await createWorktreeFromSelection({
+            workspaceId,
+            workspaceKind,
+            branch: { kind: 'new', branchName: 'feature/unreadable-setup' },
+            base: { kind: 'repository-default' },
+            deferGitSetup: true,
+            onGitFailed: (event) => failures.push(event.error),
+            onGitSetupSettled: (event) => settle(event.outcome),
+          });
+          await expect(settled).resolves.toBe('failed');
+          expect(failures).toEqual([
+            expect.stringMatching(/storage.*unreadable/i),
+          ]);
+        }
+        expect(checkouts.length).toBeGreaterThan(0);
+        for (const checkout of checkouts) {
+          expect(git(checkout.path, ['branch', '--show-current'])).toBe(
+            checkout.branch,
+          );
+          expect(
+            await readFile(path.join(checkout.path, 'README.md'), 'utf8'),
+          ).toBe('base\n');
+        }
+      } finally {
+        if (deadline) clearTimeout(deadline);
+        gitSpy.mockRestore();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   describe('single-repository', () => {
     it(

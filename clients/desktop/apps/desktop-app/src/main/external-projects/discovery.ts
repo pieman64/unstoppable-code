@@ -34,6 +34,7 @@ import {
   type ExistingWorkspaceIdentity,
   type NormalizeDeps,
 } from './normalize';
+import { findNestedRepositories } from './nested-repositories';
 import {
   resolveClaudeDesktopCoworkSessionsDir,
   resolveClaudeDesktopDataDir,
@@ -172,17 +173,19 @@ const normalizeDeps: NormalizeDeps = {
   gitTopLevel: async (directory) => {
     try {
       return await getWorktreeTopLevel(directory);
-    } catch {
-      return null;
+    } catch (error) {
+      // A definitive negative is distinct from timeout, permission or launch failure.
+      if (
+        error instanceof Error &&
+        /fatal: not a git repository\b/i.test(error.message)
+      ) {
+        return null;
+      }
+      throw error;
     }
   },
-  gitCommonDir: async (topLevel) => {
-    try {
-      return await getGitCommonDir(topLevel);
-    } catch {
-      return null;
-    }
-  },
+  gitCommonDir: (topLevel) => getGitCommonDir(topLevel),
+  findNestedRepositories,
 };
 
 /**
@@ -332,6 +335,7 @@ export async function discoverExternalProjects(
       sessionScratchRoots,
       maxSessionsPerCandidate: MAX_SESSIONS_PER_CANDIDATE,
       maxUnavailableCandidates: MAX_UNAVAILABLE_CANDIDATES,
+      maxNestedRepositoriesListed: 20,
     },
     normalizeDeps,
   );
@@ -340,7 +344,10 @@ export async function discoverExternalProjects(
   // Custom folders carry no provider evidence; drop the synthetic provider
   // marker so the UI shows them as a picked folder, not a Claude project.
   const candidates = normalized.candidates.map((candidate) =>
-    candidate.surfaces.length === 1 && candidate.surfaces[0] === 'custom-folder'
+    candidate.surfaces.every(
+      (surface) =>
+        surface === 'custom-folder' || surface === 'nested-repository',
+    )
       ? { ...candidate, providers: [] }
       : candidate,
   );

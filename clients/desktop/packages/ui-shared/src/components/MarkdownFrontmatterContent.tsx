@@ -1,7 +1,9 @@
 import { type JSX } from 'react';
 
 import { Markdown, type MarkdownProps } from './Markdown';
-import { ErrorBanner, LoadingPlaceholder } from './StatusBlocks';
+import { ErrorBanner } from './StatusBlocks';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import {
   FrontmatterBlock,
   visibleFrontmatterEntries,
@@ -43,7 +45,11 @@ export function MarkdownFrontmatterContent({
 
   return (
     <>
-      {loading && <LoadingPlaceholder />}
+      {loading && (
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
+      )}
       <ErrorBanner error={error} />
       {content && !loading && (
         <>

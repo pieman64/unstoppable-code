@@ -18,7 +18,6 @@ export interface WorkEntryRemovalConfirmDialogProps {
   /** The row's test id; the dialog and its confirm derive theirs from it. */
   readonly rowTestId: string;
   readonly pinnedSurface?: WorkEntryRowPinnedSurface;
-  readonly entryId: string;
   /**
    * The removal is running: the spinner sits inside the action and the
    * dialog cannot be dismissed until it settles.
@@ -42,7 +41,6 @@ export function WorkEntryRemovalConfirmDialog({
   retentionDays,
   rowTestId,
   pinnedSurface,
-  entryId,
   busy,
   blockedReason,
   confirmDisabled = false,
@@ -67,22 +65,13 @@ export function WorkEntryRemovalConfirmDialog({
       confirmDisabled={confirmDisabled || blockedReason !== undefined}
       onConfirm={onConfirm}
       onCancel={onCancel}
+      errorMessage={blockedReason}
       dataTestId={`${rowTestId}-delete-dialog`}
       confirmTestId={workEntryRowTestId(
         rowTestId,
         '-confirm-delete',
         pinnedSurface,
       )}
-    >
-      {blockedReason !== undefined ? (
-        <p
-          role="alert"
-          data-testid={`delete-work-entry-${entryId}-blocked`}
-          className="text-s text-pretty fg-secondary"
-        >
-          {blockedReason}
-        </p>
-      ) : null}
-    </ConfirmDialog>
+    />
   );
 }

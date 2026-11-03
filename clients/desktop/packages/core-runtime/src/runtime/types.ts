@@ -99,6 +99,12 @@ export type CanopyDispatcherInstructionHandlerMap<
     | Promise<CanopyDispatcherInstructionResultInput<D, N>>;
 };
 export interface CanopyStreamSink<Item> {
+  /**
+   * Frames emitted but not yet taken by the consumer. A handler that
+   * produces bursts can shed optional items before the buffer overflows and
+   * ends the stream.
+   */
+  buffered?(): number;
   emit(
     item: Item,
     onCursorAssigned?: (cursor: CanopyStreamCursor) => void,

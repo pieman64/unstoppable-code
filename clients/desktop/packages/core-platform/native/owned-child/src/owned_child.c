@@ -1,4 +1,4 @@
-// Owned daemon root for startup rollback (Darwin only).
+// Owned daemon root for startup rollback (Darwin and Linux).
 //
 // The root is spawned with posix_spawn as a new session and process-group
 // leader. Its exit is observed with waitid(WNOWAIT), which leaves it
@@ -6,19 +6,20 @@
 // addon reaps it. Group signals are sent only through a validated, owned,
 // unreaped handle. Errors carry fixed text: no paths, arguments, or input.
 //
-// A launcher-channel spawn also hands the child one end of a socketpair as fd
-// 3. The parent end stays in the record and never reaches JS as a descriptor.
-#ifndef __APPLE__
-#error "core-owned-child supports Darwin only"
+// A launcher-channel spawn (Darwin only) also hands the child one end of a
+// socketpair as fd 3. The parent end stays in the record and never reaches JS
+// as a descriptor.
+#if defined(__linux__)
+// POSIX_SPAWN_SETSID and posix_spawn_file_actions_addclosefrom_np.
+#define _GNU_SOURCE
+#elif !defined(__APPLE__)
+#error "core-owned-child supports Darwin and Linux only"
 #endif
 
 #include <node_api.h>
 
-#include <bsm/libbsm.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <libproc.h>
-#include <mach/mach.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -26,11 +27,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <bsm/libbsm.h>
+#include <libproc.h>
+#include <mach/mach.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#else
+#include <dirent.h>
+#include <pthread.h>
+#include <stdio.h>
+#endif
 
 #define MAX_STDIN_BYTES 4096
 #define MAX_STRING_BYTES (64 * 1024)
@@ -105,11 +116,13 @@ static root_state inspect_root(pid_t pid, siginfo_t *info) {
   }
 }
 
-// Members of the root's group other than the root, zombies included. -1 when
-// the bounded enumeration fails or may be truncated. proc_listpids returns
-// bytes; proc_listpgrppids returns a PID count, so it is not used. Callers
-// hold the root unreaped, so a valid listing always contains the root: one
-// without it (including an empty one) is a failure, never an empty group.
+// Members of the root's group other than the root. -1 when the bounded
+// enumeration fails or may be truncated. Callers hold the root unreaped, so a
+// valid listing always contains the root: one without it (including an empty
+// one) is a failure, never an empty group.
+#ifdef __APPLE__
+// Zombies included. proc_listpids returns bytes; proc_listpgrppids returns a
+// PID count, so it is not used.
 static int group_members(pid_t pid) {
   pid_t pids[GROUP_CAPACITY];
   errno = 0;
@@ -127,12 +140,105 @@ static int group_members(pid_t pid) {
   }
   return root ? count : -1;
 }
+#else
+typedef enum { PROC_FAILED = -1, PROC_OTHER, PROC_EXITED, PROC_LIVE } proc_kind;
+
+// Classifies /proc/<entry>/stat against `group`. PROC_OTHER covers another
+// group and a process already gone; PROC_EXITED a zombie whose last thread is
+// gone (a zombie leader still counts its live threads).
+static proc_kind classify(const char *entry, pid_t group) {
+  char file[64], text[512];
+  if (snprintf(file, sizeof file, "/proc/%s/stat", entry) >= (int)sizeof file)
+    return PROC_FAILED;
+  int fd;
+  do {
+    fd = open(file, O_RDONLY | O_CLOEXEC);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) return errno == ENOENT || errno == ESRCH ? PROC_OTHER : PROC_FAILED;
+  ssize_t size;
+  do {
+    size = read(fd, text, sizeof text - 1);
+  } while (size < 0 && errno == EINTR);
+  int failure = errno;
+  close(fd);
+  if (size < 0) return failure == ESRCH ? PROC_OTHER : PROC_FAILED;
+  if (size == 0) return PROC_OTHER;
+  text[size] = '\0';
+  // The command name may contain ')' and spaces. After the last ')' come
+  // state, ppid and pgrp; num_threads is the 18th field, after 14 skipped.
+  const char *rest = strrchr(text, ')');
+  char state;
+  int parent, pgrp;
+  long threads;
+  if (!rest || sscanf(rest + 1,
+                      " %c %d %d %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s %*s "
+                      "%*s %*s %*s %ld",
+                      &state, &parent, &pgrp, &threads) != 4)
+    return PROC_FAILED;
+  if (pgrp != group) return PROC_OTHER;
+  return (state == 'Z' || state == 'X') && threads <= 1 ? PROC_EXITED
+                                                        : PROC_LIVE;
+}
+
+static bool numeric(const char *name) {
+  if (!*name) return false;
+  for (const char *at = name; *at; at++)
+    if (*at < '0' || *at > '9') return false;
+  return true;
+}
+
+// A bounded scan of /proc. Exited members are not counted: they hold nothing
+// and cannot fork, and they may never be reaped (a container's PID 1, or a
+// CLI running as PID 1, need not reap orphans). The scan is not a snapshot,
+// so callers trust an empty result only after a group signal.
+static int group_members(pid_t pid) {
+  DIR *proc = opendir("/proc");
+  if (!proc) return -1;
+  int count = 0;
+  bool root = false;
+  bool failed = false;
+  for (;;) {
+    errno = 0;
+    struct dirent *entry = readdir(proc);
+    if (!entry) {
+      failed = errno != 0;
+      break;
+    }
+    if (!numeric(entry->d_name)) continue;
+    proc_kind kind = classify(entry->d_name, pid);
+    if (kind == PROC_FAILED) {
+      failed = true;
+      break;
+    }
+    if (kind == PROC_OTHER) continue;
+    if (strtol(entry->d_name, NULL, 10) == (long)pid)
+      root = true;
+    else if (kind == PROC_LIVE && ++count >= GROUP_CAPACITY - 1) {
+      failed = true;
+      break;
+    }
+  }
+  closedir(proc);
+  return failed || !root ? -1 : count;
+}
+#endif
 
 // SIGKILL to the root's group. Darwin answers EPERM, not ESRCH, while a member
-// is exiting or once only the exited root remains. Callers confirm the stop
-// by enumeration and reaping, so a lasting EPERM runs into their deadline.
+// is exiting or once only the exited root remains; Linux signals the zombie
+// root and answers 0. Callers confirm the stop by enumeration and reaping, so
+// a lasting EPERM runs into their deadline.
 static bool signal_group(pid_t pid) {
   return kill(-pid, SIGKILL) == 0 || errno == ESRCH || errno == EPERM;
+}
+
+// Members left before an uncommitted exited root is reaped. Linux signals the
+// group first: once it is signaled no member can fork, so the scan that
+// follows misses none.
+static int settled_members(pid_t pid) {
+#ifdef __linux__
+  if (!signal_group(pid)) return -1;
+#endif
+  return group_members(pid);
 }
 
 static bool reap(pid_t pid) {
@@ -173,7 +279,7 @@ static bool rollback_blocking(pid_t pid) {
     // The unreaped root reserves the group ID; never signal without it.
     root_state root = inspect_root(pid, NULL);
     if (root == ROOT_LOST) return false;
-    if (root == ROOT_EXITED && group_members(pid) == 0) return reap(pid);
+    if (root == ROOT_EXITED && settled_members(pid) == 0) return reap(pid);
     // Repeated: a member forked after the previous signal is caught next.
     if (!signal_group(pid)) return false;
     if (now_ms() >= deadline) return false;
@@ -318,17 +424,24 @@ static char **copy_vector(napi_env env, napi_value value, size_t minimum) {
 
 // channel_fd, when >= 0, is above fd 3 (raise_fd), so no stdio action
 // replaces it before its dup2; stdin's dup2 runs first in case it is fd 3.
-// A channel root starts suspended until its pidversion is read.
+// A channel root starts suspended until its pidversion is read. Only fds 0-2
+// (and the channel's fd 3) reach the child: Darwin closes the rest with
+// CLOEXEC_DEFAULT, Linux with a closefrom action after the dup2 actions.
 static int prepare_spawn(posix_spawnattr_t *attrs,
                          posix_spawn_file_actions_t *actions, int stdin_fd,
                          int channel_fd) {
   sigset_t defaults, mask;
   sigfillset(&defaults);
   sigemptyset(&mask);
+#ifdef __APPLE__
+  short flags = POSIX_SPAWN_CLOEXEC_DEFAULT |
+                (channel_fd >= 0 ? POSIX_SPAWN_START_SUSPENDED : 0);
+#else
+  short flags = 0;
+#endif
   int failed = posix_spawnattr_setflags(
-      attrs, POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT |
-                 POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK |
-                 (channel_fd >= 0 ? POSIX_SPAWN_START_SUSPENDED : 0));
+      attrs, POSIX_SPAWN_SETSID | POSIX_SPAWN_SETSIGDEF |
+                 POSIX_SPAWN_SETSIGMASK | flags);
   failed = failed || posix_spawnattr_setsigdefault(attrs, &defaults);
   failed = failed || posix_spawnattr_setsigmask(attrs, &mask);
   failed = failed ||
@@ -344,12 +457,16 @@ static int prepare_spawn(posix_spawnattr_t *attrs,
                                                       O_WRONLY, 0);
   failed = failed || posix_spawn_file_actions_addopen(actions, 2, "/dev/null",
                                                       O_WRONLY, 0);
+#ifndef __APPLE__
+  failed = failed || posix_spawn_file_actions_addclosefrom_np(
+                         actions, channel_fd >= 0 ? CHANNEL_FD + 1 : 3);
+#endif
   return failed;
 }
 
 // Bounded private handoff. A failure leaves the child to fail its own
 // bounded read; the handle is still returned because the child exists.
-static void write_stdin(int fd, const char *data, size_t size) {
+static void write_all(int fd, const char *data, size_t size) {
   int64_t deadline = now_ms() + DEADLINE_MS;
   size_t written = 0;
   while (written < size) {
@@ -367,11 +484,43 @@ static void write_stdin(int fd, const char *data, size_t size) {
   }
 }
 
+#ifdef __APPLE__
+static void write_stdin(int fd, const char *data, size_t size) {
+  write_all(fd, data, size);
+}
+#else
+// Linux has no per-descriptor SIGPIPE opt-out: a write to a pipe the child
+// closed raises SIGPIPE on this thread, whose disposition the host owns. It
+// stays blocked for the write, and one raised by the write is consumed.
+static void write_stdin(int fd, const char *data, size_t size) {
+  sigset_t pipe_signal, pending, previous;
+  sigemptyset(&pipe_signal);
+  sigaddset(&pipe_signal, SIGPIPE);
+  sigemptyset(&pending);
+  sigpending(&pending);
+  bool was_pending = sigismember(&pending, SIGPIPE) == 1;
+  if (pthread_sigmask(SIG_BLOCK, &pipe_signal, &previous) != 0) return;
+  write_all(fd, data, size);
+  if (!was_pending) {
+    sigemptyset(&pending);
+    sigpending(&pending);
+    if (sigismember(&pending, SIGPIPE) == 1) {
+      struct timespec none = {0, 0};
+      while (sigtimedwait(&pipe_signal, NULL, &none) == -1 && errno == EINTR) {
+      }
+    }
+  }
+  pthread_sigmask(SIG_SETMASK, &previous, NULL);
+}
+#endif
+
 static bool open_pipe(int fds[2]) {
   if (pipe(fds) != 0) return false;
   bool ok = fcntl(fds[0], F_SETFD, FD_CLOEXEC) == 0 &&
             fcntl(fds[1], F_SETFD, FD_CLOEXEC) == 0 &&
+#ifdef __APPLE__
             fcntl(fds[1], F_SETNOSIGPIPE, 1) == 0 &&
+#endif
             fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0;
   if (!ok) {
     close(fds[0]);
@@ -381,6 +530,7 @@ static bool open_pipe(int fds[2]) {
   return ok;
 }
 
+#ifdef __APPLE__
 // Moves a CLOEXEC descriptor above CHANNEL_FD.
 static bool raise_fd(int *fd) {
   if (*fd > CHANNEL_FD) return true;
@@ -423,6 +573,19 @@ static bool task_pidversion(pid_t pid, int *version) {
   *version = audit_token_to_pidversion(token);
   return true;
 }
+#else
+// The launcher channel is Darwin's alone; Linux never opens one.
+static bool open_channel(int fds[2]) {
+  (void)fds;
+  return false;
+}
+
+static bool task_pidversion(pid_t pid, int *version) {
+  (void)pid;
+  (void)version;
+  return false;
+}
+#endif
 
 // A record whose handle cannot be delivered: roll the child back here.
 static napi_value fail_undelivered(napi_env env, instance *inst,
@@ -548,11 +711,13 @@ static napi_value spawn_child(napi_env env, napi_callback_info info) {
   return spawn_record(env, info, false);
 }
 
+#ifdef __APPLE__
 // spawnChannel(executable, argv, envPairs, stdin | null) -> { handle, pid }
 // As spawn, plus the launcher channel on the child's fd 3.
 static napi_value spawn_channel(napi_env env, napi_callback_info info) {
   return spawn_record(env, info, true);
 }
+#endif
 
 // observe(handle) -> { state: 'running' | 'lost' } | { state: 'exited', code, signal }
 static napi_value observe(napi_env env, napi_callback_info info) {
@@ -624,7 +789,8 @@ static napi_value members(napi_env env, napi_callback_info info) {
 }
 
 // release(handle) -> true once reaped; false while the root runs or, for an
-// uncommitted handle, while its group has members.
+// uncommitted handle, while its group has members. Only a stop releases an
+// uncommitted handle, so Linux may signal its group here.
 static napi_value release(napi_env env, napi_callback_info info) {
   instance *inst;
   record *item = handle_arg(env, info, &inst);
@@ -632,7 +798,7 @@ static napi_value release(napi_env env, napi_callback_info info) {
   if (!item || !require_waitable(env, item, &root)) return NULL;
   if (root != ROOT_EXITED) return make_bool(env, false);
   if (item->state == OWNED) {
-    int count = group_members(item->pid);
+    int count = settled_members(item->pid);
     if (count < 0) {
       throw_code(env, "ERR_OWNED_CHILD_ENUMERATION",
                  "Owned child group could not be enumerated.");
@@ -694,6 +860,7 @@ static napi_value rollback_undelivered(napi_env env, napi_callback_info info) {
   return make_bool(env, complete);
 }
 
+#ifdef __APPLE__
 // Resolves (handle, ...) for a channel call; `extra` arguments follow.
 static record *channel_args(napi_env env, napi_callback_info info,
                             napi_value *extra, size_t count) {
@@ -827,6 +994,7 @@ static napi_value channel_close(napi_env env, napi_callback_info info) {
   close_channel(item);
   return make_bool(env, true);
 }
+#endif
 
 NAPI_MODULE_INIT() {
   instance *inst = calloc(1, sizeof *inst);
@@ -846,6 +1014,7 @@ NAPI_MODULE_INIT() {
        inst},
       {"rollbackUndelivered", NULL, rollback_undelivered, NULL, NULL, NULL,
        napi_enumerable, inst},
+#ifdef __APPLE__
       {"spawnChannel", NULL, spawn_channel, NULL, NULL, NULL, napi_enumerable,
        inst},
       {"channelRead", NULL, channel_read, NULL, NULL, NULL, napi_enumerable,
@@ -856,6 +1025,7 @@ NAPI_MODULE_INIT() {
        inst},
       {"channelClose", NULL, channel_close, NULL, NULL, NULL, napi_enumerable,
        inst},
+#endif
   };
   // On failure the hook stays: it frees the empty instance at teardown.
   if (napi_define_properties(env, exports, sizeof methods / sizeof *methods,

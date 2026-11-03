@@ -34,9 +34,9 @@ export const TEAM_UPGRADE_COPY = {
   inviteSubmit: 'Send invite',
   inviting: 'Sending invite…',
   manage: 'Manage',
-  retryProjects: 'Retry projects',
+  retryProjects: 'Try projects again',
   checkAgain: 'Check again',
-  retryInvite: 'Retry invite',
+  retryInvite: 'Try the invite again',
 } as const;
 
 export function teamCreatedTitle(team: string): string {
@@ -146,7 +146,7 @@ export function inviteFailureMessage(
     return `Couldn't invite ${email} right now. Wait a moment, then retry.`;
   return failure.code === 'invite_refused' || failure.code === 'forbidden'
     ? `Couldn't invite ${email}. ${failure.message}`
-    : `Couldn't invite ${email}. Retry the invite.`;
+    : `Couldn't invite ${email}. Try the invite again.`;
 }
 
 /** The promotion refusal sentence; the server message only for known refusals. */

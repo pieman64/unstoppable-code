@@ -41,6 +41,7 @@ import {
   w5ResourceKey,
   type W5CommitLogHostPort,
 } from '../commit-log-file-store';
+import type { W5RecordUnservedReason } from '../file-store';
 import {
   w5RecordPathFor,
   w5RecordTargetFor,
@@ -72,7 +73,19 @@ export interface W5RecordHostPortOptions {
     operation: string;
     kind: W5RecordConflictKind;
   }) => void;
+  /**
+   * Each refusal of a record this port cannot serve that fails closed here:
+   * a commit or revision read naming an unnameable workspace, or an
+   * over-limit revision read. By commit-log label, or the capture operation
+   * for a read.
+   */
+  readonly onUnserved?: (event: {
+    operation: string;
+    reason: W5RecordUnservedReason;
+  }) => void;
 }
+
+const CAPTURE_OPERATION = 'core.workspaceRecords.capture';
 
 const STORAGE_REFUSALS: readonly StorageWriteRefusalReason[] = [
   'invalid_writer',
@@ -161,27 +174,34 @@ function isLogCode(value: unknown): value is W5CommitLogErrorCode {
   return LOG_CODES.some((code) => code === value);
 }
 
-/** Refuses a resource whose revision capture evidence cannot carry. */
-function assertNameable(resource: W5Resource): void {
+function isCaptureLimitRefusal(error: unknown): boolean {
+  return (
+    error instanceof W5CommitRefusedError &&
+    error.reason === 'invalid-state' &&
+    error.details.capture === 'limit-exceeded'
+  );
+}
+
+const UNNAMEABLE_WORKSPACE =
+  'The daemon record port cannot name this workspace.';
+
+/** Why capture evidence cannot carry `resource`'s revision, if it cannot. */
+function nameRefusal(resource: W5Resource): string | undefined {
   if (
     resource.kind !== 'workspaces' &&
     !isW5CaptureWorkspaceId(resource.workspaceId)
   )
-    throw canopyCapabilityUnavailableError(
-      'The daemon record port cannot name this workspace.',
-    );
+    return UNNAMEABLE_WORKSPACE;
   if (
     resource.kind === 'worktree' &&
     !CoreWorkspaceRecordsWorktreeIdSchema.safeParse(resource.worktreeId).success
   )
-    throw canopyCapabilityUnavailableError(
-      'The daemon record port cannot name this worktree.',
-    );
+    return 'The daemon record port cannot name this worktree.';
+  return undefined;
 }
 
 /** The selector whose capture evidence carries `resource`'s revision. */
 function revisionSelector(resource: W5Resource): W5CaptureFile {
-  assertNameable(resource);
   switch (resource.kind) {
     case 'workspaces':
       return { kind: 'index' };
@@ -199,6 +219,16 @@ export function createW5RecordHostPort(
   const { root, transport } = options;
   const meter = (operation: string, kind: W5RecordConflictKind): void =>
     options.onConflict?.({ operation, kind });
+  const unserved = (operation: string, reason: W5RecordUnservedReason): void =>
+    options.onUnserved?.({ operation, reason });
+  /** Refuses, before sending, a resource whose revision it could not read back. */
+  const assertNameable = (resource: W5Resource, operation: string): void => {
+    const refusal = nameRefusal(resource);
+    if (refusal === undefined) return;
+    // Capture `unsupported-id` is the workspace-id class only.
+    if (refusal === UNNAMEABLE_WORKSPACE) unserved(operation, 'unsupported-id');
+    throw canopyCapabilityUnavailableError(refusal);
+  };
   const pathOf = (value: unknown, fallback: string): string =>
     isW5CaptureFile(value) ? w5RecordPathFor(root, value) : fallback;
 
@@ -209,7 +239,7 @@ export function createW5RecordHostPort(
   ): unknown {
     const payload = typedPayload(error);
     if (!payload?.code) return error;
-    const operation = request?.operation ?? 'core.workspaceRecords.capture';
+    const operation = request?.operation ?? CAPTURE_OPERATION;
     const firstPath = request?.firstPath ?? root;
     switch (payload.code) {
       case 'core.workspaceRecords.fingerprintConflict':
@@ -309,10 +339,10 @@ export function createW5RecordHostPort(
 
   async function commit(request: W5CommitRequest): Promise<W5CommitOutcome> {
     // A revision this port could not read back is never advanced.
-    request.advance.forEach(assertNameable);
-    request.expectedRevisions?.forEach((entry) =>
-      assertNameable(entry.resource),
-    );
+    for (const resource of request.advance)
+      assertNameable(resource, request.operation);
+    for (const entry of request.expectedRevisions ?? [])
+      assertNameable(entry.resource, request.operation);
     const files: CoreWorkspaceRecordsCommitParams['files'] = [];
     for (const file of request.files) {
       const target = w5RecordTargetFor(root, file.path);
@@ -458,10 +488,20 @@ export function createW5RecordHostPort(
     commit,
     capture,
     async revision(resource) {
-      const result = await capture({
-        files: [revisionSelector(resource)],
-        discoverWorkspaces: false,
-      });
+      assertNameable(resource, CAPTURE_OPERATION);
+      let result: W5CaptureResult;
+      try {
+        result = await capture({
+          files: [revisionSelector(resource)],
+          discoverWorkspaces: false,
+        });
+      } catch (error) {
+        // Only here and in a host's one-file read does the class fail closed;
+        // an over-limit query capture reads its files one at a time instead.
+        if (isCaptureLimitRefusal(error))
+          unserved(CAPTURE_OPERATION, 'limit-exceeded');
+        throw error;
+      }
       return result.log.revisions[w5ResourceKey(resource)] ?? 0;
     },
     lookupReceipt,

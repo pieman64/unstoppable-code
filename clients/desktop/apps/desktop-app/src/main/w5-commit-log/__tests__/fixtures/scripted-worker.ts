@@ -11,6 +11,8 @@ import { parentPort, threadId, workerData } from 'node:worker_threads';
  * - `never-ready`: stays alive but never reports startup, so only the host's
  *   startup deadline can end it.
  * - `silent`: reports ready, then never answers.
+ * - `gated-commit`: commits wait on an optional shared-memory outcome gate;
+ *   revisions count received requests, so tests can detect expired sends.
  * - `exit-on-request`: reports ready, then exits on its first request.
  * - `unexpected-result`: reports ready, then answers every request with a
  *   result of the wrong shape.
@@ -70,7 +72,37 @@ if (script === 'partial-recovery') {
 if (neverReady) setInterval(() => undefined, 1_000);
 
 if (!neverReady) {
+  let requests = 0;
   port.on('message', (message: unknown): void => {
+    if (script === 'gated-commit' && isRecord(message)) {
+      requests += 1;
+      const input: unknown = Array.isArray(message.args)
+        ? message.args[0]
+        : undefined;
+      if (message.method === 'commit' && isRecord(input)) {
+        if (input.outcome instanceof SharedArrayBuffer)
+          Atomics.wait(new Int32Array(input.outcome), 0, 0);
+        port.postMessage({
+          id: message.id,
+          ok: true,
+          result: { status: 'applied', commitId: requests, revisions: {} },
+        });
+      } else if (message.method === 'snapshot') {
+        port.postMessage({
+          id: message.id,
+          ok: true,
+          result: { commitId: requests, schemaVersion: 2, revisions: {} },
+        });
+      } else if (message.method === 'lookupReceipt') {
+        port.postMessage({
+          id: message.id,
+          ok: true,
+          result: { status: 'none' },
+        });
+      } else {
+        port.postMessage({ id: message.id, ok: true, result: requests });
+      }
+    }
     if (script === 'exit-on-request') process.exit(1);
     if (script === 'unexpected-result' && isRecord(message)) {
       port.postMessage({ id: message.id, ok: true, result: { nope: true } });
@@ -126,10 +158,12 @@ if (!neverReady) {
       );
   });
   port.postMessage(
-    script === 'anchor'
-      ? { type: 'ready', captureRoot: `/anchored/by-worker-${threadId}` }
-      : lateRoot !== undefined
-        ? { type: 'ready', captureRoot: lateRoot }
-        : { type: 'ready' },
+    script === 'gated-commit'
+      ? { type: 'ready', captureRoot: '/test-capture-root' }
+      : script === 'anchor'
+        ? { type: 'ready', captureRoot: `/anchored/by-worker-${threadId}` }
+        : lateRoot !== undefined
+          ? { type: 'ready', captureRoot: lateRoot }
+          : { type: 'ready' },
   );
 }

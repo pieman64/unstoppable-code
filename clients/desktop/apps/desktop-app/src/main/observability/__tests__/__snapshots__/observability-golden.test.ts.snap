@@ -755,7 +755,10 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "sdkSessionId": "session-claude",
       "planEvents": {
         "created": 0,
-        "approved": 1
+        "approved": 1,
+        "eventIds": [
+          "plan-approved-1"
+        ]
       },
       "totalCostUsd": 0.08,
       "sdkCumulativeCostUsd": 0.2,
@@ -845,7 +848,10 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
       "sdkSessionId": "session-claude",
       "planEvents": {
         "created": 1,
-        "approved": 0
+        "approved": 0,
+        "eventIds": [
+          "plan-created-1"
+        ]
       },
       "context": {
         "endTokens": 2340,
@@ -1082,7 +1088,10 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "sdkSessionId": "session-claude",
         "planEvents": {
           "created": 0,
-          "approved": 1
+          "approved": 1,
+          "eventIds": [
+            "plan-approved-1"
+          ]
         },
         "totalCostUsd": 0.08,
         "sdkCumulativeCostUsd": 0.2,
@@ -1172,7 +1181,10 @@ exports[`observability golden: chat turns: Claude serves the golden aggregates 1
         "sdkSessionId": "session-claude",
         "planEvents": {
           "created": 1,
-          "approved": 0
+          "approved": 0,
+          "eventIds": [
+            "plan-created-1"
+          ]
         },
         "context": {
           "endTokens": 2340,
@@ -2629,7 +2641,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 1,
-    "approved": 0
+    "approved": 0,
+    "eventIds": [
+      "plan-created-1"
+    ]
   }
 }
 --- 2
@@ -2702,7 +2717,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 1,
-    "approved": 0
+    "approved": 0,
+    "eventIds": [
+      "plan-created-1"
+    ]
   },
   "context": {
     "endTokens": 2340,
@@ -2797,7 +2815,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 1,
-    "approved": 0
+    "approved": 0,
+    "eventIds": [
+      "plan-created-1"
+    ]
   },
   "context": {
     "endTokens": 2340,
@@ -2892,7 +2913,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 0,
-    "approved": 1
+    "approved": 1,
+    "eventIds": [
+      "plan-approved-1"
+    ]
   }
 }
 --- 5
@@ -2965,7 +2989,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 0,
-    "approved": 1
+    "approved": 1,
+    "eventIds": [
+      "plan-approved-1"
+    ]
   },
   "totalCostUsd": 0.08,
   "sdkCumulativeCostUsd": 0.2,
@@ -3198,7 +3225,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
   "sdkSessionId": "session-claude",
   "planEvents": {
     "created": 0,
-    "approved": 1
+    "approved": 1,
+    "eventIds": [
+      "plan-approved-1"
+    ]
   },
   "totalCostUsd": 0.08,
   "sdkCumulativeCostUsd": 0.2,
@@ -3576,7 +3606,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "sdkSessionId": "session-claude",
       "planEvents": {
         "created": 0,
-        "approved": 1
+        "approved": 1,
+        "eventIds": [
+          "plan-approved-1"
+        ]
       },
       "totalCostUsd": 0.08,
       "sdkCumulativeCostUsd": 0.2,
@@ -3666,7 +3699,10 @@ exports[`observability golden: chat turns: Claude stores the golden records 1`] 
       "sdkSessionId": "session-claude",
       "planEvents": {
         "created": 1,
-        "approved": 0
+        "approved": 0,
+        "eventIds": [
+          "plan-created-1"
+        ]
       },
       "context": {
         "endTokens": 2340,
@@ -10157,7 +10193,10 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
       "providerPlanType": "max",
       "planEvents": {
         "created": 1,
-        "approved": 0
+        "approved": 0,
+        "eventIds": [
+          "plan-dup"
+        ]
       }
     },
     {
@@ -10601,7 +10640,10 @@ exports[`observability golden: duplicate finalization serves the golden aggregat
         "providerPlanType": "max",
         "planEvents": {
           "created": 1,
-          "approved": 0
+          "approved": 0,
+          "eventIds": [
+            "plan-dup"
+          ]
         }
       },
       {
@@ -12274,7 +12316,10 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "providerPlanType": "max",
   "planEvents": {
     "created": 1,
-    "approved": 0
+    "approved": 0,
+    "eventIds": [
+      "plan-dup"
+    ]
   }
 }
 --- 7
@@ -12583,7 +12628,10 @@ exports[`observability golden: duplicate finalization stores the golden records 
   "providerPlanType": "max",
   "planEvents": {
     "created": 1,
-    "approved": 0
+    "approved": 0,
+    "eventIds": [
+      "plan-dup"
+    ]
   }
 }
 === agent-observability/snapshot.json
@@ -12872,7 +12920,10 @@ exports[`observability golden: duplicate finalization stores the golden records 
       "providerPlanType": "max",
       "planEvents": {
         "created": 1,
-        "approved": 0
+        "approved": 0,
+        "eventIds": [
+          "plan-dup"
+        ]
       }
     },
     {

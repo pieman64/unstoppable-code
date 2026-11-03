@@ -82,7 +82,7 @@ export function GuestModelGateContent({
   const spinner = (testId: string): ReactNode =>
     busy && <LoadingSpinner dataTestId={testId} decorative />;
   return (
-    <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+    <div className="flex flex-col gap-4 px-6 pb-6 pt-4">
       <div
         className="text-s leading-relaxed fg-secondary"
         data-testid={bodyTestId}

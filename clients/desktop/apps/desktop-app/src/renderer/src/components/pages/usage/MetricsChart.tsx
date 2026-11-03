@@ -6,7 +6,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  ErrorState,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import { ChartErrorBoundary } from '@/components/shared/ChartErrorBoundary';
 import type { PickerOption, TabSpec } from './tab-specs';
 import {
@@ -345,13 +350,17 @@ export function MetricsChart({
 
       {error ? (
         <div
-          className="flex items-center justify-center rounded border border-line-destructive/30 bg-destructive/5 px-4 text-xs fg-destructive"
+          className="flex items-center justify-center"
           style={{ height: CHART_HEIGHT_PX }}
         >
-          {error}
+          <ErrorState space="panel" message={error} />
         </div>
       ) : (mode === 'counts' ? countsBuckets : distBuckets) === null ? (
-        <LoadingPlaceholder space="fill" style={{ height: CHART_HEIGHT_PX }} />
+        <div style={{ height: CHART_HEIGHT_PX }}>
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner />
+          </DelayedLoadingPlaceholder>
+        </div>
       ) : empty ? (
         <div
           className="flex items-center justify-center rounded border border-dashed px-4 text-xs fg-secondary"
@@ -414,24 +423,25 @@ export function MetricsChart({
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           <div className="flex items-center gap-2 text-2xs fg-secondary">
-            <span>Metric:</span>
-            <select
-              value={distributionMetric ?? ''}
-              onChange={(event): void => {
+            <span id={`usage-chart-distribution-metric-${spec.id}-label`}>
+              Metric:
+            </span>
+            <SettingsSelect
+              width="fit"
+              aria-labelledby={`usage-chart-distribution-metric-${spec.id}-label`}
+              options={spec.chartDistributionMetrics.map((opt) => ({
+                value: opt.value,
+                label: opt.label,
+              }))}
+              value={distributionMetric ?? null}
+              onValueChange={(value): void => {
                 const next = spec.chartDistributionMetrics.find(
-                  (m) => m.value === event.target.value,
+                  (m) => m.value === value,
                 );
                 if (next) setDistributionMetric(next.value);
               }}
               data-testid={`usage-chart-distribution-metric-${spec.id}`}
-              className="rounded border bg-base px-1 py-0.5 fg-primary"
-            >
-              {spec.chartDistributionMetrics.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+            />
           </div>
           <ul className="flex flex-wrap items-center gap-2 text-2xs fg-secondary">
             {PERCENTILES.map((p) => {

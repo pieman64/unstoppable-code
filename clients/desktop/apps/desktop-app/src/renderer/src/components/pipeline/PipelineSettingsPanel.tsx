@@ -12,6 +12,7 @@ import type {
   RunDefaults,
   ShellType,
 } from '@canopy/desktop-shared/types/pipeline';
+import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
 import { PipelineRelatedSections } from './PipelineRelatedSections';
 import {
   getTriggerInputDefs,
@@ -253,42 +254,33 @@ export function PipelineSettingsPanel({
           {/* Triggers */}
           <section>
             <h3 className="text-s font-semibold fg-primary mb-4">Triggers</h3>
-            <div className="space-y-2">
+            <ChoiceList aria-label="Triggers">
               {TRIGGER_OPTIONS.map((trigger) => {
                 const isActive = activeTriggerTypes.includes(trigger.type);
                 return (
-                  <label
+                  <ChoiceListRow
                     key={trigger.type}
                     data-testid={`pipeline-trigger-row-${trigger.type}`}
-                    className={`flex items-start gap-3 p-3 rounded-lg border ${
-                      readonly ? 'opacity-70' : 'cursor-pointer hover:bg-subtle'
-                    }`}
+                    selected={isActive}
+                    disabled={readonly}
+                    onClick={(): void => {
+                      const updated = isActive
+                        ? activeTriggerTypes.filter((t) => t !== trigger.type)
+                        : [...activeTriggerTypes, trigger.type];
+                      onUpdateField(
+                        'on',
+                        setTriggerTypes(pipeline.on, updated),
+                      );
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={isActive}
-                      disabled={readonly}
-                      onChange={(): void => {
-                        const updated = isActive
-                          ? activeTriggerTypes.filter((t) => t !== trigger.type)
-                          : [...activeTriggerTypes, trigger.type];
-                        onUpdateField(
-                          'on',
-                          setTriggerTypes(pipeline.on, updated),
-                        );
-                      }}
-                      className="mt-0.5 accent-accent"
-                    />
-                    <div>
-                      <div className="text-s font-medium fg-primary">
-                        {trigger.label}
-                      </div>
-                      <div className="text-xs fg-secondary">{trigger.hint}</div>
-                    </div>
-                  </label>
+                    <span className="block font-medium">{trigger.label}</span>
+                    <span className="block text-xs fg-secondary">
+                      {trigger.hint}
+                    </span>
+                  </ChoiceListRow>
                 );
               })}
-            </div>
+            </ChoiceList>
           </section>
 
           {/* Execution Scope */}
@@ -299,7 +291,7 @@ export function PipelineSettingsPanel({
             <p className="text-xs fg-secondary mb-4">
               Controls where this workflow can be shown and run.
             </p>
-            <div className="space-y-2">
+            <ChoiceList aria-label="Execution scope">
               {EXECUTION_SCOPE_OPTIONS.map((option) => {
                 const isSelected = selectedScopes.includes(option.scope);
                 // Prevent unchecking the final scope so at least one always
@@ -308,33 +300,23 @@ export function PipelineSettingsPanel({
                   isSelected && selectedScopes.length === 1;
                 const disabled = readonly || isLastSelected;
                 return (
-                  <label
+                  <ChoiceListRow
                     key={option.scope}
                     data-testid={`pipeline-execution-scope-row-${option.scope}`}
-                    className={`flex items-start gap-3 p-3 rounded-lg border ${
-                      disabled ? 'opacity-70' : 'cursor-pointer hover:bg-subtle'
-                    }`}
+                    selected={isSelected}
+                    disabled={disabled}
+                    onClick={(): void =>
+                      toggleExecutionScope(option.scope, !isSelected)
+                    }
                   >
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      disabled={disabled}
-                      data-testid={`pipeline-execution-scope-${option.scope}`}
-                      onChange={(event): void =>
-                        toggleExecutionScope(option.scope, event.target.checked)
-                      }
-                      className="mt-0.5 accent-accent"
-                    />
-                    <div>
-                      <div className="text-s font-medium fg-primary">
-                        {option.label}
-                      </div>
-                      <div className="text-xs fg-secondary">{option.hint}</div>
-                    </div>
-                  </label>
+                    <span className="block font-medium">{option.label}</span>
+                    <span className="block text-xs fg-secondary">
+                      {option.hint}
+                    </span>
+                  </ChoiceListRow>
                 );
               })}
-            </div>
+            </ChoiceList>
           </section>
 
           {/* Trigger Inputs */}

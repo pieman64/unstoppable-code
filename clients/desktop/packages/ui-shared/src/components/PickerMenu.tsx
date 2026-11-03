@@ -14,7 +14,7 @@ import {
   CloseIcon,
   SearchIcon,
 } from '../icons/AppIcons';
-import { Button } from './Button';
+import { Button, DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
 import { useContextMenuPlacement } from './context-menu-placement';
 import {
   FLOATING_PICKER_GAP,
@@ -149,10 +149,9 @@ const PICKER_TRIGGER_SHELLS: Record<PickerTriggerVariant, string> = {
   capsule:
     'gap-1 rounded-full border-0 bg-transparent px-2.5 transition-colors hover:bg-subtle hover:fg-primary disabled:hover:bg-transparent disabled:hover:fg-secondary',
   // The shared field look (`TextInput`, `Select`): the 1px `shadow-field` edge
-  // on a transparent fill, 8px radius. It stays 32px tall because its callers
+  // on a transparent fill, the 10px corners of the 28px and 32px fields. It stays 32px tall because its callers
   // sit in 32px rows (the PR status bar, worktree settings).
-  field:
-    'h-8 gap-2 rounded-lg bg-transparent px-2 text-s shadow-field transition-[box-shadow,background-color] hover:bg-subtle disabled:hover:bg-transparent',
+  field: `h-8 gap-2 rounded-row bg-transparent px-2 text-s shadow-field transition-[box-shadow,background-color,transform,scale] ${DROPDOWN_TRIGGER_INTERACTION_CLASS} disabled:pointer-events-none`,
 };
 
 // A field stays 32px (see above); a capsule is 32px or the compact 28px,

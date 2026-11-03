@@ -16,6 +16,7 @@ import { promisify } from 'node:util';
 import { expect, test } from '@playwright/test';
 import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '../../../../packages/protocol/src/file-image-save.ts';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
+import { isDaemonFilesDryRun } from './launchCanopy.mjs';
 import {
   GOLDEN_DIR,
   FIXTURE_PREFERENCES,
@@ -126,6 +127,18 @@ function ipcRoots(window, scope) {
     scope,
   );
 }
+
+/** The main window's "Couldn't reach the background service" notice. */
+const backgroundServiceNotice = (window) =>
+  window.getByTestId('background-service-notice');
+
+/**
+ * Main's background service status, which drives the notice. A routed read
+ * reports to it before its reply, and an unchanged `sequence` also rules out
+ * a warning that flickered and cleared.
+ */
+const backgroundServiceStatus = (window) =>
+  window.evaluate(() => window.api.backgroundService.getStatus());
 
 /** Settles an IPC read as `{ ok, value | message }` without throwing. */
 function settleIpc(window, channel, request) {
@@ -290,6 +303,12 @@ test('experiment off: the Files panel matches the golden listing on direct reads
       expect(
         await daemonChildren(context.mainPid, context.bridge.executable),
       ).toEqual([]);
+      // Nothing reads through the background service, so nothing warns.
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'ok',
+        retry: 'idle',
+      });
+      await expect(backgroundServiceNotice(window)).toHaveCount(0);
       Object.assign(report.steps, {
         malformedOwner: unchanged.value,
         panel: { opened: traffic.opened, all: traffic.all },
@@ -307,6 +326,12 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
     async (context) => {
       const { window, counters, report, canonicalDataRoot } = context;
       const scope = { projectId: SINGLE, worktreeId: WORKTREE };
+      const healthy = await backgroundServiceStatus(window);
+      expect(healthy).toEqual({
+        state: 'ok',
+        retry: 'idle',
+        sequence: healthy.sequence,
+      });
 
       // Deterministic typed failure: the trusted owner check refuses before
       // any daemon contact, and the direct reader is never used instead.
@@ -352,6 +377,10 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
         existsSync(path.join(canonicalDataRoot, 'runtime/core.json')),
       ).toBe(false);
       report.steps.traversal = { ...traversal, traffic: traversalTraffic };
+      // Refusals before contact say nothing about reaching the service.
+      const notice = backgroundServiceNotice(window);
+      expect(await backgroundServiceStatus(window)).toEqual(healthy);
+      await expect(notice).toHaveCount(0);
 
       // Bracketed lifecycle: no daemon before the panel action.
       await selectWorktree(window, SINGLE);
@@ -359,6 +388,8 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
       const traffic = await walkSingleRepoPanel(context);
       expectDaemonServed(traffic.opened, ['roots', 'directory']);
       expectDaemonServed(traffic.all, ['roots', 'directory']);
+      expect(await backgroundServiceStatus(window)).toEqual(healthy);
+      await expect(notice).toHaveCount(0);
       const descriptor = readDescriptor(canonicalDataRoot);
       expect(descriptor).not.toBeNull();
       context.seenDescriptors.push(descriptor);
@@ -376,6 +407,24 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
       expect(status.build).toContain(descriptor.buildVersion);
       expect(readDescriptor(canonicalDataRoot).pid).toBe(descriptor.pid);
       report.steps.cliStatus = status;
+
+      // A typed refusal from the live daemon: no direct read, no warning.
+      await counters.reset();
+      const refused = await settleIpc(window, 'directory', {
+        ...scope,
+        repoId: 'unregistered',
+        relativeDir: '',
+      });
+      expect(refused.ok).toBe(false);
+      const refusedTraffic = filesTraffic(await counters.read());
+      expect(refusedTraffic.route).toEqual({
+        'files.directory.daemon': 1,
+        'files.directory.daemon.queries': 1,
+        'files.directory.daemon.failed.not_found': 1,
+      });
+      expect(await backgroundServiceStatus(window)).toEqual(healthy);
+      await expect(notice).toHaveCount(0);
+      report.steps.liveRefusal = { ...refused, traffic: refusedTraffic };
 
       // Causal probe: a stopped daemon holds a never-opened folder's read.
       const { panel } = traffic;
@@ -400,25 +449,47 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
       expectDaemonServed(released, ['directory']);
       report.steps.causalProbe = { held, released };
 
-      // Daemon loss: the next reads reattach to a new bridged daemon and are
-      // never answered by the direct reader.
+      // Daemon loss: every read still lists, in-process while the daemon is
+      // gone (CAN-5541), until the lease's restart serves them again. A
+      // restart that succeeds never shows the notice (Mike, q-13 GA3-1).
       await counters.reset();
+      // Every push main sends, so even a notice shown briefly is caught.
+      await window.evaluate(() => {
+        const pushes = [];
+        window.__backgroundServicePushes = pushes;
+        window.__stopBackgroundServicePushes =
+          window.api.backgroundService.onStatusChanged((status) =>
+            pushes.push(status),
+          );
+      });
       process.kill(descriptor.pid, 'SIGKILL');
+      const probeC = {
+        ...scope,
+        repoId: SINGLE,
+        relativeDir: `${GOLDEN_DIR}/probe-c`,
+      };
+      const servedCount = async () =>
+        filesTraffic(await counters.read()).route[
+          'files.directory.daemon.served'
+        ] ?? 0;
       const attempts = [];
       await expect
         .poll(
           async () => {
-            const result = await settleIpc(window, 'directory', {
-              ...scope,
-              repoId: SINGLE,
-              relativeDir: `${GOLDEN_DIR}/probe-c`,
-            });
-            attempts.push(result.ok ? 'ok' : result.message);
-            return result.ok;
+            const before = await servedCount();
+            const result = await settleIpc(window, 'directory', probeC);
+            attempts.push(
+              result.ok
+                ? result.value.entries.map(({ name }) => name).join(',')
+                : result.message,
+            );
+            return (await servedCount()) > before;
           },
           { timeout: 60_000 },
         )
         .toBe(true);
+      // Never "Unable to load folder.": each attempt listed the folder.
+      expect(attempts.every((listed) => listed === 'probe-c.txt')).toBe(true);
       const replacement = readDescriptor(canonicalDataRoot);
       expect(replacement.pid).not.toBe(descriptor.pid);
       context.seenDescriptors.push(replacement);
@@ -426,13 +497,49 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
       await expect
         .poll(() => panelChildren(panel, SINGLE, `${GOLDEN_DIR}/probe-c`))
         .toEqual([{ name: 'probe-c.txt', kind: 'file', ignored: false }]);
+      // Hidden while the lease restarted the daemon, then ok on reattach.
+      await expect
+        .poll(async () => (await backgroundServiceStatus(window)).state, {
+          timeout: 15_000,
+        })
+        .toBe('ok');
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'ok',
+        retry: 'idle',
+      });
+      await expect(notice).toHaveCount(0);
+      const lossPushes = await window.evaluate(() => {
+        window.__stopBackgroundServicePushes();
+        return window.__backgroundServicePushes.map(({ state, reason }) => ({
+          state,
+          reason: reason ?? null,
+        }));
+      });
+      expect(lossPushes[0]).toEqual({ state: 'reconnecting', reason: null });
+      expect(lossPushes.at(-1)).toEqual({ state: 'ok', reason: null });
+      expect(lossPushes.filter(({ state }) => state === 'unavailable')).toEqual(
+        [],
+      );
       const lossTraffic = filesTraffic(await counters.read());
       expect(lossTraffic.route['files.directory.direct']).toBeUndefined();
       expect(lossTraffic.route['files.directory.daemon']).toBe(
         lossTraffic.directory,
       );
+      expect(
+        Object.keys(lossTraffic.route).filter((key) =>
+          key.includes('.daemon.failed.'),
+        ),
+      ).toEqual([]);
+      // Once restarted, the next read is the daemon's.
+      await counters.reset();
+      expect(
+        (await ipcDirectory(window, scope, SINGLE, `${GOLDEN_DIR}/probe-c`))
+          .entries,
+      ).toHaveLength(1);
+      expectDaemonServed(filesTraffic(await counters.read()), ['directory']);
       report.steps.daemonLoss = {
         attempts,
+        statusPushes: lossPushes,
         traffic: lossTraffic,
         replacement,
         process: await proveBridgedDaemon(context, replacement),
@@ -523,48 +630,207 @@ test('experiment on: the Files panel is served by the bridged packaged daemon th
       });
       report.steps.flagOff.traversal = directTraversal;
 
-      // Typed transport failure: with the bridged executable gone the next
-      // routed read fails typed and still never falls back.
+      // Start failure: with the bridged executable gone before contact, the
+      // next routed read lists in-process and the notice shows (CAN-5541).
       const executable = report.artifact.bridge.find(
         ({ label }) => label === 'packaged daemon',
       );
       if (!executable.owned) {
-        // CI shards never unpack `dist/`: a reused file there is a leak.
-        expect(
-          process.env.CI,
-          'CI must stage the daemon itself, so the start failure always runs',
-        ).toBeFalsy();
+        // CI shards never unpack `dist/`: a reused file there is a leak,
+        // except the Files dry run's lane install, which other workers'
+        // daemons start from (CAN-5544).
+        if (!isDaemonFilesDryRun())
+          expect(
+            process.env.CI,
+            'CI must stage the daemon itself, so the start failure always runs',
+          ).toBeFalsy();
         testInfo.annotations.push({
           type: 'limitation',
           description:
-            'Executable-start failure not exercised: the product daemon path held a pre-existing identical build this run may not remove.',
+            'Executable-start failure, the in-process fallback, the background service notice and its recovery not exercised: the product daemon path held a pre-existing identical build this run may not remove.',
         });
         return;
       }
       await setFilesChoice(window, true);
+      // Opting out reset the record, so the notice below is this read's.
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'ok',
+        retry: 'idle',
+      });
+      await expect(notice).toHaveCount(0);
       expect(context.bridge.remove('packaged daemon')).toBe('removed');
       await counters.reset();
-      const failed = await settleIpc(window, 'directory', {
+      const probeD = {
         ...scope,
         repoId: SINGLE,
         relativeDir: `${GOLDEN_DIR}/probe-d`,
+      };
+      const fellBack = await settleIpc(window, 'directory', probeD);
+      expect(fellBack.ok).toBe(true);
+      expect(fellBack.value.entries.map(({ name }) => name)).toEqual([
+        'probe-d.txt',
+      ]);
+      // Recorded before the read's reply: one read is enough to warn.
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'unavailable',
+        reason: 'start_failed',
+        retry: 'idle',
       });
-      expect(failed.ok).toBe(false);
-      // The launcher redacts the spawn failure and keeps its kind.
-      expect(failed.message).toMatch(/: Core launch failed\.$/);
-      const failedTraffic = filesTraffic(await counters.read());
-      expect(failedTraffic.route).toEqual({
+      const fallbackTraffic = filesTraffic(await counters.read());
+      expect(fallbackTraffic.route).toEqual({
         'files.directory.daemon': 1,
-        'files.directory.daemon.failed.failed_precondition': 1,
+        'files.directory.daemon.fallback.start_failed': 1,
+      });
+      // Latched: the next read skips the start that just failed.
+      await counters.reset();
+      expect((await settleIpc(window, 'directory', probeD)).ok).toBe(true);
+      expect(filesTraffic(await counters.read()).route).toEqual({
+        'files.directory.daemon': 1,
+        'files.directory.daemon.bypassed': 1,
       });
       await expandFolder(panel, SINGLE, `${GOLDEN_DIR}/probe-d`);
-      await expect(panel.getByTestId('files-tree-folder-error')).toHaveText(
-        'Unable to load folder.',
-      );
+      await expect
+        .poll(() => panelChildren(panel, SINGLE, `${GOLDEN_DIR}/probe-d`))
+        .toEqual([{ name: 'probe-d.txt', kind: 'file', ignored: false }]);
+      await expect(panel.getByTestId('files-tree-folder-error')).toHaveCount(0);
       expect(readDescriptor(canonicalDataRoot)).toBeNull();
-      report.steps.typedTransportFailure = {
-        ...failed,
-        traffic: failedTraffic,
+      // The start failure shows the one background service notice.
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText(
+        "Couldn't reach the background service",
+      );
+      report.steps.startFailure = {
+        ...fellBack,
+        traffic: fallbackTraffic,
+      };
+
+      // Try again while the executable is still missing: the notice stays
+      // and says the retry didn't reach the service either.
+      const retry = notice.getByTestId('background-service-notice-retry');
+      await retry.click();
+      await expect(notice).toContainText(
+        "Still couldn't reach the background service",
+      );
+      await expect(retry).toBeEnabled();
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'unavailable',
+        reason: 'start_failed',
+        retry: 'failed',
+      });
+      expect(readDescriptor(canonicalDataRoot)).toBeNull();
+
+      // Recovery: with the executable back, Try again starts the daemon and
+      // clears the notice, with no Files read in between; the next read is
+      // daemon-served.
+      expect(context.bridge.restage('packaged daemon')).toBe('restaged');
+      await counters.reset();
+      await retry.click();
+      await expect(notice).toHaveCount(0, { timeout: 30_000 });
+      expect(await backgroundServiceStatus(window)).toEqual({
+        state: 'ok',
+        retry: 'idle',
+        sequence: expect.any(Number),
+      });
+      expect(filesTraffic(await counters.read()).route).toEqual({});
+      const recovered = readDescriptor(canonicalDataRoot);
+      expect(recovered).not.toBeNull();
+      context.seenDescriptors.push(recovered);
+      await counters.reset();
+      const listed = await ipcDirectory(
+        window,
+        scope,
+        SINGLE,
+        `${GOLDEN_DIR}/probe-d`,
+      );
+      expect(listed.entries.map(({ name, kind }) => ({ name, kind }))).toEqual([
+        { name: 'probe-d.txt', kind: 'file' },
+      ]);
+      const recoveredTraffic = filesTraffic(await counters.read());
+      expectDaemonServed(recoveredTraffic, ['directory']);
+      report.steps.recovery = {
+        traffic: recoveredTraffic,
+        descriptor: recovered,
+        process: await proveBridgedDaemon(context, recovered),
+      };
+
+      // Kill with the restart blocked: reads keep listing in-process, and
+      // once the lease's restart fails the notice shows and reads skip it.
+      expect(context.bridge.remove('packaged daemon')).toBe('removed');
+      await counters.reset();
+      process.kill(recovered.pid, 'SIGKILL');
+      const killedAt = Date.now();
+      const orphaned = await settleIpc(window, 'directory', probeD);
+      expect(orphaned.ok).toBe(true);
+      expect(orphaned.value.entries.map(({ name }) => name)).toEqual([
+        'probe-d.txt',
+      ]);
+      const orphanedTraffic = filesTraffic(await counters.read());
+      // Answered in-process: a fallback, or a skip once the restart failed.
+      expect(
+        Object.keys(orphanedTraffic.route).filter(
+          (key) =>
+            key.includes('.daemon.fallback.') ||
+            key === 'files.directory.daemon.bypassed',
+        ),
+      ).toHaveLength(1);
+      expect(orphanedTraffic.route['files.directory.daemon.served']).toBe(
+        undefined,
+      );
+      // A missing executable fails the restart at once; the lease bounds a
+      // retried or hung one at 30 s.
+      await expect(notice).toBeVisible({ timeout: 30_000 });
+      const noticeAfterMs = Date.now() - killedAt;
+      const orphanedAttempts = [];
+      await expect
+        .poll(
+          async () => {
+            await counters.reset();
+            const result = await settleIpc(window, 'directory', probeD);
+            orphanedAttempts.push(result.ok ? 'ok' : result.message);
+            return filesTraffic(await counters.read()).route[
+              'files.directory.daemon.bypassed'
+            ];
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(1);
+      expect(orphanedAttempts.every((attempt) => attempt === 'ok')).toBe(true);
+      // The lease's failed restart latched it, or a new session's start did
+      // once the lease gave up.
+      const blocked = await backgroundServiceStatus(window);
+      expect(blocked.state).toBe('unavailable');
+      expect(['reconnect_failed', 'start_failed']).toContain(blocked.reason);
+      report.steps.killWithStartBlocked = {
+        traffic: orphanedTraffic,
+        noticeAfterMs,
+        status: await backgroundServiceStatus(window),
+      };
+
+      // Turning Files reads off while warned clears the notice.
+      await setFilesChoice(window, false);
+      await expect(notice).toHaveCount(0);
+      expect(await backgroundServiceStatus(window)).toMatchObject({
+        state: 'ok',
+        retry: 'idle',
+      });
+
+      // And on again with the executable back, the next read starts a new
+      // daemon and is served by it.
+      expect(context.bridge.restage('packaged daemon')).toBe('restaged');
+      await setFilesChoice(window, true);
+      await counters.reset();
+      expect(
+        (await ipcDirectory(window, scope, SINGLE, `${GOLDEN_DIR}/probe-d`))
+          .entries,
+      ).toHaveLength(1);
+      expectDaemonServed(filesTraffic(await counters.read()), ['directory']);
+      const restarted = readDescriptor(canonicalDataRoot);
+      expect(restarted.pid).not.toBe(recovered.pid);
+      context.seenDescriptors.push(restarted);
+      await expect(notice).toHaveCount(0);
+      report.steps.restartAfterFlagReturn = {
+        descriptor: restarted,
+        process: await proveBridgedDaemon(context, restarted),
       };
     },
   );

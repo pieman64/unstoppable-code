@@ -59,6 +59,7 @@ import {
 import { useWorkflowsViewStore } from './workflowsViewStore';
 import { useWorkspaceContextStore } from './workspaceContextStore';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import type { InstalledSharedSkillTarget } from '@/lib/sharedSkillImport';
 import {
   createSidebarSectionRootRegistry,
   returnSidebarSectionToRoot,
@@ -244,6 +245,8 @@ export type ShareInstallOrigin = 'deep-link' | 'in-app';
 export interface PendingShareInstall {
   link: DeepLinkShareOpenEvent;
   origin: ShareInstallOrigin;
+  /** Ephemeral UI intent: update the copy whose installed detail was opened. */
+  skillTarget?: InstalledSharedSkillTarget;
 }
 
 /**
@@ -837,6 +840,7 @@ interface NavigationState {
   openShareInstall: (
     link: DeepLinkShareOpenEvent,
     origin: ShareInstallOrigin,
+    skillTarget?: InstalledSharedSkillTarget,
   ) => void;
   /** Marks the review as writing, or settled; settling applies a held request. */
   setShareInstallBusy: (busy: boolean) => void;
@@ -1748,8 +1752,14 @@ export const useNavigationStore = create<NavigationState>(
       set({ pendingPluginsNavigation: undefined });
     },
     shareInstallBusy: false,
-    openShareInstall: (link, origin): void => {
-      const request: PendingShareInstall = { link, origin };
+    openShareInstall: (link, origin, skillTarget): void => {
+      const request: PendingShareInstall = {
+        link,
+        origin,
+        ...(link.entity === 'skill' && skillTarget
+          ? { skillTarget: { ...skillTarget } }
+          : {}),
+      };
       if (get().shareInstallBusy) {
         set({ heldShareInstall: request });
         return;

@@ -56,11 +56,22 @@ describe('SettingsTabBar', () => {
 
       const selectedButton = html.match(
         new RegExp(
-          `<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*class="([^"]*canopy-tab-trigger[^"]*)"[^>]*>${activeTab === 'details' ? 'Details' : 'Danger'}</button>`,
+          `<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*class="([^"]*canopy-tab-trigger[^"]*)"[^>]*><span>${activeTab === 'details' ? 'Details' : 'Danger'}</span></button>`,
         ),
       );
       expect(selectedButton?.[1]).not.toContain('border-b-2');
       expect(selectedButton?.[1]).not.toContain('tab-accent-line');
     },
   );
+
+  it('keeps an unselected danger tab full red, not faded', () => {
+    const html = renderToStaticMarkup(
+      <SettingsTabBar tabs={tabs} activeTab="details" onChange={jest.fn()} />,
+    );
+    const dangerButton = html.match(
+      /<button[^>]*aria-selected="false"[^>]*class="([^"]*)"[^>]*><span>Danger<\/span><\/button>/,
+    );
+    expect(dangerButton?.[1]).toContain('fg-destructive');
+    expect(dangerButton?.[1]).not.toContain('fg-destructive/60');
+  });
 });

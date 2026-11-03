@@ -40,6 +40,7 @@ import {
   accountProxyErrorField,
   accountProxyHost,
 } from './accountProxyCopy';
+import { StatusLabel } from '@canopy/ui-shared/components';
 
 function ErrorText({
   children,
@@ -48,11 +49,7 @@ function ErrorText({
   readonly children: ReactNode;
   readonly testId: string;
 }): JSX.Element {
-  return (
-    <span className="fg-destructive" data-testid={testId}>
-      {children}
-    </span>
-  );
+  return <StatusLabel data-testid={testId}>{children}</StatusLabel>;
 }
 
 interface ConnectFormProps {
@@ -162,9 +159,9 @@ function ConnectForm({ initialUrl, onCancel }: ConnectFormProps): JSX.Element {
               onClick={(): void => setKeyVisible((value) => !value)}
             >
               {keyVisible ? (
-                <EyeOffIcon size={16} aria-hidden />
+                <EyeOffIcon size="sm" aria-hidden />
               ) : (
-                <EyeIcon size={16} aria-hidden />
+                <EyeIcon size="sm" aria-hidden />
               )}
             </Button>
           </>
@@ -267,7 +264,7 @@ function ConnectionSection({
           dataTestId="account-proxy-connection"
           label={
             <span className="inline-flex items-center gap-2">
-              <GlobeIcon size={16} aria-hidden />
+              <GlobeIcon size="sm" aria-hidden />
               <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{host}</span>
               <ProviderStatusDot tone={status.error ? 'failed' : 'connected'} />
             </span>

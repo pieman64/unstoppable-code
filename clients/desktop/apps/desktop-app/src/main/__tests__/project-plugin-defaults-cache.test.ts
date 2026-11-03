@@ -34,6 +34,7 @@ import { writeWorkspaceConfig } from '../lib/workspace-persistence';
 import { getWorkspaceConfigPath } from '../lib/paths';
 import { writeCoworkMigrationMap } from '../lib/cowork-migration-map';
 import {
+  INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND,
   projectPluginDefaultsWritten,
   projectPluginLayerSettled,
   projectPluginLayerUnsettled,
@@ -310,13 +311,15 @@ describe('reconciling the cached layer after a write that may have landed withou
       ProjectPluginDefaultsRead | ProjectPluginDefaultsRemoved
     >,
     serialize: (work: () => Promise<void>) => Promise<void> = (work) => work(),
-  ): Promise<void> =>
+    bound?: { passes: number; deadlineMs: number },
+  ): Promise<unknown> =>
     reconcileProjectPluginDefaults({
       configPath: path,
       workspaceId,
       load,
       serialize,
       committing: () => Array.from(committing),
+      bound,
     });
   const revision = (): number => getProjectPluginDefaultsRevision(workspaceId);
 
@@ -547,7 +550,7 @@ describe('reconciling the cached layer after a write that may have landed withou
     (): Promise<ProjectPluginDefaultsRemoved> =>
       Promise.resolve({
         removed: true,
-        owed: owed && { ...owed, revision: since },
+        owed: owed ? [{ ...owed, revision: since }] : [],
       });
 
   it('leaves the cached layer, what was served and the revision to the remover of a removed config', async () => {
@@ -609,6 +612,23 @@ describe('reconciling the cached layer after a write that may have landed withou
     expect(await readThroughProjectPluginDefaults(path, loaded({}))).toEqual(
       {},
     );
+  });
+
+  it('for a removed config owing several writes, advances once if any of them would, and not for those at a passed revision', async () => {
+    await read(layerA);
+    const owing =
+      (...owed: Array<[ProjectPluginDefaults, number]>) =>
+      (): Promise<ProjectPluginDefaultsRemoved> =>
+        Promise.resolve({
+          removed: true,
+          owed: owed.map(([layer, since]) => ({ ...layer, revision: since })),
+        });
+    // Only the served layer, or a write owed at another revision.
+    await reconcile(owing([layerA, 0], [layerB, 1]));
+    expect(revision()).toBe(0);
+    await reconcile(owing([layerA, 0], [layerB, 0]));
+    await reconcile(owing([layerA, 0], [layerB, 0]));
+    expect(revision()).toBe(1);
   });
 
   it('for a removed config, advances once when reads at the revision served two layers', async () => {
@@ -800,6 +820,226 @@ describe('reconciling the cached layer after a write that may have landed withou
       expect(requested).not.toHaveBeenCalled();
       projectPluginLayerSettled(path);
       expect(await readFresh(layerB)).toEqual(layerB);
+    });
+  });
+
+  // A hand-off a background read left owed is retried by such a read.
+  describe('while a hand-off is owed (CAN-4409 D1)', () => {
+    const readFresh = (
+      defaults: ProjectPluginDefaults,
+      cacheable = true,
+    ): Promise<ProjectPluginDefaults> =>
+      readThroughProjectPluginDefaults(path, loaded(defaults, cacheable));
+
+    afterEach(() => {
+      projectPluginLayerSettled(path);
+    });
+
+    it('calls `readable` for each other readable read, never for an unreadable one or one that requests a reconcile', async () => {
+      const requested = jest.fn();
+      const readable = jest.fn();
+      await read(layerA);
+      projectPluginLayerUnsettled(path, requested, readable);
+      expect(await readFresh(layerA, false)).toEqual(layerA);
+      expect(readable).not.toHaveBeenCalled();
+      expect(await readFresh(layerA)).toEqual(layerA);
+      expect(await readFresh(layerA)).toEqual(layerA);
+      expect(readable).toHaveBeenCalledTimes(2);
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(requested).toHaveBeenCalledTimes(1);
+      expect(readable).toHaveBeenCalledTimes(2);
+      projectPluginLayerSettled(path);
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(await readFresh(layerB)).toEqual(layerB);
+      expect(readable).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // Inline callers pass a bound; the background reconcile passes none.
+  describe('with a bound (CAN-4409 D1)', () => {
+    const bound = { passes: 3, deadlineMs: 1_000 };
+
+    beforeEach(() => {
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    /** A commit that lands and settles before the work checks the queue. */
+    const commitLandingNow = (): void =>
+      registerCommit(
+        new Promise<void>((resolveCommit) => setImmediate(resolveCommit)),
+      );
+
+    it('resolves exhausted at the deadline behind a commit that never settles, without reading', async () => {
+      await read(layerA);
+      const held = heldCommit();
+      registerCommit(held.commit);
+      const load = jest.fn(loaded(layerB));
+      let result: unknown;
+      const bounded = reconcile(load, undefined, bound).then((value) => {
+        result = value;
+      });
+      await jest.advanceTimersByTimeAsync(bound.deadlineMs - 1);
+      expect(result).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1);
+      await bounded;
+      expect(result).toBe('exhausted');
+      expect(load).not.toHaveBeenCalled();
+      expect(revision()).toBe(0);
+      held.settle('resolve');
+      // Once it settles, the same reconcile compares and advances once.
+      expect(await reconcile(load, undefined, bound)).toBe('compared');
+      expect(revision()).toBe(1);
+    });
+
+    it('resolves exhausted behind a read in flight that never settles', async () => {
+      const inFlight = heldLoad();
+      const session = readThroughProjectPluginDefaults(path, inFlight.load);
+      const load = jest.fn(loaded(layerB));
+      const bounded = reconcile(load, undefined, bound);
+      await jest.advanceTimersByTimeAsync(bound.deadlineMs);
+      expect(await bounded).toBe('exhausted');
+      expect(load).not.toHaveBeenCalled();
+      inFlight.finish(layerA);
+      await session;
+      expect(await reconcile(load, undefined, bound)).toBe('compared');
+      expect(revision()).toBe(1);
+    });
+
+    it('resolves exhausted while the write queue is held, and its queued work later reads nothing', async () => {
+      await read(layerA);
+      const queue = barrier();
+      const serialize = async (work: () => Promise<void>): Promise<void> => {
+        await queue.promise;
+        await work();
+      };
+      const load = jest.fn(loaded(layerB));
+      const bounded = reconcile(load, serialize, bound);
+      await jest.advanceTimersByTimeAsync(bound.deadlineMs);
+      expect(await bounded).toBe('exhausted');
+      queue.open();
+      await drained();
+      expect(load).not.toHaveBeenCalled();
+      expect(revision()).toBe(0);
+    });
+
+    it('resolves exhausted at the deadline during its read; the read still compares once, and a later reconcile adds nothing', async () => {
+      await read(layerA);
+      const inRead = heldLoad();
+      const load = jest.fn(inRead.load);
+      const queue = barrier();
+      const serialize = async (work: () => Promise<void>): Promise<void> => {
+        const done = work();
+        void done.finally(() => queue.open());
+        await done;
+      };
+      const bounded = reconcile(load, serialize, bound);
+      await drained();
+      expect(load).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(bound.deadlineMs);
+      expect(await bounded).toBe('exhausted');
+      expect(revision()).toBe(0);
+      inRead.finish(layerB);
+      await queue.promise;
+      expect(revision()).toBe(1);
+      expect(await reconcile(loaded(layerB), undefined, bound)).toBe(
+        'compared',
+      );
+      expect(revision()).toBe(1);
+    });
+
+    it('stops at its pass bound while a commit registers during every wait for the write queue', async () => {
+      await read(layerA);
+      let passes = 0;
+      const serialize = async (work: () => Promise<void>): Promise<void> => {
+        passes += 1;
+        commitLandingNow();
+        await work();
+      };
+      const load = jest.fn(loaded(layerB));
+      expect(await reconcile(load, serialize, bound)).toBe('exhausted');
+      expect(passes).toBe(bound.passes);
+      expect(load).not.toHaveBeenCalled();
+      expect(revision()).toBe(0);
+    });
+
+    it('stops at its pass bound while the revision advances during every read', async () => {
+      await read(layerA);
+      const load = jest.fn(async (): Promise<ProjectPluginDefaultsRead> => {
+        await drained();
+        // Another writer lands a layer change during the read.
+        projectPluginDefaultsWritten({
+          configPath: path,
+          workspaceId,
+          layerChanged: true,
+        });
+        return { defaults: layerB, cacheable: true };
+      });
+      expect(await reconcile(load, undefined, bound)).toBe('exhausted');
+      expect(load).toHaveBeenCalledTimes(bound.passes);
+      // Every advance is a writer's; the reconcile added none.
+      expect(revision()).toBe(bound.passes);
+    });
+
+    it('clears its deadline setTimeout when it compares or runs out of passes, and arms none unbounded', async () => {
+      await read(layerA);
+      expect(await reconcile(loaded(layerB), undefined, bound)).toBe(
+        'compared',
+      );
+      expect(jest.getTimerCount()).toBe(0);
+      const serialize = async (work: () => Promise<void>): Promise<void> => {
+        commitLandingNow();
+        await work();
+      };
+      expect(await reconcile(loaded(layerB), serialize, bound)).toBe(
+        'exhausted',
+      );
+      expect(jest.getTimerCount()).toBe(0);
+      const held = heldCommit();
+      registerCommit(held.commit);
+      const unbounded = reconcile(loaded(layerB));
+      await drained();
+      expect(jest.getTimerCount()).toBe(0);
+      held.settle('resolve');
+      expect(await unbounded).toBe('compared');
+    });
+
+    it('with the inline bound, a commit refresh that settles before the deadline and a commit landing on every pass but the last still compare inline', async () => {
+      const { passes, deadlineMs } =
+        INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND;
+      await read(layerA);
+      const held = heldCommit();
+      registerCommit(held.commit);
+      const settling = reconcile(
+        loaded(layerB),
+        undefined,
+        INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND,
+      );
+      await jest.advanceTimersByTimeAsync(deadlineMs - 1);
+      held.settle('resolve');
+      expect(await settling).toBe('compared');
+      expect(revision()).toBe(1);
+
+      await read(layerB);
+      let calls = 0;
+      const serialize = async (work: () => Promise<void>): Promise<void> => {
+        calls += 1;
+        if (calls < passes) commitLandingNow();
+        await work();
+      };
+      expect(
+        await reconcile(
+          loaded(layerA),
+          serialize,
+          INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND,
+        ),
+      ).toBe('compared');
+      expect(calls).toBe(passes);
+      expect(revision()).toBe(2);
     });
   });
 });

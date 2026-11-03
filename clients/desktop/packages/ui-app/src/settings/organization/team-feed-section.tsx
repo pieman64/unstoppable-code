@@ -14,21 +14,23 @@ import {
   Pause,
   Play,
   RefreshCw,
-  Search,
   UserPlus,
-  X,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Button,
   buttonClassName,
+  CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   FilterDropdown,
   PageSearchControls,
   PageSearchField,
   PageSearchRow,
+  EmptyState,
   ErrorBanner,
-  LoadingPlaceholder,
+  SearchEmptyState,
   SettingsListSkeleton,
+  Dot,
+  StatusGlyph,
 } from '@canopy/ui-shared/components';
 import type { FeedItem, FeedItemType } from '@canopy/protocol';
 import { FEED_ITEM_TYPES } from '@canopy/protocol';
@@ -50,11 +52,12 @@ import {
   TeamApiError,
   type TeamFeedFilters,
 } from './team-api';
-import { useSettingsLoadErrorCopy } from '../errors';
+import { useSettingsLoadFailure } from '../errors';
 import { FeedActorProfileLinksProvider, FeedItemCard } from './team-feed-cards';
 import { TeamPageHeaderActions } from './team-page-header-slot';
 import { useViewerDataSharing } from './use-viewer-data-sharing';
 import { OrganizationDataSharingOptIn } from './web-data-sharing-opt-in';
+import type { SettingsFailure } from '../errors';
 
 interface TeamFeedSectionProps {
   /** Org id used to fetch the feed and link the empty-state CTA. */
@@ -137,7 +140,7 @@ export function TeamFeedSection({
   personal = false,
 }: TeamFeedSectionProps): JSX.Element {
   const client = useSettingsClient();
-  const loadErrorCopy = useSettingsLoadErrorCopy(
+  const loadErrorCopy = useSettingsLoadFailure(
     'settings.organization.timeline',
   );
   const { blockClassName } = useSettingsPrivacy();
@@ -146,7 +149,7 @@ export function TeamFeedSection({
   const [initialLoaded, setInitialLoaded] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Which load failed, so Retry runs it again: the newest page, or the next.
   const [failedLoad, setFailedLoad] = useState<'page' | 'more'>('page');
 
@@ -577,16 +580,13 @@ export function TeamFeedSection({
                   : 'Paused — resume updates'
             }
           >
-            <span
-              aria-hidden="true"
-              className={`h-2 w-2 rounded-full ${
-                subscriptionState === 'open'
-                  ? 'bg-success'
-                  : subscriptionState === 'reconnecting'
-                    ? 'animate-pulse bg-warning'
-                    : 'bg-fg-secondary'
-              }`}
-            />
+            {subscriptionState === 'open' ? (
+              <Dot tone="success" />
+            ) : subscriptionState === 'reconnecting' ? (
+              <StatusGlyph state="running" size={12} />
+            ) : (
+              <StatusGlyph state="paused" size={12} />
+            )}
             {live ? <Pause size={14} /> : <Play size={14} />}
             {live ? 'Live' : 'Paused'}
           </Button>
@@ -679,64 +679,55 @@ export function TeamFeedSection({
       <div className="rounded-xl bg-card shadow-sm">
         {error && (
           <div className="px-6 pt-6">
-            <ErrorBanner error={error} onRetry={retryLoad} />
+            <ErrorBanner
+              error={error?.copy}
+              details={error?.details}
+              onRetry={retryLoad}
+            />
           </div>
         )}
         {hasActiveFilters ? (
-          <div
-            className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center"
-            data-testid="team-feed-no-results"
-          >
-            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-              <Search size={26} />
-            </span>
-            <div className="max-w-md">
-              <h3 className="text-lg font-semibold fg-primary">
-                No matching activity
-              </h3>
-              <p className="mt-1.5 text-s fg-secondary">
-                No activity matches your current filters. Try a different search
-                or clear the filters to see everything.
-              </p>
-            </div>
-            <Button
-              variant="secondary"
-              size="compact"
-              onClick={clearFilters}
-              data-testid="team-feed-no-results-clear"
-            >
-              <X size={14} />
-              Clear filters
-            </Button>
+          <div className="px-6">
+            <SearchEmptyState
+              testId="team-feed-no-results"
+              title="No activity matches these filters"
+              actionLabel="Clear filters"
+              onAction={clearFilters}
+              actionTestId="team-feed-no-results-clear"
+            />
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-4 px-6 py-16 text-center">
-            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent-subtle fg-accent">
-              <FeedIcon size={26} />
-            </span>
-            <div className="max-w-md">
-              <h3 className="text-lg font-semibold fg-primary">
-                No activity yet
-              </h3>
-              <p className="mt-1.5 text-s fg-secondary">
-                {personal
+          <div className="px-6">
+            <EmptyState
+              icon={
+                <FeedIcon
+                  size={24}
+                  aria-hidden="true"
+                  className="fg-tertiary"
+                />
+              }
+              title="No activity yet"
+              subtitle={
+                personal
                   ? 'Your agent runs, plans, commits, and updates will appear here as you work.'
-                  : "This is your organization's timeline. As people get to work, their agent runs, plans, commits, and updates will stream in here so everyone stays in sync."}
-              </p>
-            </div>
-            {!personal && canManageMembers && (
-              <SettingsLink
-                href={`/organization/${orgId}/members?invite=1`}
-                data-testid="team-feed-invite-cta"
-                className={buttonClassName({
-                  variant: 'secondary',
-                  size: 'compact',
-                })}
-              >
-                <UserPlus size={14} />
-                Invite people
-              </SettingsLink>
-            )}
+                  : "This is your organization's timeline. As people get to work, their agent runs, plans, commits, and updates will stream in here so everyone stays in sync."
+              }
+              action={
+                !personal && canManageMembers ? (
+                  <SettingsLink
+                    href={`/organization/${orgId}/members?invite=1`}
+                    data-testid="team-feed-invite-cta"
+                    className={buttonClassName({
+                      variant: 'secondary',
+                      size: 'compact',
+                    })}
+                  >
+                    <UserPlus size={14} />
+                    Invite people
+                  </SettingsLink>
+                ) : undefined
+              }
+            />
           </div>
         )}
       </div>
@@ -754,7 +745,13 @@ export function TeamFeedSection({
           />
         ))}
 
-        {error && <ErrorBanner error={error} onRetry={retryLoad} />}
+        {error && (
+          <ErrorBanner
+            error={error?.copy}
+            details={error?.details}
+            onRetry={retryLoad}
+          />
+        )}
 
         {nextCursor !== null && (
           <div
@@ -762,7 +759,11 @@ export function TeamFeedSection({
             data-testid="team-feed-sentinel"
             className="py-4"
           >
-            {loadingMore && <LoadingPlaceholder label="Loading more…" />}
+            {loadingMore && (
+              <DelayedLoadingPlaceholder>
+                <CenteredLoadingSpinner />
+              </DelayedLoadingPlaceholder>
+            )}
           </div>
         )}
       </div>

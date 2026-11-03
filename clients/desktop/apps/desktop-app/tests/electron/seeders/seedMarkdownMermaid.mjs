@@ -56,6 +56,18 @@ export const MULTILINE_LABEL_DIAGRAM = [
   'before checkout-->F',
   'style B fill:#fde2e2',
 ].join('\n');
+// CAN-5295: a Cowork runbook's dashed approval path, in the comma spelling.
+// Unit and web flows use the same text.
+export const DASHED_LINK_DIAGRAM = [
+  'flowchart LR',
+  '  Ticket[Escalation ticket] --> Triage[Tier 1 triage]',
+  '  Triage --> Billing[Billing review]',
+  '  Billing --> Refund{Refund over 500?}',
+  '  Refund -->|Yes| Manager[Manager approval]',
+  '  Refund -->|No| Resolve[Resolve and close]',
+  '  Manager --> Resolve',
+  '  linkStyle 3 stroke:#6b7280,stroke-dasharray:5,5',
+].join('\n');
 export const PARTIALLY_STYLED_DIAGRAM = [
   'flowchart LR',
   '  A[Upload] --> B[Reader]',

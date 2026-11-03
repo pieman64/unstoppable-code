@@ -1,15 +1,13 @@
-import {
-  createPipelineDefinitionService,
-  type PipelineDefinitionService,
-} from '@canopy/core-runtime/node/pipeline';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import type { PipelineDefinition } from '@canopy/protocol/canopy-core';
 import {
-  createStoredPipelineDefinitionPort,
-  localPipelineNormalizeOptions,
-} from '@canopy/desktop-shared/node/pipelines/definition-sources';
+  PIPELINE_GRANTS,
+  type CanopyCallerDescriptor,
+  type PipelineDefinition,
+} from '@canopy/protocol/canopy-core';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 
 export interface AdmittedRunDefinition {
   /** The validated document the run executes and snapshots. */
@@ -17,40 +15,53 @@ export interface AdmittedRunDefinition {
   readonly definition: PipelineDefinition;
 }
 
-let admission: PipelineDefinitionService | undefined;
-
 /**
- * Core's resolution and validation over the stored definitions, without the
- * navigation context's visibility filter: the start path authorizes a run
- * against its own owner before it is admitted. This in-process call stands
- * in for `core.pipeline.definition.get`, whose desktop binding filters by the
- * selected navigation context and has no owner-scoped read; it is recorded
- * compatibility debt (CAN-4139-core-pipeline-run-admission.yaml, CAN-4140).
+ * Electron main's run start path. It alone may read a definition for a run
+ * owner, once it has resolved and authorized that owner.
  */
-function admissionService(): PipelineDefinitionService {
-  admission ??= createPipelineDefinitionService({
-    ports: [createStoredPipelineDefinitionPort()],
-    normalizeOptions: localPipelineNormalizeOptions,
-  });
-  return admission;
+export const PIPELINE_RUN_ADMISSION_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-pipeline-run-admission',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.ownerRead],
+};
+
+export interface RunDefinitionAdmission {
+  /**
+   * The owner a global run was authorized for. Core reads the definition as
+   * that owner may use it; without one, through the navigation context.
+   */
+  readonly owner?: string;
+  /** The project a run without an owner read is authorized in. */
+  readonly projectId?: string;
 }
 
 /**
- * The validated definition a stored (user or bundled) run executes, resolved
- * by core rather than taken from the caller. `null` when core has no such
- * definition, as for an inline one. A stored definition that no longer
- * validates refuses the run with its first diagnostic.
+ * The validated definition a stored (user or bundled) run executes, read
+ * through `core.pipeline.definition.get` rather than taken from the caller.
+ * `null` when core has no such definition, as for an inline one. A stored
+ * definition that no longer validates refuses the run with its first
+ * diagnostic.
  */
 export async function admitStoredRunDefinition(
   definitionId: string,
+  admission: RunDefinitionAdmission = {},
 ): Promise<AdmittedRunDefinition | null> {
   let definition: PipelineDefinition;
   try {
-    definition = await admissionService().get(
-      definitionId,
-      {},
-      new AbortController().signal,
-    );
+    ({ definition } = await getDesktopCanopyRuntime().query(
+      'core.pipeline.definition.get',
+      {
+        definitionId,
+        scope:
+          admission.projectId === undefined
+            ? {}
+            : { workspaceId: admission.projectId },
+        ...(admission.owner === undefined ? {} : { owner: admission.owner }),
+      },
+      { caller: PIPELINE_RUN_ADMISSION_CALLER },
+    ));
   } catch (error) {
     if (
       error instanceof CanopyOperationError &&

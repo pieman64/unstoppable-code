@@ -1,5 +1,9 @@
 import type { JSX } from 'react';
-import { Button, LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { BackIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useNavigationStore } from '@/stores/navigationStore';
 
@@ -41,7 +45,9 @@ export function WorkflowEditNotFound({
         {backLabel}
       </Button>
       {loading ? (
-        <LoadingPlaceholder space="section" />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-8" />
+        </DelayedLoadingPlaceholder>
       ) : (
         <p className="text-s fg-secondary">{NOT_FOUND_COPY[kind]}</p>
       )}

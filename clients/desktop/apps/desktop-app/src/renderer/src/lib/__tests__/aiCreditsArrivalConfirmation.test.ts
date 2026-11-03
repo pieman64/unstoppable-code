@@ -255,6 +255,48 @@ describe('recording an arrival', () => {
     loadCanopyCloudAiCredits.mockResolvedValue(creditsState(16));
     expect(newer.recordCovered()).toBe(true);
   });
+
+  it('keeps hand-offs for the same chat in different navigation scopes independent', async () => {
+    loadCanopyCloudAiCredits.mockResolvedValue(creditsState(0));
+    const personal = beginAiCreditsArrivalHandoff(
+      SCOPE,
+      'no-billing-source',
+      'personal-wallet',
+    );
+    await flush();
+    personal?.markExternalOpen();
+    personal?.retain();
+    const organization = beginAiCreditsArrivalHandoff(
+      SCOPE,
+      'no-billing-source',
+      'organization-wallet',
+    );
+    await flush();
+    organization?.markExternalOpen();
+    organization?.retain();
+    expect(personal?.isLive()).toBe(true);
+    expect(organization?.recordCovered()).toBe(true);
+    expect(personal?.recordCovered()).toBe(true);
+  });
+
+  it('keeps a retained hand-off live when another chat starts one (CAN-5534)', async () => {
+    const retained = await completedHandoff(creditsState(0));
+    loadCanopyCloudAiCredits.mockResolvedValueOnce(creditsState(0));
+    const elsewhere = beginAiCreditsArrivalHandoff(
+      { kind: 'work', projectId: 'p2', chatId: 'chat-9' },
+      'no-billing-source',
+    );
+    await flush();
+    elsewhere?.markExternalOpen();
+    elsewhere?.retain();
+    expect(retained.isLive()).toBe(true);
+    expect(elsewhere?.isLive()).toBe(true);
+    loadCanopyCloudAiCredits.mockResolvedValue(creditsState(16));
+    expect(retained.recordCovered()).toBe(true);
+    expect(visible()?.handoffId).toBe(retained.handoffId);
+    await flush();
+    expect(evidence()).toMatchObject({ addedCredits: 16, balanceCredits: 16 });
+  });
 });
 
 describe('the baseline', () => {

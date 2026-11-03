@@ -143,6 +143,7 @@ import { getWorkspaceConfigPath, getWorkspaceDir } from '../paths';
 import { deleteWorkspace } from '../workspace-deletion';
 import type { WorkspaceDeletionSource } from '../workspace-deletion';
 import {
+  __setInlinePluginDefaultsReconcileBoundForTests,
   updateWorkspacePlugins,
   type WorkspacePluginsUpdateOutcome,
   type WorkspacePluginsUserChange,
@@ -329,6 +330,7 @@ function setup(kind: 'single-repo' | 'cowork'): void {
 }
 
 afterEach(async () => {
+  __setInlinePluginDefaultsReconcileBoundForTests(undefined);
   mockRemoval.target = undefined;
   for (const open of barriers) open();
   barriers = [];
@@ -469,6 +471,12 @@ describe.each(['single-repo', 'cowork'] as const)('%s deletion', (kind) => {
   // The attempt's own reconcile, unlike a replay, stands in for its dropped
   // refresh, so it still advances when it reads after the removal.
   it('an attempt whose response was lost reconciles after the removal: one advance replaces its dropped refresh', async () => {
+    // The reconcile waits on the held read while the deletion runs to its
+    // gap, which a real worker can take longer than the inline bound.
+    __setInlinePluginDefaultsReconcileBoundForTests({
+      passes: 4,
+      deadlineMs: 60_000,
+    });
     await seed();
     const gap = holdDirectoryRemoval();
     const decided = barrier();

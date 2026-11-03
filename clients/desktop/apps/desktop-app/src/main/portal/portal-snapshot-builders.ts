@@ -1,3 +1,4 @@
+import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
 import { listPortalWatchersForSnapshot } from './adapters/watchers-adapter';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { validateId } from '../lib/validation';
@@ -893,6 +894,7 @@ export async function buildPortalSnapshot(
     // like every other scope and is intentionally untouched by the browser's
     // action-section replacement.
     const sidebarItems = await readPortalSidebarItems();
+    if (sidebarItems.stale) throw new Error(W5_UNREACHABLE_READ_MESSAGE);
     const pairs = sidebarItems.items.flatMap((item) =>
       item.type === 'single-repo' || item.type === 'multi-repo'
         ? item.worktrees.map((worktree) => ({
@@ -928,6 +930,7 @@ export async function buildPortalSnapshot(
     const startedAt = performance.now();
     const entityCountBefore = entities.length;
     const sidebarItems = await readPortalSidebarItems();
+    if (sidebarItems.stale) throw new Error(W5_UNREACHABLE_READ_MESSAGE);
     let pairs = sidebarItems.items.flatMap((item) =>
       item.type === 'single-repo' || item.type === 'multi-repo'
         ? item.worktrees.map((worktree) => ({

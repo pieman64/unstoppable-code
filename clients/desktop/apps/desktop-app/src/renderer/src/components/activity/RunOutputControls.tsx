@@ -7,11 +7,6 @@ import {
 } from '@canopy/ui-shared/components';
 import { ExternalIcon, SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 
-/** Thin wrapper around the shared loading-spinner used in both sections. */
-export function Spinner(): JSX.Element {
-  return <LoadingSpinner />;
-}
-
 /** Settings gear button with the activity-row hover-treatment. Used by both
  * the Hooks and Scripts sections to open per-section settings. */
 export function SettingsGearButton({
@@ -80,7 +75,7 @@ export function LiveOutputShell({
       stopLabel={stopLabel}
       stopDisabled={stopDisabled}
       onStop={onStop}
-      spinner={<Spinner />}
+      spinner={<LoadingSpinner />}
       enlargeButton={
         <button
           type="button"

@@ -1,5 +1,6 @@
 import type { CSSProperties, ComponentType, JSX, SVGProps } from 'react';
 import type { AppIconBaseProps } from './AppIconBase';
+import { DEFAULT_ICON_SIZE, isIconSize, resolveIconSize } from './icon-size';
 import {
   IconRedo,
   IconStar,
@@ -261,9 +262,17 @@ import { OllamaLogo } from './OllamaLogo';
 // The shared SVG root for app-local glyphs (Canopy-authored and banner art).
 export { AppIconBase, type AppIconBaseProps } from './AppIconBase';
 
+export { DEFAULT_ICON_SIZE, ICON_SIZE_PX, type IconSize } from './icon-size';
+
 export type AppIconProps = Omit<SVGProps<SVGSVGElement>, 'strokeWidth'> & {
   active?: boolean;
   ariaHidden?: boolean;
+  /**
+   * A step of the icon scale, an `IconSize` (`xs` 12, `sm` 14, `md` 16,
+   * `lg` 18, `xl` 20, `2xl` 24; docs/design/icons.md#sizes). Defaults to
+   * `sm`. Numbers and CSS lengths are legacy and locked by
+   * `canopy-icons/no-raw-icon-size`.
+   */
   size?: number | string;
   title?: string;
   /** See `AppIconBaseProps.exactSize`. */
@@ -276,18 +285,40 @@ type AppGlyph = ComponentType<AppIconBaseProps>;
 export type AppIcon = (props: AppIconProps) => JSX.Element;
 
 /**
+ * A step resolves to its pixels and exact-size flag. With no size, width or
+ * height (`unsizedDefault` set), the icon's default decides the flag; a
+ * caller's own `exactSize` always wins.
+ */
+function resolveRequestedSize(
+  requestedSize: number | string | undefined,
+  requestedExactSize: boolean | undefined,
+  unsizedDefault: { exactSize: boolean } | null,
+): { size: number | string | undefined; exactSize: boolean | undefined } {
+  const named = isIconSize(requestedSize)
+    ? resolveIconSize(requestedSize)
+    : null;
+  const flagSource =
+    named ?? (requestedSize === undefined ? unsizedDefault : null);
+  return {
+    size: named ? named.px : requestedSize,
+    exactSize: requestedExactSize ?? (flagSource?.exactSize || undefined),
+  };
+}
+
+/**
  * Keeps the app's existing SVG sizing and accessibility contract for every
  * glyph. Width and height remain independently overridable so replacing an
  * icon never causes surrounding layout to shift.
  */
-function createAppIcon(
-  Glyph: AppGlyph,
-  defaultSize: number | string = 14,
-): AppIcon {
+function createAppIcon(Glyph: AppGlyph): AppIcon {
+  // Every icon with no size draws the default step.
+  const fallback = resolveIconSize(DEFAULT_ICON_SIZE);
+  const defaultSize = fallback.px;
   function AppIcon({
     width,
     height,
-    size,
+    size: requestedSize,
+    exactSize: requestedExactSize,
     style,
     title,
     active = false,
@@ -295,6 +326,11 @@ function createAppIcon(
     'aria-hidden': ariaHiddenAttribute,
     ...props
   }: AppIconProps): JSX.Element {
+    const { size, exactSize } = resolveRequestedSize(
+      requestedSize,
+      requestedExactSize,
+      width === undefined && height === undefined ? fallback : null,
+    );
     const resolvedWidth = width ?? size ?? defaultSize;
     const resolvedHeight = height ?? size ?? defaultSize;
     const resolvedStyle: CSSProperties = {
@@ -315,10 +351,11 @@ function createAppIcon(
     return (
       <Glyph
         {...props}
+        {...(exactSize === undefined ? {} : { exactSize })}
         data-app-icon="true"
         size={size ?? defaultSize}
         ariaHidden={isAriaHidden}
-        aria-label={title}
+        aria-label={title ?? props['aria-label']}
         data-active={active || undefined}
         style={resolvedStyle}
       />
@@ -335,11 +372,7 @@ type LogoComponent = ComponentType<SVGProps<SVGSVGElement>>;
  * its width and height, and it gains the same accessibility handling,
  * `data-app-icon`, and a `data-glyph` naming the logo.
  */
-function adaptLogo(
-  Logo: LogoComponent,
-  glyphName: string,
-  defaultSize: number | string = 16,
-): AppIcon {
+function adaptLogo(Logo: LogoComponent, glyphName: string): AppIcon {
   function AdaptedLogo({
     size = 24,
     ariaHidden = true,
@@ -367,7 +400,7 @@ function adaptLogo(
     );
   }
 
-  return createAppIcon(AdaptedLogo, defaultSize);
+  return createAppIcon(AdaptedLogo);
 }
 
 // These factories only allocate a component; pure annotations let production
@@ -386,7 +419,7 @@ export const AppAdvisorIcon = /* @__PURE__ */ createAppIcon(IconOrbit);
 export const AgentAssistantIcon = /* @__PURE__ */ createAppIcon(IconRobot2);
 export const AppAdvisorWatcherIcon =
   /* @__PURE__ */ createAppIcon(IconEyeSparkle);
-export const ApplePlatformIcon = /* @__PURE__ */ createAppIcon(IconApple, 16);
+export const ApplePlatformIcon = /* @__PURE__ */ createAppIcon(IconApple);
 export const ArchiveIcon = /* @__PURE__ */ createAppIcon(IconArchive);
 export const ArchiveBoxIcon = /* @__PURE__ */ createAppIcon(IconArchive1);
 export const ArticleShortcutIcon = /* @__PURE__ */ createAppIcon(IconShortcut);
@@ -394,64 +427,47 @@ export const AssignmentIcon = /* @__PURE__ */ createAppIcon(IconClipboard);
 export const AssignmentAddIcon = /* @__PURE__ */ createAppIcon(
   IconClipboard2Sparkle,
 );
-export const AutomationsIcon = /* @__PURE__ */ createAppIcon(IconClock, 20);
+export const AutomationsIcon = /* @__PURE__ */ createAppIcon(IconClock);
 export const BackIcon = /* @__PURE__ */ createAppIcon(IconArrowLeft);
 export const ArrowUpIcon = /* @__PURE__ */ createAppIcon(IconArrowUp);
 export const BarChart4BarsIcon =
   /* @__PURE__ */ createAppIcon(IconStackedBarChart);
 export const BellIcon = /* @__PURE__ */ createAppIcon(IconBell);
 export const Bell2Icon = /* @__PURE__ */ createAppIcon(IconBell2);
-export const BranchIcon = /* @__PURE__ */ createAppIcon(IconBranch, 16);
+export const BranchIcon = /* @__PURE__ */ createAppIcon(IconBranch);
 export const BrightnessAutoIcon = /* @__PURE__ */ createAppIcon(IconBrightness);
 export const BugReportIcon = /* @__PURE__ */ createAppIcon(IconBug);
-export const BuildingIcon = /* @__PURE__ */ createAppIcon(IconBuildings, 20);
+export const BuildingIcon = /* @__PURE__ */ createAppIcon(IconBuildings);
 export const BundleIcon = /* @__PURE__ */ createAppIcon(IconPackage);
 export const ChatIcon = /* @__PURE__ */ createAppIcon(IconBubble2);
 export const CloseIcon = /* @__PURE__ */ createAppIcon(IconCrossSmall);
 /** A clear control seated over a chip's leading glyph: a disc with the cross cut out. */
-export const ClearFilledIcon = /* @__PURE__ */ createAppIcon(
-  IconCircleXFilled,
-  16,
-);
-export const CloseMediumIcon = /* @__PURE__ */ createAppIcon(
-  IconCrossMedium,
-  16,
-);
-export const CloseLargeIcon = /* @__PURE__ */ createAppIcon(IconCrossLarge, 16);
+export const ClearFilledIcon = /* @__PURE__ */ createAppIcon(IconCircleXFilled);
+export const CloseMediumIcon = /* @__PURE__ */ createAppIcon(IconCrossMedium);
+export const CloseLargeIcon = /* @__PURE__ */ createAppIcon(IconCrossLarge);
 export const CheckIcon = /* @__PURE__ */ createAppIcon(IconCheckmark1);
-export const ChipSimpleIcon = /* @__PURE__ */ createAppIcon(IconChipSimple, 14);
+export const ChipSimpleIcon = /* @__PURE__ */ createAppIcon(IconChipSimple);
 export const ChevronDownMediumIcon = /* @__PURE__ */ createAppIcon(
   IconChevronDownMedium,
-  16,
 );
-export const ChevronDownIcon = /* @__PURE__ */ createAppIcon(
-  IconChevronDownSmall,
-  12,
-);
+export const ChevronDownIcon =
+  /* @__PURE__ */ createAppIcon(IconChevronDownSmall);
 export const ChevronLeftMediumIcon = /* @__PURE__ */ createAppIcon(
   IconChevronLeftMedium,
-  16,
 );
-export const ChevronTopMediumIcon = /* @__PURE__ */ createAppIcon(
-  IconChevronTopMedium,
-  16,
-);
-export const LineChart1Icon = /* @__PURE__ */ createAppIcon(IconLineChart1, 16);
-export const BulletListIcon = /* @__PURE__ */ createAppIcon(IconBulletList, 16);
-export const PanelLayoutIcon = /* @__PURE__ */ createAppIcon(
-  IconCanvasGrid,
-  16,
-);
+export const ChevronTopMediumIcon =
+  /* @__PURE__ */ createAppIcon(IconChevronTopMedium);
+export const LineChart1Icon = /* @__PURE__ */ createAppIcon(IconLineChart1);
+export const BulletListIcon = /* @__PURE__ */ createAppIcon(IconBulletList);
+export const PanelLayoutIcon = /* @__PURE__ */ createAppIcon(IconCanvasGrid);
 export const ChevronRightMediumIcon = /* @__PURE__ */ createAppIcon(
   IconChevronRightMedium,
-  16,
 );
 export const ChevronRightIcon = /* @__PURE__ */ createAppIcon(
   IconChevronRightSmall,
-  12,
 );
 export const CodeBracketsIcon = /* @__PURE__ */ createAppIcon(IconCodeBrackets);
-export const CodeMediumIcon = /* @__PURE__ */ createAppIcon(IconCodeMedium, 16);
+export const CodeMediumIcon = /* @__PURE__ */ createAppIcon(IconCodeMedium);
 export const ClaudeIcon = /* @__PURE__ */ adaptLogo(ClaudeLogo, 'ClaudeLogo');
 export const CodexIcon = /* @__PURE__ */ adaptLogo(CodexLogo, 'CodexLogo');
 export const CursorIcon = /* @__PURE__ */ adaptLogo(CursorLogo, 'CursorLogo');
@@ -459,11 +475,11 @@ export const CursorIcon = /* @__PURE__ */ adaptLogo(CursorLogo, 'CursorLogo');
 // manifest glyphs but deliberately not bound here: this module ships with every
 // route, and binding them added ~10.7 KB gzip of first-load JS to each one. The
 // External agents page imports them directly from `@canopy/ui-shared/icons`.
-export const DeepSeekIcon = /* @__PURE__ */ createAppIcon(IconDeepseek, 16);
-export const MiniMaxIcon = /* @__PURE__ */ createAppIcon(IconMinimax, 16);
-export const MoonshotIcon = /* @__PURE__ */ createAppIcon(IconKimi, 16);
-export const ZaiIcon = /* @__PURE__ */ createAppIcon(IconZai, 16);
-export const CognitionIcon = /* @__PURE__ */ createAppIcon(IconBrain1, 16);
+export const DeepSeekIcon = /* @__PURE__ */ createAppIcon(IconDeepseek);
+export const MiniMaxIcon = /* @__PURE__ */ createAppIcon(IconMinimax);
+export const MoonshotIcon = /* @__PURE__ */ createAppIcon(IconKimi);
+export const ZaiIcon = /* @__PURE__ */ createAppIcon(IconZai);
+export const CognitionIcon = /* @__PURE__ */ createAppIcon(IconBrain1);
 export const CommandIcon = /* @__PURE__ */ createAppIcon(IconRunShortcut);
 export const CopyIcon = /* @__PURE__ */ createAppIcon(IconSquareBehindSquare1);
 export const ClipboardIcon = /* @__PURE__ */ createAppIcon(IconClipboard);
@@ -476,7 +492,7 @@ export const DocumentIcon = /* @__PURE__ */ createAppIcon(IconFileText);
 export const DocumentPencilIcon = /* @__PURE__ */ createAppIcon(IconEditBig);
 export const DocumentSearchIcon = /* @__PURE__ */ createAppIcon(IconPageSearch);
 export const PageTextAddIcon = /* @__PURE__ */ createAppIcon(IconPageTextAdd);
-export const DragHandleIcon = /* @__PURE__ */ createAppIcon(IconDotGrid2x3, 12);
+export const DragHandleIcon = /* @__PURE__ */ createAppIcon(IconDotGrid2x3);
 export const DotIcon = /* @__PURE__ */ createAppIcon(IconDotGrid1x3Horizontal);
 export const DownloadIcon = /* @__PURE__ */ createAppIcon(IconArrowInbox);
 export const EditBigIcon = /* @__PURE__ */ createAppIcon(IconEditBig);
@@ -484,8 +500,8 @@ export const EyeIcon = /* @__PURE__ */ createAppIcon(IconEyeOpen);
 export const EyeOffIcon = /* @__PURE__ */ createAppIcon(IconEyeSlash);
 export const MailIcon = /* @__PURE__ */ createAppIcon(IconEmail1);
 export const MailCheckIcon = /* @__PURE__ */ createAppIcon(IconEmail2Check);
-export const ExperimentIcon = /* @__PURE__ */ createAppIcon(IconLab, 16);
-export const FailedIcon = /* @__PURE__ */ createAppIcon(IconCrossSmall, 12);
+export const ExperimentIcon = /* @__PURE__ */ createAppIcon(IconLab);
+export const FailedIcon = /* @__PURE__ */ createAppIcon(IconCrossSmall);
 /** The Feed: the Agent Ledger and organization activity, on every surface. */
 export const FeedIcon = /* @__PURE__ */ createAppIcon(IconFeed);
 export const FileIcon = /* @__PURE__ */ createAppIcon(IconFileText);
@@ -511,7 +527,7 @@ export const GitBranchCompactIcon =
 export const GitDraftIcon = /* @__PURE__ */ createAppIcon(IconDraftSimple);
 /** Split-arrow glyph — used for worktree / new-worktree affordances. */
 export const WorktreeIcon = /* @__PURE__ */ createAppIcon(IconArrowSplitRight);
-export const GitHubIcon = /* @__PURE__ */ createAppIcon(IconGithub, 14);
+export const GitHubIcon = /* @__PURE__ */ createAppIcon(IconGithub);
 export const GitMergeConflictIcon = /* @__PURE__ */ createAppIcon(
   IconMergeConflictSimple,
 );
@@ -530,7 +546,7 @@ export const GitRequestClosedIcon =
   /* @__PURE__ */ createAppIcon(IconRequestClosed);
 export const GlobeIcon = /* @__PURE__ */ createAppIcon(IconGlobe);
 export const GraphIcon = /* @__PURE__ */ createAppIcon(IconAgents);
-export const Hammer2Icon = /* @__PURE__ */ createAppIcon(IconHammer2, 16);
+export const Hammer2Icon = /* @__PURE__ */ createAppIcon(IconHammer2);
 export const HookIcon = /* @__PURE__ */ createAppIcon(IconWebhooks);
 export const HistoryIcon = /* @__PURE__ */ createAppIcon(IconHistory);
 export const InfoIcon = /* @__PURE__ */ createAppIcon(IconCircleInfo);
@@ -539,13 +555,10 @@ export const CircleCheckIcon = /* @__PURE__ */ createAppIcon(IconCircleCheck);
 export const InputIcon = /* @__PURE__ */ createAppIcon(IconInputForm);
 export const LabelIcon = /* @__PURE__ */ createAppIcon(IconTag);
 export const KanbanIcon = /* @__PURE__ */ createAppIcon(IconKanbanView);
-export const LayoutDashboardIcon = /* @__PURE__ */ createAppIcon(
-  IconLayoutDashboard,
-  15,
-);
+export const LayoutDashboardIcon =
+  /* @__PURE__ */ createAppIcon(IconLayoutDashboard);
 export const WindowsPlatformIcon = /* @__PURE__ */ createAppIcon(
   IconLayoutGrid2FilledSquare,
-  16,
 );
 export const LayoutWindowIcon = /* @__PURE__ */ createAppIcon(IconLayoutWindow);
 export const LinkIcon = /* @__PURE__ */ createAppIcon(IconLink);
@@ -553,13 +566,13 @@ export const BoardIcon = /* @__PURE__ */ createAppIcon(IconBoard);
 export const LinearIcon = /* @__PURE__ */ adaptLogo(LinearLogo, 'LinearLogo');
 // Community identity marks. Distinct from the Lucide close `X` and the
 // existing profile-platform marks, which keep their own contracts.
-export const XSocialIcon = /* @__PURE__ */ createAppIcon(IconXSocial, 16);
+export const XSocialIcon = /* @__PURE__ */ createAppIcon(IconXSocial);
 export const LinkedInSocialIcon = /* @__PURE__ */ adaptLogo(
   LinkedInLogo,
   'LinkedInLogo',
 );
-export const RedditSocialIcon = /* @__PURE__ */ createAppIcon(IconReddit, 16);
-export const DiscordSocialIcon = /* @__PURE__ */ createAppIcon(IconDiscord, 16);
+export const RedditSocialIcon = /* @__PURE__ */ createAppIcon(IconReddit);
+export const DiscordSocialIcon = /* @__PURE__ */ createAppIcon(IconDiscord);
 export const LoginIcon = /* @__PURE__ */ createAppIcon(IconArrowBoxRight);
 export const LogoutIcon = /* @__PURE__ */ createAppIcon(IconArrowBoxLeft);
 export const MacbookIcon = /* @__PURE__ */ createAppIcon(IconMacbook);
@@ -584,26 +597,23 @@ export const PersonIcon = /* @__PURE__ */ createAppIcon(IconUser);
 export const PipelineIcon = /* @__PURE__ */ createAppIcon(IconAgent);
 export const PinIcon = /* @__PURE__ */ createAppIcon(IconPin);
 export const PinFilledIcon = /* @__PURE__ */ createAppIcon(IconPinFilled);
-export const PauseIcon = /* @__PURE__ */ createAppIcon(IconPause, 16);
+export const PauseIcon = /* @__PURE__ */ createAppIcon(IconPause);
 export const PlanModeIcon = MapIcon;
 export const PlansIcon = MapIcon;
-export const PlayIcon = /* @__PURE__ */ createAppIcon(IconPlay, 16);
+export const PlayIcon = /* @__PURE__ */ createAppIcon(IconPlay);
 export const PlayCircleIcon = /* @__PURE__ */ createAppIcon(IconPlayCircle);
 export const PluginsIcon = /* @__PURE__ */ createAppIcon(IconPuzzle);
 export const PlusIcon = /* @__PURE__ */ createAppIcon(IconPlusSmall);
 export const PlusLargeIcon = /* @__PURE__ */ createAppIcon(IconPlusLarge);
 export const PlusMediumIcon = /* @__PURE__ */ createAppIcon(IconPlusMedium);
-export const PortalIcon = /* @__PURE__ */ createAppIcon(IconGlobe2, 20);
-export const PrivacyIcon = /* @__PURE__ */ createAppIcon(IconShield, 16);
+export const PortalIcon = /* @__PURE__ */ createAppIcon(IconGlobe2);
+export const PrivacyIcon = /* @__PURE__ */ createAppIcon(IconShield);
 export const ProcessIcon = /* @__PURE__ */ createAppIcon(IconServer);
 export const RaisedHandIcon = /* @__PURE__ */ createAppIcon(IconFrontHand);
 /** The Ask approval mode, at the 16px size of the other approval glyphs. */
-export const ApprovalAskIcon = /* @__PURE__ */ createAppIcon(IconFrontHand, 16);
+export const ApprovalAskIcon = /* @__PURE__ */ createAppIcon(IconFrontHand);
 /** The Auto approval mode: a shield that approves on your behalf. */
-export const ApprovalAutoIcon = /* @__PURE__ */ createAppIcon(
-  IconShieldCheck3,
-  16,
-);
+export const ApprovalAutoIcon = /* @__PURE__ */ createAppIcon(IconShieldCheck3);
 export const RecordIcon = /* @__PURE__ */ createAppIcon(IconRecord);
 export const ResourceMonitorIcon = /* @__PURE__ */ createAppIcon(
   IconElectrocardiogram,
@@ -626,13 +636,9 @@ export const RevertIcon = /* @__PURE__ */ createAppIcon(IconArrowLoopDownLeft);
 export const RocketLaunchIcon = /* @__PURE__ */ createAppIcon(IconRocket);
 export const OllamaIcon = /* @__PURE__ */ adaptLogo(OllamaLogo, 'OllamaLogo');
 export const ScheduleIcon = /* @__PURE__ */ createAppIcon(IconCalendarClock);
-export const SettingsIcon = /* @__PURE__ */ createAppIcon(
-  IconSettingsGear2,
-  16,
-);
+export const SettingsIcon = /* @__PURE__ */ createAppIcon(IconSettingsGear2);
 export const SettingsSliderHorIcon = /* @__PURE__ */ createAppIcon(
   IconSettingsSliderHor,
-  16,
 );
 /**
  * The one share glyph: three connected nodes. Every share action,
@@ -640,24 +646,18 @@ export const SettingsSliderHorIcon = /* @__PURE__ */ createAppIcon(
  * the glyph here changes it everywhere. Do not add another share icon.
  */
 export const ShareIcon = /* @__PURE__ */ createAppIcon(IconShareAndroid);
-export const ShieldIcon = /* @__PURE__ */ createAppIcon(IconShield, 16);
-export const ShieldAiIcon = /* @__PURE__ */ createAppIcon(IconShieldAi, 16);
-export const ShieldAccessIcon = /* @__PURE__ */ createAppIcon(
-  IconShieldAccess,
-  16,
-);
-export const SidebarIcon = /* @__PURE__ */ createAppIcon(IconSidebar, 16);
+export const ShieldIcon = /* @__PURE__ */ createAppIcon(IconShield);
+export const ShieldAiIcon = /* @__PURE__ */ createAppIcon(IconShieldAi);
+export const ShieldAccessIcon = /* @__PURE__ */ createAppIcon(IconShieldAccess);
+export const SidebarIcon = /* @__PURE__ */ createAppIcon(IconSidebar);
 export const SidebarHiddenLeftWideIcon = /* @__PURE__ */ createAppIcon(
   IconSidebarHiddenLeftWide,
-  16,
 );
 export const SidebarHiddenRightWideIcon = /* @__PURE__ */ createAppIcon(
   IconSidebarHiddenRightWide,
-  16,
 );
 export const BottombarHiddenBottomWideIcon = /* @__PURE__ */ createAppIcon(
   IconBottombarHiddenBottomWide,
-  16,
 );
 export const SingleRepoWorkspaceIcon =
   /* @__PURE__ */ createAppIcon(IconFolderFilled);
@@ -673,7 +673,7 @@ export const ForkSplitIcon = /* @__PURE__ */ createAppIcon(IconForkSplit);
 export const GitBranchLineIcon =
   /* @__PURE__ */ createAppIcon(IconGitBranchLine);
 export const StopIcon = /* @__PURE__ */ createAppIcon(IconStop);
-export const StopFilledIcon = /* @__PURE__ */ createAppIcon(IconStopFilled, 16);
+export const StopFilledIcon = /* @__PURE__ */ createAppIcon(IconStopFilled);
 export const StopwatchIcon = /* @__PURE__ */ createAppIcon(IconStopwatch);
 export const StorefrontIcon = /* @__PURE__ */ createAppIcon(IconStore1);
 /** The Customize hub (skills, plugins, MCP servers, collections). Marketplace sources keep `StorefrontIcon`. */
@@ -694,15 +694,13 @@ export const ThinkingIcon = /* @__PURE__ */ createAppIcon(IconBrain2);
 /** Lightbulb: the clean chat look's thinking step. */
 export const LightbulbIcon = /* @__PURE__ */ createAppIcon(IconLightbulb);
 export const TimeFliesIcon = /* @__PURE__ */ createAppIcon(IconClock);
-export const TrashIcon = /* @__PURE__ */ createAppIcon(IconTrashCan, 14);
+export const TrashIcon = /* @__PURE__ */ createAppIcon(IconTrashCan);
 /** Trash can with an ✕: delete for good (no retention, no restore). */
-export const TrashPermanentlyIcon = /* @__PURE__ */ createAppIcon(
-  IconTrashPermanently,
-  14,
-);
+export const TrashPermanentlyIcon =
+  /* @__PURE__ */ createAppIcon(IconTrashPermanently);
 export const TriggerIcon = /* @__PURE__ */ createAppIcon(IconCursorClick);
 /** A broken link: stop sharing an item, which keeps the item itself. */
-export const UnshareIcon = /* @__PURE__ */ createAppIcon(IconLinkOff, 14);
+export const UnshareIcon = /* @__PURE__ */ createAppIcon(IconLinkOff);
 /** Composer fast-mode chip glyph: a bolt, sized by the host. */
 export const FastModeIcon = /* @__PURE__ */ createAppIcon(IconZap);
 /** Fast mode switched on: the same bolt, filled. */
@@ -712,26 +710,22 @@ export const AutoModelIcon = /* @__PURE__ */ createAppIcon(IconShimmer);
 export const UnarchiveIcon = /* @__PURE__ */ createAppIcon(IconUnarchive);
 export const WarningIcon = /* @__PURE__ */ createAppIcon(
   IconExclamationTriangle,
-  16,
 );
-export const WatcherEyeIcon = /* @__PURE__ */ createAppIcon(IconEyeOpen, 16);
+export const WatcherEyeIcon = /* @__PURE__ */ createAppIcon(IconEyeOpen);
 export const WrenchIcon = /* @__PURE__ */ createAppIcon(IconBuild);
 
 export const CameraIcon = /* @__PURE__ */ createAppIcon(IconCamera1);
-export const CautionIcon = /* @__PURE__ */ createAppIcon(IconWarningSign, 12);
+export const CautionIcon = /* @__PURE__ */ createAppIcon(IconWarningSign);
 export const CodeIcon = /* @__PURE__ */ createAppIcon(IconCodeBrackets);
-export const ContextIcon = /* @__PURE__ */ createAppIcon(IconFileText, 12);
+export const ContextIcon = /* @__PURE__ */ createAppIcon(IconFileText);
 export const DetailsIcon = /* @__PURE__ */ createAppIcon(IconListBullets);
 export const DiagramIcon = /* @__PURE__ */ createAppIcon(IconAgent);
-export const ExplanationIcon = /* @__PURE__ */ createAppIcon(
-  IconCircleInfo,
-  12,
-);
+export const ExplanationIcon = /* @__PURE__ */ createAppIcon(IconCircleInfo);
 export const ArrowUpRightIcon = /* @__PURE__ */ createAppIcon(IconArrowUpRight);
 export const ExternalIcon = /* @__PURE__ */ createAppIcon(
   IconSquareArrowTopRight,
 );
-export const FilterIcon = /* @__PURE__ */ createAppIcon(IconFilter1, 12);
+export const FilterIcon = /* @__PURE__ */ createAppIcon(IconFilter1);
 export const MoonIcon = /* @__PURE__ */ createAppIcon(IconMoon);
 export const PickIcon = /* @__PURE__ */ createAppIcon(IconCursorClick);
 export const PeopleIdCardIcon = /* @__PURE__ */ createAppIcon(IconPeopleIdCard);
@@ -763,7 +757,7 @@ export function RefreshSpinnerIcon({
 // Lucide-compatible names let existing desktop and web call sites migrate
 // without losing their props or local aliases.
 export type LucideIcon = AppIcon;
-const lucide = (Glyph: AppGlyph): LucideIcon => createAppIcon(Glyph, 24);
+const lucide = (Glyph: AppGlyph): LucideIcon => createAppIcon(Glyph);
 
 export const Activity = /* @__PURE__ */ lucide(IconElectrocardiogram);
 export const AlertTriangle = /* @__PURE__ */ lucide(IconWarningSign);
@@ -817,7 +811,7 @@ export const Mail = /* @__PURE__ */ lucide(IconEmail1);
 export const Database = /* @__PURE__ */ lucide(IconBrain1);
 export const MailCheck = /* @__PURE__ */ lucide(IconEmail2Check);
 export const Menu = /* @__PURE__ */ lucide(IconBarsThree);
-export const MenuSimpleIcon = /* @__PURE__ */ createAppIcon(IconBarsTwo, 20);
+export const MenuSimpleIcon = /* @__PURE__ */ createAppIcon(IconBarsTwo);
 export const MessageSquare = /* @__PURE__ */ lucide(IconBubble2);
 export const MessageSquarePlus = /* @__PURE__ */ lucide(IconBubblePlus);
 export const MessagesSquare = /* @__PURE__ */ lucide(IconBubbles);
@@ -842,17 +836,12 @@ export const Shield = /* @__PURE__ */ lucide(IconShield);
 export const ShieldCheck = /* @__PURE__ */ lucide(IconShieldCheck);
 export const SlidersHorizontal = /* @__PURE__ */ lucide(IconSettingsSliderHor);
 export const Smartphone = /* @__PURE__ */ lucide(IconPhone);
-export const PhoneFilledIcon = /* @__PURE__ */ createAppIcon(
-  IconPhoneFilled,
-  20,
-);
+export const PhoneFilledIcon = /* @__PURE__ */ createAppIcon(IconPhoneFilled);
 export const PhoneDynamicIslandFilledIcon = /* @__PURE__ */ createAppIcon(
   IconPhoneDynamicIslandFilled,
-  20,
 );
 export const PhoneDynamicIslandIcon = /* @__PURE__ */ createAppIcon(
   IconPhoneDynamicIsland,
-  20,
 );
 export const Sparkles = /* @__PURE__ */ lucide(IconAutoAwesome);
 export const SquarePlus = /* @__PURE__ */ lucide(IconSquarePlus);

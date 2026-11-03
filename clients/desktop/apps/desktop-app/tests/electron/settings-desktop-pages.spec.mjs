@@ -117,10 +117,11 @@ test('desktop Settings pages keep their actions and lists in settings rows', asy
       const secret = window
         .locator('input[data-testid^="environment-editor-secret-"]')
         .last();
-      await expect(secret).not.toHaveClass(/accent/);
+      await expect(secret).not.toBeChecked();
       await secret.check();
       await expect(secret).toBeChecked();
-      await expect(secret).toHaveClass(/bg-fg-primary/);
+      // The shared Checkbox fills with the accent once checked.
+      await expect(secret).toHaveClass(/checked:bg-accent/);
       // The save bar spans the Settings card, its Save on the content column.
       const bar = window.getByTestId('environments-save-bar');
       await expect(bar.getByTestId('environments-unsaved')).toBeVisible();

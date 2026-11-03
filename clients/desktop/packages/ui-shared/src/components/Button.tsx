@@ -3,10 +3,12 @@ import {
   type ButtonHTMLAttributes,
   type CSSProperties,
   type JSX,
+  type MouseEvent,
 } from 'react';
 import {
   SECONDARY_SURFACE_CLASS,
   SECONDARY_SURFACE_HOVER_CLASS,
+  SECONDARY_SURFACE_OPEN_CLASS,
 } from '../lib/row-chips';
 import { KbdChip } from './KbdChip';
 
@@ -29,7 +31,7 @@ export type ButtonVariant =
  */
 export type ButtonLinkVariant = 'link';
 
-export type ButtonSize = 'sm' | 'md' | 'lg' | 'control' | 'compact';
+export type ButtonSize = 'sm' | 'md' | 'lg' | 'control' | 'compact' | 'field';
 
 interface CapsuleButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Visual treatment for the button. */
@@ -39,6 +41,10 @@ interface CapsuleButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonElement>
    * and `lg` are the 14px-label pill. `compact` is the 28px capsule with a
    * 13px label: Settings, dialog, section-header and dense-panel actions.
    * `control` (the 28px rounded rectangle) is deprecated: use `compact`.
+   * `field` is the 28px field rectangle (10px `rounded-row` corners) for a
+   * dropdown trigger only
+   * (`SettingsSelect`): fields and dropdowns are rectangles, actions are
+   * capsules. Never give an action `field`.
    */
   size?: ButtonSize;
   /**
@@ -88,16 +94,43 @@ interface LinkButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export type ButtonProps = CapsuleButtonProps | LinkButtonProps;
 
+/**
+ * The press every button and dropdown trigger shares: a 3% scale-down while
+ * the pointer is down, eased over 150ms. Pair it with `transition-transform`
+ * or a property list that names `scale`: Tailwind's `scale-*` sets
+ * the CSS `scale` property, which a plain `transform` entry does not ease.
+ */
+export const BUTTON_PRESS_CLASS = 'duration-150 active:scale-97';
+
+/**
+ * How a dropdown trigger behaves under the pointer: the secondary `Button`'s
+ * press, its hover fill, and that hover look held while the menu is open.
+ * `Select`, `SettingsSelect`, `ControlSelect`, and the `PickerTrigger` field
+ * variant all use it; each keeps its own field shape and edge.
+ */
+export const DROPDOWN_TRIGGER_INTERACTION_CLASS = `${BUTTON_PRESS_CLASS} ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS}`;
+
+/**
+ * An invalid dropdown (`aria-invalid` on its trigger) takes the field
+ * tokens: the destructive edge at rest, and the destructive edge and halo
+ * while focused or open, in place of its hairline ring and shadow; the
+ * stylesheet drops the `focus-ring` outline for an invalid `combobox` trigger
+ * or native `select`, so give this class only to one of those. One colour
+ * family in every state, like the invalid fields.
+ */
+export const DROPDOWN_INVALID_CLASS =
+  'aria-invalid:ring-0 aria-invalid:shadow-field-invalid aria-invalid:focus-visible:shadow-field-invalid-focus aria-invalid:aria-expanded:shadow-field-invalid-focus';
+
 // An `aria-disabled` button stays in the tab order so it can announce a busy
-// state (Connecting…); it keeps its variant surface and reads as unavailable
-// at 60% under a not-allowed cursor.
+// state (Connecting…); it keeps its variant surface, reads as unavailable at
+// 60% under a not-allowed cursor, and, like `disabled`, neither presses nor
+// runs its click.
 // A `disabled` button stays the click target, so a click on it is swallowed
 // rather than handed to a clickable row behind it (no `pointer-events-none`).
 // Its look ignores hover and press instead: Tailwind sorts `disabled:` after
 // `hover:` and `active:`, so each disabled class below outranks the hover or
 // press class for the same property.
-const BASE_CLASS_NAME =
-  "focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform] duration-150 before:absolute before:inset-x-0 before:content-[''] active:scale-97 disabled:scale-100 disabled:cursor-not-allowed disabled:text-[var(--fg-disabled)] disabled:opacity-100 disabled:shadow-none aria-disabled:cursor-not-allowed aria-disabled:opacity-60";
+const BASE_CLASS_NAME = `focus-ring inline-flex max-h-9 shrink-0 select-none items-center justify-center gap-1.5 font-medium transition-[opacity,transform,scale] ${BUTTON_PRESS_CLASS} before:absolute before:inset-x-0 before:content-[''] disabled:scale-100 disabled:cursor-not-allowed disabled:text-[var(--fg-disabled)] disabled:opacity-100 disabled:shadow-none aria-disabled:scale-100 aria-disabled:cursor-not-allowed aria-disabled:opacity-60`;
 
 // Disabled, a filled variant swaps its fill for the disabled fill. The ghost
 // variants (transparent at rest) keep no fill: a disabled ghost reads as a
@@ -109,7 +142,7 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   primary: `bg-accent fg-emphasis hover:bg-[color-mix(in_srgb,var(--bg-accent),#000_12%)] ${DISABLED_FILL_CLASS_NAME}`,
   // The house secondary control surface shared with action chips and the
   // header `Open in` split control; only the ink is added here.
-  secondary: `${SECONDARY_SURFACE_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none]`,
+  secondary: `${SECONDARY_SURFACE_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} fg-primary ${DISABLED_FILL_CLASS_NAME} disabled:[background-image:none]`,
   outline: `border bg-base fg-primary hover:bg-secondary active:bg-muted ${DISABLED_FILL_CLASS_NAME}`,
   ghost: `bg-transparent fg-secondary hover:bg-secondary hover:fg-primary ${DISABLED_NO_FILL_CLASS_NAME}`,
   // Ghost for a control on a raised or hovered surface (a card's row): the
@@ -122,7 +155,7 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
   // Disabled, it keeps no fill: a quiet action that can't run now reads as
   // a dimmed icon, not a grey disc. Open (a menu) or pressed (a toggle), it
   // takes the full ink, and its small icons draw a 1.5px visible stroke.
-  'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary aria-expanded:bg-subtle aria-expanded:fg-primary aria-pressed:fg-primary disabled:opacity-40 ${DISABLED_NO_FILL_CLASS_NAME}`,
+  'ghost-quiet': `canopy-small-icon-stroke bg-transparent fg-tertiary hover:bg-subtle hover:fg-primary focus-visible:fg-primary not-disabled:aria-expanded:bg-subtle not-disabled:aria-expanded:fg-primary not-disabled:aria-pressed:fg-primary ${DISABLED_NO_FILL_CLASS_NAME}`,
   'ghost-accent': `bg-transparent fg-accent hover:bg-accent-subtle hover:fg-accent ${DISABLED_NO_FILL_CLASS_NAME}`,
   // A quiet destructive action beside other actions (Delete next to Edit),
   // where the filled `destructive` would outweigh the primary choice.
@@ -146,6 +179,7 @@ const SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   lg: 'h-9 rounded-full text-s pointer-coarse:before:-inset-y-1',
   control: 'h-7 rounded-md text-xs pointer-coarse:before:-inset-y-2',
   compact: 'h-7 rounded-full text-xs pointer-coarse:before:-inset-y-2',
+  field: `h-7 rounded-row text-xs pointer-coarse:before:-inset-y-2 ${DROPDOWN_INVALID_CLASS}`,
 };
 
 const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
@@ -154,6 +188,7 @@ const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   lg: 'px-4',
   control: 'px-2.5',
   compact: 'px-3',
+  field: 'px-2.5',
 };
 
 // With a shortcut chip at the end, the end padding equals the chip's inset
@@ -165,6 +200,7 @@ const SHORTCUT_END_PADDING_CLASS_NAMES: Record<ButtonSize, string> = {
   lg: 'pr-2.25',
   control: 'pr-1.25',
   compact: 'pr-1.25',
+  field: 'pr-1.25',
 };
 
 const ICON_ONLY_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
@@ -173,6 +209,7 @@ const ICON_ONLY_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   lg: 'w-9 px-0 pointer-coarse:before:-inset-x-1',
   control: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
   compact: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
+  field: 'w-7 px-0 pointer-coarse:before:-inset-x-2',
 };
 
 // The overlay replaces the coarse-pointer `before:` hit area; `static` and the
@@ -292,6 +329,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         })}
         style={fillRow ? { ...FILL_ROW_STYLE, ...style } : style}
         {...props}
+        onClick={
+          isAriaDisabled(props['aria-disabled'])
+            ? swallowUnavailableClick
+            : props.onClick
+        }
       >
         {children}
         {withShortcut && <KbdChip shortcut={shortcut} />}
@@ -301,3 +343,19 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
 );
 
 Button.displayName = 'Button';
+
+/** `aria-disabled` as React accepts it: a boolean or its string form. */
+export function isAriaDisabled(
+  value: ButtonHTMLAttributes<HTMLButtonElement>['aria-disabled'],
+): boolean {
+  return value === true || value === 'true';
+}
+
+/**
+ * The click of a button that is unavailable but focusable: it runs nothing,
+ * and cancelling it stops a submit button from submitting its form, Enter in
+ * a field included.
+ */
+export function swallowUnavailableClick(event: MouseEvent): void {
+  event.preventDefault();
+}

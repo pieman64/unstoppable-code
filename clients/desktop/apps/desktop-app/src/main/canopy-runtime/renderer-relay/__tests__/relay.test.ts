@@ -587,6 +587,24 @@ describe('renderer relay', () => {
     expect(h.callers[0].grants).toEqual(['core.runtime.read']);
   });
 
+  it('never passes on the pipeline owner read grant', async () => {
+    const h = harness();
+    const sender = h.sender();
+    h.resolveSurface.mockImplementation(() => ({
+      surface: 'main',
+      caller: {
+        ...TRUSTED_CALLER,
+        grants: [
+          ...TRUSTED_CALLER.grants,
+          'core.pipeline.read',
+          'core.pipeline.ownerRead',
+        ],
+      },
+    }));
+    await h.call(sender, health);
+    expect(h.callers[0].grants).not.toContain('core.pipeline.ownerRead');
+  });
+
   it('revalidates the sender on every invocation', async () => {
     const h = harness();
     const sender = h.sender();

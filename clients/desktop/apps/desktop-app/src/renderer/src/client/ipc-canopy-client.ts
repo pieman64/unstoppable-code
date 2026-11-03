@@ -1463,16 +1463,19 @@ export class IpcCanopyClient implements CanopyClient {
       window.api.describeWorktreeDiscard({
         projectId: args.workspaceId,
         worktreeId: args.worktreeId,
+        ...(args.retainedArchives === true ? { retainedArchives: true } : {}),
       }),
     'worktree.discard': (args) =>
       window.api.discardWorktree({
         projectId: args.workspaceId,
         worktreeId: args.worktreeId,
         confirmation: args.confirmation,
+        ...(args.retainedArchives === true ? { retainedArchives: true } : {}),
       }),
     'workspace.delete.discard.describe': (args) =>
       window.api.describeProjectDeletionDiscard({
         workspaceId: args.workspaceId,
+        ...(args.retainedArchives === true ? { retainedArchives: true } : {}),
       }),
     'workspace.reorder': async (args) => {
       await window.api.reorderWorkspaces(args);

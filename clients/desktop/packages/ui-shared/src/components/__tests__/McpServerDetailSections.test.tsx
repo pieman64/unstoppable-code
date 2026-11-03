@@ -47,10 +47,10 @@ describe('PluginSection', () => {
     });
   }
 
-  /** The value beside the "Author:" label, as a reader sees it. */
+  /** The value beside the "Author" label, as a reader sees it. */
   function authorShown(): string | null | undefined {
     const label = Array.from(container.querySelectorAll('dt')).find(
-      (dt) => dt.textContent === 'Author:',
+      (dt) => dt.textContent === 'Author',
     );
     return label?.nextElementSibling?.textContent;
   }
@@ -120,10 +120,9 @@ describe('PluginSection', () => {
         />,
       );
     });
-    const error = Array.from(container.querySelectorAll('div')).find(
-      (div) => div.textContent === "Couldn't read /Users/me/.claude/plugins",
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't read /Users/me/.claude/plugins",
     );
-    expect(error).toBeDefined();
   });
 });
 

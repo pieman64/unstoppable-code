@@ -695,6 +695,73 @@ describe('lookupInstalledSharedSkill (CAN-5307)', () => {
     ).resolves.toMatchObject({ status: 'installed', skillName: 'b' });
   });
 
+  it('reviews the requested stale copy even when a sibling is already current', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('release', { remoteId: share.id, contentHash: editedHash }),
+        localSkill('release-2', {
+          remoteId: share.id,
+          contentHash: matchingHash,
+        }),
+      ],
+    });
+    readRawSkill.mockImplementation((id: string) =>
+      Promise.resolve(id === 'custom:app/release' ? 'edited' : rawSkill),
+    );
+    await expect(
+      lookupInstalledSharedSkill(
+        { ...share, ...receipted('release', 'release-2') },
+        { sourceId: 'custom:app', skillName: 'release' },
+      ),
+    ).resolves.toMatchObject({
+      status: 'installed',
+      skillName: 'release',
+      updateAvailable: true,
+    });
+  });
+
+  it('never substitutes a sibling for a missing or unreadable requested copy', async () => {
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [localSkill('other', { remoteId: share.id })],
+    });
+    const target = { sourceId: 'custom:app', skillName: 'wanted' };
+    await expect(
+      lookupInstalledSharedSkill({ ...share, ...receipted('other') }, target),
+    ).resolves.toEqual({ status: 'missing-copy' });
+    loadSkills.mockResolvedValue({
+      success: true,
+      data: [
+        localSkill('wanted', { remoteId: share.id }),
+        localSkill('other', { remoteId: share.id }),
+      ],
+    });
+    readRawSkill.mockImplementation((id: string) =>
+      id === 'custom:app/wanted'
+        ? Promise.reject(new Error('EACCES'))
+        : Promise.resolve(rawSkill),
+    );
+    await expect(
+      lookupInstalledSharedSkill(
+        { ...share, ...receipted('wanted', 'other') },
+        target,
+      ),
+    ).resolves.toEqual({ status: 'unverified' });
+  });
+
+  it('requires receipt enforcement for a specific installed destination', async () => {
+    mockResourceContextEnabled = false;
+    await expect(
+      lookupInstalledSharedSkill(share, {
+        sourceId: 'custom:app',
+        skillName: 'helper',
+      }),
+    ).resolves.toEqual({ status: 'unverified' });
+    expect(getShared).not.toHaveBeenCalled();
+    expect(loadSkills).not.toHaveBeenCalled();
+  });
+
   it('reports a receipt whose copies are all missing, not absence', async () => {
     loadSkills.mockResolvedValue({ success: true, data: [] });
     await expect(

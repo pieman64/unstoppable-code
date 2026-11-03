@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, type JSX } from 'react';
+import type { JSX } from 'react';
 import type { LedgerViewFileCandidate } from '@canopy/protocol/ledger-view';
 import { TextInput } from '../Field';
 
@@ -27,16 +27,12 @@ export function LedgerFileSearch({
   onPick,
   disabled = false,
 }: LedgerFileSearchProps): JSX.Element {
-  const inputId = useId();
   const showResults = query.trim().length > 0;
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={inputId} className="sr-only">
-        Find a file
-      </label>
       <TextInput
-        id={inputId}
         type="search"
+        aria-label="Find a file"
         value={query}
         disabled={disabled}
         placeholder="Find a file"

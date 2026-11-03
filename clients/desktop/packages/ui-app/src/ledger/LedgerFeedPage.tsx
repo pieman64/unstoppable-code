@@ -1,8 +1,8 @@
 'use client';
 
-import type { JSX, ReactNode } from 'react';
+import type { JSX } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
-import { PageHeader } from '@canopy/ui-shared/components';
+import { PageColumn, PageHeader, Stack } from '@canopy/ui-shared/components';
 import { LedgerFeed, type LedgerFeedProps } from './LedgerFeed';
 
 /** The Feed page's title, on every host. */
@@ -34,44 +34,47 @@ export function LedgerFeedHeading({
 export interface LedgerFeedPageProps extends LedgerFeedProps {
   /** What the host can do with the Feed; local features need `ledgerLocal`. */
   readonly capabilities: Pick<CanopyCapabilities, 'ledgerFeed' | 'ledgerLocal'>;
-  /** Places the heading in the host's page chrome. */
-  readonly frameHeading: (heading: JSX.Element) => ReactNode;
   /**
    * `page` (default) when the heading opens the page under a title bar;
    * `none` when the host's frame already insets the top.
    */
   readonly headingInset?: 'page' | 'none';
-  /** Places the Feed itself in the host's page chrome. */
-  readonly frameFeed: (feed: JSX.Element) => ReactNode;
 }
 
 /**
- * The Feed page on every host: its heading, then the Feed. The window chrome
- * around them stays the host's. A host that holds a Ledger itself
+ * The Feed page on every host: its heading, then the Feed, in one 640px page
+ * column so the title, tabs, search row and list share one left and right
+ * edge (design, 2026-11-01). The window chrome around it stays the host's. A host that holds a Ledger itself
  * (`ledgerLocal`) adds its scopes, the composer and every change; one that
  * only reads the mirror shows the same list, filters, threads and details,
  * read only.
  */
 export function LedgerFeedPage({
   capabilities,
-  frameHeading,
   headingInset,
-  frameFeed,
   local,
   ...feed
 }: LedgerFeedPageProps): JSX.Element | null {
   if (capabilities.ledgerFeed !== true) return null;
   return (
-    <>
-      {frameHeading(<LedgerFeedHeading inset={headingInset} />)}
-      {frameFeed(
-        <LedgerFeed
-          {...feed}
-          {...(capabilities.ledgerLocal === true && local !== undefined
-            ? { local }
-            : {})}
-        />,
-      )}
-    </>
+    <PageColumn
+      width="content"
+      className="min-h-0 flex-1"
+      data-testid="ledger-feed-page-column"
+    >
+      {/* The heading introduces the list, so both are one section: 16px
+          apart, as before the column. */}
+      <Stack gap="group" className="min-h-0 flex-1">
+        <LedgerFeedHeading inset={headingInset} />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <LedgerFeed
+            {...feed}
+            {...(capabilities.ledgerLocal === true && local !== undefined
+              ? { local }
+              : {})}
+          />
+        </div>
+      </Stack>
+    </PageColumn>
   );
 }

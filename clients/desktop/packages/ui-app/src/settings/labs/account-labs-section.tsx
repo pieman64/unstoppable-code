@@ -25,6 +25,7 @@ import {
   LabsSettingsPortProvider,
   type LabsSettingsPort,
 } from './labs-settings-port';
+import type { SettingsFailure } from '../errors';
 
 const ACCOUNT_LABS_ERROR_SCOPE = 'settings.account.labs';
 
@@ -47,8 +48,8 @@ export function AccountLabsSection(): JSX.Element {
     AccountLabsExperiment[] | null
   >(null);
   const [pending, setPending] = useState<Readonly<Record<string, boolean>>>({});
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Bumped by Retry so the load effect runs again.
   const [loadAttempt, setLoadAttempt] = useState(0);
   const mounted = useRef(true);
@@ -71,7 +72,7 @@ export function AccountLabsSection(): JSX.Element {
         setExperiments(next);
         setLoadError(null);
       } catch (caught: unknown) {
-        if (active) setLoadError(errorCopy.loadCopy(caught));
+        if (active) setLoadError(errorCopy.loadFailure(caught));
       }
     };
     void load();
@@ -102,7 +103,7 @@ export function AccountLabsSection(): JSX.Element {
         } catch (caught: unknown) {
           if (mounted.current)
             setError(
-              errorCopy.actionCopy(caught, { action: 'save your choice' }),
+              errorCopy.actionFailure(caught, { action: 'save your choice' }),
             );
         } finally {
           if (mounted.current)
@@ -135,12 +136,23 @@ export function AccountLabsSection(): JSX.Element {
   );
 
   const port = useMemo(
-    (): LabsSettingsPort => ({ rows, error, onToggle }),
+    (): LabsSettingsPort => ({
+      rows,
+      error: error?.copy ?? null,
+      ...(error?.details !== undefined ? { errorDetails: error.details } : {}),
+      onToggle,
+    }),
     [rows, error, onToggle],
   );
 
   if (loadError !== null)
-    return <ErrorBanner error={loadError} onRetry={retryLoad} />;
+    return (
+      <ErrorBanner
+        error={loadError?.copy}
+        details={loadError?.details}
+        onRetry={retryLoad}
+      />
+    );
   if (experiments === null)
     return (
       <DelayedLoadingPlaceholder>

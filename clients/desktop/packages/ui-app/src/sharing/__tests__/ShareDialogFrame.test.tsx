@@ -75,7 +75,7 @@ describe('ShareDialogFrame', () => {
     ).toBe(false);
     const submit = byTestId<HTMLButtonElement>('share-x-submit');
     expect(submit?.textContent).toBe('Sharing…');
-    expect(submit?.disabled).toBe(true);
+    expect(submit?.getAttribute('aria-disabled')).toBe('true');
     expect(byTestId('share-x-submit-spinner')).not.toBeNull();
     expect(byTestId('share-x-cancel')).toBeNull();
   });
@@ -122,7 +122,7 @@ describe('ShareDialogFrame', () => {
     );
     expect(byTestId('share-x-done')?.textContent).toBe('Done');
     const retry = byTestId<HTMLButtonElement>('share-x-retry-public');
-    expect(retry?.textContent).toBe('Retry public link');
+    expect(retry?.textContent).toBe('Try the public link again');
     act(() => retry?.click());
     expect(onRetryPublic).toHaveBeenCalledTimes(1);
   });

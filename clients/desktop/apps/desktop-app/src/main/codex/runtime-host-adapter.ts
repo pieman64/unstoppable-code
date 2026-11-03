@@ -5,7 +5,7 @@ import {
   type CodexWorkerResourceRegistration,
 } from '@canopy/desktop-shared/node/codex-runtime';
 import type { ClientInfo } from '@canopy/desktop-shared/node/codex-runtime/generated/ClientInfo';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getResourceMonitorService } from '../resource-monitor';
 import {
   registerCodexAppServerProcess,
@@ -54,7 +54,7 @@ configureCodexRuntimeHostHooks({
   registerProcessOwner: registerCodexAppServerProcess,
   unregisterProcessOwner: unregisterCodexAppServerProcess,
   recordDiagnostic: (event) => {
-    getObservabilityService().recordAppDiagnostic(event);
+    getExecutionObservabilityIngest().recordAppDiagnostic(event);
   },
   // Chat storage group-commits, so one
   // chat may have several notification admissions pending, so its commits

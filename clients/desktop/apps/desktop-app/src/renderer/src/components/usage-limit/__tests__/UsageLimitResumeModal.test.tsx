@@ -1764,7 +1764,7 @@ describe('UsageLimitResumeModal', () => {
       expect(useUsageLimitResumePromptStore.getState().isOpen).toBe(true);
 
       const retry = Array.from(document.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Retry',
+        (button) => button.textContent === 'Try again',
       );
       await act(async () => {
         retry?.click();

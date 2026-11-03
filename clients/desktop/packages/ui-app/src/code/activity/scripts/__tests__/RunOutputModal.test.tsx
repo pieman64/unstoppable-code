@@ -58,10 +58,10 @@ describe('RunOutputModal', () => {
     expect(output.some((name) => name.startsWith('rounded'))).toBe(false);
     expect(output.some((name) => name.startsWith('border'))).toBe(false);
 
-    // The status row and the search keep the dialog's 20px column, and the
+    // The status row and the search keep the dialog's 24px column, and the
     // wrapper around the log adds no padding of its own.
     const controls = classesOf(markup, 'run-output-controls');
-    expect(controls).toContain('px-5');
+    expect(controls).toContain('px-6');
     const body = classesOf(markup, 'run-output-body');
     expect(body.some((name) => /^p[xytrbl]?-/.test(name))).toBe(false);
   });

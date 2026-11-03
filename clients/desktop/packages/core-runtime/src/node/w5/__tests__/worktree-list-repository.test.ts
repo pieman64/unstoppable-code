@@ -1,5 +1,9 @@
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/protocol/ui-labels';
-import type { W5FileReplacement, W5FileStore } from '../file-store';
+import {
+  W5RecordUnservedError,
+  type W5FileReplacement,
+  type W5FileStore,
+} from '../file-store';
 import type { W5StorageTarget } from '../storage-target';
 import type { LocalReplicaContext } from '../worktree-replica-record';
 import {
@@ -53,6 +57,11 @@ function setup(options: { unreadable?: boolean; context?: boolean } = {}): {
       return Promise.resolve(
         raw === undefined ? { state: 'absent' } : { state: 'present', raw },
       );
+    },
+    remove: (filePath, _storage, removal): Promise<void> => {
+      replacements.push(removal);
+      files.delete(filePath);
+      return Promise.resolve();
     },
     replace: (filePath, contents, _storage, replacement) => {
       replacements.push(replacement);
@@ -221,6 +230,69 @@ it('refuses to replace a list that could not be read', async () => {
     error: new Error('EACCES'),
   });
   await expect(repository.replace('ws', [], previous)).rejects.toBeInstanceOf(
+    WorktreeRegistryUnreadableError,
+  );
+  await expect(repository.replace('ws', [], previous)).rejects.toThrow(
+    'Worktree registry is unreadable',
+  );
+  expect(replacements).toEqual([]);
+});
+
+it('refuses a list the record port cannot serve with that specific reason (CAN-5531)', async () => {
+  const { replacements, repository } = setup();
+  const unserved = new W5RecordUnservedError('limit-exceeded', 'worktrees');
+  await expect(
+    repository.replace('ws', [], { authority: 'unreadable', error: unserved }),
+  ).rejects.toMatchObject({
+    name: 'WorktreeRegistryUnreadableError',
+    message: unserved.message,
+    cause: unserved,
+  });
+  expect(replacements).toEqual([]);
+});
+
+it.each([
+  { raw: 'not json', collection: true, ids: [] },
+  { raw: '{"worktrees":[]}', collection: false, ids: [] },
+  { raw: 'null', collection: false, ids: [] },
+  { raw: '[]', collection: false, ids: [] },
+  { raw: '{}', collection: false, ids: [] },
+  { raw: '{"worktrees":null}', collection: false, ids: [] },
+  { raw: '{"worktrees":{}}', collection: false, ids: [] },
+  { raw: '{"worktrees":[null,3,"bad"]}', collection: false, ids: [] },
+  { raw: '{"worktrees":[{}, {"id":3}]}', collection: true, ids: [] },
+  {
+    raw: '{"worktrees":[{"id":"one"},{"id":"two"},{"id":"one"}]}',
+    collection: true,
+    ids: ['one', 'two'],
+  },
+])(
+  'removes a list with only the revisions its removed rows affect: $raw',
+  async ({ raw, collection, ids }) => {
+    const { files, replacements, repository } = setup();
+    files.set(LIST, raw);
+    await repository.remove('ws');
+    await repository.remove('ws');
+    expect(files.has(LIST)).toBe(false);
+    expect(replacements).toEqual([
+      {
+        operation: 'w5.worktree_list.remove',
+        previousRaw: raw,
+        advance: [
+          ...(collection ? [{ kind: 'worktrees', workspaceId: 'ws' }] : []),
+          ...ids.map((worktreeId) => ({
+            kind: 'worktree',
+            workspaceId: 'ws',
+            worktreeId,
+          })),
+        ],
+      },
+    ]);
+  },
+);
+it('refuses removal when the list cannot be read', async () => {
+  const { replacements, repository } = setup({ unreadable: true });
+  await expect(repository.remove('ws')).rejects.toBeInstanceOf(
     WorktreeRegistryUnreadableError,
   );
   expect(replacements).toEqual([]);

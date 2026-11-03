@@ -62,13 +62,15 @@ describe('EmailRecipientInput', () => {
         />,
       ),
     );
-    expect(container.querySelector('label')?.textContent).toBe('Email');
+    const label = container.querySelector('label');
+    expect(label?.textContent).toBe('Email');
+    expect(label?.htmlFor).toBe(input().id);
     expect(input().getAttribute('aria-invalid')).toBe('false');
     expect(container.textContent).toContain('They get an email with a link.');
     expect(container.querySelector('[data-testid="email-error"]')).toBeNull();
   });
 
-  it('renders a description between the label and the field', () => {
+  it('renders the description under the field, before the helper', () => {
     act(() =>
       root.render(
         <EmailRecipientInput
@@ -81,17 +83,19 @@ describe('EmailRecipientInput', () => {
         />,
       ),
     );
-    const label = container.querySelector('label');
-    const description = container.querySelector<HTMLParagraphElement>(
+    const description = container.querySelector<HTMLElement>(
       '[data-testid="email-description"]',
     );
-    expect(label?.className).toContain('font-medium fg-primary');
     expect(description?.textContent).toBe("We'll email them an invite.");
-    expect(label?.nextElementSibling).toBe(description);
-    expect(description?.nextElementSibling).toBe(input());
-    const describedBy = input().getAttribute('aria-describedby')?.split(' ');
-    expect(describedBy).toHaveLength(2);
-    expect(describedBy?.[0]).toBe(description?.id);
+    expect(
+      input().compareDocumentPosition(description ?? input()) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const helpId = input().getAttribute('aria-describedby');
+    expect(helpId).toBeTruthy();
+    const help = document.getElementById(helpId ?? '');
+    expect(help?.contains(description)).toBe(true);
+    expect(help?.textContent).toBe("We'll email them an invite.Helper");
   });
 
   it('omits the description when none is given', () => {

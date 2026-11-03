@@ -249,11 +249,23 @@ describe('notification choices in menus', () => {
         const trigger = byTestId('trigger');
         act(() => trigger?.focus());
         act(() => {
-          if (opening === 'click') trigger?.click();
-          else
-            trigger?.dispatchEvent(
-              new KeyboardEvent('keydown', { key: opening, bubbles: true }),
-            );
+          if (opening === 'click') {
+            trigger?.click();
+            return;
+          }
+          const keydown = new KeyboardEvent('keydown', {
+            key: opening,
+            bubbles: true,
+            cancelable: true,
+          });
+          trigger?.dispatchEvent(keydown);
+          // A browser activates a focused button on Enter and Space unless
+          // the keydown was handled; jsdom does not, so do it here.
+          if (
+            (opening === 'Enter' || opening === ' ') &&
+            !keydown.defaultPrevented
+          )
+            trigger?.click();
         });
         const menu = byTestId('menu');
         expect(menu).not.toBeNull();
@@ -475,7 +487,7 @@ describe('notification choices in menus', () => {
       ),
     );
     const status = byTestId('entry-notify-status');
-    expect(status?.getAttribute('role')).toBe('alert');
+    expect(status?.querySelector('[role="alert"]')?.textContent).toBe('Nope');
     expect(status?.textContent).toBe('Nope');
     act(() =>
       root.render(
@@ -533,7 +545,7 @@ describe('notification choices in menus', () => {
     expect(byTestId('all')?.hasAttribute('aria-busy')).toBe(false);
     expect(byTestId('mute')?.getAttribute('aria-busy')).toBe('true');
     expect(byTestId('mute')?.getAttribute('aria-checked')).toBe('false');
-    expect(byTestId('status')?.getAttribute('role')).toBe('alert');
+    expect(byTestId('status')?.querySelector('[role="alert"]')).toBeTruthy();
     act(() => byTestId('mute')?.click());
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(byTestId('menu')).not.toBeNull();

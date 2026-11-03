@@ -9,6 +9,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import type {
   LocalMemoryChatRef,
   LocalMemoryClient,
@@ -22,7 +23,11 @@ import {
   Button,
   ConfirmDialog,
   EmptyState,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  FormField,
+  ErrorBanner,
+  ErrorState,
   Markdown,
   TextArea,
   TextInput,
@@ -43,7 +48,6 @@ import {
   SearchIcon,
   SettingsIcon,
   TrashIcon,
-  WarningIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   MEMORY_KIND_LABELS,
@@ -795,23 +799,19 @@ export function MemoryPanel({
 
   function renderList(): JSX.Element {
     if (loading)
-      return <LoadingPlaceholder label="Loading memories…" space="panel" />;
+      return (
+        <DelayedLoadingPlaceholder slowNote="Still loading memories…">
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
+      );
     if (listError)
       return (
-        <p
-          role="alert"
-          className="px-1 py-2 text-xs fg-destructive"
-          data-testid="memory-list-error"
-        >
-          {listError}{' '}
-          <button
-            type="button"
-            onClick={refresh}
-            className="focus-ring underline"
-          >
-            Retry
-          </button>
-        </p>
+        <ErrorState
+          space="panel"
+          testId="memory-list-error"
+          message={listError}
+          onRetry={refresh}
+        />
       );
     if (shown.length === 0)
       return (
@@ -915,14 +915,16 @@ export function MemoryPanel({
     const source = entry.file.source;
     const chat = source ? chats.get(source.chatId) : undefined;
     return (
-      <dl
-        className="mb-4 grid grid-cols-[96px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs"
-        data-testid="memory-detail-facts"
+      <FactList
+        labelWidth="6rem"
+        columnGap="3"
+        rowGap="2"
+        placement="mb-4"
+        dataTestId="memory-detail-facts"
       >
         {source && (
           <>
-            <dt className="fg-tertiary">Source</dt>
-            <dd className="min-w-0 fg-primary">
+            <Fact label="Source">
               {chat ? (
                 <button
                   type="button"
@@ -940,37 +942,28 @@ export function MemoryPanel({
               ) : (
                 <span data-testid="memory-detail-source">Chat</span>
               )}
-            </dd>
+            </Fact>
           </>
         )}
-        <dt className="fg-tertiary">Saved for</dt>
-        <dd className={`min-w-0 fg-primary ${REPLAY_MASK_CLASS}`}>
-          {scopes[entry.scopeIndex].savedFor}
-        </dd>
-        <dt className="fg-tertiary">Kind</dt>
-        <dd className="min-w-0 fg-primary">
-          {MEMORY_KIND_LABELS[entry.file.kind]}
-        </dd>
-        <dt className="fg-tertiary">Saved</dt>
-        <dd className="min-w-0 fg-primary">
-          {savedTime(entry.file.modifiedAt, now)}
-        </dd>
+        <Fact label="Saved for">
+          <span className={REPLAY_MASK_CLASS}>
+            {scopes[entry.scopeIndex].savedFor}
+          </span>
+        </Fact>
+        <Fact label="Kind">{MEMORY_KIND_LABELS[entry.file.kind]}</Fact>
+        <Fact label="Saved">{savedTime(entry.file.modifiedAt, now)}</Fact>
         {entry.file.usageCount !== undefined && (
           <>
-            <dt className="fg-tertiary">Used</dt>
-            <dd
-              className="min-w-0 fg-primary"
-              data-testid="memory-detail-usage"
-            >
+            <Fact label="Used" dataTestId="memory-detail-usage">
               {entry.file.usageCount === 0
                 ? 'Not used yet'
                 : entry.file.usageCount === 1
                   ? '1 time'
                   : `${entry.file.usageCount} times`}
-            </dd>
+            </Fact>
           </>
         )}
-      </dl>
+      </FactList>
     );
   }
 
@@ -988,68 +981,48 @@ export function MemoryPanel({
     return (
       <div className="flex flex-col" data-testid="memory-item-editor">
         {titled && (
-          <>
-            <label
-              htmlFor="memory-edit-title"
-              className="mb-1.5 text-xs fg-secondary"
-            >
-              Title
-            </label>
-            <TextInput
+          <div className="mb-3.5">
+            <FormField
               id="memory-edit-title"
-              autoFocus
-              value={draftTitle}
-              disabled={saving}
-              aria-invalid={titleMissing}
-              aria-describedby={
-                titleMissing ? 'memory-edit-title-error' : undefined
-              }
-              onChange={(event) => setDraftTitle(event.target.value)}
-              onKeyDown={onKeyDown}
-              data-testid="memory-item-title"
-            />
-            {titleMissing && (
-              <p
-                id="memory-edit-title-error"
-                className="mt-1.5 flex items-center gap-1.5 text-2xs fg-destructive"
-              >
-                <WarningIcon width={14} height={14} aria-hidden="true" />
-                Add a title.
-              </p>
-            )}
-          </>
+              label="Title"
+              error={titleMissing ? 'Add a title.' : undefined}
+            >
+              {(control) => (
+                <TextInput
+                  {...control}
+                  autoFocus
+                  value={draftTitle}
+                  disabled={saving}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onKeyDown={onKeyDown}
+                  data-testid="memory-item-title"
+                />
+              )}
+            </FormField>
+          </div>
         )}
-        <label
-          htmlFor="memory-edit-body"
-          className={`mb-1.5 text-xs fg-secondary ${titled ? 'mt-3.5' : ''}`}
-        >
-          Memory
-        </label>
-        <TextArea
-          id="memory-edit-body"
-          autoFocus={!titled}
-          rows={Math.min(14, Math.max(5, draftBody.split('\n').length + 1))}
-          value={draftBody}
-          disabled={saving}
-          onChange={(event) => setDraftBody(event.target.value)}
-          onKeyDown={onKeyDown}
-          data-testid="memory-item-draft"
-        />
+        <FormField id="memory-edit-body" label="Memory">
+          {(control) => (
+            <TextArea
+              {...control}
+              autoFocus={!titled}
+              rows={Math.min(14, Math.max(5, draftBody.split('\n').length + 1))}
+              value={draftBody}
+              disabled={saving}
+              onChange={(event) => setDraftBody(event.target.value)}
+              onKeyDown={onKeyDown}
+              data-testid="memory-item-draft"
+            />
+          )}
+        </FormField>
         {removedWhileEditing ? (
-          <p
-            role="alert"
-            className="mt-2 text-2xs fg-destructive"
-            data-testid="memory-item-removed"
-          >
-            This memory was removed, so it can't be saved. Copy your draft
-            before you cancel.
-          </p>
+          <ErrorBanner
+            className="mt-2"
+            testId="memory-item-removed"
+            error="This memory was removed, so it can't be saved. Copy your draft before you cancel."
+          />
         ) : (
-          saveError && (
-            <p role="alert" className="mt-2 text-2xs fg-destructive">
-              {saveError}
-            </p>
-          )
+          <ErrorBanner className="mt-2" error={saveError} />
         )}
         <div className="mt-3.5 flex justify-end gap-2">
           <Button
@@ -1118,9 +1091,7 @@ export function MemoryPanel({
                 {content?.title || entry.title}
               </h2>
               {document?.error ? (
-                <p role="alert" className="mb-4 text-xs fg-destructive">
-                  {document.error}
-                </p>
+                <ErrorBanner error={document.error} />
               ) : content ? (
                 content.body && (
                   <div
@@ -1133,7 +1104,9 @@ export function MemoryPanel({
                   </div>
                 )
               ) : (
-                <LoadingPlaceholder label="Opening…" space="compact" />
+                <DelayedLoadingPlaceholder slowNote="Still opening…">
+                  <CenteredLoadingSpinner className="my-4" />
+                </DelayedLoadingPlaceholder>
               )}
               {renderFacts(entry)}
               <div className="flex gap-2">

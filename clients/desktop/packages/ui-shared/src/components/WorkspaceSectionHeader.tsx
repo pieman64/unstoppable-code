@@ -1,8 +1,5 @@
 import {
   useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
   useRef,
   useState,
   type JSX,
@@ -10,10 +7,9 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
 import { ActionMenuRowStyle } from './ActionMenuItems';
-import { FloatingMenu } from './FloatingMenu';
+import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
 import {
   CHAT_UNIT_LABEL,
   CHAT_UNIT_LABEL_PLURAL,
@@ -34,6 +30,7 @@ import {
 import { CloudBackendIcon } from '../icons/CloudBackendIcon';
 import { DeviceBackendIcon } from '../icons/DeviceBackendIcon';
 import { RailIconButton } from './RailIconButton';
+import { RichHoverTooltip } from './RichHoverTooltip';
 import { useMediaQuery } from './useMediaQuery';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 import { WorkspaceIconDisclosureSwap } from './WorkspaceIconDisclosureSwap';
@@ -982,15 +979,14 @@ export function WorkspaceSectionHeader({
       )}
       {contextMenu !== null &&
         hasContextMenu &&
-        rootRef.current?.ownerDocument.body !== undefined &&
-        createPortal(
+        rootRef.current?.ownerDocument.body !== undefined && (
           <>
-            <span
+            <FloatingMenuPointAnchor
               ref={contextMenuAnchorRef}
-              aria-hidden="true"
+              x={contextMenu.x}
+              y={contextMenu.y}
+              ownerDocument={rootRef.current.ownerDocument}
               data-testid={`${contextMenuTestId}-anchor`}
-              className="pointer-events-none fixed h-0 w-0"
-              style={{ left: contextMenu.x, top: contextMenu.y }}
             />
             <FloatingMenu
               open
@@ -1024,8 +1020,7 @@ export function WorkspaceSectionHeader({
                 {renderContextMenuItems?.((): void => setContextMenu(null))}
               </ActionMenuRowStyle>
             </FloatingMenu>
-          </>,
-          rootRef.current.ownerDocument.body,
+          </>
         )}
     </div>
   );
@@ -1033,7 +1028,6 @@ export function WorkspaceSectionHeader({
 
 const REPO_TOOLTIP_MAX_NAMES = 12;
 const REPO_TOOLTIP_GAP = 6;
-const REPO_TOOLTIP_VIEWPORT_PADDING = 8;
 
 /**
  * Renders the `<N> repo(s)` count for a multi-repo workspace, wrapping it in
@@ -1070,12 +1064,9 @@ function RepoCountWithTooltip({
 }
 
 /**
- * Portaled, viewport-aware tooltip for the multi-repo `<N> repos` sub-label.
- * The tooltip content is rendered into `document.body` via `createPortal` so
- * it escapes overflow:hidden ancestors in the sidebar, and its position is
- * recomputed against the viewport so it never extends past the window edge.
- * Mirrors the desktop `IconTooltip` pattern in a SSR-safe shape that this
- * shared component can rely on.
+ * The multi-repo `<N> repos` sub-label and its list of repository names, on
+ * the shared rich hover tooltip: it hangs under the label from its left edge
+ * and flips above when there is no room below.
  */
 function RepoTooltipTrigger({
   label,
@@ -1086,147 +1077,42 @@ function RepoTooltipTrigger({
   repoNames: string[];
   textScale: 'default' | 'sidebar';
 }): JSX.Element {
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
-
   const visibleNames = repoNames.slice(0, REPO_TOOLTIP_MAX_NAMES);
   const remaining = repoNames.length - visibleNames.length;
-  const tooltipId = useId();
-
-  const updatePosition = useCallback((): void => {
-    const trigger = triggerRef.current;
-    const tooltip = tooltipRef.current;
-    if (!trigger || !tooltip) return;
-
-    const rect = trigger.getBoundingClientRect();
-    const tooltipWidth = tooltip.offsetWidth;
-    const tooltipHeight = tooltip.offsetHeight;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    const preferredTop = rect.bottom + REPO_TOOLTIP_GAP;
-    const fitsBelow =
-      preferredTop + tooltipHeight + REPO_TOOLTIP_VIEWPORT_PADDING <=
-      viewportHeight;
-    const fallbackTop = rect.top - REPO_TOOLTIP_GAP - tooltipHeight;
-    const clampedMaxTop = Math.max(
-      REPO_TOOLTIP_VIEWPORT_PADDING,
-      viewportHeight - tooltipHeight - REPO_TOOLTIP_VIEWPORT_PADDING,
-    );
-    const top = fitsBelow
-      ? preferredTop
-      : Math.min(
-          Math.max(REPO_TOOLTIP_VIEWPORT_PADDING, fallbackTop),
-          clampedMaxTop,
-        );
-
-    const desiredLeft = rect.left;
-    const clampedMaxLeft = Math.max(
-      REPO_TOOLTIP_VIEWPORT_PADDING,
-      viewportWidth - tooltipWidth - REPO_TOOLTIP_VIEWPORT_PADDING,
-    );
-    const left = Math.min(
-      Math.max(REPO_TOOLTIP_VIEWPORT_PADDING, desiredLeft),
-      clampedMaxLeft,
-    );
-
-    setPosition((previous) => {
-      if (previous && previous.top === top && previous.left === left) {
-        return previous;
-      }
-      return { top, left };
-    });
-  }, []);
-
-  useLayoutEffect((): void => {
-    if (!open) {
-      setPosition(null);
-      return;
-    }
-    updatePosition();
-  }, [open, updatePosition]);
-
-  useEffect((): (() => void) | undefined => {
-    if (!open) return undefined;
-    let frame: number | null = null;
-    const schedule = (): void => {
-      if (frame !== null) return;
-      frame = window.requestAnimationFrame((): void => {
-        frame = null;
-        updatePosition();
-      });
-    };
-    window.addEventListener('resize', schedule);
-    window.addEventListener('scroll', schedule, {
-      capture: true,
-      passive: true,
-    });
-    return (): void => {
-      window.removeEventListener('resize', schedule);
-      window.removeEventListener('scroll', schedule, { capture: true });
-      if (frame !== null) {
-        window.cancelAnimationFrame(frame);
-      }
-    };
-  }, [open, updatePosition]);
-
-  const showTooltip = (): void => setOpen(true);
-  const hideTooltip = (): void => setOpen(false);
-
-  const canPortal = typeof document !== 'undefined';
 
   return (
-    <span className="relative inline-block">
+    <RichHoverTooltip
+      placement="below-start"
+      placementGap={REPO_TOOLTIP_GAP}
+      surfacePadding="relaxed"
+      surfaceClassName="min-w-35 max-w-65"
+      content={
+        <div className="text-xs">
+          <span
+            className={`block ${textScale === 'sidebar' ? 'text-xs' : 'text-3xs'} font-normal fg-secondary`}
+          >
+            Repositories
+          </span>
+          <ul className="mt-1 space-y-0.5">
+            {visibleNames.map((repoName, index) => (
+              <li key={`${repoName}-${index}`} className="truncate">
+                {repoName}
+              </li>
+            ))}
+            {remaining > 0 && (
+              <li className="fg-secondary/80">+ {remaining} more</li>
+            )}
+          </ul>
+        </div>
+      }
+    >
       <button
         type="button"
-        ref={triggerRef}
-        aria-describedby={open ? tooltipId : undefined}
         aria-label={`Repositories: ${repoNames.join(', ')}`}
         className={`focus-ring rounded-sm border-0 bg-transparent p-0 ${textScale === 'sidebar' ? 'text-s' : 'text-xs'} fg-secondary/60 underline-offset-2 hover:underline focus:underline`}
-        onMouseEnter={showTooltip}
-        onMouseLeave={hideTooltip}
-        onFocus={showTooltip}
-        onBlur={hideTooltip}
       >
         {label}
       </button>
-      {open &&
-        canPortal &&
-        createPortal(
-          <div
-            id={tooltipId}
-            ref={tooltipRef}
-            role="tooltip"
-            className="pointer-events-none fixed z-tooltip min-w-35 max-w-65 rounded-md bg-quaternary px-2.5 py-2 text-left text-xs shadow-tooltip fg-primary"
-            style={
-              position
-                ? { top: position.top, left: position.left }
-                : { visibility: 'hidden', top: 0, left: 0 }
-            }
-          >
-            <span
-              className={`block ${textScale === 'sidebar' ? 'text-xs' : 'text-3xs'} font-normal fg-secondary`}
-            >
-              Repositories
-            </span>
-            <ul className="mt-1 space-y-0.5">
-              {visibleNames.map((repoName, index) => (
-                <li key={`${repoName}-${index}`} className="truncate">
-                  {repoName}
-                </li>
-              ))}
-              {remaining > 0 && (
-                <li className="fg-secondary/80">+ {remaining} more</li>
-              )}
-            </ul>
-          </div>,
-          document.body,
-        )}
-    </span>
+    </RichHoverTooltip>
   );
 }

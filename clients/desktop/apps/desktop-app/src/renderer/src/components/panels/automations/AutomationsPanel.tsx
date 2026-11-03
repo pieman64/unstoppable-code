@@ -40,9 +40,11 @@ import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import {
+  Badge,
   Button,
   Notice,
   NoticeButton,
+  SearchField,
   SegmentedControl,
   Tooltip,
 } from '@canopy/ui-shared/components';
@@ -181,15 +183,9 @@ function UpcomingSection({
             data-testid={`automations-panel-upcoming-${entry.key}`}
             className="focus-ring flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-fg-primary/[0.04]"
           >
-            <span
-              className={`inline-flex shrink-0 rounded-full px-1.5 py-0.5 text-2xs font-medium ${
-                entry.withinSoonWindow
-                  ? 'bg-accent-subtle fg-accent'
-                  : 'bg-fg-primary/[0.06] fg-secondary'
-              }`}
-            >
+            <Badge muted={!entry.withinSoonWindow}>
               {formatTimeUntil(now, entry.occursAt)}
-            </span>
+            </Badge>
             <span className="min-w-0 flex-1 truncate text-xs fg-primary">
               {entry.activity.name || 'Untitled automation'}
             </span>
@@ -240,13 +236,13 @@ function OverviewSection({
           shape="capsule"
           width="content"
         />
-        <input
-          type="text"
+        <SearchField
           value={search}
-          onChange={(event): void => onSearchChange(event.target.value)}
+          onValueChange={onSearchChange}
           placeholder="Filter by name"
+          aria-label="Filter by name"
           data-testid="automations-panel-search"
-          className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1 text-xs fg-primary"
+          className="min-w-0 flex-1"
         />
       </div>
       {rows.length === 0 ? (
@@ -705,7 +701,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
                 data-testid="automations-panel-retry"
                 onClick={retryHydration}
               >
-                Retry
+                Try again
               </NoticeButton>
             }
           >

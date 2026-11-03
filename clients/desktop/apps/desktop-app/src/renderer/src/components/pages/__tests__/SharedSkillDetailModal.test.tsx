@@ -92,6 +92,11 @@ jest.mock('@/lib/clipboard', () => ({
     copyTextToClipboard(value),
 }));
 
+const postShareToast = jest.fn<void, [toast: ShareToast]>();
+jest.mock('@/lib/share-toast', () => ({
+  postShareToast: (toast: ShareToast): void => postShareToast(toast),
+}));
+
 const ABSENT: SharedSkillInstallLookup = { status: 'absent' };
 /** A receipted copy under `skillName`; stale when `updateAvailable`. */
 function installedAs(
@@ -124,8 +129,11 @@ jest.mock('@/lib/sharedSkillImport', () => ({
 }));
 
 import type { SharedSkillInstallLookup } from '@/lib/sharedSkillImport';
+import type { ShareToast } from '@canopy/ui-app/sharing';
+import { brand } from '@/lib/brand';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { SharedSkillDetailModal } from '../SkillsTab';
+import { SharedByYou } from '../../plugins/SharedByYou';
 
 const PUBLIC_SHARE = {
   externalId: 'share-1',
@@ -845,6 +853,44 @@ describe('SharedSkillDetailModal page', () => {
     expect(document.querySelectorAll('h1')).toHaveLength(1);
   });
 
+  it('leaves Preview so Save can show and focus the content error', async () => {
+    const updateShared = jest.fn();
+    Object.assign(window, {
+      skills: {
+        getShared,
+        publishPublicShare,
+        revokePublicShare,
+        updateShared,
+      },
+    });
+    // The loaded source has no body, which blocks the save.
+    getShared.mockResolvedValue(
+      makeDetail({ rawSkill: '---\nname: helper\ndescription: Helps\n---\n' }),
+    );
+    await renderPage({ mode: 'edit', presentation: 'modal' });
+    const bodyInput = (): HTMLElement | null =>
+      document.querySelector<HTMLElement>(
+        '[data-testid="skill-editor-body-field"] textarea',
+      );
+    act(() => q('skill-editor-mode-preview')?.click());
+    expect(bodyInput()).toBeNull();
+
+    const save = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Save changes',
+    );
+    if (!save) throw new Error('Expected the Save changes button');
+    await act(async () => {
+      save.click();
+      await Promise.resolve();
+    });
+
+    expect(updateShared).not.toHaveBeenCalled();
+    expect(q('skill-editor-body-field-error')?.textContent).toContain(
+      'Enter the skill content.',
+    );
+    expect(document.activeElement).toBe(bodyInput());
+  });
+
   // CAN-5016: who shared it, the owning organization and the audience lead
   // the meta, before the installed and public-link facts.
   const LENA_ACME: Partial<SharedSkillSummary> = {
@@ -1003,8 +1049,156 @@ describe('SharedSkillDetailModal page', () => {
     const bar = q('plugins-entry-detail-header-actions');
     expect(bar?.textContent).not.toContain('Unshare');
     const items = openMore();
-    expect(items).toContain('Publish public link');
+    expect(items).toContain('Publish public link (anyone with the link)');
     expect(items[items.length - 1]).toBe('Unshare');
+  });
+
+  // CAN-5452: after the public link is gone the owner still copies the
+  // member link from ⋯; copying never publishes or revokes anything.
+  describe('Copy link for the member link', () => {
+    const SKILL_UUID = '0b6f3c2a-8d1e-4f5a-9b7c-6e5d4c3b2a19';
+    const OWNED_ORG: Partial<SharedSkillSummary> = {
+      ...LENA_ACME,
+      id: SKILL_UUID,
+      canDelete: true,
+    };
+
+    function menuItem(testId: string): HTMLElement | null {
+      return document.querySelector<HTMLElement>(
+        `[data-testid="plugins-entry-detail-menu"] [data-testid="${testId}"]`,
+      );
+    }
+
+    beforeEach(() => {
+      postShareToast.mockClear();
+      copyTextToClipboard.mockClear();
+      copyTextToClipboard.mockImplementation(() => Promise.resolve(true));
+    });
+
+    it('copies the organization link before the public-link actions', async () => {
+      getShared.mockResolvedValue(makeDetail(OWNED_ORG));
+      await renderPage({ summary: makeSummary(OWNED_ORG) });
+      const items = openMore();
+      expect(items.indexOf('Copy link')).toBeGreaterThanOrEqual(0);
+      expect(items.indexOf('Copy link')).toBeLessThan(
+        items.indexOf('Publish public link (anyone with the link)'),
+      );
+      await act(async () => {
+        menuItem('shared-by-you-copy-link-menu')?.click();
+        await Promise.resolve();
+      });
+      expect(copyTextToClipboard).toHaveBeenCalledWith(
+        `${brand.internalName}://share/skills/${SKILL_UUID}?audience=ORGANIZATION`,
+      );
+      expect(postShareToast).toHaveBeenCalledTimes(1);
+      expect(postShareToast).toHaveBeenCalledWith({
+        tone: 'success',
+        message: 'Link copied. Only Acme members can open it.',
+        blockMessageFromReplay: true,
+      });
+      expect(publishPublicShare).not.toHaveBeenCalled();
+      expect(revokePublicShare).not.toHaveBeenCalled();
+    });
+
+    it('says a public link is also active while one exists', async () => {
+      const linked = { ...OWNED_ORG, publicShare: PUBLIC_SHARE };
+      getShared.mockResolvedValue(makeDetail(linked));
+      await renderPage({ summary: makeSummary(linked) });
+      openMore();
+      await act(async () => {
+        menuItem('shared-by-you-copy-link-menu')?.click();
+        await Promise.resolve();
+      });
+      expect(postShareToast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            'Link copied for Acme members. A public link is also active.',
+        }),
+      );
+    });
+
+    it('copies current access facts after removal even when the detail refresh fails', async () => {
+      const linked = { ...OWNED_ORG, publicShare: PUBLIC_SHARE };
+      getShared
+        .mockResolvedValueOnce(makeDetail(linked))
+        .mockRejectedValue(new Error('transient refresh failure'));
+      revokePublicShare.mockResolvedValue(undefined);
+      const onUpdated = jest.fn();
+      await renderPage({
+        summary: makeSummary(linked),
+        onUpdated,
+        renderSharedByYou: (detail, refresh) => (
+          <SharedByYou
+            kind="skill"
+            shareId={detail.id}
+            name={detail.name}
+            facts={detail}
+            onUnshared={(audience) => {
+              if (audience.id === 'public') void refresh();
+            }}
+          />
+        ),
+      });
+      act(() => q('shared-by-you-unshare-public')?.click());
+      await act(async () => {
+        q('shared-by-you-remove-public-link-confirm-action')?.click();
+        await Promise.resolve();
+      });
+      expect(revokePublicShare).toHaveBeenCalledWith(SKILL_UUID);
+      expect(getShared).toHaveBeenCalledTimes(2);
+      expect(q('shared-by-you-copy-link-account')).not.toBeNull();
+      await act(async () => {
+        q('shared-by-you-copy-link-account')?.click();
+        await Promise.resolve();
+      });
+      openMore();
+      await act(async () => {
+        menuItem('shared-by-you-copy-link-menu')?.click();
+        await Promise.resolve();
+      });
+      expect(postShareToast.mock.calls.map(([toast]) => toast.message)).toEqual(
+        [
+          'Link copied. Only Acme members can open it.',
+          'Link copied. Only Acme members can open it.',
+        ],
+      );
+      expect(q('shared-by-you-row-public')).toBeNull();
+      expect(onUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: SKILL_UUID, publicShare: null }),
+      );
+    });
+
+    it('warns without a success notice when the clipboard rejects', async () => {
+      copyTextToClipboard.mockImplementation(() =>
+        Promise.reject(new Error('denied')),
+      );
+      getShared.mockResolvedValue(makeDetail(OWNED_ORG));
+      await renderPage({ summary: makeSummary(OWNED_ORG) });
+      openMore();
+      await act(async () => {
+        menuItem('shared-by-you-copy-link-menu')?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(postShareToast).toHaveBeenCalledTimes(1);
+      expect(postShareToast).toHaveBeenCalledWith(
+        expect.objectContaining({ tone: 'warning' }),
+      );
+    });
+
+    it('offers no Copy link to a recipient', async () => {
+      const recipient = { ...OWNED_ORG, canDelete: false };
+      getShared.mockResolvedValue(makeDetail(recipient));
+      await renderPage({ summary: makeSummary(recipient) });
+      expect(openMore()).not.toContain('Copy link');
+    });
+
+    it('offers no Copy link for a private share', async () => {
+      const personal = { id: SKILL_UUID, canDelete: true };
+      getShared.mockResolvedValue(makeDetail(personal));
+      await renderPage({ summary: makeSummary(personal) });
+      expect(openMore()).not.toContain('Copy link');
+    });
   });
 
   it('hides a Share it cannot use instead of showing it disabled', async () => {

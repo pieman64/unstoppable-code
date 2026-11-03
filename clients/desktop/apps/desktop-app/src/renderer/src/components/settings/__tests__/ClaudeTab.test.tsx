@@ -205,34 +205,38 @@ describe('ClaudeTab', () => {
       expect(
         rendered.container.querySelector('[data-testid="settings-tab-claude"]'),
       ).not.toBeNull();
-      const canopyRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-canopy"]',
+      const canopyRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-canopy"]',
       );
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-claude-code"]',
       );
-      expect(canopyRadio?.checked).toBe(false);
-      expect(terminalRadio?.checked).toBe(true);
+      expect(canopyRadio?.getAttribute('aria-checked')).toBe('false');
+      expect(terminalRadio?.getAttribute('aria-checked')).toBe('true');
       const standaloneCanopyRadio =
-        rendered.container.querySelector<HTMLInputElement>(
-          '[data-testid="settings-claude-default-standalone-chat-mode-canopy"]',
+        rendered.container.querySelector<HTMLButtonElement>(
+          '[data-testid=\"settings-claude-default-standalone-chat-mode-canopy"]',
         );
       const standaloneTerminalRadio =
-        rendered.container.querySelector<HTMLInputElement>(
-          '[data-testid="settings-claude-default-standalone-chat-mode-claude-code"]',
+        rendered.container.querySelector<HTMLButtonElement>(
+          '[data-testid=\"settings-claude-default-standalone-chat-mode-claude-code"]',
         );
-      expect(standaloneCanopyRadio?.checked).toBe(true);
-      expect(standaloneTerminalRadio?.checked).toBe(false);
+      expect(standaloneCanopyRadio?.getAttribute('aria-checked')).toBe('true');
+      expect(standaloneTerminalRadio?.getAttribute('aria-checked')).toBe(
+        'false',
+      );
       const appAdvisorCanopyRadio =
-        rendered.container.querySelector<HTMLInputElement>(
-          '[data-testid="settings-claude-default-app-advisor-chat-mode-canopy"]',
+        rendered.container.querySelector<HTMLButtonElement>(
+          '[data-testid=\"settings-claude-default-app-advisor-chat-mode-canopy"]',
         );
       const appAdvisorTerminalRadio =
-        rendered.container.querySelector<HTMLInputElement>(
-          '[data-testid="settings-claude-default-app-advisor-chat-mode-claude-code"]',
+        rendered.container.querySelector<HTMLButtonElement>(
+          '[data-testid=\"settings-claude-default-app-advisor-chat-mode-claude-code"]',
         );
-      expect(appAdvisorCanopyRadio?.checked).toBe(false);
-      expect(appAdvisorTerminalRadio?.checked).toBe(true);
+      expect(appAdvisorCanopyRadio?.getAttribute('aria-checked')).toBe('false');
+      expect(appAdvisorTerminalRadio?.getAttribute('aria-checked')).toBe(
+        'true',
+      );
     } finally {
       rendered.cleanup();
     }
@@ -249,8 +253,8 @@ describe('ClaudeTab', () => {
     const rendered = await renderTab();
 
     try {
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-claude-code"]',
       );
       if (!terminalRadio) throw new Error('Terminal radio not found');
       act(() => {
@@ -291,15 +295,15 @@ describe('ClaudeTab', () => {
           '[data-testid="settings-claude-auth-required"]',
         ),
       ).toBeNull();
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-claude-code"]',
       );
-      const autoRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-auto"]',
+      const autoRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-auto"]',
       );
       const pipelineTerminalRadio =
-        rendered.container.querySelector<HTMLInputElement>(
-          '[data-testid="settings-claude-pipelines-mode-terminal"]',
+        rendered.container.querySelector<HTMLButtonElement>(
+          '[data-testid=\"settings-claude-pipelines-mode-terminal"]',
         );
       expect(terminalRadio?.disabled).toBe(true);
       expect(autoRadio?.disabled).toBe(true);
@@ -345,8 +349,8 @@ describe('ClaudeTab', () => {
     const rendered = await renderTab();
 
     try {
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-chat-mode-claude-code"]',
       );
       expect(terminalRadio?.disabled).toBe(true);
       expect(savePreferencesMock).not.toHaveBeenCalled();
@@ -376,8 +380,8 @@ describe('ClaudeTab', () => {
     const rendered = await renderTab();
 
     try {
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-standalone-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-standalone-chat-mode-claude-code"]',
       );
       if (!terminalRadio)
         throw new Error('Standalone terminal radio not found');
@@ -407,8 +411,8 @@ describe('ClaudeTab', () => {
     const rendered = await renderTab();
 
     try {
-      const terminalRadio = rendered.container.querySelector<HTMLInputElement>(
-        '[data-testid="settings-claude-default-app-advisor-chat-mode-claude-code"]',
+      const terminalRadio = rendered.container.querySelector<HTMLButtonElement>(
+        '[data-testid=\"settings-claude-default-app-advisor-chat-mode-claude-code"]',
       );
       if (!terminalRadio)
         throw new Error('App Advisor terminal radio not found');

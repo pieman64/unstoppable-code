@@ -160,15 +160,15 @@ describe('PipelineJobView matrix action feedback', () => {
     usePipelineRunsStore.setState({
       retryMatrixJob: jest.fn().mockResolvedValue({
         success: false,
-        error: 'Retry reservation unavailable',
+        error: 'Variant reservation unavailable',
       }),
     });
     const rendered = render(view(matrixState('failure', 'failure')));
 
-    await clickButton(rendered.container, 'Retry variant');
+    await clickButton(rendered.container, 'Try variant again');
 
     expect(rendered.container.textContent).toContain(
-      'Retry reservation unavailable',
+      'Variant reservation unavailable',
     );
     rendered.cleanup();
   });
@@ -176,9 +176,9 @@ describe('PipelineJobView matrix action feedback', () => {
   it('hides retry-failed when no variant is failed or cancelled', () => {
     const rendered = render(view(matrixState('success', 'success')));
 
-    expect(rendered.container.textContent).toContain('Retry all variants');
+    expect(rendered.container.textContent).toContain('Try all variants again');
     expect(rendered.container.textContent).not.toContain(
-      'Retry failed variants',
+      'Try failed variants again',
     );
     rendered.cleanup();
   });
@@ -190,9 +190,11 @@ describe('PipelineJobView matrix action feedback', () => {
     state.job_definitions = {};
     const rendered = render(view(state));
 
-    expect(rendered.container.textContent).not.toContain('Retry all variants');
     expect(rendered.container.textContent).not.toContain(
-      'Retry failed variants',
+      'Try all variants again',
+    );
+    expect(rendered.container.textContent).not.toContain(
+      'Try failed variants again',
     );
     rendered.cleanup();
   });
@@ -218,7 +220,7 @@ describe('PipelineJobView matrix action feedback', () => {
       );
       const labels = Array.from(rendered.container.querySelectorAll('button'))
         .map((button) => button.textContent ?? '')
-        .filter((label) => /Retry|Cancel/.test(label));
+        .filter((label) => /Try\b.*\bagain|Cancel/.test(label));
       expect(labels).toEqual([]);
       // Variants stay navigable in the read-only view.
       expect(rendered.container.textContent).toContain('Build matrix');
@@ -239,13 +241,13 @@ describe('PipelineJobView matrix action feedback', () => {
     };
     const rendered = render(view(state));
 
-    expect(rendered.container.textContent).toContain('Retry expansion');
+    expect(rendered.container.textContent).toContain('Try expansion again');
     rendered.cleanup();
 
     state.pipeline_snapshot.jobs.build.strategy.dynamic = false;
     const staticRendered = render(view(state));
     expect(staticRendered.container.textContent).not.toContain(
-      'Retry expansion',
+      'Try expansion again',
     );
     staticRendered.cleanup();
   });

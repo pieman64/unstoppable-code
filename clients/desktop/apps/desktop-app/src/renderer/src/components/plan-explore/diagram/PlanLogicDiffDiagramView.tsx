@@ -21,10 +21,16 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import {
+  Badge,
+  type BadgeTone,
   Button,
+  EmptyState,
+  ErrorState,
   SegmentedControl,
+  TextArea,
   ThinkingSpinner,
 } from '@canopy/ui-shared/components';
+import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type {
   LogicChangeType,
   LogicDiffDiagram,
@@ -70,21 +76,21 @@ interface SelectedNode {
 
 const CHANGE_STYLES: Record<
   LogicChangeType,
-  { border: string; chip: string; label: string }
+  { border: string; tone: BadgeTone; label: string }
 > = {
   added: {
     border: 'border-l-line-positive',
-    chip: 'bg-success-subtle fg-success',
+    tone: 'success',
     label: 'Added',
   },
   removed: {
     border: 'border-l-line-destructive',
-    chip: 'bg-destructive-subtle fg-destructive',
+    tone: 'danger',
     label: 'Removed',
   },
   changed: {
     border: 'border-l-line-attention',
-    chip: 'bg-warning-subtle fg-warning',
+    tone: 'warning',
     label: 'Changed',
   },
 };
@@ -109,11 +115,9 @@ function LogicFlowNodeView({ data }: NodeProps<LogicFlowNode>): JSX.Element {
       <Handle type="target" position={Position.Top} className="!opacity-0" />
       <div className="flex items-center gap-1.5">
         {style && (
-          <span
-            className={`shrink-0 rounded-sm px-1 py-0.5 text-3xs font-medium ${style.chip}`}
-          >
+          <Badge size="compact" tone={style.tone}>
             {style.label}
-          </span>
+          </Badge>
         )}
         <span className="min-w-0 truncate text-xs font-semibold fg-primary">
           {data.label}
@@ -135,27 +139,6 @@ function LogicFlowNodeView({ data }: NodeProps<LogicFlowNode>): JSX.Element {
 }
 
 const NODE_TYPES: NodeTypes = { logic: LogicFlowNodeView };
-
-function DiagramOverlayBadge({
-  label,
-  tone,
-}: {
-  label: string;
-  tone: 'info' | 'error';
-}): JSX.Element {
-  return (
-    <div
-      className={`pointer-events-none absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-medium ${
-        tone === 'error'
-          ? 'border-line-destructive/40 bg-destructive-subtle fg-destructive'
-          : 'bg-card/90 fg-secondary'
-      }`}
-    >
-      {tone === 'info' && <ThinkingSpinner />}
-      {label}
-    </div>
-  );
-}
 
 function SelectedNodeDetail({
   node,
@@ -195,11 +178,9 @@ function SelectedNodeDetail({
       <div className="mb-1 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           {style && (
-            <span
-              className={`shrink-0 rounded-sm px-1 py-0.5 text-3xs font-medium ${style.chip}`}
-            >
+            <Badge size="compact" tone={style.tone}>
               {style.label}
-            </span>
+            </Badge>
           )}
           <h4 className="min-w-0 truncate text-s font-semibold fg-primary">
             {data.label}
@@ -240,10 +221,7 @@ function SelectedNodeDetail({
           <p className="mb-1 text-3xs font-medium fg-secondary">Plan nodes</p>
           <ul className="flex flex-wrap gap-1">
             {data.planNodeIds.map((id) => (
-              <li
-                key={id}
-                className="rounded-sm bg-fg-primary/[0.06] px-1.5 py-0.5 font-mono text-3xs fg-secondary"
-              >
+              <li key={id} className="font-mono text-3xs fg-secondary">
                 {id}
               </li>
             ))}
@@ -254,14 +232,14 @@ function SelectedNodeDetail({
         <div className="mt-3 border-t pt-2">
           {composing ? (
             <div className="flex flex-col gap-1.5">
-              <textarea
+              <TextArea
+                aria-label="Comment"
                 value={body}
                 onChange={(e): void => setBody(e.target.value)}
                 placeholder="Comment on this node…"
                 rows={3}
                 autoFocus
                 data-testid="plan-node-comment-input"
-                className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="flex items-center justify-end gap-1.5">
                 <Button
@@ -295,18 +273,6 @@ function SelectedNodeDetail({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-function CenteredMessage({
-  children,
-}: {
-  children: React.ReactNode;
-}): JSX.Element {
-  return (
-    <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
-      {children}
     </div>
   );
 }
@@ -587,19 +553,24 @@ export const PlanLogicDiffDiagram = forwardRef<
         data-testid="plan-logic-diff-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
-          <p className="text-s fg-secondary">No current/planned diagram yet.</p>
-          {onGenerate && (
-            <Button
-              size="compact"
-              data-testid="plan-logic-diff-generate"
-              onClick={onGenerate}
-              disabled={isGenerating}
-            >
-              {isGenerating ? 'Generating…' : 'Generate diagram'}
-            </Button>
-          )}
-        </CenteredMessage>
+        <DiagramCenteredMessage>
+          <EmptyState
+            inset="none"
+            title="No current/planned diagram yet."
+            action={
+              onGenerate ? (
+                <Button
+                  size="compact"
+                  data-testid="plan-logic-diff-generate"
+                  onClick={onGenerate}
+                  disabled={isGenerating}
+                >
+                  {isGenerating ? 'Generating…' : 'Generate diagram'}
+                </Button>
+              ) : undefined
+            }
+          />
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -615,10 +586,10 @@ export const PlanLogicDiffDiagram = forwardRef<
         data-testid="plan-logic-diff-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
+        <DiagramCenteredMessage>
           <ThinkingSpinner />
           <p className="text-s fg-secondary">Generating diagram…</p>
-        </CenteredMessage>
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -630,24 +601,24 @@ export const PlanLogicDiffDiagram = forwardRef<
         data-testid="plan-logic-diff-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
-          <p className="text-s font-medium fg-destructive">
-            Failed to generate diagram
-          </p>
-          {artifact?.error && (
-            <p className="max-w-sm text-xs fg-secondary">{artifact.error}</p>
-          )}
-          {onGenerate && (
-            <Button
-              size="compact"
-              data-testid="plan-logic-diff-retry"
-              onClick={onGenerate}
-              disabled={isGenerating}
-            >
-              {isGenerating ? 'Generating…' : 'Retry'}
-            </Button>
-          )}
-        </CenteredMessage>
+        <DiagramCenteredMessage>
+          <ErrorState
+            space="panel"
+            message={
+              <>
+                Couldn’t generate the diagram.
+                {artifact?.error && (
+                  <span className="mt-1 block max-w-sm text-xs fg-secondary">
+                    {artifact.error}
+                  </span>
+                )}
+              </>
+            }
+            onRetry={onGenerate}
+            retrying={isGenerating}
+            retryTestId="plan-logic-diff-retry"
+          />
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -660,9 +631,9 @@ export const PlanLogicDiffDiagram = forwardRef<
         data-testid="plan-logic-diff-diagram"
         className="flex min-h-0 flex-1 flex-col"
       >
-        <CenteredMessage>
+        <DiagramCenteredMessage>
           <p className="text-s fg-secondary">No diagram content available.</p>
-        </CenteredMessage>
+        </DiagramCenteredMessage>
       </div>
     );
   }
@@ -718,9 +689,19 @@ export const PlanLogicDiffDiagram = forwardRef<
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {isUpdating && <DiagramOverlayBadge label="Updating…" tone="info" />}
+        {isUpdating && (
+          <Badge className="pointer-events-none absolute right-3 top-3 z-10">
+            <ThinkingSpinner />
+            Updating…
+          </Badge>
+        )}
         {hasErrorOverlay && (
-          <DiagramOverlayBadge label="Update failed" tone="error" />
+          <Badge
+            tone="danger"
+            className="pointer-events-none absolute right-3 top-3 z-10"
+          >
+            Update failed
+          </Badge>
         )}
 
         {primaryView === 'current' && (
@@ -756,9 +737,12 @@ export const PlanLogicDiffDiagram = forwardRef<
         {primaryView === 'diff' && presentation === 'split' && (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="relative flex min-h-0 flex-1 flex-col border-b">
-              <span className="pointer-events-none absolute left-3 top-2 z-10 rounded-sm bg-card/90 px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+              <Badge
+                size="compact"
+                className="pointer-events-none absolute left-3 top-2 z-10"
+              >
                 {currentLabel}
-              </span>
+              </Badge>
               <LogicFlowGraph
                 nodes={currentNodes}
                 edges={currentLayout.edges}
@@ -768,9 +752,12 @@ export const PlanLogicDiffDiagram = forwardRef<
               />
             </div>
             <div className="relative flex min-h-0 flex-1 flex-col">
-              <span className="pointer-events-none absolute left-3 top-2 z-10 rounded-sm bg-card/90 px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+              <Badge
+                size="compact"
+                className="pointer-events-none absolute left-3 top-2 z-10"
+              >
                 {plannedLabel}
-              </span>
+              </Badge>
               <LogicFlowGraph
                 nodes={plannedNodes}
                 edges={plannedLayout.edges}

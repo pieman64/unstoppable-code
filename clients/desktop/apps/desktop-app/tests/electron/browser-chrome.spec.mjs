@@ -46,6 +46,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { expect, test } from '@playwright/test';
 import {
+  captureDaemonDryRunEvidence,
   closeCanopy,
   ElectronTerminalResultError,
   getMainWindow,
@@ -3174,6 +3175,7 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
 
     let evaluationError;
     if (!bodyError && nativeCloseQualification === 'target125') {
+      await captureDaemonDryRunEvidence(electronApp);
       try {
         await electronApp.evaluate(({ app }) => app.exit(125));
       } catch (error) {

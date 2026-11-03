@@ -71,7 +71,6 @@ export function FirstSendFailedNotice({
   return (
     <Notice
       intent="destructive"
-      role="alert"
       title={title}
       aria-busy={busy || undefined}
       className={className}

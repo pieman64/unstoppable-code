@@ -3,7 +3,7 @@
 // helpers are intended to be rendered as standalone React components, so the
 // react-refresh fast-refresh constraint does not apply here.
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { Children, isValidElement, type JSX, type ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 import {
   DocumentIcon,
   TerminalIcon,
@@ -33,7 +33,7 @@ import {
 import { TaskIcon as AppCatalogTaskIcon } from '../../icons/AppIcons';
 import { DocumentPencilIcon, PickIcon } from '../../icons/AppIcons';
 import { capitalizeFirstLetter } from '../../lib/text-format';
-import { useCleanChatLook, useStepBadges, useStepTense } from '../chat-look';
+import { useCleanChatLook, useStepBadges } from '../chat-look';
 import { StepBadge } from './StepBadge';
 import type { PortalChatToolFamily } from './tool-display-info';
 import type { AnsweredQuestionDisplay } from './AskUserQuestionCard';
@@ -1295,116 +1295,46 @@ function CodeChunk({ children }: { children: ReactNode }): JSX.Element {
   );
 }
 
-/** A clean step's verb in each tense. */
-interface StepVerbs {
-  done: string;
-  running: string;
-  failed: string;
-  /** Stopped before it ran, so the verb never claims it happened. */
-  blocked: string;
-  /** No outcome was recorded, so the verb claims neither success nor failure. */
-  interrupted: string;
-  /** Held for the person's approval, so the verb never claims it is running. */
-  waiting: string;
-}
-
-const READ_VERBS: StepVerbs = {
-  done: 'Read',
-  running: 'Reading',
-  failed: 'Couldn’t read',
-  blocked: 'Didn’t read',
-  interrupted: 'Read',
-  waiting: 'Waiting to read',
-};
-const WRITE_VERBS: StepVerbs = {
-  done: 'Wrote',
-  running: 'Writing',
-  failed: 'Couldn’t write',
-  blocked: 'Didn’t write',
-  interrupted: 'Write',
-  waiting: 'Waiting to write',
-};
-const EDIT_VERBS: StepVerbs = {
-  done: 'Edited',
-  running: 'Editing',
-  failed: 'Couldn’t edit',
-  blocked: 'Didn’t edit',
-  interrupted: 'Edit',
-  waiting: 'Waiting to edit',
-};
-const DELETE_VERBS: StepVerbs = {
-  done: 'Deleted',
-  running: 'Deleting',
-  failed: 'Couldn’t delete',
-  blocked: 'Didn’t delete',
-  interrupted: 'Delete',
-  waiting: 'Waiting to delete',
-};
-const RUN_VERBS: StepVerbs = {
-  done: 'Ran',
-  running: 'Running',
-  failed: 'Couldn’t run',
-  blocked: 'Didn’t run',
-  interrupted: 'Run',
-  waiting: 'Waiting to run',
-};
-const SEARCH_VERBS: StepVerbs = {
-  done: 'Searched for',
-  running: 'Searching for',
-  failed: 'Couldn’t search for',
-  blocked: 'Didn’t search for',
-  interrupted: 'Search for',
-  waiting: 'Waiting to search for',
-};
-const FIND_VERBS: StepVerbs = {
-  done: 'Found files matching',
-  running: 'Finding files matching',
-  failed: 'Couldn’t find files matching',
-  blocked: 'Didn’t find files matching',
-  interrupted: 'Find files matching',
-  waiting: 'Waiting to find files matching',
-};
-
-/**
- * A tool's own verb in classic rows; in clean rows, a plain verb in the
- * step's tense ("Ran", "Running", "Couldn't run", "Didn't run").
- */
-function TensedVerb({
+/** Stable action words; status belongs to the row, not its label. */
+function ToolVerb({
   classic,
-  verbs,
+  clean,
 }: {
   classic: ReactNode;
-  verbs: StepVerbs;
+  clean: string;
 }): JSX.Element {
-  const clean = useCleanChatLook();
-  const tense = useStepTense();
-  return <>{clean ? verbs[tense] : classic}</>;
+  const cleanLook = useCleanChatLook();
+  return <>{cleanLook ? clean : classic}</>;
 }
 
 /**
- * A shell call: its description and a mono snippet in classic rows; in clean
- * rows the verb and the whole command in the row's own ink, cut to the
- * column by the row rather than to a character count.
+ * Shell calls prefer the provider description in clean rows. Without one,
+ * show Run and the command; the raw command remains in expanded details.
+ * Classic rows retain their description and short command snippet.
  */
 function ShellLabel({
   heading,
   command,
   shortCommand,
+  description,
 }: {
   heading: string;
   command: string;
   shortCommand: string;
+  description?: string;
 }): JSX.Element {
   const clean = useCleanChatLook();
   const badges = useStepBadges();
   if (clean) {
+    if (description) return <>{description}</>;
     return (
       <>
-        <TensedVerb classic={heading} verbs={RUN_VERBS} />{' '}
+        <ToolVerb classic={heading} clean="Run" />{' '}
         {badges ? <StepBadge>{command}</StepBadge> : command}
       </>
     );
   }
+  if (!shortCommand) return <>{heading}</>;
   return (
     <>
       {heading} <MonoSnippet>{shortCommand}</MonoSnippet>
@@ -2808,7 +2738,7 @@ const renderRead: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentIcon />,
     label: filePath ? (
       <>
-        <TensedVerb classic="Read" verbs={READ_VERBS} />{' '}
+        <ToolVerb classic="Read" clean="Read" />{' '}
         <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
@@ -2858,7 +2788,7 @@ const renderWrite: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentPencilIcon />,
     label: filePath ? (
       <>
-        <TensedVerb classic="Write" verbs={WRITE_VERBS} />{' '}
+        <ToolVerb classic="Write" clean="Write" />{' '}
         <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
@@ -2873,7 +2803,7 @@ const renderEdit: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentPencilIcon />,
     label: filePath ? (
       <>
-        <TensedVerb classic="Edit" verbs={EDIT_VERBS} />{' '}
+        <ToolVerb classic="Edit" clean="Edit" />{' '}
         <CodeChunk>{baseName(filePath)}</CodeChunk>
       </>
     ) : (
@@ -2890,21 +2820,25 @@ const renderBash: ToolDisplayRenderer = (parsed, input, toolName) => {
     asString(parsed.command ?? parsed.cmd) || readShellCommandInput(input),
   );
   const truncated = truncate(command, 60);
-  const description = capitalizeFirstLetter(asString(parsed.description));
+  const description = capitalizeFirstLetter(
+    asString(parsed.description).trim(),
+  );
   const truncatedDesc = truncate(description, 80);
   const heading =
     truncatedDesc || (toolName === 'PowerShell' ? toolName : 'Bash');
   return {
     icon: <TerminalIcon />,
-    label: truncated ? (
-      <ShellLabel
-        heading={heading}
-        command={command}
-        shortCommand={truncated}
-      />
-    ) : (
-      heading
-    ),
+    label:
+      description || truncated ? (
+        <ShellLabel
+          heading={heading}
+          command={command}
+          shortCommand={truncated}
+          description={description || undefined}
+        />
+      ) : (
+        heading
+      ),
   };
 };
 
@@ -2937,17 +2871,17 @@ const renderFileChange: ToolDisplayRenderer = (_parsed, input) => {
       const kind = match[1].toLowerCase();
       const filePath = match[2];
       const icon = kind === 'delete' ? <TrashIcon /> : <DocumentPencilIcon />;
-      const [verb, verbs] =
+      const verb =
         kind === 'delete'
-          ? ['Delete', DELETE_VERBS]
+          ? 'Delete'
           : kind === 'add' || kind === 'create'
-            ? ['Write', WRITE_VERBS]
-            : ['Edit', EDIT_VERBS];
+            ? 'Write'
+            : 'Edit';
       return {
         icon,
         label: (
           <>
-            <TensedVerb classic={verb} verbs={verbs} />{' '}
+            <ToolVerb classic={verb} clean={verb} />{' '}
             <CodeChunk>{baseName(filePath)}</CodeChunk>
           </>
         ),
@@ -2970,7 +2904,7 @@ const renderGrep: ToolDisplayRenderer = (parsed) => {
     icon: <DocumentSearchIcon />,
     label: pattern ? (
       <>
-        <TensedVerb classic="Grep" verbs={SEARCH_VERBS} />{' '}
+        <ToolVerb classic="Grep" clean="Search for" />{' '}
         <CodeChunk>{pattern}</CodeChunk>
         {filePath && (
           <>
@@ -2991,7 +2925,7 @@ const renderGlob: ToolDisplayRenderer = (parsed) => {
     icon: <MagnifyingGlassIcon />,
     label: pattern ? (
       <>
-        <TensedVerb classic="Glob" verbs={FIND_VERBS} />{' '}
+        <ToolVerb classic="Glob" clean="Find files matching" />{' '}
         <CodeChunk>{pattern}</CodeChunk>
       </>
     ) : (
@@ -3500,32 +3434,6 @@ export function readableToolInput(toolName: string, input: string): string {
         `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`,
     )
     .join('\n');
-}
-
-/**
- * Whether a label renders a {@link TensedVerb} anywhere inside it. A
- * {@link ShellLabel} always does under the clean look.
- */
-export function containsTensedVerb(node: ReactNode): boolean {
-  if (!isValidElement<{ children?: ReactNode }>(node)) return false;
-  if (node.type === TensedVerb || node.type === ShellLabel) return true;
-  return Children.toArray(node.props.children).some(containsTensedVerb);
-}
-
-/**
- * Whether a clean step row's label already says how the step went ("Couldn't
- * run …"). Decided from the label itself, so a fallback without a verb
- * ("Read" with no path, "File changes (3 files)") still names a failure.
- */
-export function hasTensedStepLabel(
-  rawToolName: string,
-  rawInput = '',
-): boolean {
-  const { toolName } = normalizeCloudToolDisplay(rawToolName, rawInput);
-  if (PREDICATE_MATCHERS.some((matcher) => matcher.match(toolName))) {
-    return false;
-  }
-  return containsTensedVerb(getToolDisplayInfo(rawToolName, rawInput).label);
 }
 
 // ---------------------------------------------------------------------------

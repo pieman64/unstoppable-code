@@ -3,6 +3,7 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { buttonClassName } from '../Button';
 import { COPY_LINK_CONFIRMATION_MS, CopyLinkButton } from '../CopyLinkButton';
 
@@ -100,4 +101,40 @@ describe('CopyLinkButton', () => {
     });
     expect(button?.textContent).toBe('Copy link');
   });
+
+  // CAN-5452: a row listing several links names which one this copies.
+  it.each(['button', 'notice'] as const)(
+    'keeps the %s accessible name out of replay-recorded attributes',
+    async (variant) => {
+      act(() => {
+        root.render(
+          <CopyLinkButton
+            url="https://example.test/s/1"
+            dataTestId="copy"
+            ariaLabel="Copy the Acme link for Deploy"
+            variant={variant}
+          />,
+        );
+      });
+      const button = container.querySelector<HTMLButtonElement>(
+        '[data-testid="copy"]',
+      );
+      expect(button?.textContent).toBe('Copy link');
+      expect(button?.getAttribute('aria-label') ?? '').not.toContain('Acme');
+      const labelId = button?.getAttribute('aria-labelledby');
+      expect(labelId).toBeTruthy();
+      const label = document.getElementById(labelId ?? '');
+      expect(label?.textContent).toBe('Copy the Acme link for Deploy');
+      expect(label?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
+      expect(button?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(false);
+      await act(async () => {
+        button?.click();
+        await Promise.resolve();
+      });
+      expect(button?.getAttribute('aria-labelledby')).toBeNull();
+      expect(button?.textContent).toBe('Copied');
+      act(() => jest.advanceTimersByTime(COPY_LINK_CONFIRMATION_MS));
+      expect(button?.getAttribute('aria-labelledby')).toBe(labelId);
+    },
+  );
 });

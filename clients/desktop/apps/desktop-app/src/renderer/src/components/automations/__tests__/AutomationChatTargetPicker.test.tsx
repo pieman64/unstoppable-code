@@ -311,13 +311,14 @@ describe('AutomationChatTargetPicker', () => {
 
     click(byTestId('automations-form-chat-target-chat'));
 
-    const menu = document.querySelector<HTMLElement>('[role="listbox"]');
-    expect(Number.parseFloat(menu?.style.maxHeight ?? '')).toBeGreaterThan(0);
-    expect(menu?.classList.contains('flex')).toBe(true);
-    expect(menu?.classList.contains('flex-col')).toBe(true);
-    const scrollRegion = menu?.querySelector('ul');
-    expect(scrollRegion?.classList.contains('min-h-0')).toBe(true);
-    expect(scrollRegion?.classList.contains('flex-1')).toBe(true);
+    // The shared picker caps the surface at the viewport and the list at
+    // PickList's popover height, so a long list scrolls.
+    const list = document.querySelector<HTMLElement>('[role="listbox"]');
+    const surface = list?.closest<HTMLElement>('.canopy-floating-menu');
+    expect(Number.parseFloat(surface?.style.maxHeight ?? '')).toBeGreaterThan(
+      0,
+    );
+    expect(list?.closest('.max-h-64')).not.toBeNull();
 
     const lastOption = Array.from(
       document.querySelectorAll<HTMLElement>('[role="option"]'),

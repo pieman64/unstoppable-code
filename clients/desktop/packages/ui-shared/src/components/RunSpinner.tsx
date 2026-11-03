@@ -10,6 +10,12 @@ interface RunSpinnerProps {
 }
 
 const DOT = 'h-0.5 w-0.5 rounded-full bg-current';
+/**
+ * A sweeping dot. Under reduced motion the global rule would run the sweep
+ * once in 0.01ms and hold its last frame, where every dot is hidden, so the
+ * dots stop animating instead and the grid shows still.
+ */
+const SWEEPING_DOT = `${DOT} animate-run-dot motion-reduce:animate-none`;
 
 /**
  * Diagonal-sweep dot spinner on a 3×3 grid.
@@ -29,20 +35,21 @@ export function RunSpinner({ className = '' }: RunSpinnerProps): JSX.Element {
     <span
       ref={motionRef}
       className={`inline-grid grid-cols-3 gap-0.5 ${className}`}
+      role="img"
       aria-label="Running"
     >
       {/* Row 0: positions 1, 2, 3 */}
-      <span className={`${DOT} animate-run-dot`} />
-      <span className={`${DOT} animate-run-dot [animation-delay:0.3s]`} />
-      <span className={`${DOT} animate-run-dot [animation-delay:0.6s]`} />
+      <span className={`${SWEEPING_DOT}`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.3s]`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.6s]`} />
       {/* Row 1: positions 4, 5 (hidden), 6 */}
-      <span className={`${DOT} animate-run-dot [animation-delay:0.9s]`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.9s]`} />
       <span className={`${DOT} opacity-0`} />
-      <span className={`${DOT} animate-run-dot [animation-delay:0.9s]`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.9s]`} />
       {/* Row 2: positions 7, 8, 9 */}
-      <span className={`${DOT} animate-run-dot [animation-delay:0.6s]`} />
-      <span className={`${DOT} animate-run-dot [animation-delay:0.3s]`} />
-      <span className={`${DOT} animate-run-dot`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.6s]`} />
+      <span className={`${SWEEPING_DOT} [animation-delay:0.3s]`} />
+      <span className={`${SWEEPING_DOT}`} />
     </span>
   );
 }

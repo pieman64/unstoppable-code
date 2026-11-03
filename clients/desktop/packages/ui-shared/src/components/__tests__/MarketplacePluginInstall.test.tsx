@@ -76,7 +76,7 @@ describe('PluginInstallStatusCell', () => {
         onInstall={noop}
       />,
     );
-    expect(html).toContain('aria-label="Retry install alpha"');
+    expect(html).toContain('aria-label="Try again to install alpha"');
     expect(html).toContain('fg-destructive');
     // The error rides in a tooltip, so only its trigger wrapper is server
     // rendered; the plain (error-free) cell has no such wrapper.

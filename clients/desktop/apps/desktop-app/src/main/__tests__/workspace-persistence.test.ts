@@ -2778,3 +2778,103 @@ describe('Personal catalog identity (CAN-2963)', (): void => {
     );
   });
 });
+
+describe('workspace record removal', () => {
+  it('releases staged unlink tracking on an outer abort without invalidating defaults', async () => {
+    const { createMemoryFileStore } =
+      await import('../lib/__tests__/w5-memory-file-store');
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../lib/w5-commit-log-file-store');
+    const { nodeW5FileStore } = await import('../lib/w5-file-store');
+    const { removeWorkspaceRecords } =
+      await import('../lib/workspace-persistence');
+    const { runW5Commit } = await import('../lib/w5-commit-scope');
+    const id = 'aborted-remove-records';
+    const memory = createMemoryFileStore({
+      [`/tmp/${id}/workspace.json`]: '{}',
+      [`/tmp/${id}/worktrees.json`]: '{"worktrees":[]}',
+    });
+    __setDesktopW5FileStoreForTests(memory.store);
+    clearWorktreesSelfWriteTracking(id);
+    const before = getProjectPluginDefaultsRevision(id);
+    const refusal = new Error('outer decision refused');
+    try {
+      await expect(
+        runW5Commit(
+          memory.store,
+          { operation: 'test.outer' },
+          async () => {
+            await removeWorkspaceRecords(id);
+            expect(wasRecentWorktreesSelfWrite(id)).toBe(true);
+            expect(getProjectPluginDefaultsRevision(id)).toBe(before);
+          },
+          () => Promise.reject(refusal),
+        ),
+      ).rejects.toBe(refusal);
+      expect(wasRecentWorktreesSelfWrite(id)).toBe(false);
+      expect(getProjectPluginDefaultsRevision(id)).toBe(before);
+    } finally {
+      clearWorktreesSelfWriteTracking(id);
+      __setDesktopW5FileStoreForTests(nodeW5FileStore);
+    }
+  });
+
+  it('removes both records, tracks the unlink as ours and advances defaults only once', async () => {
+    const { createMemoryFileStore } =
+      await import('../lib/__tests__/w5-memory-file-store');
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../lib/w5-commit-log-file-store');
+    const { nodeW5FileStore } = await import('../lib/w5-file-store');
+    const { removeWorkspaceRecords } =
+      await import('../lib/workspace-persistence');
+    const id = 'remove-records';
+    const manifest = `/tmp/${id}/workspace.json`;
+    const list = `/tmp/${id}/worktrees.json`;
+    const memory = createMemoryFileStore({
+      [manifest]: 'corrupt JSON',
+      [list]: '{"version":1,"worktrees":[]}',
+    });
+    __setDesktopW5FileStoreForTests(memory.store);
+    clearWorktreesSelfWriteTracking(id);
+    const before = getProjectPluginDefaultsRevision(id);
+    try {
+      await removeWorkspaceRecords(id);
+      expect(memory.files.size).toBe(0);
+      expect(wasRecentWorktreesSelfWrite(id)).toBe(true);
+      expect(getProjectPluginDefaultsRevision(id)).toBe(before + 1);
+      await removeWorkspaceRecords(id);
+      expect(memory.writes).toEqual([manifest, list]);
+      expect(getProjectPluginDefaultsRevision(id)).toBe(before + 1);
+    } finally {
+      clearWorktreesSelfWriteTracking(id);
+      __setDesktopW5FileStoreForTests(nodeW5FileStore);
+    }
+  });
+
+  it('refuses an unreadable list before either record is removed and releases self-write tracking', async () => {
+    const { createMemoryFileStore } =
+      await import('../lib/__tests__/w5-memory-file-store');
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../lib/w5-commit-log-file-store');
+    const { nodeW5FileStore } = await import('../lib/w5-file-store');
+    const { removeWorkspaceRecords } =
+      await import('../lib/workspace-persistence');
+    const id = 'unreadable-remove-records';
+    const manifest = `/tmp/${id}/workspace.json`;
+    const list = `/tmp/${id}/worktrees.json`;
+    const memory = createMemoryFileStore({ [manifest]: '{}', [list]: '{}' });
+    memory.unreadable.add(list);
+    __setDesktopW5FileStoreForTests(memory.store);
+    clearWorktreesSelfWriteTracking(id);
+    try {
+      await expect(removeWorkspaceRecords(id)).rejects.toMatchObject({
+        name: 'WorktreeRegistryUnreadableError',
+      });
+      expect(memory.writes).toEqual([]);
+      expect(memory.files.has(manifest)).toBe(true);
+      expect(wasRecentWorktreesSelfWrite(id)).toBe(false);
+    } finally {
+      __setDesktopW5FileStoreForTests(nodeW5FileStore);
+    }
+  });
+});

@@ -3,11 +3,11 @@
 /**
  * Builds the owned-child addon (packages/core-platform/native/owned-child)
  * against the headers of the Node running this script. Darwin compiles
- * src/owned_child.c for both architectures with /usr/bin/clang and the Node
- * install's own headers; nothing is downloaded. Windows builds
- * src/owned_child_win.c with the root node-gyp, as the pipe-security addon
- * does. Elsewhere nothing is built and the platform reports owned children as
- * unavailable.
+ * src/owned_child.c for both architectures with /usr/bin/clang, and Linux for
+ * the host architecture with /usr/bin/cc, each with the Node install's own
+ * headers; nothing is downloaded. Windows builds src/owned_child_win.c with the
+ * root node-gyp, as the pipe-security addon does. Elsewhere nothing is built
+ * and the platform reports owned children as unavailable.
  *
  * Usage: node scripts/build-owned-child.mjs [--out <file>] [--probe-out <file>]
  * Default output: .cache/native-owned-child/<platform>-<arch>/core-owned-child.node
@@ -47,6 +47,7 @@ export const OWNED_CHILD_DEFAULT_OUTPUT = join(
   OWNED_CHILD_FILE,
 );
 const CLANG = '/usr/bin/clang';
+const CC = '/usr/bin/cc';
 const ARCH = { arm64: 'arm64', x64: 'x86_64' };
 // Matches the minimum macOS of the Node 24 release binaries.
 const MACOS_MINIMUM = '13.5';
@@ -69,9 +70,9 @@ function nodeHeaders() {
 }
 
 /**
- * Builds the addon and returns its path, or `null` off Darwin and Windows.
- * The result is renamed into place, so concurrent builds to the same output
- * never observe a partial addon.
+ * Builds the addon and returns its path, or `null` off Darwin, Linux and
+ * Windows. The result is renamed into place, so concurrent builds to the same
+ * output never observe a partial addon.
  */
 export function buildOwnedChild({ out } = {}) {
   const target = out ?? OWNED_CHILD_DEFAULT_OUTPUT;
@@ -89,6 +90,8 @@ export function buildOwnedChild({ out } = {}) {
       product: 'core_owned_child.node',
       out: target,
     });
+  if (process.platform === 'linux')
+    return buildLinuxAddon({ source: OWNED_CHILD_SOURCE, out: target });
   return buildDarwinAddon({
     source: OWNED_CHILD_SOURCE,
     out: target,
@@ -112,10 +115,7 @@ export function buildDarwinAddon({ source, out, libraries }) {
   if (process.platform !== 'darwin') return null;
   if (!ARCH[process.arch])
     throw new Error(`Unsupported architecture ${process.arch}`);
-  const target = resolve(root, out);
-  mkdirSync(dirname(target), { recursive: true });
-  const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
-  try {
+  return compileInto(out, (temporary) =>
     execFileSync(
       CLANG,
       [
@@ -151,7 +151,52 @@ export function buildDarwinAddon({ source, out, libraries }) {
             : {}),
         },
       },
-    );
+    ),
+  );
+}
+
+/**
+ * Builds one Linux Node-API addon for the host architecture from one C
+ * source. Node-API symbols resolve against the loading process.
+ */
+function buildLinuxAddon({ source, out }) {
+  if (process.platform !== 'linux') return null;
+  return compileInto(out, (temporary) =>
+    execFileSync(
+      CC,
+      [
+        '-std=c11',
+        '-O2',
+        '-Wall',
+        '-Wextra',
+        '-fPIC',
+        '-shared',
+        '-DNAPI_VERSION=8',
+        '-I',
+        nodeHeaders(),
+        '-o',
+        temporary,
+        source,
+      ],
+      {
+        cwd: root,
+        stdio: ['ignore', 'inherit', 'inherit'],
+        env: {
+          PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+          TMPDIR: process.env.TMPDIR ?? '/tmp',
+        },
+      },
+    ),
+  );
+}
+
+/** Runs `compile` into a private temporary file, then renames it to `out`. */
+function compileInto(out, compile) {
+  const target = resolve(root, out);
+  mkdirSync(dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}-${randomUUID()}.tmp`;
+  try {
+    compile(temporary);
     renameSync(temporary, target);
   } finally {
     rmSync(temporary, { force: true });
@@ -236,7 +281,7 @@ if (invokedDirectly) {
     console.log(
       built
         ? `Done! Addon: ${built}`
-        : `Owned child addon is Darwin and Windows only; nothing built on ${process.platform}.`,
+        : `Owned child addon is Darwin, Linux and Windows only; nothing built on ${process.platform}.`,
     );
     const probeOut = parseOption(argv, '--probe-out');
     if (probeOut) {

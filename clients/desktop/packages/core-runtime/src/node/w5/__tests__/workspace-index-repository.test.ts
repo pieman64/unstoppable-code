@@ -1,6 +1,12 @@
 import type { WorkspaceIndexReadEntry } from '../../workspace/read-formats';
 import { runW5Commit } from '../commit-scope';
-import type { W5FileRead, W5FileReplacement, W5FileStore } from '../file-store';
+import {
+  W5AuthorityUnreachableError,
+  W5RecordUnservedError,
+  type W5FileRead,
+  type W5FileReplacement,
+  type W5FileStore,
+} from '../file-store';
 import type { W5StorageTarget } from '../storage-target';
 import {
   createWorkspaceIndexRepository,
@@ -37,6 +43,10 @@ function memoryStore(unreadable = new Set<string>()): MemoryStore {
       return Promise.resolve(
         raw === undefined ? { state: 'absent' } : { state: 'present', raw },
       );
+    },
+    remove: (filePath): Promise<void> => {
+      files.delete(filePath);
+      return Promise.resolve();
     },
     replace: (filePath, contents, _storage, replacement): Promise<void> => {
       replacements.push({ filePath, replacement });
@@ -152,6 +162,41 @@ it('keeps unknown fields and unreadable entries, advances changed rows and backs
   });
 });
 
+it('names the string IDs of unreadable entries on every snapshot, so RR5 can count them', async () => {
+  const store = memoryStore();
+  store.files.set(
+    INDEX,
+    JSON.stringify({
+      version: 1,
+      workspaces: [
+        { id: 'b' },
+        entry('a'),
+        { type: 'notebook' },
+        { id: 'a', type: 'notebook' },
+        { id: 'b', type: 'notebook' },
+      ],
+    }),
+  );
+  const index = repository(store);
+  const ids = ['b', 'a', 'b'];
+  await expect(index.read()).resolves.toMatchObject({
+    authority: 'partial',
+    unreadableRowIds: ids,
+  });
+  await expect(index.readStored()).resolves.toMatchObject({
+    unreadableRowIds: ids,
+  });
+  await index.update((current) => {
+    expect(current.unreadableRowIds).toEqual(ids);
+    return { result: undefined };
+  });
+  store.files.set(
+    INDEX,
+    JSON.stringify({ version: 1, workspaces: [entry('a'), { type: 'x' }] }),
+  );
+  expect(await index.read()).not.toHaveProperty('unreadableRowIds');
+});
+
 it('refuses to rewrite an unreadable index and reports the refusal', async () => {
   const store = memoryStore(new Set([INDEX]));
   const refused = jest.fn();
@@ -166,6 +211,55 @@ it('refuses to rewrite an unreadable index and reports the refusal', async () =>
   });
   expect(refused).toHaveBeenCalledTimes(1);
   expect(committed).not.toHaveBeenCalled();
+  expect(store.replacements).toEqual([]);
+});
+
+it('names only an unreadable read the record port could not serve, on every read (CAN-5531)', async () => {
+  const unserved = new W5RecordUnservedError('limit-exceeded', 'index');
+  const store: W5FileStore = {
+    ...memoryStore(),
+    read: (): Promise<W5FileRead> =>
+      Promise.resolve({ state: 'unreadable', error: unserved }),
+  };
+  const index = repository(store);
+  await expect(index.read()).resolves.toEqual({
+    entries: [],
+    authority: 'unreadable',
+    unserved,
+  });
+  await expect(index.readStored()).resolves.toMatchObject({ unserved });
+  const seen = jest.fn(() => ({ result: undefined }));
+  await index.update(seen);
+  expect(seen).toHaveBeenCalledWith(expect.objectContaining({ unserved }));
+  await expect(
+    index.update(() => ({ result: undefined, entries: [] })),
+  ).rejects.toMatchObject({ message: unserved.message, cause: unserved });
+
+  // Any other unreadable read keeps its shape.
+  await expect(
+    repository(memoryStore(new Set([INDEX]))).read(),
+  ).resolves.toEqual({ entries: [], authority: 'unreadable' });
+});
+
+it('refuses a write while the authority is unreachable with its message and no unreadable-index diagnostic (CAN-5542)', async () => {
+  const unreachable = new W5AuthorityUnreachableError('refused', 'connect');
+  const store: MemoryStore = {
+    ...memoryStore(),
+    read: (): Promise<W5FileRead> =>
+      Promise.resolve({ state: 'unreadable', error: unreachable }),
+  };
+  const refused = jest.fn();
+  const write = repository(store, { onRefused: refused }).update(() => ({
+    result: undefined,
+    entries: [entry('a')],
+  }));
+  await expect(write).rejects.toBeInstanceOf(WorkspaceIndexUnreadableError);
+  await expect(write).rejects.toMatchObject({
+    message: unreachable.message,
+    cause: unreachable,
+  });
+  // The index was never shown to be unreadable: nothing could be asked.
+  expect(refused).not.toHaveBeenCalled();
   expect(store.replacements).toEqual([]);
 });
 

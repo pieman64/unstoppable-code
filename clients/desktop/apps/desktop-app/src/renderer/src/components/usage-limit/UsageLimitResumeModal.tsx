@@ -12,7 +12,6 @@ import {
 import { useShallow } from 'zustand/shallow';
 import {
   Button,
-  Checkbox,
   DialogModal,
   getModelCatalogProviderLabel,
   InterruptedSessionRow,
@@ -92,6 +91,7 @@ import {
   interruptedSessionSecondaryMetadata,
   interruptedSessionTitle,
 } from './sessionRowModel';
+import { ChoiceField, ErrorBanner } from '@canopy/ui-shared/components';
 
 const REFRESH_INTERVAL_MS = 30_000;
 /** Readiness is recomputed in memory on this clock; it never fetches. */
@@ -222,36 +222,6 @@ function groupSessionsByWorktree(
     }
   }
   return Array.from(byWorktree.values());
-}
-
-/** Checkbox that also renders the indeterminate (partial-selection) state. */
-function TriStateCheckbox({
-  checked,
-  indeterminate,
-  disabled = false,
-  onChange,
-  testId,
-}: {
-  checked: boolean;
-  indeterminate: boolean;
-  disabled?: boolean;
-  onChange: () => void;
-  testId: string;
-}): JSX.Element {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = indeterminate && !checked;
-  }, [indeterminate, checked]);
-  return (
-    <input
-      ref={ref}
-      type="checkbox"
-      data-testid={testId}
-      checked={checked}
-      disabled={disabled}
-      onChange={onChange}
-    />
-  );
 }
 
 /** Subscribe only to the icon's repository path, not live worktree status. */
@@ -994,14 +964,14 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         title={title}
         subtitle={subtitle}
       >
-        <div className="px-5 py-5">
-          <p className="text-s fg-destructive">{LOAD_ERROR}</p>
+        <div className="">
+          <ErrorBanner error={LOAD_ERROR} className="" />
           <div className="mt-4 flex justify-end gap-3">
             <Button size="compact" onClick={closePrompt}>
               Cancel
             </Button>
             <Button variant="primary" size="compact" onClick={retryAutomations}>
-              Retry
+              Try again
             </Button>
           </div>
         </div>
@@ -1016,9 +986,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         title={title}
         subtitle={subtitle}
       >
-        <div className="px-5 py-8 text-s fg-secondary">
-          Loading interrupted work…
-        </div>
+        <div className="text-s fg-secondary">Loading interrupted work…</div>
       </DialogModal>
     );
   }
@@ -1030,8 +998,8 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         title={title}
         subtitle={subtitle}
       >
-        <div className="px-5 py-5">
-          <p className="text-s fg-destructive">{error}</p>
+        <div className="">
+          <ErrorBanner error={error} className="" />
           <div className="mt-4 flex justify-end gap-3">
             <Button size="compact" onClick={closePrompt}>
               Cancel
@@ -1041,7 +1009,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
               size="compact"
               onClick={() => setLoadAttempt((value) => value + 1)}
             >
-              Retry
+              Try again
             </Button>
           </div>
         </div>
@@ -1525,7 +1493,14 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
         key={key}
         indent={indent}
         title={interruptedSessionTitle(session)}
-        titleFor={checkboxId}
+        selection={{
+          id: checkboxId,
+          testId: interruptedSessionCheckboxTestId(session),
+          describedBy: metadataId,
+          checked: effectiveSelected.has(key),
+          disabled: !selectable,
+          onChange: (): void => toggleSession(session),
+        }}
         replayMaskTitle
         disabled={!selectable}
         metadataId={metadataId}
@@ -1544,34 +1519,20 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
           )
         }
         replayMaskSecondaryMetadata
-        leading={
-          <Checkbox
-            id={checkboxId}
-            className="mt-0.5 shrink-0"
-            data-testid={interruptedSessionCheckboxTestId(session)}
-            aria-describedby={metadataId}
-            checked={effectiveSelected.has(key)}
-            disabled={!selectable}
-            onChange={(): void => toggleSession(session)}
-          />
-        }
         trailing={
           gated && readiness
             ? renderScheduleControl(session, readiness, metadataId)
             : null
         }
       >
-        {scheduleError ? (
-          <p role="alert" className="mt-1 text-xs fg-destructive">
-            {scheduleError}
-          </p>
-        ) : null}
+        <ErrorBanner error={scheduleError} className="mt-1" />
       </InterruptedSessionRow>
     );
   };
 
   return (
     <DialogModal
+      inset="flush"
       onClose={closePrompt}
       maxWidth="lg"
       title={title}
@@ -1580,41 +1541,38 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       <div data-testid="usage-limit-resume-modal" className="flex flex-col">
         {origin === 'authentication' &&
           authentication?.phase === 'verification-failed' && (
-            <div className="px-5 py-4 text-s" role="alert">
-              <p>{authentication.error}</p>
-              <Button
-                size="compact"
-                className="mt-2"
-                onClick={(): void => {
-                  void window.api.codexLogin
-                    .retryVerification()
-                    .then((state) =>
-                      useUsageLimitResumePromptStore
-                        .getState()
-                        .updateAuthentication(state),
-                    );
-                }}
-              >
-                Retry verification
-              </Button>
-            </div>
+            <ErrorBanner
+              className="mx-6 mt-4"
+              error={
+                authentication.error || "Couldn't verify your Codex sign-in."
+              }
+              onRetry={(): void => {
+                void window.api.codexLogin
+                  .retryVerification()
+                  .then((state) =>
+                    useUsageLimitResumePromptStore
+                      .getState()
+                      .updateAuthentication(state),
+                  );
+              }}
+            />
           )}
         {origin === 'authentication' &&
           authentication?.phase === 'complete' &&
           !authentication.account?.authenticated && (
-            <p className="px-5 py-4 text-s fg-secondary">
+            <p className="px-6 py-4 text-s fg-secondary">
               Codex is signed out. Sign in before resuming this work.
             </p>
           )}
         {effectDisclosure ? (
           <p
             data-testid="usage-limit-resume-effect"
-            className="px-5 pt-3 pb-2 text-s fg-secondary"
+            className="px-6 pt-3 pb-2 text-s fg-secondary"
           >
             {effectDisclosure}
           </p>
         ) : null}
-        <div className="flex items-center justify-between border-b px-5 py-2">
+        <div className="flex items-center justify-between border-b px-6 py-2">
           <button
             type="button"
             data-testid="usage-limit-resume-select-all"
@@ -1634,10 +1592,8 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
             </span>
           ) : null}
         </div>
-        <div className="max-h-[50vh] overflow-y-auto px-5 py-2">
-          {error ? (
-            <p className="mb-2 text-xs fg-destructive">{error}</p>
-          ) : null}
+        <div className="max-h-[50vh] overflow-y-auto px-6 py-2">
+          <ErrorBanner error={error} className="mb-2" />
           {groups.map((group) => {
             const workspaceState = triState(group.sessions);
             const groupLabelId = interruptedSessionDomId(
@@ -1651,19 +1607,26 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
                 aria-labelledby={groupLabelId}
                 className="mb-3"
               >
-                <label className="flex items-center gap-2 py-1 font-medium">
-                  <TriStateCheckbox
-                    testId={`usage-limit-resume-workspace-${group.groupId}`}
+                {/* One label: the icon and name toggle the checkbox too. */}
+                <div className="py-1">
+                  <ChoiceField
+                    data-testid={`usage-limit-resume-workspace-${group.groupId}`}
                     checked={workspaceState.checked}
-                    indeterminate={workspaceState.indeterminate}
+                    indeterminate={
+                      workspaceState.indeterminate && !workspaceState.checked
+                    }
                     disabled={workspaceState.disabled}
                     onChange={(): void => toggleWorkspace(group)}
+                    label={
+                      <span className="flex min-w-0 items-center gap-2 font-medium">
+                        <ResumeWorkspaceIcon group={group} />
+                        <span id={groupLabelId} className="truncate">
+                          {group.workspaceName}
+                        </span>
+                      </span>
+                    }
                   />
-                  <ResumeWorkspaceIcon group={group} />
-                  <span id={groupLabelId} className="truncate">
-                    {group.workspaceName}
-                  </span>
-                </label>
+                </div>
                 {group.workspaceType === 'cowork'
                   ? readyFirst(group.sessions, isEligible).map((session) =>
                       renderSessionRow(session, 'group'),
@@ -1678,26 +1641,36 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
                           aria-labelledby={worktreeLabelId}
                           className="ml-6"
                         >
-                          <label className="flex items-center gap-2 py-1 text-s fg-secondary">
-                            <TriStateCheckbox
-                              testId={`usage-limit-resume-worktree-${group.groupId}-${worktree.worktreeId}`}
+                          <div className="py-1">
+                            <ChoiceField
+                              data-testid={`usage-limit-resume-worktree-${group.groupId}-${worktree.worktreeId}`}
                               checked={worktreeState.checked}
-                              indeterminate={worktreeState.indeterminate}
+                              indeterminate={
+                                worktreeState.indeterminate &&
+                                !worktreeState.checked
+                              }
                               disabled={worktreeState.disabled}
                               onChange={(): void =>
                                 toggleSessions(worktree.sessions)
                               }
+                              label={
+                                <span className="flex min-w-0 items-center gap-2 fg-secondary">
+                                  <AppCatalogBranchIcon
+                                    aria-hidden="true"
+                                    width="12"
+                                    height="12"
+                                    className="shrink-0 opacity-70"
+                                  />
+                                  <span
+                                    id={worktreeLabelId}
+                                    className="truncate"
+                                  >
+                                    {worktree.worktreeName}
+                                  </span>
+                                </span>
+                              }
                             />
-                            <AppCatalogBranchIcon
-                              aria-hidden="true"
-                              width="12"
-                              height="12"
-                              className="shrink-0 opacity-70"
-                            />
-                            <span id={worktreeLabelId} className="truncate">
-                              {worktree.worktreeName}
-                            </span>
-                          </label>
+                          </div>
                           {readyFirst(worktree.sessions, isEligible).map(
                             (session) => renderSessionRow(session, 'worktree'),
                           )}
@@ -1708,7 +1681,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
             );
           })}
         </div>
-        <div className="flex items-center justify-end gap-3 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-3">
           <Button
             size="compact"
             data-testid="usage-limit-resume-cancel"

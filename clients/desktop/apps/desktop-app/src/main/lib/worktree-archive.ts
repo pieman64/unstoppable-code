@@ -65,7 +65,9 @@ export type WorktreeArchiveSource =
   | 'single_repo'
   | 'multi_repo'
   | 'portal'
-  | 'workspace_delete';
+  | 'workspace_delete'
+  /** A registered archive or Delete wire call (W7b-2a/2b). */
+  | 'desktop_canopy_client';
 
 export interface WorktreeArchiveRequest {
   expectedRevision?: number;
@@ -226,41 +228,86 @@ export function archiveWorktree(
   });
 }
 
-/** Explicit keyed deletion uses the same lifecycle, without retaining a container. */
+/** Explicit keyed deletion; existing internal callers keep no container. */
 export interface WorktreeDeleteRequest
-  extends
-    Omit<
-      WorktreeArchiveRequest,
-      'lockAfterArchive' | 'deleteWithoutRetentionIfMissing'
-    >,
-    W5BoundaryOptions {}
+  extends Omit<WorktreeArchiveRequest, 'lockAfterArchive'>, W5BoundaryOptions {
+  /** P-1(i): retain an unlocked container, as the desktop Delete button does. */
+  retainAsArchivedContainer?: boolean;
+}
 
 const archiveOutcomeSchema = destructiveArchiveOutcomeSchema.extend({
   status: z.enum(['archived', 'already-archived']),
 });
 
+/** A wire call addresses only after receipt lookup and before reservation. */
+export interface WorktreeDeleteWireCall {
+  readonly caller: string;
+  readonly idempotencyKey: string;
+  readonly parameters: unknown;
+  readonly resolveRequest: () => Promise<WorktreeDeleteRequest>;
+}
+
 export async function deleteWorktree(
-  request: WorktreeDeleteRequest,
+  input: WorktreeDeleteRequest | WorktreeDeleteWireCall,
 ): Promise<WorktreeArchiveOutcome> {
-  validateId(request.workspaceId, 'workspaceId');
-  validateId(request.worktreeId, 'worktreeId');
-  const { expectedRevision, idempotencyKey, ...parameters } = request;
+  const direct = 'resolveRequest' in input ? undefined : input;
+  const wire = 'resolveRequest' in input ? input : undefined;
+  let admitted: WorktreeDeleteRequest | undefined;
+  const validate = (request: WorktreeDeleteRequest): void => {
+    validateId(request.workspaceId, 'workspaceId');
+    validateId(request.worktreeId, 'worktreeId');
+  };
+  if (direct) validate(direct);
+  const parameters = (request: WorktreeDeleteRequest): unknown => {
+    const {
+      expectedRevision: _revision,
+      idempotencyKey: _key,
+      ...rest
+    } = request;
+    void _revision;
+    void _key;
+    return rest;
+  };
   return runW5BoundaryOperation(
     {
       operation: 'core.worktree.delete',
-      caller: `desktop-host:${request.source}`,
-      idempotencyKey,
-      parameters,
+      caller:
+        'resolveRequest' in input
+          ? input.caller
+          : `desktop-host:${input.source}`,
+      idempotencyKey: input.idempotencyKey,
+      parameters:
+        'resolveRequest' in input ? input.parameters : parameters(input),
+      ...(wire && {
+        admit: async (): Promise<void> => {
+          admitted = await wire.resolveRequest();
+          validate(admitted);
+        },
+      }),
       isPreEffectRefusal: (error) =>
         error instanceof WorktreeArchiveRefusedError ||
         error instanceof W5RevisionConflictError,
     },
     (outcome) => archiveOutcomeSchema.parse(outcome),
     async (options, attempt) => {
+      const request = direct ?? admitted;
+      if (!request) throw new Error('Worktree deletion was not addressed.');
+      const {
+        expectedRevision,
+        retainAsArchivedContainer,
+        idempotencyKey: _key,
+        ...fields
+      } = request;
+      void _key;
       const pending = await admitLifecycleJournals(attempt, () =>
         readDestructiveRecovery(request.workspaceId, request.worktreeId),
       );
-      if (!pending || pending.state === 'completed') {
+      // Retained repeats skip a stale revision: the transition checks it
+      // only while the live incarnation is still present (A3(a)).
+      if (
+        retainAsArchivedContainer !== true &&
+        (!pending || pending.state === 'completed')
+      ) {
         await checkW5ExpectedRevision(
           {
             kind: 'worktree',
@@ -271,10 +318,10 @@ export async function deleteWorktree(
         );
       }
       return archiveWorktreeTransition(
-        { ...parameters, expectedRevision },
+        { ...fields, expectedRevision },
         options,
         attempt,
-        false,
+        retainAsArchivedContainer ?? false,
       );
     },
   );

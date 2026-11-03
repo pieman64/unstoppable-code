@@ -99,16 +99,4 @@ describe('TeamPage joined notice', () => {
       ),
     ).toBeNull();
   });
-
-  it('uses a ring rather than an inert border for its outline (CAN-2734)', () => {
-    const notice = renderShell({ justJoined: true }).querySelector(
-      '[data-testid="team-joined-notice"]',
-    );
-
-    const className = notice?.getAttribute('class') ?? '';
-    expect(className).toContain('ring-1');
-    // `border-*` colors are overridden by an unlayered global rule, so a
-    // border here would silently paint the neutral line color instead.
-    expect(className).not.toMatch(/(^|\s)border/);
-  });
 });

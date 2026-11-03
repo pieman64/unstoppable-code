@@ -9,7 +9,13 @@ import {
   resolveWorkspaceReadinessWorktreeId,
 } from '../workspaceReadinessLauncher';
 import { brand } from '@/lib/brand';
+import { workspaceReadinessIssueKey } from '@/lib/workspaceReadinessIssueKey';
+import {
+  workspaceReadinessLaunchKey,
+  type LaunchedReadinessFix,
+} from '@/lib/workspaceReadinessLaunches';
 import { useChatStore } from '@/stores/chatStore';
+import { useWorkspaceReadinessLaunchStore } from '@/stores/workspaceReadinessLaunchStore';
 import type {
   ChatTab,
   CreateTabTarget,
@@ -118,6 +124,7 @@ describe('launchWorkspaceReadinessFix', () => {
     sendMessage.mockResolvedValue(undefined);
     useProjectsStore.setState({
       projects: [workspace()],
+      hasHydratedProjects: false,
       createWorktree,
       retryWorktreeHealthCheck,
     });
@@ -150,9 +157,15 @@ describe('launchWorkspaceReadinessFix', () => {
     });
     useNavigationStore.setState({ navigate });
     ensureSelectedWorktreeTabsLoaded.mockResolvedValue(true);
+    useWorkspaceReadinessLaunchStore.setState({
+      records: {},
+      pendingSendKeys: {},
+      failedSendKeys: {},
+    });
   });
 
   afterAll(() => {
+    useWorkspaceReadinessLaunchStore.setState({ records: {} });
     useProjectsStore.setState(originalProjectsState, true);
     useChatStore.setState(originalChatState, true);
     useNavigationStore.setState(originalNavigationState, true);
@@ -242,6 +255,7 @@ describe('launchWorkspaceReadinessFix', () => {
   });
 
   it('opens a launched readiness chat on the worktree that owns it', async () => {
+    useChatStore.getState().createTab();
     await navigateToWorkspaceReadinessChat(
       'workspace-1',
       'worktree-1',
@@ -257,6 +271,7 @@ describe('launchWorkspaceReadinessFix', () => {
   });
 
   it('opens the launched worktree when selection changes during hydration', async () => {
+    useChatStore.getState().createTab();
     let resolveHydration: ((loaded: boolean) => void) | undefined;
     ensureSelectedWorktreeTabsLoaded.mockReturnValueOnce(
       new Promise<boolean>((resolve) => {
@@ -297,6 +312,18 @@ describe('launchWorkspaceReadinessFix', () => {
     expect(switchTab).not.toHaveBeenCalled();
   });
 
+  it('keeps the worktree recovery destination when the hydrated chat is missing', async () => {
+    await navigateToWorkspaceReadinessChat(
+      'workspace-1',
+      'worktree-1',
+      'deleted-chat',
+    );
+    expect(selectWorktree).toHaveBeenCalledWith('workspace-1', 'worktree-1');
+    expect(switchTab).not.toHaveBeenCalled();
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it('keeps repository scope on the targeted chat if the active worktree changes', async () => {
     createTab.mockImplementationOnce(() => {
       useChatStore.setState({
@@ -334,7 +361,7 @@ describe('launchWorkspaceReadinessFix', () => {
     );
   });
 
-  it('queues the prompt while git setup is pending', async () => {
+  it('sends the prompt straight to main while git setup is pending', async () => {
     useProjectsStore.setState({ projects: [workspace('git-pending')] });
 
     await launchWorkspaceReadinessFix('workspace-1', issue);
@@ -344,7 +371,7 @@ describe('launchWorkspaceReadinessFix', () => {
       undefined,
       expect.any(Object),
       undefined,
-      { queueForSetup: true, throwOnDispatchFailure: true },
+      { throwOnDispatchFailure: true },
     );
   });
 
@@ -438,6 +465,239 @@ describe('launchWorkspaceReadinessFix', () => {
       ok: true,
       worktreeId: 'worktree-1',
       chatId: 'new-chat',
+    });
+  });
+
+  describe('launch records', () => {
+    const launchKey = workspaceReadinessLaunchKey(
+      'workspace-1',
+      undefined,
+      workspaceReadinessIssueKey(issue),
+    );
+    const recorded = (): LaunchedReadinessFix | undefined =>
+      useWorkspaceReadinessLaunchStore.getState().records[launchKey];
+
+    it('records the destination before navigating and sending', async () => {
+      let atNavigation: LaunchedReadinessFix | undefined;
+      let atSend: LaunchedReadinessFix | undefined;
+      let pendingAtSend = false;
+      navigate.mockImplementation(() => {
+        atNavigation = recorded();
+      });
+      sendMessage.mockImplementation(() => {
+        atSend = recorded();
+        pendingAtSend =
+          useWorkspaceReadinessLaunchStore.getState().pendingSendKeys[
+            launchKey
+          ] === true;
+        return Promise.resolve();
+      });
+
+      await launchWorkspaceReadinessFix('workspace-1', issue);
+
+      const expected = {
+        workspaceId: 'workspace-1',
+        issueKey: workspaceReadinessIssueKey(issue),
+        issueCode: issue.code,
+        worktreeId: 'worktree-1',
+        chatId: 'new-chat',
+      };
+      expect(atNavigation).toMatchObject(expected);
+      expect(atSend).toMatchObject(expected);
+      expect(Number.isNaN(Date.parse(atSend?.launchedAt ?? ''))).toBe(false);
+      expect(pendingAtSend).toBe(true);
+      expect(
+        useWorkspaceReadinessLaunchStore.getState().pendingSendKeys[launchKey],
+      ).toBeUndefined();
+    });
+
+    it('reuses the recorded destination while its first send is pending', async () => {
+      let finishSend: (() => void) | undefined;
+      let sendStarted: (() => void) | undefined;
+      const sending = new Promise<void>((resolve) => {
+        sendStarted = resolve;
+      });
+      sendMessage.mockImplementationOnce(() => {
+        sendStarted?.();
+        return new Promise<void>((resolve) => {
+          finishSend = resolve;
+        });
+      });
+      const first = launchWorkspaceReadinessFix(
+        'workspace-1',
+        issue,
+        undefined,
+        {
+          navigateToChat: false,
+        },
+      );
+      await sending;
+      try {
+        await expect(
+          launchWorkspaceReadinessFix('workspace-1', issue),
+        ).resolves.toEqual({
+          ok: true,
+          worktreeId: 'worktree-1',
+          chatId: 'new-chat',
+        });
+        expect(selectWorktree).toHaveBeenCalledWith(
+          'workspace-1',
+          'worktree-1',
+        );
+        expect(switchTab).toHaveBeenCalledWith('new-chat', {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+        });
+        expect(createWorktree).toHaveBeenCalledTimes(1);
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+      } finally {
+        finishSend?.();
+        await first;
+      }
+    });
+
+    it('scopes the record to the audited worktree', async () => {
+      await launchWorkspaceReadinessFix(
+        'workspace-1',
+        issue,
+        'audited-worktree',
+      );
+      expect(recorded()).toBeUndefined();
+      expect(
+        useWorkspaceReadinessLaunchStore.getState().records[
+          workspaceReadinessLaunchKey(
+            'workspace-1',
+            'audited-worktree',
+            workspaceReadinessIssueKey(issue),
+          )
+        ],
+      ).toMatchObject({ baseWorktreeId: 'audited-worktree' });
+    });
+
+    it('writes no record before a usable destination exists', async () => {
+      createWorktree.mockResolvedValueOnce(undefined);
+      await launchWorkspaceReadinessFix('workspace-1', issue);
+      expect(recorded()).toBeUndefined();
+
+      useChatStore.setState({ createTab: jest.fn(), worktreeChats: {} });
+      await expect(
+        launchWorkspaceReadinessFix('workspace-1', issue),
+      ).resolves.toEqual({
+        ok: false,
+        message: 'Could not create a chat for this recommendation.',
+      });
+      expect(recorded()).toBeUndefined();
+    });
+
+    it('retains the record and marks the failure when the send fails', async () => {
+      sendMessage.mockRejectedValueOnce(new Error('send failed'));
+
+      await launchWorkspaceReadinessFix('workspace-1', issue);
+
+      expect(recorded()).toMatchObject({
+        worktreeId: 'worktree-1',
+        chatId: 'new-chat',
+      });
+      const state = useWorkspaceReadinessLaunchStore.getState();
+      expect(state.failedSendKeys[launchKey]).toBe(true);
+      expect(state.pendingSendKeys[launchKey]).toBeUndefined();
+    });
+
+    it('reopens a retained launch from any caller without another worktree or send', async () => {
+      await launchWorkspaceReadinessFix('workspace-1', issue, undefined, {
+        navigateToChat: false,
+      });
+      jest.clearAllMocks();
+      ensureSelectedWorktreeTabsLoaded.mockResolvedValue(true);
+
+      await expect(
+        launchWorkspaceReadinessFix('workspace-1', issue),
+      ).resolves.toEqual({
+        ok: true,
+        worktreeId: 'worktree-1',
+        chatId: 'new-chat',
+      });
+      await expect(
+        launchWorkspaceReadinessFix('workspace-1', issue, undefined, {
+          navigateToChat: false,
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        worktreeId: 'worktree-1',
+        chatId: 'new-chat',
+      });
+
+      expect(createWorktree).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+      // Only the navigating caller opens the existing chat.
+      expect(selectWorktree).toHaveBeenCalledTimes(1);
+      expect(switchTab).toHaveBeenCalledWith('new-chat', {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+      });
+    });
+
+    it('keeps a retained launch while the worktree list is incomplete', async () => {
+      useWorkspaceReadinessLaunchStore.getState().recordLaunch({
+        workspaceId: 'workspace-1',
+        issueKey: workspaceReadinessIssueKey(issue),
+        issueCode: issue.code,
+        worktreeId: 'unlisted-worktree',
+        chatId: 'old-chat',
+        launchedAt: new Date(0).toISOString(),
+      });
+      useProjectsStore.setState({ hasHydratedProjects: false });
+
+      await launchWorkspaceReadinessFix('workspace-1', issue, undefined, {
+        navigateToChat: false,
+      });
+
+      expect(createWorktree).not.toHaveBeenCalled();
+      expect(recorded()).toMatchObject({ chatId: 'old-chat' });
+    });
+
+    it('launches again once a complete list no longer has the fix worktree', async () => {
+      useWorkspaceReadinessLaunchStore.getState().recordLaunch({
+        workspaceId: 'workspace-1',
+        issueKey: workspaceReadinessIssueKey(issue),
+        issueCode: issue.code,
+        worktreeId: 'removed-worktree',
+        chatId: 'old-chat',
+        launchedAt: new Date(0).toISOString(),
+      });
+      useProjectsStore.setState({
+        hasHydratedProjects: true,
+        projectInventoryStatus: 'ready',
+        projectInventorySnapshot: {
+          projects: [workspace()],
+          startedAt: Date.now(),
+        },
+        isLoading: false,
+      });
+
+      await launchWorkspaceReadinessFix('workspace-1', issue, undefined, {
+        navigateToChat: false,
+      });
+
+      expect(createWorktree).toHaveBeenCalledTimes(1);
+      expect(recorded()).toMatchObject({
+        worktreeId: 'worktree-1',
+        chatId: 'new-chat',
+      });
+    });
+
+    it('launches a different issue independently', async () => {
+      await launchWorkspaceReadinessFix('workspace-1', issue, undefined, {
+        navigateToChat: false,
+      });
+      await launchWorkspaceReadinessFix(
+        'workspace-1',
+        { ...issue, code: 'configure-scripts', title: 'Add scripts' },
+        undefined,
+        { navigateToChat: false },
+      );
+      expect(createWorktree).toHaveBeenCalledTimes(2);
+      expect(sendMessage).toHaveBeenCalledTimes(2);
     });
   });
 

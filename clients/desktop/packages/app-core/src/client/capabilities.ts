@@ -153,6 +153,8 @@ export interface CanopyCapabilities {
   readonly chatDeliverables?: boolean;
   /** A host reader for chat visuals is wired. Optional and default-deny; this is not the feature flag. */
   readonly chatVisuals?: boolean;
+  /** Paired host projects sanitized watched GitHub progress. Default-deny. */
+  readonly watchedGitHubItems?: boolean;
   /**
    * Host renders in a document whose clipboard can take a PNG plus HTML item,
    * for copying a diagram as a picture (CAN-5040). Optional and default-deny

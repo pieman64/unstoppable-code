@@ -1,7 +1,6 @@
 import { memo, type JSX, type ReactNode } from 'react';
 import {
   ChatToolStepGroup,
-  STEP_GROUP_BODY_CLASS,
   getToolDisplayInfo,
   liveToolCallActivity,
   stepKindIcon,
@@ -11,12 +10,11 @@ import {
   type ToolApprovalWait,
 } from '@canopy/ui-shared/components';
 import { AgentIcon, QuestionMarkIcon } from '@canopy/ui-shared/icons';
-import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { brand } from '@/lib/brand';
 import type { TurnOutcomeEvidence } from '@canopy/protocol/portal';
-import type { DisplayBlock, DisplayMessage } from './types';
+import type { DisplayBlock } from './types';
 import {
   cleanBlockRole,
   describeCleanSteps,
@@ -30,10 +28,6 @@ import {
 } from './tool-step-groups';
 
 type ToolUseBlock = Extract<DisplayBlock, { type: 'tool_use' }>;
-
-function hasCleanStep(message: DisplayMessage): boolean {
-  return message.blocks.some((block) => cleanBlockRole(block) === 'step');
-}
 
 /**
  * Early access: one row standing in for a run of back-to-back tool calls.
@@ -127,7 +121,8 @@ function liveActivity(
 ): ChatToolStepLive {
   const thinking = {
     label: workingLabel ?? 'Thinking',
-    icon: <LightbulbIcon />,
+    icon: null,
+    showWhenUngrouped: true,
   };
   const messages = segment?.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -163,7 +158,9 @@ function liveActivity(
       }
       // The newest step is done (or is a thought): the agent is thinking
       // about the next one.
-      return thinking;
+      return block.type === 'thinking'
+        ? { ...thinking, showWhenUngrouped: false }
+        : thinking;
     }
   }
   return thinking;
@@ -184,6 +181,8 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
   openRequest,
   isCodeReviewChat,
   liveSteps,
+  hiddenSteps,
+  trailingActivity,
   outcomeEvidence,
   deniedToolUseIds,
   children,
@@ -199,6 +198,8 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
   isCodeReviewChat?: boolean;
   /** "Show only recent steps": the newest steps, under the closed line. */
   liveSteps?: ReactNode;
+  hiddenSteps?: ReactNode;
+  trailingActivity?: ReactNode;
   /**
    * Whether the turn settled with every result loaded, so a call without a
    * result counts as interrupted; the turn's outcome counts use the same.
@@ -221,13 +222,6 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
     segment && liveSteps !== undefined
       ? stepsBeforeLiveWindow(segment.messages)
       : undefined;
-  if (hidden !== undefined && !hidden.some(hasCleanStep)) {
-    return (
-      <div className={STEP_GROUP_BODY_CLASS} data-testid="chat-tool-step-live">
-        {liveSteps}
-      </div>
-    );
-  }
   const done = segment
     ? describeCleanSteps(
         hidden === undefined ? segment : { ...segment, messages: hidden },
@@ -246,6 +240,22 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
       forceExpanded={forceExpanded}
       openRequest={openRequest}
       liveSteps={liveSteps}
+      hiddenSteps={hiddenSteps}
+      trailingActivity={trailingActivity}
+      collapsedStepCount={
+        segment
+          ? (hidden ?? segment.messages).reduce(
+              (count, message) =>
+                count +
+                message.blocks.filter(
+                  (block) =>
+                    cleanBlockRole(block) === 'step' &&
+                    block.type !== 'thinking',
+                ).length,
+              0,
+            )
+          : undefined
+      }
       {...(live && hidden === undefined
         ? { live: liveActivity(segment, workingLabel, scope, approvalWait) }
         : {})}

@@ -251,7 +251,7 @@ export function BaseBranchDropdown({
                   selected={isSelected}
                 >
                   <PickerMenuOptionLeading>
-                    <BranchIcon />
+                    <BranchIcon size="md" />
                   </PickerMenuOptionLeading>
                   <PickerMenuOptionContent>
                     <PickerMenuOptionLabel>{branch.name}</PickerMenuOptionLabel>

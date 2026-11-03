@@ -1492,7 +1492,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
     expect(useNavigationStore.getState().navigate).toHaveBeenCalledWith('main');
   });
 
-  it('creates a new worktree, joins tab hydration, applies config, toggles plan mode, then sends with queueForSetup when git-pending', async () => {
+  it('creates a new worktree, joins tab hydration, applies config, toggles plan mode, then sends when git-pending', async () => {
     seedLoadTabsForTarget('git-pending');
     importChatAttachmentsMock.mockImplementation(() => {
       callOrder.push('importChatAttachments');
@@ -1584,7 +1584,6 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       target,
       undefined,
       expect.objectContaining({
-        queueForSetup: true,
         attachmentPaths: ['/workspaces/ws-1/attachments/wt-1/a.png'],
         attachmentPromptContexts: undefined,
       }),
@@ -1786,7 +1785,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
     );
   });
 
-  it('waits for the selected model harness before capturing a setup-queued first message', async () => {
+  it('waits for the selected model harness before capturing a first message during setup', async () => {
     seedLoadTabsForTarget('git-pending');
     let acceptModel = (): void => {
       throw new Error('Model acceptance resolver was not initialized.');
@@ -1826,7 +1825,6 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
       expect.objectContaining({
-        queueForSetup: true,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
       }),
@@ -1837,7 +1835,7 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
     // `setModelAndWait` reports "did it land" as a boolean and swallows a
     // rejected IPC as `false`, so the refusal arrives as a resolved `false`
     // rather than a throw. Treating that as success re-opens exactly what the
-    // await exists to prevent: a setup-queued first message captures the tab's
+    // await exists to prevent: a first message during setup captures the tab's
     // execution harness, so sending after a refused model change can
     // permanently pin the provisional tab's default harness.
     seedLoadTabsForTarget('git-pending');
@@ -1920,7 +1918,6 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
       expect.objectContaining({
-        queueForSetup: undefined,
         attachmentPaths: [
           '/workspaces/ws-1/attachments/wt-1/linear-can-202.md',
         ],
@@ -1948,143 +1945,28 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
     expect(importChatAttachmentsMock).not.toHaveBeenCalled();
   });
 
-  it('omits queueForSetup when the worktree is not git-pending', async () => {
-    seedLoadTabsForTarget('git-ready');
-    useHomeComposerStore.setState({
-      workspaceId: 'ws-1',
-      branchTarget: { kind: 'new-worktree' },
-      text: 'build a thing',
-    });
-
-    await dispatchHomeSend();
-
-    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
-      'build a thing',
-      undefined,
-      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
-      undefined,
-      expect.objectContaining({
-        queueForSetup: undefined,
-        attachmentPaths: undefined,
-        attachmentPromptContexts: undefined,
-      }),
-    );
-  });
-
-  it('Task H3 fix 3: reads setupPhase LIVE before dispatch — git setup completing mid-flight (git-pending → git-ready) omits queueForSetup', async () => {
-    // Reservation resolved as `git-pending`, but git setup finishes during the
-    // post-create work (modeled here by targeted hydration flipping the
-    // worktree to `git-ready`). The old post-create SNAPSHOT would have queued
-    // the message; the live re-read immediately before `sendMessage` sees the
-    // completed setup and dispatches immediately (no queueForSetup).
-    useProjectsStore.setState({
-      projects: [
-        makeSingleRepoProject('ws-1', {
-          worktrees: [makeWorktree({ setupPhase: 'git-pending' })],
-        }),
-      ],
-    });
-    jest
-      .mocked(useChatStore.getState().loadTabsForTarget)
-      .mockImplementation((): Promise<void> => {
-        callOrder.push('loadTabsForTarget');
-        useChatStore.setState({
-          worktreeChats: {
-            'ws-1/wt-1': {
-              tabs: [{ ...createEmptyTab(), id: 'tab-1' }],
-              activeTabId: 'tab-1',
-            },
-          },
-        });
-        // Git setup completes here, after the reservation resolved.
-        useProjectsStore.setState({
-          projects: [
-            makeSingleRepoProject('ws-1', {
-              worktrees: [makeWorktree({ setupPhase: 'git-ready' })],
-            }),
-          ],
-        });
-        return Promise.resolve();
+  it.each(['git-pending', 'git-ready'] as const)(
+    'sends a %s first message straight to main, with no renderer setup queue',
+    async (setupPhase) => {
+      seedLoadTabsForTarget(setupPhase);
+      useHomeComposerStore.setState({
+        workspaceId: 'ws-1',
+        branchTarget: { kind: 'new-worktree' },
+        text: 'build a thing',
       });
 
-    useHomeComposerStore.setState({
-      workspaceId: 'ws-1',
-      branchTarget: { kind: 'new-worktree' },
-      text: 'build a thing',
-    });
+      await dispatchHomeSend();
 
-    await dispatchHomeSend();
-
-    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
-      'build a thing',
-      undefined,
-      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
-      undefined,
-      expect.objectContaining({
-        queueForSetup: undefined,
-        attachmentPaths: undefined,
-        attachmentPromptContexts: undefined,
-      }),
-    );
-  });
-
-  it('Task H3 fix 3: reads setupPhase LIVE before dispatch — still git-pending at dispatch keeps queueForSetup', async () => {
-    // The complement: setup is still running at dispatch time, so the live
-    // re-read yields `queueForSetup: true` and the message queues (queued bubble
-    // explaining the setup wait in the real chat).
-    seedLoadTabsForTarget('git-pending');
-    useHomeComposerStore.setState({
-      workspaceId: 'ws-1',
-      branchTarget: { kind: 'new-worktree' },
-      text: 'build a thing',
-    });
-
-    await dispatchHomeSend();
-
-    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
-      'build a thing',
-      undefined,
-      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
-      undefined,
-      expect.objectContaining({
-        queueForSetup: true,
-        attachmentPaths: undefined,
-        attachmentPromptContexts: undefined,
-      }),
-    );
-  });
-
-  it('keeps the setup queue when a concurrent project refresh temporarily drops the reserved row', async () => {
-    seedLoadTabsForTarget('git-pending');
-    jest
-      .mocked(useChatStore.getState().setModelAndWait)
-      .mockImplementation(() => {
-        callOrder.push('setModel');
-        useProjectsStore.setState({
-          projects: [makeSingleRepoProject('ws-1', { worktrees: [] })],
-        });
-        return Promise.resolve(true);
+      const call = jest.mocked(useChatStore.getState().sendMessage).mock
+        .calls[0];
+      expect(call?.[2]).toEqual({
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        chatId: 'tab-1',
       });
-    useHomeComposerStore.setState({
-      workspaceId: 'ws-1',
-      branchTarget: { kind: 'new-worktree' },
-      text: 'preserve the pending reservation',
-    });
-
-    await dispatchHomeSend();
-
-    expect(useChatStore.getState().sendMessage).toHaveBeenCalledWith(
-      'preserve the pending reservation',
-      undefined,
-      { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
-      undefined,
-      expect.objectContaining({
-        queueForSetup: true,
-        attachmentPaths: undefined,
-        attachmentPromptContexts: undefined,
-      }),
-    );
-  });
+      expect(call?.[4]).not.toHaveProperty('queueForSetup');
+    },
+  );
 
   it('forwards existingBranch for a branch-kind target', async () => {
     seedLoadTabsForTarget(undefined);
@@ -2422,16 +2304,15 @@ describe('dispatchHomeSend CAN-4742 first-send echo', () => {
 
       await expect(dispatchHomeSend()).resolves.toBe(true);
 
-      // A chat still setting up opens on the queue row the send becomes,
-      // never on a starting turn that the queue then replaces (CAN-4981).
-      const pending = setupPhase === 'git-pending';
+      // A chat still setting up opens on the sent question and its starting
+      // turn, as a ready one does: main holds the send until setup finishes.
       expect(atNavigation).toEqual([
         {
           texts: ['Why is the deck empty?'],
           title: 'Why is the deck empty?',
-          shown: pending ? [] : ['Why is the deck empty?'],
-          queued: pending ? ['Why is the deck empty?'] : [],
-          starting: !pending,
+          shown: ['Why is the deck empty?'],
+          queued: [],
+          starting: true,
         },
       ]);
       const presented = tabIn('tab-1')?.provisionalFirstSend;
@@ -3093,7 +2974,7 @@ describe('dispatchHomeSend CAN-4742 first-send echo', () => {
     },
   );
 
-  it('hands the echo to the setup queue row it was queued as', async () => {
+  it('hands the echo to the renderer queue row it was queued as', async () => {
     seedStarterHydration('git-pending');
     draftNewWorktreeSend();
     jest
@@ -3418,7 +3299,6 @@ describe('dispatchHomeSend Task F3: shadow-backed @ mention rewrite (new-worktre
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
       expect.objectContaining({
-        queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
       }),
@@ -3742,7 +3622,6 @@ describe('dispatchHomeSend multi-repo working directory', () => {
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
       expect.objectContaining({
-        queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
       }),
@@ -3822,7 +3701,6 @@ describe('dispatchHomeSend multi-repo working directory', () => {
       { projectId: 'ws-1', worktreeId: 'wt-1', chatId: 'tab-1' },
       undefined,
       expect.objectContaining({
-        queueForSetup: undefined,
         attachmentPaths: undefined,
         attachmentPromptContexts: undefined,
       }),

@@ -395,7 +395,10 @@ export interface AppAdvisorWatcherSurfaces {
   deliverWatcherMessage: (
     delivery: WatcherChatDelivery,
   ) => Promise<WatcherChatDeliveryOutcome>;
-  onChange?: (watchers: AppAdvisorWatcherSummary[]) => void;
+  onChange?: (
+    watchers: AppAdvisorWatcherSummary[],
+    completedGitHub?: AppAdvisorWatcherSummary[],
+  ) => void;
 }
 
 export interface AppAdvisorChatTerminalEvent {
@@ -1233,6 +1236,21 @@ function newestCompletedFirst(
     (Date.parse(b.firedAt ?? b.updatedAt) || 0) -
     (Date.parse(a.firedAt ?? a.updatedAt) || 0)
   );
+}
+
+/** The same bounded fire history for local readers and Portal notifications. */
+function recentCompletedWatcherRows(
+  watchers: AppAdvisorWatcher[],
+): AppAdvisorWatcher[] {
+  const finished = watchers
+    .filter((watcher) => COMPLETED_STATUSES.has(watcher.status))
+    .sort(newestCompletedFirst)
+    .slice(0, COMPLETED_WATCHER_SUMMARY_LIMIT);
+  const pending = watchers
+    .filter((watcher) => watcher.status === 'firing')
+    .sort(newestCompletedFirst)
+    .slice(0, COMPLETED_WATCHER_SUMMARY_LIMIT);
+  return [...finished, ...pending].sort(newestCompletedFirst);
 }
 
 /**
@@ -8695,15 +8713,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
    */
   async listCompleted(): Promise<AppAdvisorWatcherSummary[]> {
     const watchers = await this.readSharedWatchers();
-    const finished = watchers
-      .filter((watcher) => COMPLETED_STATUSES.has(watcher.status))
-      .sort(newestCompletedFirst)
-      .slice(0, COMPLETED_WATCHER_SUMMARY_LIMIT);
-    const pending = watchers
-      .filter((watcher) => watcher.status === 'firing')
-      .sort(newestCompletedFirst)
-      .slice(0, COMPLETED_WATCHER_SUMMARY_LIMIT);
-    const completedRows = [...finished, ...pending].sort(newestCompletedFirst);
+    const completedRows = recentCompletedWatcherRows(watchers);
     const completed = completedRows.map((watcher) =>
       toSummary(
         watcher,
@@ -13261,10 +13271,20 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     if (surfaces?.onChange) {
       const publish = (summaries: AppAdvisorWatcherSummary[]): void => {
         if (
-          generation === this.summaryNotificationGeneration &&
-          this.surfaces === surfaces
+          generation !== this.summaryNotificationGeneration ||
+          this.surfaces !== surfaces
         )
-          surfaces.onChange?.(summaries);
+          return;
+        const completedGitHub = recentCompletedWatcherRows(watchers)
+          .filter(
+            (watcher) =>
+              watcher.trigger === 'github_workflow_runs_changed' ||
+              watcher.trigger === 'github_pull_requests_changed',
+          )
+          .map((watcher) => toSummary(watcher));
+        if (completedGitHub.length)
+          surfaces.onChange?.(summaries, completedGitHub);
+        else surfaces.onChange?.(summaries);
       };
       if (
         visible.some(

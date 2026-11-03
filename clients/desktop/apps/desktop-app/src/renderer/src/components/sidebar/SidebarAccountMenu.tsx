@@ -475,7 +475,7 @@ export function SidebarAccountMenu({
                   data-testid="sidebar-account-menu-item-billing"
                 >
                   <DropdownMenuItemIcon>
-                    <ArrowUp aria-hidden="true" />
+                    <ArrowUp size="xl" aria-hidden="true" />
                   </DropdownMenuItemIcon>
                   {subscription.billingAction?.label ?? 'Upgrade'}
                 </DropdownMenuItem>
@@ -569,7 +569,7 @@ export function SidebarAccountMenu({
                   data-testid="sidebar-account-menu-item-remote-control"
                 >
                   <DropdownMenuItemIcon>
-                    <PortalIcon aria-hidden="true" />
+                    <PortalIcon size="xl" aria-hidden="true" />
                   </DropdownMenuItemIcon>
                   {REMOTE_CONTROL_LABEL}
                 </DropdownMenuItem>

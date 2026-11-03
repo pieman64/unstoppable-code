@@ -253,8 +253,9 @@ refuses it once sealed.
 ## Owned daemon roots (host-only)
 
 `createOwnedChildServices` launches the daemon root for startup rollback on
-Darwin (a process group held by its unreaped root) and, since CAN-4929, on
-Windows: one kill-on-close job per root with no breakaway flags, entered while
+Darwin and, since CAN-4966, Linux (a process group held by its unreaped root)
+and, since CAN-4929, on Windows: one kill-on-close job per root with no
+breakaway flags, entered while
 the root is still suspended and held with the root's process handle. Job
 membership is containment here, unlike the libuv parent-exit job above: the job
 forbids breakaway, so a descendant that silently leaves a nested libuv job
@@ -267,8 +268,14 @@ breaks away from it so that a committed daemon outlives the launcher. The
 root and its attached helpers likewise sit in the root's libuv job, nested in
 the owned one. Job queries made from inside those processes report the libuv
 job, so the suite reads the owned job from a detached leaf that spawns
-nothing. `commit()` clears kill-on-close. Linux reports `capability_unavailable`,
-and `spawnWithChannel` stays Darwin-only. Since CAN-5140 the addon's `launch`
+nothing. `commit()` clears kill-on-close. `spawnWithChannel` stays
+Darwin-only. Linux shares the Darwin source (`owned_child.c`): it enumerates
+the group from `/proc/<pid>/stat`, signals it before trusting an empty
+listing, does not count exited (zombie) members unless another of their
+threads still runs, closes descriptors above 2 with a `closefrom` spawn
+action, and blocks and consumes `SIGPIPE` around the stdin write. Like
+Darwin, a host killed before commit leaves the uncommitted root to idle out; neither sets `PR_SET_PDEATHSIG`, which would also end committed
+daemons. Since CAN-5140 the addon's `launch`
 also starts execution children inside jobs of their own; see below. The contract, staging and failure
 behavior are in
 [bundled runtime maintenance](../../docs/bundled-runtime-maintenance.md).
@@ -503,8 +510,9 @@ a file whose final path is no longer under the root's (the root moved
 mid-walk, even if back by that check), and a root that does not open is
 `root-unavailable`; either refuses the whole
 capture before log evidence is read. Handles share read, write and
-delete. The call is stateless, so the W5 worker thread loads the addon the
-desktop already stages, once, on its first capture. Without the addon, or with
+delete. The call is stateless, so each W5 worker thread, the desktop's or
+the core daemon's, loads the addon its host stages, once, on its first
+capture. Without the addon, or with
 one that lacks the call, there is no reader and Windows capture refuses
 (`confinement-unavailable`); a malformed or throwing call reads as `io`.
 `w5-confined-read.test.ts` covers the result validation and loading;

@@ -27,6 +27,13 @@ import {
   type PendingModelUnlockIntent,
 } from '@/lib/modelUnlockIntent';
 import { useGitHubStore } from '@/stores/githubStore';
+import {
+  hasAiCreditsHandoffs,
+  reconcileAiCreditsHandoffAccount,
+  suspendAiCreditsHandoffAccount,
+  useAiCreditsHandoffStore,
+  type AiCreditsHandoffAccountIdentity,
+} from '@/stores/aiCreditsHandoffStore';
 
 /**
  * Follow a browser checkout back into the app (CAN-4028).
@@ -54,6 +61,7 @@ export function useModelUnlockReturn(): void {
 
   useEffect(() => {
     let accountReadGeneration = 0;
+    let accountReadPending = false;
     let active = true;
     let queuedConfirmation: PendingModelUnlockIntent | null = null;
     ensureModelLibraryAccessSubscribed();
@@ -75,6 +83,14 @@ export function useModelUnlockReturn(): void {
     // Coming back to the window is the usual way a purchase ends, with or
     // without a return link. Only worth a read while something is pending.
     const handleFocus = (): void => {
+      if (
+        !accountReadPending &&
+        Object.values(useAiCreditsHandoffStore.getState().records).some(
+          (record) => record.identityUnverified,
+        )
+      ) {
+        handleAccountChanged();
+      }
       const { phase } = useModelUnlockIntentStore.getState();
       if (phase === 'waiting' || phase === 'timed-out') {
         void checkModelUnlockNow();
@@ -84,46 +100,65 @@ export function useModelUnlockReturn(): void {
     // rather than assumed from the event, which also fires for a balance
     // change on the same account. A confirmed unlock outlives its pending
     // intent, so its confirmation is reconciled even when nothing is pending.
-    // The usage-limit arrival confirmation (CAN-5160) shares the same guard.
+    // The usage-limit arrival confirmation (CAN-5160) and pending credits
+    // checkouts (CAN-5534) share the same guard.
     const handleAccountChanged = (): void => {
       if (
         useModelUnlockIntentStore.getState().intent === null &&
         !hasModelUnlockConfirmationSession() &&
-        !hasAiCreditsArrivalSession()
+        !hasAiCreditsArrivalSession() &&
+        !hasAiCreditsHandoffs()
       ) {
         return;
       }
       const generation = ++accountReadGeneration;
+      accountReadPending = true;
       suspendModelUnlockConfirmationAccount();
       suspendAiCreditsArrivalAccount();
-      const reconcile = (accountKey: string | null): void => {
+      suspendAiCreditsHandoffAccount();
+      const reconcile = (
+        accountKey: string | null,
+        handoffIdentity: AiCreditsHandoffAccountIdentity,
+      ): void => {
         if (!active || generation !== accountReadGeneration) return;
+        accountReadPending = false;
         reconcileModelUnlockIntentAccount(accountKey);
         reconcileModelUnlockConfirmationAccount(accountKey);
-        reconcileAiCreditsArrivalAccount(accountKey);
+        if (handoffIdentity.kind !== 'unreadable') {
+          reconcileAiCreditsArrivalAccount(accountKey);
+        }
+        // A failed read is not a sign-out for a pending checkout: the browser
+        // purchase may still land, so it keeps waiting, unattributed.
+        reconcileAiCreditsHandoffAccount(handoffIdentity);
         if (queuedConfirmation?.accountId === accountKey) {
           recordModelUnlockConfirmation(queuedConfirmation);
         }
         queuedConfirmation = null;
       };
+      const unreadable = (): void => {
+        // An unreadable account cannot be shown to still be the buyer.
+        reconcile(null, { kind: 'unreadable' });
+      };
       const loadAccount = window.api?.loadCanopyCloudAccount;
       if (typeof loadAccount !== 'function') {
-        reconcile(null);
+        unreadable();
         return;
       }
-      void loadAccount().then(
-        (account): void => {
+      void Promise.resolve()
+        .then(() => loadAccount())
+        .then((account): void => {
+          if (account.read !== undefined && account.read !== 'ok') {
+            unreadable();
+            return;
+          }
+          const accountKey = cloudAccountIdentityKey(account);
           reconcile(
-            account.read !== undefined && account.read !== 'ok'
-              ? null
-              : cloudAccountIdentityKey(account),
+            accountKey,
+            accountKey === null
+              ? { kind: 'signed-out' }
+              : { kind: 'account', key: accountKey },
           );
-        },
-        (): void => {
-          // An unreadable account cannot be shown to still be the buyer.
-          reconcile(null);
-        },
-      );
+        }, unreadable);
     };
     window.addEventListener('focus', handleFocus);
     window.addEventListener(

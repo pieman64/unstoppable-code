@@ -14,6 +14,7 @@ import type {
   McpServersIndexFile,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { McpServerDialog, McpServersTab } from '../McpServersTab';
+import { brandText } from '@/lib/brand';
 import { useNavigationStore } from '@/stores/navigationStore';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -164,6 +165,49 @@ afterEach(async (): Promise<void> => {
   await update((): void => root.unmount());
   container.remove();
 });
+
+it.each(['device', 'account'] as const)(
+  'omits internal catalog setup instructions from the %s connection dialog',
+  async (mode): Promise<void> => {
+    const setupInstructions =
+      'claude mcp add --transport http datadog "https://mcp.datadoghq.com/v1/mcp?toolsets=all"';
+    await update((): void =>
+      root.render(
+        <McpServerDialog
+          serverId={null}
+          mode={mode}
+          initialCurated={{
+            key: 'datadog',
+            name: 'Datadog',
+            shortDescription: 'Datadog telemetry',
+            transport: 'http',
+            url: 'https://mcp.datadoghq.com/v1/mcp?toolsets=all',
+            categories: [],
+            popular: false,
+            sortOrder: 0,
+            updatedAt: '2026-11-02T00:00:00.000Z',
+            setupInstructions,
+            urlOptions: [
+              {
+                label: 'US1',
+                url: 'https://mcp.datadoghq.com/v1/mcp?toolsets=all',
+              },
+            ],
+          }}
+          onClose={(): void => undefined}
+          onSaved={(): Promise<void> => Promise.resolve()}
+          onAccountConnect={jest.fn()}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain('Endpoint');
+    expect(container.textContent).not.toContain(setupInstructions);
+    expect(
+      container.querySelector('[data-testid="mcp-curated-url-option"]'),
+    ).not.toBeNull();
+  },
+);
+
 it('keeps an unbound server on this device when the default is the cloud account', async (): Promise<void> => {
   const startAccountConnection = jest.fn();
   Object.assign(window.mcpServers, { startAccountConnection });
@@ -184,7 +228,7 @@ it('keeps an unbound server on this device when the default is the cloud account
     container.querySelector('[data-testid="mcp-cloud-placement"]'),
   ).toBeNull();
   // An account default has no connection behind it on this device.
-  expect(handlerSelect().value).toBe('canopy');
+  expect(handlerValue()).toBe('canopy');
   await update((): void => button('Save').click());
   await update((): void => undefined);
   expect(startAccountConnection).not.toHaveBeenCalled();
@@ -249,13 +293,45 @@ function scopeButton(scope: 'device' | 'cloud'): HTMLButtonElement {
   return found;
 }
 
-function handlerSelect(): HTMLSelectElement {
+const HANDLER_LABELS: Record<string, string> = {
+  '': 'Use default',
+  canopy: `${brandText.appName} proxy`,
+  provider: 'Agent provider',
+};
+
+function handlerSelect(): HTMLButtonElement {
   const select = container.querySelector(
     '[data-testid="mcp-server-auth-handler"]',
   );
-  if (!(select instanceof HTMLSelectElement))
+  if (!(select instanceof HTMLButtonElement))
     throw new Error('Missing handler selector');
   return select;
+}
+
+/** The chosen handling, read from the label the dropdown shows. */
+function handlerValue(): string | undefined {
+  const label = handlerSelect().textContent;
+  return Object.keys(HANDLER_LABELS).find(
+    (value) => HANDLER_LABELS[value] === label,
+  );
+}
+
+/**
+ * The shared `Select` is a Canopy-drawn listbox, not a native `<select>`:
+ * open its combobox trigger and press the option with `label`.
+ */
+function chooseSelectOption(trigger: Element | null, label: string): void {
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`Missing select for ${label}`);
+  }
+  act(() => trigger.click());
+  const listId = trigger.getAttribute('aria-controls');
+  const listbox = listId ? document.getElementById(listId) : null;
+  const option = Array.from(
+    listbox?.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
+  ).find((row) => row.textContent === label);
+  if (!option) throw new Error(`Missing option ${label}`);
+  act(() => option.click());
 }
 
 it.each(['account', 'provider', 'canopy'] as const)(
@@ -293,7 +369,7 @@ it.each(['account', 'provider', 'canopy'] as const)(
       ),
     );
     if (httpAuthHandler === 'account') expect(scopeChoice()).toBe('cloud');
-    else expect(handlerSelect().value).toBe(httpAuthHandler);
+    else expect(handlerValue()).toBe(httpAuthHandler);
     await update((): void => button('Save').click());
     expect(saveServer.mock.calls[0]?.[0].definition.httpAuthHandler).toBe(
       httpAuthHandler,
@@ -343,11 +419,8 @@ it.each(['', 'provider', 'canopy'])(
     );
     expect(scopeChoice()).toBe('cloud');
     await update((): void => scopeButton('device').click());
-    const select = handlerSelect();
-    await update((): void => {
-      select.value = choice;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseSelectOption(handlerSelect(), HANDLER_LABELS[choice] ?? choice);
+    await update((): void => undefined);
     await update((): void => button('Save').click());
     expect(saveServer).not.toHaveBeenCalled();
     await update((): void => button('Move to this device').click());
@@ -477,6 +550,29 @@ it('defaults new custom servers to HTTP and still lets users choose Command', as
   ).not.toBeNull();
   await update((): void => button('Command').click());
   expect(container.querySelector('input[placeholder="npx"]')).not.toBeNull();
+});
+
+it('turns on Use OAuth when its text is clicked', async (): Promise<void> => {
+  await update((): void =>
+    root.render(
+      <McpServerDialog
+        serverId={null}
+        onClose={(): void => undefined}
+        onSaved={(): Promise<void> => Promise.resolve()}
+      />,
+    ),
+  );
+  const checkbox = container.querySelector<HTMLInputElement>(
+    'input[data-testid="mcp-server-use-oauth"]',
+  );
+  expect(checkbox?.type).toBe('checkbox');
+  expect(checkbox?.checked).toBe(false);
+  const text = Array.from(container.querySelectorAll('span')).find(
+    (span) => span.textContent === 'Use OAuth',
+  );
+  if (!text) throw new Error('Missing Use OAuth text');
+  await update((): void => text.click());
+  expect(checkbox?.checked).toBe(true);
 });
 
 it('preserves Command when editing an existing command server', async (): Promise<void> => {

@@ -502,6 +502,11 @@ import {
 import { validateId } from './lib/validation';
 import { admitDesktopW5Host } from './lib/w5-host-admission';
 import {
+  cancelPendingW5FlipHandoff,
+  disposeW5FlipHandoff,
+  startW5FlipHandoff,
+} from './canopy-runtime/w5-flip-handoff';
+import {
   ipcWindowLabel,
   registerIpcSurface,
   sendToWebContents,
@@ -579,6 +584,7 @@ import {
   getObservabilityService,
   initializeObservabilityService,
 } from './observability';
+import { getExecutionObservabilityIngest } from './observability/ingest';
 import {
   formatUnknownError,
   recordMainProcessError,
@@ -661,6 +667,7 @@ import { workerTerminal } from './terminal/worker-terminal';
 import { startUpdater, stopUpdater } from './updater';
 import { getVoiceService } from './voice/service';
 import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
+import type { W5StoreArmHandle } from './e2e-fixtures/w5-daemon-record-store-arm';
 
 initializeMainProcessLogging();
 installDesktopCodeGraphResources();
@@ -846,6 +853,8 @@ let runtimeCleanupPromise: Promise<void> | null = null;
 let drainedProcessExitGuard: DrainedProcessExitGuard | null = null;
 let desktopCanopyRuntime: DesktopCanopyDispatcher | null = null;
 let closeChatStatePush: (() => void) | null = null;
+/** E2E builds only: the daemon-backed W5 store arm a performance launch chose. */
+let w5StoreArm: W5StoreArmHandle | null = null;
 const DESKTOP_CANOPY_RUNTIME_SHUTDOWN_TIMEOUT_MS = 750;
 /** How long quit waits for queued Ledger lifecycle steps before storage stops. */
 const LEDGER_LIFECYCLE_DRAIN_TIMEOUT_MS = 2_000;
@@ -2117,6 +2126,7 @@ async function cleanupRuntimeResources(
   stopPersonalCatalogSync();
   stopResumeQueue();
   beginSplitTemporaryWorkspaceShutdown();
+  cancelPendingW5FlipHandoff();
   let diagnosticsOpen = true;
   const reportCleanup = (event: RuntimeCleanupDiagnostic): void => {
     // The file sink survives observability disposal and the updater's direct
@@ -2449,9 +2459,17 @@ async function cleanupRuntimeResources(
       .catch(() => undefined);
     // After every W5 writer above (including the workspace touch flush), so
     // no commit is refused or cut off at quit.
+    if (__CANOPY_E2E__ && w5StoreArm) {
+      const arm = w5StoreArm;
+      await stages
+        .run('w5-store-arm', () => arm.shutdown())
+        .catch(() => undefined);
+    }
     await stages
       .run('w5-commit-log', () => shutdownW5CommitLogHost())
       .catch(() => undefined);
+    // A flip build's W5 sessions outlive the Files route until here.
+    await stages.bestEffort('w5-daemon-handoff', disposeW5FlipHandoff);
     // Also closes the desktop integration server, which aliases this service.
     await stages.bestEffort('mcp-proxy', () =>
       getMcpHttpProxyService().shutdown(),
@@ -3540,7 +3558,7 @@ async function createAppAdvisorWindowIfMissing(
 
     contents.on('render-process-gone', (_event, details): void => {
       appAdvisorWindowReady = false;
-      getObservabilityService().recordAppDiagnostic({
+      getExecutionObservabilityIngest().recordAppDiagnostic({
         version: 1,
         timestamp: new Date().toISOString(),
         kind: 'renderer_process_gone',
@@ -4252,7 +4270,7 @@ function createWindowWithState(preferences: PreferencesData): void {
     // survives the crash and its approve settle releases them).
     releaseIdleSplitLocksForRendererLifecycle();
 
-    getObservabilityService().recordAppDiagnostic({
+    getExecutionObservabilityIngest().recordAppDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'renderer_process_gone',
@@ -4775,12 +4793,31 @@ void app.whenReady().then(async (): Promise<void> => {
     exitForW5HostRefusal(w5Host.message);
     return;
   }
+  // TRANSITIONAL (CAN-5543): a flip build hands W5 to the daemon on every
+  // launch; W5 calls wait for it, the rest of startup does not. A no-op with
+  // legacy rows. Remove at W15.
+  void startW5FlipHandoff({ admission: w5Host });
   installExecutionAccountingHost({
     wakeLock: getWakeLockService(),
     recordDiagnostic: (record): void => {
       getObservabilityService().recordAppDiagnostic(record);
     },
   });
+  if (__CANOPY_E2E__) {
+    // CAN-5532: validate either explicit arm, including on flip builds.
+    // An unset selection loads no module.
+    const w5StoreArmName = process.env.CANOPY_PERFORMANCE_W5_STORE;
+    if (w5StoreArmName) {
+      const { startW5StoreArm } =
+        await import('./e2e-fixtures/w5-daemon-record-store-arm');
+      const started = await startW5StoreArm(w5StoreArmName);
+      if ('refusal' in started) {
+        exitForW5HostRefusal(started.refusal);
+        return;
+      }
+      w5StoreArm = started.handle;
+    }
+  }
   initializeSidebarItemGroups();
   if (__CANOPY_E2E__) {
     // The performance harness's J1 journey reads when main became ready.
@@ -6735,7 +6772,7 @@ void app.whenReady().then(async (): Promise<void> => {
   });
 
   app.on('child-process-gone', (_event, details): void => {
-    getObservabilityService().recordAppDiagnostic({
+    getExecutionObservabilityIngest().recordAppDiagnostic({
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'child_process_gone',

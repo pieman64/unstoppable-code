@@ -690,6 +690,9 @@ test.describe('chat plan mode', () => {
             trackedPlanId: planId,
             trackedPlanSource: 'claude',
             trackedPlanReviewStatus: 'pending',
+            // Main records the reviewed revision with each plan exit and locks
+            // Implement to it: the seeded plan's only (default) revision.
+            latestRevisionNumber: 1,
             pendingPlanExitRequestId: 'can-5164-old-exit',
             pendingPlanExit: { plan: PLAN_TEXT },
           },

@@ -2,20 +2,28 @@
 // Extracted from `pages/AutomationsPage.tsx` so
 // `components/automations/AutomationChatTargetPicker.tsx` can reuse the exact
 // same control without importing the page (which would be a module cycle).
+import { useCallback, useRef, useState, type JSX, type ReactNode } from 'react';
+import { ChevronDownIcon } from '@canopy/ui-shared/icons';
 import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type JSX,
-  type ReactNode,
-} from 'react';
-import { createPortal } from 'react-dom';
-import { ChevronDownIcon, MagnifyingGlassIcon } from '@canopy/ui-shared/icons';
-import { Tooltip } from '@canopy/ui-shared';
-import { useAnchoredMenu } from '@/hooks/useAnchoredMenu';
+  FloatingPickerMenu,
+  PickList,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionDescription,
+  PickerMenuOptionLabel,
+  PickerMenuOptionLeading,
+  Tooltip,
+} from '@canopy/ui-shared';
 
-const SEARCHABLE_SELECT_MENU_WIDTH = 320;
+const SEARCHABLE_SELECT_MENU_WIDTH = '320px';
+
+function optionMatches(option: SearchableSelectOption, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  return (
+    option.label.toLowerCase().includes(normalized) ||
+    (option.subtitle ?? '').toLowerCase().includes(normalized)
+  );
+}
 
 export interface SearchableSelectOption {
   id: string;
@@ -37,6 +45,8 @@ export interface SearchableSelectProps {
   disabled?: boolean;
   disabledHint?: string;
   testId?: string;
+  /** Id of the trigger, for a `FormField` label. */
+  id?: string;
   ownerDocument?: Document;
 }
 
@@ -52,48 +62,26 @@ export function SearchableSelect({
   disabled = false,
   disabledHint,
   testId,
+  id,
   ownerDocument,
 }: SearchableSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const position = useAnchoredMenu(
-    open,
-    setOpen,
-    anchorRef,
-    menuRef,
-    SEARCHABLE_SELECT_MENU_WIDTH,
-  );
-
-  useEffect(() => {
-    if (open) {
-      setQuery('');
-      const handle = window.setTimeout(() => {
-        searchRef.current?.focus();
-      }, 0);
-      return (): void => window.clearTimeout(handle);
-    }
-    return undefined;
-  }, [open]);
+  // The menu focuses its search field once it is placed (a field focused
+  // while the menu is still hidden would not take focus).
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const setSurface = useCallback((node: HTMLDivElement | null): void => {
+    searchRef.current = node?.querySelector('input') ?? null;
+  }, []);
 
   const selected = value
     ? (options.find((option) => option.id === value) ??
       (selectedFallback?.id === value ? selectedFallback : undefined))
     : undefined;
-  const filteredOptions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return options;
-    return options.filter((option) => {
-      return (
-        option.label.toLowerCase().includes(normalized) ||
-        (option.subtitle ?? '').toLowerCase().includes(normalized)
-      );
-    });
-  }, [options, query]);
-
-  const showEmptyOption = emptyOption !== undefined && query.trim() === '';
+  // The empty option leads the list and drops out once the user searches.
+  const items: readonly SearchableSelectOption[] = emptyOption
+    ? [emptyOption, ...options]
+    : options;
   const triggerLabel = selected
     ? selected.label
     : emptyOption && value === ''
@@ -106,6 +94,7 @@ export function SearchableSelect({
       <Tooltip label={disabledHint} suppressed={!disabled} className="w-full">
         <button
           ref={anchorRef}
+          id={id}
           type="button"
           onClick={(): void => {
             if (disabled) return;
@@ -139,108 +128,56 @@ export function SearchableSelect({
           />
         </button>
       </Tooltip>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            role="listbox"
-            onClick={(event): void => event.stopPropagation()}
-            className="z-dropdown flex flex-col overflow-hidden rounded-lg bg-popover shadow-lg"
-            style={{
-              position: 'fixed',
-              width: SEARCHABLE_SELECT_MENU_WIDTH,
-              ...(position
-                ? {
-                    top: position.top,
-                    left: position.left,
-                    maxHeight: position.maxHeight,
-                  }
-                : { visibility: 'hidden' }),
-            }}
-          >
-            <div className="flex items-center gap-2 border-b px-2 py-1.5">
-              <MagnifyingGlassIcon
-                width={14}
-                height={14}
-                className="shrink-0 fg-secondary"
-              />
-              <input
-                ref={searchRef}
-                type="text"
-                value={query}
-                onChange={(event): void => setQuery(event.target.value)}
-                placeholder={searchPlaceholder}
-                aria-label={searchPlaceholder}
-                className="min-w-0 flex-1 bg-transparent text-xs fg-primary outline-none placeholder:fg-secondary"
-              />
-            </div>
-            <ul className="min-h-0 max-h-[40vh] flex-1 overflow-y-auto p-1">
-              {showEmptyOption && emptyOption && (
-                <li>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={value === ''}
-                    onClick={(): void => {
-                      onChange('');
-                      setOpen(false);
-                    }}
-                    className={`flex w-full flex-col rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
-                      value === '' ? 'bg-secondary' : ''
-                    }`}
-                  >
-                    <span className="font-medium fg-primary">
-                      {emptyOption.label}
-                    </span>
-                    {emptyOption.subtitle && (
-                      <span className="text-2xs fg-secondary">
-                        {emptyOption.subtitle}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              )}
-              {filteredOptions.length === 0 ? (
-                <li className="px-3 py-3 text-center text-xs fg-secondary">
-                  {emptyListMessage ?? 'No matches'}
-                </li>
-              ) : (
-                filteredOptions.map((option) => {
-                  const isSelected = option.id === value;
-                  return (
-                    <li key={option.id}>
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        onClick={(): void => {
-                          onChange(option.id);
-                          setOpen(false);
-                        }}
-                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
-                          isSelected ? 'bg-secondary' : ''
-                        }`}
-                      >
-                        {option.badge}
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="truncate font-medium fg-primary">
-                            {option.label}
-                          </span>
-                          {option.subtitle && (
-                            <span className="truncate text-2xs fg-secondary">
-                              {option.subtitle}
-                            </span>
-                          )}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })
-              )}
-            </ul>
-          </div>,
-          (ownerDocument ?? anchorRef.current?.ownerDocument ?? document).body,
-        )}
+      <FloatingPickerMenu
+        ref={setSurface}
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={anchorRef}
+        {...(ownerDocument ? { ownerDocument } : {})}
+        placement="bottom-left"
+        minimumWidth={SEARCHABLE_SELECT_MENU_WIDTH}
+        initialFocusRef={searchRef}
+        role="dialog"
+        aria-label={placeholder}
+        onClick={(event): void => event.stopPropagation()}
+      >
+        <PickList
+          items={items}
+          getKey={(option): string => option.id}
+          getLabel={(option): string => option.label}
+          filter={(option, query): boolean =>
+            option.id !== '' && optionMatches(option, query)
+          }
+          selectedKey={value}
+          searchLabel={searchPlaceholder}
+          listLabel={placeholder}
+          emptyLabel={emptyListMessage ?? 'No matches'}
+          listMaxHeight="md"
+          autoFocus={false}
+          onPick={(option): void => {
+            onChange(option.id);
+            setOpen(false);
+          }}
+          renderItem={(option, state) => (
+            <>
+              {option.badge ? (
+                <PickerMenuOptionLeading>
+                  {option.badge}
+                </PickerMenuOptionLeading>
+              ) : null}
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
+                {option.subtitle ? (
+                  <PickerMenuOptionDescription>
+                    {option.subtitle}
+                  </PickerMenuOptionDescription>
+                ) : null}
+              </PickerMenuOptionContent>
+              <PickerMenuOptionCheck selected={state.selected} />
+            </>
+          )}
+        />
+      </FloatingPickerMenu>
     </>
   );
 }

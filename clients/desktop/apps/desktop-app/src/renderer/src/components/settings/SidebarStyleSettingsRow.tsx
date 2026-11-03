@@ -1,5 +1,5 @@
 import { useEffect, type JSX } from 'react';
-import { SidebarStylePicker } from '@canopy/ui-shared/components';
+import { SidebarStylePicker, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   ensureLabsExperimentsSubscription,
   setLabsExperimentChoice,
@@ -43,11 +43,7 @@ export function SidebarStyleSettingsRow(): JSX.Element | null {
         />
       }
     >
-      {error ? (
-        <p role="alert" className="mt-2 text-xs fg-destructive">
-          {error}
-        </p>
-      ) : null}
+      <ErrorBanner error={error} className="mt-2" />
     </SettingsRow>
   );
 }

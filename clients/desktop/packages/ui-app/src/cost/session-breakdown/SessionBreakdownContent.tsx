@@ -32,6 +32,7 @@ import {
   formatCostShare,
   formatCostTotal,
 } from '@canopy/ui-shared/components/cost';
+import { ValueRow } from '@canopy/ui-shared/components/settings/ValueRows';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   formatDuration,
@@ -41,6 +42,7 @@ import {
   CostBillingSection,
   CostDetailSection,
   CostValueRow,
+  CostValueRows,
 } from '../cost-detail-parts';
 import { AttributedCostRow } from './AttributedCostRow';
 
@@ -84,7 +86,7 @@ function ModelRows({
   readonly showTurns: boolean;
 }): JSX.Element {
   return (
-    <dl className="flex flex-col gap-1">
+    <CostValueRows>
       {rows.map((row) => (
         <CostValueRow
           key={row.model}
@@ -97,7 +99,7 @@ function ModelRows({
           value={formatCostTotal(row)}
         />
       ))}
-    </dl>
+    </CostValueRows>
   );
 }
 
@@ -338,7 +340,7 @@ function Tokens({
   const { tokens } = view.chat.totals;
   return (
     <CostDetailSection title="Tokens" testId="session-breakdown-tokens">
-      <dl className="flex flex-col gap-1">
+      <CostValueRows>
         <CostValueRow label="Input" value={formatTokenCount(tokens.input)} />
         <CostValueRow label="Output" value={formatTokenCount(tokens.output)} />
         <CostValueRow
@@ -354,7 +356,7 @@ function Tokens({
           label="Cache write"
           value={formatTokenCount(tokens.cacheCreationInputTokens)}
         />
-      </dl>
+      </CostValueRows>
     </CostDetailSection>
   );
 }
@@ -502,30 +504,21 @@ function ContextList({
   let usedIndex = 0;
 
   return (
-    <dl className="flex flex-col gap-1">
+    <CostValueRows>
       {categories.map((category) => {
         const color = categoryColor(category, usedIndex);
         if (category.kind === 'used') usedIndex += 1;
         return (
-          <div key={category.name} className="flex items-center gap-2 text-xs">
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-xs"
-              style={{ backgroundColor: color }}
-            />
-            <dt className="min-w-0 flex-1 truncate fg-primary">
-              {category.name}
-            </dt>
-            <dd className="tabular-nums fg-secondary">
-              {formatTokenCount(category.tokens)}
-            </dd>
-            <dd className="w-12 text-right tabular-nums fg-primary">
-              {contextCategoryShare(category.tokens, latest.windowTokens)}
-            </dd>
-          </div>
+          <ValueRow
+            key={category.name}
+            swatch={color}
+            label={category.name}
+            value={formatTokenCount(category.tokens)}
+            share={contextCategoryShare(category.tokens, latest.windowTokens)}
+          />
         );
       })}
-    </dl>
+    </CostValueRows>
   );
 }
 
@@ -636,7 +629,7 @@ function ContextSection({
     >
       <ContextMeter view={view} />
       <ContextList view={view} />
-      <dl className="flex flex-col gap-1 pt-1">
+      <CostValueRows>
         {peak !== undefined ? (
           <CostValueRow
             label="Peak"
@@ -644,26 +637,23 @@ function ContextSection({
           />
         ) : null}
         <CostValueRow label="Compactions" value={compactionLabel(view)} />
-      </dl>
+      </CostValueRows>
       <ContextTimeline view={view} />
     </CostDetailSection>
   );
 }
 
-function StatGrid({
+function StatRows({
   stats,
 }: {
   readonly stats: readonly (readonly [string, string])[];
 }): JSX.Element {
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+    <CostValueRows>
       {stats.map(([label, value]) => (
-        <div key={label} className="flex flex-col">
-          <dt className="text-xs fg-tertiary">{label}</dt>
-          <dd className="text-xs tabular-nums fg-primary">{value}</dd>
-        </div>
+        <CostValueRow key={label} label={label} value={value} />
       ))}
-    </dl>
+    </CostValueRows>
   );
 }
 
@@ -703,7 +693,7 @@ function ActivitySection({
   return (
     <div className="flex flex-col gap-6">
       <CostDetailSection title="Activity" testId="session-breakdown-activity">
-        <StatGrid
+        <StatRows
           stats={[
             ['Turns', String(activity.turnCount)],
             ['Total time', formatDuration(activity.totalDurationMs)],
@@ -717,7 +707,7 @@ function ActivitySection({
         />
       </CostDetailSection>
       <CostDetailSection title="Top tools" testId="session-breakdown-top-tools">
-        <dl className="flex flex-col gap-1">
+        <CostValueRows>
           {activity.topTools.map((tool) => (
             <CostValueRow
               key={tool.tool}
@@ -725,7 +715,7 @@ function ActivitySection({
               value={String(tool.count)}
             />
           ))}
-        </dl>
+        </CostValueRows>
       </CostDetailSection>
       <CostDetailSection title="By model" testId="session-breakdown-by-model">
         <ModelRows

@@ -23,7 +23,7 @@ export function CuratedCatalogNotice({
         role="none"
         title="Couldn't load curated workflows."
         data-testid="plugins-curated-pipelines-error"
-        actions={<NoticeButton onClick={onRetry}>Retry</NoticeButton>}
+        actions={<NoticeButton onClick={onRetry}>Try again</NoticeButton>}
       >
         {error}
       </Notice>

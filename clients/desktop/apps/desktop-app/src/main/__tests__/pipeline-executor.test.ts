@@ -4289,7 +4289,7 @@ describe('pipeline-executor', () => {
     ).toBe(true);
   }, 20_000);
 
-  it('does not treat a running execution as orphaned while its owner process is alive', () => {
+  it('does not treat a running execution as orphaned while its owner process is alive', async () => {
     const pipeline: Pipeline = {
       name: 'live owner cancel',
       on: 'dispatch',
@@ -4317,7 +4317,7 @@ describe('pipeline-executor', () => {
     const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
 
     try {
-      expect(isKnownOrphanedExecution(runningState)).toBe(false);
+      await expect(isKnownOrphanedExecution(runningState)).resolves.toBe(false);
       expect(killSpy).toHaveBeenCalledWith(52_525, 0);
     } finally {
       killSpy.mockRestore();

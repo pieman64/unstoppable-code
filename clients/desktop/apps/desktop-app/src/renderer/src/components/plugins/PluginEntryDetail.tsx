@@ -395,6 +395,7 @@ function DetailShell({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       titleId="plugins-entry-detail-title"
@@ -404,9 +405,9 @@ function DetailShell({
       scrollableBody={false}
     >
       {/* DialogModal pads only its header; body content pads itself (px to
-          match the header's p-5, bottom padding to keep the scroll end off
+          match the header's 24px inset, bottom padding to keep the scroll end off
           the rounded edge). */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto px-5 pb-5">
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto px-6 pb-6">
         {(onNavigateBack ||
           shareButton ||
           primaryAction ||

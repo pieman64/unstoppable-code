@@ -1,7 +1,3 @@
-import {
-  onOpenCodeAccountsChanged,
-  peekOpenCodeAccounts,
-} from '../opencode/account-information';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
@@ -17,12 +13,6 @@ import {
 import { randomUUID } from 'node:crypto';
 import { parseCursorReportedUsage } from '@canopy/agent-transcript/lib/cursor-usage';
 import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
-import { isCursorHarnessEnabled } from '../cursor/feature-flag';
-import { readCursorAccountUsage } from '../cursor/account-usage';
-import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
-import { readCopilotUsageSummary } from '../copilot/account-usage';
-import { onCopilotUsageChanged } from '../copilot/usage-events';
-import { getFeatureFlagService } from '../feature-flags';
 import { isAssistantPatch } from '@canopy/agent-transcript/lib/assistant-snapshot';
 import { Buffer } from 'node:buffer';
 import {
@@ -48,13 +38,6 @@ import {
   TURN_DISPATCH_PHASES,
   type TurnDispatchPhase,
 } from '../lib/turn-dispatch-timing';
-import {
-  CHAT_LABEL,
-  CHAT_UNIT_LABEL,
-  ORCHESTRATOR_LABEL,
-  WORKTREE_LABEL,
-  WORKTREE_UNIT_LABEL,
-} from '@canopy/protocol';
 import { CANOPY_AUTH_FAILURE_EVENT_TYPE } from '@canopy/protocol/auth-recovery';
 import {
   ChatTurnFailureEvidence,
@@ -86,7 +69,6 @@ import {
   type AgentAuditStatus,
   type AgentAuditAccountProxyUsage,
   type AgentAuditTranscriptSyntheticPromptRecord,
-  type AgentAuditToolCounts,
   type AgentObservabilitySnapshot,
   type AgentObservabilityUpdateEvent,
   type AgentProviderType,
@@ -104,22 +86,13 @@ import {
   type ProviderUsageSummary,
   type RetainedAccountUsageSnapshot,
   type ChatTurnUsageEvent,
-  type PipelineRunUsageEvent,
-  type PipelineUsageIdentity,
-  type PipelineUsageIdentitySource,
   type PlanUsageEvent,
-  type UsageBreakdownRow,
-  type UsageBreakdownRows,
   type UsageInitiationSource,
   type UsageMetricEvent,
-  type UsageMetricEventBase,
-  type UsageMetricProvider,
   type UsageMetricsRequest,
   type UsageMetricsResponse,
   type UsageMetricsViewRequest,
   type UsageMetricsViewResponse,
-  type UsageRepoScope,
-  type UsageStats,
   type UsageTabSummaryRequest,
   type UsageTabSummaryResponse,
   type SharedContainerPublicationErrorReason,
@@ -128,10 +101,6 @@ import {
   type SharedContainerTrackingChange,
   type UsageTimeseriesRequest,
   type UsageTimeseriesResponse,
-  type UsageWorktreeEventType,
-  type WorktreeCreatedUsageEvent,
-  type WorktreeDeletedUsageEvent,
-  type WorktreePrMergedUsageEvent,
   type OrgProjectLinksUnknownReason,
   type OrgProjectConversionErrorCode,
 } from '@canopy/desktop-shared/types';
@@ -144,23 +113,10 @@ import type {
   OrgProjectAutoConversionSkipReason,
   OrgProjectMigrationPassEvent,
 } from '../services/org-project-auto-conversion';
-import {
-  createDesktopInstrumentationOperationKey,
-  type DesktopOperationName,
-} from '@canopy/desktop-instrumentation';
-import {
-  captureDesktopInstrumentationError,
-  failDesktopOperation,
-  startDesktopOperation,
-  succeedDesktopOperation,
-} from '@canopy/desktop-instrumentation/electron/main';
+import { createDesktopInstrumentationOperationKey } from '@canopy/desktop-instrumentation';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { getLastDailyCreditGrantStatus } from '../lib/daily-credit-grant-telemetry';
 import { bucketEntries } from '@canopy/desktop-shared/lib/auditTimeBucket';
-import {
-  getToolCategory,
-  isUsageInitiationSource,
-} from '@canopy/desktop-shared/lib/turn-utils';
+import { getToolCategory } from '@canopy/desktop-shared/lib/turn-utils';
 import {
   computeAccountKey,
   normalizeRetainedAccountSnapshot,
@@ -193,7 +149,6 @@ import {
   parseGetAccountRateLimitsPayload,
   parseGetAccountResponsePayload,
 } from '../codex/app-server-client';
-import { getCodexRuntimeService } from '../codex/runtime-service';
 import { computeCodexObservedCost } from '../openai-pricing/cost-calculator';
 import {
   CodexSubagentUsageTracker,
@@ -205,10 +160,6 @@ import {
   benchmarkModelRoutingUsage,
   priceModelRoutingUsage,
 } from '@canopy/protocol/model-routing';
-import {
-  getOpenAiPricingForCostingSync,
-  prewarmOpenAiPricingCache,
-} from '../openai-pricing/pricing-client';
 import type { GetAccountRateLimitsResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountRateLimitsResponse';
 import type { GetAccountResponse } from '@canopy/desktop-shared/node/codex-runtime/generated/v2/GetAccountResponse';
 import type {
@@ -237,24 +188,13 @@ import {
   getAgentObservabilityUsageEventsDayFilePath,
   getAgentObservabilityUsageEventsDir,
 } from '../lib/paths';
-import { readPreferencesFile } from '../lib/preferences-store';
 import { buildStandaloneChatLinkTarget } from '../lib/standalone-link-target';
-import {
-  isLocalMemoryCitationTrackingEnabled,
-  trackCompletedTurnLocalMemoryCitations,
-} from '../memory/local/citation-tracking';
-import {
-  fetchMockControlPlaneRecord,
-  getMockLlmOrigin,
-} from '../lib/e2e-mock-control-plane';
-import {
-  readClaudeOauthCredentialsResult,
-  type ClaudeOauthCredentialsReadFailureReason,
-  type ClaudeOauthCredentialsReadFailureSource,
+import type {
+  ClaudeOauthCredentialsReadFailureReason,
+  ClaudeOauthCredentialsReadFailureSource,
 } from '../auth/claude-oauth-credentials';
 import { PLAN_MODE_DEVELOPER_INSTRUCTIONS } from '../codex/plan-mode-instructions';
 import type { TranscriptIndexRecord } from './types';
-import { normalizeAuditEntry, parseObservedCost } from './audit-entry-parser';
 import {
   mayPruneAuditDayFile,
   notifyAuditEntryEnqueued,
@@ -263,13 +203,45 @@ import {
 } from './audit-stream-hooks';
 import { appendJsonlLines } from './jsonl-append';
 import {
+  buildAuditDayWindow,
+  buildUsageMetricsResponse,
+  compareEntries,
   computeCountsTimeseries,
   computeDistributionTimeseries,
   computeMetricsView,
   computeTabSummary,
+  countPlanUsageEvent,
+  defaultTokens,
+  defaultToolCounts,
+  entryMatchesWorktree,
+  getRetentionCutoffTime,
+  isAuditFileInsideWindow,
+  isRecord,
+  isStartedAtInsideRange,
+  isUsageEventInsideRange,
+  isUsageEventWithinRetention,
+  isValidIsoTimestamp,
+  labelForEventType,
+  matchesHistoryRequest,
+  matchesUsageMetricsRequest,
+  normalizeAuditEntry,
+  normalizeUsageMetricEvent,
+  readArray,
+  readBoolean,
+  readNumber,
+  readRecord,
+  readString,
+  retainedDayStartTime,
+  safeJsonParse,
   toDelegationStatisticsEvent,
+  toIsoDay,
+  upsertUsageEventById,
+  USAGE_EVENT_RETENTION_DAYS,
+  type ObservabilityInstrumentationPort,
+  type ObservabilityOperationName,
+  type ObservabilityPricingState,
   type StatisticsEvent,
-} from './usage-tab-aggregation';
+} from '@canopy/core-runtime/observability';
 import { ManagedDelegationCapture } from './managed-delegation-capture';
 import {
   getClaudeSessionCostLedger,
@@ -277,11 +249,7 @@ import {
   readClaudeMainLoopUsage,
 } from './claude-session-cost-ledger';
 import { runCostHistoryRepair } from './cost-history-repair';
-import {
-  getAccountProxySessionUsage,
-  onAccountProxyResponse,
-  type AccountProxyResponse,
-} from '../account-proxy/attribution';
+import type { AccountProxyResponse } from '../account-proxy/attribution';
 import {
   addAccountProxyResponse,
   mergeAccountProxyUsages,
@@ -302,15 +270,10 @@ import {
   purgePersistedWorktreeObservabilityData,
   purgePersistedWorktreeSessionDiagnostics,
 } from './worktree-cleanup';
+import type { DesktopObservabilityHost } from './host';
 import type {
   ProviderAccountIdentity,
   ProviderBillingAccountKind,
-} from '../auth/provider-auth-state';
-import {
-  checkClaudeAuthStatusObserved,
-  peekProviderAccountIdentity,
-  peekProviderBillingAccountKind,
-  warmProviderAccountIdentity,
 } from '../auth/provider-auth-state';
 import { CLAUDE_SYNTHETIC_MODEL_SENTINEL } from '../lib/claude-synthetic';
 import { skillSuggestionTurnRecorder } from '../skill-suggestions/turn-recorder';
@@ -322,6 +285,12 @@ import type {
 } from './types';
 
 const RECENT_ENTRY_LIMIT = 200;
+
+/** The chat turn a plan usage event is counted on. */
+interface PlanUsageTarget {
+  entry: AgentAuditEntry;
+  open: boolean;
+}
 const MAX_RETAINED_PIPELINE_ENTRIES = 256;
 const MAX_CODEX_SUBAGENT_CHAT_STATES = 128;
 const MAX_CODEX_PIPELINE_SUBAGENT_TRACKERS = 128;
@@ -371,7 +340,6 @@ const TRANSCRIPT_MARKER_RESERVATION_BYTES = 512;
 const CHAT_TURN_OPERATION_NAME = 'canopy.chat_turn';
 const AGENT_TASK_OPERATION_NAME = 'canopy.agent_task';
 const APP_DIAGNOSTIC_OPERATION_NAME = 'canopy.app_diagnostic';
-const USAGE_EVENT_RETENTION_DAYS = 365;
 const CLAUDE_INTERACTIVE_USAGE_FRESHNESS_MS = 30_000;
 const CLAUDE_BACKGROUND_USAGE_FRESHNESS_MS = 180_000;
 const CLAUDE_USAGE_REFRESH_DEBOUNCE_MS = 30_000;
@@ -672,11 +640,6 @@ interface CodexUsageMonitor {
   readAccount(refreshToken: boolean): Promise<GetAccountResponse>;
   readRateLimits(): Promise<GetAccountRateLimitsResponse>;
   dispose(): void;
-}
-
-interface AuditDayWindow {
-  startDay?: string;
-  endDay?: string;
 }
 
 export interface TranscriptSeedOptions {
@@ -2109,7 +2072,7 @@ export interface SessionDiagnosticRecord {
   worktreeStatsOutcome?: 'success' | 'failure';
 }
 
-function getOperationNameForAuditKey(key: string): DesktopOperationName {
+function getOperationNameForAuditKey(key: string): ObservabilityOperationName {
   return key.startsWith('chat:')
     ? CHAT_TURN_OPERATION_NAME
     : AGENT_TASK_OPERATION_NAME;
@@ -2168,12 +2131,15 @@ function resolveChatTurnFailures(
  * out of credits (CAN-4633). Routing reads the balance at most 30 seconds
  * before dispatch, so main's latest read describes this turn's wallet.
  */
-function noCreditsGrantContext(): { daily_credit_grant_status?: string } {
-  const status = getLastDailyCreditGrantStatus();
+function noCreditsGrantContext(host: DesktopObservabilityHost): {
+  daily_credit_grant_status?: string;
+} {
+  const status = host.dailyCreditGrantStatus();
   return status === undefined ? {} : { daily_credit_grant_status: status };
 }
 
 function buildAuditOperationContext(
+  host: DesktopObservabilityHost,
   entry: AgentAuditEntry,
   status?: AgentAuditStatus,
   chatTurn?: ChatTurnOperationContext,
@@ -2187,7 +2153,7 @@ function buildAuditOperationContext(
       ? { failure_detail: chatTurn.failure.detail }
       : {}),
     ...(chatTurn?.failure?.category === 'no_credits'
-      ? noCreditsGrantContext()
+      ? noCreditsGrantContext(host)
       : {}),
     ...(chatTurn?.subAgentFailure
       ? { sub_agent_failure_category: chatTurn.subAgentFailure.category }
@@ -2208,14 +2174,19 @@ function buildAuditOperationContext(
   };
 }
 
-function startAuditOperation(key: string, entry: AgentAuditEntry): void {
-  startDesktopOperation(getOperationNameForAuditKey(key), {
+function startAuditOperation(
+  host: DesktopObservabilityHost,
+  key: string,
+  entry: AgentAuditEntry,
+): void {
+  host.instrumentation.startOperation(getOperationNameForAuditKey(key), {
     operationKey: createDesktopInstrumentationOperationKey(key),
-    context: buildAuditOperationContext(entry),
+    context: buildAuditOperationContext(host, entry),
   });
 }
 
 function finishAuditOperation(
+  host: DesktopObservabilityHost,
   key: string,
   entry: AgentAuditEntry,
   status: AgentAuditStatus,
@@ -2223,16 +2194,16 @@ function finishAuditOperation(
 ): void {
   const operationOptions = {
     operationKey: createDesktopInstrumentationOperationKey(key),
-    context: buildAuditOperationContext(entry, status, chatTurn),
+    context: buildAuditOperationContext(host, entry, status, chatTurn),
   };
   const operationName = getOperationNameForAuditKey(key);
 
   if (status === 'success') {
-    succeedDesktopOperation(operationName, operationOptions);
+    host.instrumentation.succeedOperation(operationName, operationOptions);
     return;
   }
 
-  failDesktopOperation(
+  host.instrumentation.failOperation(
     operationName,
     mapAuditStatusToFailureReason(status),
     operationOptions,
@@ -2240,6 +2211,7 @@ function finishAuditOperation(
 }
 
 function reportAppDiagnosticToDesktopInstrumentation(
+  instrumentation: ObservabilityInstrumentationPort,
   event: AppDiagnosticRecord,
 ): void {
   const isCloudOAuthSuccessStage =
@@ -2291,11 +2263,11 @@ function reportAppDiagnosticToDesktopInstrumentation(
       cloud_oauth_platform: event.cloudOAuthPlatform,
       cloud_oauth_app_version: event.cloudOAuthAppVersion,
     };
-    startDesktopOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
+    instrumentation.startOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
       operationKey,
       context,
     });
-    succeedDesktopOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
+    instrumentation.succeedOperation(APP_DIAGNOSTIC_OPERATION_NAME, {
       operationKey,
       context,
     });
@@ -2317,7 +2289,7 @@ function reportAppDiagnosticToDesktopInstrumentation(
     ? `${BRAND.displayName} renderer process gone: ${rendererCrashReason ?? 'unknown'}`
     : `${BRAND.displayName} desktop diagnostic: ${event.kind}`;
 
-  captureDesktopInstrumentationError(new Error(errorMessage), {
+  instrumentation.captureError(new Error(errorMessage), {
     context: {
       kind: event.kind,
       reason: event.reason,
@@ -2362,70 +2334,10 @@ function isPersistedTranscriptContentLine(line: string): boolean {
   );
 }
 
-function defaultTokens(): AgentAuditEntry['tokens'] {
-  return {
-    input: 0,
-    output: 0,
-    cacheReadInputTokens: 0,
-    cacheCreationInputTokens: 0,
-    reasoningOutputTokens: 0,
-  };
-}
-
-function normalizeOptionalAuditTokens(
-  value: unknown,
-): AgentAuditEntry['tokens'] | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  return {
-    input: readNumber(value, 'input') ?? 0,
-    output: readNumber(value, 'output') ?? 0,
-    cacheReadInputTokens: readNumber(value, 'cacheReadInputTokens') ?? 0,
-    cacheCreationInputTokens:
-      readNumber(value, 'cacheCreationInputTokens') ?? 0,
-    reasoningOutputTokens: readNumber(value, 'reasoningOutputTokens') ?? 0,
-  };
-}
-
 function writeObservabilityError(message: string, error: unknown): void {
   const details =
     error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n${details}\n`);
-}
-
-function defaultToolCounts(): AgentAuditToolCounts {
-  return {
-    thinking: 0,
-    bash: 0,
-    read: 0,
-    readLines: 0,
-    writeEdit: 0,
-    plan: 0,
-    fileEdit: 0,
-    fileAdd: 0,
-    fileDelete: 0,
-    search: 0,
-    grep: 0,
-    web: 0,
-    agent: 0,
-    workflow: 0,
-    tasks: 0,
-    taskStop: 0,
-    skills: 0,
-    monitor: 0,
-    claude: 0,
-    scheduleWakeup: 0,
-    askUser: 0,
-    scriptOutput: 0,
-    watcher: 0,
-    canopy: 0,
-    graph: 0,
-    appAdvisor: 0,
-    pipelineEditor: 0,
-    mcp: 0,
-    other: 0,
-  };
 }
 
 /** A chat's audit metadata, without any per-turn counters or outcome. */
@@ -2470,35 +2382,6 @@ function chatEntryMetadata(
     ...(entry.linkTarget ? { linkTarget: entry.linkTarget } : {}),
   };
 }
-
-const AGENT_AUDIT_TOOL_COUNT_KEYS: Array<keyof AgentAuditToolCounts> = [
-  'thinking',
-  'bash',
-  'read',
-  'readLines',
-  'writeEdit',
-  'fileEdit',
-  'fileAdd',
-  'fileDelete',
-  'search',
-  'grep',
-  'web',
-  'agent',
-  'workflow',
-  'tasks',
-  'taskStop',
-  'skills',
-  'monitor',
-  'claude',
-  'scheduleWakeup',
-  'askUser',
-  'scriptOutput',
-  'graph',
-  'appAdvisor',
-  'pipelineEditor',
-  'mcp',
-  'other',
-];
 
 function buildTranscriptRequest(
   entry: Pick<AgentAuditEntry, 'id' | 'eventType' | 'startedAt'>,
@@ -2633,143 +2516,6 @@ function createEmptyProviderUsage(
   };
 }
 
-function toIsoDay(value: string | Date): string {
-  const date = typeof value === 'string' ? new Date(value) : value;
-  return date.toISOString().slice(0, 10);
-}
-
-function readIsoDayPrefix(value: string | undefined): string | undefined {
-  if (!value || value.length < 10) {
-    return undefined;
-  }
-
-  const day = value.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-    return undefined;
-  }
-
-  const timestamp = Date.parse(`${day}T00:00:00.000Z`);
-  return Number.isFinite(timestamp) ? day : undefined;
-}
-
-/**
- * The start of the day a retention file or directory is named for, or null
- * when the name is not a calendar date. Retention never deletes such a name.
- */
-function retainedDayStartTime(day: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
-  const time = Date.parse(`${day}T00:00:00.000Z`);
-  return Number.isFinite(time) &&
-    new Date(time).toISOString().slice(0, 10) === day
-    ? time
-    : null;
-}
-
-function shiftIsoDay(day: string, days: number): string {
-  const date = new Date(`${day}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function buildAuditDayWindow(
-  startDate: string | undefined,
-  endDate: string | undefined,
-): AuditDayWindow {
-  const window: AuditDayWindow = {};
-  const startDay = readIsoDayPrefix(startDate);
-  const endDay = readIsoDayPrefix(endDate);
-
-  if (startDay) {
-    window.startDay = shiftIsoDay(startDay, -1);
-  }
-  if (endDay) {
-    window.endDay = shiftIsoDay(endDay, 1);
-  }
-
-  return window;
-}
-
-function readAuditFilenameDay(filename: string): string | undefined {
-  const match = /^(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(filename);
-  if (!match) {
-    return undefined;
-  }
-  return readIsoDayPrefix(match[1]);
-}
-
-function isAuditFileInsideWindow(
-  filename: string,
-  window: AuditDayWindow,
-): boolean {
-  const day = readAuditFilenameDay(filename);
-  if (!day) {
-    return false;
-  }
-
-  if (window.startDay && day < window.startDay) {
-    return false;
-  }
-  if (window.endDay && day > window.endDay) {
-    return false;
-  }
-  return true;
-}
-
-function isStartedAtInsideRange(
-  startedAt: string,
-  startDate: string | undefined,
-  endDate: string | undefined,
-): boolean {
-  const startedAtTime = Date.parse(startedAt);
-  if (!Number.isFinite(startedAtTime)) {
-    return false;
-  }
-
-  if (startDate) {
-    const startTime = Date.parse(startDate);
-    if (Number.isFinite(startTime) && startedAtTime < startTime) {
-      return false;
-    }
-  }
-
-  if (endDate) {
-    const endTime = Date.parse(endDate);
-    if (Number.isFinite(endTime) && startedAtTime >= endTime) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function getRetentionCutoffTime(retentionDays: number): number {
-  const cutoff = new Date();
-  cutoff.setUTCHours(0, 0, 0, 0);
-  cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays);
-  return cutoff.getTime();
-}
-
-function compareEntries(left: AgentAuditEntry, right: AgentAuditEntry): number {
-  const timeDiff =
-    new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime();
-  if (timeDiff !== 0) {
-    return timeDiff;
-  }
-  return right.id.localeCompare(left.id);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function readString(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' ? value : undefined;
-}
-
 function readCodexEventTurnId(
   event: Record<string, unknown>,
 ): string | undefined {
@@ -2779,16 +2525,6 @@ function readCodexEventTurnId(
     readString(event, 'turnId') ??
     (turn ? readString(turn, 'id') : undefined)
   );
-}
-
-function readNumber(
-  record: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value)
-    ? value
-    : undefined;
 }
 
 export function commandLooksLikePrCreate(command: string): boolean {
@@ -2950,27 +2686,6 @@ function collectText(value: unknown): string {
     .join('\n');
 }
 
-function readBoolean(
-  record: Record<string, unknown>,
-  key: string,
-): boolean | undefined {
-  const value = record[key];
-  return typeof value === 'boolean' ? value : undefined;
-}
-
-function readRecord(
-  record: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> | null {
-  const value = record[key];
-  return isRecord(value) ? value : null;
-}
-
-function readArray(record: Record<string, unknown>, key: string): unknown[] {
-  const value = record[key];
-  return Array.isArray(value) ? value : [];
-}
-
 function buildCodexAccountUsageSummary(
   account: GetAccountResponse,
 ): Pick<
@@ -3030,79 +2745,6 @@ function toOptionalString(
   return value ?? undefined;
 }
 
-function labelForEventType(eventType: AgentAuditEventType): string {
-  switch (eventType) {
-    case 'worktree_chat':
-      return `${WORKTREE_LABEL} ${CHAT_UNIT_LABEL}`;
-    case 'standalone_chat':
-      return `${CHAT_LABEL} ${CHAT_UNIT_LABEL}`;
-    case 'app_advisor':
-      return ORCHESTRATOR_LABEL;
-    case 'pipeline_editor':
-      return 'Workflow Editor';
-    case 'pipeline_agent_turn':
-      return 'Workflow Agent';
-    case 'pipeline_advisor':
-      return 'Workflow Advisor';
-    case 'pr_generation':
-      return 'PR Generation';
-    case 'pr_split_planning':
-      return 'Split PR Planning';
-    case 'commit_message_generation':
-      return 'Commit Message';
-    case 'branch_naming':
-      return 'Branch Naming';
-    case 'cron_generation':
-      return 'Cron Generation';
-    case 'automation_if_command_generation':
-      return 'If Command Generation';
-    case 'worktree_summary':
-      return `${WORKTREE_UNIT_LABEL} Summary`;
-    case 'chat_summary':
-      return `${CHAT_UNIT_LABEL} Summary`;
-    case 'chat_handoff_summary':
-      return `${CHAT_UNIT_LABEL} Handoff Summary`;
-    case 'archive_summary':
-      return 'Archive Summary';
-    case 'worktree_plan_chat':
-      return 'Worktree Plan Chat';
-    case 'worktree_plan_diagram':
-      return 'Worktree Plan Diagram';
-    case 'code_review_annotations':
-      return 'Review Annotations';
-    case 'code_review_diagram':
-      return 'Review Diagram';
-    case 'local_memory_consolidation':
-      return 'Memory Consolidation';
-    case 'local_memory_chat_profile':
-      return 'Chat History Profile';
-    case 'skill_suggestion_scan':
-      return 'Skill Suggestion Scan';
-    case 'managed_delegation':
-      return 'Delegation';
-  }
-}
-
-/**
- * Both names of a renamed audit target. Persisted entries keep the label they
- * were written with, so history search matches either the old or the current
- * name for every entry of that type.
- */
-function renamedLabelsForEventType(
-  eventType: AgentAuditEventType,
-): readonly string[] {
-  switch (eventType) {
-    case 'pipeline_editor':
-      return ['Pipeline Editor', 'Workflow Editor'];
-    case 'pipeline_agent_turn':
-      return ['Pipeline Agent', 'Workflow Agent'];
-    case 'pipeline_advisor':
-      return ['Pipeline Advisor', 'Workflow Advisor'];
-    default:
-      return [];
-  }
-}
-
 function isClaudeEventShape(data: Record<string, unknown>): boolean {
   const type = readString(data, 'type');
   return (
@@ -3152,347 +2794,11 @@ function isSyntheticCodexErrorResult(data: Record<string, unknown>): boolean {
   );
 }
 
-function safeJsonParse(line: string): Record<string, unknown> | null {
+async function readClaudeAuthStatus(
+  host: DesktopObservabilityHost,
+): Promise<ClaudeAuthStatus | null> {
   try {
-    const parsed: unknown = JSON.parse(line);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseUsageEventType(value: unknown): UsageWorktreeEventType | null {
-  switch (value) {
-    case 'worktree_created':
-    case 'worktree_pr_merged':
-    case 'worktree_deleted':
-    case 'chat_turn_started':
-    case 'chat_turn_completed':
-    case 'plan_created':
-    case 'plan_updated':
-    case 'plan_approved':
-    case 'pipeline_run_started':
-    case 'pipeline_run_completed':
-      return value;
-    default:
-      return null;
-  }
-}
-
-function parseUsageInitiationSource(
-  value: unknown,
-): UsageInitiationSource | undefined {
-  return isUsageInitiationSource(value) ? value : undefined;
-}
-
-function parseUsageMetricProvider(
-  value: unknown,
-): UsageMetricProvider | undefined {
-  switch (value) {
-    case 'claude':
-    case 'codex':
-    case 'ollama':
-    case 'cursor':
-    case 'opencode':
-    case 'pipeline':
-      return value;
-    default:
-      return undefined;
-  }
-}
-
-function parsePipelineUsageIdentitySource(
-  value: unknown,
-): PipelineUsageIdentitySource {
-  switch (value) {
-    case 'bundled':
-    case 'user':
-    case 'project':
-    case 'shared':
-    case 'inline':
-    case 'unknown':
-      return value;
-    default:
-      return 'unknown';
-  }
-}
-
-function parsePipelineRunStatus(
-  value: unknown,
-): PipelineRunUsageEvent['status'] | undefined {
-  switch (value) {
-    case 'running':
-    case 'success':
-    case 'failure':
-    case 'cancelled':
-      return value;
-    default:
-      return undefined;
-  }
-}
-
-function parseAgentAuditStatus(value: unknown): AgentAuditStatus | undefined {
-  switch (value) {
-    case 'running':
-    case 'success':
-    case 'failure':
-    case 'cancelled':
-    case 'interrupted':
-      return value;
-    default:
-      return undefined;
-  }
-}
-
-function isValidIsoTimestamp(value: string | undefined): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
-}
-
-function normalizeUsageRepoScope(value: unknown): UsageRepoScope | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const workspaceId = readString(value, 'workspaceId');
-  const repoId = readString(value, 'repoId');
-  const repoLabel = readString(value, 'repoLabel');
-  if (!workspaceId || !repoId || !repoLabel) {
-    return null;
-  }
-  return {
-    workspaceId,
-    workspaceLabel: readString(value, 'workspaceLabel'),
-    worktreeId: readString(value, 'worktreeId'),
-    repoId,
-    repoLabel,
-    repoPath: readString(value, 'repoPath'),
-  };
-}
-
-function normalizeDeletedRepoScope(
-  value: unknown,
-): WorktreeDeletedUsageEvent['repos'][number] | null {
-  const scope = normalizeUsageRepoScope(value);
-  if (!scope || !isRecord(value)) {
-    return null;
-  }
-  return {
-    ...scope,
-    hadChanges: readBoolean(value, 'hadChanges') ?? false,
-    insertions: readNumber(value, 'insertions') ?? 0,
-    deletions: readNumber(value, 'deletions') ?? 0,
-    hasUncommittedChanges: readBoolean(value, 'hasUncommittedChanges') ?? false,
-    hasCommitsAhead: readBoolean(value, 'hasCommitsAhead') ?? false,
-  };
-}
-
-function normalizePipelineUsageIdentity(
-  value: unknown,
-): PipelineUsageIdentity | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const key = readString(value, 'key');
-  const id = readString(value, 'id');
-  const name = readString(value, 'name');
-  if (!key || !id || !name) {
-    return null;
-  }
-
-  return {
-    key,
-    id,
-    name,
-    source: parsePipelineUsageIdentitySource(value.source),
-  };
-}
-
-function normalizeUsageMetricEvent(value: unknown): UsageMetricEvent | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const id = readString(value, 'id');
-  const type = parseUsageEventType(value.type);
-  const timestamp = readString(value, 'timestamp');
-  const workspaceId = readString(value, 'workspaceId');
-  if (
-    value.version !== 1 ||
-    !id ||
-    !type ||
-    !isValidIsoTimestamp(timestamp) ||
-    !workspaceId
-  ) {
-    return null;
-  }
-
-  const base: UsageMetricEventBase = {
-    version: 1,
-    id,
-    type,
-    timestamp,
-    workspaceId,
-    workspaceLabel: readString(value, 'workspaceLabel'),
-    worktreeId: readString(value, 'worktreeId'),
-    repoId: readString(value, 'repoId'),
-    repoLabel: readString(value, 'repoLabel'),
-    provider: parseUsageMetricProvider(value.provider),
-    initiationSource: parseUsageInitiationSource(value.initiationSource),
-  };
-
-  if (type === 'worktree_created') {
-    const repos = Array.isArray(value.repos)
-      ? value.repos
-          .map((entry) => normalizeUsageRepoScope(entry))
-          .filter((entry): entry is UsageRepoScope => entry !== null)
-      : [];
-    const worktreeCreatedAt =
-      readString(value, 'worktreeCreatedAt') ?? timestamp;
-    return {
-      ...base,
-      type,
-      worktreeCreatedAt,
-      repos,
-    } satisfies WorktreeCreatedUsageEvent;
-  }
-
-  if (type === 'worktree_pr_merged') {
-    const repos = Array.isArray(value.repos)
-      ? value.repos
-          .map((entry) => normalizeUsageRepoScope(entry))
-          .filter((entry): entry is UsageRepoScope => entry !== null)
-      : [];
-    return {
-      ...base,
-      type,
-      prNumber: readNumber(value, 'prNumber'),
-      prUrl: readString(value, 'prUrl'),
-      mergedAt: readString(value, 'mergedAt'),
-      repos,
-    } satisfies WorktreePrMergedUsageEvent;
-  }
-
-  if (type === 'worktree_deleted') {
-    const repos = Array.isArray(value.repos)
-      ? value.repos
-          .map((entry) => normalizeDeletedRepoScope(entry))
-          .filter(
-            (entry): entry is WorktreeDeletedUsageEvent['repos'][number] =>
-              entry !== null,
-          )
-      : [];
-    return {
-      ...base,
-      type,
-      deletedWithChanges: readBoolean(value, 'deletedWithChanges') ?? false,
-      worktreeAgeMs: readNumber(value, 'worktreeAgeMs'),
-      repos,
-    } satisfies WorktreeDeletedUsageEvent;
-  }
-
-  if (type === 'pipeline_run_started' || type === 'pipeline_run_completed') {
-    const pipelineExecutionId = readString(value, 'pipelineExecutionId');
-    const pipelineId = readString(value, 'pipelineId');
-    const pipelineName = readString(value, 'pipelineName');
-    const pipelineIdentityKey = readString(value, 'pipelineIdentityKey');
-    const pipeline = normalizePipelineUsageIdentity(value.pipeline);
-    const runStartedAt = readString(value, 'runStartedAt');
-    const runCompletedAtRaw = readString(value, 'runCompletedAt');
-
-    if (
-      !pipelineExecutionId ||
-      !pipelineId ||
-      !pipelineName ||
-      !pipelineIdentityKey ||
-      !pipeline ||
-      !isValidIsoTimestamp(runStartedAt)
-    ) {
-      return null;
-    }
-
-    return {
-      ...base,
-      type,
-      pipelineExecutionId,
-      pipeline,
-      pipelineId,
-      pipelineName,
-      pipelineIdentityKey,
-      eventName: readString(value, 'eventName'),
-      triggerSource: readString(value, 'triggerSource'),
-      runStartedAt,
-      runCompletedAt: isValidIsoTimestamp(runCompletedAtRaw)
-        ? runCompletedAtRaw
-        : undefined,
-      runDurationMs: readNumber(value, 'runDurationMs'),
-      status: parsePipelineRunStatus(value.status),
-      jobCount: readNumber(value, 'jobCount'),
-      stepCount: readNumber(value, 'stepCount'),
-      agentStepCount: readNumber(value, 'agentStepCount'),
-      retryCount: readNumber(value, 'retryCount'),
-      parentExecutionId: readString(value, 'parentExecutionId'),
-      rerunSourceId: readString(value, 'rerunSourceId'),
-      hidden: readBoolean(value, 'hidden'),
-    } satisfies PipelineRunUsageEvent;
-  }
-
-  if (type === 'chat_turn_started' || type === 'chat_turn_completed') {
-    const chatId = readString(value, 'chatId');
-    const turnStartedAt = readString(value, 'turnStartedAt');
-    if (!chatId || !isValidIsoTimestamp(turnStartedAt)) {
-      return null;
-    }
-    const rawToolCounts = value.toolCounts;
-    const toolCounts = isRecord(rawToolCounts)
-      ? {
-          ...defaultToolCounts(),
-          ...Object.fromEntries(
-            Object.entries(defaultToolCounts()).map(([key]) => [
-              key,
-              readNumber(rawToolCounts, key) ?? 0,
-            ]),
-          ),
-        }
-      : undefined;
-    return {
-      ...base,
-      type,
-      chatId,
-      auditEntryId: readString(value, 'auditEntryId'),
-      model: readString(value, 'model'),
-      turnStartedAt,
-      turnCompletedAt: readString(value, 'turnCompletedAt'),
-      turnDurationMs: readNumber(value, 'turnDurationMs'),
-      turnIndexInChat: readNumber(value, 'turnIndexInChat'),
-      turnIndexInWorktree: readNumber(value, 'turnIndexInWorktree'),
-      tokens: normalizeOptionalAuditTokens(value.tokens),
-      totalCostUsd: readNumber(value, 'totalCostUsd'),
-      observedCost: parseObservedCost(value.observedCost),
-      toolUseCount: readNumber(value, 'toolUseCount'),
-      toolCounts,
-      status: parseAgentAuditStatus(value.status),
-      error: readString(value, 'error'),
-    } satisfies ChatTurnUsageEvent;
-  }
-
-  const planId = readString(value, 'planId');
-  if (!planId) {
-    return null;
-  }
-  return {
-    ...base,
-    type,
-    chatId: readString(value, 'chatId'),
-    auditEntryId: readString(value, 'auditEntryId'),
-    planId,
-    planVersion: readNumber(value, 'planVersion'),
-    planTextBytes: readNumber(value, 'planTextBytes'),
-    planLineCount: readNumber(value, 'planLineCount'),
-  } satisfies PlanUsageEvent;
-}
-
-async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
-  try {
-    const status = await checkClaudeAuthStatusObserved('usage-refresh');
+    const status = await host.claude.checkAuthStatus('usage-refresh');
     const detailParts = status.detail?.match(/^(.*?)\s+\((.*)\)$/);
     return {
       loggedIn: status.authenticated,
@@ -3622,8 +2928,10 @@ function claudeUsageFailure(
   };
 }
 
-async function readClaudeUsageDetails(): Promise<ClaudeUsageDetailsReadResult> {
-  const credentialResult = await readClaudeOauthCredentialsResult();
+async function readClaudeUsageDetails(
+  host: DesktopObservabilityHost,
+): Promise<ClaudeUsageDetailsReadResult> {
+  const credentialResult = await host.claude.readOauthCredentials();
   if (credentialResult.status === 'failure') {
     return claudeUsageFailure(
       claudeCredentialFailureKind(credentialResult.reason),
@@ -4021,11 +3329,25 @@ export class ObservabilityService {
     string,
     AgentAuditEntry
   >();
-  private readonly seenPlanUsageEventIds = new Set<string>();
   private readonly managedDelegationAuditEntriesById = new Map<
     string,
     AgentAuditEntry
   >();
+  /**
+   * Plan usage event ids already counted on some audit entry, rebuilt from
+   * the stored `planEvents.eventIds` on start. Unlike the bounded recent
+   * entries, it still knows an id after its turn has been evicted.
+   */
+  private readonly countedPlanUsageEventIds = new Set<string>();
+  private storedStateLoad: Promise<void> | null = null;
+  /**
+   * Plan events recorded while `start()` loads that index. They are counted
+   * once it is complete, so a replay during start-up is still recognized.
+   */
+  private plansAwaitingCountedIds: Array<{
+    event: PlanUsageEvent;
+    target: PlanUsageTarget | null;
+  }> | null = null;
   private readonly loadedManagedDelegationAuditDays = new Set<string>();
   private readonly managedDelegationEntryIdsUpdatedInProcess =
     new Set<string>();
@@ -4058,7 +3380,7 @@ export class ObservabilityService {
   private accountProxyUsageInitialization: Promise<void> | null = null;
   private unsubscribeAccountProxyInventory: (() => void) | null = null;
 
-  constructor() {
+  constructor(private readonly host: DesktopObservabilityHost) {
     this.accountProxyQuotaUsage = new AccountProxyQuotaUsage({
       inventory: (): readonly AccountProxyUsageInventoryEntry[] =>
         this.accountProxyUsagePorts?.getAccountProxyUsageInventory() ?? [],
@@ -4091,14 +3413,15 @@ export class ObservabilityService {
       },
       recordedEntry: (id): AgentAuditEntry | undefined =>
         this.recentEntries.find((entry) => entry.id === id),
-      codexPricing: getOpenAiPricingForCostingSync,
+      codexPricing: (): ObservabilityPricingState =>
+        this.host.pricing.current(),
       nativeAccountKind: (provider): ProviderBillingAccountKind | undefined =>
         provider === 'codex' || provider === 'claude'
-          ? peekProviderBillingAccountKind(provider)
+          ? this.host.accounts.peekBillingAccountKind(provider)
           : undefined,
     });
     // Turns can start before the service's own start finishes loading.
-    this.unsubscribeAccountProxyResponses = onAccountProxyResponse(
+    this.unsubscribeAccountProxyResponses = this.host.accountProxy.onResponse(
       (response): void => {
         this.observeAccountProxyResponse(response);
       },
@@ -4110,46 +3433,80 @@ export class ObservabilityService {
       return;
     }
     this.started = true;
+    // Hold plan events from the first await, while dispose() can wait.
+    this.plansAwaitingCountedIds = [];
+    this.storedStateLoad = this.loadStoredStateAndCountPlans();
+    await this.storedStateLoad;
+    await this.refreshUsageAdapters();
+    this.emitSnapshot();
+    this.scheduleCostHistoryRepair();
+  }
+
+  private async startHostServices(): Promise<void> {
     void this.initializeAccountProxyUsage().catch(() => undefined);
     await getClaudeSessionCostLedger()
       .load()
       .catch(() => undefined);
-    let cursorEnabled = isCursorHarnessEnabled();
-    let copilotEnabled = isCopilotHarnessEnabled();
-    this.unsubscribeCursorRollout = getFeatureFlagService().onSnapshotChanged(
-      () => {
-        if (this.disposing) return;
-        const enabled = isCursorHarnessEnabled();
-        if (enabled !== cursorEnabled) {
-          cursorEnabled = enabled;
-          if (enabled) void this.refreshCursorUsage();
-          else this.invalidateCursorUsage();
-        }
-        const nextCopilotEnabled = isCopilotHarnessEnabled();
-        if (nextCopilotEnabled !== copilotEnabled) {
-          copilotEnabled = nextCopilotEnabled;
-          if (copilotEnabled) void this.refreshCopilotUsage();
-          else this.invalidateCopilotUsage();
-        }
+    let cursorEnabled = this.host.cursor.isEnabled();
+    let copilotEnabled = this.host.copilot.isEnabled();
+    this.unsubscribeCursorRollout = this.host.onFeatureFlagsChanged(() => {
+      if (this.disposing) return;
+      const enabled = this.host.cursor.isEnabled();
+      if (enabled !== cursorEnabled) {
+        cursorEnabled = enabled;
+        if (enabled) void this.refreshCursorUsage();
+        else this.invalidateCursorUsage();
+      }
+      const nextCopilotEnabled = this.host.copilot.isEnabled();
+      if (nextCopilotEnabled !== copilotEnabled) {
+        copilotEnabled = nextCopilotEnabled;
+        if (copilotEnabled) void this.refreshCopilotUsage();
+        else this.invalidateCopilotUsage();
+      }
+    });
+    this.unsubscribeCopilotUsage = this.host.copilot.onUsageChanged(
+      (ready): void => {
+        this.invalidateCopilotUsage();
+        if (ready && !this.disposing) void this.refreshCopilotUsage();
       },
     );
-    this.unsubscribeCopilotUsage = onCopilotUsageChanged((ready): void => {
-      this.invalidateCopilotUsage();
-      if (ready && !this.disposing) void this.refreshCopilotUsage();
-    });
-    this.unsubscribeOpenCodeAccounts = onOpenCodeAccountsChanged((): void => {
-      if (!this.disposing)
-        this.emit({ type: 'usage', usage: this.buildUsageOverview() });
-    });
-    prewarmOpenAiPricingCache();
+    this.unsubscribeOpenCodeAccounts = this.host.openCode.onAccountsChanged(
+      (): void => {
+        if (!this.disposing)
+          this.emit({ type: 'usage', usage: this.buildUsageOverview() });
+      },
+    );
+    this.host.pricing.prewarm();
+  }
 
-    await this.loadRetentionDaysFromPreferences();
-
-    await this.loadSnapshotFromDisk();
-    await this.pruneOldDayFiles();
-    await this.refreshUsageAdapters();
-    this.emitSnapshot();
-    this.scheduleCostHistoryRepair();
+  /**
+   * Loads the stored entries and counted plan ids, then counts the plan
+   * events held meanwhile. `dispose()` waits for it so none are lost.
+   */
+  private async loadStoredStateAndCountPlans(): Promise<void> {
+    try {
+      await this.startHostServices();
+      await this.loadRetentionDaysFromPreferences();
+      await this.loadSnapshotFromDisk();
+      for (const entry of this.recentEntries) {
+        this.rememberCountedPlanUsageEventIds(entry);
+      }
+      await this.pruneOldDayFiles();
+      await this.loadCountedPlanUsageEventIds();
+    } finally {
+      const awaiting = this.plansAwaitingCountedIds ?? [];
+      this.plansAwaitingCountedIds = null;
+      // One object per turn, so two held events for it add up.
+      const pinnedById = new Map<string, PlanUsageTarget>();
+      for (const { event, target } of awaiting) {
+        // An event no turn matched when it arrived is not counted, as before.
+        if (!target) continue;
+        const pinned = pinnedById.get(target.entry.id) ?? target;
+        pinnedById.set(pinned.entry.id, pinned);
+        this.applyPlanUsageEventToAuditEntry(event, pinned);
+      }
+      if (awaiting.length > 0) this.scheduleFlush();
+    }
   }
 
   /**
@@ -4161,7 +3518,7 @@ export class ObservabilityService {
     this.costHistoryRepairTimer = setTimeout((): void => {
       this.costHistoryRepairTimer = null;
       if (this.disposing) return;
-      if (!getOpenAiPricingForCostingSync().payload) {
+      if (!this.host.pricing.current().payload) {
         if (attempt < COST_HISTORY_REPAIR_MAX_ATTEMPTS)
           this.scheduleCostHistoryRepair(attempt + 1);
         return;
@@ -4171,7 +3528,8 @@ export class ObservabilityService {
         auditDir,
         transcriptIndexDir: getAgentObservabilityTranscriptIndexDir(),
         markerPath: join(dirname(auditDir), 'cost-history-repair.json'),
-        codexPricing: getOpenAiPricingForCostingSync,
+        codexPricing: (): ObservabilityPricingState =>
+          this.host.pricing.current(),
         append: (entry): void => this.appendCostRepair(entry),
         transcriptPathFor: (entry): string | undefined =>
           entry.hasTranscript === true
@@ -4331,7 +3689,7 @@ export class ObservabilityService {
         deduped.set(entry.id, entry);
       }
       const matchCount = Array.from(deduped.values()).filter((entry) =>
-        this.matchesHistoryRequest(entry, request),
+        matchesHistoryRequest(entry, request),
       ).length;
       const neededCount =
         cursor === undefined ? limit : limit + persistedEntries.size;
@@ -4347,7 +3705,7 @@ export class ObservabilityService {
     }
 
     const filtered = Array.from(deduped.values())
-      .filter((entry) => this.matchesHistoryRequest(entry, request))
+      .filter((entry) => matchesHistoryRequest(entry, request))
       .sort(compareEntries);
 
     const startIndex =
@@ -4506,7 +3864,11 @@ export class ObservabilityService {
     try {
       filenames = await readdir(usageDir);
     } catch {
-      return [...this.pendingUsageMetricEvents];
+      const pendingById = new Map<string, UsageMetricEvent>();
+      for (const event of this.pendingUsageMetricEvents) {
+        upsertUsageEventById(pendingById, event);
+      }
+      return Array.from(pendingById.values());
     }
 
     const dayWindow = buildAuditDayWindow(startDate, endDate);
@@ -4528,8 +3890,8 @@ export class ObservabilityService {
           if (trimmed.length === 0) continue;
           const parsed = safeJsonParse(trimmed);
           const event = parsed ? normalizeUsageMetricEvent(parsed) : null;
-          if (!event || !this.isUsageEventWithinRetention(event)) continue;
-          eventsById.set(event.id, event);
+          if (!event || !isUsageEventWithinRetention(event)) continue;
+          upsertUsageEventById(eventsById, event);
         }
       } catch {
         // skip corrupt day files
@@ -4537,8 +3899,8 @@ export class ObservabilityService {
     }
 
     for (const event of this.pendingUsageMetricEvents) {
-      if (this.isUsageEventWithinRetention(event)) {
-        eventsById.set(event.id, event);
+      if (isUsageEventWithinRetention(event)) {
+        upsertUsageEventById(eventsById, event);
       }
     }
 
@@ -4755,18 +4117,15 @@ export class ObservabilityService {
     const eventsById = new Map<string, UsageMetricEvent>();
     const addEvent = (event: UsageMetricEvent): void => {
       if (
-        !this.isUsageEventWithinRetention(event) ||
-        !this.isUsageEventInsideRange(event, request.startDate, request.endDate)
+        !isUsageEventWithinRetention(event) ||
+        !isUsageEventInsideRange(event, request.startDate, request.endDate)
       ) {
         return;
       }
-      if (!this.matchesUsageMetricsRequest(event, request)) {
+      if (!matchesUsageMetricsRequest(event, request)) {
         return;
       }
-      const previous = eventsById.get(event.id);
-      if (!previous || previous.timestamp <= event.timestamp) {
-        eventsById.set(event.id, event);
-      }
+      upsertUsageEventById(eventsById, event);
     };
 
     const sortedFiles = filenames
@@ -4800,9 +4159,10 @@ export class ObservabilityService {
       addEvent(event);
     }
 
-    return this.buildUsageMetricsResponse(
+    return buildUsageMetricsResponse(
       Array.from(eventsById.values()),
       request,
+      this.retentionDays,
     );
   }
 
@@ -5091,7 +4451,10 @@ export class ObservabilityService {
     // `app-events/` and its Datadog forwarding are global: no worktree or chat
     // identifier may reach either, whatever the caller assembled.
     const sanitized = sanitizeAppDiagnosticRecord(event);
-    reportAppDiagnosticToDesktopInstrumentation(sanitized);
+    reportAppDiagnosticToDesktopInstrumentation(
+      this.host.instrumentation,
+      sanitized,
+    );
     this.pendingAppDiagnostics.push(sanitized);
     this.scheduleFlush(estimatePendingRecordBytes(sanitized));
   }
@@ -5108,21 +4471,120 @@ export class ObservabilityService {
       event.type === 'plan_updated' ||
       event.type === 'plan_approved'
     ) {
-      this.applyPlanUsageEventToAuditEntry(event);
+      if (this.plansAwaitingCountedIds) {
+        // Pin the turn now: a later turn may be current when it is counted.
+        this.plansAwaitingCountedIds.push({
+          event,
+          target: this.findPlanUsageTarget(event),
+        });
+      } else {
+        this.applyPlanUsageEventToAuditEntry(event);
+      }
     }
     this.pendingUsageMetricEvents.push(event);
     this.emit({ type: 'usage', usage: this.buildUsageOverview() });
     this.scheduleFlush(estimatePendingRecordBytes(event));
   }
 
-  private applyPlanUsageEventToAuditEntry(event: PlanUsageEvent): void {
-    if (
-      event.type === 'plan_updated' ||
-      this.seenPlanUsageEventIds.has(event.id)
-    ) {
+  private rememberCountedPlanUsageEventIds(entry: AgentAuditEntry): void {
+    for (const id of entry.planEvents?.eventIds ?? []) {
+      this.countedPlanUsageEventIds.add(id);
+    }
+  }
+
+  /**
+   * Reads the counted ids from every stored audit line, and restores plan
+   * counts a stale snapshot is missing so a skipped replay loses nothing.
+   */
+  private async loadCountedPlanUsageEventIds(): Promise<void> {
+    let filenames: string[];
+    try {
+      filenames = await readdir(getAgentObservabilityAuditDir());
+    } catch {
       return;
     }
+    const storedPlanEvents = new Map<
+      string,
+      NonNullable<AgentAuditEntry['planEvents']>
+    >();
+    for (const filename of filenames.sort()) {
+      if (!filename.endsWith('.jsonl')) continue;
+      let contents: string;
+      try {
+        contents = await readFile(
+          getAgentObservabilityAuditDayFilePath(
+            filename.replace(/\.jsonl$/, ''),
+          ),
+          'utf8',
+        );
+      } catch {
+        continue;
+      }
+      for (const line of contents.split('\n')) {
+        if (!line.includes('"eventIds"')) continue;
+        const entry = normalizeAuditEntry(safeJsonParse(line));
+        if (!entry?.planEvents) continue;
+        this.rememberCountedPlanUsageEventIds(entry);
+        storedPlanEvents.set(entry.id, entry.planEvents);
+      }
+    }
+    const heldTargets = (this.plansAwaitingCountedIds ?? []).flatMap(
+      ({ target }) => (target ? [target.entry] : []),
+    );
+    for (const entry of [...this.recentEntries, ...heldTargets]) {
+      const stored = storedPlanEvents.get(entry.id);
+      const storedIds = stored?.eventIds ?? [];
+      const loadedIds = entry.planEvents?.eventIds ?? [];
+      if (
+        stored &&
+        storedIds.length > loadedIds.length &&
+        loadedIds.every((id) => storedIds.includes(id))
+      ) {
+        entry.planEvents = { ...stored, eventIds: [...storedIds] };
+      }
+    }
+  }
 
+  private applyPlanUsageEventToAuditEntry(
+    event: PlanUsageEvent,
+    pinned?: PlanUsageTarget | null,
+  ): void {
+    if (event.type === 'plan_updated') {
+      return;
+    }
+    // A replay may target a newer turn than the one that counted it.
+    if (this.countedPlanUsageEventIds.has(event.id)) return;
+
+    // A pinned turn that has since left the recent entries is still counted.
+    const target = pinned
+      ? (this.findPlanUsageTarget({
+          ...event,
+          auditEntryId: pinned.entry.id,
+        }) ?? { entry: pinned.entry, open: false })
+      : this.findPlanUsageTarget(event);
+    if (!target || !countPlanUsageEvent(target.entry, event)) return;
+    this.countedPlanUsageEventIds.add(event.id);
+    // Late transcript publication rewrites the turn from its own copy.
+    for (const state of [
+      ...Array.from(this.transcriptStates.values()),
+      ...Array.from(this.retiringTranscriptStates),
+    ]) {
+      if (state.finalizedEntry?.id === target.entry.id) {
+        state.finalizedEntry.planEvents = target.entry.planEvents;
+      }
+    }
+
+    if (target.open) {
+      this.upsertRecentEntry(target.entry);
+      this.enqueueAuditEntry(target.entry);
+    } else {
+      this.enqueueAuditEntry(target.entry);
+      this.upsertRecentEntry(target.entry);
+    }
+  }
+
+  /** The chat turn a plan event belongs to: its explicit entry, else the current one. */
+  private findPlanUsageTarget(event: PlanUsageEvent): PlanUsageTarget | null {
     const isChatTurnEntry = (entry: AgentAuditEntry): boolean =>
       entry.eventType === 'worktree_chat' ||
       entry.eventType === 'standalone_chat' ||
@@ -5134,6 +4596,7 @@ export class ObservabilityService {
       entry.projectId === event.workspaceId &&
       entry.worktreeId === event.worktreeId &&
       entry.chatId === event.chatId;
+
     let matchedOpenEntry: OpenAuditEntry | undefined;
     if (event.auditEntryId) {
       matchedOpenEntry = Array.from(this.openEntries.values()).find(
@@ -5153,23 +4616,8 @@ export class ObservabilityService {
           (entry) => entry.id === event.auditEntryId && matchesScope(entry),
         )
       : this.recentEntries.filter(matchesScope).sort(compareEntries)[0];
-    const entry = matchedOpenEntry?.entry ?? recentEntry;
-    if (!entry) return;
-
-    this.seenPlanUsageEventIds.add(event.id);
-    const prior = entry.planEvents;
-    entry.planEvents = {
-      created: (prior?.created ?? 0) + (event.type === 'plan_created' ? 1 : 0),
-      approved:
-        (prior?.approved ?? 0) + (event.type === 'plan_approved' ? 1 : 0),
-    };
-    if (matchedOpenEntry) {
-      this.upsertRecentEntry(entry);
-      this.enqueueAuditEntry(entry);
-    } else {
-      this.enqueueAuditEntry(entry);
-      this.upsertRecentEntry(entry);
-    }
+    if (matchedOpenEntry) return { entry: matchedOpenEntry.entry, open: true };
+    return recentEntry ? { entry: recentEntry, open: false } : null;
   }
 
   recordCreatedPullRequest(options: {
@@ -5250,7 +4698,7 @@ export class ObservabilityService {
     if (!tracker) return;
     const subagents = tracker.toAuditUsages({
       serviceTier: openEntry.entry.serviceTier,
-      pricingState: getOpenAiPricingForCostingSync(),
+      pricingState: this.host.pricing.current(),
       allowCost: openEntry.entry.modelGatewayRouted !== true,
     });
     if (subagents.length > 0) {
@@ -5397,7 +4845,7 @@ export class ObservabilityService {
     if (codexSubagentUsageTracker) {
       const subagents = codexSubagentUsageTracker.toAuditUsages({
         serviceTier: entry.serviceTier,
-        pricingState: getOpenAiPricingForCostingSync(),
+        pricingState: this.host.pricing.current(),
         allowCost: entry.modelGatewayRouted !== true,
       });
       if (subagents.length > 0) entry.subagents = subagents;
@@ -5437,7 +4885,7 @@ export class ObservabilityService {
       managedDelegationDeliveryId: options.managedDelegationDeliveryId,
       injectedPrompts: buildInjectedPrompts(options),
     });
-    startAuditOperation(key, entry);
+    startAuditOperation(this.host, key, entry);
     this.upsertRecentEntry(entry);
 
     const startedUsageEvent: ChatTurnUsageEvent = {
@@ -7227,7 +6675,7 @@ export class ObservabilityService {
       this.claudeTaskTrackers.get(key)?.applyPending(entry);
     }
     this.initializeTranscriptState(key, entry);
-    startAuditOperation(key, entry);
+    startAuditOperation(this.host, key, entry);
     this.upsertRecentEntry(entry);
   }
 
@@ -7532,7 +6980,7 @@ export class ObservabilityService {
       this.claudeTaskTrackers.get(key)?.applyPending(observedEntry);
     }
     this.initializeTranscriptState(key, observedEntry);
-    startAuditOperation(key, observedEntry);
+    startAuditOperation(this.host, key, observedEntry);
     this.upsertRecentEntry(observedEntry);
   }
 
@@ -7779,6 +7227,12 @@ export class ObservabilityService {
 
       const chatKeyPrefix = `chat:${projectId}/${worktreeId}/`;
       const transcriptPaths = new Set<string>();
+      if (this.plansAwaitingCountedIds) {
+        this.plansAwaitingCountedIds = this.plansAwaitingCountedIds.filter(
+          ({ event }) =>
+            event.workspaceId !== projectId || event.worktreeId !== worktreeId,
+        );
+      }
       for (const key of Array.from(this.claudeTaskTrackers.keys())) {
         if (key.startsWith(chatKeyPrefix)) this.claudeTaskTrackers.delete(key);
       }
@@ -7788,9 +7242,7 @@ export class ObservabilityService {
       }
 
       for (const [key, openEntry] of Array.from(this.openEntries.entries())) {
-        if (
-          !this.entryMatchesWorktree(openEntry.entry, projectId, worktreeId)
-        ) {
+        if (!entryMatchesWorktree(openEntry.entry, projectId, worktreeId)) {
           continue;
         }
 
@@ -7840,15 +7292,15 @@ export class ObservabilityService {
       }
 
       this.pendingPersistedEntries = this.pendingPersistedEntries.filter(
-        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+        (entry) => !entryMatchesWorktree(entry, projectId, worktreeId),
       );
       this.pendingSessionDiagnostics = this.pendingSessionDiagnostics.filter(
-        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+        (entry) => !entryMatchesWorktree(entry, projectId, worktreeId),
       );
       // Usage metrics intentionally survive worktree archive/deletion so
       // deletion outcomes remain computable after worktree-scoped data is gone.
       this.recentEntries = this.recentEntries.filter(
-        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+        (entry) => !entryMatchesWorktree(entry, projectId, worktreeId),
       );
       await Promise.all(
         Array.from(transcriptPaths, (path) =>
@@ -7873,7 +7325,7 @@ export class ObservabilityService {
   ): Promise<void> {
     await this.enqueuePersistenceTask(async (): Promise<void> => {
       this.pendingSessionDiagnostics = this.pendingSessionDiagnostics.filter(
-        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+        (entry) => !entryMatchesWorktree(entry, projectId, worktreeId),
       );
       await purgePersistedWorktreeObservabilityData(projectId, worktreeId);
     });
@@ -7896,7 +7348,7 @@ export class ObservabilityService {
         (entry) => entry.waitOperationId === waitOperationId,
       ).length;
       this.pendingSessionDiagnostics = this.pendingSessionDiagnostics.filter(
-        (entry) => !this.entryMatchesWorktree(entry, projectId, worktreeId),
+        (entry) => !entryMatchesWorktree(entry, projectId, worktreeId),
       );
       if (unwritten < records)
         await purgePersistedWorktreeSessionDiagnostics(projectId, worktreeId);
@@ -8386,6 +7838,7 @@ export class ObservabilityService {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+    await this.storedStateLoad?.catch((): void => undefined);
     if (this.costHistoryRepairTimer) {
       clearTimeout(this.costHistoryRepairTimer);
       this.costHistoryRepairTimer = null;
@@ -8586,7 +8039,7 @@ export class ObservabilityService {
       const routeSessionId =
         options.step.outputs[ACCOUNT_PROXY_SESSION_OUTPUT_KEY];
       const usage = routeSessionId
-        ? getAccountProxySessionUsage(routeSessionId)
+        ? this.host.accountProxy.sessionUsage(routeSessionId)
         : null;
       if (routeSessionId && usage) {
         // Reading a route again replaces its count, never adds to it.
@@ -8777,7 +8230,7 @@ export class ObservabilityService {
           tokens: openEntry.entry.tokens,
           billableToolCounts: openEntry.entry.billableToolCounts,
         },
-        getOpenAiPricingForCostingSync(),
+        this.host.pricing.current(),
       );
       openEntry.entry.observedCost = observedCost;
       if (typeof observedCost.totalUsd === 'number') {
@@ -8818,7 +8271,7 @@ export class ObservabilityService {
         (openEntry.entry.executionHarness === 'codex' ||
           openEntry.entry.provider === 'codex')
       ) {
-        const pricingState = getOpenAiPricingForCostingSync();
+        const pricingState = this.host.pricing.current();
         const benchmarkCost = computeCodexObservedCost(
           {
             model: attribution.benchmarkModelId,
@@ -8870,6 +8323,7 @@ export class ObservabilityService {
     }
 
     finishAuditOperation(
+      this.host,
       key,
       openEntry.entry,
       status,
@@ -8912,9 +8366,10 @@ export class ObservabilityService {
       return { providerAccountIdentity: null, billingAccountKind: 'unknown' };
     }
     if (provider === 'claude' || provider === 'codex') {
-      const providerAccountIdentity = peekProviderAccountIdentity(provider);
-      const billingAccountKind = peekProviderBillingAccountKind(provider);
-      warmProviderAccountIdentity(provider, 'audit-entry-start');
+      const providerAccountIdentity = this.host.accounts.peekIdentity(provider);
+      const billingAccountKind =
+        this.host.accounts.peekBillingAccountKind(provider);
+      this.host.accounts.warmIdentity(provider, 'audit-entry-start');
       return { providerAccountIdentity, billingAccountKind };
     }
     return {
@@ -9023,14 +8478,14 @@ export class ObservabilityService {
         // Local memory defaults off, so check the cheap preference (the same
         // read the tracker's own gate performs) before paying for the full
         // transcript sidecar read on every successful turn.
-        if (!(await isLocalMemoryCitationTrackingEnabled())) {
+        if (!(await this.host.memoryCitations.isEnabled())) {
           return;
         }
         const transcript = await this.loadTranscript(transcriptRequest);
         if (transcript.type !== 'success' || transcript.truncation.truncated) {
           return;
         }
-        await trackCompletedTurnLocalMemoryCitations({
+        await this.host.memoryCitations.trackCompletedTurn({
           auditEntryId: entry.id,
           provider: entry.provider,
           transcriptLines: transcript.lines,
@@ -9208,20 +8663,20 @@ export class ObservabilityService {
     );
     return {
       updatedAt: new Date().toISOString(),
-      openCodeAccounts: peekOpenCodeAccounts(),
+      openCodeAccounts: this.host.openCode.peekAccounts(),
       providers: [
         { ...this.usageProviders.claude },
         { ...this.usageProviders.codex },
-        ...(isCopilotHarnessEnabled() && this.copilotUsage
+        ...(this.host.copilot.isEnabled() && this.copilotUsage
           ? [{ ...this.copilotUsage }]
           : []),
-        ...(isCursorHarnessEnabled() && this.cursorUsage
+        ...(this.host.cursor.isEnabled() && this.cursorUsage
           ? [{ ...this.cursorUsage }]
           : []),
       ],
       accountSnapshots: accountSnapshots.filter(
         (snapshot) =>
-          snapshot.provider !== 'cursor' || isCursorHarnessEnabled(),
+          snapshot.provider !== 'cursor' || this.host.cursor.isEnabled(),
       ),
     };
   }
@@ -9242,6 +8697,12 @@ export class ObservabilityService {
   ): void {
     const pending = { ...entry };
     this.pendingPersistedEntries.push(pending);
+    // A held plan event counts on the latest version of its pinned turn.
+    for (const held of this.plansAwaitingCountedIds ?? []) {
+      if (held.target?.entry.id === entry.id && held.target.entry !== entry) {
+        held.target = { entry: { ...entry }, open: false };
+      }
+    }
     if (pending.eventType === 'managed_delegation') {
       this.managedDelegationAuditEntriesById.set(pending.id, pending);
       this.managedDelegationEntryIdsUpdatedInProcess.add(pending.id);
@@ -9281,691 +8742,6 @@ export class ObservabilityService {
       timer.unref();
     }
     this.flushTimer = timer;
-  }
-
-  private matchesHistoryRequest(
-    entry: AgentAuditEntry,
-    request: AgentAuditHistoryRequest,
-  ): boolean {
-    if (
-      (request.startDate || request.endDate) &&
-      !isStartedAtInsideRange(
-        entry.startedAt,
-        request.startDate,
-        request.endDate,
-      )
-    ) {
-      return false;
-    }
-    if (request.eventType && request.eventType !== 'all') {
-      if (entry.eventType !== request.eventType) {
-        return false;
-      }
-    }
-    if (request.provider && request.provider !== 'all') {
-      if (entry.provider !== request.provider) {
-        return false;
-      }
-    }
-    if (request.status && request.status !== 'all') {
-      if (entry.status !== request.status) {
-        return false;
-      }
-    }
-    if (request.projectId && entry.projectId !== request.projectId) {
-      return false;
-    }
-    if (request.worktreeId && entry.worktreeId !== request.worktreeId) {
-      return false;
-    }
-    if (
-      request.pipelineExecutionId &&
-      entry.pipelineExecutionId !== request.pipelineExecutionId
-    ) {
-      return false;
-    }
-    if (request.activeOnly && entry.status !== 'running') {
-      return false;
-    }
-    if (request.search) {
-      const needle = request.search.toLowerCase();
-      const haystack = [
-        entry.label,
-        ...renamedLabelsForEventType(entry.eventType),
-        entry.model,
-        entry.projectId,
-        entry.worktreeId,
-        entry.chatId,
-        entry.repoId,
-        entry.repoLabel,
-        entry.sdkSessionId,
-        entry.pipelineExecutionId,
-        entry.jobId,
-        entry.stepId,
-        entry.error,
-      ]
-        .filter((value): value is string => typeof value === 'string')
-        .join(' ')
-        .toLowerCase();
-      if (!haystack.includes(needle)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private entryMatchesWorktree(
-    entry: Pick<AgentAuditEntry, 'projectId' | 'worktreeId'>,
-    projectId: string,
-    worktreeId: string,
-  ): boolean {
-    return entry.projectId === projectId && entry.worktreeId === worktreeId;
-  }
-
-  private isUsageEventWithinRetention(event: UsageMetricEvent): boolean {
-    const cutoff =
-      Date.now() - USAGE_EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    return new Date(event.timestamp).getTime() >= cutoff;
-  }
-
-  private isUsageEventInsideRange(
-    event: UsageMetricEvent,
-    startDate: string,
-    endDate: string,
-  ): boolean {
-    const timestamp = Date.parse(event.timestamp);
-    const start = Date.parse(startDate);
-    const end = Date.parse(endDate);
-    return (
-      Number.isFinite(timestamp) &&
-      Number.isFinite(start) &&
-      Number.isFinite(end) &&
-      timestamp >= start &&
-      timestamp < end
-    );
-  }
-
-  private eventRepoScopes(event: UsageMetricEvent): UsageRepoScope[] {
-    if ('repos' in event) {
-      return event.repos;
-    }
-    if (event.repoId && event.repoLabel) {
-      return [
-        {
-          workspaceId: event.workspaceId,
-          workspaceLabel: event.workspaceLabel,
-          worktreeId: event.worktreeId,
-          repoId: event.repoId,
-          repoLabel: event.repoLabel,
-        },
-      ];
-    }
-    return [];
-  }
-
-  private matchesUsageMetricsRequest(
-    event: UsageMetricEvent,
-    request: UsageMetricsRequest,
-  ): boolean {
-    if (request.workspaceId && event.workspaceId !== request.workspaceId) {
-      return false;
-    }
-    if (
-      request.provider &&
-      request.provider !== 'all' &&
-      event.provider !== request.provider
-    ) {
-      return false;
-    }
-    if (
-      request.initiationSource &&
-      request.initiationSource !== 'all' &&
-      event.initiationSource !== request.initiationSource
-    ) {
-      return false;
-    }
-    if (request.repoId) {
-      const repoMatches =
-        event.repoId === request.repoId ||
-        this.eventRepoScopes(event).some(
-          (repo) => repo.repoId === request.repoId,
-        );
-      if (!repoMatches) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private computeUsageStats(values: number[]): UsageStats | undefined {
-    if (values.length === 0) {
-      return undefined;
-    }
-    const sorted = [...values].sort((left, right) => left - right);
-    // Nearest-rank percentile over the sorted sample set.
-    const percentile = (p: number): number =>
-      sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)] ?? 0;
-    const total = sorted.reduce((sum, value) => sum + value, 0);
-    return {
-      total,
-      min: sorted[0] ?? 0,
-      max: sorted[sorted.length - 1] ?? 0,
-      avg: total / sorted.length,
-      p50: percentile(50),
-      p95: percentile(95),
-      p99: percentile(99),
-    };
-  }
-
-  private buildUsageBreakdown(
-    rowsByKey: Map<string, UsageBreakdownRow & { values?: number[] }>,
-  ): UsageBreakdownRows {
-    const aggregateStats = this.computeUsageStats(
-      Array.from(rowsByKey.values()).flatMap(
-        (row) => row.values ?? [row.count],
-      ),
-    );
-    const rows = Array.from(rowsByKey.values())
-      .map((row) => {
-        const { values, ...publicRow } = row;
-        const stats = this.computeUsageStats(values ?? [row.count]);
-        return {
-          ...publicRow,
-          ...(stats ? { stats } : {}),
-        };
-      })
-      .sort((left, right) => {
-        const countDiff = right.count - left.count;
-        return countDiff !== 0
-          ? countDiff
-          : left.label.localeCompare(right.label);
-      });
-    return {
-      total: rows.reduce((sum, row) => sum + row.count, 0),
-      ...(aggregateStats ? { stats: aggregateStats } : {}),
-      rows,
-    };
-  }
-
-  private incrementUsageRow(
-    rows: Map<string, UsageBreakdownRow & { values?: number[] }>,
-    row: Omit<UsageBreakdownRow, 'count'>,
-    amount = 1,
-    sample?: number,
-  ): void {
-    const existing = rows.get(row.key);
-    if (existing) {
-      existing.count += amount;
-      if (typeof sample === 'number') {
-        existing.values = [...(existing.values ?? []), sample];
-      }
-      return;
-    }
-    rows.set(row.key, {
-      ...row,
-      count: amount,
-      ...(typeof sample === 'number' ? { values: [sample] } : {}),
-    });
-  }
-
-  private repoRowBase(
-    event: UsageMetricEvent,
-    repo: UsageRepoScope,
-  ): Omit<UsageBreakdownRow, 'count'> {
-    const workspaceLabel = repo.workspaceLabel ?? event.workspaceLabel;
-    return {
-      key: `${repo.workspaceId}:${repo.repoId}`,
-      label: `${workspaceLabel ?? repo.workspaceId} / ${repo.repoLabel}`,
-      workspaceId: repo.workspaceId,
-      repoId: repo.repoId,
-    };
-  }
-
-  private usageRepoMatchesRequest(
-    repo: UsageRepoScope,
-    request: UsageMetricsRequest,
-  ): boolean {
-    return !request.repoId || repo.repoId === request.repoId;
-  }
-
-  private chatDimensionRow(
-    event: ChatTurnUsageEvent,
-  ): Omit<UsageBreakdownRow, 'count'> {
-    const source = event.initiationSource ?? 'unknown';
-    const provider = event.provider;
-    const repoKey = event.repoId ?? 'all-repos';
-    return {
-      key: `${event.workspaceId}:${repoKey}:${provider ?? 'unknown'}:${source}`,
-      label: [
-        event.workspaceLabel ?? event.workspaceId,
-        event.repoLabel,
-        provider,
-        source,
-      ]
-        .filter((value): value is string => Boolean(value))
-        .join(' / '),
-      workspaceId: event.workspaceId,
-      repoId: event.repoId,
-      provider,
-      initiationSource: source,
-    };
-  }
-
-  private chatSourceRow(
-    event: ChatTurnUsageEvent,
-  ): Omit<UsageBreakdownRow, 'count'> {
-    const source = event.initiationSource ?? 'unknown';
-    const repoKey = event.repoId ?? 'all-repos';
-    return {
-      key: `${event.workspaceId}:${repoKey}:${source}`,
-      label: [
-        event.workspaceLabel ?? event.workspaceId,
-        event.repoLabel,
-        source,
-      ]
-        .filter((value): value is string => Boolean(value))
-        .join(' / '),
-      workspaceId: event.workspaceId,
-      repoId: event.repoId,
-      provider: event.provider,
-      initiationSource: source,
-    };
-  }
-
-  private chatProviderRow(
-    event: ChatTurnUsageEvent,
-  ): Omit<UsageBreakdownRow, 'count'> {
-    const provider = event.provider;
-    const repoKey = event.repoId ?? 'all-repos';
-    return {
-      key: `${event.workspaceId}:${repoKey}:${provider ?? 'unknown'}`,
-      label: [
-        event.workspaceLabel ?? event.workspaceId,
-        event.repoLabel,
-        provider ?? 'unknown',
-      ]
-        .filter((value): value is string => Boolean(value))
-        .join(' / '),
-      workspaceId: event.workspaceId,
-      repoId: event.repoId,
-      provider,
-      initiationSource: event.initiationSource,
-    };
-  }
-
-  private buildUsageMetricsResponse(
-    events: UsageMetricEvent[],
-    request: UsageMetricsRequest,
-  ): UsageMetricsResponse {
-    const worktreeCreated = new Map<string, UsageBreakdownRow>();
-    const worktreeMerged = new Map<string, UsageBreakdownRow>();
-    const deletedWithChanges = new Map<string, UsageBreakdownRow>();
-    const deletedWithoutChanges = new Map<string, UsageBreakdownRow>();
-    const deletionAge = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-
-    const turnCountsPerChat = new Map<string, UsageBreakdownRow>();
-    const turnCountsPerWorktree = new Map<string, UsageBreakdownRow>();
-    const turnCountsBySource = new Map<string, UsageBreakdownRow>();
-    const turnCountsByProvider = new Map<string, UsageBreakdownRow>();
-    const turnDuration = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    const toolCallsPerTurn = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    const toolCallsByChat = new Map<
-      string,
-      { row: Omit<UsageBreakdownRow, 'count'>; count: number }
-    >();
-    const toolCallsByWorktree = new Map<
-      string,
-      { row: Omit<UsageBreakdownRow, 'count'>; count: number }
-    >();
-    const statusCounts = new Map<AgentAuditStatus, number>();
-    const toolCategoryCounts = new Map<keyof AgentAuditToolCounts, number>();
-    const toolsByProvider = new Map<string, UsageBreakdownRow>();
-    const toolsBySource = new Map<string, UsageBreakdownRow>();
-
-    const plansCreated = new Map<string, UsageBreakdownRow>();
-    const plansUpdated = new Map<string, UsageBreakdownRow>();
-    const plansApproved = new Map<string, UsageBreakdownRow>();
-    const createdPerWorktree = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    const updatedPerWorktree = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    const approvedPerWorktree = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-
-    const incrementWorktreeRepos = (
-      target: Map<string, UsageBreakdownRow>,
-      event: WorktreeCreatedUsageEvent | WorktreePrMergedUsageEvent,
-    ): void => {
-      for (const repo of event.repos) {
-        if (!this.usageRepoMatchesRequest(repo, request)) {
-          continue;
-        }
-        this.incrementUsageRow(target, this.repoRowBase(event, repo));
-      }
-    };
-    const incrementToolAggregate = (
-      target: Map<
-        string,
-        { row: Omit<UsageBreakdownRow, 'count'>; count: number }
-      >,
-      row: Omit<UsageBreakdownRow, 'count'>,
-      amount: number,
-    ): void => {
-      const existing = target.get(row.key);
-      if (existing) {
-        existing.count += amount;
-        return;
-      }
-      target.set(row.key, { row, count: amount });
-    };
-
-    for (const event of events) {
-      if (event.type === 'worktree_created') {
-        incrementWorktreeRepos(worktreeCreated, event);
-        continue;
-      }
-      if (event.type === 'worktree_pr_merged') {
-        incrementWorktreeRepos(worktreeMerged, event);
-        continue;
-      }
-      if (event.type === 'worktree_deleted') {
-        for (const repo of event.repos) {
-          if (!this.usageRepoMatchesRequest(repo, request)) {
-            continue;
-          }
-          const target = repo.hadChanges
-            ? deletedWithChanges
-            : deletedWithoutChanges;
-          this.incrementUsageRow(target, this.repoRowBase(event, repo));
-          if (typeof event.worktreeAgeMs === 'number') {
-            this.incrementUsageRow(
-              deletionAge,
-              this.repoRowBase(event, repo),
-              1,
-              event.worktreeAgeMs,
-            );
-          }
-        }
-        continue;
-      }
-      if (event.type === 'chat_turn_completed') {
-        const source = event.initiationSource ?? 'unknown';
-        const provider = event.provider ?? 'unknown';
-        const repoKey = event.repoId ?? 'all-repos';
-        const chatKey = [
-          event.workspaceId,
-          event.worktreeId ?? 'no-worktree',
-          repoKey,
-          provider,
-          source,
-          event.chatId,
-        ].join(':');
-        this.incrementUsageRow(turnCountsPerChat, {
-          key: chatKey,
-          label: [
-            event.workspaceLabel ?? event.workspaceId,
-            event.repoLabel,
-            event.chatId,
-            event.provider,
-            event.initiationSource,
-          ]
-            .filter((value): value is string => Boolean(value))
-            .join(' / '),
-          workspaceId: event.workspaceId,
-          repoId: event.repoId,
-          provider: event.provider,
-          initiationSource: event.initiationSource,
-        });
-        if (event.worktreeId) {
-          this.incrementUsageRow(turnCountsPerWorktree, {
-            key: [
-              event.workspaceId,
-              event.worktreeId,
-              repoKey,
-              provider,
-              source,
-            ].join(':'),
-            label: [
-              event.workspaceLabel ?? event.workspaceId,
-              event.repoLabel,
-              event.worktreeId,
-              event.provider,
-              event.initiationSource,
-            ]
-              .filter((value): value is string => Boolean(value))
-              .join(' / '),
-            workspaceId: event.workspaceId,
-            repoId: event.repoId,
-            provider: event.provider,
-            initiationSource: event.initiationSource,
-          });
-        }
-        this.incrementUsageRow(turnCountsBySource, this.chatSourceRow(event));
-        this.incrementUsageRow(
-          turnCountsByProvider,
-          this.chatProviderRow(event),
-        );
-        if (typeof event.turnDurationMs === 'number') {
-          this.incrementUsageRow(
-            turnDuration,
-            this.chatDimensionRow(event),
-            1,
-            event.turnDurationMs,
-          );
-        }
-        const toolUseCount = event.toolUseCount ?? 0;
-        this.incrementUsageRow(
-          toolCallsPerTurn,
-          this.chatDimensionRow(event),
-          1,
-          toolUseCount,
-        );
-        incrementToolAggregate(
-          toolCallsByChat,
-          {
-            key: chatKey,
-            label: [
-              event.workspaceLabel ?? event.workspaceId,
-              event.repoLabel,
-              event.chatId,
-              event.provider,
-              event.initiationSource,
-            ]
-              .filter((value): value is string => Boolean(value))
-              .join(' / '),
-            workspaceId: event.workspaceId,
-            repoId: event.repoId,
-            provider: event.provider,
-            initiationSource: event.initiationSource,
-          },
-          toolUseCount,
-        );
-        if (event.worktreeId) {
-          incrementToolAggregate(
-            toolCallsByWorktree,
-            {
-              key: [
-                event.workspaceId,
-                event.worktreeId,
-                repoKey,
-                provider,
-                source,
-              ].join(':'),
-              label: [
-                event.workspaceLabel ?? event.workspaceId,
-                event.repoLabel,
-                event.worktreeId,
-                event.provider,
-                event.initiationSource,
-              ]
-                .filter((value): value is string => Boolean(value))
-                .join(' / '),
-              workspaceId: event.workspaceId,
-              repoId: event.repoId,
-              provider: event.provider,
-              initiationSource: event.initiationSource,
-            },
-            toolUseCount,
-          );
-        }
-        if (event.status) {
-          statusCounts.set(
-            event.status,
-            (statusCounts.get(event.status) ?? 0) + 1,
-          );
-        }
-        if (event.toolCounts) {
-          for (const category of AGENT_AUDIT_TOOL_COUNT_KEYS) {
-            // Persisted usage events from before a category was added lack that
-            // key, so guard against a non-numeric read to avoid NaN totals.
-            const count = event.toolCounts[category];
-            if (typeof count !== 'number' || count <= 0) {
-              continue;
-            }
-            toolCategoryCounts.set(
-              category,
-              (toolCategoryCounts.get(category) ?? 0) + count,
-            );
-          }
-        }
-        if (event.provider && toolUseCount > 0) {
-          this.incrementUsageRow(
-            toolsByProvider,
-            {
-              key: event.provider,
-              label: event.provider,
-              provider: event.provider,
-            },
-            toolUseCount,
-          );
-        }
-        if (toolUseCount > 0) {
-          const toolSource = event.initiationSource ?? 'unknown';
-          this.incrementUsageRow(
-            toolsBySource,
-            {
-              key: toolSource,
-              label: toolSource,
-              initiationSource: toolSource,
-            },
-            toolUseCount,
-          );
-        }
-        continue;
-      }
-      if (
-        event.type === 'plan_created' ||
-        event.type === 'plan_updated' ||
-        event.type === 'plan_approved'
-      ) {
-        const lifecycleTarget =
-          event.type === 'plan_created'
-            ? plansCreated
-            : event.type === 'plan_updated'
-              ? plansUpdated
-              : plansApproved;
-        const worktreeTarget =
-          event.type === 'plan_created'
-            ? createdPerWorktree
-            : event.type === 'plan_updated'
-              ? updatedPerWorktree
-              : approvedPerWorktree;
-        const source = event.initiationSource ?? 'unknown';
-        const provider = event.provider ?? 'unknown';
-        this.incrementUsageRow(lifecycleTarget, {
-          key: `${event.workspaceId}:${provider}:${source}`,
-          label: `${event.workspaceLabel ?? event.workspaceId} / ${provider} / ${source}`,
-          workspaceId: event.workspaceId,
-          provider: event.provider,
-          initiationSource: source,
-        });
-        if (event.worktreeId) {
-          this.incrementUsageRow(
-            worktreeTarget,
-            {
-              key: `${event.workspaceId}:${event.worktreeId}:${provider}:${source}`,
-              label: `${event.worktreeId} / ${provider} / ${source}`,
-              workspaceId: event.workspaceId,
-              provider: event.provider,
-              initiationSource: source,
-            },
-            1,
-            1,
-          );
-        }
-      }
-    }
-
-    const toolCallsPerChat = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    for (const { row, count } of Array.from(toolCallsByChat.values())) {
-      this.incrementUsageRow(toolCallsPerChat, row, count, count);
-    }
-    const toolCallsPerWorktree = new Map<
-      string,
-      UsageBreakdownRow & { values?: number[] }
-    >();
-    for (const { row, count } of Array.from(toolCallsByWorktree.values())) {
-      this.incrementUsageRow(toolCallsPerWorktree, row, count, count);
-    }
-
-    return {
-      updatedAt: new Date().toISOString(),
-      retentionDays: this.retentionDays,
-      worktrees: {
-        created: this.buildUsageBreakdown(worktreeCreated),
-        merged: this.buildUsageBreakdown(worktreeMerged),
-        deletedWithChanges: this.buildUsageBreakdown(deletedWithChanges),
-        deletedWithoutChanges: this.buildUsageBreakdown(deletedWithoutChanges),
-        deletionAgeMs: this.buildUsageBreakdown(deletionAge),
-      },
-      chats: {
-        turnCountsPerChat: this.buildUsageBreakdown(turnCountsPerChat),
-        turnCountsPerWorktree: this.buildUsageBreakdown(turnCountsPerWorktree),
-        turnCountsByInitiationSource:
-          this.buildUsageBreakdown(turnCountsBySource),
-        turnCountsByProvider: this.buildUsageBreakdown(turnCountsByProvider),
-        turnDurationMs: this.buildUsageBreakdown(turnDuration),
-        toolCallsPerTurn: this.buildUsageBreakdown(toolCallsPerTurn),
-        toolCallsPerChat: this.buildUsageBreakdown(toolCallsPerChat),
-        toolCallsPerWorktree: this.buildUsageBreakdown(toolCallsPerWorktree),
-        statusCounts: Array.from(statusCounts.entries()).map(
-          ([status, count]) => ({ status, count }),
-        ),
-      },
-      plans: {
-        created: this.buildUsageBreakdown(plansCreated),
-        updated: this.buildUsageBreakdown(plansUpdated),
-        approved: this.buildUsageBreakdown(plansApproved),
-        createdPerWorktree: this.buildUsageBreakdown(createdPerWorktree),
-        updatedPerWorktree: this.buildUsageBreakdown(updatedPerWorktree),
-        approvedPerWorktree: this.buildUsageBreakdown(approvedPerWorktree),
-      },
-      tools: {
-        byCategory: Array.from(toolCategoryCounts.entries()).map(
-          ([category, count]) => ({ category, count }),
-        ),
-        byProvider: this.buildUsageBreakdown(toolsByProvider),
-        byInitiationSource: this.buildUsageBreakdown(toolsBySource),
-      },
-    };
   }
 
   private async loadSnapshotFromDisk(): Promise<void> {
@@ -10013,8 +8789,9 @@ export class ObservabilityService {
     if (this.accountProxyUsageInitialization) {
       return this.accountProxyUsageInitialization;
     }
-    this.accountProxyUsageInitialization =
-      import('../account-proxy/service').then((ports): void => {
+    this.accountProxyUsageInitialization = this.host.accountProxy
+      .loadUsagePorts()
+      .then((ports): void => {
         if (this.disposing) return;
         this.accountProxyUsagePorts = ports;
         this.unsubscribeAccountProxyInventory =
@@ -10162,7 +8939,7 @@ export class ObservabilityService {
 
   private refreshCursorUsage(): Promise<void> {
     if (this.disposing) return Promise.resolve();
-    if (!isCursorHarnessEnabled()) {
+    if (!this.host.cursor.isEnabled()) {
       this.invalidateCursorUsage();
       return Promise.resolve();
     }
@@ -10173,10 +8950,11 @@ export class ObservabilityService {
       controller.signal,
       AbortSignal.timeout(45_000),
     ]);
-    const done = readPreferencesFile()
+    const done = this.host
+      .readPreferences()
       .then(async (preferences): Promise<ProviderUsageSummary | null> => {
         if (!preferences.cursorEnabled || signal.aborted) return null;
-        return readCursorAccountUsage(signal);
+        return this.host.cursor.readUsage(signal);
       })
       .then((summary): void => {
         if (
@@ -10223,7 +9001,7 @@ export class ObservabilityService {
 
   private refreshCopilotUsage(fresh = false): Promise<void> {
     if (this.disposing) return Promise.resolve();
-    if (!isCopilotHarnessEnabled()) {
+    if (!this.host.copilot.isEnabled()) {
       this.invalidateCopilotUsage();
       return Promise.resolve();
     }
@@ -10238,10 +9016,11 @@ export class ObservabilityService {
     ]);
     const current = (): boolean =>
       !this.disposing && this.isCurrentProviderUsageRefresh('copilot', version);
-    const done = readPreferencesFile()
+    const done = this.host
+      .readPreferences()
       .then(async (preferences): Promise<ProviderUsageSummary | null> => {
         if (!preferences.copilotEnabled || signal.aborted) return null;
-        return readCopilotUsageSummary(signal);
+        return this.host.copilot.readUsage(signal);
       })
       .then((summary): void => {
         if (!current() || summary === this.copilotUsage) return;
@@ -10271,7 +9050,7 @@ export class ObservabilityService {
     freshnessMs = claudeUsageFreshnessMs(false),
   ): Promise<void> {
     const refreshVersion = this.beginProviderUsageRefresh('claude');
-    const authStatus = await readClaudeAuthStatus();
+    const authStatus = await readClaudeAuthStatus(this.host);
     if (
       this.disposing ||
       !this.isCurrentProviderUsageRefresh('claude', refreshVersion)
@@ -10307,7 +9086,7 @@ export class ObservabilityService {
         : 0,
       async (): Promise<ClaudeUsageDetailsReadResult> => {
         const readOrder = ++this.claudeUsageEventOrder;
-        const result = await readClaudeUsageDetails();
+        const result = await readClaudeUsageDetails(this.host);
         this.claudeUsageReadOrderByResult.set(result, readOrder);
         return result;
       },
@@ -10792,13 +9571,13 @@ export class ObservabilityService {
     rateLimits: GetAccountRateLimitsResponse | null;
   } | null> {
     if (__CANOPY_E2E__) {
-      const mockOrigin = getMockLlmOrigin();
+      const mockOrigin = this.host.e2e.mockLlmOrigin();
       if (!mockOrigin) {
         throw new Error(
           'E2E Codex usage probe requires CANOPY_MOCK_LLM_BASE_URL.',
         );
       }
-      const accountPayload = await fetchMockControlPlaneRecord(
+      const accountPayload = await this.host.e2e.fetchControlPlaneRecord(
         mockOrigin,
         '/__mock/codex/account',
       );
@@ -10813,7 +9592,7 @@ export class ObservabilityService {
       if (account.account === null) {
         return { account, rateLimits: null };
       }
-      const rateLimitsPayload = await fetchMockControlPlaneRecord(
+      const rateLimitsPayload = await this.host.e2e.fetchControlPlaneRecord(
         mockOrigin,
         '/__mock/codex/ratelimits',
       );
@@ -10883,7 +9662,7 @@ export class ObservabilityService {
       return this.codexMonitor;
     }
 
-    const admin = getCodexRuntimeService().admin();
+    const admin = this.host.codexAdmin();
     const unsubscribes: Array<() => void> = [];
     const monitor: CodexUsageMonitor = {
       readAccount: async (refreshToken): Promise<GetAccountResponse> => {
@@ -10954,8 +9733,18 @@ export class ObservabilityService {
     );
   }
 
+  /**
+   * While start-up holds plan events, their usage events wait too, so a crash
+   * cannot store an event whose plan count was never written.
+   */
+  private holdsUsageMetricWrites(): boolean {
+    return (this.plansAwaitingCountedIds?.length ?? 0) > 0;
+  }
+
   private hasPendingUsageMetricWrites(): boolean {
-    return this.pendingUsageMetricEvents.length > 0;
+    return (
+      !this.holdsUsageMetricWrites() && this.pendingUsageMetricEvents.length > 0
+    );
   }
 
   private hasPendingTranscriptIndexWrites(): boolean {
@@ -11148,6 +9937,7 @@ export class ObservabilityService {
   }
 
   private async flushUsageMetricQueue(): Promise<boolean> {
+    if (this.holdsUsageMetricWrites()) return false;
     return this.flushJsonlQueue({
       pending: () => this.pendingUsageMetricEvents,
       replacePending: (entries) => {
@@ -11300,9 +10090,10 @@ export class ObservabilityService {
       return;
     }
 
-    this.retentionDaysLoadPromise = readPreferencesFile()
-      .then((preferences) => {
-        this.retentionDays = preferences.auditRetentionDays;
+    this.retentionDaysLoadPromise = this.host
+      .readAuditRetentionDays()
+      .then((days) => {
+        if (days !== undefined) this.retentionDays = days;
       })
       .catch(() => {})
       .finally(() => {

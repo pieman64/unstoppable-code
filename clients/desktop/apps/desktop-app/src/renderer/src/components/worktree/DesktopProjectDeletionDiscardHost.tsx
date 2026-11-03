@@ -19,6 +19,7 @@ export function DesktopProjectDeletionDiscardHost(): JSX.Element {
       worktreeId,
       warnings,
       removedTemporaryWorkspaceId,
+      retainedArchive,
     }: ProjectDeletionItemDiscarded): void => {
       for (const warning of warnings) {
         useGitHubStore.getState().addToast(warning, 'warning', undefined, {
@@ -27,6 +28,8 @@ export function DesktopProjectDeletionDiscardHost(): JSX.Element {
           worktreeId,
         });
       }
+      // CAN-5338: a retained archive has no row or panels to drop.
+      if (retainedArchive) return;
       void useProjectsStore
         .getState()
         .reconcileArchivedWorktree(

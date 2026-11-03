@@ -215,9 +215,9 @@ describe('AppAdvisorProjectAgentAccessControl', () => {
       'app-advisor-project-agent-access-owner-organization-beta-id',
     );
     const unselected = mark('app-advisor-project-agent-access-owner-personal');
-    // ChoiceMark: a rounded 16px box, filled with the page ink when checked.
+    // ChoiceMark: a rounded 16px box, filled with the accent when checked.
     expect(selected?.className).toContain('rounded');
-    expect(selected?.className).toContain('bg-fg-primary');
+    expect(selected?.className).toContain('bg-accent');
     expect(selected?.querySelector('svg')).not.toBeNull();
     expect(unselected?.className).toContain('ring-fg-quaternary');
     expect(unselected?.querySelector('svg')).toBeNull();
@@ -284,7 +284,7 @@ describe('AppAdvisorProjectAgentAccessControl', () => {
     expect(staleRow.textContent).toContain('Unavailable organization');
     expect(staleRow.textContent).toContain('stale-org-id');
     expect(staleRow.getAttribute('data-unavailable')).toBe('true');
-    expect(staleRow.getAttribute('aria-pressed')).toBe('true');
+    expect(staleRow.getAttribute('aria-checked')).toBe('true');
     expect(staleRow.hasAttribute('aria-disabled')).toBe(false);
 
     click('app-advisor-project-agent-access-owner-organization-stale-org-id');

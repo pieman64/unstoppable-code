@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import { act, type JSX } from 'react';
+import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   TrackedPlanData,
@@ -12,6 +13,7 @@ import type {
   PipelineData,
 } from '@canopy/desktop-shared/types/pipeline';
 import type { PlanReadyPipelineModalOnRun } from '@/components/chat/PlanReadyPipelineModal';
+import { chooseSettingsOptionSync } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 // The follow-up actions of a Plan panel's header (Share, the plan_ready
 // pipeline, Implement) with the real header, follow-up hook, and share
@@ -455,13 +457,10 @@ describe('Plan panel share', () => {
     await flush();
 
     const select = query('plan-panel-revision-select');
-    if (!(select instanceof HTMLSelectElement)) {
+    if (!(select instanceof HTMLButtonElement)) {
       throw new Error('Expected the revision select');
     }
-    act(() => {
-      select.value = '1';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseSettingsOptionSync(select, '1');
 
     const share = query('plan-panel-share');
     if (!(share instanceof HTMLButtonElement)) {
@@ -598,10 +597,80 @@ describe('Plan panel plan_ready pipeline', () => {
 });
 
 describe('Plan panel Implement', () => {
+  it.each(['approval', 'admission'] as const)(
+    'disables both choices and rechecks an open workflow dialog while chat %s is pending',
+    async (stage) => {
+      const send = slowSend();
+      let finishApproval: (() => void) | undefined;
+      if (stage === 'approval')
+        updateMock.mockImplementationOnce(
+          () =>
+            new Promise<TrackedPlanData>((resolve) => {
+              finishApproval = (): void =>
+                resolve(makePlan({ reviewStatus: 'approved' }));
+            }),
+        );
+      useChatStore.setState({ dispatchChatCommand: send.dispatchChatCommand });
+      renderPanel();
+      await flush();
+      await click('plan-panel-execute');
+      await click('plan-panel-execute-pipeline');
+      let pending: Promise<{ chatId: string }> | undefined;
+      try {
+        await act(async () => {
+          pending = implementTrackedPlan(makePlan());
+          await Promise.resolve();
+        });
+        await flush();
+        await click('plan-panel-execute');
+        for (const action of ['implement', 'pipeline']) {
+          expect(
+            query(`plan-panel-execute-${action}`)?.getAttribute('disabled'),
+          ).not.toBeNull();
+        }
+        await click('mock-plan-ready-run');
+        expect(executeMock).not.toHaveBeenCalled();
+      } finally {
+        finishApproval?.();
+        await flush();
+        send.settle();
+        await act(async () => {
+          await pending;
+        });
+      }
+    },
+  );
+
+  it('blocks chat and duplicate workflow dispatch while workflow admission is pending', async () => {
+    let finishWorkflow: (() => void) | undefined;
+    const result = new Promise<ExecuteResult>((resolve) => {
+      finishWorkflow = (): void => resolve({ success: true, data: {} });
+    });
+    executeMock.mockReturnValueOnce(result);
+    const dispatchChatCommand = jest.fn().mockResolvedValue('accepted');
+    useChatStore.setState({ dispatchChatCommand });
+    renderPanel();
+    await flush();
+    try {
+      await startPlanReadyRun('mock-plan-ready-run');
+      await expect(implementTrackedPlan(makePlan())).rejects.toThrow(
+        'already in progress',
+      );
+      expect(dispatchChatCommand).not.toHaveBeenCalled();
+      await click('mock-plan-ready-run');
+      expect(executeMock).toHaveBeenCalledTimes(1);
+    } finally {
+      finishWorkflow?.();
+      await flush();
+    }
+  });
+
   it("sends Implement to the plan's worktree chat while another worktree is selected and keeps the panel", async () => {
-    const sendMessage = jest.fn().mockResolvedValue(undefined);
+    const dispatchChatCommand = jest
+      .fn<Promise<'accepted'>, [unknown, unknown]>()
+      .mockResolvedValue('accepted');
     useChatStore.setState({
-      sendMessage,
+      dispatchChatCommand,
       selectedWorktree: { projectId: 'proj-other', worktreeId: 'wt-other' },
       worktreeChats: {
         'proj-other/wt-other': {
@@ -619,14 +688,16 @@ describe('Plan panel Implement', () => {
     await flush();
 
     expect(addToastMock).not.toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      'Implement this plan:\n\n# My Plan\n\nLatest body',
-      undefined,
-      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID, chatId: 'owning-chat' },
-      undefined,
-      expect.objectContaining({ throwOnDispatchFailure: true }),
-    );
+    expect(dispatchChatCommand).toHaveBeenCalledTimes(1);
+    const scope: unknown = dispatchChatCommand.mock.calls[0]?.[0];
+    const command: unknown = dispatchChatCommand.mock.calls[0]?.[1];
+    expect(scope).toEqual({ projectId: PROJECT_ID, worktreeId: WORKTREE_ID });
+    expect(command).toMatchObject({
+      type: 'chat.send_message',
+      chatId: 'owning-chat',
+      text: 'Implement this plan:\n\n# My Plan\n\nLatest body',
+      trackedPlanImplementation: { planId: 'plan-1' },
+    });
     // The plan is approved in its own worktree, its chat comes forward, and
     // the plan panel stays open.
     expect(updateMock).toHaveBeenCalledWith(
@@ -646,20 +717,20 @@ describe('Plan panel Implement', () => {
   });
 
   /** A send that stays in flight until the test settles it. */
-  function slowSend(): { sendMessage: jest.Mock; settle: () => void } {
+  function slowSend(): { dispatchChatCommand: jest.Mock; settle: () => void } {
     let settle: () => void = () => undefined;
-    const sendMessage = jest.fn(
-      (): Promise<void> =>
-        new Promise<void>((resolve) => {
-          settle = resolve;
+    const dispatchChatCommand = jest.fn(
+      (): Promise<string> =>
+        new Promise<string>((resolve) => {
+          settle = (): void => resolve('accepted');
         }),
     );
-    return { sendMessage, settle: () => settle() };
+    return { dispatchChatCommand, settle: () => settle() };
   }
 
   it('shows the chat right away, before the send settles, and only once', async () => {
     const send = slowSend();
-    useChatStore.setState({ sendMessage: send.sendMessage });
+    useChatStore.setState({ dispatchChatCommand: send.dispatchChatCommand });
     const store = usePanelLayoutStore.getState();
     expect(store.collapseGroup(KEY, 'group-chat')).toBe(true);
     store.focusGroup(KEY, 'group-plan');
@@ -670,9 +741,11 @@ describe('Plan panel Implement', () => {
     await click('plan-panel-execute-implement');
     await flush();
 
-    // The send is still in flight, yet the chat is already in view.
-    expect(send.sendMessage).toHaveBeenCalledTimes(1);
-    expect(updateMock).not.toHaveBeenCalled();
+    // The send is still in flight, yet the chat is already in view. Main
+    // links an implementation only to an approved plan, so it was approved
+    // first.
+    expect(send.dispatchChatCommand).toHaveBeenCalledTimes(1);
+    expect(updateMock).toHaveBeenCalledTimes(1);
     let layout = usePanelLayoutStore.getState().layouts[KEY];
     expect(layout.groups['group-chat'].collapsed).toBeUndefined();
     expect(layout.groups['group-chat'].activePanelId).toBe(
@@ -697,7 +770,7 @@ describe('Plan panel Implement', () => {
     // chat/panel bridge places on its next pass. The plan is maximized.
     const send = slowSend();
     useChatStore.setState({
-      sendMessage: send.sendMessage,
+      dispatchChatCommand: send.dispatchChatCommand,
       worktreeChats: { [KEY]: { tabs: [], activeTabId: '' } },
       ensureWorktreeHasChatTab: jest.fn((): Promise<void> => {
         useChatStore.setState({
@@ -725,12 +798,13 @@ describe('Plan panel Implement', () => {
     await click('plan-panel-execute-implement');
     await flush();
 
-    expect(send.sendMessage).toHaveBeenCalledWith(
-      'Implement this plan:\n\n# My Plan\n\nLatest body',
-      undefined,
-      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID, chatId: 'new-chat' },
-      undefined,
-      expect.objectContaining({ throwOnDispatchFailure: true }),
+    expect(send.dispatchChatCommand).toHaveBeenCalledWith(
+      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+      expect.objectContaining({
+        type: 'chat.send_message',
+        chatId: 'new-chat',
+        text: 'Implement this plan:\n\n# My Plan\n\nLatest body',
+      }),
     );
     const location = findPanelByInstanceKey(KEY, 'chat:new-chat');
     expect(location?.groupId).toBe('group-chat');
@@ -907,7 +981,7 @@ describe('Plan panel status (CAN-5166)', () => {
   );
 
   it.each(['pending', 'running', 'paused'] as const)(
-    'shows Implementing for a %s linked run and opens it from View run',
+    'shows Implementing in workflow for a %s linked run and opens it from Open',
     async (status) => {
       seedPlan(makePlan({ reviewStatus: 'approved' }));
       usePipelineRunsStore.setState({
@@ -917,10 +991,14 @@ describe('Plan panel status (CAN-5166)', () => {
       await flush();
 
       expect(query('plan-panel-status-badge')?.textContent).toBe(
-        'Implementing',
+        'Implementing in workflow',
       );
-      expect(executeIsPrimary()).toBe(false);
-      await click('plan-panel-status-note-run');
+      expect(query('plan-panel-execute')).toBeNull();
+      expect(query('plan-panel-status-note-run')).toBeNull();
+      expect(query('plan-panel-open')?.getAttribute('aria-label')).toBe(
+        'Open run',
+      );
+      await click('plan-panel-open');
       expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
         expect.objectContaining({ executionId: 'run-1' }),
       );
@@ -929,7 +1007,7 @@ describe('Plan panel status (CAN-5166)', () => {
 
   it.each([
     ['failure', 'success', 'Approved'],
-    ['success', 'failure', 'Implemented'],
+    ['success', 'failure', 'Implemented in workflow'],
   ] as const)(
     'uses the root %s outcome instead of its nested %s outcome',
     async (rootStatus, childStatus, expectedLabel) => {
@@ -958,7 +1036,7 @@ describe('Plan panel status (CAN-5166)', () => {
       await click(
         rootStatus === 'failure'
           ? 'plan-panel-status-note-run-outcome'
-          : 'plan-panel-status-note-run',
+          : 'plan-panel-open',
       );
       expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
         expect.objectContaining({ executionId: 'root-run' }),
@@ -977,7 +1055,9 @@ describe('Plan panel status (CAN-5166)', () => {
     renderPanel();
     await flush();
 
-    expect(query('plan-panel-status-badge')?.textContent).toBe('Implemented');
+    expect(query('plan-panel-status-badge')?.textContent).toBe(
+      'Implemented in workflow',
+    );
     expect(query('plan-panel-status-note-outcome')?.textContent).toBe(
       'Workflow failed·View run',
     );
@@ -985,10 +1065,146 @@ describe('Plan panel status (CAN-5166)', () => {
     expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
       expect.objectContaining({ executionId: 'run-retry' }),
     );
-    await click('plan-panel-status-note-run');
+    await click('plan-panel-open');
     expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ executionId: 'run-ok' }),
     );
+    // Retries stay behind the overflow menu, keyboard-operable.
+    await click('plan-panel-more');
+    expect(query('plan-panel-more')?.getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+    expect(query('plan-panel-execute-pipeline')?.textContent).toBe(
+      'Run again as workflow',
+    );
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(query('plan-panel-execute-pipeline')).toBeNull();
+  });
+
+  describe('linked chat implementation (CAN-5359)', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'implement-1',
+      startedAt: '2026-06-03T01:00:00.000Z',
+    };
+
+    function seedChat(
+      implementation: ChatTab['trackedPlanImplementation'],
+      runtimeStatus?: 'streaming' | 'idle',
+    ): void {
+      seedPlan(makePlan({ reviewStatus: 'approved' }));
+      useChatStore.setState({
+        worktreeChats: {
+          [KEY]: {
+            tabs: [
+              {
+                ...chatTab('owning-chat'),
+                trackedPlanId: 'plan-1',
+                trackedPlanImplementation: implementation,
+              },
+            ],
+            activeTabId: 'owning-chat',
+          },
+        },
+        runtimeByChatId: runtimeStatus
+          ? {
+              'owning-chat': {
+                status: runtimeStatus,
+                queuedMessageIds: [],
+                activeTurn: { userMessageId: 'implement-1', startedAt: 1 },
+              },
+            }
+          : {},
+      });
+    }
+
+    it('rechecks an open workflow dialog against newly admitted active chat evidence', async () => {
+      renderPanel();
+      await flush();
+      await click('plan-panel-execute');
+      await click('plan-panel-execute-pipeline');
+      await act(async () => {
+        seedChat(link, 'streaming');
+        await Promise.resolve();
+      });
+      await flush();
+      await click('mock-plan-ready-run');
+      expect(executeMock).not.toHaveBeenCalled();
+    });
+
+    it('follows the linked turn from Implementing in chat to Finished in chat, with Open replacing Execute', async () => {
+      seedChat(link, 'streaming');
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe(
+        'Implementing in chat',
+      );
+      expect(query('plan-panel-status-badge-spinner')).not.toBeNull();
+      expect(query('plan-panel-execute')).toBeNull();
+      expect(query('plan-panel-status-note-chat')).toBeNull();
+      expect(query('plan-panel-open')?.getAttribute('aria-label')).toBe(
+        'Open chat',
+      );
+      await click('plan-panel-more');
+      for (const action of ['pipeline', 'implement']) {
+        expect(
+          query(`plan-panel-execute-${action}`)?.hasAttribute('disabled'),
+        ).toBe(true);
+      }
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      });
+
+      act(() => {
+        seedChat(
+          {
+            ...link,
+            outcome: 'completed',
+            endedAt: '2026-06-03T01:05:00.000Z',
+          },
+          'idle',
+        );
+      });
+      expect(query('plan-panel-status-badge')?.textContent).toBe(
+        'Finished in chat',
+      );
+      expect(query('plan-panel-execute')).toBeNull();
+      usePanelLayoutStore.getState().focusGroup(KEY, 'group-plan');
+      await click('plan-panel-open');
+      expect(usePanelLayoutStore.getState().layouts[KEY].activeGroupId).toBe(
+        'group-chat',
+      );
+    });
+
+    it('does not manufacture progress for a link without live or terminal evidence', async () => {
+      seedChat(link);
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+      expect(query('plan-panel-execute')).not.toBeNull();
+      expect(query('plan-panel-open')).toBeNull();
+    });
+
+    it('ignores a link for an earlier revision', async () => {
+      seedChat(
+        {
+          ...link,
+          revisionNumber: 1,
+          outcome: 'completed',
+          endedAt: '2026-06-03T01:05:00.000Z',
+        },
+        'idle',
+      );
+      renderPanel();
+      await flush();
+
+      expect(query('plan-panel-status-badge')?.textContent).toBe('Approved');
+    });
   });
 
   it('keeps Approved for a cancelled run on the current revision', async () => {
@@ -1023,7 +1239,9 @@ describe('Plan panel status (CAN-5166)', () => {
     });
     renderPanel();
     await flush();
-    expect(query('plan-panel-status-badge')?.textContent).toBe('Implemented');
+    expect(query('plan-panel-status-badge')?.textContent).toBe(
+      'Implemented in workflow',
+    );
     act(() => {
       usePipelineRunsStore.setState({ summaries: [] });
     });

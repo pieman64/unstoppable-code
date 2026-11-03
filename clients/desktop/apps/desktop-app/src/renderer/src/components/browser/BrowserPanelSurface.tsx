@@ -1,4 +1,3 @@
-import { Button } from '@canopy/ui-shared';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
   forgetWarmBrowserWorktree,
@@ -18,7 +17,7 @@ import { ensureLabsExperimentsSubscription } from '@/stores/labsExperimentsStore
 import { useSurfaceFindStore } from '@/stores/surfaceFindStore';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { BrowserPane } from './BrowserPane';
-import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { ErrorState } from '@canopy/ui-shared/components';
 
 export interface BrowserPanelSurfaceProps {
   projectId: string;
@@ -168,23 +167,14 @@ export function BrowserPanelSurface({
     // placeholder renders; a successful Retry completes the pending
     // migration and resumes layout persistence.
     content = (
-      <div
-        data-testid="browser-panel-hydration-error"
-        role="alert"
-        className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-sm fg-secondary"
-      >
-        <div className="font-medium fg-primary">Unable to open Browser</div>
-        <div>Browser state could not be restored.</div>
-        <Button
-          variant="secondary"
-          size="compact"
-          className="mt-1"
-          onClick={handleRetry}
-          disabled={retrying}
-        >
-          <RefreshIcon size={14} />
-          Retry
-        </Button>
+      <div className="flex h-full flex-col justify-center">
+        <ErrorState
+          space="panel"
+          testId="browser-panel-hydration-error"
+          message="Couldn't restore Browser."
+          onRetry={handleRetry}
+          retrying={retrying}
+        />
       </div>
     );
   } else if (snapshot !== undefined) {

@@ -3,7 +3,10 @@
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { fileViewerKey } from '@canopy/app-state';
 import type { PortalFileReadPayload } from '@canopy/protocol/portal';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import type {
   FileContentScrollBinding,
   FileDocumentBytesResult,
@@ -168,7 +171,9 @@ export function FileNotebookPreview({
     if (full.status === 'loading') {
       return (
         <div className="flex min-h-0 flex-1 items-center justify-center">
-          <LoadingPlaceholder />
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       );
     }

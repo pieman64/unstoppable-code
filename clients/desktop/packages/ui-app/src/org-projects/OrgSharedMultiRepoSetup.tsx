@@ -401,9 +401,9 @@ function ConnectedSetup({
         </p>
       )}
       {navigationError && (
-        <p role="alert" className="text-s fg-secondary">
+        <Notice role="alert">
           Your project is ready. Open it from Projects.
-        </p>
+        </Notice>
       )}
       <div className="flex flex-wrap gap-2">
         {onClose && (
@@ -450,7 +450,7 @@ function ConnectedSetup({
             disabled={state.busy}
             onClick={() => void state.submit()}
           >
-            Retry the same project
+            Try the same project again
           </Button>
         )}
         {ready && onReady && (
@@ -555,6 +555,6 @@ function statusText(
     case 'creating':
       return 'Creating your shared project… You can close this view while setup continues.';
     default:
-      return 'Creation hasn’t been confirmed. Retry to check the same project.';
+      return 'Creation hasn’t been confirmed. Try again to check the same project.';
   }
 }

@@ -31,6 +31,7 @@ import {
   CostDetailSection,
   CostBillingSection,
   CostValueRow,
+  CostValueRows,
 } from './cost-detail-parts';
 import {
   CostUnavailableState,
@@ -301,7 +302,7 @@ function ModelRows({
   readonly rows: readonly CostModelRow[];
 }): JSX.Element {
   return (
-    <dl className="flex flex-col gap-1">
+    <CostValueRows>
       {rows.map((row) => (
         <CostValueRow
           key={row.model}
@@ -309,7 +310,7 @@ function ModelRows({
           value={formatCostTotal(row)}
         />
       ))}
-    </dl>
+    </CostValueRows>
   );
 }
 

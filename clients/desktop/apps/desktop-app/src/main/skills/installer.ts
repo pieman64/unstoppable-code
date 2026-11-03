@@ -67,52 +67,71 @@ export async function installSkill(
     throw new Error(`Unsafe skill directory path: ${skillDir}`);
   }
 
-  // Clean existing directory if present, then create fresh
-  if (fs.existsSync(skillDir)) {
-    fs.rmSync(skillDir, { recursive: true, force: true });
-  }
-  fs.mkdirSync(skillDir, { recursive: true });
-
-  // Find all files under this skill's source path
-  const prefix = skill.sourcePath === '.' ? '' : skill.sourcePath + '/';
-  const skillFiles = treeEntries.filter((entry) => {
-    if (entry.type !== 'blob') return false;
-    if (prefix && !entry.path.startsWith(prefix)) return false;
-    if (!prefix && entry.path.includes('/')) {
-      // When sourcePath is root, include all files — file-level exclusion
-      // checks below (isExcluded, isPathInside) handle .git, underscored dirs, etc.
+  // Download beside the destination. A network failure must leave the entire
+  // existing install (including local-only files) untouched.
+  fs.mkdirSync(sourceDir, { recursive: true });
+  const stagingRoot = fs.mkdtempSync(path.join(sourceDir, '.install-'));
+  const stagedSkillDir = path.join(stagingRoot, 'next');
+  const backupDir = path.join(stagingRoot, 'previous');
+  let retainBackup = false;
+  try {
+    fs.mkdirSync(stagedSkillDir);
+    // Find all files under this skill's source path
+    const prefix = skill.sourcePath === '.' ? '' : skill.sourcePath + '/';
+    const skillFiles = treeEntries.filter((entry) => {
+      if (entry.type !== 'blob') return false;
+      if (prefix && !entry.path.startsWith(prefix)) return false;
+      if (!prefix && entry.path.includes('/')) {
+        // When sourcePath is root, include all files — file-level exclusion
+        // checks below (isExcluded, isPathInside) handle .git, underscored dirs, etc.
+        return true;
+      }
       return true;
+    });
+
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    for (const fileEntry of skillFiles) {
+      // Compute relative path within the skill directory
+      const relativePath = prefix
+        ? fileEntry.path.substring(prefix.length)
+        : fileEntry.path;
+
+      // Check exclusions
+      const fileName = path.basename(relativePath);
+      const dirName = path.dirname(relativePath);
+      if (isExcluded(fileName, false)) continue;
+      if (dirName.split('/').some((segment) => isExcluded(segment, true))) {
+        continue;
+      }
+
+      const targetPath = path.join(stagedSkillDir, relativePath);
+      if (!isPathInside(stagedSkillDir, targetPath)) continue;
+
+      // Ensure parent directory exists
+      const parentDir = path.dirname(targetPath);
+      fs.mkdirSync(parentDir, { recursive: true });
+
+      // Download and write file
+      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fileEntry.path}`;
+      const content = await httpsGetBuffer(rawUrl, { headers });
+      fs.writeFileSync(targetPath, content);
     }
-    return true;
-  });
-
-  const headers: Record<string, string> = {};
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-
-  for (const fileEntry of skillFiles) {
-    // Compute relative path within the skill directory
-    const relativePath = prefix
-      ? fileEntry.path.substring(prefix.length)
-      : fileEntry.path;
-
-    // Check exclusions
-    const fileName = path.basename(relativePath);
-    const dirName = path.dirname(relativePath);
-    if (isExcluded(fileName, false)) continue;
-    if (dirName.split('/').some((segment) => isExcluded(segment, true))) {
-      continue;
+    const hadExisting = fs.existsSync(skillDir);
+    if (hadExisting) fs.renameSync(skillDir, backupDir);
+    try {
+      fs.renameSync(stagedSkillDir, skillDir);
+    } catch (error) {
+      if (hadExisting) {
+        // If restoration itself fails, keep the recoverable backup on disk.
+        retainBackup = true;
+        fs.renameSync(backupDir, skillDir);
+        retainBackup = false;
+      }
+      throw error;
     }
-
-    const targetPath = path.join(skillDir, relativePath);
-    if (!isPathInside(skillDir, targetPath)) continue;
-
-    // Ensure parent directory exists
-    const parentDir = path.dirname(targetPath);
-    fs.mkdirSync(parentDir, { recursive: true });
-
-    // Download and write file
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${fileEntry.path}`;
-    const content = await httpsGetBuffer(rawUrl, { headers });
-    fs.writeFileSync(targetPath, content);
+  } finally {
+    if (!retainBackup) fs.rmSync(stagingRoot, { recursive: true, force: true });
   }
 }

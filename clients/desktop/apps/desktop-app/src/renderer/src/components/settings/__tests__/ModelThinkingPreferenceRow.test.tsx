@@ -125,14 +125,14 @@ describe('ModelThinkingPreferenceRow — Ollama catalog gating', () => {
     ).toBeTruthy();
   });
 
-  it('uses the shared capsule dropdown in two equal 144px columns', () => {
+  it('uses the shared rounded dropdown in two equal 144px columns', () => {
     const host = mountRow();
     const triggers = host.querySelectorAll<HTMLButtonElement>(
       'button[role="combobox"]',
     );
     expect(triggers).toHaveLength(2);
     triggers.forEach((trigger: HTMLButtonElement) => {
-      expect(trigger.classList.contains('rounded-full')).toBe(true);
+      expect(trigger.classList.contains('rounded-row')).toBe(true);
       expect(trigger.classList.contains('h-7')).toBe(true);
     });
     expect(host.querySelectorAll('.w-36')).toHaveLength(2);

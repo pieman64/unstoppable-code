@@ -1,4 +1,7 @@
-import type { JSX, ReactNode } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
+import { TextInput } from './Field';
+import { SettingsRowsRow, SettingsRowsSubRow } from './settings/SettingsRows';
+import { ToggleSwitch } from './ToggleSwitch';
 
 export interface AutoArchiveSettingsControlProps {
   readonly enabled: boolean;
@@ -11,11 +14,19 @@ export interface AutoArchiveSettingsControlProps {
   readonly onEnabledChange: (enabled: boolean) => void;
   readonly onDaysChange: (days: number) => void;
   readonly daysLabel?: string;
+  /**
+   * @deprecated The control now uses the Settings row text sizes; kept so
+   * existing callers compile.
+   */
   readonly textSize?: 's' | 'sm';
   readonly children?: ReactNode;
 }
 
-/** Callback-driven Auto Delete settings shared by desktop and portal hosts. */
+/**
+ * Callback-driven Auto Delete settings shared by desktop and portal hosts:
+ * a Settings row with the on/off switch, and, while it is on, the inactivity
+ * period as a dependent sub-row followed by the host's own options.
+ */
 export function AutoArchiveSettingsControl({
   enabled,
   days,
@@ -27,53 +38,64 @@ export function AutoArchiveSettingsControl({
   onEnabledChange,
   onDaysChange,
   daysLabel = 'days of inactivity',
-  textSize = 'sm',
   children,
 }: AutoArchiveSettingsControlProps): JSX.Element {
-  const textClass = textSize === 's' ? 'text-s' : 'text-sm';
+  const switchId = useId();
+  const daysId = useId();
   return (
     <div className="mt-4">
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(event) => onEnabledChange(event.target.checked)}
-          data-testid={toggleTestId}
-          className="rounded"
-        />
-        <span className={`${textClass} font-medium fg-primary`}>
-          Auto delete
-        </span>
-      </label>
-      <p className="mt-1 text-xs fg-secondary">{description}</p>
-      {enabled && (
-        <div className="mt-3 space-y-3">
-          <div className="flex items-center gap-2">
-            <span className={`${textClass} fg-secondary`}>After</span>
-            <input
-              type="number"
-              value={days}
-              onChange={(event) =>
-                onDaysChange(
-                  Math.max(
-                    1,
-                    Math.min(
-                      maxDays,
-                      Number.parseInt(event.target.value, 10) || fallbackDays,
-                    ),
-                  ),
-                )
+      <SettingsRowsRow
+        label="Auto delete"
+        htmlFor={switchId}
+        description={description}
+        control={
+          <ToggleSwitch
+            id={switchId}
+            checked={enabled}
+            label="Auto delete"
+            onChange={onEnabledChange}
+            dataTestId={toggleTestId}
+          />
+        }
+      >
+        {enabled ? (
+          <div className="space-y-3">
+            <SettingsRowsSubRow
+              label="After"
+              htmlFor={daysId}
+              control={
+                <>
+                  <div className="w-20">
+                    <TextInput
+                      id={daysId}
+                      density="settings"
+                      type="number"
+                      value={days}
+                      onChange={(event) =>
+                        onDaysChange(
+                          Math.max(
+                            1,
+                            Math.min(
+                              maxDays,
+                              Number.parseInt(event.target.value, 10) ||
+                                fallbackDays,
+                            ),
+                          ),
+                        )
+                      }
+                      min={1}
+                      max={maxDays}
+                      data-testid={daysTestId}
+                    />
+                  </div>
+                  <span className="text-s fg-secondary">{daysLabel}</span>
+                </>
               }
-              min={1}
-              max={maxDays}
-              data-testid={daysTestId}
-              className={`w-20 rounded-lg bg-secondary/30 px-3 py-2 ${textClass} fg-primary outline-none ring-1 ring-inset ring-line-base`}
             />
-            <span className={`${textClass} fg-secondary`}>{daysLabel}</span>
+            {children}
           </div>
-          {children}
-        </div>
-      )}
+        ) : null}
+      </SettingsRowsRow>
     </div>
   );
 }

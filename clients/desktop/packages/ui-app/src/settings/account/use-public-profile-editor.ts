@@ -24,7 +24,11 @@ import type {
   SocialLink,
 } from '@canopy/protocol/profile';
 import { useSettingsClient } from '../host';
-import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
+import {
+  useSettingsErrorCopy,
+  type KnownSettingsError,
+  type SettingsFailure,
+} from '../errors';
 
 /** Failures of the public profile save that have their own copy. */
 const SAVE_PUBLIC_PROFILE_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -209,7 +213,7 @@ function parsePreview(value: unknown): PublicProfileArtifactDetail | null {
 
 export interface UsePublicProfileEditorResult {
   busy: boolean;
-  error: string | null;
+  error: SettingsFailure | null;
   clearError: () => void;
   /** PATCH settings; resolves to the saved settings, or null on failure. */
   save: (
@@ -261,7 +265,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy('settings.account.public-profile');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const clearError = useCallback((): void => {
     setError(null);
@@ -279,7 +283,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
         );
         if (!settings) {
           setError(
-            errorCopy.actionCopy(new Error('Invalid profile response'), {
+            errorCopy.actionFailure(new Error('Invalid profile response'), {
               action: 'save your profile',
             }),
           );
@@ -288,7 +292,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
         return settings;
       } catch (err: unknown) {
         setError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action: 'save your profile',
             known: SAVE_PUBLIC_PROFILE_KNOWN_ERRORS,
           }),
@@ -394,7 +398,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
         return true;
       } catch (err: unknown) {
         setError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action: 'add this to your profile',
             known: PUBLISH_ARTIFACT_KNOWN_ERRORS,
           }),
@@ -422,7 +426,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
         return true;
       } catch (err: unknown) {
         setError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action: 'remove this from your profile',
           }),
         );
@@ -445,7 +449,7 @@ export function usePublicProfileEditor(): UsePublicProfileEditorResult {
         return true;
       } catch (err: unknown) {
         setError(
-          errorCopy.actionCopy(err, { action: 'revoke the share link' }),
+          errorCopy.actionFailure(err, { action: 'revoke the share link' }),
         );
         return false;
       } finally {

@@ -9,6 +9,7 @@ import { useDroppable } from '@dnd-kit/core';
 import type { Job, Step } from '@canopy/desktop-shared/types/pipeline';
 import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
+import { Badge, Count } from '@canopy/ui-shared/components';
 import { StepCard } from './StepCard';
 import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
 import { Button } from '@canopy/ui-shared/components';
@@ -16,6 +17,7 @@ import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   PlusIcon as AppCatalogPlusIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { EmptyStateRow } from '@canopy/ui-shared/components';
 
 interface JobCardProps {
   jobId: string;
@@ -126,20 +128,13 @@ export function JobCard({
         {needs.length > 0 && (
           <div className="flex items-center gap-1 shrink-0">
             {needs.map((dep: string) => (
-              <span
-                key={dep}
-                className="px-1.5 py-0.5 text-3xs font-medium fg-secondary bg-secondary rounded"
-              >
-                {dep}
-              </span>
+              <Badge key={dep}>{dep}</Badge>
             ))}
           </div>
         )}
 
         {/* Step count badge */}
-        <span className="shrink-0 px-1.5 py-0.5 text-3xs font-medium fg-secondary bg-secondary rounded">
-          {job.steps.length}
-        </span>
+        <Count value={job.steps.length} className="shrink-0" />
 
         {/* Add step button */}
         {!readonly && (
@@ -162,9 +157,7 @@ export function JobCard({
       {!collapsed && (
         <div ref={setDropRef} className="px-2 py-2 space-y-1.5 min-h-10">
           {job.steps.length === 0 ? (
-            <div className="flex items-center justify-center py-4">
-              <p className="text-xs fg-secondary">No steps yet</p>
-            </div>
+            <EmptyStateRow title="No steps yet" />
           ) : (
             <SortableContext
               items={sortableStepIds}

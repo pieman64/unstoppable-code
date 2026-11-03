@@ -16,7 +16,7 @@ import {
   useCleanChatLook,
   type ToolCallStatus,
 } from '@canopy/ui-shared/components';
-import { CanopyLogo } from '@/components/CanopyLogo';
+import { BrandLogo } from '@/components/BrandLogo';
 import { brand } from '@/lib/brand';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
 import type { ToolResult } from './types';
@@ -144,11 +144,11 @@ export const ToolCallBlock = memo(function ToolCallBlock({
   const displayIcon =
     isAppActionToolName(toolName, toolDisplayScope) &&
     !isCodeGraphToolName(toolName, toolDisplayScope) ? (
-      <CanopyLogo width={14} height={14} aria-hidden="true" />
+      <BrandLogo width={14} height={14} aria-hidden />
     ) : (
       icon
     );
-  const appIcon = <CanopyLogo width={14} height={14} aria-hidden="true" />;
+  const appIcon = <BrandLogo width={14} height={14} aria-hidden />;
 
   const toolResult = result
     ? toolCallResultFrom({

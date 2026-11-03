@@ -221,6 +221,11 @@ function StatusReasonPanel({
       intent="attention"
       className="mb-4"
       title={executionStatus === 'running' ? 'Steps paused' : 'Run paused'}
+      detail={
+        error || scheduleError
+          ? [error, scheduleError].filter(Boolean).join(' ')
+          : undefined
+      }
       actionsPlacement={actionCount >= 3 ? 'below' : 'trailing'}
       actions={
         <>
@@ -278,10 +283,6 @@ function StatusReasonPanel({
             : ''}{' '}
         </span>
       ))}
-      {error ? <span className="fg-destructive">{error} </span> : null}
-      {scheduleError ? (
-        <span className="fg-destructive">{scheduleError}</span>
-      ) : null}
     </Notice>
   );
 }

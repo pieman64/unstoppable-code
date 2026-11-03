@@ -1,7 +1,13 @@
-import { useCallback, useEffect, useId, useRef, type JSX } from 'react';
+import {
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import { PipelineIcon } from '@canopy/ui-shared/icons';
-import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { hasEscapeEnabledOverlay } from '@canopy/ui-shared/components';
+import { DialogModal } from '@canopy/ui-shared/components';
 import type { PipelineDetailOwner } from '@/stores/pipelineDetailCoordinator';
 import { PipelineExecutionDetail } from './details/PipelineExecutionDetail';
 import type {
@@ -12,7 +18,6 @@ import type {
 } from './details/pipelineDetailTypes';
 import type { PipelineExecutionActions } from './usePipelineExecutionActions';
 import { PIPELINE_DETAIL_MODAL_UI_STATE_KEY } from '@/lib/current-ui-state/pipelineDetailUiState';
-import { Button } from '@canopy/ui-shared/components';
 
 /** The current-UI slice the compatibility modal reports under. */
 export { PIPELINE_DETAIL_MODAL_UI_STATE_KEY };
@@ -50,15 +55,29 @@ interface PipelineExecutionDetailModalProps {
   detailOwner?: PipelineDetailOwner | null;
 }
 
+/** Hands the title the detail shows (it follows the breadcrumb) to the dialog header. */
+function ReportTitle({
+  title,
+  onTitle,
+}: {
+  title: string;
+  onTitle: (title: string) => void;
+}): null {
+  useLayoutEffect(() => {
+    onTitle(title);
+  }, [onTitle, title]);
+  return null;
+}
+
 /**
- * The compatibility takeover around {@link PipelineExecutionDetail}: a
- * fullscreen dialog with a drag-region title bar and a close button. It is
- * the host for runs the Activity run list opens and for archived runs; the
+ * The compatibility host around {@link PipelineExecutionDetail}: a page over
+ * the app (`DialogModal variant="page"`) titled with the run being shown. It
+ * is the host for runs the Activity run list opens and for archived runs; the
  * detail body carries no modal chrome of its own.
  *
- * Escape closes the modal only when nothing else handled it: a nested dialog
+ * Escape closes the page only when nothing else handled it: a nested dialog
  * or menu that owns Escape, or a search field that prevented it, keeps the
- * modal open.
+ * page open (the shared overlay Escape stack).
  */
 export function PipelineExecutionDetailModal({
   executionId,
@@ -71,28 +90,9 @@ export function PipelineExecutionDetailModal({
   detailOwner,
 }: PipelineExecutionDetailModalProps): JSX.Element {
   const titleId = `${useId()}-pipeline-execution-detail-title`;
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [title, setTitle] = useState('Workflow run');
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const ownerDocument = rootRef.current?.ownerDocument ?? document;
-    function handleKeyDown(event: KeyboardEvent): void {
-      if (
-        event.key !== 'Escape' ||
-        event.defaultPrevented ||
-        // A nested dialog or sheet owns Escape while it is open; it registers
-        // its listener after this one, so `defaultPrevented` cannot tell yet.
-        hasEscapeEnabledOverlay(ownerDocument)
-      ) {
-        return;
-      }
-      onCloseRef.current();
-    }
-    ownerDocument.addEventListener('keydown', handleKeyDown);
-    return (): void =>
-      ownerDocument.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   // A covering modal gets out of the way when an action opens another
   // surface. Report and follow-up dialogs live in `actions`, so closing only
@@ -113,60 +113,42 @@ export function PipelineExecutionDetailModal({
   );
 
   return (
-    <div
-      ref={rootRef}
-      className="fixed inset-0 z-modal flex flex-col bg-base"
-      role="presentation"
+    <DialogModal
+      variant="page"
+      onClose={onClose}
+      titleId={titleId}
+      title={
+        <span className="flex min-w-0 items-center gap-2">
+          <PipelineIcon
+            width={16}
+            height={16}
+            className="shrink-0 fg-secondary"
+          />
+          <span className="truncate">{title}</span>
+        </span>
+      }
+      inset="flush"
+      scrollableBody={false}
     >
       {/* The frame records; `PipelineExecutionDetail` blocks its own body
           (step logs, output, reports, pause inputs, job and step names). */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="flex min-h-0 flex-1 flex-col overflow-hidden"
-      >
-        <PipelineExecutionDetail
-          executionId={executionId}
-          owner={detailOwner}
-          initialTarget={{ viewStack: initialViewStack, jobId: initialJobId }}
-          revealTarget={revealTarget}
-          archivedSource={archivedSource}
-          actions={actions}
-          onNavigatedAway={handleNavigatedAway}
-          uiStateKey={
-            archivedSource === undefined
-              ? PIPELINE_DETAIL_MODAL_UI_STATE_KEY
-              : undefined
-          }
-          renderHeader={({ title }) => (
-            // Electron drag region with centered title and close button
-            <div className="electron-drag relative flex h-10 shrink-0 items-center justify-center border-b">
-              <h2
-                id={titleId}
-                className="flex min-w-0 items-center gap-2 px-28 text-m font-semibold fg-primary"
-              >
-                <PipelineIcon
-                  width={16}
-                  height={16}
-                  className="shrink-0 fg-secondary"
-                />
-                <span className="truncate">{title}</span>
-              </h2>
-              <div className="electron-no-drag absolute right-2 top-1/2 -translate-y-1/2">
-                <Button
-                  variant="ghost"
-                  iconOnly
-                  onClick={onClose}
-                  aria-label="Close"
-                >
-                  <AppCatalogCloseIcon width="20" height="20" />
-                </Button>
-              </div>
-            </div>
-          )}
-        />
-      </div>
-    </div>
+      <PipelineExecutionDetail
+        executionId={executionId}
+        owner={detailOwner}
+        initialTarget={{ viewStack: initialViewStack, jobId: initialJobId }}
+        revealTarget={revealTarget}
+        archivedSource={archivedSource}
+        actions={actions}
+        onNavigatedAway={handleNavigatedAway}
+        uiStateKey={
+          archivedSource === undefined
+            ? PIPELINE_DETAIL_MODAL_UI_STATE_KEY
+            : undefined
+        }
+        renderHeader={({ title: shownTitle }) => (
+          <ReportTitle title={shownTitle} onTitle={setTitle} />
+        )}
+      />
+    </DialogModal>
   );
 }

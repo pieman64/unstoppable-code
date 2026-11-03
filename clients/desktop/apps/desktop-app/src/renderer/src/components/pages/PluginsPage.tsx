@@ -1,8 +1,11 @@
+import type { CustomizeRowMenuItem } from '@canopy/ui-shared/components/CustomizeRowMenu';
+import { isLocalCollectionConfig } from '@canopy/protocol/collections';
 import { Button } from '@canopy/ui-shared/components';
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import {
   CustomizeSearchRow,
   CustomizeTabSections,
+  useCollectionUpdateSummaries,
   EMPTY_INSTALLED_STATUS_SNAPSHOT,
   MarketplaceUnshareAction,
   buildCustomizeTabModel,
@@ -40,6 +43,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useLayoutEffect,
   useState,
 } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
@@ -692,7 +696,14 @@ export function PluginsPage({
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
   const [addSkillsOpen, setAddSkillsOpen] = useState(false);
   const [createSkillOpen, setCreateSkillOpen] = useState(false);
-  const [createCollectionOpen, setCreateCollectionOpen] = useState(false);
+  const [collectionEditor, setCollectionEditor] = useState<{
+    id: string | null;
+    context: string;
+  } | null>(null);
+  const createCollectionOpen = collectionEditor !== null;
+  const [collectionActionError, setCollectionActionError] = useState('');
+  const collectionMutations = useRef(new Set<string>());
+  const collectionCopyReconciliation = useRef(new Set<string>());
   const [pluginShareTarget, setPluginShareTarget] =
     useState<PluginShareTarget | null>(null);
   const shareAction = useShareAction();
@@ -725,7 +736,7 @@ export function PluginsPage({
       setMcpDialogOpen(false);
       setAddSkillsOpen(false);
       setCreateSkillOpen(false);
-      setCreateCollectionOpen(false);
+      setCollectionEditor(null);
       setAgentDialog(null);
       setPendingAgentEditId(null);
       if (!preserveBrowse) {
@@ -878,6 +889,74 @@ export function PluginsPage({
         ? [...capabilityInventory.sharedSkills, linkedSharedSkill]
         : capabilityInventory.sharedSkills,
     [capabilityInventory.sharedSkills, linkedSharedSkill],
+  );
+
+  const collectionLocalRows = capabilityInventory.localCollections;
+  const collectionSharedRows = capabilityInventory.sharedCollections;
+  const refreshCollectionList = capabilityInventory.refreshLocalCollections;
+  const refreshCollectionShares = capabilityInventory.refreshSharedCollections;
+  const collectionContextKey = JSON.stringify([
+    shareScopingContext,
+    capabilityInventory.viewerId,
+  ]);
+  const collectionScope = useMemo(
+    () => ({ key: collectionContextKey }),
+    [collectionContextKey],
+  );
+  const collectionPending = useRef<typeof collectionScope | null>(null);
+  const [pendingCollectionScope, setPendingCollectionScope] = useState<
+    typeof collectionScope | null
+  >(null);
+  const [unknownCollectionCreates, setUnknownCollectionCreates] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const canCreateCollection =
+    pendingCollectionScope !== collectionScope &&
+    !unknownCollectionCreates.has(collectionContextKey);
+  const openCollectionCreate = useCallback((): void => {
+    if (
+      collectionPending.current !== collectionScope &&
+      !unknownCollectionCreates.has(collectionContextKey)
+    )
+      setCollectionEditor({ id: null, context: collectionContextKey });
+  }, [collectionScope, collectionContextKey, unknownCollectionCreates]);
+  const currentCollectionContext = useRef(collectionScope);
+  currentCollectionContext.current = collectionScope;
+  useEffect(() => {
+    setCollectionEditor(null);
+    setCollectionActionError('');
+  }, [collectionScope]);
+  const collectionSummaryPorts = useMemo(
+    () => ({
+      contextKey: collectionContextKey,
+      onRevisionMismatch: (): void => {
+        void refreshCollectionShares();
+        void refreshCollectionList();
+      },
+      refreshKey: JSON.stringify([
+        collectionLocalRows,
+        collectionSharedRows.map((share) => [share.id, share.contentHash]),
+      ]),
+      loadLocalMembers: (
+        id: string,
+      ): ReturnType<typeof window.collections.loadCollection> =>
+        window.collections.loadCollection(id),
+      loadSharedDocument: (
+        id: string,
+      ): ReturnType<typeof window.collections.getShared> =>
+        window.collections.getShared(id),
+    }),
+    [
+      refreshCollectionShares,
+      refreshCollectionList,
+      collectionContextKey,
+      collectionLocalRows,
+      collectionSharedRows,
+    ],
+  );
+  const collectionSummaries = useCollectionUpdateSummaries(
+    entries,
+    collectionSummaryPorts,
   );
 
   // A collection installed from the share install review (CAN-3710) is listed
@@ -1272,10 +1351,13 @@ export function PluginsPage({
     refreshSharedSkills,
     refreshSharedCollections,
   } = capabilityInventory;
-  // The owner's Unshare beside a Shared by me row (CAN-4840), with the same
+  // The owner's Unshare in a Shared by me row menu, with the same
   // follow-up as the shared detail's Unshare minus closing a detail.
   const renderRowUnshare = useCallback(
-    (entry: UnifiedPluginEntry): ReactNode => {
+    (
+      entry: UnifiedPluginEntry,
+      renderRow: (item: CustomizeRowMenuItem) => ReactNode,
+    ): ReactNode => {
       const share = rowUnshareTarget(entry, {
         sharedSkills: capabilityInventory.sharedSkills,
         sharedCollections: capabilityInventory.sharedCollections,
@@ -1287,7 +1369,9 @@ export function PluginsPage({
       return (
         <MarketplaceUnshareAction
           key={`${kind}:${shareId}`}
-          iconOnly
+          renderTrigger={(unshare) =>
+            renderRow({ ...unshare.item, label: 'Unshare…' })
+          }
           kind={kind}
           name={name}
           ownerName={unshareOwnerName(share.owner)}
@@ -1322,7 +1406,7 @@ export function PluginsPage({
         installedInventory: capabilityInventory.installedInventory,
         ownershipAvailable:
           ownershipAvailable && !!capabilityInventory.viewerId,
-        supportedUpdateKinds: ['skill', 'automation'],
+        supportedUpdateKinds: ['skill', 'automation', 'collection'],
         pipelineFilters,
         pipelineCategory: category,
         suggestedNames,
@@ -1483,6 +1567,12 @@ export function PluginsPage({
     }),
     [currentBrowseState, selectedSourceId, sourcePluginFilters],
   );
+  // Row actions read the latest return destination without invalidating
+  // every Browse row when only the search text changes.
+  const currentDetailReturnRef = useRef(currentDetailReturn);
+  useLayoutEffect(() => {
+    currentDetailReturnRef.current = currentDetailReturn;
+  }, [currentDetailReturn]);
   const applyBrowseDestination = useCallback(
     (destination: CapabilityMarketplaceReturnTarget): void => {
       if (destination.tab === 'sources' && !marketplaceSourcesAvailable) {
@@ -1964,14 +2054,13 @@ export function PluginsPage({
         // The Installed section lists only installed content, so a detail it
         // opens keeps the Installed breadcrumb level just like the strip.
         setEntryDetailFromInstalled(fromInstalled || installedExpanded);
-        setEntryDetailBrowseReturn(currentDetailReturn);
+        setEntryDetailBrowseReturn(currentDetailReturnRef.current);
       }
       setSelectedEntryId(entry.id);
     },
     [
       captureDetailReturnScrollTop,
       capabilityInventory.curated,
-      currentDetailReturn,
       entries,
       installedExpanded,
       servers,
@@ -1980,6 +2069,108 @@ export function PluginsPage({
   const handleSelectEntry = useCallback(
     (entry: UnifiedPluginEntry): void => selectEntry(entry, false),
     [selectEntry],
+  );
+  const refreshCollectionResources = useCallback(async (): Promise<void> => {
+    await Promise.all([
+      refreshCollectionList(),
+      refreshCollectionShares(),
+      refreshSkills(),
+      reloadMarketplaces(),
+      refreshServers(),
+    ]);
+  }, [
+    refreshCollectionList,
+    refreshCollectionShares,
+    refreshSkills,
+    reloadMarketplaces,
+    refreshServers,
+  ]);
+  const handleDuplicateCollection = useCallback(
+    async (entry: UnifiedPluginEntry): Promise<void> => {
+      if (entry.ref.type !== 'local-collection') return;
+      const context = collectionScope;
+      const key = `${context.key}/${entry.id}/duplicate`;
+      if (
+        collectionMutations.current.has(key) ||
+        collectionPending.current === context
+      )
+        return;
+      if (collectionCopyReconciliation.current.has(key)) {
+        setCollectionActionError(
+          'The copy outcome is still unknown. Check the collection list on your desktop before creating another copy.',
+        );
+        return;
+      }
+      collectionMutations.current.add(key);
+      collectionPending.current = context;
+      setPendingCollectionScope(context);
+      setCollectionActionError('');
+      try {
+        const copy = await window.collections.duplicateCollection({
+          collectionId: entry.ref.collectionId,
+        });
+        if (!isLocalCollectionConfig(copy) || !copy.revision)
+          throw new Error('The desktop returned an incomplete copy response.');
+        if (currentCollectionContext.current !== context) return;
+        // Creation is already committed. A failed refresh must never create again.
+        try {
+          await refreshCollectionList();
+        } catch {
+          if (currentCollectionContext.current === context)
+            setCollectionActionError(
+              'Collection copied, but the list could not refresh.',
+            );
+        }
+        if (currentCollectionContext.current === context)
+          setCollectionEditor({ id: copy.id, context: collectionContextKey });
+      } catch (error) {
+        // An IPC rejection cannot establish whether the non-idempotent create
+        // committed. Inventory reads alone cannot identify that outcome.
+        collectionCopyReconciliation.current.add(key);
+        if (currentCollectionContext.current !== context) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : 'Could not copy the collection.';
+        try {
+          await refreshCollectionList();
+          if (currentCollectionContext.current === context)
+            setCollectionActionError(
+              `${message} The copy outcome is still unknown. Check the refreshed list on your desktop before creating another copy.`,
+            );
+        } catch {
+          collectionCopyReconciliation.current.add(key);
+          if (currentCollectionContext.current === context)
+            setCollectionActionError(
+              `${message} Could not reconcile the collection list. Refresh before copying again.`,
+            );
+        }
+      } finally {
+        collectionMutations.current.delete(key);
+        if (collectionPending.current === context)
+          collectionPending.current = null;
+        setPendingCollectionScope((pending) =>
+          pending === context ? null : pending,
+        );
+      }
+    },
+    [collectionContextKey, collectionScope, refreshCollectionList],
+  );
+  const editCollection = useCallback(
+    (entry: UnifiedPluginEntry): void => {
+      if (entry.ref.type === 'local-collection')
+        setCollectionEditor({
+          id: entry.ref.collectionId,
+          context: collectionContextKey,
+        });
+    },
+    [collectionContextKey],
+  );
+  const duplicateCollection = useCallback(
+    (entry: UnifiedPluginEntry): void => {
+      void handleDuplicateCollection(entry);
+    },
+    [handleDuplicateCollection],
   );
   // A custom skill's row menu Edit opens its edit page (CAN-3485, CAN-4844).
   const handleEditEntry = useCallback(
@@ -1999,6 +2190,56 @@ export function PluginsPage({
     async (entry: UnifiedPluginEntry): Promise<void> => {
       if (entry.ref.type === 'skill') {
         await updateSkillEntry(entry);
+        return;
+      }
+      if (entry.ref.type === 'local-collection') {
+        const context = collectionScope;
+        setCollectionActionError('');
+        try {
+          const local = await window.collections.loadCollection(
+            entry.ref.collectionId,
+          );
+          if (currentCollectionContext.current !== context) return;
+          if (!local?.revision)
+            throw new Error(
+              'Could not read the current collection. Refresh and try again.',
+            );
+          const result = await window.collections.applySharedUpdate({
+            collectionId: local.id,
+            expectedRevision: local.revision,
+          });
+          if (currentCollectionContext.current !== context) return;
+          const limits = [
+            result.preservedLegacyMcpRefs
+              ? 'Existing MCP server references were kept because this share does not describe them.'
+              : '',
+            result.uninstalledResourceLabels?.length
+              ? `These package resources were not installed: ${result.uninstalledResourceLabels.join(', ')}.`
+              : '',
+            result.keptLocalFiles?.length
+              ? `Existing local files were kept: ${result.keptLocalFiles.join(', ')}.`
+              : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
+          setCollectionActionError(limits);
+        } catch (error) {
+          if (currentCollectionContext.current === context)
+            setCollectionActionError(
+              `${error instanceof Error ? error.message : 'Could not update the collection.'} Some resource imports may have completed. Refresh before retrying.`,
+            );
+        } finally {
+          if (currentCollectionContext.current === context) {
+            try {
+              await refreshCollectionResources();
+            } catch {
+              if (currentCollectionContext.current === context)
+                setCollectionActionError((message) =>
+                  `${message} Could not refresh the collection inventory.`.trim(),
+                );
+            }
+          }
+        }
         return;
       }
       if (entry.ref.type === 'pipeline') {
@@ -2025,6 +2266,8 @@ export function PluginsPage({
       handleSelectEntry,
       openAutomationUpdate,
       updateSkillEntry,
+      collectionScope,
+      refreshCollectionResources,
     ],
   );
   // A requirement chip on a multi-connection plugin card opens that
@@ -2154,7 +2397,7 @@ export function PluginsPage({
       if (entryUsesDetailPage(entry, servers)) {
         captureDetailReturnScrollTop();
         setEntryDetailFromInstalled(installedExpanded);
-        setEntryDetailBrowseReturn(currentDetailReturn);
+        setEntryDetailBrowseReturn(currentDetailReturnRef.current);
       }
       setSelectedEntryId(entry.id);
     },
@@ -2162,7 +2405,6 @@ export function PluginsPage({
       captureDetailReturnScrollTop,
       handleSelectEntry,
       sharedInstallInventory,
-      currentDetailReturn,
       installedExpanded,
       servers,
     ],
@@ -3211,7 +3453,9 @@ export function PluginsPage({
                   onAddMcpServer={() => setMcpDialogOpen(true)}
                   onInstallSkillsFromGitHub={() => setAddSkillsOpen(true)}
                   onCreateCustomSkill={() => setCreateSkillOpen(true)}
-                  onCreateCollection={() => setCreateCollectionOpen(true)}
+                  onCreateCollection={
+                    canCreateCollection ? openCollectionCreate : undefined
+                  }
                   onCreateAgent={
                     sharedCustomAgentsEnabled
                       ? (): void => openAgentDialog({ mode: 'create' })
@@ -3342,6 +3586,10 @@ export function PluginsPage({
                 {/* 16px under the page search row, as on every page. */}
                 <div className="mt-4">
                   <ErrorBanner error={skillUpdates.error} />
+                  <ErrorBanner
+                    error={collectionActionError}
+                    blockMessageFromReplay
+                  />
                   <CustomizeTabSections
                     tab={activeCatalogTab}
                     entries={entries}
@@ -3371,14 +3619,13 @@ export function PluginsPage({
                     ownershipAvailable={
                       ownershipAvailable && !!capabilityInventory.viewerId
                     }
-                    supportedUpdateKinds={['skill', 'automation']}
+                    supportedUpdateKinds={['skill', 'automation', 'collection']}
                     pipelineFilters={pipelineFilters}
                     pipelineCategory={category}
                     suggestedNames={suggestedNames}
                     agentsAvailable={sharedCustomAgentsEnabled}
                     projectTemplatesAvailable
                     McpServerLogoComponent={McpServerLogo}
-                    showPipelineSources
                     contextKey={JSON.stringify([
                       shareScopingContext,
                       capabilityInventory.viewerId,
@@ -3398,6 +3645,20 @@ export function PluginsPage({
                           : 'suggested',
                       )
                     }
+                    collectionUpdateSummaries={collectionSummaries}
+                    onCreateCollection={
+                      canCreateCollection ? openCollectionCreate : undefined
+                    }
+                    onEditCollection={
+                      pendingCollectionScope === collectionScope
+                        ? undefined
+                        : editCollection
+                    }
+                    onDuplicateCollection={
+                      pendingCollectionScope === collectionScope
+                        ? undefined
+                        : duplicateCollection
+                    }
                     onUpdateEntry={handleUpdateEntry}
                     onUpdateFailures={skillUpdates.reportFailures}
                     workflowActions={workflowActions}
@@ -3407,7 +3668,11 @@ export function PluginsPage({
                       void refreshSkills();
                       void refreshServers();
                       void capabilityInventory.refreshPipelines();
-                      void capabilityInventory.refreshLocalCollections();
+                      void refreshCollectionList().catch(() => {
+                        setCollectionActionError(
+                          'Could not refresh the collection inventory.',
+                        );
+                      });
                       capabilityInventory.refreshOwnedShares();
                     }}
                     entryStatus={entryStatus}
@@ -3452,7 +3717,8 @@ export function PluginsPage({
                             <Button
                               size="compact"
                               data-testid="plugins-collections-empty-create"
-                              onClick={() => setCreateCollectionOpen(true)}
+                              disabled={!canCreateCollection}
+                              onClick={openCollectionCreate}
                             >
                               Add collection
                             </Button>
@@ -3654,19 +3920,31 @@ export function PluginsPage({
           await refreshSkills();
         }}
       />
-      {createCollectionOpen && (
-        <CollectionModal
-          collectionId={null}
-          onClose={() => setCreateCollectionOpen(false)}
-          onSaved={async (): Promise<void> => {
-            setCreateCollectionOpen(false);
-            await capabilityInventory.refreshLocalCollections();
-          }}
-          onCreated={(collectionId): void =>
-            openCreatedCustomItem({ kind: 'collection', collectionId })
-          }
-        />
-      )}
+      {collectionEditor &&
+        collectionEditor.context === collectionContextKey && (
+          <CollectionModal
+            key={`${collectionContextKey}/${collectionEditor.id}`}
+            collectionId={collectionEditor.id}
+            onClose={() => setCollectionEditor(null)}
+            onSaved={async (): Promise<void> => {
+              setCollectionEditor(null);
+              await capabilityInventory.refreshLocalCollections();
+            }}
+            onUnknownCreate={(): void => {
+              setUnknownCollectionCreates(
+                (previous) =>
+                  new Set([...Array.from(previous), collectionContextKey]),
+              );
+              if (currentCollectionContext.current === collectionScope)
+                setCollectionActionError(
+                  'The save outcome is unknown. Check the collection list on your desktop before creating another collection.',
+                );
+            }}
+            onCreated={(collectionId): void =>
+              openCreatedCustomItem({ kind: 'collection', collectionId })
+            }
+          />
+        )}
 
       {sharedCustomAgentsEnabled &&
         (agentDialog?.mode === 'create' ||

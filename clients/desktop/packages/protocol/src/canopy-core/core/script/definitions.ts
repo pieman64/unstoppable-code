@@ -11,13 +11,20 @@ import {
   defineCanopyQuery,
   defineCanopyQueryRegistry,
 } from '../../definitions';
+import {
+  CORE_SCRIPT_LIFECYCLE_ROLES,
+  CoreScriptCommandSchema,
+  CoreScriptCommandShellSchema,
+  CoreScriptDevServerPatternSchema,
+  MAX_SCRIPT_TIMEOUT_SECONDS,
+} from '../../script-values';
 
-// The script model's limits (`@canopy/protocol/scripts`), which canopy-core
-// cannot import; the core-runtime script tests pin them together.
-const MAX_SCRIPT_TIMEOUT_SECONDS = 2_000_000;
-const MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH = 1000;
-const MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH = 80;
-const MAX_SCRIPT_DEV_SERVER_PATTERNS = 8;
+export {
+  CORE_SCRIPT_LIFECYCLE_ROLES,
+  CoreScriptCommandSchema,
+  CoreScriptCommandShellSchema,
+  CoreScriptDevServerPatternSchema,
+};
 
 export const CORE_SCRIPT_GRANTS = {
   read: 'core.script.read',
@@ -43,7 +50,6 @@ export type CoreScriptErrorCode = (typeof CORE_SCRIPT_ERROR_CODES)[number];
 const id = z
   .string()
   .min(1)
-  .max(128)
   .regex(/^[a-z0-9][a-z0-9-]*$/);
 // Reads accept any name a source may hold; changes keep the settings
 // command's 512-character bound.
@@ -95,19 +101,6 @@ export const CORE_SCRIPT_SOURCE_KINDS = [
 export const CoreScriptSourceKindSchema = z.enum(CORE_SCRIPT_SOURCE_KINDS);
 export type CoreScriptSourceKind = z.output<typeof CoreScriptSourceKindSchema>;
 
-export const CORE_SCRIPT_LIFECYCLE_ROLES = [
-  'before-setup',
-  'setup',
-  'after-setup',
-  'before-launch',
-  'launch',
-  'after-launch',
-  'before-teardown',
-  'teardown',
-  'after-teardown',
-  'custom',
-] as const;
-
 /**
  * The shell a run would select on each operating system, without probing the
  * host. `default` is PowerShell when installed, otherwise `cmd`, on Windows,
@@ -135,47 +128,38 @@ export const CoreScriptTimeoutSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-const devServerPatternEntry = z.union([
-  z.string().min(1).max(MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH),
-  z.strictObject({
-    pattern: z.string().min(1).max(MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH),
-    label: z.string().min(1).max(MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH).optional(),
-    openTarget: z.enum(['in-app', 'external']).optional(),
-    autoOpen: z.boolean().optional(),
-  }),
-]);
-const devServerPattern = z.union([
-  devServerPatternEntry,
-  z.array(devServerPatternEntry).min(1).max(MAX_SCRIPT_DEV_SERVER_PATTERNS),
-]);
-
-const commandShell = z.strictObject({
-  windows: z.enum(['cmd', 'powershell', 'bash']).optional(),
-  mac: z.enum(['zsh', 'bash']).optional(),
-  linux: z.enum(['bash', 'zsh']).optional(),
-});
-
-const command = z
+const devServerPattern = CoreScriptDevServerPatternSchema;
+const commandShell = CoreScriptCommandShellSchema;
+const command = CoreScriptCommandSchema;
+const commandText = z
   .string()
   .min(1)
-  .max(65_536)
   .refine((value) => value.trim().length > 0, 'Commands are not blank');
+
+const definitionFields = {
+  interactive: z.boolean().optional(),
+  timeoutSeconds: z
+    .int()
+    .min(1)
+    .max(MAX_SCRIPT_TIMEOUT_SECONDS)
+    .nullable()
+    .optional(),
+  devServerPattern: devServerPattern.optional(),
+  shell: commandShell.optional(),
+};
 
 /** A persisted script value: a command, a definition, or a disable (`null`). */
 export const CoreScriptValueSchema = z.union([
   command,
-  z.strictObject({
-    command,
-    interactive: z.boolean().optional(),
-    timeoutSeconds: z
-      .int()
-      .min(1)
-      .max(MAX_SCRIPT_TIMEOUT_SECONDS)
-      .nullable()
-      .optional(),
-    devServerPattern: devServerPattern.optional(),
-    shell: commandShell.optional(),
-  }),
+  z.strictObject({ command, ...definitionFields }),
+  z.null(),
+]);
+
+// A stored value may predate the write bound on commands; reads still report
+// it, so a save can replace or remove it.
+const storedScriptValue = z.union([
+  commandText,
+  z.strictObject({ command: commandText, ...definitionFields }),
   z.null(),
 ]);
 
@@ -239,6 +223,17 @@ export type CoreScriptDefinitionListParams = z.output<
 >;
 export const CoreScriptDefinitionListResultSchema = z.strictObject({
   definitions: z.array(CoreScriptDefinitionSchema),
+  /**
+   * With `layer: 'local'`, the target's own settings as stored, by name: the
+   * values `core.script.definition.upsert` sets and `.delete` removes.
+   */
+  settings: z.record(z.string().min(1), storedScriptValue).optional(),
+  /**
+   * With `layer: 'local'`, the workspace revision (`workspace:{id}`) read
+   * before `settings`, for the `expectedRevision` of a change planned from
+   * them. Absent when the host keeps no revisions.
+   */
+  revision: z.int().nonnegative().optional(),
 });
 export type CoreScriptDefinitionListResult = z.output<
   typeof CoreScriptDefinitionListResultSchema

@@ -78,6 +78,7 @@ export function LinkSharingConfirmDialog({
   const copy = linkSharingConfirmCopy(variant, organizationName);
   return (
     <DialogModal
+      inset="flush"
       onClose={busy ? (): void => {} : onCancel}
       title={copy.title}
       maxWidth="sm"
@@ -85,7 +86,7 @@ export function LinkSharingConfirmDialog({
       dataTestId={`${p}-link-confirm`}
       ownerDocument={ownerDocument}
     >
-      <div className="px-5 py-4">
+      <div className="px-6 py-4">
         <p
           className="text-s fg-secondary"
           data-testid={`${p}-link-confirm-body`}
@@ -93,7 +94,7 @@ export function LinkSharingConfirmDialog({
           {copy.body}
         </p>
       </div>
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         <Button
           type="button"
           variant="secondary"

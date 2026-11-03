@@ -157,7 +157,7 @@ export const WORKFLOW_RUN_ACTION_LABELS: Readonly<
 > = {
   respond: 'Respond',
   cancel: 'Cancel',
-  retry: 'Retry',
+  retry: 'Try again',
   rerun: 'Rerun',
   'open-library': 'Open in Library',
   'go-to-chat': 'Go to chat',

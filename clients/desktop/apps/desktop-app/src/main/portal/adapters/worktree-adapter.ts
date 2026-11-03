@@ -13,9 +13,14 @@ import {
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
-  updateWorkspaceWorktree,
-  updateWorkspaceWorktrees,
 } from '../../lib/workspace-persistence';
+import {
+  moveWorktree,
+  updateWorktree,
+  WorktreeUpdateRefusedError,
+  type WorktreeMetadataPatch,
+  type WorktreeUpdateRefusal,
+} from '../../lib/worktree-update';
 import { recordWorktreeCrudTelemetry } from '../../lib/desktop-telemetry';
 import { validateId } from '../../lib/validation';
 import {
@@ -28,7 +33,7 @@ import {
 } from '../../lib/worktree-discard';
 import { discardWorktreeFromInterface } from '../../lib/worktree-discard-interface';
 import { sendToWindow } from '../../lib/window-send';
-import type { PortalAdapterContext } from './types';
+import type { PortalAdapterContext, PortalAdapterFailureCode } from './types';
 import { failServiceError, isRecord } from './validation';
 import { forkOpenWorktreeTabs } from '../../lib/worktree-open-tabs-fork';
 import { createPortalEvent } from '../portal-event-bus';
@@ -134,14 +139,6 @@ async function broadcastWorktreeListToRenderer(
   );
 }
 
-function moveItem<T>(items: T[], fromIndex: number, toIndex: number): T[] {
-  const next = items.slice();
-  const [moved] = next.splice(fromIndex, 1);
-  if (moved === undefined) return items;
-  next.splice(toIndex, 0, moved);
-  return next;
-}
-
 /** Update a worktree label and/or hidden state. */
 export async function handlePortalWorktreeUpdate(
   command: PortalCommandEnvelope<unknown>,
@@ -179,39 +176,68 @@ export async function handlePortalWorktreeUpdate(
     validateId(payload.workspaceId, 'workspaceId');
     validateId(payload.worktreeId, 'worktreeId');
     const workspaceId = payload.workspaceId;
-    const worktreeId = payload.worktreeId;
-    const nextLabel =
-      hasLabel && typeof payload.label === 'string'
-        ? payload.label.trim()
-        : undefined;
-    let updatedWorktree: WorktreeData | undefined;
-    const persistUpdate = (): Promise<boolean> =>
-      updateWorkspaceWorktree(workspaceId, worktreeId, (worktree) => {
-        const next = { ...worktree };
-        if (hasLabel) {
-          if (nextLabel) next.label = nextLabel;
-          else delete next.label;
-        }
-        if (hasHidden) {
-          if (payload.hidden === true) next.hidden = true;
-          else delete next.hidden;
-        }
-        updatedWorktree = next;
-        return next;
-      });
-    const persisted = await persistUpdate();
-    if (!persisted) {
-      context.fail(command, 'not_found', 'Worktree to update was not found.');
-      return;
-    }
+    const patch: WorktreeMetadataPatch = {};
+    // `updateWorktree` trims the label and clears a blank or null one.
+    if (
+      hasLabel &&
+      (payload.label === null || typeof payload.label === 'string')
+    )
+      patch.label = payload.label;
+    if (hasHidden && typeof payload.hidden === 'boolean')
+      patch.hidden = payload.hidden;
+    const { worktree } = await updateWorktree({
+      workspaceId,
+      worktreeId: payload.worktreeId,
+      patch,
+    });
     sendToWindow(
       context.getWindow?.() ?? null,
       IPC_CHANNELS.workspaceWorktreesUpdated,
-      { workspaceId, worktree: updatedWorktree },
+      { workspaceId, worktree },
     );
     context.complete(command, { success: true });
   } catch (error) {
+    failWorktreeMetadataError(
+      command,
+      context,
+      error,
+      'Worktree to update was not found.',
+    );
+  }
+}
+
+/** The Portal's closed failure code for each metadata boundary refusal. */
+const PORTAL_CODE_BY_WORKTREE_REFUSAL: Record<
+  WorktreeUpdateRefusal,
+  PortalAdapterFailureCode
+> = {
+  'not-found': 'not_found',
+  'read-only-scope': 'forbidden',
+  'invalid-patch': 'invalid_payload',
+  'worktrees-unavailable': 'execution_failed',
+};
+
+/**
+ * Projects an `updateWorktree`/`moveWorktree` refusal onto the Portal's closed
+ * failure codes, keeping the Portal's own not-found copy.
+ */
+function failWorktreeMetadataError(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+  error: unknown,
+  notFoundMessage: string,
+): void {
+  if (!(error instanceof WorktreeUpdateRefusedError)) {
     failServiceError(command, context, error);
+  } else if (error.reason === 'not-found') {
+    context.fail(command, 'not_found', notFoundMessage);
+  } else {
+    context.fail(
+      command,
+      PORTAL_CODE_BY_WORKTREE_REFUSAL[error.reason],
+      error.message,
+      false,
+    );
   }
 }
 
@@ -244,45 +270,25 @@ export async function handlePortalWorktreeReorder(
       context.fail(command, 'not_found', 'Project to reorder was not found.');
       return;
     }
-    let persisted = false;
-    const worktrees = await updateWorkspaceWorktrees(
-      payload.workspaceId,
-      (worktrees) => {
-        const visible = worktrees.filter((worktree) => !worktree.hidden);
-        const fromIndex = visible.findIndex(
-          (worktree) => worktree.id === payload.activeWorktreeId,
-        );
-        const toIndex = visible.findIndex(
-          (worktree) => worktree.id === payload.overWorktreeId,
-        );
-        if (fromIndex < 0 || toIndex < 0) return worktrees;
-        const reorderedVisible = moveItem(visible, fromIndex, toIndex);
-        let visibleIndex = 0;
-        persisted = true;
-        return worktrees.map((worktree) => {
-          if (worktree.hidden) return worktree;
-          const replacement = reorderedVisible[visibleIndex];
-          visibleIndex += 1;
-          return replacement ?? worktree;
-        });
-      },
-    );
-    if (!persisted) {
-      context.fail(command, 'not_found', 'Worktree to reorder was not found.');
-      return;
-    }
-    sendToWindow(
-      context.getWindow?.() ?? null,
-      IPC_CHANNELS.workspaceWorktreesUpdated,
-      { workspaceId: payload.workspaceId, worktrees },
-    );
+    await moveWorktree({
+      workspaceId: payload.workspaceId,
+      activeWorktreeId: payload.activeWorktreeId,
+      overWorktreeId: payload.overWorktreeId,
+    });
+    // `moveWorktree` returns no list, so the broadcast re-reads it.
+    await broadcastWorktreeListToRenderer(context, payload.workspaceId);
     context.complete(command, {
       workspaceId: payload.workspaceId,
       activeWorktreeId: payload.activeWorktreeId,
       overWorktreeId: payload.overWorktreeId,
     });
   } catch (error) {
-    failServiceError(command, context, error);
+    failWorktreeMetadataError(
+      command,
+      context,
+      error,
+      'Worktree to reorder was not found.',
+    );
   }
 }
 
@@ -568,9 +574,13 @@ async function isDiscardableForMissingSource(
   );
 }
 
-function readDiscardTarget(
-  payload: unknown,
-): { workspaceId: string; worktreeId: string; confirmation?: string } | null {
+function readDiscardTarget(payload: unknown): {
+  workspaceId: string;
+  worktreeId: string;
+  confirmation?: string;
+  /** CAN-5338: any value but `true` describes as without it. */
+  retainedArchives?: true;
+} | null {
   if (
     !isRecord(payload) ||
     typeof payload.workspaceId !== 'string' ||
@@ -590,6 +600,9 @@ function readDiscardTarget(
     worktreeId: payload.worktreeId,
     ...(typeof payload.confirmation === 'string'
       ? { confirmation: payload.confirmation }
+      : {}),
+    ...(payload.retainedArchives === true
+      ? { retainedArchives: true as const }
       : {}),
   };
 }
@@ -619,7 +632,11 @@ export async function handlePortalWorktreeDiscardDescribe(
   try {
     context.complete(
       command,
-      await describeWorktreeDiscard(target.workspaceId, target.worktreeId),
+      target.retainedArchives
+        ? await describeWorktreeDiscard(target.workspaceId, target.worktreeId, {
+            retainedArchives: true,
+          })
+        : await describeWorktreeDiscard(target.workspaceId, target.worktreeId),
     );
   } catch (error) {
     failServiceError(command, context, error);
@@ -657,6 +674,7 @@ export async function handlePortalWorktreeDiscard(
         worktreeId: target.worktreeId,
         confirmation: target.confirmation,
         source: 'portal-ui',
+        ...(target.retainedArchives ? { retainedArchives: true } : {}),
       }),
     );
   } catch (error) {

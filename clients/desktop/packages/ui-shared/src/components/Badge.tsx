@@ -1,24 +1,30 @@
 import type { JSX, ReactNode } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
 import {
-  BADGE_ICON_CLASS,
+  BADGE_ICON_BY_SIZE,
   badgeClassName,
   dotClassName,
   formatBadgeCount,
   iconCountClassName,
   LABEL_COUNT_CLASS,
+  type BadgeSize,
   type BadgeTone,
   type CountTone,
   type DotTone,
 } from '../lib/badge';
 
-export type { BadgeTone, CountTone, DotTone } from '../lib/badge';
+export type { BadgeSize, BadgeTone, CountTone, DotTone } from '../lib/badge';
 
 export interface BadgeProps {
   children: ReactNode;
   /** Defaults to `neutral`. Roles, plans and kinds stay neutral. */
   tone?: BadgeTone;
-  /** Optional leading glyph, drawn at 12px with a 1.5px stroke. */
+  /**
+   * `regular` (default) is the 18px capsule. `compact` is a 16px square tag
+   * for dense views only: diagrams, code views and schema tags.
+   */
+  size?: BadgeSize;
+  /** Optional leading glyph, drawn at 12px (10px compact), 1.5px stroke. */
   icon?: AppIcon;
   /** Quieter fill and ink for a completed or de-emphasised row. */
   muted?: boolean;
@@ -36,24 +42,27 @@ export interface BadgeProps {
 export function Badge({
   children,
   tone = 'neutral',
+  size = 'regular',
   icon: Icon,
   muted = false,
   className,
   title,
   'data-testid': testId,
 }: BadgeProps): JSX.Element {
-  const base = badgeClassName(tone, { muted });
+  const base = badgeClassName(tone, { muted, size });
+  const icon = BADGE_ICON_BY_SIZE[size];
   return (
     <span
       data-testid={testId}
       data-badge-tone={tone}
+      data-badge-size={size === 'compact' ? size : undefined}
       title={title}
       className={className ? `${base} ${className}` : base}
     >
       {Icon ? (
         <Icon
-          className={BADGE_ICON_CLASS}
-          size={12}
+          className={icon.className}
+          size={icon.px}
           exactSize
           drawnStrokeWidth={1.5}
           aria-hidden
@@ -92,7 +101,9 @@ export function Count({
   const text =
     placement === 'icon'
       ? formatBadgeCount(value)
-      : String(Math.max(0, Math.floor(value)));
+      : Number.isFinite(value)
+        ? String(Math.max(0, Math.floor(value)))
+        : '0';
   return (
     <span
       data-testid={testId}
@@ -118,7 +129,8 @@ export interface DotProps {
 }
 
 /**
- * A 6px marker: unread (blue), waiting on you (orange) or filter on (grey).
+ * A 6px marker: unread (blue), waiting on you (orange), filter on (grey),
+ * connected or working (green), offline or failed (red).
  */
 export function Dot({
   tone,

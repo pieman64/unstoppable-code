@@ -663,12 +663,14 @@ test.describe('GitHub pull request watchers against the GraphQL mock', () => {
           timeout: 30_000,
         })
         .toBe('fired');
-      // Merged, it stays in the drawer until dismissed.
+      // Merged, it stays under Pull requests: the composer drawer offers no
+      // Hide for finished work.
       await expect(drawerRow).toContainText('Merged', { timeout: 30_000 });
-      await drawerRow
-        .getByTestId(`background-tray-run-github-pr:${REPOSITORY}#7-dismiss`)
-        .click();
-      await expect(drawerRow).toHaveCount(0);
+      await expect(
+        drawerRow.getByTestId(
+          `background-tray-run-github-pr:${REPOSITORY}#7-dismiss`,
+        ),
+      ).toHaveCount(0);
       await expect(panel.getByTestId('watcher-fired-title')).toHaveCount(1, {
         timeout: 30_000,
       });

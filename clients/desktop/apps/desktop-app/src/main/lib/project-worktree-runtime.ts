@@ -8,14 +8,9 @@ import type { BrowserWindow } from 'electron';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { triggerDiscovery } from '../ipc/worktree-discovery';
 import { scheduleCodeGraphBuild } from './code-graph-scheduler';
-import {
-  appendScriptRunLogLines,
-  completeScriptRunLog,
-  startScriptRunLog,
-} from './script-log-store';
+import type { ScriptRunLogRef } from './script-log-store';
 import { getWorktreeDir } from './paths';
-import { runShellScript } from './script-runner';
-import { buildWorktreeDataEnv } from './worktree-data-env';
+import { runDesktopScript } from './script-execution';
 import {
   createProjectScriptDescriptor,
   createScriptCompleteEvent,
@@ -113,9 +108,8 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
   ).catch(() => null);
   let setupScript: ReturnType<typeof createProjectScriptDescriptor> | null =
     null;
-  let setupScriptLogRef: Awaited<ReturnType<typeof startScriptRunLog>> | null =
-    null;
-  let runId: string = randomUUID();
+  let setupScriptLogRef: ScriptRunLogRef | null = null;
+  const runId: string = randomUUID();
   let startedScript: WorktreeSetupScriptRef | null = null;
   let completedScript: WorktreeSetupScriptResult | null = null;
   const observer = params.observer;
@@ -146,13 +140,13 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       params.projectId,
       params.worktreeId,
     );
-    setupScriptLogRef = await startScriptRunLog({
+    // The worker writes the run log under this run id.
+    setupScriptLogRef = {
       projectId: params.projectId,
       worktreeId: params.worktreeId,
       script: setupScriptDescriptor,
-      invocation: 'automatic-setup',
-    }).catch(() => null);
-    runId = setupScriptLogRef?.runId ?? runId;
+      runId,
+    };
     const scriptRef: WorktreeSetupScriptRef = {
       scriptKey: setupScriptDescriptor.scriptKey,
       runId,
@@ -180,15 +174,7 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       );
     }
 
-    const onChunk = (lines: string[]): void => {
-      const logRef = setupScriptLogRef;
-      if (logRef) {
-        void appendScriptRunLogLines({
-          ref: logRef,
-          lines,
-        }).catch(() => {});
-      }
-
+    const onLines = (lines: string[]): void => {
       const window = params.getWindow();
       if (!window) {
         return;
@@ -208,48 +194,36 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       );
     };
 
-    const result = await runShellScript({
-      script: command,
-      cwd: worktreePath,
-      env: buildWorktreeDataEnv(
-        params.projectId,
-        params.worktreeId,
-        undefined,
-        { runtime: 'canopy' },
-      ),
-      timeoutSeconds:
-        definition.interactive === true
-          ? null
-          : resolveEffectiveScriptTimeoutSeconds({
-              scriptName: 'setup',
-              configuredTimeoutSeconds: definition.timeoutSeconds,
-              defaultTimeoutSeconds:
-                prefs?.scriptTimeoutMinutes !== undefined
-                  ? prefs.scriptTimeoutMinutes * 60
-                  : DEFAULT_SCRIPT_TIMEOUT_SECONDS,
-            }),
-      shell: definition.shell,
-      onChunk,
-      signal: params.signal,
-      backgroundPriority: true,
-      interactive: definition.interactive === true,
-      tracking: {
+    const { response: result } = await runDesktopScript(
+      {
         projectId: params.projectId,
         worktreeId: params.worktreeId,
-        scriptKey: setupScriptDescriptor.scriptKey,
-        runId,
+        context: { kind: 'project' },
         script: setupScriptDescriptor,
         invocation: 'automatic-setup',
-        logRef: setupScriptLogRef ?? undefined,
+        command,
+        ...(definition.shell ? { shell: definition.shell } : {}),
+        timeoutSeconds:
+          definition.interactive === true
+            ? null
+            : resolveEffectiveScriptTimeoutSeconds({
+                scriptName: 'setup',
+                configuredTimeoutSeconds: definition.timeoutSeconds,
+                defaultTimeoutSeconds:
+                  prefs?.scriptTimeoutMinutes !== undefined
+                    ? prefs.scriptTimeoutMinutes * 60
+                    : DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+              }),
+        interactive: definition.interactive === true,
+        backgroundPriority: true,
+        runId,
       },
-    });
+      {
+        ...(params.signal ? { signal: params.signal } : {}),
+        observer: { onLines },
+      },
+    );
 
-    if (setupScriptLogRef) {
-      await completeScriptRunLog({
-        ref: setupScriptLogRef,
-        response: result,
-      }).catch(() => {});
-    }
     const scriptResult = buildWorktreeSetupScriptResult(scriptRef, result);
     // Cleared so a throw from the completion broadcast below cannot report
     // this run a second time from the catch branch.
@@ -297,16 +271,7 @@ async function runProjectWorktreePostCreateSetupOwned(params: {
       durationMs: 0,
     };
 
-    if (setupScriptLogRef) {
-      await appendScriptRunLogLines({
-        ref: setupScriptLogRef,
-        lines: [failureResult.output],
-      }).catch(() => {});
-      await completeScriptRunLog({
-        ref: setupScriptLogRef,
-        response: failureResult,
-      }).catch(() => {});
-    }
+    // The worker closed the run log of any run it started.
     const failedRef = startedScript;
     const scriptResult = failedRef
       ? buildWorktreeSetupScriptResult(failedRef, failureResult)

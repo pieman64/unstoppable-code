@@ -96,11 +96,15 @@ test('shares a plugin from its card and Suggested detail', async () => {
     await app.waitForShell({ timeout: 30_000 });
 
     await app.openPluginsPage();
+    await window
+      .getByTestId(`plugins-entry-menu-${SHAREABLE_ENTRY_ID}`)
+      .click();
     const cardShare = window.getByTestId(
-      `plugins-entry-share-${SHAREABLE_ENTRY_ID}`,
+      `plugins-entry-menu-${SHAREABLE_ENTRY_ID}-share`,
     );
     await expect(cardShare).toBeVisible({ timeout: 15_000 });
 
+    await window.keyboard.press('Escape');
     await window.getByTestId(`plugins-entry-${SHAREABLE_ENTRY_ID}`).click();
     const detail = window.getByTestId('plugin-catalog-detail');
     await expect(detail).toBeVisible();
@@ -199,6 +203,9 @@ test('shares a plugin from its card and Suggested detail', async () => {
     await window.getByTestId('plugins-entry-detail-breadcrumb-root').click();
 
     // Signed out: the card action must raise the sign-in gate, not the modal.
+    await window
+      .getByTestId(`plugins-entry-menu-${SHAREABLE_ENTRY_ID}`)
+      .click();
     await cardShare.click();
     const gate = window.getByTestId('cloud-sync-modal');
     await expect(gate).toBeVisible();
@@ -370,7 +377,10 @@ test('blocks plugin sharing after analysis failure and permits a successful retr
     });
     await app.openPluginsPage();
     await window
-      .getByTestId(`plugins-entry-share-${SHAREABLE_ENTRY_ID}`)
+      .getByTestId(`plugins-entry-menu-${SHAREABLE_ENTRY_ID}`)
+      .click();
+    await window
+      .getByTestId(`plugins-entry-menu-${SHAREABLE_ENTRY_ID}-share`)
       .click();
     const modal = window.getByTestId('share-plugin-modal');
     await expect(modal).toBeVisible();
@@ -452,14 +462,27 @@ test('explains blocked Marketplace sharing on an Installed row and detail at 900
     await expect(share).toHaveAccessibleName(
       'Share…: This plugin has no public source to share.',
     );
-    const [rowBox, menuBox] = await Promise.all([
+    const status = row.locator('..').getByTestId('customize-row-status-slot');
+    await expect(status).toBeVisible();
+    const [rowBox, menuBox, primaryBox, statusBox] = await Promise.all([
       row.locator('..').boundingBox(),
       menu.boundingBox(),
+      row.boundingBox(),
+      status.boundingBox(),
     ]);
+    if (!rowBox || !menuBox || !primaryBox || !statusBox)
+      throw new Error('Expected Installed row, name, status and menu bounds');
     expect(menuBox.x).toBeGreaterThanOrEqual(rowBox.x);
     expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(
       rowBox.x + rowBox.width,
     );
+    // Keeping the menu contained must not collapse the name column (#7323).
+    expect(primaryBox.width).toBeGreaterThanOrEqual(128);
+    // Status can move below the name when its reserved slot no longer fits.
+    expect(
+      statusBox.y >= primaryBox.y + primaryBox.height ||
+        statusBox.x >= primaryBox.x + primaryBox.width,
+    ).toBe(true);
     await share.click({ force: true });
     await expect(window.getByTestId('cloud-sync-modal')).toHaveCount(0);
     await expect(window.getByTestId('share-plugin-modal')).toHaveCount(0);

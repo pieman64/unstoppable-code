@@ -4,6 +4,7 @@ import { normalizeNeeds } from '@canopy/desktop-shared/types/pipeline';
 import { isValidPipelineIdentifier } from '../../../lib/pipelineEditor';
 import { parseMaxIterationsInput } from '../../../lib/jobDetailPanel';
 import { MAX_RETRIES_LIMIT } from '@canopy/desktop-shared/pipelines/normalize-pipeline';
+import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
 import { ToggleField } from '../shared/ToggleField';
@@ -212,26 +213,18 @@ export function JobDetailPanel({
       {/* Dependencies (needs) */}
       {otherJobIds.length > 0 && (
         <FormField label="Dependencies" hint="Jobs that must complete first">
-          <div className="space-y-1.5">
-            {otherJobIds.map((otherId: string) => {
-              const isChecked: boolean = currentNeeds.includes(otherId);
-              return (
-                <label
-                  key={otherId}
-                  className={`flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors ${readonly ? 'opacity-70' : 'hover:bg-secondary cursor-pointer'}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => handleNeedsToggle(otherId)}
-                    disabled={readonly}
-                    className="rounded fg-accent focus:ring-line-accent/50"
-                  />
-                  <span className="text-s fg-primary">{otherId}</span>
-                </label>
-              );
-            })}
-          </div>
+          <ChoiceList aria-label="Dependencies">
+            {otherJobIds.map((otherId: string) => (
+              <ChoiceListRow
+                key={otherId}
+                selected={currentNeeds.includes(otherId)}
+                onClick={() => handleNeedsToggle(otherId)}
+                disabled={readonly}
+              >
+                {otherId}
+              </ChoiceListRow>
+            ))}
+          </ChoiceList>
         </FormField>
       )}
 

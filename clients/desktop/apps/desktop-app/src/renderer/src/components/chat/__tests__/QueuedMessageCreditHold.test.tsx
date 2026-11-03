@@ -123,7 +123,7 @@ describe('desktop queued-row credit hold', () => {
     render(row(true));
 
     const send = button('queued-message-interrupt');
-    expect(send?.textContent).toBe('Retry');
+    expect(send?.textContent).toBe('Try again');
     expect(send?.getAttribute('aria-disabled')).toBe('true');
     expect(button('queued-message-steer')).toBeNull();
     act(() => send?.click());

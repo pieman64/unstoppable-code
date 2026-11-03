@@ -123,7 +123,7 @@ export const CLOUD_REPOSITORY_ERROR_COPY: Readonly<
   'cloud-repository-provisioning-in-progress':
     'This project is still being set up. Check again in a moment.',
   'cloud-repository-provisioning-failed':
-    "Couldn't finish setting up this project. Retry setup to continue.",
+    "Couldn't finish setting up this project. Try again to continue.",
   'cloud-repository-not-ready':
     "This project isn't set up yet. Finish setup in project settings, then try again.",
   // The one server refusal under this code is project-scoped file work in a

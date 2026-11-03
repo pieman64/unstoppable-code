@@ -6,6 +6,7 @@ import {
   useNavigationModeStore,
 } from '@/stores/navigationModeStore';
 import { SettingsRow, SettingsSegmentedControl } from './SettingsLayout';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface ModeOption {
   id: NavigationMode;
@@ -85,14 +86,11 @@ export function NavigationModeSection(): JSX.Element {
         />
       }
     >
-      {saveError && (
-        <p
-          className="text-xs fg-destructive"
-          data-testid="settings-navigation-mode-error"
-        >
-          {saveError}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={saveError}
+        testId="settings-navigation-mode-error"
+      />
     </SettingsRow>
   );
 }

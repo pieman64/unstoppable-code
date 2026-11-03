@@ -15,8 +15,11 @@ import {
 } from '@canopy/protocol/mcp-servers';
 import {
   Button,
+  ChoiceField,
   LoadingSpinner,
   Notice,
+  SearchField,
+  SettingsRowsRow,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 
@@ -186,36 +189,37 @@ export function McpToolSelection({
 
   return (
     <div className="flex flex-col gap-3" data-testid={dataTestId}>
-      <div className="flex items-start justify-between gap-4">
-        {/* The whole text names the switch, so a click on either line flips it. */}
-        <label htmlFor={switchId} className="flex flex-col gap-0.5">
-          <span className="text-s fg-primary">Allow all tools</span>
-          <span className="text-xs fg-secondary">
-            {allTools
-              ? 'Includes tools the server adds later.'
-              : 'Only the tools you choose below.'}
-          </span>
-        </label>
-        <ToggleSwitch
-          id={switchId}
-          checked={allTools}
-          label="Allow all tools"
-          disabled={saving}
-          onChange={(next) => {
-            setStatus(null);
-            setAllTools(next);
-            // Restricting a policy saved as unrestricted starts from every
-            // tool on again, not from whatever was chosen before that save.
-            if (!next && saved === null)
-              setSelected(
-                tools.status === 'loaded'
-                  ? new Set(tools.tools.map((tool): string => tool.name))
-                  : null,
-              );
-          }}
-          dataTestId={`${dataTestId}-all`}
-        />
-      </div>
+      {/* A click on the label or its explanation flips the switch. */}
+      <SettingsRowsRow
+        label="Allow all tools"
+        htmlFor={switchId}
+        description={
+          allTools
+            ? 'Includes tools the server adds later.'
+            : 'Only the tools you choose below.'
+        }
+        control={
+          <ToggleSwitch
+            id={switchId}
+            checked={allTools}
+            label="Allow all tools"
+            disabled={saving}
+            onChange={(next) => {
+              setStatus(null);
+              setAllTools(next);
+              // Restricting a policy saved as unrestricted starts from every
+              // tool on again, not from whatever was chosen before that save.
+              if (!next && saved === null)
+                setSelected(
+                  tools.status === 'loaded'
+                    ? new Set(tools.tools.map((tool): string => tool.name))
+                    : null,
+                );
+            }}
+            dataTestId={`${dataTestId}-all`}
+          />
+        }
+      />
       {!allTools && tools.status !== 'loaded' && (
         <div
           className="flex min-h-16 items-center justify-center gap-2 rounded-md ring-1 ring-inset ring-line-base p-3 text-s fg-secondary"
@@ -259,13 +263,11 @@ export function McpToolSelection({
           ) : (
             <>
               {rows.length > SEARCH_THRESHOLD && (
-                <input
-                  type="search"
+                <SearchField
                   aria-label="Filter tools"
                   placeholder="Filter tools"
-                  className="focus-ring rounded-md ring-1 ring-inset ring-line-base bg-base px-3 py-1.5 text-s fg-primary"
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onValueChange={setQuery}
                   data-testid={`${dataTestId}-filter`}
                 />
               )}
@@ -310,42 +312,43 @@ export function McpToolSelection({
               >
                 {visibleRows.map((row) => (
                   <li key={row.name}>
-                    <label
-                      className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-secondary/50"
+                    <div
+                      className="rounded-md px-2 py-1.5"
                       data-testid={`${dataTestId}-tool`}
                       data-tool-name={row.name}
                     >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5 shrink-0 rounded"
+                      {/* The whole row is the label: a click on its text toggles the tool. */}
+                      <ChoiceField
                         checked={selection.has(row.name)}
                         disabled={saving}
                         onChange={(event) =>
                           setMany([row.name], event.target.checked)
                         }
-                      />
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <span className="truncate text-s fg-primary">
-                          {row.title ?? row.name}
-                        </span>
-                        {row.title && (
-                          <span className="truncate font-mono text-xs fg-tertiary">
-                            {row.name}
+                        label={
+                          <span className="flex min-w-0 flex-col gap-0.5">
+                            <span className="truncate">
+                              {row.title ?? row.name}
+                            </span>
+                            {row.title && (
+                              <span className="truncate font-mono text-xs fg-tertiary">
+                                {row.name}
+                              </span>
+                            )}
                           </span>
-                        )}
-                        {row.missing ? (
-                          <span className="text-xs fg-warning">
-                            No longer offered by this server
-                          </span>
-                        ) : (
-                          row.description && (
-                            <span className="truncate text-xs fg-secondary">
+                        }
+                        description={
+                          row.missing ? (
+                            <span className="fg-warning">
+                              No longer offered by this server
+                            </span>
+                          ) : row.description ? (
+                            <span className="block truncate">
                               {row.description}
                             </span>
-                          )
-                        )}
-                      </span>
-                    </label>
+                          ) : undefined
+                        }
+                      />
+                    </div>
                   </li>
                 ))}
                 {visibleRows.length === 0 && (

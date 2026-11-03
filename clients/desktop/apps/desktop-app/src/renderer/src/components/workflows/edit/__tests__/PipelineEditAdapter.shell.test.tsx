@@ -340,9 +340,15 @@ describe('PipelineEditAdapter actions on the saved version', () => {
     click(rename);
     const field = byTestId('pipeline-editor-name-input');
     expect(field).toBeInstanceOf(HTMLInputElement);
-    // The field takes the header title's type rather than its own.
-    for (const local of ['text-lg', 'font-semibold'])
-      expect(field?.className.split(' ')).not.toContain(local);
+    // The field takes the header title's font rather than its own: no size,
+    // weight, line or height, so the name keeps its size when editing starts
+    // (it renders inside the heading, whose font it inherits).
+    expect(heading?.contains(field ?? null)).toBe(true);
+    expect(
+      field?.className
+        .split(' ')
+        .filter((c) => /^(text-(xs|s|m|l|lg|xl)|font-|leading-|h-\d)/.test(c)),
+    ).toEqual([]);
   });
 
   it('turns the pipeline off through the page', () => {
@@ -511,6 +517,72 @@ describe('PipelineEditAdapter shortcuts', () => {
     await flush();
 
     expect(editor.save).not.toHaveBeenCalled();
+  });
+
+  it('saves a name typed into the rename field on ⌘S, without leaving it', async () => {
+    const editor = setMockEditor('review');
+    renderShell(REVIEW);
+    click(byTestId('workflow-edit-name')?.querySelector('button'));
+    const field = byTestId('pipeline-editor-name-input');
+    if (!(field instanceof HTMLInputElement)) throw new Error('No name field');
+    act(() => {
+      field.focus();
+      setNativeInputValue(field, 'Release review');
+    });
+
+    // ⌘S from the focused field: nothing blurs it first.
+    act(() => {
+      field.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 's',
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    await flush();
+
+    expect(editor.updatePipelineField).toHaveBeenCalledWith(
+      'name',
+      'Release review',
+    );
+    expect(editor.save).toHaveBeenCalledTimes(1);
+    const renamedAt = jest
+      .mocked(editor.updatePipelineField)
+      .mock.invocationCallOrder.at(-1);
+    const savedAt = jest.mocked(editor.save).mock.invocationCallOrder[0];
+    expect(renamedAt).toBeLessThan(savedAt ?? 0);
+  });
+
+  it('puts the old name back when Escape leaves the rename field', () => {
+    const editor = setMockEditor('review');
+    renderShell(REVIEW);
+    click(byTestId('workflow-edit-name')?.querySelector('button'));
+    const field = byTestId('pipeline-editor-name-input');
+    if (!(field instanceof HTMLInputElement)) throw new Error('No name field');
+    act(() => {
+      field.focus();
+      setNativeInputValue(field, 'Release review');
+    });
+
+    act(() => {
+      field.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    // The pipeline's name ends where it started, whether or not the typed
+    // name reached the editor on the way.
+    const lastName = jest
+      .mocked(editor.updatePipelineField)
+      .mock.calls.filter(([field]) => field === 'name')
+      .at(-1);
+    expect(lastName?.[1] ?? 'Review').toBe('Review');
   });
 
   it('still undoes and redoes with ⌘Z and ⇧⌘Z', () => {

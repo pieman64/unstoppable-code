@@ -59,6 +59,8 @@ import {
   normalizeDefaultPluginSelections,
   updateWorkspacePlugins,
   type RecommendedPluginSelection,
+  type WorkspacePluginsUpdateOutcome,
+  type WorkspacePluginsUserChangeRequest,
 } from './workspace-plugin-defaults';
 
 interface RecommendationScope {
@@ -571,8 +573,15 @@ function normalizeKeyList(keys: readonly string[] | undefined): string[] {
   return result;
 }
 
+/**
+ * `updatePlugins` is the boundary write; the IPC handler passes the
+ * projection of the registered plugins operation (W7b-1c).
+ */
 export async function applyRecommendedPlugins(
   request: ApplyRecommendedPluginsRequest,
+  updatePlugins: (
+    request: WorkspacePluginsUserChangeRequest,
+  ) => Promise<WorkspacePluginsUpdateOutcome> = updateWorkspacePlugins,
 ): Promise<ApplyRecommendedPluginsResponse> {
   const inspection = await inspectRecommendedPlugins(request);
   const itemsByKey = new Map(inspection.items.map((item) => [item.key, item]));
@@ -645,7 +654,7 @@ export async function applyRecommendedPlugins(
     }
   }
 
-  const outcome = await updateWorkspacePlugins({
+  const outcome = await updatePlugins({
     workspaceId: request.workspaceId,
     change: {
       kind: 'selectRecommended',

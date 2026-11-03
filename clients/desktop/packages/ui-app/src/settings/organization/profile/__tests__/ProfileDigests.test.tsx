@@ -162,10 +162,10 @@ describe('MemberProfilePage: Digests tab visibility', () => {
     expect(
       container
         .querySelector('[data-testid="profile-tab-overview"]')
-        ?.getAttribute('aria-current'),
-    ).toBe('page');
+        ?.getAttribute('aria-selected'),
+    ).toBe('true');
     // The URL must converge on what was actually rendered. Without this the
-    // address bar keeps `?tab=digests` while Overview shows, so `aria-current`
+    // address bar keeps `?tab=digests` while Overview shows, so the selected tab
     // and the URL disagree and a refresh carries the dead param forward.
     // `replace`, not `push`, so the fallback adds no history entry for Back to
     // bounce off.

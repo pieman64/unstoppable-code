@@ -4,6 +4,7 @@ import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilit
 import { localPlatform } from '@/lib/local-platform';
 import { CHAT_UNIT_LABEL, CHAT_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import { PlusIcon as AppCatalogPlusIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { EmptyState } from '@canopy/ui-shared/components';
 
 interface StandaloneColdStartEmptyStateProps {
   onNewChat: () => void;
@@ -35,23 +36,21 @@ export function StandaloneColdStartEmptyState({
         <div className="electron-drag h-10 shrink-0" />
       )}
       <div className="flex flex-1 flex-col items-center justify-center p-8">
-        <div className="max-w-md text-center">
-          <h2 className="text-lg font-medium fg-primary">
-            No {CHAT_UNIT_LABEL_PLURAL.toLowerCase()} yet
-          </h2>
-          <p className="mt-1 text-s fg-secondary">
-            Start a new {CHAT_UNIT_LABEL.toLowerCase()} to get started.
-          </p>
-          <Button
-            variant="primary"
-            onClick={onNewChat}
-            data-testid="empty-new-chat"
-            className="mt-5"
-          >
-            <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
-            New {CHAT_UNIT_LABEL}
-          </Button>
-        </div>
+        <EmptyState
+          inset="none"
+          title={`No ${CHAT_UNIT_LABEL_PLURAL.toLowerCase()} yet`}
+          subtitle={`Start a new ${CHAT_UNIT_LABEL.toLowerCase()} to get started.`}
+          action={
+            <Button
+              variant="primary"
+              onClick={onNewChat}
+              data-testid="empty-new-chat"
+            >
+              <AppCatalogPlusIcon width="14" height="14" aria-hidden="true" />
+              New {CHAT_UNIT_LABEL}
+            </Button>
+          }
+        />
       </div>
     </div>
   );

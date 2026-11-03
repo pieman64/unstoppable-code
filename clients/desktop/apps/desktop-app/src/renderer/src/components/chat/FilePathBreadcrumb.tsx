@@ -26,7 +26,7 @@ import { FolderIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { isCoworkWorkspaceFileTreeRoot } from '@/components/activity/files-tree-tab-state';
 import { FileTypeIcon } from '@/components/shared/file-icons';
-import { AnchoredMenu } from '@/components/shared/AnchoredMenu';
+import { FloatingMenu } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -263,15 +263,19 @@ export function FilePathBreadcrumb({
     }
   };
 
-  // Stable RefObject identity (AnchoredMenu keys effects on it); the live
+  // Stable RefObject identity (FloatingMenu keys effects on it); the live
   // anchor element is refreshed on every render.
   const anchorRef = useRef<HTMLElement | null>(null);
   anchorRef.current = menu?.anchorEl ?? null;
+  // A press on another segment switches the menu instead of closing it, so
+  // the whole breadcrumb is one outside-press boundary.
+  const breadcrumbRef = useRef<HTMLDivElement | null>(null);
   const fileName = parts[parts.length - 1] ?? relativePath;
   const folderParts = parts.slice(0, -1);
 
   return (
     <div
+      ref={breadcrumbRef}
       className="flex min-w-0 max-w-xl items-center gap-0.5 overflow-hidden whitespace-nowrap text-xs"
       data-testid="file-breadcrumb"
     >
@@ -330,14 +334,22 @@ export function FilePathBreadcrumb({
       >
         {fileName}
       </button>
-      <AnchoredMenu
+      <FloatingMenu
+        // Each segment's menu is its own: switching segments places it anew.
+        key={menu?.segmentIndex ?? 'closed'}
         open={menu !== null}
-        onClose={closeMenu}
+        onOpenChange={(open): void => {
+          if (!open) closeMenu();
+        }}
         anchorRef={anchorRef}
-        placement="below-start"
-        portal
-        className="max-h-80 w-72 overflow-y-auto"
-        testId="file-breadcrumb-menu"
+        outsidePressBoundaryRef={breadcrumbRef}
+        placement="bottom-left"
+        // A folder tree of plain buttons, not menu rows: the menu keeps its
+        // placement and dismissal and leaves focus and keys to the rows.
+        interaction="manual"
+        heightLimit={320}
+        className="w-72 overflow-y-auto"
+        data-testid="file-breadcrumb-menu"
       >
         {menu !== null && (
           <BreadcrumbDirectory
@@ -352,7 +364,7 @@ export function FilePathBreadcrumb({
             onPickFile={handlePickFile}
           />
         )}
-      </AnchoredMenu>
+      </FloatingMenu>
     </div>
   );
 }

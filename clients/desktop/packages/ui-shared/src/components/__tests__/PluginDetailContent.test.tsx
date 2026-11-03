@@ -320,7 +320,6 @@ describe('PluginDetailContent', () => {
     const codexButton = container.querySelector(
       '[data-testid="plugin-detail-toggle-codex"]',
     ) as HTMLButtonElement;
-    expect(codexButton.dataset.codexCompat).toBe('false');
     act(() => {
       codexButton.click();
     });

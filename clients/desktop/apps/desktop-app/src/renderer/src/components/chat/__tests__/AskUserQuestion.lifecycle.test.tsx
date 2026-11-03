@@ -37,7 +37,7 @@ jest.mock('@canopy/ui-shared/components', () => ({
         >
           Submit
         </button>
-        {errorKind && <span role="alert">Retry</span>}
+        {errorKind && <span role="alert">Try again</span>}
       </div>
     ),
 }));

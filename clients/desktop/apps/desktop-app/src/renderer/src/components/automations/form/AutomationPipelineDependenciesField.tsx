@@ -2,6 +2,7 @@ import { type JSX, useEffect, useState } from 'react';
 import { Button } from '@canopy/ui-shared/components';
 import type { AutomationPipelineDependency } from '@canopy/desktop-shared/types';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
+import { SettingsSelect } from '@canopy/ui-shared/components';
 
 const HELPER =
   'Sharing includes these pipelines so recipients get a copy that runs. A pipeline whose ID is in the prompt is included automatically.';
@@ -90,25 +91,21 @@ export function AutomationPipelineDependenciesField({
           ))}
         </ul>
       )}
-      <select
-        value=""
+      <SettingsSelect
+        width="fill"
+        value={null}
+        placeholder={ADD_PLACEHOLDER}
         disabled={disabled || available.length === 0}
-        onChange={(event): void => {
-          const pipelineId = event.target.value;
-          if (!pipelineId) return;
+        onValueChange={(pipelineId): void => {
           onChange([...value, { pipelineId, source: 'user' }]);
         }}
         aria-label="Add a pipeline"
         data-testid="automations-form-pipeline-dependency-add"
-        className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <option value="">{ADD_PLACEHOLDER}</option>
-        {available.map((pipeline) => (
-          <option key={pipeline.id} value={pipeline.id}>
-            {pipeline.name}
-          </option>
-        ))}
-      </select>
+        options={available.map((pipeline) => ({
+          value: pipeline.id,
+          label: pipeline.name,
+        }))}
+      />
     </div>
   );
 }

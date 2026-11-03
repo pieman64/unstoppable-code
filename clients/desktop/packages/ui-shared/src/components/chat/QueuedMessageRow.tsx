@@ -151,8 +151,6 @@ export const QUEUED_MESSAGE_SENDING_TOOLTIP =
 /** Another queued message is open in the editor; the queue holds still. */
 export const QUEUED_MESSAGE_EDITING_TOOLTIP =
   'Available after you finish editing';
-/** The chat's copy is still being set up; nothing in its queue can run yet. */
-export const QUEUED_MESSAGE_SETUP_TOOLTIP = 'Available when setup finishes';
 /** The agent is between steps (handing over a message, recovering). */
 export const QUEUED_MESSAGE_BUSY_TOOLTIP =
   'Available when the current step finishes';
@@ -479,7 +477,7 @@ export const QueuedMessageRow = forwardRef<
     (sending ? QUEUED_MESSAGE_SENDING_TOOLTIP : undefined);
   const forceLabel =
     sendBlock || forceKind === 'retry'
-      ? 'Retry'
+      ? 'Try again'
       : forceKind === 'run-now'
         ? 'Run now'
         : 'Interrupt';
@@ -654,9 +652,8 @@ export const QueuedMessageRow = forwardRef<
         {preview}
       </span>
       {status ? (
-        // A flex slot centers a rich status (the setup reason's inline
-        // tooltip trigger) on the row's axis; on a text line it would sit on
-        // its spinner's baseline instead. Plain text truncates in its own span.
+        // A flex slot centers a rich status (an inline reason's tooltip
+        // trigger) on the row's axis. Plain text truncates in its own span.
         <span
           data-testid="queued-message-status"
           className="flex min-w-0 max-w-1/2 shrink items-center fg-tertiary"
@@ -698,7 +695,7 @@ export const QueuedMessageRow = forwardRef<
               aria-description={sendBlock.description}
               disabled={sending}
             >
-              Retry
+              Try again
             </Button>
           </ActionTooltip>
         ) : sendNowButton && (interruptReason || interruptIcon) ? (

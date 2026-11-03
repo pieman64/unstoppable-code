@@ -1,3 +1,5 @@
+import type { W5CommitEventSource } from '@canopy/core-runtime/node/w5/commit-events';
+import type { W5CommitLogHostPort } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import type { W5RecordPortTransport } from '@canopy/core-runtime/node/w5/record-port';
 import type { W5CommitLogHost } from '../../../w5-commit-log/commit-log-host';
 import {
@@ -9,7 +11,7 @@ import {
   installW5DaemonRecordStoreForTests,
   w5RecordPortTransport,
 } from '../../w5-daemon-record-store';
-import { startW5DaemonRecordHarness } from './w5-daemon-record-harness';
+import { startW5DaemonRecordHarness } from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-daemon-record-harness';
 
 /*
  * W6g (CAN-5498, CAN-5506) keyed-boundary parity: one suite runs over desktop
@@ -42,6 +44,11 @@ export async function installW5StoreSide(
     readonly wrapTransport?: (
       transport: W5RecordPortTransport,
     ) => W5RecordPortTransport;
+    /**
+     * Daemon side: the W5e event source over `host`, so each applied commit
+     * publishes one event attributed to its caller.
+     */
+    readonly events?: W5CommitEventSource;
   },
 ): Promise<() => Promise<void>> {
   const { host, root, setDaemonOwned } = options;
@@ -52,7 +59,16 @@ export async function installW5StoreSide(
     __setDesktopW5FileStoreForTests(createW5CommitLogFileStore(() => host));
     return () => Promise.resolve();
   }
-  const harness = await startW5DaemonRecordHarness({ host });
+  const { events } = options;
+  const harness = await startW5DaemonRecordHarness(
+    events
+      ? {
+          host: events.port(),
+          portFor: (caller): W5CommitLogHostPort =>
+            events.port({ publishedBy: caller.clientInstanceId }),
+        }
+      : { host },
+  );
   setDaemonOwned(W5_NAMESPACES);
   const restore = installW5DaemonRecordStoreForTests(
     createW5DaemonRecordStore({

@@ -1242,6 +1242,55 @@ describe('TurnGroupRenderer active fork action', () => {
     expect(html).not.toContain('aria-label="Fork');
   });
 
+  it('offers fork and the compact menu on a completed background reply', () => {
+    withWorktreeChatTab('owner-project', 'owner-worktree');
+    const group: TurnGroup = {
+      ...completedTurnGroup(),
+      assistantMessages: [
+        {
+          id: 'wake-reply',
+          role: 'assistant',
+          timestamp: 2,
+          blocks: [{ type: 'text', text: 'Tests passed.' }],
+        },
+      ],
+      userMessage: {
+        id: 'wake-timer:wake',
+        role: 'system',
+        timestamp: 1,
+        blocks: [{ type: 'wake_boundary', turnId: 'wake' }],
+      },
+      timerMessage: {
+        id: 'wake-timer',
+        role: 'system',
+        timestamp: 3,
+        blocks: [
+          {
+            type: 'turn_timer',
+            startedAt: 1,
+            completedAt: 3,
+          },
+        ],
+      },
+    };
+    const html = renderToStaticMarkup(
+      <TurnGroupRenderer
+        chatId="chat-1"
+        group={group}
+        chatPendingQuestions={[]}
+        isLastTurnGroup={false}
+        isLastForkableTurnGroup={false}
+        targetOverride={{
+          projectId: 'owner-project',
+          worktreeId: 'owner-worktree',
+          chatId: 'chat-1',
+        }}
+      />,
+    );
+    expect(html).toContain('data-testid="fork-chat-button"');
+    expect(html).toContain('data-testid="turn-more-actions"');
+  });
+
   it('hides the inline active fork action for Claude terminal sessions', () => {
     const html = renderToStaticMarkup(
       <ChatLookProvider value="classic">
@@ -1468,7 +1517,7 @@ describe('TurnGroupRenderer reply Copy (CAN-4704)', () => {
   }
 
   it.each(['classic', 'clean'] as const)(
-    'gives a %s reply under an alternate timer message one Copy beside its thumbs',
+    'gives a %s reply under an alternate timer message one Copy beside its response actions',
     (look) => {
       const html = renderIn(
         look,
@@ -1480,7 +1529,11 @@ describe('TurnGroupRenderer reply Copy (CAN-4704)', () => {
         -1,
       );
       expect(row.indexOf('data-testid="turn-copy-message"')).toBeLessThan(
-        row.indexOf('data-testid="turn-feedback-up"'),
+        row.indexOf(
+          look === 'clean'
+            ? 'data-testid="turn-more-actions"'
+            : 'data-testid="turn-feedback-up"',
+        ),
       );
     },
   );
@@ -2000,6 +2053,8 @@ describe('live step window (CAN-4274)', () => {
             <TurnGroupRenderer
               chatId="chat"
               group={turn([
+                calls('read-before-1', ['Read']),
+                calls('read-before-2', ['Read']),
                 thought('think-1'),
                 calls('read-1', ['Read']),
                 thought('think-2'),
@@ -2021,7 +2076,7 @@ describe('live step window (CAN-4274)', () => {
         line.querySelector('[data-testid="chat-tool-step-summary"]')
           ?.textContent ?? '';
       expect(summary).not.toMatch(/Run/);
-      expect(container.textContent?.match(/Running/g) ?? []).toHaveLength(1);
+      expect(container.textContent?.match(/Run /g) ?? []).toHaveLength(1);
     },
   );
 
@@ -2704,6 +2759,7 @@ describe('clean chat look steps between replies', () => {
   const originalResizeObserver = globalThis.ResizeObserver;
 
   beforeEach(() => {
+    mockLiveStepWindow = false;
     // Grouping follows Settings → "Group tool calls".
     mockGroupToolCalls = true;
     (
@@ -2752,16 +2808,13 @@ describe('clean chat look steps between replies', () => {
 
   it('folds all the work between two replies into one closed line', () => {
     show(streamingTurn());
-    // Before the question, after it, after each reply: four lines, not a
-    // row per tool call.
+    // Only runs of at least two calls get a summary. Single calls stay visible.
     expect(groups().map(lineOf)).toEqual([
-      'Used 1 tool',
       'Used 1 tool, ran 1 command· 1 error',
       'Ran 2 commands, checked the code graph· 1 error',
-      'Thinking',
     ]);
-    // Closed: no single step row shows until the person opens a line.
-    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(0);
+    // The two standalone calls remain visible.
+    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(2);
     // The question reads as the answer card alone, without a tool row.
     expect(container.textContent).not.toContain('Asked you');
     expect(
@@ -2771,8 +2824,9 @@ describe('clean chat look steps between replies', () => {
 
   it('shimmers one live line and keeps the timer row quiet', () => {
     show(streamingTurn());
-    const live = groups().at(-1);
-    expect(live?.querySelector('.canopy-text-shimmer-strong')).not.toBeNull();
+    expect(
+      container.querySelector('.canopy-text-shimmer-strong'),
+    ).not.toBeNull();
     expect(
       container.querySelectorAll('.canopy-text-shimmer-strong'),
     ).toHaveLength(1);
@@ -2783,6 +2837,9 @@ describe('clean chat look steps between replies', () => {
 
   it('keeps every line in place as steps stream in', () => {
     const group = streamingTurn();
+    group.assistantMessages.push(
+      message(tool('r0', 'Read', { file_path: '/repo/setup.ts' }, ok)),
+    );
     show(group);
     const before = groups();
     const running = {
@@ -2797,10 +2854,8 @@ describe('clean chat look steps between replies', () => {
     // Same lines, same nodes: the new step joins the live line.
     expect(after).toHaveLength(before.length);
     after.forEach((node, index) => expect(node).toBe(before[index]));
-    expect(lineOf(after.at(-1) ?? container)).toBe(
-      'Reading BrowserToolbar.tsx',
-    );
-    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(0);
+    expect(lineOf(after.at(-1) ?? container)).toBe('Read BrowserToolbar.tsx');
+    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(1);
   });
 
   it('shows "Thinking" on its own line until the next step starts', () => {
@@ -2829,7 +2884,64 @@ describe('clean chat look steps between replies', () => {
     });
     expect(container.textContent).toContain('Pulling up the canopy repo.');
     expect(container.textContent).toContain('Worked');
-    expect(groups().map(lineOf).at(-1)).toBe('Ran 1 command');
+    expect(groups().map(lineOf).at(-1)).toBe(
+      'Ran 2 commands, checked the code graph· 1 error',
+    );
+    expect(container.querySelector('[data-tool-use-id="b4"]')).not.toBeNull();
+  });
+
+  it('folds Detailed work when the turn completes and allows reopening', () => {
+    mockGroupToolCalls = false;
+    const group = streamingTurn();
+    show(group);
+    expect(
+      container.querySelectorAll('[data-tool-status]').length,
+    ).toBeGreaterThan(4);
+    const complete = {
+      ...group,
+      assistantMessages: [
+        ...group.assistantMessages,
+        message({ type: 'text', text: 'Here is the audit.' }),
+      ],
+      timerMessage: {
+        ...group.timerMessage,
+        blocks: [{ type: 'turn_timer' as const, startedAt: 1, completedAt: 9 }],
+      },
+      isComplete: true,
+    };
+    show(complete);
+    expect(container.querySelectorAll('[data-tool-status]')).toHaveLength(0);
+    expect(container.textContent).toContain('Here is the audit.');
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="turn-work-header"] button[aria-expanded]',
+    );
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle?.click());
+    expect(
+      container.querySelectorAll('[data-tool-status]').length,
+    ).toBeGreaterThan(4);
+    show(complete);
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('shows Thinking after completed recent calls until the next call starts', () => {
+    mockGroupToolCalls = true;
+    mockLiveStepWindow = true;
+    const group = streamingTurn();
+    show({
+      ...group,
+      assistantMessages: [
+        ...group.assistantMessages,
+        message(tool('recent-done', 'Bash', { command: 'ls' }, ok)),
+      ],
+    });
+    expect(container.textContent?.match(/Thinking/g)).toHaveLength(1);
+    const live = container.querySelectorAll(
+      '[data-testid="chat-tool-step-live"]',
+    );
+    expect(live[live.length - 1]?.lastElementChild?.textContent).toBe(
+      'Thinking',
+    );
   });
 
   it('keeps one row per tool call while Group tool calls is off', () => {
@@ -2847,7 +2959,7 @@ describe('clean chat look steps between replies', () => {
     expect(
       container.querySelector('[data-testid="turn-timer"]')?.textContent,
     ).toBe('');
-    // Once the newest step is done, the slot says the agent is thinking.
+    // Once the newest step is done, Thinking shares the step stack's spacing.
     show({
       ...group,
       assistantMessages: [
@@ -2857,7 +2969,13 @@ describe('clean chat look steps between replies', () => {
     });
     expect(
       container.querySelector('[data-testid="turn-timer"]')?.textContent,
-    ).toBe('Thinking');
+    ).toBe('');
+    const stacks = container.querySelectorAll(
+      '[data-testid="chat-tool-step-detailed"]',
+    );
+    expect(stacks[stacks.length - 1]?.lastElementChild?.textContent).toBe(
+      'Thinking',
+    );
   });
 });
 

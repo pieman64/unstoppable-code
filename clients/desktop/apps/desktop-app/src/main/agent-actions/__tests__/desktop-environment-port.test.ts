@@ -420,6 +420,27 @@ describe('desktop environment port', () => {
     expect(callerOf(options)).toMatchObject({ interfaceKind: 'mcp' });
   });
 
+  it('propagates retryable workspace unavailability instead of hiding it as a missing chat', async () => {
+    mockQuery.mockRejectedValueOnce(
+      new CanopyOperationError({
+        kind: 'unavailable',
+        message:
+          'Workspace storage is temporarily unavailable. Try again in a moment.',
+        retry: { kind: 'same_request' },
+      }),
+    );
+    const port = createDesktopEnvironmentPort(deps());
+    await expect(
+      port.getChat(
+        { scope: { workspaceId: 'ws-1' }, chatId: 'chat-other' },
+        call,
+      ),
+    ).rejects.toMatchObject({ code: 'surface_unavailable', retryable: true });
+    expect(mockQuery.mock.calls.map(([name]) => name)).toEqual([
+      'core.workspace.get',
+    ]);
+  });
+
   it('finds a chat in any worktree and reads its latest response', async () => {
     const port = createDesktopEnvironmentPort(deps());
     await expect(

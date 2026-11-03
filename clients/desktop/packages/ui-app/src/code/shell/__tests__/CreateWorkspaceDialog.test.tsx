@@ -167,11 +167,16 @@ describe('CreateWorkspaceDialog', () => {
       document.querySelector<HTMLInputElement>('[data-testid="remote-url"]')
         ?.value,
     ).toBe('  https://github.com/cursor/plugins/tree/main/pstack  ');
-    expect(
+    // The error first, then the field's help text.
+    const describedBy = (
       document
         .querySelector<HTMLInputElement>('[data-testid="remote-url"]')
-        ?.getAttribute('aria-describedby'),
-    ).toBe('error');
+        ?.getAttribute('aria-describedby') ?? ''
+    ).split(' ');
+    expect(describedBy[0]).toBe('error');
+    expect(
+      document.getElementById(describedBy[1] ?? '')?.textContent,
+    ).toContain('clones the repo');
     expect(
       document.querySelector('[data-testid="error"]')?.getAttribute('role'),
     ).toBe('alert');

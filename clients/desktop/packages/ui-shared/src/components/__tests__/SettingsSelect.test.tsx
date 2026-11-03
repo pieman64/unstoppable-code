@@ -57,11 +57,12 @@ function listbox(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="listbox"]');
 }
 
-it('draws a 144px capsule trigger instead of a native select', () => {
+it('draws a 144px rounded-rectangle trigger instead of a native select', () => {
   const trigger = render();
   expect(container.querySelector('select')).toBeNull();
   expect(trigger.classList.contains('w-36')).toBe(true);
-  expect(trigger.classList.contains('rounded-full')).toBe(true);
+  expect(trigger.classList.contains('rounded-row')).toBe(true);
+  expect(trigger.classList.contains('rounded-full')).toBe(false);
   expect(trigger.classList.contains('h-7')).toBe(true);
   expect(trigger.getAttribute('aria-label')).toBe('Member role');
   expect(trigger.getAttribute('aria-haspopup')).toBe('listbox');
@@ -344,6 +345,17 @@ it('stays closed while disabled', () => {
   expect(trigger.disabled).toBe(true);
   act(() => trigger.click());
   expect(listbox()).toBeNull();
+});
+
+it('stays closed when enabled again after being disabled while open', () => {
+  const trigger = render();
+  act(() => trigger.click());
+  expect(listbox()).not.toBeNull();
+  render({ disabled: true });
+  expect(listbox()).toBeNull();
+  render({ disabled: false });
+  expect(listbox()).toBeNull();
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
 });
 
 it('shows a placeholder for an unknown value, else the first option', () => {

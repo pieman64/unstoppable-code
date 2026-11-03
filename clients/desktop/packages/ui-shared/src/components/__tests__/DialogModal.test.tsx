@@ -220,10 +220,13 @@ describe('DialogModal', () => {
     );
 
     try {
+      // The padded body sits inside the scroller.
       const body = document.querySelector('[data-testid="dialog-body"]');
-      expect(body?.parentElement?.classList.contains('overflow-y-auto')).toBe(
-        true,
-      );
+      expect(
+        body?.parentElement?.parentElement?.classList.contains(
+          'overflow-y-auto',
+        ),
+      ).toBe(true);
     } finally {
       act(() => {
         root.unmount();
@@ -231,12 +234,13 @@ describe('DialogModal', () => {
     }
   });
 
-  it('renders children without a body wrapper when scrolling is disabled', () => {
+  it('renders a flush body without a wrapper when scrolling is disabled', () => {
     const { root } = render(
       <DialogModal
         onClose={jest.fn()}
         title="Custom layout dialog"
         scrollableBody={false}
+        inset="flush"
       >
         <div data-testid="dialog-body">Body</div>
       </DialogModal>,
@@ -876,6 +880,55 @@ describe('DialogModal trapFocus', () => {
     );
   });
 
+  it('leaves Tab to a non-trapping dialog stacked above it', () => {
+    function Harness(): JSX.Element {
+      const [childOpen, setChildOpen] = useState(false);
+      return (
+        <DialogModal onClose={() => undefined} title="Parent" trapFocus>
+          <button
+            type="button"
+            data-testid="open-child"
+            onClick={() => setChildOpen(true)}
+          >
+            Open child
+          </button>
+          {childOpen ? (
+            <DialogModal onClose={() => setChildOpen(false)} title="Child">
+              <button type="button" data-testid="child-first">
+                First
+              </button>
+              <button type="button" data-testid="child-last">
+                Last
+              </button>
+            </DialogModal>
+          ) : null}
+        </DialogModal>
+      );
+    }
+
+    render(<Harness />);
+    act(() => query('open-child').click());
+
+    const parentClose = document.body.querySelectorAll<HTMLButtonElement>(
+      'button[aria-label="Close"]',
+    )[0];
+    const parentFocus = jest.spyOn(parentClose, 'focus');
+    query('child-first').focus();
+
+    const tab = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      document.activeElement?.dispatchEvent(tab);
+    });
+
+    expect(tab.defaultPrevented).toBe(false);
+    expect(parentFocus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(query('child-first'));
+  });
+
   it('restores focus to the opener on close', () => {
     const opener = document.createElement('button');
     document.body.appendChild(opener);
@@ -1062,4 +1115,50 @@ it('adds no session-replay block to the card or overlay', () => {
   expect(document.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
   unmountAllRoots();
   document.body.innerHTML = '';
+});
+
+describe('DialogModal page variant', () => {
+  afterEach(() => {
+    unmountAllRoots();
+    document.body.innerHTML = '';
+  });
+
+  it('fills the window inside a scrim margin with the dialog radius', () => {
+    render(
+      <DialogModal
+        variant="page"
+        onClose={jest.fn()}
+        title="Project settings"
+        dataTestId="page"
+      >
+        <div>Body</div>
+      </DialogModal>,
+    );
+    const card = document.querySelector<HTMLElement>('[data-testid="page"]');
+    expect(card?.className).toContain('h-full');
+    expect(card?.className).toContain('max-w-none');
+    expect(card?.className).toContain('rounded-2xl');
+    expect(card?.style.maxHeight).toBe('100%');
+    expect(card?.parentElement?.className).toContain('bg-overlay-scrim');
+    expect(card?.parentElement?.className).toContain('p-4');
+    expect(card?.textContent).toContain('Project settings');
+  });
+
+  it('moves focus in, closes on Escape and returns focus', () => {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const onClose = jest.fn();
+    const { root } = render(
+      <DialogModal variant="page" onClose={onClose} title="Settings">
+        <button type="button">Inside</button>
+      </DialogModal>,
+    );
+    const card = document.querySelector('[role="dialog"]');
+    expect(card?.contains(document.activeElement)).toBe(true);
+    dispatchEscape();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => root.render(<></>));
+    expect(document.activeElement).toBe(trigger);
+  });
 });

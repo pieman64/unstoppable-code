@@ -163,7 +163,7 @@ function MappingRow({
           {...attributes}
           {...listeners}
         >
-          <DragHandleIcon size={12} className="shrink-0" />
+          <DragHandleIcon size="sm" className="shrink-0" />
         </span>
 
         <ToggleSwitch
@@ -174,12 +174,12 @@ function MappingRow({
         />
 
         {mapping.builtin ? (
-          <label
-            htmlFor={`branch-display-mapping-switch-${mapping.id}`}
-            className="min-w-0 flex-1 truncate text-s font-medium fg-primary"
-          >
-            {mapping.label}
-          </label>
+          <div className="min-w-0 flex-1">
+            <SettingsRow
+              htmlFor={`branch-display-mapping-switch-${mapping.id}`}
+              label={mapping.label}
+            />
+          </div>
         ) : (
           <div className="min-w-0 flex-1">
             <SettingsTextField
@@ -203,7 +203,7 @@ function MappingRow({
             onClick={onDelete}
             aria-label="Delete mapping"
           >
-            <TrashIcon size={14} />
+            <TrashIcon size="sm" />
           </Button>
         )}
 
@@ -220,7 +220,7 @@ function MappingRow({
           }
         >
           <ChevronRightIcon
-            size={12}
+            size="sm"
             className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
           />
         </Button>
@@ -341,7 +341,7 @@ function MappingRow({
                           }
                           aria-label="Remove example"
                         >
-                          <CloseIcon size={10} />
+                          <CloseIcon size="sm" />
                         </Button>
                       )}
                       <span className="flex min-w-0 items-center gap-1 fg-tertiary">
@@ -352,7 +352,7 @@ function MappingRow({
                         {p.output !== null && (
                           <>
                             <ForwardIcon
-                              size={12}
+                              size="sm"
                               aria-hidden
                               className="shrink-0"
                             />
@@ -485,7 +485,7 @@ export function BranchDisplayMappings({
                       variant="secondary"
                       onClick={handleAdd}
                     >
-                      <PlusIcon size={14} />
+                      <PlusIcon size="sm" />
                       Add mapping
                     </Button>
                   )}
@@ -497,7 +497,7 @@ export function BranchDisplayMappings({
                     aria-label={rulesLabel}
                   >
                     <ChevronRightIcon
-                      size={12}
+                      size="sm"
                       className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
                     />
                     {expanded ? 'Hide' : 'Show'}

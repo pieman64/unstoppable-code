@@ -32,15 +32,15 @@ export interface ProjectPluginDefaultsRead {
 export interface ProjectPluginDefaultsRemoved {
   removed: true;
   /**
-   * The default selections the write left when its own refresh may have been
-   * dropped, and the revision then; null when it was not. Any advance since
-   * followed the write and settled it.
+   * For each write whose own refresh may have been dropped, the default
+   * selections it left and the revision then; empty when none was. Any
+   * advance since followed the write and settled it.
    */
-  owed:
-    | (Pick<ProjectPluginDefaults, 'defaultPluginSelections'> & {
-        revision: number;
-      })
-    | null;
+  owed: ReadonlyArray<
+    Pick<ProjectPluginDefaults, 'defaultPluginSelections'> & {
+      revision: number;
+    }
+  >;
 }
 
 /** Those fields as found in any workspace config, parsed or typed. */
@@ -126,20 +126,24 @@ function recordServed(
 
 /**
  * Configs whose layer may change with no refresh (CAN-4417), each with the
- * request for its reconcile, which must not wait on the read.
+ * requests a read makes, which must not wait on the read.
  */
-const unsettled = new Map<string, () => void>();
+const unsettled = new Map<
+  string,
+  { reconcile: () => void; readable?: () => void }
+>();
 
 /**
  * Until {@link projectPluginLayerSettled}, reads of the config skip the
  * cache, and one that finds a layer other than one served since the last
- * advance requests `reconcile`.
+ * advance requests `reconcile`. Any other readable read calls `readable`.
  */
 export function projectPluginLayerUnsettled(
   configPath: string,
   reconcile: () => void,
+  readable?: () => void,
 ): void {
-  unsettled.set(configPath, reconcile);
+  unsettled.set(configPath, { reconcile, readable });
   cache.delete(configPath);
 }
 
@@ -151,8 +155,8 @@ export function readThroughProjectPluginDefaults(
   configPath: string,
   load: () => Promise<ProjectPluginDefaultsRead>,
 ): Promise<ProjectPluginDefaults> {
-  const reconcile = unsettled.get(configPath);
-  const cached = reconcile ? undefined : cache.get(configPath);
+  const requests = unsettled.get(configPath);
+  const cached = requests ? undefined : cache.get(configPath);
   if (cached) return cached;
   const startedAt = advances.get(configPath) ?? 0;
   const record = (defaults: ProjectPluginDefaults | 'mixed'): void => {
@@ -162,17 +166,18 @@ export function readThroughProjectPluginDefaults(
   const pending = load().then(({ defaults, cacheable }) => {
     const before = served.get(configPath);
     record(defaults);
-    if (
-      reconcile &&
-      cacheable &&
-      before !== undefined &&
-      (before === 'mixed' || projectPluginLayerChanged(before, defaults))
-    )
-      reconcile();
+    if (requests && cacheable) {
+      if (
+        before !== undefined &&
+        (before === 'mixed' || projectPluginLayerChanged(before, defaults))
+      )
+        requests.reconcile();
+      else requests.readable?.();
+    }
     if (!cacheable) forget(configPath, pending);
     return defaults;
   });
-  if (!reconcile) cache.set(configPath, pending);
+  if (!requests) cache.set(configPath, pending);
   track(
     readsInFlight,
     configPath,
@@ -236,6 +241,35 @@ export function projectPluginDefaultsWritten(write: {
 }
 
 /**
+ * How long a caller that awaits a reconcile waits for it (CAN-4409 D1). A
+ * pass is one start, ended early by a concurrent commit or advance; the
+ * deadline counts from the call and covers waiting for reads in flight,
+ * settling commits and the write queue.
+ */
+export interface ProjectPluginDefaultsReconcileBound {
+  passes: number;
+  deadlineMs: number;
+}
+
+/**
+ * The bound of callers that wait inline: keyed failures and replays, Cowork
+ * settings, and W5e commit events. One concurrent commit costs one more
+ * pass. A real-worker deletion held an awaited read for up to 7.4 s in
+ * tests, so 5 s still decides inline behind most ordinary work and holds a
+ * W5e event about 20 s across the bridge's retries. Neither value changes
+ * the result, only when the background takes over.
+ */
+export const INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND: ProjectPluginDefaultsReconcileBound =
+  { passes: 4, deadlineMs: 5_000 };
+
+/**
+ * `compared`: a read in the write queue was compared (an unreadable one
+ * changes nothing). `exhausted`: a bounded reconcile ran out first; a read it
+ * already started may still finish and compare.
+ */
+export type ProjectPluginDefaultsReconcileResult = 'compared' | 'exhausted';
+
+/**
  * Records a write that may have landed without {@link projectPluginDefaultsWritten}
  * (a lost response): the cached layer is dropped, and the revision advances
  * only when a layer served since it last advanced differs from the file's,
@@ -246,13 +280,15 @@ export function projectPluginDefaultsWritten(write: {
  * every other in-process write has refreshed or not landed, after the reads
  * in flight have recorded what they served. A commit of the config still
  * running its post-commit work, or an advance during the read, starts it
- * over; each start follows a new commit or advance.
+ * over; each start follows a new commit or advance. Without a `bound` it
+ * waits and starts over without limit; with one it resolves `exhausted`
+ * once either limit is reached, and the caller owns what is still owed.
  *
  * A removed read leaves the removal to its remover. It changes nothing, the
- * cached layer included, unless the revision has not advanced since the
- * owed write and a layer served since then predates it: neither its
+ * cached layer included, unless for some owed write the revision has not
+ * advanced since it and a layer served since then predates it: neither its
  * selections nor the removed config's empty layer. Then it drops the layer
- * and advances, standing in for the write's refresh.
+ * and advances once, standing in for the write's refresh.
  */
 export async function reconcileProjectPluginDefaults(write: {
   configPath: string;
@@ -261,59 +297,105 @@ export async function reconcileProjectPluginDefaults(write: {
   serialize: (work: () => Promise<void>) => Promise<void>;
   /** Commits that wrote the config and still refresh after leaving the queue. */
   committing: () => readonly Promise<void>[];
-}): Promise<void> {
-  const { configPath, workspaceId } = write;
-  await Promise.all([
-    ...Array.from(readsInFlight.get(configPath) ?? []),
-    ...write.committing(),
-  ]);
-  let decided = false;
-  await write.serialize(async (): Promise<void> => {
-    if (write.committing().length > 0) return;
-    const revision = getProjectPluginDefaultsRevision(workspaceId);
-    let read: ProjectPluginDefaultsRead | ProjectPluginDefaultsRemoved;
-    try {
-      read = await write.load();
-    } catch (error) {
+  bound?: ProjectPluginDefaultsReconcileBound;
+}): Promise<ProjectPluginDefaultsReconcileResult> {
+  const { configPath, workspaceId, bound } = write;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  const deadline =
+    bound &&
+    new Promise<void>((resolveDeadline) => {
+      timer = setTimeout(() => {
+        expired = true;
+        resolveDeadline();
+      }, bound.deadlineMs);
+    });
+  /** Whether `work` settled before the deadline. */
+  const withinBound = async (work: Promise<unknown>): Promise<boolean> => {
+    await (deadline ? Promise.race([work, deadline]) : work);
+    return !expired;
+  };
+  try {
+    for (let pass = 1; !bound || pass <= bound.passes; pass += 1) {
+      if (
+        !(await withinBound(
+          Promise.all([
+            ...Array.from(readsInFlight.get(configPath) ?? []),
+            ...write.committing(),
+          ]),
+        ))
+      )
+        return 'exhausted';
+      let abandoned = false;
+      let decided = false;
+      const queued = write.serialize(async (): Promise<void> => {
+        if (abandoned || write.committing().length > 0) return;
+        const revision = getProjectPluginDefaultsRevision(workspaceId);
+        let read: ProjectPluginDefaultsRead | ProjectPluginDefaultsRemoved;
+        try {
+          read = await write.load();
+        } catch (error) {
+          projectPluginDefaultsWritten({
+            configPath,
+            workspaceId,
+            layerChanged: false,
+          });
+          throw error;
+        }
+        // Every session that read before an advance is already recreated.
+        if (getProjectPluginDefaultsRevision(workspaceId) !== revision) return;
+        decided = true;
+        compareRead(configPath, workspaceId, revision, read);
+      });
+      if (!(await withinBound(queued))) {
+        // Not yet started: it never reads. Started: it finishes on its own.
+        abandoned = true;
+        queued.catch((): void => undefined);
+        return 'exhausted';
+      }
+      if (decided) return 'compared';
+    }
+    return 'exhausted';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function compareRead(
+  configPath: string,
+  workspaceId: string,
+  revision: number,
+  read: ProjectPluginDefaultsRead | ProjectPluginDefaultsRemoved,
+): void {
+  const lastServed = served.get(configPath);
+  if ('removed' in read) {
+    if (
+      lastServed !== undefined &&
+      read.owed.some(
+        (owed) =>
+          owed.revision === revision &&
+          (lastServed === 'mixed' ||
+            (projectPluginLayerChanged(lastServed, {}) &&
+              !pluginSelectionsEqual(
+                normalizePluginSelections(lastServed.defaultPluginSelections),
+                normalizePluginSelections(owed.defaultPluginSelections),
+              ))),
+      )
+    )
       projectPluginDefaultsWritten({
         configPath,
         workspaceId,
-        layerChanged: false,
+        layerChanged: true,
       });
-      throw error;
-    }
-    // Every session that read before an advance is already recreated.
-    if (getProjectPluginDefaultsRevision(workspaceId) !== revision) return;
-    decided = true;
-    const lastServed = served.get(configPath);
-    if ('removed' in read) {
-      if (
-        read.owed !== null &&
-        read.owed.revision === revision &&
-        lastServed !== undefined &&
-        (lastServed === 'mixed' ||
-          (projectPluginLayerChanged(lastServed, {}) &&
-            !pluginSelectionsEqual(
-              normalizePluginSelections(lastServed.defaultPluginSelections),
-              normalizePluginSelections(read.owed.defaultPluginSelections),
-            )))
-      )
-        projectPluginDefaultsWritten({
-          configPath,
-          workspaceId,
-          layerChanged: true,
-        });
-      return;
-    }
-    projectPluginDefaultsWritten({
-      configPath,
-      workspaceId,
-      layerChanged:
-        read.cacheable &&
-        lastServed !== undefined &&
-        (lastServed === 'mixed' ||
-          projectPluginLayerChanged(lastServed, read.defaults)),
-    });
+    return;
+  }
+  projectPluginDefaultsWritten({
+    configPath,
+    workspaceId,
+    layerChanged:
+      read.cacheable &&
+      lastServed !== undefined &&
+      (lastServed === 'mixed' ||
+        projectPluginLayerChanged(lastServed, read.defaults)),
   });
-  if (!decided) await reconcileProjectPluginDefaults(write);
 }

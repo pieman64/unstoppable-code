@@ -28,6 +28,7 @@ import {
 } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   Button,
+  FormField,
   Notice,
   SettingsSelect,
   StatusBadge,
@@ -231,131 +232,150 @@ function AddRuleForm({
 
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <label className={ADD_RULE_FIELD_CLASS_NAME}>
-        <span className={ADD_RULE_CAPTION_CLASS_NAME}>Behavior</span>
-        <SettingsSelect
-          options={[
-            { value: 'allow', label: 'Allow' },
-            { value: 'deny', label: 'Deny' },
-          ]}
-          value={form.behavior}
-          disabled={disabled}
-          onValueChange={(next): void =>
-            setForm((prev) => ({
-              ...prev,
-              behavior: next === 'deny' ? 'deny' : 'allow',
-            }))
-          }
-        />
-      </label>
+      <FormField label="Behavior">
+        {(control) => (
+          <SettingsSelect
+            {...control}
+            options={[
+              { value: 'allow', label: 'Allow' },
+              { value: 'deny', label: 'Deny' },
+            ]}
+            value={form.behavior}
+            disabled={disabled}
+            onValueChange={(next): void =>
+              setForm((prev) => ({
+                ...prev,
+                behavior: next === 'deny' ? 'deny' : 'allow',
+              }))
+            }
+          />
+        )}
+      </FormField>
 
-      <label className={ADD_RULE_FIELD_CLASS_NAME}>
-        <span className={ADD_RULE_CAPTION_CLASS_NAME}>Kind</span>
-        <SettingsSelect
-          options={RULE_KIND_OPTIONS.map((option) => ({
-            value: option.kind,
-            label: option.label,
-          }))}
-          value={form.kind}
-          disabled={disabled}
-          onValueChange={(next): void => {
-            const kind = parseRuleKind(next);
-            setForm((prev) => ({
-              ...EMPTY_ADD_RULE_FORM,
-              behavior: prev.behavior,
-              kind,
-            }));
-          }}
-        />
-      </label>
+      <FormField label="Kind">
+        {(control) => (
+          <SettingsSelect
+            {...control}
+            options={RULE_KIND_OPTIONS.map((option) => ({
+              value: option.kind,
+              label: option.label,
+            }))}
+            value={form.kind}
+            disabled={disabled}
+            onValueChange={(next): void => {
+              const kind = parseRuleKind(next);
+              setForm((prev) => ({
+                ...EMPTY_ADD_RULE_FORM,
+                behavior: prev.behavior,
+                kind,
+              }));
+            }}
+          />
+        )}
+      </FormField>
 
       {form.kind === 'mcp' ? (
         <>
-          <label className={ADD_RULE_FIELD_CLASS_NAME}>
-            <span className={ADD_RULE_CAPTION_CLASS_NAME}>Server</span>
-            <SettingsTextField
-              type="text"
-              width="sm"
-              value={form.server}
-              disabled={disabled}
-              placeholder="server name"
-              onChange={(e): void =>
-                setForm((prev) => ({ ...prev, server: e.target.value }))
-              }
-            />
-          </label>
-          <label className={ADD_RULE_FIELD_CLASS_NAME}>
-            <span className={ADD_RULE_CAPTION_CLASS_NAME}>Tool (optional)</span>
-            <SettingsTextField
-              type="text"
-              width="sm"
-              value={form.tool}
-              disabled={disabled}
-              placeholder="tool name"
-              onChange={(e): void =>
-                setForm((prev) => ({ ...prev, tool: e.target.value }))
-              }
-            />
-          </label>
+          <FormField label="Server">
+            {(control) => (
+              <SettingsTextField
+                {...control}
+                type="text"
+                width="sm"
+                value={form.server}
+                disabled={disabled}
+                placeholder="server name"
+                onChange={(e): void =>
+                  setForm((prev) => ({ ...prev, server: e.target.value }))
+                }
+              />
+            )}
+          </FormField>
+          <FormField label="Tool (optional)">
+            {(control) => (
+              <SettingsTextField
+                {...control}
+                type="text"
+                width="sm"
+                value={form.tool}
+                disabled={disabled}
+                placeholder="tool name"
+                onChange={(e): void =>
+                  setForm((prev) => ({ ...prev, tool: e.target.value }))
+                }
+              />
+            )}
+          </FormField>
         </>
       ) : form.kind === 'browser-upload' ? (
         <>
-          <label className={ADD_RULE_FIELD_CLASS_NAME}>
-            <span className={ADD_RULE_CAPTION_CLASS_NAME}>Site</span>
+          <FormField label="Site">
+            {(control) => (
+              <SettingsTextField
+                {...control}
+                type="text"
+                width="md"
+                data-testid={patternInputTestId}
+                value={form.value}
+                disabled={disabled}
+                placeholder="https://upload.example.com"
+                onChange={(e): void =>
+                  setForm((prev) => ({ ...prev, value: e.target.value }))
+                }
+              />
+            )}
+          </FormField>
+          <FormField label="Path (optional)">
+            {(control) => (
+              <SettingsTextField
+                {...control}
+                type="text"
+                width="sm"
+                value={form.path}
+                disabled={disabled}
+                placeholder="exports/**"
+                onChange={(e): void =>
+                  setForm((prev) => ({ ...prev, path: e.target.value }))
+                }
+              />
+            )}
+          </FormField>
+        </>
+      ) : (
+        <FormField
+          label={
+            form.kind === 'command'
+              ? 'Command pattern'
+              : form.kind === 'file-write'
+                ? 'Path pattern'
+                : form.kind === 'network'
+                  ? 'Host'
+                  : 'Tool name'
+          }
+        >
+          {(control) => (
             <SettingsTextField
+              {...control}
               type="text"
               width="md"
               data-testid={patternInputTestId}
               value={form.value}
               disabled={disabled}
-              placeholder="https://upload.example.com"
+              placeholder={
+                form.kind === 'command'
+                  ? 'npm test*'
+                  : form.kind === 'file-write'
+                    ? 'src/**/*.ts'
+                    : form.kind === 'network'
+                      ? 'api.example.com'
+                      : 'ToolName'
+              }
               onChange={(e): void =>
                 setForm((prev) => ({ ...prev, value: e.target.value }))
               }
             />
-          </label>
-          <label className={ADD_RULE_FIELD_CLASS_NAME}>
-            <span className={ADD_RULE_CAPTION_CLASS_NAME}>Path (optional)</span>
-            <SettingsTextField
-              type="text"
-              width="sm"
-              value={form.path}
-              disabled={disabled}
-              placeholder="exports/**"
-              onChange={(e): void =>
-                setForm((prev) => ({ ...prev, path: e.target.value }))
-              }
-            />
-          </label>
-        </>
-      ) : (
-        <label className={ADD_RULE_FIELD_CLASS_NAME}>
-          <span className={ADD_RULE_CAPTION_CLASS_NAME}>
-            {form.kind === 'command' && 'Command pattern'}
-            {form.kind === 'file-write' && 'Path pattern'}
-            {form.kind === 'network' && 'Host'}
-            {form.kind === 'tool' && 'Tool name'}
-          </span>
-          <SettingsTextField
-            type="text"
-            width="md"
-            data-testid={patternInputTestId}
-            value={form.value}
-            disabled={disabled}
-            placeholder={
-              form.kind === 'command'
-                ? 'npm test*'
-                : form.kind === 'file-write'
-                  ? 'src/**/*.ts'
-                  : form.kind === 'network'
-                    ? 'api.example.com'
-                    : 'ToolName'
-            }
-            onChange={(e): void =>
-              setForm((prev) => ({ ...prev, value: e.target.value }))
-            }
-          />
-        </label>
+          )}
+        </FormField>
       )}
 
       <Button
@@ -370,9 +390,6 @@ function AddRuleForm({
     </div>
   );
 }
-
-const ADD_RULE_FIELD_CLASS_NAME = 'flex flex-col gap-1';
-const ADD_RULE_CAPTION_CLASS_NAME = 'text-xs fg-secondary';
 
 // Behavior, Target (with its kind under it), Origin, Created, action.
 const RULE_GRID_COLUMNS = '4.5rem minmax(0, 1fr) 6rem 6.5rem 6.5rem';

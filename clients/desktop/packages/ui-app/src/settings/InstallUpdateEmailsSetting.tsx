@@ -12,12 +12,19 @@ import {
   Notice,
   NoticeButton,
   SettingsFormSkeleton,
+  SettingsRowsRow,
+  CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCardSwitch,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
-import { settingsActionErrorCopy, settingsLoadErrorCopy } from './errors';
+import {
+  settingsActionErrorCopy,
+  settingsFailure,
+  settingsLoadErrorCopy,
+  type SettingsFailure,
+} from './errors';
 
 /** The default frame's heading, exported so a host frame can reuse it. */
 export const INSTALL_UPDATE_EMAILS_TITLE = 'Update emails';
@@ -30,7 +37,7 @@ const DESCRIPTION =
 type SettingState =
   | { readonly kind: 'loading' }
   // The load failed, so there is no real value to show or write.
-  | { readonly kind: 'locked'; readonly copy: string }
+  | { readonly kind: 'locked'; readonly failure: SettingsFailure }
   | {
       readonly kind: 'ready';
       /** Always the server's value, never the requested one. */
@@ -38,8 +45,8 @@ type SettingState =
       readonly saving: boolean;
       /** The value a failed save asked for, kept so Retry can resend it. */
       readonly failedRequest: boolean | null;
-      /** Friendly copy for the failed save; null when nothing failed. */
-      readonly failureCopy: string | null;
+      /** The failed save (our sentence and its details); null when nothing failed. */
+      readonly failure: SettingsFailure | null;
     };
 
 /**
@@ -119,12 +126,15 @@ function InstallUpdateEmailsContent({
           enabled: preference.enabled,
           saving: false,
           failedRequest: null,
-          failureCopy: null,
+          failure: null,
         });
       })
       .catch((caught: unknown) => {
         if (mounted.current) {
-          setState({ kind: 'locked', copy: settingsLoadErrorCopy(caught) });
+          setState({
+            kind: 'locked',
+            failure: settingsFailure(caught, settingsLoadErrorCopy(caught)),
+          });
         }
       });
   }, [client]);
@@ -139,7 +149,7 @@ function InstallUpdateEmailsContent({
       saveInFlight.current = true;
       setState((current) =>
         current.kind === 'ready' && !current.saving
-          ? { ...current, saving: true, failedRequest: null, failureCopy: null }
+          ? { ...current, saving: true, failedRequest: null, failure: null }
           : current,
       );
       client
@@ -152,22 +162,23 @@ function InstallUpdateEmailsContent({
             enabled: preference.enabled,
             saving: false,
             failedRequest: null,
-            failureCopy: null,
+            failure: null,
           });
         })
         .catch((caught: unknown) => {
           saveInFlight.current = false;
           if (!mounted.current) return;
-          const failureCopy = settingsActionErrorCopy(caught, {
-            action: 'save this setting',
-          });
+          const failure = settingsFailure(
+            caught,
+            settingsActionErrorCopy(caught, { action: 'save this setting' }),
+          );
           setState((current) =>
             current.kind === 'ready'
               ? {
                   ...current,
                   saving: false,
                   failedRequest: requested,
-                  failureCopy,
+                  failure,
                 }
               : current,
           );
@@ -195,9 +206,9 @@ function InstallUpdateEmailsContent({
 
   const error =
     state.kind === 'locked'
-      ? state.copy
+      ? state.failure
       : state.kind === 'ready' && state.failedRequest !== null
-        ? state.failureCopy
+        ? state.failure
         : null;
 
   const content = (
@@ -211,15 +222,20 @@ function InstallUpdateEmailsContent({
           intent="destructive"
           data-testid="install-update-emails-error"
           actions={
-            <NoticeButton
-              onClick={handleRetry}
-              data-testid="install-update-emails-retry"
-            >
-              Try again
-            </NoticeButton>
+            <>
+              {error.details !== undefined ? (
+                <CopyDetailsButton details={error.details} />
+              ) : null}
+              <NoticeButton
+                onClick={handleRetry}
+                data-testid="install-update-emails-retry"
+              >
+                Try again
+              </NoticeButton>
+            </>
           }
         >
-          {error}
+          {error.copy}
         </Notice>
       )}
       {state.kind === 'loading' ? (
@@ -228,29 +244,25 @@ function InstallUpdateEmailsContent({
         </DelayedLoadingPlaceholder>
       ) : (
         <div className={SETTINGS_CARD_ROW_CLASS}>
-          <div className="min-w-0">
-            {state.kind === 'ready' ? (
-              <label
-                htmlFor={TOGGLE_ID}
-                className="block text-s font-medium fg-primary"
-              >
-                {LABEL}
-              </label>
-            ) : (
-              <p className="text-s font-medium fg-primary">{LABEL}</p>
-            )}
-            <p className="text-xs fg-secondary">{DESCRIPTION}</p>
-          </div>
-          {state.kind === 'ready' && (
-            <SettingsCardSwitch
-              id={TOGGLE_ID}
-              checked={state.enabled}
-              disabled={state.saving}
+          <div className="min-w-0 flex-1">
+            <SettingsRowsRow
               label={LABEL}
-              onChange={handleToggle}
-              dataTestId="install-update-emails-toggle"
+              description={DESCRIPTION}
+              htmlFor={state.kind === 'ready' ? TOGGLE_ID : undefined}
+              control={
+                state.kind === 'ready' ? (
+                  <SettingsCardSwitch
+                    id={TOGGLE_ID}
+                    checked={state.enabled}
+                    disabled={state.saving}
+                    label={LABEL}
+                    onChange={handleToggle}
+                    dataTestId="install-update-emails-toggle"
+                  />
+                ) : undefined
+              }
             />
-          )}
+          </div>
         </div>
       )}
     </div>

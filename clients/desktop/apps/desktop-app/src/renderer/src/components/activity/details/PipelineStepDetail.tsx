@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { Notice } from '@canopy/ui-shared/components';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type {
   NormalizedStep,
@@ -403,20 +404,14 @@ export function PipelineStepDetail({
       )}
 
       {stepResult?.error && (
-        <div
-          className="rounded-md border border-line-destructive bg-destructive-subtle px-3 py-2"
-          role="alert"
-        >
-          <div className="mb-0.5 text-2xs font-medium fg-destructive">
-            Error
-          </div>
+        <Notice intent="destructive" title="Step failed">
           {/* Step error text is command output: blocked from session replay. */}
-          <div
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words font-mono text-2xs fg-destructive`}
+          <span
+            className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words font-mono`}
           >
             {stepResult.error}
-          </div>
-        </div>
+          </span>
+        </Notice>
       )}
 
       {stepResult?.agent_provider && (

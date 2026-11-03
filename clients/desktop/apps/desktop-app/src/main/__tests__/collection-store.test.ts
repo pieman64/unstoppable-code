@@ -1,8 +1,20 @@
 import * as fs from 'node:fs';
-import type * as FsPromisesModule from 'node:fs/promises';
+import type * as AtomicFileModule from '../lib/atomic-file';
+jest.mock('../lib/atomic-file', () => ({
+  writeFileAtomically: jest.fn(
+    jest.requireActual<typeof AtomicFileModule>('../lib/atomic-file')
+      .writeFileAtomically,
+  ),
+}));
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { CollectionConfig } from '@canopy/desktop-shared/types/collections';
+
+jest.mock('../skills/skill-service', () => ({ loadSkills: jest.fn() }));
+jest.mock('../plugins/plugin-service', () => ({ loadMarketplaces: jest.fn() }));
+jest.mock('../skills/resource-lanes', () => ({
+  skillResourceContextEnabled: jest.fn(() => false),
+}));
 
 jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
   recordSharedItemInstall: jest.fn(),
@@ -89,10 +101,22 @@ import {
   rollbackNewCollectionInstall,
   writeCollectionRemoteMetadata,
 } from '../collections/collection-store';
+import {
+  getPortalCollection,
+  savePortalCollection,
+} from '../services/plugin-catalog-service';
 
 describe('collection-store', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    const atomic =
+      jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+    jest
+      .mocked(atomic.writeFileAtomically)
+      .mockImplementation(
+        jest.requireActual<typeof AtomicFileModule>('../lib/atomic-file')
+          .writeFileAtomically,
+      );
     mockRecord.mockReset();
     mockContextEnabled = false;
     mockDecide.mockResolvedValue({ allow: false, reason: 'context-mismatch' });
@@ -102,6 +126,152 @@ describe('collection-store', () => {
 
   afterEach(() => {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('counts canonical local member refs once without changing saved membership', async () => {
+    const skill = { sourceId: 'custom:app', skillName: 'review-2' };
+    const plugin = { marketplaceId: 'builtin:app', pluginName: 'review' };
+    const mcp = { serverId: 'abc', configId: 'def' };
+    const saved = await saveCollectionConfig({
+      name: 'Repeated references',
+      skills: [skill, skill, { ...skill, sourceId: 'github:other/repo' }],
+      plugins: [plugin, plugin],
+      mcpServers: [mcp, mcp, { ...mcp, configId: 'fed' }],
+    });
+    const index = await readCollectionIndex();
+    expect(index.collections.find((row) => row.id === saved.id)).toMatchObject({
+      skillCount: 2,
+      pluginCount: 1,
+      mcpServerCount: 2,
+    });
+    expect((await readCollectionConfig(saved.id))?.collection.skills).toEqual(
+      saved.skills,
+    );
+  });
+
+  it('repairs raw counts in an older entrySchema 2 index once', async () => {
+    const saved = await saveCollectionConfig({
+      name: 'Old count',
+      skills: [
+        { sourceId: 'custom:app', skillName: 'review' },
+        { sourceId: 'custom:app', skillName: 'review' },
+      ],
+    });
+    const indexPath = path.join(tempDir, 'collections', 'index.json');
+    const index = await readCollectionIndex();
+    delete index.memberCountsSchema;
+    index.collections[0].skillCount = 2;
+    fs.writeFileSync(indexPath, JSON.stringify(index));
+    expect((await readCollectionIndex()).collections[0].skillCount).toBe(1);
+    expect((await readCollectionIndex()).collections[0].id).toBe(saved.id);
+  });
+
+  it('projects the opaque revision into the index for same-timestamp invalidation', async () => {
+    const saved = await saveCollectionConfig({ name: 'Revisioned index' });
+    expect((await readCollectionIndex()).collections[0]).toMatchObject({
+      revision: saved.revision,
+    });
+  });
+
+  it('round-trips a Portal GET revision through a real replacement save and refuses a second editor', async () => {
+    const initial = await saveCollectionConfig({ name: 'Launch kit' });
+    const first = await getPortalCollection(initial.id);
+    const second = await getPortalCollection(initial.id);
+    expect(first.collection.revision).toBe(initial.revision);
+    const draft = {
+      id: initial.id,
+      expectedRevision: first.collection.revision,
+      name: 'Edited kit',
+      description: 'Replacement description',
+      skills: [{ sourceId: 'unresolved-source', skillName: 'review-2' }],
+      plugins: [{ marketplaceId: 'unresolved-market', pluginName: 'lint' }],
+      mcpServers: [{ serverId: 'abc', configId: 'def' }],
+    };
+    const saved = await savePortalCollection(draft);
+    expect(saved.collection.revision).toEqual(expect.any(String));
+    expect(saved.collection.revision).not.toBe(first.collection.revision);
+    const reloaded = await getPortalCollection(initial.id);
+    expect(reloaded.collection).toEqual(saved.collection);
+    expect(reloaded.collection).toMatchObject({
+      name: draft.name,
+      description: draft.description,
+      skills: draft.skills,
+      plugins: draft.plugins,
+      mcpServers: draft.mcpServers,
+      createdAt: initial.createdAt,
+    });
+    await expect(
+      savePortalCollection({
+        ...draft,
+        expectedRevision: second.collection.revision,
+        name: 'Stale replacement',
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await getPortalCollection(initial.id)).collection).toEqual(
+      saved.collection,
+    );
+  });
+
+  it('returns a usable stable Portal revision for a legacy file without rewriting it', async () => {
+    const initial = await saveCollectionConfig({ name: 'Legacy kit' });
+    const legacy = { ...initial };
+    delete legacy.revision;
+    const configPath = path.join(
+      tempDir,
+      'collections',
+      `collection-${initial.id}.json`,
+    );
+    const bytes = JSON.stringify({ version: 2, collection: legacy });
+    fs.writeFileSync(configPath, bytes);
+    const first = await getPortalCollection(initial.id);
+    const second = await getPortalCollection(initial.id);
+    expect(first.collection.revision).toEqual(expect.any(String));
+    expect(second.collection.revision).toBe(first.collection.revision);
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(bytes);
+    const saved = await savePortalCollection({
+      ...first.collection,
+      expectedRevision: first.collection.revision,
+      name: 'Edited legacy kit',
+    });
+    expect(saved.collection.revision).not.toBe(first.collection.revision);
+    expect((await getPortalCollection(initial.id)).collection).toEqual(
+      saved.collection,
+    );
+  });
+
+  it('removes only the selected linked copy and its tracking, retaining constituent resources', async () => {
+    const input = {
+      name: 'Shared kit',
+      skills: [{ sourceId: 'source', skillName: 'review' }],
+      plugins: [{ marketplaceId: 'market', pluginName: 'lint' }],
+      mcpServers: [{ serverId: 'abc', configId: 'def' }],
+      sharedSource: {
+        remoteId: 'remote-a',
+        fetchedAt: 'now',
+        contentHash: 'installed-hash',
+      },
+    };
+    const first = await saveCollectionConfig(input);
+    const second = await saveCollectionConfig(input);
+    const resources = ['SKILL.md', 'plugin.json', 'mcp.json'].map((name) =>
+      path.join(tempDir, name),
+    );
+    for (const resource of resources)
+      fs.writeFileSync(resource, 'retained resource');
+    await deleteCollectionConfig(first.id);
+    expect(await readCollectionConfig(first.id)).toBeNull();
+    expect(
+      (await readCollectionIndex()).collections.map((row) => row.id),
+    ).toEqual([second.id]);
+    expect((await readCollectionConfig(second.id))?.collection).toEqual(second);
+    expect(recordSharedItemUninstall).toHaveBeenCalledWith({
+      kind: 'collection',
+      remoteId: 'remote-a',
+      sourceKind: 'shared',
+      localId: first.id,
+    });
+    for (const resource of resources)
+      expect(fs.readFileSync(resource, 'utf8')).toBe('retained resource');
   });
 
   it('blocks direct reads and capability expansion of installed organization collections', async () => {
@@ -411,10 +581,13 @@ describe('collection-store', () => {
       sharedAt: '2026-09-24T16:00:00.000Z',
     };
     const fsPromises =
-      jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
-    const actualWriteFile = fsPromises.writeFile;
+      jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+    const actualWriteFile =
+      jest.requireActual<typeof AtomicFileModule>(
+        '../lib/atomic-file',
+      ).writeFileAtomically;
     const writeSpy = jest
-      .spyOn(fsPromises, 'writeFile')
+      .spyOn(fsPromises, 'writeFileAtomically')
       .mockImplementationOnce(actualWriteFile)
       .mockRejectedValueOnce(new Error('index write failed'));
 
@@ -437,6 +610,50 @@ describe('collection-store', () => {
     );
   });
 
+  it.each(['share-config', 'share-index', 'unshare-config', 'unshare-index'])(
+    'restores metadata after a late %s write failure',
+    async (mode) => {
+      const remote = {
+        accountId: 'account',
+        remoteId: 'remote',
+        contentHash: 'hash',
+        shareScope: 'private' as const,
+        sharedAt: 'before',
+      };
+      const initial = await saveCollectionConfig({
+        name: 'Metadata',
+        ...(mode.startsWith('unshare') ? { remote } : {}),
+      });
+      const atomic =
+        jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+      const actual =
+        jest.requireActual<typeof AtomicFileModule>(
+          '../lib/atomic-file',
+        ).writeFileAtomically;
+      const lateFailure: typeof actual = async (...args) => {
+        await actual(...args);
+        throw new Error('late metadata failure');
+      };
+      const write = jest.spyOn(atomic, 'writeFileAtomically');
+      if (mode.endsWith('index')) write.mockImplementationOnce(actual);
+      write.mockImplementationOnce(lateFailure);
+      try {
+        const mutation = mode.startsWith('unshare')
+          ? clearCollectionRemoteMetadataByRemoteId(remote.remoteId)
+          : writeCollectionRemoteMetadata(initial.id, remote);
+        await expect(mutation).rejects.toThrow('late metadata failure');
+      } finally {
+        write.mockRestore();
+      }
+      expect((await readCollectionConfig(initial.id))?.collection).toEqual(
+        initial,
+      );
+      expect(
+        (await readCollectionIndex()).collections[0]?.hasExistingShare,
+      ).toBe(Boolean(initial.remote));
+    },
+  );
+
   it('restores Collection metadata when a repaired legacy index update fails', async () => {
     const collection = await saveCollectionConfig({ name: 'Legacy shared' });
     const remote = {
@@ -456,10 +673,13 @@ describe('collection-store', () => {
     fs.writeFileSync(indexPath, JSON.stringify(legacyIndex));
 
     const fsPromises =
-      jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
-    const actualWriteFile = fsPromises.writeFile;
+      jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+    const actualWriteFile =
+      jest.requireActual<typeof AtomicFileModule>(
+        '../lib/atomic-file',
+      ).writeFileAtomically;
     const writeSpy = jest
-      .spyOn(fsPromises, 'writeFile')
+      .spyOn(fsPromises, 'writeFileAtomically')
       .mockImplementationOnce(actualWriteFile)
       .mockImplementationOnce(actualWriteFile)
       .mockRejectedValueOnce(new Error('index write failed'));
@@ -495,10 +715,13 @@ describe('collection-store', () => {
     await writeCollectionRemoteMetadata(collection.id, remote);
 
     const fsPromises =
-      jest.requireActual<typeof FsPromisesModule>('node:fs/promises');
-    const actualWriteFile = fsPromises.writeFile;
+      jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+    const actualWriteFile =
+      jest.requireActual<typeof AtomicFileModule>(
+        '../lib/atomic-file',
+      ).writeFileAtomically;
     const writeSpy = jest
-      .spyOn(fsPromises, 'writeFile')
+      .spyOn(fsPromises, 'writeFileAtomically')
       .mockImplementationOnce(actualWriteFile)
       .mockRejectedValueOnce(new Error('index write failed'));
 
@@ -570,6 +793,420 @@ describe('collection-store', () => {
         }),
       ],
     });
+  });
+
+  it('saveCollectionConfig projects sharedSource (remoteId, contentHash, fromPublicShare, no fetchedAt) into the index entry', async () => {
+    const scoped = await saveCollectionConfig({
+      name: 'Scoped',
+      sharedSource: {
+        remoteId: 'remote-scoped',
+        fetchedAt: '2026-10-14T12:00:00.000Z',
+        contentHash: 'hash-scoped',
+      },
+    });
+    const own = await saveCollectionConfig({ name: 'Own' });
+
+    const index = await readCollectionIndex();
+    expect(index.collections.find((e) => e.id === scoped.id)).toEqual(
+      expect.objectContaining({
+        sharedSource: { remoteId: 'remote-scoped', contentHash: 'hash-scoped' },
+      }),
+    );
+    expect(
+      index.collections.find((e) => e.id === own.id)?.sharedSource,
+    ).toBeUndefined();
+    const indexPath = path.join(tempDir, 'collections', 'index.json');
+    expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).toMatchObject({
+      version: 2,
+      entrySchema: 2,
+    });
+  });
+
+  it('projects fromPublicShare into the index entry only when set', async () => {
+    const saved = await saveCollectionConfig({
+      name: 'Public',
+      sharedSource: {
+        remoteId: 'remote-public',
+        fetchedAt: '2026-10-14T12:00:00.000Z',
+        fromPublicShare: true,
+        contentHash: 'hash-public',
+      },
+    });
+
+    const entry = (await readCollectionIndex()).collections.find(
+      (e) => e.id === saved.id,
+    );
+    expect(entry?.sharedSource).toEqual({
+      remoteId: 'remote-public',
+      contentHash: 'hash-public',
+      fromPublicShare: true,
+    });
+  });
+
+  it('saveCollectionConfig keeps stored sharedSource, remote and createdAt when the partial omits them', async () => {
+    const installed = await saveCollectionConfig({
+      name: 'Installed',
+      sharedSource: {
+        remoteId: 'remote-keep',
+        fetchedAt: '2026-10-14T12:00:00.000Z',
+        contentHash: 'hash-keep',
+      },
+    });
+    const remote = {
+      accountId: 'account-a',
+      remoteId: '66666666-6666-4666-8666-666666666666',
+      contentHash: 'hash-f',
+      shareScope: 'team' as const,
+      sharedAt: '2026-09-24T16:00:00.000Z',
+    };
+    await writeCollectionRemoteMetadata(installed.id, remote);
+
+    const edited = await saveCollectionConfig({
+      id: installed.id,
+      name: 'Edited',
+      skills: [],
+    });
+
+    expect(edited.sharedSource).toEqual(installed.sharedSource);
+    expect(edited.remote).toEqual(remote);
+    expect(edited.createdAt).toBe(installed.createdAt);
+    expect(
+      (await readCollectionIndex()).collections.find(
+        (e) => e.id === installed.id,
+      )?.sharedSource,
+    ).toEqual({ remoteId: 'remote-keep', contentHash: 'hash-keep' });
+  });
+
+  describe('index entry schema repair', () => {
+    const brokenId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const brokenEntry = {
+      id: brokenId,
+      name: 'Broken',
+      description: '',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      skillCount: 0,
+      pluginCount: 0,
+      mcpServerCount: 0,
+      hasExistingShare: false,
+    };
+
+    async function seedPreSchemaIndex(): Promise<{
+      indexPath: string;
+      collectionId: string;
+    }> {
+      const collection = await saveCollectionConfig({
+        name: 'Added',
+        sharedSource: {
+          remoteId: 'remote-old',
+          fetchedAt: '2026-10-14T12:00:00.000Z',
+          contentHash: 'hash-old',
+        },
+      });
+      fs.writeFileSync(
+        path.join(tempDir, 'collections', `collection-${brokenId}.json`),
+        '{not json',
+      );
+      const indexPath = path.join(tempDir, 'collections', 'index.json');
+      const stored = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as {
+        collections: Array<Record<string, unknown>>;
+      };
+      const collections = stored.collections.map((entry) =>
+        Object.fromEntries(
+          Object.entries(entry).filter(([key]) => key !== 'sharedSource'),
+        ),
+      );
+      fs.writeFileSync(
+        indexPath,
+        JSON.stringify({
+          version: 2,
+          collections: [...collections, brokenEntry],
+        }),
+      );
+      return { indexPath, collectionId: collection.id };
+    }
+
+    it('repairs an index written before entrySchema 2 by re-projecting each entry from its config', async () => {
+      const { indexPath, collectionId } = await seedPreSchemaIndex();
+
+      const index = await readCollectionIndex();
+
+      expect(index.entrySchema).toBeUndefined();
+      expect(index.collections).toEqual([
+        expect.objectContaining({
+          id: collectionId,
+          hasExistingShare: false,
+          sharedSource: { remoteId: 'remote-old', contentHash: 'hash-old' },
+        }),
+        { ...brokenEntry, provenanceUnknown: true },
+      ]);
+      // An unreadable row cannot certify the whole index. Once it is readable,
+      // persist the repair exactly once.
+      fs.writeFileSync(
+        path.join(tempDir, 'collections', `collection-${brokenId}.json`),
+        JSON.stringify({
+          version: 2,
+          collection: {
+            ...brokenEntry,
+            skills: [],
+            plugins: [],
+            mcpServers: [],
+            createdAt: brokenEntry.updatedAt,
+          },
+        }),
+      );
+      expect((await readCollectionIndex()).entrySchema).toBe(2);
+      expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).toMatchObject({
+        entrySchema: 2,
+      });
+
+      const fsPromises =
+        jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+      const writeSpy = jest.spyOn(fsPromises, 'writeFileAtomically');
+      writeSpy.mockClear();
+      try {
+        await readCollectionIndex();
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+      }
+    });
+
+    it('does not overwrite a concurrent save with an older repaired projection', async () => {
+      const { collectionId } = await seedPreSchemaIndex();
+      const [, saved] = await Promise.all([
+        readCollectionIndex(),
+        saveCollectionConfig({ name: 'Concurrent' }),
+      ]);
+      const index = await readCollectionIndex();
+      expect(index.collections.some((entry) => entry.id === saved.id)).toBe(
+        true,
+      );
+      expect(
+        index.collections.find((entry) => entry.id === collectionId)
+          ?.sharedSource?.contentHash,
+      ).toBe('hash-old');
+      expect(index.entrySchema).toBeUndefined();
+    });
+
+    it('repair returns the re-projected index when the write fails', async () => {
+      const { indexPath, collectionId } = await seedPreSchemaIndex();
+      const index = await readCollectionIndex();
+      index.collections = index.collections.filter(
+        (row: { id: string }) => row.id !== brokenId,
+      );
+      fs.writeFileSync(indexPath, JSON.stringify(index));
+      const fsPromises =
+        jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+      const writeSpy = jest
+        .spyOn(fsPromises, 'writeFileAtomically')
+        .mockRejectedValueOnce(new Error('index write failed'));
+      const warnSpy = jest
+        .spyOn(process, 'emitWarning')
+        .mockImplementation(() => undefined);
+
+      try {
+        const index = await readCollectionIndex();
+        expect(index.collections).toContainEqual(
+          expect.objectContaining({
+            id: collectionId,
+            sharedSource: { remoteId: 'remote-old', contentHash: 'hash-old' },
+          }),
+        );
+        expect(warnSpy).toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+      const stored = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as {
+        entrySchema?: number;
+      };
+      expect(stored.entrySchema).toBeUndefined();
+    });
+  });
+
+  it('serializes concurrent creates without losing index entries', async () => {
+    const created = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        saveCollectionConfig({ name: `Collection ${i}` }),
+      ),
+    );
+    expect(
+      (await readCollectionIndex()).collections.map((row) => row.id).sort(),
+    ).toEqual(created.map((row) => row.id).sort());
+  });
+
+  it('rejects stale guarded saves and never resurrects a removed collection', async () => {
+    const initial = await saveCollectionConfig({ name: 'Initial' });
+    const edited = await saveCollectionConfig({ ...initial, name: 'Newer' });
+    await expect(
+      saveCollectionConfig({ ...initial, name: 'Stale' }, undefined, {
+        expectedRevision: initial.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect((await readCollectionConfig(initial.id))?.collection.name).toBe(
+      'Newer',
+    );
+    await deleteCollectionConfig(initial.id);
+    await expect(
+      saveCollectionConfig({ ...edited, name: 'Resurrected' }, undefined, {
+        expectedRevision: edited.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('retries unreadable repair rows even after an unrelated save', async () => {
+    const collection = await saveCollectionConfig({
+      name: 'Added',
+      sharedSource: {
+        remoteId: 'remote',
+        fetchedAt: 'now',
+        contentHash: 'installed',
+      },
+    });
+    const indexPath = path.join(tempDir, 'collections', 'index.json');
+    const configPath = path.join(
+      tempDir,
+      'collections',
+      `collection-${collection.id}.json`,
+    );
+    const config = fs.readFileSync(configPath, 'utf8');
+    const index = await readCollectionIndex();
+    delete index.entrySchema;
+    delete index.collections[0].sharedSource;
+    fs.writeFileSync(indexPath, JSON.stringify(index));
+    fs.writeFileSync(configPath, '{bad');
+    await readCollectionIndex();
+    await saveCollectionConfig({ name: 'Other' });
+    expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).not.toHaveProperty(
+      'entrySchema',
+    );
+    fs.writeFileSync(configPath, config);
+    expect(
+      (await readCollectionIndex()).collections.find(
+        (row) => row.id === collection.id,
+      )?.sharedSource,
+    ).toEqual({ remoteId: 'remote', contentHash: 'installed' });
+    expect(JSON.parse(fs.readFileSync(indexPath, 'utf8'))).toMatchObject({
+      entrySchema: 2,
+    });
+  });
+
+  it('retains the previous config/hash if the index commit fails', async () => {
+    const initial = await saveCollectionConfig({
+      name: 'Installed',
+      sharedSource: {
+        remoteId: 'source',
+        fetchedAt: 'before',
+        contentHash: 'old',
+      },
+    });
+    const atomic =
+      jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+    const actual =
+      jest.requireActual<typeof AtomicFileModule>(
+        '../lib/atomic-file',
+      ).writeFileAtomically;
+    const write = jest
+      .spyOn(atomic, 'writeFileAtomically')
+      .mockImplementationOnce(actual)
+      .mockRejectedValueOnce(new Error('Index failed'));
+    try {
+      await expect(
+        saveCollectionConfig(
+          {
+            ...initial,
+            skills: [{ sourceId: 'new', skillName: 'new' }],
+            sharedSource: {
+              remoteId: 'source',
+              fetchedAt: 'after',
+              contentHash: 'new',
+            },
+          },
+          undefined,
+          { expectedRevision: initial.revision },
+        ),
+      ).rejects.toThrow('Index failed');
+    } finally {
+      write.mockRestore();
+    }
+    expect((await readCollectionConfig(initial.id))?.collection).toEqual(
+      initial,
+    );
+    expect(
+      (await readCollectionIndex()).collections[0]?.sharedSource?.contentHash,
+    ).toBe('old');
+  });
+
+  it.each(['config', 'index'] as const)(
+    'restores both files after a durable %s replacement reports a late failure',
+    async (phase) => {
+      const initial = await saveCollectionConfig({
+        name: 'Installed',
+        sharedSource: {
+          remoteId: 'source',
+          fetchedAt: 'before',
+          contentHash: 'old',
+        },
+      });
+      const atomic =
+        jest.requireMock<typeof AtomicFileModule>('../lib/atomic-file');
+      const actual =
+        jest.requireActual<typeof AtomicFileModule>(
+          '../lib/atomic-file',
+        ).writeFileAtomically;
+      const failAfterReplacement: typeof actual = async (...args) => {
+        await actual(...args);
+        throw new Error('directory sync failed');
+      };
+      const write = jest.spyOn(atomic, 'writeFileAtomically');
+      if (phase === 'index') write.mockImplementationOnce(actual);
+      write.mockImplementationOnce(failAfterReplacement);
+      try {
+        await expect(
+          saveCollectionConfig(
+            {
+              ...initial,
+              sharedSource: {
+                remoteId: 'source',
+                fetchedAt: 'after',
+                contentHash: 'new',
+              },
+            },
+            undefined,
+            { expectedRevision: initial.revision },
+          ),
+        ).rejects.toThrow('directory sync failed');
+      } finally {
+        write.mockRestore();
+      }
+      expect((await readCollectionConfig(initial.id))?.collection).toEqual(
+        initial,
+      );
+      expect(
+        (await readCollectionIndex()).collections[0]?.sharedSource?.contentHash,
+      ).toBe('old');
+    },
+  );
+
+  it('provides stable revisions for legacy configs without changing an unknown installed hash', async () => {
+    const initial = await saveCollectionConfig({
+      name: 'Legacy',
+      sharedSource: { remoteId: 'source', fetchedAt: 'before' },
+    });
+    const configPath = path.join(
+      tempDir,
+      'collections',
+      `collection-${initial.id}.json`,
+    );
+    const legacy = await readCollectionConfig(initial.id);
+    if (!legacy) throw new Error('Missing fixture collection');
+    delete legacy.collection.revision;
+    fs.writeFileSync(configPath, JSON.stringify(legacy));
+    const first = await readCollectionConfig(initial.id);
+    const second = await readCollectionConfig(initial.id);
+    expect(first?.collection.revision).toBeTruthy();
+    expect(first?.collection.revision).toBe(second?.collection.revision);
+    expect(first?.collection.sharedSource?.contentHash).toBeUndefined();
   });
 
   it('throws when the Collection index is malformed', async () => {

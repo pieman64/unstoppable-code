@@ -687,7 +687,7 @@ export function useSelectedMcpSignIn({
       } catch (error: unknown) {
         if (valid(captured.owner, attempt))
           setActionError(
-            `${error instanceof Error ? error.message : 'Couldn’t start sign-in.'}${accepted ? ' This task still uses desktop sign-in. Retry to keep using that route.' : ''}`,
+            `${error instanceof Error ? error.message : 'Couldn’t start sign-in.'}${accepted ? ' This task still uses desktop sign-in. Try again to keep using that route.' : ''}`,
           );
       } finally {
         if (valid(captured.owner, attempt)) busy.current = false;
@@ -757,7 +757,7 @@ export function useSelectedMcpSignIn({
     actionError ??
     signIn.error ??
     (detected.error && retainedRouteKey
-      ? `${detected.error} This task still uses desktop sign-in. Retry to keep using that route.`
+      ? `${detected.error} This task still uses desktop sign-in. Try again to keep using that route.`
       : detected.error);
   const errorCode = signIn.error === null ? null : signIn.errorCode;
   const catalogBlocksConnect =
@@ -802,7 +802,7 @@ export function useSelectedMcpSignIn({
       detected.cancelConnect();
       if (retainedRouteKey)
         setActionError(
-          'Sign-in cancelled. This task still uses desktop sign-in. Retry to keep using that route.',
+          'Sign-in cancelled. This task still uses desktop sign-in. Try again to keep using that route.',
         );
     },
     servers: decorated,
@@ -823,6 +823,7 @@ export function useSelectedMcpSignIn({
         {signIn.dialogs}
         {choice && choice.owner === ownerKey && (
           <DialogModal
+            inset="flush"
             title="Sign in on this desktop?"
             onClose={(): void => {
               generation.current += 1;
@@ -836,11 +837,7 @@ export function useSelectedMcpSignIn({
               browser. This task uses that sign-in on this desktop; web chats
               aren’t affected.
             </p>
-            {actionError !== null && (
-              <p role="status" className="mt-2 text-s fg-destructive">
-                {actionError}
-              </p>
-            )}
+            <ErrorBanner error={actionError} className="mt-2" />
             <div className="mt-4 flex justify-end gap-2">
               <>
                 <Button

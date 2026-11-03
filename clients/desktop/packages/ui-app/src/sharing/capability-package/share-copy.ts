@@ -67,4 +67,4 @@ export function publicShareDegradedLabel(noun: string): string {
   return `The public link could not be created. Only you can see this ${noun} until you retry.`;
 }
 
-export const PUBLIC_SHARE_RETRY_LABEL = 'Retry public link';
+export const PUBLIC_SHARE_RETRY_LABEL = 'Try the public link again';

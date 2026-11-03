@@ -19,6 +19,8 @@ export type WorktreeDiscardAttemptError =
 /** A finished discard's report for the host's own cleanup. */
 interface WorktreeDiscardFinished {
   readonly warnings: string[];
+  /** CAN-5338: a retained archive was discarded; no row was listed. */
+  readonly retainedArchive?: true;
   /** The temporary project the discard left empty and removed. */
   readonly removedTemporaryWorkspaceId?: string;
 }
@@ -72,6 +74,19 @@ export function worktreeRemovalRetryable(view: WorktreeDiscardView): boolean {
   );
 }
 
+/**
+ * CAN-5338: a description of a retained archive, which only a host that
+ * received `retainedArchives` returns. Its discard sends the opt-in too, so no
+ * caller has to remember it.
+ */
+export function describesRetainedArchive(
+  description: WorktreeDiscardDescription,
+): boolean {
+  return description.targets.some(
+    (target) => target.kind === 'retained-archive',
+  );
+}
+
 /** Electron wraps IPC rejections as `Error invoking remote method '…': Class: text`. */
 export function failureText(error: unknown): string | null {
   const raw = error instanceof Error ? error.message : '';
@@ -102,6 +117,9 @@ function createWorktreeDiscardStore(
           .command('worktree.discard.describe', {
             workspaceId: offer.workspaceId,
             worktreeId: offer.worktreeId,
+            ...(offer.retainedArchives === true
+              ? { retainedArchives: true }
+              : {}),
           })
           .catch(() => undefined);
         if (current !== generation) return false;
@@ -121,12 +139,14 @@ function createWorktreeDiscardStore(
       if (view.description.status !== 'discardable') return null;
       const current = generation;
       set({ view: { ...view, busy: true, error: null } });
+      const retainedArchive = describesRetainedArchive(view.description);
       let result: WorktreeDiscardResult;
       try {
         result = await client.command('worktree.discard', {
           workspaceId: view.offer.workspaceId,
           worktreeId: view.offer.worktreeId,
           confirmation: view.description.confirmation,
+          ...(retainedArchive ? { retainedArchives: true } : {}),
         });
       } catch (error) {
         if (current === generation)
@@ -147,6 +167,7 @@ function createWorktreeDiscardStore(
         }
         return {
           warnings: result.warnings,
+          ...(retainedArchive ? { retainedArchive: true } : {}),
           ...(result.removedTemporaryWorkspaceId
             ? {
                 removedTemporaryWorkspaceId: result.removedTemporaryWorkspaceId,

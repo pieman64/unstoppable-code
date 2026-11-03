@@ -195,6 +195,7 @@ export function hostQueueViewsToQueuedMessages(
         ? { blockedByBackgroundWork: true }
         : {}),
       ...(message.editLocked === true ? { editLocked: true } : {}),
+      ...(message.forceLocked === true ? { forceLocked: true as const } : {}),
       ...(message.canSteer === true ? { canSteer: true } : {}),
       ...(message.steerBlockedByCapabilityChange === true
         ? { steerBlockedByCapabilityChange: true }

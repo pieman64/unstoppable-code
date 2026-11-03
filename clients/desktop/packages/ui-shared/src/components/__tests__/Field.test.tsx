@@ -4,7 +4,13 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Select, TextArea, TextInput, type SelectOption } from '../Field';
+import {
+  FieldError,
+  Select,
+  TextArea,
+  TextInput,
+  type SelectOption,
+} from '../Field';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -15,7 +21,7 @@ const OPTIONS: readonly SelectOption[] = [
 ];
 
 describe('form fields', () => {
-  it('offers a compact capsule for Settings without changing regular fields', () => {
+  it('offers a 28px rounded field for Settings without changing regular fields', () => {
     const html = renderToStaticMarkup(
       <TextInput
         density="settings"
@@ -25,14 +31,14 @@ describe('form fields', () => {
         defaultValue={7}
       />,
     );
-    expect(html).toContain('h-7 rounded-full px-3');
+    expect(html).toContain('h-7 rounded-row px-2.5');
     expect(html).toContain('whitespace-nowrap placeholder:whitespace-nowrap');
     expect(html).toContain('shadow-field');
     expect(html).toContain('focus-visible:shadow-field-focus');
     expect(html).toContain('value="7"');
     expect(html).not.toContain('density=');
     expect(renderToStaticMarkup(<TextInput density="compact" />)).toContain(
-      'rounded-md',
+      'rounded-row',
     );
   });
   it('draws every field with the token edge and neutral focus, not an outline ring', () => {
@@ -186,11 +192,119 @@ describe('form fields', () => {
       act(() => trigger().click());
       expect(document.querySelector('[role="listbox"]')).toBeNull();
     });
+
+    it('closes when disabled while open and stays closed when enabled again', () => {
+      const onValueChange = jest.fn();
+      const renderSelect = (disabled: boolean): void =>
+        act(() =>
+          root.render(
+            <Select
+              aria-label="Environment"
+              options={OPTIONS}
+              value="staging"
+              onValueChange={onValueChange}
+              disabled={disabled}
+            />,
+          ),
+        );
+      renderSelect(false);
+      act(() => trigger().click());
+      expect(document.querySelector('[role="listbox"]')).not.toBeNull();
+
+      renderSelect(true);
+      expect(document.querySelector('[role="listbox"]')).toBeNull();
+      expect(trigger().getAttribute('aria-expanded')).toBe('false');
+
+      renderSelect(false);
+      expect(document.querySelector('[role="listbox"]')).toBeNull();
+      expect(onValueChange).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('adorned TextInput', () => {
+    let container: HTMLDivElement;
+    let root: Root;
+
+    beforeEach(() => {
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+    });
+
+    afterEach(() => {
+      act(() => root.unmount());
+      container.remove();
+    });
+
+    const press = (target: Element | null): MouseEvent => {
+      const event = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        target?.dispatchEvent(event);
+      });
+      return event;
+    };
+
+    it('focuses the input on a press on an adornment or the padding', () => {
+      act(() =>
+        root.render(
+          <TextInput
+            aria-label="Retention"
+            leading="@"
+            trailing="days"
+            defaultValue="7"
+          />,
+        ),
+      );
+      const input = container.querySelector('input');
+      for (const target of [
+        container.querySelector('[data-field-adornment="leading"]'),
+        container.querySelector('[data-field-adornment="trailing"]'),
+        input?.parentElement ?? null,
+      ]) {
+        input?.blur();
+        expect(press(target).defaultPrevented).toBe(true);
+        expect(document.activeElement).toBe(input);
+      }
+    });
+
+    it('leaves a press on a control inside an adornment to that control', () => {
+      act(() =>
+        root.render(
+          <TextInput
+            aria-label="Token"
+            trailing={<button type="button">Show</button>}
+          />,
+        ),
+      );
+      const event = press(container.querySelector('button'));
+      expect(event.defaultPrevented).toBe(false);
+      expect(document.activeElement).not.toBe(container.querySelector('input'));
+    });
   });
 
   it('appends caller placement classes without dropping the recipe', () => {
     const html = renderToStaticMarkup(<TextInput className="max-w-60" />);
     expect(html).toContain('shadow-field');
     expect(html).toContain('max-w-60');
+  });
+
+  it('draws the FieldError glyph at a true 12px, centred on the first line', () => {
+    const html = renderToStaticMarkup(
+      <FieldError id="name-error">Enter a name.</FieldError>,
+    );
+    const svg = /<svg[^>]*>/.exec(html)?.[0] ?? '';
+    // The Badge recipe: an exact 12px glyph (no snap to 14px) with the 1.5px
+    // drawn stroke of the small icons.
+    expect(svg).toContain('width:12px;height:12px');
+    expect(svg).toContain('data-icon-size="exact"');
+    // 3 units of the 24-unit artwork drawn at 12px is a 1.5px stroke.
+    expect(svg).toContain('stroke-width:3');
+    // The glyph box is one 18px line of the 13px text, so the icon sits on
+    // the first line's centre.
+    expect(html).toContain('h-4.5');
+    expect(html).toContain('gap-1 ');
   });
 });

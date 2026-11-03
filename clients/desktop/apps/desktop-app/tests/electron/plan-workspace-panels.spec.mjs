@@ -85,6 +85,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { closeCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import {
   chatPanelLocator,
   collectLeaves,
@@ -1962,7 +1963,10 @@ test('P13: on an older revision the Plan panel shares nothing, implements the la
     const planGroupId = await planGroupOf(electronApp, window, ROADMAP);
 
     // --- Viewing revision 1 -------------------------------------------------
-    await doc.getByTestId('plan-panel-revision-select').selectOption('1');
+    await chooseSettingsOption(
+      doc.getByTestId('plan-panel-revision-select'),
+      '1',
+    );
     await expect(view).toContainText('• Revision 1');
     await expect(body).toContainText('Earlier draft (revision 1).');
     await expect(body).not.toContainText(marker);
@@ -2017,13 +2021,18 @@ test('P13: on an older revision the Plan panel shares nothing, implements the la
     await expect
       .poll(() => window.evaluate(() => window.innerWidth))
       .toBe(1000);
-    const execute = doc.getByTestId('plan-panel-execute');
-    await expect(execute).toBeVisible();
-    await expect
-      .poll(async () =>
-        isInside(await execute.boundingBox(), await doc.boundingBox()),
-      )
-      .toBe(true);
+    // The finished chat implementation put Open first and moved the
+    // retries behind the overflow menu, the row's last control.
+    await expect(doc.getByTestId('plan-panel-execute')).toHaveCount(0);
+    for (const testId of ['plan-panel-open', 'plan-panel-more']) {
+      const control = doc.getByTestId(testId);
+      await expect(control).toBeVisible();
+      await expect
+        .poll(async () =>
+          isInside(await control.boundingBox(), await doc.boundingBox()),
+        )
+        .toBe(true);
+    }
   } finally {
     await clearScenario(DEFAULT_MOCK_BASE_URL, marker).catch(() => undefined);
     await closeCanopy(electronApp, userDataDir);
@@ -2345,19 +2354,25 @@ test('P17: Implement shows its chat at once, expanding its group and leaving a m
     await expect(chat).toContainText('Implement this plan:', {
       timeout: 30_000,
     });
+    // The linked implementation turn finishes; Open replaces Execute.
     await expect(doc.getByTestId('plan-panel-status-badge')).toHaveText(
-      'Approved',
+      'Finished in chat',
+      { timeout: 30_000 },
     );
     await expect.poll(() => getActiveGroupId(window)).toBe(planGroupId);
 
-    // From a maximized plan group, Implement leaves the maximize too.
+    // From a maximized plan group, Implement again (now in the overflow
+    // menu) leaves the maximize too.
     await window.keyboard.press('ControlOrMeta+Shift+F');
     await expect.poll(() => maximizedGroupIds(window)).toEqual([planGroupId]);
     await expect(chat).toBeHidden();
     await window.evaluate(() => {
       window.__canopyPanelTestApi.holdChatSends();
     });
-    await doc.getByTestId('plan-panel-execute').click();
+    await doc.getByTestId('plan-panel-more').click();
+    await expect(window.getByTestId('plan-panel-execute-implement')).toHaveText(
+      'Implement again in chat',
+    );
     await window.getByTestId('plan-panel-execute-implement').click();
     await expect.poll(() => maximizedGroupIds(window)).toEqual([]);
     await expect(chat).toBeVisible();
@@ -2426,7 +2441,10 @@ test('CAN-5166: workflow outcomes and retries update both plan surfaces and open
           .click();
         firstLaunch = false;
       } else {
-        await doc.getByTestId('plan-panel-execute').click();
+        // Once Open replaces Execute, retries live in the overflow menu.
+        const more = doc.getByTestId('plan-panel-more');
+        if (await more.isVisible()) await more.click();
+        else await doc.getByTestId('plan-panel-execute').click();
         await window.getByTestId('plan-panel-execute-pipeline').click();
       }
       const modal = window.getByTestId('pipeline-trigger-modal');
@@ -2462,9 +2480,10 @@ test('CAN-5166: workflow outcomes and retries update both plan surfaces and open
       doc.getByTestId('plan-panel-status-note-outcome'),
     ).toContainText('Workflow failed');
     const successfulRun = await launch('success');
-    await expect(header).toHaveText('Implementing');
-    await expect(card).toHaveText('Implementing');
-    await doc.getByTestId('plan-panel-status-note-run').click();
+    await expect(header).toHaveText('Implementing in workflow');
+    await expect(card).toHaveText('Implementing in workflow');
+    await expect(doc.getByTestId('plan-panel-execute')).toHaveCount(0);
+    await doc.getByTestId('plan-panel-open').click();
     await expectPipelineRunPanel(window, successfulRun);
     await closePipelineRunPanels(window);
     const cwd = await window.evaluate(
@@ -2472,34 +2491,48 @@ test('CAN-5166: workflow outcomes and retries update both plan surfaces and open
       scope,
     );
     writeFileSync(path.join(cwd, '.can5166-success'), 'release');
-    await expect(header).toHaveText('Implemented');
-    await expect(card).toHaveText('Implemented');
+    await expect(header).toHaveText('Implemented in workflow');
+    await expect(card).toHaveText('Implemented in workflow');
     await launch('failure');
-    await expect(header).toHaveText('Implemented');
+    await expect(header).toHaveText('Implemented in workflow');
     await expect(
       doc.getByTestId('plan-panel-status-note-outcome'),
     ).toContainText('Workflow failed');
     const cancelledRun = await launch('cancel');
-    await expect(header).toHaveText('Implementing');
+    await expect(header).toHaveText('Implementing in workflow');
     await window.evaluate(
       (id) => window.pipelines.cancelExecution(id),
       cancelledRun,
     );
-    await expect(header).toHaveText('Implemented');
-    await expect(card).toHaveText('Implemented');
+    await expect(header).toHaveText('Implemented in workflow');
+    await expect(card).toHaveText('Implemented in workflow');
     await expect(
       doc.getByTestId('plan-panel-status-note-outcome'),
     ).toContainText('Workflow cancelled');
-    await expect(doc.getByTestId('plan-panel-execute')).not.toHaveClass(
-      /bg-accent/,
+    await expect(doc.getByTestId('plan-panel-execute')).toHaveCount(0);
+    await expect(doc.getByTestId('plan-panel-open')).toHaveAttribute(
+      'aria-label',
+      'Open run',
     );
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }
 });
 
+async function releasePlanImplementationBarrier(
+  marker,
+  name = 'implementation',
+) {
+  const response = await fetch(`${DEFAULT_MOCK_BASE_URL}/__mock/barrier`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key: marker, name }),
+  });
+  expect(response.ok).toBe(true);
+}
+
 for (const entry of ['chat approval', 'Plan Implement']) {
-  test(`CAN-5166: ${entry} updates header and card before the admitted send settles`, async () => {
+  test(`CAN-5166/CAN-5359: ${entry} approves before the linked send, then follows that turn to Finished in chat`, async () => {
     test.setTimeout(180_000);
     const marker = `Canopy-CAN5166-${entry.replaceAll(' ', '-')}`;
     const plan = buildPanelPlan({
@@ -2510,7 +2543,20 @@ for (const entry of ['chat approval', 'Plan Implement']) {
     });
     await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
       llm: {
-        steps: [{ text: 'Implementation finished.', stopReason: 'end_turn' }],
+        steps: [
+          {
+            text: 'Implementation finished.',
+            stopReason: 'end_turn',
+            waitFor: 'implementation',
+            barrierTimeoutMs: 90_000,
+          },
+          {
+            text: 'Unrelated follow-up finished.',
+            stopReason: 'end_turn',
+            waitFor: 'follow-up',
+            barrierTimeoutMs: 90_000,
+          },
+        ],
       },
     });
     const pending =
@@ -2519,6 +2565,8 @@ for (const entry of ['chat approval', 'Plan Implement']) {
             trackedPlanId: ROADMAP,
             trackedPlanSource: 'claude',
             trackedPlanReviewStatus: 'pending',
+            // Main records the reviewed revision with each plan exit.
+            latestRevisionNumber: 1,
             pendingPlanExitRequestId: 'can-5166-review',
             pendingPlanExit: {
               plan: plan.content,
@@ -2536,11 +2584,27 @@ for (const entry of ['chat approval', 'Plan Implement']) {
       const doc = planDocumentPanel(window, ROADMAP);
       const header = doc.getByTestId('plan-panel-status-badge');
       const card = window.getByTestId(`activity-plan-status-${ROADMAP}`);
+      await expandDefaultActivityRail(window);
       await expect(header).toHaveText('Pending');
       await expect(card).toHaveText('Pending');
-      await window.evaluate(() =>
-        window.__canopyPanelTestApi.holdChatSends(true),
-      );
+      // Record every badge label from approval onward, so a transient
+      // return to Pending cannot hide behind the endpoint assertions.
+      await window.evaluate(() => {
+        const seen = [];
+        const read = () => {
+          const text = document.querySelector(
+            '[data-testid="plan-panel-status-badge"]',
+          )?.textContent;
+          if (text && seen.at(-1) !== text) seen.push(text);
+        };
+        new MutationObserver(read).observe(document.body, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+        });
+        Reflect.set(window, '__can5359BadgeLabels', seen);
+      });
+      await window.evaluate(() => window.__canopyPanelTestApi.holdChatSends());
       if (entry === 'chat approval') {
         await chatPanelLocator(window, SEEDED_CHAT_TAB_ID)
           .getByTestId('chat-plan-implement')
@@ -2549,24 +2613,221 @@ for (const entry of ['chat approval', 'Plan Implement']) {
         await doc.getByTestId('plan-panel-execute').click();
         await window.getByTestId('plan-panel-execute-implement').click();
       }
+      // Before admission supplies active evidence, both surfaces still
+      // guard chat and workflow dispatch through the same pending request.
       await expect(header).toHaveText('Approved', { timeout: 30_000 });
       await expect(card).toHaveText('Approved');
-      await expect(doc.getByTestId('plan-panel-execute')).not.toHaveClass(
-        /bg-accent/,
-      );
+      await doc.getByTestId('plan-panel-execute').click();
       await expect(
-        window.getByTestId(`activity-plan-${ROADMAP}-execute`),
-      ).not.toHaveClass(/bg-accent/);
-      // No identified implementation turn exists in the projection. Even
-      // after an assistant response, the status remains evidence-led.
+        window.getByTestId('plan-panel-execute-pipeline'),
+      ).toBeDisabled();
+      await expect(
+        window.getByTestId('plan-panel-execute-implement'),
+      ).toBeDisabled();
+      await window.keyboard.press('Escape');
+      await window.getByTestId(`activity-plan-${ROADMAP}-execute`).click();
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute-pipeline`),
+      ).toBeDisabled();
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute-implement`),
+      ).toBeDisabled();
+      await window.keyboard.press('Escape');
       await window.evaluate(() =>
         window.__canopyPanelTestApi.releaseHeldChatSends(),
       );
-      await expect(header).toHaveText('Approved');
+      // Hold the actual provider response, not just the renderer callback,
+      // so the active state is observed on both surfaces before completion.
+      await expect(header).toHaveText('Implementing in chat', {
+        timeout: 30_000,
+      });
+      await expect(card).toHaveText('Implementing in chat');
+      await expect(card).toBeVisible();
+      await doc.getByTestId('plan-panel-more').click();
+      await expect(
+        window.getByTestId('plan-panel-execute-pipeline'),
+      ).toBeDisabled();
+      await expect(
+        window.getByTestId('plan-panel-execute-implement'),
+      ).toBeDisabled();
+      await window.keyboard.press('Escape');
+      await expect(
+        doc.getByTestId('plan-panel-status-badge-spinner'),
+      ).toBeVisible();
+      await expect(doc.getByTestId('plan-panel-execute')).toHaveCount(0);
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute`),
+      ).toHaveCount(0);
+      const chat = chatPanelLocator(window, SEEDED_CHAT_TAB_ID);
+      await chat
+        .getByRole('textbox')
+        .last()
+        .fill(`[${marker}] An unrelated follow-up.`);
+      await chat.getByRole('textbox').last().press('Enter');
+      await expect(chat.getByTestId('queued-message-bubble')).toContainText(
+        'An unrelated follow-up.',
+      );
+      // Main links the admitted send to this plan revision and settles the
+      // link with that exact turn's end.
+      await window.evaluate(() =>
+        window.__canopyPanelTestApi.releaseHeldChatSends(),
+      );
+      await releasePlanImplementationBarrier(marker);
+      await expect(header).toHaveText('Finished in chat', { timeout: 60_000 });
+      await expect(card).toHaveText('Finished in chat');
+      // A queued follow-up can now run, but cannot become this implementation.
+      await expect
+        .poll(
+          async () => {
+            const response = await fetch(
+              `${DEFAULT_MOCK_BASE_URL}/__mock/barrier?key=${encodeURIComponent(marker)}`,
+            );
+            const { barriers } = await response.json();
+            return barriers.some(
+              (barrier) => barrier.name === 'follow-up' && barrier.waiting > 0,
+            );
+          },
+          { timeout: 45_000 },
+        )
+        .toBe(true);
+      await expect(header).toHaveText('Finished in chat');
+      await expect(doc.getByTestId('plan-panel-execute')).toHaveCount(0);
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute`),
+      ).toHaveCount(0);
+      const labels = await window.evaluate(() =>
+        Reflect.get(window, '__can5359BadgeLabels'),
+      );
+      const firstReviewed = labels.findIndex((label) => label !== 'Pending');
+      expect(firstReviewed).toBeGreaterThanOrEqual(0);
+      expect(labels.slice(firstReviewed)).not.toContain('Pending');
+      await doc.getByTestId('plan-panel-open').click();
+      await expect(chatPanelLocator(window, SEEDED_CHAT_TAB_ID)).toBeVisible();
+      const more = doc.getByTestId('plan-panel-more');
+      await more.focus();
+      await more.press('ArrowDown');
+      await expect(
+        window.getByTestId('plan-panel-execute-pipeline'),
+      ).toBeFocused();
+      await window.keyboard.press('ArrowDown');
+      await expect(
+        window.getByTestId('plan-panel-execute-implement'),
+      ).toBeFocused();
+      await window.keyboard.press('Escape');
+      await expect(more).toBeFocused();
+      const activityMore = window.getByTestId(`activity-plan-${ROADMAP}-more`);
+      await activityMore.focus();
+      await activityMore.press('ArrowDown');
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute-pipeline`),
+      ).toBeFocused();
+      await window.keyboard.press('Escape');
+      await expect(activityMore).toBeFocused();
+      // Action focus must not swallow the app's global shortcuts.
+      await openPalette(window);
+      await window.keyboard.press('Escape');
+      await window.reload();
+      // Reload returns to Home; re-open this worktree before checking its
+      // durably hydrated plan rather than depending on navigation restore.
+      await window
+        .locator(`[data-worktree-id="${PLAN_PANEL_WORKTREE_ID}"]`)
+        .first()
+        .click();
+      await expandDefaultActivityRail(window);
+      await planRow(window, ROADMAP).click();
+      await expect(
+        planDocumentPanel(window, ROADMAP).getByTestId(
+          'plan-panel-status-badge',
+        ),
+      ).toHaveText('Finished in chat');
+      await expect(
+        window.getByTestId(`activity-plan-status-${ROADMAP}`),
+      ).toHaveText('Finished in chat');
+      await expect(
+        planDocumentPanel(window, ROADMAP).getByTestId('plan-panel-open'),
+      ).toHaveAccessibleName('Open chat');
+      await releasePlanImplementationBarrier(marker, 'follow-up');
     } finally {
+      await releasePlanImplementationBarrier(marker).catch(() => undefined);
+      await releasePlanImplementationBarrier(marker, 'follow-up').catch(
+        () => undefined,
+      );
       await window
         .evaluate(() => window.__canopyPanelTestApi.releaseHeldChatSends())
         .catch(() => undefined);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, marker).catch(() => undefined);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+}
+
+for (const outcome of ['failed', 'stopped']) {
+  test(`CAN-5359: a sole ${outcome} chat implementation keeps Approved with its outcome note and Execute`, async () => {
+    test.setTimeout(180_000);
+    const marker = `Canopy-CAN5359-${outcome}`;
+    const plan = buildPanelPlan({
+      id: ROADMAP,
+      title: ROADMAP_TITLE,
+      summary: `[${marker}] Implement this change.`,
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [
+          {
+            waitFor: 'implementation',
+            barrierTimeoutMs: 90_000,
+            ...(outcome === 'failed'
+              ? {
+                  error: {
+                    status: 400,
+                    message: 'The implementation request failed.',
+                  },
+                }
+              : {
+                  text: 'This response should be stopped.',
+                  stopReason: 'end_turn',
+                }),
+          },
+        ],
+      },
+    });
+    const { electronApp, userDataDir, window } = await seedPlanPanelWorktree({
+      plans: [plan],
+    });
+    try {
+      await planRow(window, ROADMAP).click();
+      await expandDefaultActivityRail(window);
+      const doc = planDocumentPanel(window, ROADMAP);
+      const header = doc.getByTestId('plan-panel-status-badge');
+      const card = window.getByTestId(`activity-plan-status-${ROADMAP}`);
+      await doc.getByTestId('plan-panel-execute').click();
+      await window.getByTestId('plan-panel-execute-implement').click();
+      await expect(header).toHaveText('Implementing in chat');
+      await expect(card).toHaveText('Implementing in chat');
+      if (outcome === 'stopped') {
+        await chatPanelLocator(window, SEEDED_CHAT_TAB_ID)
+          .getByTestId('chat-stop-generation')
+          .click();
+      }
+      await releasePlanImplementationBarrier(marker);
+      await expect(header).toHaveText('Approved', { timeout: 60_000 });
+      await expect(card).toHaveText('Approved');
+      const note = outcome === 'failed' ? 'Chat failed' : 'Chat stopped';
+      await expect(
+        doc.getByTestId('plan-panel-status-note-outcome'),
+      ).toContainText(note);
+      await expect(
+        window.getByTestId(`activity-plan-status-note-${ROADMAP}`),
+      ).toContainText(note);
+      await expect(doc.getByTestId('plan-panel-execute')).toBeVisible();
+      await expect(
+        window.getByTestId(`activity-plan-${ROADMAP}-execute`),
+      ).toBeVisible();
+      await expect(doc.getByTestId('plan-panel-open')).toHaveCount(0);
+      await doc.getByTestId('plan-panel-status-note-chat-outcome').click();
+      await expect(chatPanelLocator(window, SEEDED_CHAT_TAB_ID)).toBeVisible();
+    } finally {
+      await releasePlanImplementationBarrier(marker).catch(() => undefined);
       await clearScenario(DEFAULT_MOCK_BASE_URL, marker).catch(() => undefined);
       await closeCanopy(electronApp, userDataDir);
     }

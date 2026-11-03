@@ -367,6 +367,288 @@ describe('FirstRunImportPage', () => {
     );
   });
 
+  describe('a picked folder holding repositories (CAN-5487)', () => {
+    const PARENT = '/Users/me/AndroidStudioProjects';
+    const parent = (
+      overrides: Partial<ExternalProjectCandidate> = {},
+    ): ExternalProjectCandidate =>
+      candidate('parent', {
+        displayName: 'AndroidStudioProjects',
+        rootPath: PARENT,
+        kind: 'folder',
+        surfaces: ['custom-folder'],
+        providers: [],
+        lastActivityAt: null,
+        nestedRepositories: { count: 3, complete: true },
+        ...overrides,
+      });
+    const nested = (
+      name: string,
+      overrides: Partial<ExternalProjectCandidate> = {},
+    ): ExternalProjectCandidate =>
+      candidate(name, {
+        rootPath: `${PARENT}/${name}`,
+        surfaces: ['nested-repository'],
+        providers: [],
+        lastActivityAt: null,
+        parentCandidateIds: ['parent'],
+        ...overrides,
+      });
+    const ticketPick = (): ExternalProjectDiscoverResponse =>
+      scan([
+        candidate('older', { lastActivityAt: '2020-01-01T00:00:00.000Z' }),
+        nested('wear-timer'),
+        parent(),
+        nested('pantry-android'),
+        nested('compose-playground'),
+      ]);
+    const rowIds = (): string[] =>
+      Array.from(
+        container.querySelectorAll('[data-testid^="first-run-import-row-"]'),
+      ).map((row) =>
+        (row.getAttribute('data-testid') ?? '').replace(
+          'first-run-import-row-',
+          '',
+        ),
+      );
+    const box = (id: string): HTMLInputElement => {
+      const node = container.querySelector(`#first-run-${id}`);
+      if (!(node instanceof HTMLInputElement)) throw new Error(`missing ${id}`);
+      return node;
+    };
+    const pick = async (
+      api: Api,
+      response: ExternalProjectDiscoverResponse,
+    ): Promise<void> => {
+      api.pickFolder.mockResolvedValue(PARENT);
+      api.discover
+        .mockResolvedValueOnce(scan([]))
+        .mockResolvedValueOnce(response);
+      await render();
+      const choose = Array.from(container.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Choose a folder',
+      );
+      if (!choose) throw new Error('missing Choose a folder');
+      await click(choose);
+    };
+
+    it('lists its repositories A–Z, unticked, above a plain-folder option', async () => {
+      const api = installApi(scan([]));
+      await pick(api, ticketPick());
+
+      // Picked rows show even with no activity and nothing selected.
+      expect(rowIds().slice(0, 4)).toEqual([
+        'compose-playground',
+        'pantry-android',
+        'wear-timer',
+        'parent',
+      ]);
+      for (const id of rowIds()) expect(box(id).checked).toBe(false);
+      expect(byTestId('first-run-import-projects').textContent).toContain(
+        'Found 3 repositories in AndroidStudioProjects',
+      );
+      const parentRow = byTestId('first-run-import-row-parent');
+      expect(parentRow.textContent).toContain(
+        'Add AndroidStudioProjects as a plain folder',
+      );
+      expect(parentRow.textContent).toContain('Plain folder');
+      expect(parentRow.textContent).not.toContain('not a code repository');
+      expect(box('parent').disabled).toBe(false);
+      const repoRow = byTestId('first-run-import-row-pantry-android');
+      expect(repoRow.textContent).toContain('Code repository');
+      expect(repoRow.textContent).not.toContain('No chat history');
+      const submit = byTestId('first-run-import-submit');
+      expect(submit.textContent).toBe('Select a project to import');
+      expect(submit).toHaveProperty('disabled', true);
+    });
+
+    it('imports only the one repository chosen', async () => {
+      const api = installApi(scan([]));
+      await pick(api, ticketPick());
+
+      await click(box('pantry-android'));
+      await click(byTestId('first-run-import-submit'));
+
+      expect(api.importProjects).toHaveBeenCalledWith(
+        expect.objectContaining({
+          selections: [{ candidateId: 'pantry-android', importChats: false }],
+        }),
+      );
+    });
+
+    it('keeps the folder and its repositories exclusive, including Select all', async () => {
+      const api = installApi(scan([]));
+      await pick(api, ticketPick());
+
+      await click(box('wear-timer'));
+      await click(box('parent'));
+      expect(box('parent').checked).toBe(true);
+      expect(box('wear-timer').checked).toBe(false);
+
+      await click(box('pantry-android'));
+      expect(box('parent').checked).toBe(false);
+      expect(box('pantry-android').checked).toBe(true);
+
+      await click(box('parent'));
+      await click(box('select-all'));
+      expect(box('parent').checked).toBe(false);
+      for (const id of ['compose-playground', 'pantry-android', 'wear-timer'])
+        expect(box(id).checked).toBe(true);
+    });
+
+    it('still pre-selects a picked folder whose complete scan found nothing', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([parent({ nestedRepositories: { count: 0, complete: true } })]),
+      );
+
+      expect(box('parent').checked).toBe(true);
+      expect(byTestId('first-run-import-projects').textContent).toContain(
+        'You chose 1 folder',
+      );
+    });
+
+    it('leaves an uncertain or unscanned folder unticked', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([parent({ nestedRepositories: { count: 0, complete: false } })]),
+      );
+      expect(box('parent').checked).toBe(false);
+      // One run of sentences, not a line per fact.
+      expect(byTestId('first-run-import-picked-summary').textContent).toBe(
+        'You chose 1 folder. Could not finish checking for repositories.',
+      );
+    });
+
+    it('leaves a folder without scan metadata unticked', async () => {
+      const api = installApi(scan([]));
+      await pick(api, scan([parent({ nestedRepositories: undefined })]));
+      expect(box('parent').checked).toBe(false);
+      expect(byTestId('first-run-import-projects').textContent).toContain(
+        'Could not finish checking for repositories',
+      );
+    });
+
+    it('bulk selects only rendered rows while older results are collapsed', async () => {
+      const api = installApi(scan([]));
+      const response = ticketPick();
+      response.candidates.push(candidate('recent'));
+      await pick(api, response);
+      expect(rowIds()).not.toContain('older');
+      await click(box('select-all'));
+      expect(rowIds()).not.toContain('older');
+      expect(byTestId('first-run-import-submit').textContent).toBe(
+        'Import 4 projects',
+      );
+    });
+
+    it('honors a direct pick that also has nested provenance', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([
+          parent(),
+          nested('pantry-android', {
+            surfaces: ['custom-folder', 'nested-repository'],
+          }),
+        ]),
+      );
+      expect(box('pantry-android').checked).toBe(true);
+      expect(box('parent').checked).toBe(false);
+      expect(rowIds().filter((id) => id === 'pantry-android')).toHaveLength(1);
+    });
+
+    it('keeps independently discovered related rows visible so capped summaries count rendered results', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([
+          parent({ nestedRepositories: { count: 37, complete: true } }),
+          nested('pantry-android'),
+          candidate('independent', {
+            lastActivityAt: '2020-01-01T00:00:00.000Z',
+            parentCandidateIds: ['parent'],
+          }),
+        ]),
+      );
+      expect(rowIds()).toContain('independent');
+      expect(byTestId('first-run-import-projects').textContent).toContain(
+        'Showing 2 of 37 repositories',
+      );
+    });
+
+    it('keeps the summary and available repositories when the folder is unavailable', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([
+          parent({ status: 'unavailable', statusReason: 'Holds a project' }),
+          nested('pantry-android'),
+          nested('wear-timer'),
+          nested('compose-playground', { status: 'already-tracked' }),
+        ]),
+      );
+
+      expect(rowIds()).toEqual(['pantry-android', 'wear-timer']);
+      expect(byTestId('first-run-import-projects').textContent).toContain(
+        'Found 3 repositories in AndroidStudioProjects · 1 already added',
+      );
+    });
+
+    it('shows picked types instead of No chat history even with provider evidence', async () => {
+      const api = installApi(scan([]));
+      await pick(
+        api,
+        scan([
+          parent({ nestedRepositories: { count: 1, complete: true } }),
+          nested('pantry-android', { providers: ['claude'] }),
+        ]),
+      );
+      const row = byTestId('first-run-import-row-pantry-android');
+      expect(row.textContent).toContain('Code repository');
+      expect(row.textContent).not.toContain('No chat history');
+    });
+
+    it('ignores an earlier pick that resolves after a newer one', async () => {
+      const api = installApi(scan([]));
+      let resolveFirst: (value: ExternalProjectDiscoverResponse) => void = () =>
+        undefined;
+      api.pickFolder.mockResolvedValue(PARENT);
+      api.discover
+        .mockResolvedValueOnce(scan([]))
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveFirst = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(ticketPick());
+      await render();
+      const choose = (): HTMLElement => {
+        const button = Array.from(container.querySelectorAll('button')).find(
+          (node) => node.textContent === 'Choose a folder',
+        );
+        if (!button) throw new Error('missing Choose a folder');
+        return button;
+      };
+      await click(choose());
+      await click(choose());
+      expect(rowIds()).toContain('pantry-android');
+
+      await act(async () => {
+        resolveFirst(
+          scan([candidate('stale', { surfaces: ['custom-folder'] })]),
+        );
+        await Promise.resolve();
+      });
+      await flush();
+      expect(rowIds()).not.toContain('stale');
+      expect(rowIds()).toContain('pantry-android');
+    });
+  });
+
   it('offers the Cursor rules review for the imported projects (CAN-2053)', async () => {
     const api = installApi(scan([candidate('alpha'), candidate('beta')]));
     api.importProjects.mockResolvedValue({

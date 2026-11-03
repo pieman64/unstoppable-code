@@ -523,9 +523,12 @@ function archivedManifest(
 
 /**
  * Plan §3.1: a version-3 archive whose Git registration cleanup still points
- * at a source repository that no longer exists.
+ * at a source repository that no longer exists. CAN-5338 points it at the
+ * project's configured source instead.
  */
-async function plantPendingVersion3Archive(): Promise<void> {
+async function plantPendingVersion3Archive(
+  referenceRepoPath = join(dir, 'missing-source'),
+): Promise<void> {
   const containerId = 'pending';
   const payloadId = '00000000-0000-4000-8000-000000000003';
   const containerDir = getArchivedContainerDir('a', containerId);
@@ -553,7 +556,7 @@ async function plantPendingVersion3Archive(): Promise<void> {
       // Absent repositories clear the pending flag; a missing one keeps it.
       repositories: [
         {
-          referenceRepoPath: join(dir, 'missing-source'),
+          referenceRepoPath,
           repositoryIdentity: null,
           relativePath: '',
           worktreePaths: [],
@@ -654,13 +657,19 @@ function journalFileOf(worktreeId?: string): string {
  */
 async function describeProjectDeletion(
   workspaceId = 'a',
+  options?: { retainedArchives?: boolean },
 ): Promise<ProjectDeletionDiscardDescription> {
   const { describeProjectDeletionDiscard } =
     await import('../project-deletion-discard');
-  return describeProjectDeletionDiscard(workspaceId);
+  return options
+    ? describeProjectDeletionDiscard(workspaceId, options)
+    : describeProjectDeletionDiscard(workspaceId);
 }
 
-/** Discards each listed item with its own token, as a client does. */
+/**
+ * Discards each listed item with its own token, as a client does: with the
+ * opt-in when its description lists a retained archive (CAN-5338).
+ */
 async function discardListedItems(
   description: ProjectDeletionDiscardDescription,
 ): Promise<void> {
@@ -671,6 +680,11 @@ async function discardListedItems(
         worktreeId: item.description.worktreeId,
         confirmation: item.description.confirmation,
         source: 'portal-ui',
+        ...(item.description.targets.some(
+          (target) => target.kind === 'retained-archive',
+        )
+          ? { retainedArchives: true }
+          : {}),
       }),
     ).resolves.toMatchObject({ status: 'discarded' });
 }
@@ -3118,6 +3132,100 @@ describe('W6c2 characterization (plan §3)', () => {
       expect((await describeProjectDeletion()).status).toBe('refused');
       rmSync(staged);
       expect((await describeProjectDeletion()).status).toBe('discardable');
+    });
+
+    it('CAN-5338 a source that stays gone with a retained archive: the opted-in confirmation lists the archive beside the worktrees, and after their discards the project deletes', async () => {
+      await plantPendingVersion3Archive(repo);
+      hideSource();
+      const sourceTree = treeImage(movedSource());
+      const branches = (): string =>
+        execFileSync(
+          'git',
+          [
+            '-C',
+            movedSource(),
+            'for-each-ref',
+            '--format=%(refname) %(objectname)',
+          ],
+          { encoding: 'utf8' },
+        );
+      const branchesBefore = branches();
+      await expect(
+        deleteWorkspace({ workspaceId: 'a', source: 'portal' }),
+      ).rejects.toMatchObject({ reason: 'git-cleanup-pending' });
+      // Older clients send no opt-in and get E's answer.
+      expect(await describeProjectDeletion()).toEqual({
+        version: 1,
+        workspaceId: 'a',
+        status: 'refused',
+        items: [],
+      });
+
+      const description = await describeProjectDeletion('a', {
+        retainedArchives: true,
+      });
+
+      expect(description.status).toBe('discardable');
+      expect(
+        description.items.map((item) => [
+          item.worktreeName,
+          item.description.worktreeId,
+          item.description.causes,
+          item.description.targets.map((target) => target.kind),
+        ]),
+      ).toEqual([
+        ['old', 'one', ['source-gone'], ['live-checkout']],
+        ['second', 'two', ['source-gone'], []],
+        ['Archived worktree', 'pending', ['source-gone'], ['retained-archive']],
+      ]);
+      await discardListedItems(description);
+      await expect(
+        deleteWorkspace({ workspaceId: 'a', source: 'portal' }),
+      ).resolves.toMatchObject({ removed: 'code' });
+      expect(indexIds()).toEqual(['b', 'c']);
+      expect(existsSync(join(root, 'a'))).toBe(false);
+      expect(treeImage(movedSource())).toEqual(sourceTree);
+      expect(branches()).toBe(branchesBefore);
+    });
+
+    it('CAN-5338 a retained archive beside another archive whose staged Git capture is unreadable offers no discard', async () => {
+      await plantPendingVersion3Archive(repo);
+      hideSource();
+      const payloadId = '00000000-0000-4000-8000-000000000004';
+      const payload = join(
+        getArchivedContainerDir('a', 'kept'),
+        'recovery-files',
+        payloadId,
+      );
+      mkdirSync(payload, { recursive: true });
+      writeFileSync(join(payload, 'kept.txt'), 'retained');
+      const digest = await workspaceRootPayloadDigest({ rootPath: payload });
+      if (digest === null) throw new Error('Expected a payload digest');
+      await commitArchivedContainer({
+        ...archivedManifestFields('a', 'kept'),
+        version: 3,
+        recovery: {
+          kind: 'files-only',
+          source: 'partial',
+          digest,
+          payloadId,
+          gitCleanupPending: false,
+        },
+      });
+      const retained = { retainedArchives: true };
+      expect((await describeProjectDeletion('a', retained)).status).toBe(
+        'discardable',
+      );
+      const staged = getArchivedContainerGitStateStagedPath('a', 'kept');
+      writeFileSync(staged, '{truncated');
+
+      expect((await describeProjectDeletion('a', retained)).status).toBe(
+        'refused',
+      );
+      rmSync(staged);
+      expect((await describeProjectDeletion('a', retained)).status).toBe(
+        'discardable',
+      );
     });
 
     it('CAN-5337 a source that comes back lists nothing to discard, so the ordinary deletion stands', async () => {

@@ -7,6 +7,7 @@ import { renderToString } from 'react-dom/server';
 import type { ChatInputDeliveryView } from '@canopy/protocol/portal';
 import { InputDeliveryList } from '../InputDeliveryList';
 import { BUBBLE_INFO_SURFACE_CLASS } from '../../bubble-badge';
+import { buttonClassName } from '../../Button';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -19,7 +20,40 @@ const row = (state: ChatInputDeliveryView['state']): ChatInputDeliveryView => ({
   canWithdraw: state === 'pending',
 });
 
+// The corner actions are the sent bubble's 28px secondary icon Button.
+const ICON_BUTTON_CLASS = buttonClassName({
+  variant: 'secondary',
+  size: 'compact',
+  iconOnly: true,
+}).trim();
+
+function classOf(html: string, testId: string): string | null | undefined {
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  return container
+    .querySelector(`[data-testid="${testId}"]`)
+    ?.getAttribute('class')
+    ?.trim();
+}
+
 describe('InputDeliveryList', () => {
+  it.each([
+    ['pending', 'input-delivery-cancel'],
+    ['cancelled', 'input-delivery-dismiss'],
+    ['uncertain', 'input-delivery-dismiss'],
+  ] as const)(
+    'draws the %s row corner actions with the shared icon Button',
+    (state, trashTestId) => {
+      const html = renderToString(
+        <InputDeliveryList rows={[row(state)]} onAction={async () => {}} />,
+      );
+      if (state !== 'uncertain') {
+        expect(classOf(html, 'input-delivery-edit')).toBe(ICON_BUTTON_CLASS);
+      }
+      expect(classOf(html, trashTestId)).toBe(ICON_BUTTON_CLASS);
+    },
+  );
+
   it('renders a pending row as Sending… with corner edit/cancel actions and Queue below', () => {
     const html = renderToString(
       <InputDeliveryList rows={[row('pending')]} onAction={async () => {}} />,
@@ -176,8 +210,9 @@ describe('InputDeliveryList', () => {
       '[data-testid="input-delivery-dismiss"]',
     );
     expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss message');
-    expect(dismiss?.className).toContain('pointer-coarse:h-11');
-    expect(dismiss?.className).toContain('pointer-coarse:w-11');
+    // The Button keeps its 28px disc and grows a 44px hit area on touch.
+    expect(dismiss?.className).toContain('pointer-coarse:before:-inset-x-2');
+    expect(dismiss?.className).toContain('pointer-coarse:before:-inset-y-2');
     act(() => dismiss?.click());
     expect(onAction).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'row-cancelled' }),
@@ -208,8 +243,8 @@ describe('InputDeliveryList', () => {
     expect(html).toContain('pointer-coarse:opacity-100');
     expect(html).toContain('pointer-coarse:right-0');
     expect(html).toContain('pointer-coarse:top-0');
-    expect(html).toContain('pointer-coarse:h-11');
-    expect(html).toContain('pointer-coarse:w-11');
+    expect(html).toContain('pointer-coarse:before:-inset-x-2');
+    expect(html).toContain('pointer-coarse:before:-inset-y-2');
     expect(html).toContain('data-testid="input-delivery-resend"');
     expect(html).toContain('>Resend<');
     expect(html).not.toContain('data-testid="input-delivery-queue"');

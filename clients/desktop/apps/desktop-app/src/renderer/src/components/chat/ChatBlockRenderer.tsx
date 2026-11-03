@@ -48,6 +48,7 @@ import {
   useSmoothStreaming,
   withSoftLineBreaks,
   type MarkdownOverrides,
+  TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import type { PendingQuestion } from '@/stores/chatStore';
 import { ThinkingSpinner } from '../shared/loading/spinners/ThinkingSpinner';
@@ -948,7 +949,7 @@ function TranscriptProse({
     ],
   );
   return (
-    <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
+    <div className={TRANSCRIPT_PROSE_CLASS}>
       {!smoothStreamed && canRenderAsPlainParagraph(text) ? (
         <p>
           {decorateMentionChildren(
@@ -1358,7 +1359,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         const plan = extractExitPlanModePlan(block.input);
         if (!plan) return null;
         return (
-          <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
+          <div className={TRANSCRIPT_PROSE_CLASS}>
             <Markdown options={MARKDOWN_OPTIONS} streaming={streaming}>
               {plan}
             </Markdown>

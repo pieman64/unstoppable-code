@@ -430,16 +430,17 @@ describe('AutomationEditAdapter — enable toggle', () => {
     // A draft has nothing to turn on or off yet: no menu, no Off state.
     expect(env.byTestId('workflow-edit-more')).toBeNull();
     expect(env.byTestId('workflow-edit-enabled-state')).toBeNull();
-    const checkbox = (): HTMLInputElement => {
+    const checked = (): boolean => {
       const field = env.byTestId('automations-form-enabled');
-      if (!(field instanceof HTMLInputElement)) throw new Error('no checkbox');
-      return field;
+      if (field?.getAttribute('role') !== 'switch')
+        throw new Error('no switch');
+      return field.getAttribute('aria-checked') === 'true';
     };
-    const before = checkbox().checked;
+    const before = checked();
 
     await env.click('automations-form-enabled');
     expect(env.updateMock).not.toHaveBeenCalled();
-    expect(checkbox().checked).toBe(!before);
+    expect(checked()).toBe(!before);
   });
 });
 

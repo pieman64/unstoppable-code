@@ -687,7 +687,10 @@ it('editor focuses its labelled input, applies semantic color, and cancels draft
       '[data-testid="sidebar-item-group-name"]',
     );
     expect(document.activeElement).toBe(input);
-    expect(document.querySelector('label')?.htmlFor).toBe(input?.id);
+    const labelId = input?.getAttribute('aria-labelledby') ?? '';
+    expect(document.getElementById(labelId)?.textContent?.trim()).toBe(
+      'Group name',
+    );
     if (!input) throw new Error('Missing group name input');
     setInputValue(input, 'Changed draft');
     void act(() =>

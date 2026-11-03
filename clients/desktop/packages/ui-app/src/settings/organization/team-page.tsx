@@ -2,7 +2,7 @@
 
 import { useState, type JSX, type ReactNode } from 'react';
 import { ExternalLink, Plus, UserPlus } from '@canopy/ui-shared/icons/AppIcons';
-import { Button, buttonClassName } from '@canopy/ui-shared/components';
+import { Button, buttonClassName, Notice } from '@canopy/ui-shared/components';
 import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import { useOptionalSettingsStoreApi } from '@canopy/app-state/settings';
 import {
@@ -578,25 +578,13 @@ export function TeamPage({
       )}
 
       {justJoined && (
-        <p
-          role="status"
-          data-testid="team-joined-notice"
-          // `ring-1` rather than `border` on purpose (CAN-2734): an unlayered
-          // `* { border-color: var(--line-base) }` outranks Tailwind's layered
-          // `border-*` utilities, so a border color here would silently paint
-          // `--line-base`. The sibling lapsed notice below still has that bug.
-          className="rounded-lg bg-success-subtle px-3 py-2 text-s fg-success ring-1 ring-line-positive/40"
-        >
+        <Notice intent="positive" data-testid="team-joined-notice">
           {`You've joined ${detail.name}.`}
-        </p>
+        </Notice>
       )}
 
       {showLapsedNotice && (
-        <p
-          role="status"
-          data-testid="team-lapsed-notice"
-          className="rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2 text-s fg-warning"
-        >
+        <Notice intent="attention" data-testid="team-lapsed-notice">
           {/*
             Location-INDEPENDENT wording on purpose. This notice renders on
             every tab in LAPSED_LIVE_TABS, which now includes Settings — so a
@@ -612,7 +600,7 @@ export function TeamPage({
               ? ', or restore it from the Billing settings'
               : ''
           }. Other organization features stay paused until it is restored.`}
-        </p>
+        </Notice>
       )}
 
       <TeamPageHeaderSlotContext.Provider value={headerSlot}>

@@ -7,9 +7,13 @@ import type { W5Resource } from './commit-log';
 import { afterW5Commit } from './commit-scope';
 import {
   isJsonObject,
+  W5AuthorityUnreachableError,
+  w5NamedUnreadable,
+  w5UnreadableMessage,
   withUnknownFields,
   type PersistedFileAuthority,
   type W5FileStore,
+  type W5NamedUnreadableError,
 } from './file-store';
 import { withW5RepositoryLock } from './repository-locks';
 import { diffW5Rows, equalW5Contents } from './revision-diff';
@@ -30,6 +34,14 @@ export interface WorkspaceIndexSnapshot<
   /** The entries this version can read, in file order. */
   entries: Entry[];
   authority: WorkspaceIndexAuthority;
+  /** The named reason an unreadable index could not be read (CAN-5531, CAN-5542). */
+  unserved?: W5NamedUnreadableError;
+  /**
+   * The string IDs of entries this version could not read, in file order and
+   * with repeats; absent when there are none. A write that names one of these
+   * IDs replaces its unreadable rows.
+   */
+  unreadableRowIds?: string[];
 }
 
 /**
@@ -114,7 +126,12 @@ export class WorkspaceIndexUnreadableError extends Error {
   // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
   declare readonly cause?: unknown;
   constructor(cause?: unknown) {
-    super('The workspace index could not be read, so it was not rewritten');
+    super(
+      w5UnreadableMessage(
+        'The workspace index could not be read, so it was not rewritten',
+        cause,
+      ),
+    );
     this.name = 'WorkspaceIndexUnreadableError';
     if (cause !== undefined)
       Object.defineProperty(this, 'cause', {
@@ -189,14 +206,30 @@ export function createWorkspaceIndexRepository<Section extends string>(
     };
   }
 
+  /** A loaded index as callers see it, naming why it was unreadable. */
+  function snapshotOf(
+    current: LoadedWorkspaceIndex<Section>,
+  ): WorkspaceIndexSnapshot<Entry> {
+    const { entries, authority, readError } = current;
+    const unreadableRowIds = current.unreadableEntries.flatMap((rawEntry) =>
+      typeof rawEntry.id === 'string' ? [rawEntry.id] : [],
+    );
+    const unserved = w5NamedUnreadable(readError);
+    return {
+      entries,
+      authority,
+      ...(unserved && { unserved }),
+      ...(unreadableRowIds.length > 0 && { unreadableRowIds }),
+    };
+  }
+
   return {
     async read(): Promise<WorkspaceIndexSnapshot<Entry>> {
-      const { entries, authority } = await load();
-      return { entries, authority };
+      return snapshotOf(await load());
     },
     async readStored(): Promise<WorkspaceIndexStoredSnapshot<Entry>> {
-      const { entries, authority, rawEntries } = await load();
-      return { entries, authority, storedFields: rawEntries };
+      const current = await load();
+      return { ...snapshotOf(current), storedFields: current.rawEntries };
     },
     update<T>(
       change: (
@@ -209,15 +242,14 @@ export function createWorkspaceIndexRepository<Section extends string>(
         { kind: 'index', path: deps.filePath() },
         async (): Promise<T> => {
           const current = await load();
-          const decided = await change({
-            entries: current.entries,
-            authority: current.authority,
-          });
+          const decided = await change(snapshotOf(current));
           if (decided.entries === undefined) return decided.result;
           // Rewriting from an index that could not be read would drop every
           // entry in it (CAN-3329).
           if (current.authority === 'unreadable') {
-            deps.onRefused();
+            // An unreachable authority never showed the index unreadable.
+            if (!(current.readError instanceof W5AuthorityUnreachableError))
+              deps.onRefused();
             throw new WorkspaceIndexUnreadableError(current.readError);
           }
           const filePath = deps.filePath();

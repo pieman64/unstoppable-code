@@ -9,19 +9,24 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type ChangeEvent,
   type FormEvent,
   type JSX,
 } from 'react';
 import {
   Button,
   DelayedLoadingPlaceholder,
+  EmptyState,
   ErrorBanner,
   ErrorState,
+  Notice,
+  SearchEmptyState,
   SettingsChartSkeleton,
   SettingsListSkeleton,
+  SearchField,
   SettingsSelect,
+  TextInput,
   type SettingsSelectOption,
+  CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
 import type {
@@ -55,6 +60,7 @@ import {
   type EntityGraphFilters,
   type EntityGraphLiveness,
 } from './graph-helpers';
+import type { SettingsFailure } from '../errors';
 
 // Matches MAX_FACT_DETAIL_BATCH on the facts/batch route.
 const MAX_SELECTED_FACTS = 25;
@@ -144,7 +150,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
   const [graph, setGraph] = useState<ExplorerEntityGraph | null>(
     () => graphCache.get(entityGraphCacheKey(orgId, filters)) ?? null,
   );
-  const [graphError, setGraphError] = useState<string | null>(null);
+  const [graphError, setGraphError] = useState<SettingsFailure | null>(null);
   // The failure Try again is reading past: it stays on screen, its capsule
   // spinning, until the read settles, instead of blanking to the skeleton.
   const [retriedGraphError, setRetriedGraphError] = useState<string | null>(
@@ -155,9 +161,8 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
   const [selectionTitle, setSelectionTitle] = useState('Select a node or edge');
   const [selectedFactIds, setSelectedFactIds] = useState<string[]>([]);
   const [selectedFacts, setSelectedFacts] = useState<ExplorerFactDetail[]>([]);
-  const [selectedFactsError, setSelectedFactsError] = useState<string | null>(
-    null,
-  );
+  const [selectedFactsError, setSelectedFactsError] =
+    useState<SettingsFailure | null>(null);
   // Bumped by the facts sidebar's Retry to read the same selection again.
   const [selectedFactsRetry, setSelectedFactsRetry] = useState(0);
   const [preview, setPreview] = useState<ExplorerRetrievalPreview | null>(null);
@@ -196,7 +201,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         setGraphError(null);
       } catch (caught) {
         if (graphRequestRef.current !== requestId) return;
-        setGraphError(errorCopy.loadCopy(caught));
+        setGraphError(errorCopy.loadFailure(caught));
       } finally {
         if (graphRequestRef.current === requestId) {
           setGraphLoading(false);
@@ -286,15 +291,15 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         if (cancelled) return;
         setSelectedFacts(payload.facts);
         if (payload.facts.length === 0) {
-          setSelectedFactsError('Unable to load facts');
+          setSelectedFactsError({ copy: 'Unable to load facts' });
         } else if (payload.facts.length < ids.length) {
-          setSelectedFactsError('Some facts could not be loaded');
+          setSelectedFactsError({ copy: 'Some facts could not be loaded' });
         } else {
           setSelectedFactsError(null);
         }
       } catch (caught) {
         if (cancelled) return;
-        setSelectedFactsError(errorCopy.loadCopy(caught));
+        setSelectedFactsError(errorCopy.loadFailure(caught));
       }
     };
     // Clearing stale facts happens in the click handlers (setState in an
@@ -337,8 +342,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
     applyFilters({ ...filters, q: queryInput.trim() });
   };
 
-  const onQueryChange = (event: ChangeEvent<HTMLInputElement>): void => {
-    const value = event.target.value;
+  const onQueryChange = (value: string): void => {
     setQueryInput(value);
     // Clearing the input immediately drops the name filter without requiring
     // another submit; non-empty edits still wait for one.
@@ -353,13 +357,12 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
     <div className="space-y-4">
       <div className="rounded-xl border bg-card p-4">
         <form onSubmit={submitQuery} className="flex gap-2">
-          <input
-            type="search"
+          <SearchField
             value={queryInput}
-            onChange={onQueryChange}
+            onValueChange={onQueryChange}
             placeholder="Filter entities by name"
             aria-label="Filter entities by name"
-            className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+            className="min-w-0 flex-1"
           />
           <Button
             type="submit"
@@ -378,22 +381,22 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             aria-label="Fact liveness"
             options={LIVENESS_OPTIONS}
           />
-          <input
+          <TextInput
+            density="settings"
             type="date"
             value={filters.from}
             onChange={(event) =>
               applyFilters({ ...filters, from: event.target.value })
             }
-            className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
             aria-label="Facts created from"
           />
-          <input
+          <TextInput
+            density="settings"
             type="date"
             value={filters.to}
             onChange={(event) =>
               applyFilters({ ...filters, to: event.target.value })
             }
-            className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
             aria-label="Facts created to"
           />
         </div>
@@ -409,7 +412,12 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
       {/* The graph === null fallback card below already shows the error, so
           this alert only covers failures while a graph is on screen. */}
       {graph !== null && (
-        <ErrorBanner className="" error={graphError} onRetry={handleRefresh} />
+        <ErrorBanner
+          className=""
+          error={graphError?.copy}
+          details={graphError?.details}
+          onRetry={handleRefresh}
+        />
       )}
 
       {graph === null && graphLoading && retriedGraphError === null ? (
@@ -425,35 +433,36 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
           <ErrorState
             testId="memory-graph-load-failed"
             message={
-              graphError ?? retriedGraphError ?? SETTINGS_LOAD_ERROR_COPY
+              graphError?.copy ?? retriedGraphError ?? SETTINGS_LOAD_ERROR_COPY
             }
             retrying={graphLoading}
             onRetry={(): void => {
-              setRetriedGraphError(graphError ?? SETTINGS_LOAD_ERROR_COPY);
+              setRetriedGraphError(
+                graphError?.copy ?? SETTINGS_LOAD_ERROR_COPY,
+              );
               handleRefresh();
             }}
           />
         </div>
       ) : graph.nodes.length === 0 ? (
-        <div className="rounded-xl border border-dashed py-20 text-center">
-          <h2 className="text-base font-semibold fg-primary">
-            {filtersActive ? 'No matching entities' : 'No entities yet'}
-          </h2>
-          <p className="mt-2 text-s fg-secondary">
-            {filtersActive
-              ? 'No entities match the current filters. Adjust or clear them to see the graph.'
-              : 'Run entity backfill to populate the organization graph.'}
-          </p>
-          <Button
-            size="compact"
-            onClick={handleRefresh}
-            disabled={graphLoading}
-            className="mt-4"
-          >
-            <RefreshCw size={14} />
-            Refresh
-          </Button>
-        </div>
+        filtersActive ? (
+          <SearchEmptyState title="No entities match the current filters. Adjust or clear them to see the graph." />
+        ) : (
+          <EmptyState
+            title="No entities yet"
+            subtitle="Run entity backfill to populate the organization graph."
+            action={
+              <Button
+                size="compact"
+                onClick={handleRefresh}
+                disabled={graphLoading}
+              >
+                <RefreshCw size={14} />
+                Refresh
+              </Button>
+            }
+          />
+        )
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,24rem)]">
           <section
@@ -525,7 +534,8 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             ) : selectedFactsError !== null && selectedFacts.length === 0 ? (
               <ErrorBanner
                 className="mt-4"
-                error={selectedFactsError}
+                error={selectedFactsError?.copy}
+                details={selectedFactsError?.details}
                 onRetry={retrySelectedFacts}
               />
             ) : selectedFacts.length === 0 ? (
@@ -535,9 +545,18 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
             ) : (
               <div className="mt-4 space-y-3">
                 {selectedFactsError !== null && (
-                  <p className="rounded-lg bg-warning-subtle px-3 py-2 text-s fg-warning">
-                    {selectedFactsError}
-                  </p>
+                  <Notice
+                    intent="attention"
+                    actions={
+                      selectedFactsError.details !== undefined ? (
+                        <CopyDetailsButton
+                          details={selectedFactsError.details}
+                        />
+                      ) : undefined
+                    }
+                  >
+                    {selectedFactsError.copy}
+                  </Notice>
                 )}
                 {selectedFacts.map((fact) => (
                   <FactCard key={fact.id} fact={fact} />

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   getTriggerTypes,
   normalizePipeline,
@@ -20,11 +20,15 @@ import {
   type PipelineDefinitionDocument,
   type PipelineDefinitionDeleteParams,
   type PipelineDefinitionDeleteResult,
+  type PipelineDefinitionDuplicateParams,
+  type PipelineDefinitionDuplicateResult,
   type PipelineDefinitionFormat,
   type PipelineDefinitionInstructionErrorCode,
   type PipelineDefinitionListParams,
   type PipelineDefinitionListResult,
   type PipelineDefinitionSource,
+  type PipelineDefinitionSetEnabledParams,
+  type PipelineDefinitionSetEnabledResult,
   type PipelineDefinitionSummary,
   type PipelineDefinitionUpsertParams,
   type PipelineDefinitionValidateResult,
@@ -61,6 +65,16 @@ export interface PipelineDefinitionSourceContext {
   readonly signal: AbortSignal;
   /** The port's sources this call asked for; a port reads only these. */
   readonly sources: readonly PipelineDefinitionSource[];
+  /**
+   * A list's query, which a source may use to narrow its own read; core
+   * still filters every row by it.
+   */
+  readonly query?: string;
+  /**
+   * The run owner a read is for. A port authorizes the definition against
+   * this owner instead of the selected navigation context.
+   */
+  readonly owner?: string;
 }
 
 /**
@@ -102,6 +116,19 @@ export interface PipelineDefinitionWrite {
   readonly pipeline: Pipeline;
 }
 
+/** A copy for the writable source to create under the id core assigned. */
+export interface PipelineDefinitionCopy extends Omit<
+  PipelineDefinitionWrite,
+  'definitionId' | 'expectedRevision'
+> {
+  readonly definitionId: string;
+  /** The definition copied, so the host can carry its provenance. */
+  readonly origin: {
+    readonly source: PipelineDefinitionSource;
+    readonly definitionId: string;
+  };
+}
+
 export interface PipelineDefinitionWriteContext {
   readonly scope: CanopyWorkspaceScope;
   readonly signal: AbortSignal;
@@ -116,6 +143,14 @@ export interface PipelineDefinitionWriteContext {
 export interface PipelineDefinitionWritePort {
   upsert(
     write: PipelineDefinitionWrite,
+    context: PipelineDefinitionWriteContext,
+  ): Promise<PipelineDefinitionSourceDocument>;
+  /**
+   * Creates the copy under its assigned id with what the host keeps about
+   * its origin, or leaves nothing behind.
+   */
+  copy(
+    copy: PipelineDefinitionCopy,
     context: PipelineDefinitionWriteContext,
   ): Promise<PipelineDefinitionSourceDocument>;
   /** The stored revision of a user definition; `null` when there is none. */
@@ -136,10 +171,28 @@ export class PipelineDefinitionResumableWrite extends Error {
   constructor(
     message: string,
     readonly resume: () => Promise<PipelineDefinition>,
+    /**
+     * The committed write, and the enabled state it still has to record
+     * when its request set one.
+     */
+    readonly pending: Omit<PipelineDefinitionPendingEnablement, 'enabled'> &
+      Partial<Pick<PipelineDefinitionPendingEnablement, 'enabled'>>,
+    /**
+     * Whether an enabled state was recorded for the definition after this
+     * write's own attempt, under the definition's lock.
+     */
+    readonly superseded: () => boolean = (): boolean => false,
   ) {
     super(message);
     this.name = 'PipelineDefinitionResumableWrite';
   }
+}
+
+/** An upsert that committed `revision` before recording `enabled`. */
+export interface PipelineDefinitionPendingEnablement {
+  readonly definitionId: string;
+  readonly revision: number;
+  readonly enabled: boolean;
 }
 
 /** A source failure with a stable code and a message safe for its caller. */
@@ -164,6 +217,8 @@ export interface PipelineDefinitionServiceOptions {
   readonly servingTargetIds?: readonly string[];
   /** The writable `user` source; without it every write is refused. */
   readonly writer?: PipelineDefinitionWritePort;
+  /** Assigns a copy's id; a random UUID by default. */
+  readonly createDefinitionId?: () => string;
   /** Records a definition's enabled state; required to disable one. */
   readonly setDefinitionEnabled?: (
     definitionId: string,
@@ -361,15 +416,17 @@ function decodeCursor(cursor: string | undefined): number {
   return Number(cursor);
 }
 
+/** Every word of the query appears in the id, name or description. */
 function matchesQuery(
   summary: PipelineDefinitionSummary,
   query: string | undefined,
 ): boolean {
-  const needle = query?.trim().toLowerCase();
-  if (!needle) return true;
-  return [summary.definitionId, summary.name, summary.description].some(
-    (value) => value.toLowerCase().includes(needle),
-  );
+  const words = (query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  const haystack = [summary.definitionId, summary.name, summary.description]
+    .join(' ')
+    .toLowerCase();
+  return words.every((word) => haystack.includes(word));
 }
 
 export interface PipelineDefinitionService {
@@ -381,6 +438,7 @@ export interface PipelineDefinitionService {
     definitionId: string,
     scope: CanopyWorkspaceScope,
     signal: AbortSignal,
+    owner?: string,
   ): Promise<PipelineDefinition>;
   validate(
     document: PipelineDefinitionDocument,
@@ -394,6 +452,18 @@ export interface PipelineDefinitionService {
     params: Omit<PipelineDefinitionDeleteParams, '_meta'>,
     signal: AbortSignal,
   ): Promise<PipelineDefinitionDeleteResult>;
+  duplicate(
+    params: Omit<PipelineDefinitionDuplicateParams, '_meta'>,
+    signal: AbortSignal,
+  ): Promise<PipelineDefinitionDuplicateResult>;
+  setEnabled(
+    params: Omit<PipelineDefinitionSetEnabledParams, '_meta'>,
+  ): Promise<PipelineDefinitionSetEnabledResult>;
+  /**
+   * Records the enabled state an upsert committed without, unless a later
+   * write has raised the definition's revision since.
+   */
+  resumeEnablement(pending: PipelineDefinitionPendingEnablement): Promise<void>;
 }
 
 export function createPipelineDefinitionService(
@@ -447,6 +517,7 @@ export function createPipelineDefinitionService(
     definitionId: string,
     scope: CanopyWorkspaceScope,
     signal: AbortSignal,
+    owner: string | undefined,
   ): Promise<PipelineDefinitionSourceDocument> => {
     for (const source of pipelineDefinitionSourcesForId(definitionId)) {
       const port = portFor(source);
@@ -462,6 +533,7 @@ export function createPipelineDefinitionService(
           scope,
           signal,
           sources: [source],
+          ...(owner === undefined ? {} : { owner }),
         });
       } catch (error) {
         throw toOperationError(error, 'The workflow could not be read.');
@@ -477,20 +549,26 @@ export function createPipelineDefinitionService(
   const definitionFrom = async (
     document: PipelineDefinitionSourceDocument,
     scope: CanopyWorkspaceScope,
+    disabled?: ReadonlySet<string>,
   ): Promise<PipelineDefinition> => {
     const validation = validate(document.text, normalizeOptions());
     const checksum =
       document.checksum ?? pipelineDefinitionChecksum(document.text);
-    const summary = summarize(document, scope, await disabledIds(), {
-      checksum,
-      format: document.format,
-      triggerTypes: validation.pipeline
-        ? getTriggerTypes(validation.pipeline.on)
-        : undefined,
-      executionScopes: validation.normalized
-        ? executionScopesOf(validation.normalized)
-        : undefined,
-    });
+    const summary = summarize(
+      document,
+      scope,
+      disabled ?? (await disabledIds()),
+      {
+        checksum,
+        format: document.format,
+        triggerTypes: validation.pipeline
+          ? getTriggerTypes(validation.pipeline.on)
+          : undefined,
+        executionScopes: validation.normalized
+          ? executionScopesOf(validation.normalized)
+          : undefined,
+      },
+    );
     return {
       ...summary,
       checksum,
@@ -540,6 +618,26 @@ export function createPipelineDefinitionService(
     return options.writer;
   };
 
+  // Each enabled state recorded on its own, which supersedes any write
+  // still waiting to record one.
+  const enablementGenerations = new Map<string, number>();
+  const enablementGeneration = (definitionId: string): number =>
+    enablementGenerations.get(definitionId) ?? 0;
+
+  // A later write owns the enabled state once it has a newer revision.
+  const recordCommittedEnablement = async (
+    writer: PipelineDefinitionWritePort,
+    pending: PipelineDefinitionPendingEnablement,
+  ): Promise<void> => {
+    const setEnabled = options.setDefinitionEnabled;
+    if (
+      setEnabled &&
+      (await writer.revision(pending.definitionId)) === pending.revision &&
+      (await disabledIds()).has(pending.definitionId) === pending.enabled
+    )
+      await setEnabled(pending.definitionId, pending.enabled);
+  };
+
   return {
     async list(params, signal): Promise<PipelineDefinitionListResult> {
       const scope = params.scope ?? {};
@@ -561,6 +659,7 @@ export function createPipelineDefinitionService(
               scope,
               signal,
               sources: port.sources.filter((source) => requested.has(source)),
+              ...(params.query?.trim() ? { query: params.query } : {}),
             });
           } catch (error) {
             if (!port.optional)
@@ -624,8 +723,11 @@ export function createPipelineDefinitionService(
       };
     },
 
-    async get(definitionId, scope, signal): Promise<PipelineDefinition> {
-      return definitionFrom(await read(definitionId, scope, signal), scope);
+    async get(definitionId, scope, signal, owner): Promise<PipelineDefinition> {
+      return definitionFrom(
+        await read(definitionId, scope, signal, owner),
+        scope,
+      );
     },
 
     async upsert(params, signal): Promise<PipelineDefinition> {
@@ -674,21 +776,27 @@ export function createPipelineDefinitionService(
           throw toOperationError(error, 'The workflow could not be saved.');
         }
         const finish = async (): Promise<PipelineDefinition> => {
-          const enabled = params.enabled;
-          // A later write owns the enabled state once it has a newer revision.
-          if (
-            enabled !== undefined &&
-            setEnabled &&
-            (await writer.revision(written.definitionId)) ===
-              written.revision &&
-            (await disabledIds()).has(written.definitionId) === enabled
-          )
-            await setEnabled(written.definitionId, enabled);
+          if (params.enabled !== undefined)
+            await recordCommittedEnablement(writer, {
+              definitionId: written.definitionId,
+              revision: written.revision,
+              enabled: params.enabled,
+            });
           return definitionFrom(written, params.scope);
         };
+        const generation = enablementGeneration(written.definitionId);
         // The document is saved: every failure from here leaves a retry that
-        // finishes enablement on it.
+        // finishes enablement on it, unless a later enabled state, recorded
+        // under this lock, superseded it.
         const attempt = async (): Promise<PipelineDefinition> => {
+          if (
+            params.enabled !== undefined &&
+            enablementGeneration(written.definitionId) !== generation
+          )
+            throw pipelineDefinitionError(
+              'core.pipeline.revisionConflict',
+              `The workflow's enabled state changed since this write: ${written.definitionId}`,
+            );
           try {
             return await finish();
           } catch {
@@ -697,8 +805,17 @@ export function createPipelineDefinitionService(
             throw pipelineDefinitionError(
               'core.pipeline.sourceUnavailable',
               message,
-              new PipelineDefinitionResumableWrite(message, () =>
-                withDefinitionLock(written.definitionId, attempt),
+              new PipelineDefinitionResumableWrite(
+                message,
+                () => withDefinitionLock(written.definitionId, attempt),
+                {
+                  definitionId: written.definitionId,
+                  revision: written.revision,
+                  ...(params.enabled === undefined
+                    ? {}
+                    : { enabled: params.enabled }),
+                },
+                () => enablementGeneration(written.definitionId) !== generation,
               ),
             );
           }
@@ -720,6 +837,119 @@ export function createPipelineDefinitionService(
         throw toOperationError(error, 'The workflow could not be deleted.');
       }
       return { definitionId: params.definitionId, deleted: true, revision };
+    },
+
+    async duplicate(
+      params,
+      signal,
+    ): Promise<PipelineDefinitionDuplicateResult> {
+      const writer = writerFor(null);
+      const origin = await read(
+        params.sourceDefinitionId,
+        params.scope,
+        signal,
+        undefined,
+      );
+      if (
+        params.expectedChecksum !== undefined &&
+        (origin.checksum ?? pipelineDefinitionChecksum(origin.text)) !==
+          params.expectedChecksum
+      )
+        throw pipelineDefinitionError(
+          'core.pipeline.revisionConflict',
+          `Workflow changed since it was loaded: ${params.sourceDefinitionId}`,
+        );
+      const validation = validate(origin.text, normalizeOptions());
+      const diagnostic = validation.diagnostics[0];
+      if (!validation.pipeline || diagnostic)
+        throw pipelineDefinitionError(
+          'core.pipeline.definitionInvalid',
+          diagnostic?.message ?? 'The workflow is invalid.',
+        );
+      const name = params.name ?? `${origin.name} (Copy)`;
+      // A copy is the user's own: it drops a read-only source's marker, and
+      // its document carries the name it is listed under.
+      const pipeline: Pipeline = { ...validation.pipeline, name };
+      delete pipeline.readonly;
+      const text = serializePipelineDocument(pipeline);
+      if (text.length > PIPELINE_DEFINITION_DOCUMENT_MAX_LENGTH)
+        throw pipelineDefinitionError(
+          'core.pipeline.definitionInvalid',
+          'The workflow document is larger than 1 MiB.',
+        );
+      const definitionId = (options.createDefinitionId ?? randomUUID)();
+      // Read before the copy commits, so nothing after it can fail the
+      // request and free its key while the copy stays stored.
+      const disabled = await disabledIds();
+      let written: PipelineDefinitionSourceDocument;
+      try {
+        written = await writer.copy(
+          {
+            definitionId,
+            origin: {
+              source: origin.source,
+              definitionId: origin.definitionId,
+            },
+            name,
+            description: origin.description,
+            icon: origin.icon,
+            text,
+            pipeline,
+          },
+          { scope: params.scope, signal },
+        );
+      } catch (error) {
+        throw toOperationError(error, 'The workflow could not be copied.');
+      }
+      if (written.definitionId !== definitionId)
+        throw pipelineDefinitionError(
+          'core.pipeline.sourceUnavailable',
+          'The workflow copy was saved under another id.',
+        );
+      return {
+        definition: await definitionFrom(written, {}, disabled),
+        sourceDefinitionId: origin.definitionId,
+      };
+    },
+
+    async setEnabled(params): Promise<PipelineDefinitionSetEnabledResult> {
+      const setEnabled = options.setDefinitionEnabled;
+      if (!setEnabled)
+        throw pipelineDefinitionError(
+          'core.pipeline.sourceUnavailable',
+          'This host cannot change whether a workflow is enabled.',
+        );
+      // Under the definition's lock, so it lands in order with its writes.
+      await withDefinitionLock(params.definitionId, async () => {
+        try {
+          await setEnabled(params.definitionId, params.enabled);
+        } catch (error) {
+          throw toOperationError(
+            error,
+            'The workflow could not be enabled or disabled.',
+          );
+        }
+        enablementGenerations.set(
+          params.definitionId,
+          enablementGeneration(params.definitionId) + 1,
+        );
+      });
+      return { definitionId: params.definitionId, enabled: params.enabled };
+    },
+
+    async resumeEnablement(pending): Promise<void> {
+      const writer = writerFor(pending.definitionId);
+      // Taken before waiting for the lock: an enabled state recorded while
+      // this waits supersedes it.
+      const generation = enablementGeneration(pending.definitionId);
+      await withDefinitionLock(pending.definitionId, () => {
+        if (enablementGeneration(pending.definitionId) !== generation)
+          throw pipelineDefinitionError(
+            'core.pipeline.revisionConflict',
+            `The workflow's enabled state changed since this write: ${pending.definitionId}`,
+          );
+        return recordCommittedEnablement(writer, pending);
+      });
     },
   };
 }

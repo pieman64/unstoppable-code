@@ -2,7 +2,12 @@
 
 import { useState, type FormEvent, type JSX } from 'react';
 import { toDataURL } from 'qrcode';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  FormField,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
@@ -295,18 +300,20 @@ export function TwoFactorSetupPanel({
             onSubmit={handleEnablePasswordSubmit}
             className={STEP_ROW_CLASS}
           >
-            <label className="flex flex-col gap-1 text-s fg-secondary">
-              <span className="font-medium fg-primary">Password</span>
-              <input
-                type="password"
-                required
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={submitting}
-                className="rounded-md border bg-card px-3 py-2 text-s fg-primary disabled:opacity-50"
-              />
-            </label>
+            <FormField label="Password">
+              {(control) => (
+                <TextInput
+                  {...control}
+                  density="settings"
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={submitting}
+                />
+              )}
+            </FormField>
             <div className="flex items-center gap-2">
               <Button type="submit" size="compact" disabled={submitting}>
                 {submitting ? 'Enabling…' : 'Enable 2FA'}
@@ -366,21 +373,22 @@ export function TwoFactorSetupPanel({
               onSubmit={(e) => void handleVerifySubmit(e)}
               className="flex flex-col gap-3"
             >
-              <label className="flex flex-col gap-1 text-s fg-secondary">
-                <span className="font-medium fg-primary">
-                  Authentication code
-                </span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  required
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  disabled={submitting}
-                  className="rounded-md border bg-card px-3 py-2 font-mono fg-primary disabled:opacity-50"
-                />
-              </label>
+              <FormField label="Authentication code">
+                {(control) => (
+                  <TextInput
+                    {...control}
+                    density="settings"
+                    mono
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    required
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    disabled={submitting}
+                  />
+                )}
+              </FormField>
               <div className="flex items-center gap-2">
                 <Button
                   type="submit"
@@ -441,18 +449,20 @@ export function TwoFactorSetupPanel({
               Disable two-factor authentication?
             </p>
             {hasCredential && (
-              <label className="flex flex-col gap-1 text-s fg-secondary">
-                <span className="font-medium fg-primary">Password</span>
-                <input
-                  type="password"
-                  required
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  disabled={submitting}
-                  className="rounded-md border bg-card px-3 py-2 text-s fg-primary disabled:opacity-50"
-                />
-              </label>
+              <FormField label="Password">
+                {(control) => (
+                  <TextInput
+                    {...control}
+                    density="settings"
+                    type="password"
+                    required
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={submitting}
+                  />
+                )}
+              </FormField>
             )}
             <div className="flex items-center gap-2">
               <Button
@@ -479,18 +489,20 @@ export function TwoFactorSetupPanel({
             onSubmit={handleRegeneratePasswordSubmit}
             className={STEP_ROW_CLASS}
           >
-            <label className="flex flex-col gap-1 text-s fg-secondary">
-              <span className="font-medium fg-primary">Password</span>
-              <input
-                type="password"
-                required
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={submitting}
-                className="rounded-md border bg-card px-3 py-2 text-s fg-primary disabled:opacity-50"
-              />
-            </label>
+            <FormField label="Password">
+              {(control) => (
+                <TextInput
+                  {...control}
+                  density="settings"
+                  type="password"
+                  required
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={submitting}
+                />
+              )}
+            </FormField>
             <div className="flex items-center gap-2">
               <Button type="submit" size="compact" disabled={submitting}>
                 {submitting ? 'Generating…' : 'Regenerate backup codes'}

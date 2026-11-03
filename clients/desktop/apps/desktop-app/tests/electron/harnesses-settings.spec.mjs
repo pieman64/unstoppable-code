@@ -106,6 +106,10 @@ function seedAiGatewayModelCatalogCache(userDataDir) {
   );
 }
 
+// The held first send's setup status from `TurnWorkHeader`.
+const SETUP_STATUS =
+  '[data-testid="turn-starting-status"][data-turn-header="setup"]';
+
 function writeSlowGitShim(userDataDir) {
   const shimPath = path.join(userDataDir, 'git-slow-harness-shim.sh');
   writeFileSync(
@@ -505,7 +509,7 @@ test('configurable models move via menu, drag, and keyboard, and persist across 
   }
 });
 
-test('a Home-created chat captures the configured gateway harness before its setup queue', async () => {
+test('a Home-created chat captures the configured gateway harness while its worktree sets up', async () => {
   test.setTimeout(120_000);
 
   const userDataDir = mkdtempSync(
@@ -558,16 +562,21 @@ test('a Home-created chat captures the configured gateway harness before its set
       GATEWAY_BRAVO.label,
     );
 
-    await home
-      .getByTestId('home-composer-editor')
-      .fill('Keep this gateway model on its configured Claude harness.');
+    const prompt = 'Keep this gateway model on its configured Claude harness.';
+    await home.getByTestId('home-composer-editor').fill(prompt);
     await home.getByTestId('home-send-button').click();
 
+    // Main holds the first send for the new worktree's Git setup: it shows as
+    // sent, under the turn's setup status (CAN-5483).
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toBeVisible({ timeout: 15_000 });
+    await expect(panel.getByText(prompt).first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(panel.locator(SETUP_STATUS)).toBeVisible({ timeout: 15_000 });
     await expect(
       panel.getByRole('list', { name: 'Queued messages' }),
-    ).toBeVisible({ timeout: 15_000 });
+    ).toHaveCount(0);
     await expect(
       panel.getByTestId('chat-model-picker-provider-icon'),
     ).toHaveAttribute('data-provider', 'claude');
@@ -1042,8 +1051,12 @@ test('Home selects a gateway harness for one chat without changing the default',
     const panel = window.getByTestId('panel-content-chat');
     await expect(panel).toBeVisible({ timeout: 15_000 });
     await expect(
-      panel.getByRole('list', { name: 'Queued messages' }),
+      panel.getByText('Use Claude for this task.').first(),
     ).toBeVisible({ timeout: 15_000 });
+    await expect(panel.locator(SETUP_STATUS)).toBeVisible({ timeout: 15_000 });
+    await expect(
+      panel.getByRole('list', { name: 'Queued messages' }),
+    ).toHaveCount(0);
     await expect(
       panel.getByTestId('chat-model-picker-provider-icon'),
     ).toHaveAttribute('data-provider', 'claude');
@@ -1086,7 +1099,7 @@ test('Home selects a gateway harness for one chat without changing the default',
         executionHarnessExplicitlyChosen: true,
       });
     expect(selectedTab.providerType).toBe('claude');
-    // The queued bubble is optimistic. Wait for main to accept the first
+    // The sent prompt is optimistic. Wait for main to accept the first
     // message before testing the conversation lock through another IPC call.
     await expect
       .poll(

@@ -72,6 +72,10 @@ const mockAuthorizeTerminalAgentWrite = jest.fn<
   Promise<void> | undefined,
   [string, string | undefined]
 >();
+const mockRecordPlanImplementationWriteFailure = jest.fn<
+  Promise<void> | undefined,
+  [string, string | undefined]
+>();
 const mockClaudeTerminalLaunch = jest.fn();
 const mockClaudeTerminalGetState = jest.fn();
 const mockClaudeTerminalInterrupt = jest.fn();
@@ -101,6 +105,8 @@ jest.mock('../integration/claude-terminal-session-service', () => ({
   getClaudeTerminalSessionService: jest.fn(() => ({
     launch: mockClaudeTerminalLaunch,
     authorizeAgentInputTerminalWrite: mockAuthorizeTerminalAgentWrite,
+    recordPlanImplementationWriteFailure:
+      mockRecordPlanImplementationWriteFailure,
     cleanup: jest.fn(),
     getState: mockClaudeTerminalGetState,
     interrupt: mockClaudeTerminalInterrupt,
@@ -658,6 +664,44 @@ describe('registerTerminalHandlers', () => {
       }),
     ).toThrow('Terminal write exceeds maximum data size');
     expect(mockedPtyManager.write).not.toHaveBeenCalled();
+  });
+
+  it('awaits canonical plan failure settlement when an oversized paste is refused while the terminal remains alive', async () => {
+    const handler = getRegisteredHandler(IPC_CHANNELS.terminalWrite);
+    let release: (() => void) | undefined;
+    mockRecordPlanImplementationWriteFailure.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    let rejected = false;
+    const refusal = Promise.resolve()
+      .then(() =>
+        handler(null, {
+          terminalId: 'terminal-1',
+          data: 'a'.repeat(70 * 1024),
+          idempotencyKey: 'implementation-large-paste',
+        }),
+      )
+      .catch((error: unknown) => {
+        rejected = true;
+        throw error;
+      });
+    const assertion = expect(refusal).rejects.toThrow(
+      'Terminal write exceeds maximum data size',
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockRecordPlanImplementationWriteFailure).toHaveBeenCalledWith(
+      'terminal-1',
+      'implementation-large-paste',
+    );
+    expect(rejected).toBe(false);
+    release?.();
+    await assertion;
+    expect(mockedPtyManager.write).not.toHaveBeenCalled();
+    expect(mockedPtyManager.kill).not.toHaveBeenCalled();
   });
 
   it('blocks an unauthorized retained agent paste before any PTY write and preserves successful replay receipts', async () => {

@@ -496,15 +496,14 @@ for (const mode of ['ask', 'auto']) {
         await expect(
           window.getByTestId(`panel-tab-tool-approval-${CHAT}`),
         ).toBeVisible();
-        // The compact live line must identify this gate rather than a historical row.
+        // The visible tool row (or grouped summary) identifies the current gate.
         const liveLine = panel.locator(
-          '[data-testid="chat-tool-step-group"][data-live]',
+          '[data-testid="chat-tool-step-group"][data-live][data-tool-approval="waiting"], [data-testid="chat-tool-call"][data-tool-approval="waiting"]',
         );
         await expect(liveLine).toHaveAttribute('data-tool-approval', 'waiting');
+        await expect(liveLine).toContainText('Waiting for approval');
         await expect(liveLine).toContainText(
-          mode === 'auto' && step === 1
-            ? 'Waiting to read'
-            : `Waiting to run touch can4996-${step}`,
+          mode === 'auto' && step === 1 ? 'Read' : `Run touch can4996-${step}`,
         );
         await expect(
           liveLine.locator('[class*="canopy-text-shimmer"]'),
@@ -710,7 +709,7 @@ test('approval waiting rows and file contributions resume or disappear after All
       await expect(row).not.toHaveAttribute('data-tool-approval', 'waiting');
       if (step === 0) {
         await expect(row).toHaveAttribute('data-tool-status', 'pending');
-        await expect(row).toContainText('Running');
+        await expect(row).toContainText('Run sleep 3');
         await expect(row.locator('[class*="canopy-text-shimmer"]')).toHaveCount(
           1,
         );

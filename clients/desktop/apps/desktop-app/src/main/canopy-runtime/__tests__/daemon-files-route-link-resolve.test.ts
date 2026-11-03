@@ -1,8 +1,8 @@
 /**
- * CAN-5038: under the production selection, `file-reference:resolve` links
- * pass the Files route's eligibility check, are journaled and counted as
- * `direct`, and never reach the daemon, whatever the Files reads experiment
- * says. CAN-5509 gives them a daemon path; CAN-4729 selects them.
+ * CAN-5038: `file-reference:resolve` links pass the Files route's
+ * eligibility check and are journaled and counted. CAN-5509 gives them a
+ * daemon path and CAN-5556 selects them: with the Files reads experiment on,
+ * a window's link resolves through the daemon on macOS; off, it stays direct.
  */
 import { join } from 'node:path';
 import {
@@ -16,6 +16,7 @@ import {
   deferred,
   FakeSender,
   localCaller,
+  rejection,
   type RouteHarness,
   untilReached,
 } from './daemon-files-route-harness';
@@ -80,17 +81,22 @@ function linkEntries(
     .map(({ operation, backend, phase }) => ({ operation, backend, phase }));
 }
 
-it.each([true, false])(
-  'resolves a window link directly and counts it with the experiment %s',
-  async (flag) => {
-    h = await createRouteHarness({ flag });
-    // Any daemon contact fails the resolution.
-    h.connectionsFactory.mockImplementation(() => {
-      throw new Error('connections() must not be called for links.');
-    });
-    h.hostContext.mockImplementation(() => {
-      throw new Error('hostContext() must not be called for links.');
-    });
+it.each([
+  [true, 'daemon'],
+  [false, 'direct'],
+] as const)(
+  'resolves a window link and counts it with the experiment %s, through the %s reader',
+  async (flag, backend) => {
+    h = await createRouteHarness({ flag, platform: 'darwin' });
+    if (backend === 'direct') {
+      // Any daemon contact fails the resolution.
+      h.connectionsFactory.mockImplementation(() => {
+        throw new Error('connections() must not be called for links.');
+      });
+      h.hostContext.mockImplementation(() => {
+        throw new Error('hostContext() must not be called for links.');
+      });
+    }
     resetWorkCounters();
     const local = sender();
     const before = cursor();
@@ -110,7 +116,12 @@ it.each([true, false])(
       relativePath: 'README.md',
       name: 'README.md',
       kind: 'file',
+      ...(backend === 'daemon' && {
+        catalogRevision: canonicalResult?.catalogRevision,
+      }),
     });
+    if (backend === 'daemon')
+      expect(typeof canonicalResult?.catalogRevision).toBe('string');
     await expect(
       h.runtime.queryLinkResolveForLegacyIpc(
         { scope: SINGLE, mode: 'transcript', href: 'README.md' },
@@ -120,7 +131,7 @@ it.each([true, false])(
     ).resolves.toMatchObject({
       canonicalResult: { fileRootId: 'single', relativePath: 'README.md' },
     });
-    // A typed failure projects to null and is still a direct read.
+    // A typed failure projects to null and stays on the chosen reader.
     await expect(
       h.runtime.queryLinkResolveForLegacyIpc(
         { scope: SINGLE, mode: 'transcript', href: '../README.md' },
@@ -128,26 +139,37 @@ it.each([true, false])(
         { sender: local },
       ),
     ).resolves.toEqual({ canonicalResult: null, legacyResult: null });
-    expectNoDaemonContact();
+    if (backend === 'direct') expectNoDaemonContact();
+    else
+      expect(h.daemon.names()).toEqual([
+        'worker.filesystem.link.resolve',
+        'worker.filesystem.link.resolve',
+        'worker.filesystem.link.resolve',
+      ]);
     expect(linkEntries(before)).toEqual([
-      { operation: 'link', backend: 'direct', phase: 'started' },
-      { operation: 'link', backend: 'direct', phase: 'success' },
-      { operation: 'link', backend: 'direct', phase: 'started' },
-      { operation: 'link', backend: 'direct', phase: 'success' },
-      { operation: 'link', backend: 'direct', phase: 'started' },
-      { operation: 'link', backend: 'direct', phase: 'failed' },
+      { operation: 'link', backend, phase: 'started' },
+      { operation: 'link', backend, phase: 'success' },
+      { operation: 'link', backend, phase: 'started' },
+      { operation: 'link', backend, phase: 'success' },
+      { operation: 'link', backend, phase: 'started' },
+      { operation: 'link', backend, phase: 'failed' },
     ]);
     const counters = snapshotFilesWorkCounters();
-    expect(counters.route['files.link.direct']).toBe(3);
-    expect(counters.route['files.link.daemon']).toBe(0);
+    expect(counters.route[`files.link.${backend}`]).toBe(3);
+    expect(
+      counters.route[
+        `files.link.${backend === 'daemon' ? 'direct' : 'daemon'}`
+      ],
+    ).toBe(0);
   },
 );
 
-it('does not discard a direct resolution when the experiment flips mid-read', async () => {
+it('discards a direct resolution that finishes after the experiment turns on, without contact', async () => {
   const directStarted = deferred();
   const releaseDirect = deferred();
   h = await createRouteHarness({
-    flag: true,
+    flag: false,
+    platform: 'darwin',
     wrapRoute: (route) => {
       const holding: DaemonFilesRoute = {
         ...route,
@@ -166,11 +188,58 @@ it('does not discard a direct resolution when the experiment flips mid-read', as
   });
   resetWorkCounters();
   const local = sender();
+  const read = rejection(
+    h.runtime.queryLinkResolveForLegacyIpc(
+      markdownRequest(),
+      { caller: localCaller(local) },
+      { sender: local },
+    ),
+  );
+  try {
+    await untilReached(directStarted.promise, read);
+    h.flag.set(true);
+  } finally {
+    releaseDirect.resolve();
+  }
+  expect(await read).toMatchObject({
+    kind: 'cancelled',
+    retry: { kind: 'after_refresh' },
+  });
+  expect(snapshotFilesWorkCounters().route['files.link.direct.discarded']).toBe(
+    1,
+  );
+  expectNoDaemonContact();
+});
+
+it('does not discard a remote-bridge resolution when the experiment flips mid-read', async () => {
+  const directStarted = deferred();
+  const releaseDirect = deferred();
+  h = await createRouteHarness({
+    flag: true,
+    platform: 'darwin',
+    wrapRoute: (route) => {
+      const holding: DaemonFilesRoute = {
+        ...route,
+        link: (params, context, request, run) =>
+          route.link(params, context, request, {
+            ...run,
+            direct: async () => {
+              directStarted.resolve();
+              await releaseDirect.promise;
+              return run.direct();
+            },
+          }),
+      };
+      return holding;
+    },
+  });
+  resetWorkCounters();
+  const bridge = sender();
   const before = cursor();
   const read = h.runtime.queryLinkResolveForLegacyIpc(
     markdownRequest(),
-    { caller: localCaller(local) },
-    { sender: local },
+    { caller: bridgeCaller(bridge, 'controller-1') },
+    { sender: bridge },
   );
   try {
     await untilReached(directStarted.promise, read);
@@ -194,7 +263,7 @@ it('does not discard a direct resolution when the experiment flips mid-read', as
 });
 
 it('counts a remote-bridge resolution as direct after it fails eligibility', async () => {
-  h = await createRouteHarness({ flag: true });
+  h = await createRouteHarness({ flag: true, platform: 'darwin' });
   resetWorkCounters();
   const bridge = sender();
   await h.runtime.queryLinkResolveForLegacyIpc(
@@ -207,7 +276,7 @@ it('counts a remote-bridge resolution as direct after it fails eligibility', asy
 });
 
 it('leaves resolutions without an IPC sender unjournaled and uncounted', async () => {
-  h = await createRouteHarness({ flag: true });
+  h = await createRouteHarness({ flag: true, platform: 'darwin' });
   resetWorkCounters();
   const local = sender();
   const before = cursor();

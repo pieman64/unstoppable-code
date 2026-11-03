@@ -193,10 +193,11 @@ function setQuery(value: string): void {
 }
 
 function pressPaletteKey(key: string): void {
-  const palette = document.querySelector('[data-testid="command-palette"]');
-  if (!palette) throw new Error('palette not found');
+  // Keys reach the palette from its focused search field.
+  const input = document.querySelector('[data-testid="command-palette-input"]');
+  if (!input) throw new Error('palette input not found');
   act(() => {
-    palette.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
   });
 }
 
@@ -416,7 +417,10 @@ describe('CommandPalette rendering', () => {
     const dialog = document.querySelector(
       '[data-testid="command-palette"][role="dialog"]',
     );
-    expect(dialog?.getAttribute('aria-label')).toBe('Search');
+    const labelId = dialog?.getAttribute('aria-labelledby');
+    expect(labelId ? document.getElementById(labelId)?.textContent : null).toBe(
+      'Search',
+    );
   });
 
   it('hides Code Graph from settings navigation when its flag is off', async () => {
@@ -718,14 +722,13 @@ describe('CommandPalette rendering', () => {
     ).not.toBeNull();
   });
 
-  it('centers the dialog within the full app window', () => {
+  it('pins the palette near the top of the full app window', () => {
     render();
 
     const palette = document.querySelector('[data-testid="command-palette"]');
     expect(palette?.parentElement?.className).toContain('fixed inset-0');
-    expect(palette?.parentElement?.className).toContain('items-center');
+    expect(palette?.parentElement?.className).toContain('items-start');
     expect(palette?.parentElement?.className).toContain('justify-center');
-    expect(palette?.parentElement?.className).not.toContain('pt-[10vh]');
   });
 
   it('closes on Escape after focus moves outside the palette', async () => {
@@ -873,6 +876,30 @@ describe('CommandPalette rendering', () => {
     await flushMicrotasks();
 
     pressPaletteKey('Escape');
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes once on Escape from a focused result row', async () => {
+    const onClose = jest.fn();
+    render(onClose);
+    await flushMicrotasks();
+    setQuery('>');
+
+    const row = document.querySelector<HTMLButtonElement>(
+      '[role="listbox"] button[role="option"]',
+    );
+    if (!row) throw new Error('palette result row not found');
+    act(() => {
+      row.focus();
+      row.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -1027,10 +1054,8 @@ describe('CommandPalette session-replay privacy', () => {
     const results = document.querySelector(
       '[role="listbox"][aria-label="Results"]',
     )?.parentElement;
-    expect(results?.parentElement?.getAttribute('data-testid')).toBe(
-      'command-palette',
-    );
-    expect(results?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
+    expect(results?.closest('[data-testid="command-palette"]')).not.toBeNull();
+    expect(results?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
     expect(
       results?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`) ?? null,
     ).toBeNull();

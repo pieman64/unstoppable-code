@@ -7,6 +7,8 @@ import {
   SettingsRowsSection,
 } from '../settings/SettingsRows';
 import { Notice, NoticeButton } from '../Notice';
+import { StatusLabel } from '../StatusLabel';
+import { EmptyStateRow } from '../StatusBlocks';
 
 /**
  * Graph state shown by the summary. `'partial'` applies only to the aggregate
@@ -241,38 +243,19 @@ function SummaryDetails({
         />
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs sm:grid-cols-3">
-        <div className="flex justify-between gap-2">
-          <dt className="fg-secondary">Unresolved edges</dt>
-          <dd className="font-medium fg-primary">
-            {formatCount(totals.unresolvedEdgeCount)}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-2">
-          <dt className="fg-secondary">Files with errors</dt>
-          <dd className="font-medium fg-primary">
-            {formatCount(totals.filesWithErrors)}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-2">
-          <dt className="fg-secondary">Communities</dt>
-          <dd className="font-medium fg-primary">
-            {formatCount(totals.communityCount)}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-2">
-          <dt className="fg-secondary">Flows</dt>
-          <dd className="font-medium fg-primary">
-            {formatCount(totals.flowCount)}
-          </dd>
-        </div>
-        <div className="col-span-2 flex justify-between gap-2 sm:col-span-1">
-          <dt className="fg-secondary">Last generated</dt>
-          <dd className="font-medium fg-primary">
-            {formatTimestamp(summary.lastBuildAt)}
-          </dd>
-        </div>
-      </dl>
+      {/* The same rows the Settings page shows for these numbers (design
+          call 6B, 2026-10-31). */}
+      <SettingsRowsGroup dataTestId="code-graph-summary-health">
+        <HealthRows totals={totals} />
+        <SummaryRow
+          label="Last generated"
+          trailing={
+            <span className="text-s tabular-nums fg-secondary">
+              {formatTimestamp(summary.lastBuildAt)}
+            </span>
+          }
+        />
+      </SettingsRowsGroup>
 
       {summary.repositories.length > 1 && (
         <ul className="space-y-1.5" data-testid="code-graph-repository-list">
@@ -387,6 +370,36 @@ function BuildButton({
   );
 }
 
+/** The index's health counts as settings rows, in a group the caller owns. */
+function HealthRows({
+  totals,
+}: {
+  totals: CodeGraphSummaryViewData['totals'];
+}): JSX.Element {
+  return (
+    <>
+      <SummaryRow
+        label="Unresolved edges"
+        description="Calls the graph could not link to a definition."
+        trailing={<CountValue value={totals.unresolvedEdgeCount} />}
+      />
+      <SummaryRow
+        label="Files with errors"
+        description="Files the parser could not read completely."
+        trailing={<CountValue value={totals.filesWithErrors} />}
+      />
+      <SummaryRow
+        label="Communities"
+        trailing={<CountValue value={totals.communityCount} />}
+      />
+      <SummaryRow
+        label="Flows"
+        trailing={<CountValue value={totals.flowCount} />}
+      />
+    </>
+  );
+}
+
 /** The loaded summary as settings rows: index counts, then health. */
 function SummaryRows({
   summary,
@@ -434,24 +447,7 @@ function SummaryRows({
         title="Health"
         description="High numbers are normal in large repositories. They matter when they grow suddenly."
       >
-        <SummaryRow
-          label="Unresolved edges"
-          description="Calls the graph could not link to a definition."
-          trailing={<CountValue value={totals.unresolvedEdgeCount} />}
-        />
-        <SummaryRow
-          label="Files with errors"
-          description="Files the parser could not read completely."
-          trailing={<CountValue value={totals.filesWithErrors} />}
-        />
-        <SummaryRow
-          label="Communities"
-          trailing={<CountValue value={totals.communityCount} />}
-        />
-        <SummaryRow
-          label="Flows"
-          trailing={<CountValue value={totals.flowCount} />}
-        />
+        <HealthRows totals={totals} />
       </SummarySection>
       {summary.repositories.length > 1 && (
         <SummarySection title="Repositories">
@@ -490,7 +486,7 @@ function RetryButton({
 }): JSX.Element {
   return (
     <NoticeButton onClick={onRetry} disabled={disabled} data-testid={testId}>
-      Retry
+      Try again
     </NoticeButton>
   );
 }
@@ -712,14 +708,15 @@ export function CodeGraphSummaryView({
               building ? (
                 buildingLabel
               ) : summary.message ? (
-                <span
-                  className={
-                    summary.state === 'error' ? 'fg-destructive' : undefined
-                  }
-                  data-testid={`${testId}-message`}
-                >
-                  {summary.message}
-                </span>
+                summary.state === 'error' ? (
+                  <StatusLabel data-testid={`${testId}-message`}>
+                    {summary.message}
+                  </StatusLabel>
+                ) : (
+                  <span data-testid={`${testId}-message`}>
+                    {summary.message}
+                  </span>
+                )
               ) : (
                 `Updated ${formatTimestamp(summary.lastBuildAt)}`
               )
@@ -766,9 +763,7 @@ export function CodeGraphSummaryView({
         </div>
       ) : readiness === 'missing' ? (
         <div className="space-y-3" data-testid={`${testId}-missing`}>
-          <p className="text-s fg-secondary">
-            No Code Graph has been generated yet.
-          </p>
+          <EmptyStateRow title="No Code Graph has been generated yet." />
           {buildErrorMessage && (
             <Notice
               intent="destructive"
@@ -804,14 +799,14 @@ export function CodeGraphSummaryView({
             <>
               {summary.message && (
                 <p
-                  className={`text-xs ${
-                    summary.state === 'error'
-                      ? 'fg-destructive'
-                      : 'fg-secondary'
-                  }`}
+                  className="text-xs fg-secondary"
                   data-testid={`${testId}-message`}
                 >
-                  {summary.message}
+                  {summary.state === 'error' ? (
+                    <StatusLabel>{summary.message}</StatusLabel>
+                  ) : (
+                    summary.message
+                  )}
                 </p>
               )}
               <SummaryDetails summary={summary} />

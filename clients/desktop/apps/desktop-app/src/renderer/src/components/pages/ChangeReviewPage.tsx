@@ -499,10 +499,10 @@ function PipelineRowChipsAfter(): JSX.Element {
           onClick={noop}
         />
         <ExecutionActionButton
-          label="Retry"
+          label="Try again"
           icon={<RetryIcon width={13} height={13} />}
           onClick={noop}
-          ariaLabel="Retry workflow run"
+          ariaLabel="Try the workflow run again"
           variant="warning"
           dataTestId="change-review-retry"
         />
@@ -518,8 +518,8 @@ function PipelineRowChipsAfter(): JSX.Element {
       <Caption>
         Left to right: the status badges — running, success (muted), Plan
         updated, Input required, Advisor ETA — then the action buttons — Chat
-        and Workflow (neutral), Retry (warning), Start over (destructive). Same
-        height, radius, label size, and hairline ring within each shape.
+        and Workflow (neutral), Try again (warning), Start over (destructive).
+        Same height, radius, label size, and hairline ring within each shape.
       </Caption>
     </div>
   );

@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { ToggleSwitch } from '@canopy/ui-shared/components';
+import { ErrorBanner, ToggleSwitch } from '@canopy/ui-shared/components';
 
 /**
  * Shared Billing block with a titled master on/off switch, set off from the
@@ -75,11 +75,7 @@ export function BillingTogglePanel({
         />
       </div>
 
-      {error ? (
-        <p className="mt-2 text-xs fg-destructive" role="alert">
-          {error}
-        </p>
-      ) : null}
+      <ErrorBanner className="mt-2" error={error} />
 
       {children}
     </div>

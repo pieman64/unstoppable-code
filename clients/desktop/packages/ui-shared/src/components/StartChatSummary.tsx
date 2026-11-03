@@ -51,8 +51,7 @@ export function StartChatSummary({
               >
                 {index > 0 ? (
                   <ChevronRightMediumIcon
-                    width={14}
-                    height={14}
+                    size="sm"
                     aria-hidden="true"
                     className="fg-quaternary"
                   />

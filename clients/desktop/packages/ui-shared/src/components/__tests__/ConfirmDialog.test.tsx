@@ -326,3 +326,50 @@ describe('ConfirmDialog shape and keyboard', () => {
     ).toBe(true);
   });
 });
+
+describe('ConfirmDialog owner document', () => {
+  afterEach(() => {
+    act(() => {
+      while (activeRoots.length > 0) {
+        activeRoots.pop()?.unmount();
+      }
+    });
+    document.body.innerHTML = '';
+  });
+
+  it('opens in a popped-out window and closes on that window’s Escape', () => {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    const ownerDocument = iframe.contentDocument;
+    if (ownerDocument === null) {
+      throw new Error('Expected iframe content document');
+    }
+    const onCancel = jest.fn();
+    render(
+      <ConfirmDialog
+        {...baseProps}
+        onCancel={onCancel}
+        ownerDocument={ownerDocument}
+      />,
+    );
+
+    expect(ownerDocument.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    const escape = (target: Document): void => {
+      act(() => {
+        target.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    };
+    escape(document);
+    expect(onCancel).not.toHaveBeenCalled();
+    escape(ownerDocument);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});

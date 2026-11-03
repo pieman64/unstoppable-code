@@ -8,8 +8,15 @@ export const interruptedResumeScope = {
   worktreeId: 'demo-main',
   chatId: 'interrupted-resume-transcript',
 };
-// Fixed prior calendar day, not a rolling offset that can still mean today.
-export const interruptedStartedAt = Date.parse('2026-10-25T20:00:00.000Z');
+// 8:00 PM local, two calendar days before the run: never today, and always
+// inside the six days a completion stamp names by weekday. A fixed date ages
+// out of that window and changes the stamp's format.
+export const interruptedStartedAt = (() => {
+  const startedAt = new Date();
+  startedAt.setDate(startedAt.getDate() - 2);
+  startedAt.setHours(20, 0, 0, 0);
+  return startedAt.getTime();
+})();
 export const interruptedActivityAt = interruptedStartedAt + 12_000;
 
 export function interruptedResumeMessages() {
@@ -137,7 +144,8 @@ export function seedInterruptedTurnResume(userDataDir) {
         provider: 'claude',
         interruptedUserMessageId: 'original',
         resumeReason: 'app_shutdown',
-        detectedAt: Date.parse('2026-10-26T00:00:00.000Z'),
+        // Detected at the next launch, after the turn it interrupted.
+        detectedAt: interruptedStartedAt + 4 * 60 * 60 * 1000,
         workspaceName: 'TypeScript pnpm Vite',
         chatTitle: 'Interrupted transcript',
       },

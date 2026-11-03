@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import { useOverviewStore } from '@canopy/app-state';
+import { SettingsSelect } from '@canopy/ui-shared/components';
 import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
 import { Overview } from '@canopy/ui-app';
 import { useShallow } from 'zustand/react/shallow';
@@ -330,22 +331,22 @@ export function OverviewPage(): JSX.Element {
       <PageTitlebar />
       {context !== undefined && (
         <div className="flex justify-end px-6 pt-4">
-          <label className="flex items-center gap-2 text-xs fg-secondary">
-            <span>Scope</span>
-            <select
+          <div className="flex items-center gap-2 text-xs fg-secondary">
+            <span id="overview-context-filter-label">Scope</span>
+            <SettingsSelect
+              width="fit"
+              aria-labelledby="overview-context-filter-label"
               data-testid="overview-context-filter"
+              options={[
+                { value: 'context', label: 'Selected context' },
+                { value: 'all', label: 'All contexts' },
+              ]}
               value={contextFilter}
-              onChange={(event) =>
-                setContextFilter(
-                  event.target.value === 'all' ? 'all' : 'context',
-                )
+              onValueChange={(next) =>
+                setContextFilter(next === 'all' ? 'all' : 'context')
               }
-              className="focus-ring rounded-md border bg-base px-3 py-2 text-s fg-primary"
-            >
-              <option value="context">Selected context</option>
-              <option value="all">All contexts</option>
-            </select>
-          </label>
+            />
+          </div>
         </div>
       )}
       <Overview

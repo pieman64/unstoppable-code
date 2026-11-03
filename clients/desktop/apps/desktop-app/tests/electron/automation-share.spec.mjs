@@ -8,6 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import {
+  chooseSettingsOption,
+  settingsOptionValues,
+} from './helpers/settingsSelect.mjs';
+import {
   backFromWorkflowEdit,
   CanopyAppDriver,
   discardWorkflowEditIfOpen,
@@ -42,8 +46,7 @@ const SECRET_WORKSPACE_ID = 'demo-ts-pnpm-vite';
 // The description is one field shared by every scope, so its placeholder must
 // never name an audience. Pinned here because the regression is invisible to
 // type checking: scope-specific copy reads fine until a public share shows it.
-const DESCRIPTION_PLACEHOLDER =
-  'Describe what this automation does (optional).';
+const DESCRIPTION_PLACEHOLDER = 'Describe what this automation does.';
 // There is no Private audience; `private` is only the storage value behind a
 // public share.
 const SHARE_SCOPES = ['Team', 'Organization', 'Public'];
@@ -935,13 +938,13 @@ test('CAN-3734: Cowork session publishes a Cowork action and installs only into 
       detail,
     );
     const picker = window.getByTestId('install-automation-cowork-project');
-    await expect(picker.locator('option[value="seeded-cowork"]')).toHaveCount(
-      1,
-    );
-    await expect(
-      picker.locator('option[value="demo-ts-pnpm-vite"]'),
-    ).toHaveCount(0);
-    await picker.selectOption('seeded-cowork');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .toContain('seeded-cowork');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .not.toContain('demo-ts-pnpm-vite');
+    await chooseSettingsOption(picker, 'seeded-cowork');
     await window.getByTestId('install-automation-submit').click();
     await expect(
       window.getByTestId('install-shared-automation-modal'),
@@ -995,10 +998,10 @@ test('CAN-3734: Cowork session publishes a Cowork action and installs only into 
     );
     // Personal still has the default Chats project; the removed binding must
     // be refused even though its stale row was visible when the dialog opened.
-    await picker.selectOption('seeded-cowork');
+    await chooseSettingsOption(picker, 'seeded-cowork');
     await window.getByTestId('install-automation-submit').click();
     await expect(window.getByTestId('install-automation-error')).toBeVisible();
-    await expect(picker).toHaveValue('');
+    await expect(picker).not.toHaveAttribute('data-value');
   } finally {
     await discardWorkflowEditIfOpen(electronApp);
     await closeCanopy(electronApp, userDataDir);

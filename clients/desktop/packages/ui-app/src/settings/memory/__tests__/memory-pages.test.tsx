@@ -232,7 +232,7 @@ describe('OrganizationMemoryFactsPage', () => {
     expect(
       container
         .querySelector('[data-testid="memory-views-tab-facts"]')
-        ?.getAttribute('aria-pressed'),
+        ?.getAttribute('aria-selected'),
     ).toBe('true');
     expect(client.calls).toEqual([]);
   });

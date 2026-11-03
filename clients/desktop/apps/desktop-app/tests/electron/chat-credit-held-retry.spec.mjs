@@ -183,7 +183,7 @@ for (const funding of ['daily credits', 'settled top-up', 'clear']) {
         await expect(
           window.getByTestId('chat-ai-credits-stop-line'),
         ).toBeVisible({ timeout: 60_000 });
-        // In the composer's work drawer the held row's Retry, Edit and Delete
+        // In the composer's work drawer the held row's Try again, Edit and Delete
         // live in its More actions menu.
         const openActions = async () => {
           await window.getByTestId('queued-message-more').click();
@@ -202,7 +202,7 @@ for (const funding of ['daily credits', 'settled top-up', 'clear']) {
           await expect(retry).toBeDisabled();
           await expect(retry).toHaveAttribute(
             'aria-description',
-            /Retry sends it once your account has AI credits/,
+            /Try again sends it once your account has AI credits/,
           );
           await closeActions();
         };
@@ -310,7 +310,8 @@ for (const funding of ['daily credits', 'settled top-up', 'clear']) {
         await expect(window.getByTestId('turn-timer')).toHaveCount(2);
         await expect(
           window
-            .getByTestId('panel-content-chat')
+            // Count transcript messages, excluding a restored composer draft.
+            .getByTestId('chat-message-list-content')
             .getByText(original, { exact: true }),
         ).toHaveCount(1);
         expect(

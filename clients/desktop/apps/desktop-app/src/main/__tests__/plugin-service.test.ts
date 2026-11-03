@@ -164,6 +164,8 @@ jest.mock('../lib/workspace-persistence', () => {
           return { state: 'absent' };
         }
       },
+      remove: (): Promise<void> =>
+        Promise.reject(new Error('Pruning never removes manifests')),
       replace: (filePath: string, contents: string): Promise<void> =>
         mockedFs.promises.writeFile(filePath, contents, 'utf8'),
     },

@@ -274,6 +274,7 @@ export function ArchivedChatTranscriptModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       noEnterAnimation={noEnterAnimation}
       maxWidth="3xl"

@@ -23,6 +23,7 @@ import type {
   DaemonFilesOperation,
   DaemonFilesRoute,
 } from '../daemon-files-route';
+import { markUnreachable } from '../electron-daemon-connection';
 import {
   bridgeCaller,
   createRouteHarness,
@@ -491,6 +492,55 @@ describe('typed failures with no direct fallback', () => {
       expect(direct[op]).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('an unreachable daemon (CAN-5541)', () => {
+  const launchFailed = (): Error => {
+    const failure = markUnreachable(
+      new CanopyClientError({
+        kind: 'failed_precondition',
+        message: 'Core launch failed.',
+        retry: { kind: 'never' },
+      }),
+      'start_failed',
+    );
+    if (!(failure instanceof Error)) throw new Error('Expected an Error.');
+    return failure;
+  };
+
+  it.each(['file', 'link'] as const)(
+    'answers %s in-process, then skips the daemon while latched',
+    async (op) => {
+      const direct = await selectedHarness();
+      harness().connections.fail = launchFailed;
+      resetWorkCounters();
+      const local = sender();
+      const first = await read(op, local);
+      expect(await read(op, local)).toEqual(first);
+      expect(direct[op]).toHaveBeenCalledTimes(2);
+      expect(harness().connections.gets).toHaveLength(1);
+      const counters = snapshotFilesWorkCounters().route;
+      expect(counters[`files.${op}.daemon`]).toBe(2);
+      expect(counters[`files.${op}.daemon.fallback.start_failed`]).toBe(1);
+      expect(counters[`files.${op}.daemon.bypassed`]).toBe(1);
+      expect(counters[`files.${op}.direct`]).toBe(0);
+    },
+  );
+
+  it('keeps a daemon search walk typed', async () => {
+    const direct = await selectedHarness();
+    harness().connections.fail = launchFailed;
+    resetWorkCounters();
+    await expect(rejection(read('search', sender()))).resolves.toMatchObject({
+      kind: 'failed_precondition',
+    });
+    expect(direct.search).not.toHaveBeenCalled();
+    expect(
+      snapshotFilesWorkCounters().route[
+        'files.search.daemon.fallback.start_failed'
+      ],
+    ).toBe(0);
+  });
 });
 
 describe('links with a host markdown base', () => {

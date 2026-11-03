@@ -5,6 +5,10 @@ import {
   CostSplitBar,
   costBillingSegments,
 } from '@canopy/ui-shared/components/cost';
+import {
+  ValueRow,
+  ValueRows,
+} from '@canopy/ui-shared/components/settings/ValueRows';
 
 export interface CostDetailSectionProps {
   readonly title: string;
@@ -35,27 +39,25 @@ export function CostDetailSection({
   );
 }
 
+/** The list cost and usage figures sit in: Settings rows with no box. */
+export const CostValueRows = ValueRows;
+
 export interface CostValueRowProps {
   readonly label: string;
   readonly value: string;
   readonly note?: string;
 }
 
-/** A compact definition-list row for a labeled cost or usage value. */
+/**
+ * One labeled cost or usage figure: a Settings row in a `ValueRows` list,
+ * its note under the label (design call 1C).
+ */
 export function CostValueRow({
   label,
   value,
   note,
 }: CostValueRowProps): JSX.Element {
-  return (
-    <div className="flex items-baseline gap-3 text-xs">
-      <dt className="fg-secondary">{label}</dt>
-      {note !== undefined ? (
-        <span className="tabular-nums fg-tertiary">{note}</span>
-      ) : null}
-      <dd className="ml-auto tabular-nums fg-primary">{value}</dd>
-    </div>
-  );
+  return <ValueRow label={label} value={value} note={note} />;
 }
 
 /**

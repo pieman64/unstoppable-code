@@ -7,6 +7,7 @@ import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
 import { shareSessionAction } from '@/lib/shareSessionAction';
 import { useShareSessionStatusStore } from '@/stores/shareSessionStatusStore';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 export function ShareSessionStatusModal(): JSX.Element | null {
   const target = useShareSessionStatusStore((state) => state.target);
@@ -31,7 +32,7 @@ export function ShareSessionStatusModal(): JSX.Element | null {
       maxWidth="md"
       dataTestId="share-session-status-modal"
     >
-      <div className="space-y-4 px-5 py-5">
+      <div className="space-y-4">
         {status.phase === 'sharing' && (
           <div
             className="flex items-center gap-3"
@@ -77,12 +78,11 @@ export function ShareSessionStatusModal(): JSX.Element | null {
         )}
 
         {status.phase === 'error' && (
-          <div data-testid="share-session-status-error">
-            <p className="text-s font-medium fg-destructive">
-              Couldn’t export this session
-            </p>
-            <p className="mt-1 text-xs fg-secondary">{status.message}</p>
-          </div>
+          <ErrorBanner
+            className=""
+            testId="share-session-status-error"
+            error={`Couldn’t export this session. ${status.message}`}
+          />
         )}
 
         {!sharing && (

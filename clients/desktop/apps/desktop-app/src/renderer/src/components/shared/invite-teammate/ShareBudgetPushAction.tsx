@@ -7,6 +7,7 @@ import {
   TRY_AGAIN_LABEL,
 } from './shareCopy';
 import type { ShareBudgetPush } from './useSharePreview';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import { Button } from '@/components/shared/Button';
 
 export interface ShareBudgetPushActionProps {
@@ -37,15 +38,11 @@ export function ShareBudgetPushAction({
         : null;
   return (
     <div className="space-y-1" aria-busy={pushing ? 'true' : undefined}>
-      {failureLabel && (
-        <p
-          role="alert"
-          className="text-xs fg-destructive"
-          data-testid={`${dataTestId}-error`}
-        >
-          {failureLabel}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={failureLabel}
+        testId={`${dataTestId}-error`}
+      />
       {budgetPush.state !== 'push-blocked' && (
         <Button
           variant="primary"

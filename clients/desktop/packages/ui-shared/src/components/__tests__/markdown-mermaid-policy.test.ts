@@ -8,6 +8,7 @@ import {
   type MermaidRenderPlan,
 } from '../markdown-mermaid-policy';
 import {
+  DASHED_LINK_DIAGRAM,
   JOURNEY_BRIEF_DIAGRAM,
   MULTILINE_LABEL_DIAGRAM,
 } from './fixtures/mermaid-diagrams';
@@ -224,8 +225,6 @@ describe('Mermaid styling admission', () => {
     ['style A opacity:0.5,fill:#f00', 'style A fill:#f00'],
     ['style A fill:#f00,stroke-width:-1', 'style A fill:#f00'],
     ['style A fill:#f00,stroke-width:2em', 'style A fill:#f00'],
-    ['style A fill:#f00,stroke-dasharray:5,5', 'style A fill:#f00'],
-    ['style A stroke-dasharray:5,5,fill:#f00', 'style A fill:#f00'],
     ['style A fill:#f00,font-weight:950', 'style A fill:#f00'],
     ['style A fill:#f00,stroke:#0f0,', 'style A fill:#f00,stroke:#0f0'],
     ['  classDef x fill:#f00,display:none;', '  classDef x fill:#f00;'],
@@ -261,6 +260,129 @@ describe('Mermaid styling admission', () => {
       prepared: 'flowchart LR\nA-->B\n\nB-->C',
       droppedStyling: true,
     });
+  });
+
+  it('draws the dashed approval path from the comma-spelled runbook', () => {
+    expect(planMermaidRender(DASHED_LINK_DIAGRAM)).toEqual({
+      issue: null,
+      prepared: DASHED_LINK_DIAGRAM.replace(
+        'stroke-dasharray:5,5',
+        'stroke-dasharray:5 5',
+      ),
+      droppedStyling: false,
+    });
+  });
+
+  it.each([
+    [
+      'linkStyle 0 stroke:#6b7280,stroke-dasharray:5,5',
+      'linkStyle 0 stroke:#6b7280,stroke-dasharray:5 5',
+    ],
+    ['style A stroke-dasharray:4,2,1', 'style A stroke-dasharray:4 2 1'],
+    [
+      'style A stroke-dasharray:5,5,fill:#f00',
+      'style A stroke-dasharray:5 5,fill:#f00',
+    ],
+    [
+      'style A fill:#f00,stroke-dasharray:5,5',
+      'style A fill:#f00,stroke-dasharray:5 5',
+    ],
+    ['style A stroke-dasharray: 5 , 5', 'style A stroke-dasharray: 5 5'],
+    ['style A stroke-dasharray:5 5,3', 'style A stroke-dasharray:5 5 3'],
+    [
+      'classDef dashed stroke-dasharray:5,5;',
+      'classDef dashed stroke-dasharray:5 5;',
+    ],
+    ['STYLE A Stroke-Dasharray:5,5', 'STYLE A Stroke-Dasharray:5 5'],
+    [
+      'style A stroke-dasharray:0,0.5,.25,10000',
+      'style A stroke-dasharray:0 0.5 .25 10000',
+    ],
+    [
+      'style A stroke:rgb(107, 114, 128),stroke-dasharray:5,5,fill:rgba(0,0,0,0.5)',
+      'style A stroke:rgb(107, 114, 128),stroke-dasharray:5 5,fill:rgba(0,0,0,0.5)',
+    ],
+  ])('spells a comma dash pattern with spaces: %s', (body, normalized) => {
+    expect(plan(body)).toEqual({
+      issue: null,
+      prepared: 'flowchart LR\nA-->B\n' + normalized,
+      droppedStyling: false,
+    });
+  });
+
+  it.each([
+    ...['5px', 'abc', '-5', '1e3', '10001', '0000000000005', '5,abc'].map(
+      (continuation) => `style A fill:#f00,stroke-dasharray:5,${continuation}`,
+    ),
+    ...['5px', 'abc', '-5', '10001', '0000000000005', 'none', ''].map(
+      (head) => `style A fill:#f00,stroke-dasharray:${head},5`,
+    ),
+    'style A fill:#f00,stroke-width:2,5',
+    'style A fill:#f00,stroke:#000,5',
+  ])('drops a dash pattern with an invalid part: %s', (body) => {
+    expect(plan(body)).toEqual({
+      issue: null,
+      prepared: 'flowchart LR\nA-->B\nstyle A fill:#f00',
+      droppedStyling: true,
+    });
+  });
+
+  it.each([
+    // An empty fragment is not part of the pattern; the orphan number is removed.
+    [
+      'style A fill:#f00,stroke-dasharray:5,,5',
+      'style A fill:#f00,stroke-dasharray:5',
+    ],
+    [
+      'style A fill:#f00,stroke-dasharray:5,5,',
+      'style A fill:#f00,stroke-dasharray:5 5',
+    ],
+    [
+      'style A stroke-dasharray:5,5,font-size:9px',
+      'style A stroke-dasharray:5 5',
+    ],
+    // A property ends the pattern, and only dash patterns absorb numbers.
+    [
+      'style A stroke-dasharray:5,stroke-width:2,5',
+      'style A stroke-dasharray:5',
+    ],
+    [
+      'style A stroke-dasharray:5,5\nstyle B fill:#f00,opacity:0',
+      'style A stroke-dasharray:5 5\nstyle B fill:#f00',
+    ],
+  ])('keeps a joined pattern beside removed styling: %s', (body, kept) => {
+    expect(plan(body)).toEqual({
+      issue: null,
+      prepared: 'flowchart LR\nA-->B\n' + kept,
+      droppedStyling: true,
+    });
+  });
+
+  it('joins several patterns without touching the surrounding source', () => {
+    const lines = [
+      'flowchart LR',
+      'A-->B',
+      'B-->C',
+      '  linkStyle 0 stroke-dasharray:5,5',
+      'style A fill:#f00',
+      'classDef x stroke-dasharray:2,1;',
+      'B-->C; style C stroke-dasharray:3,1',
+    ];
+    expect(planMermaidRender(lines.join('\r\n'))).toEqual({
+      issue: null,
+      prepared: lines
+        .join('\r\n')
+        .replace('5,5', '5 5')
+        .replace('2,1', '2 1')
+        .replace('3,1', '3 1'),
+      droppedStyling: false,
+    });
+  });
+
+  it('still refuses forbidden constructs beside a comma dash pattern', () => {
+    expect(
+      plan('style A stroke-dasharray:5,5\nclick A "https://tracker.invalid"'),
+    ).toEqual({ issue: unsupported, prepared: '', droppedStyling: false });
   });
 
   it('keeps class assignments whose definitions were removed', () => {
@@ -688,10 +810,13 @@ describe('Mermaid styling admission', () => {
     ).toBe('This diagram is too large to draw here.');
   });
 
-  it('is deterministic and idempotent', () => {
-    const source =
-      'flowchart LR\nA-->B\nstyle A fill:#f00,opacity:0\nclassDef x font-size:9px\nclass B x';
+  it.each([
+    'flowchart LR\nA-->B\nstyle A fill:#f00,opacity:0\nclassDef x font-size:9px\nclass B x',
+    'flowchart LR\nA-->B\nstyle A fill:#f00,stroke-dasharray:5,5,opacity:0',
+    DASHED_LINK_DIAGRAM,
+  ])('is deterministic and idempotent: %j', (source) => {
     const first = planMermaidRender(source);
+    expect(first.issue).toBeNull();
     expect(planMermaidRender(source)).toEqual(first);
     expect(planMermaidRender(first.prepared)).toEqual({
       issue: null,

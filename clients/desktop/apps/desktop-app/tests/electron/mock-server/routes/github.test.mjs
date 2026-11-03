@@ -931,6 +931,111 @@ test('graphql mock keeps the status poller query on its merge-queue path', async
   }
 });
 
+// The fields of `PULL_REQUEST_STATUS_QUERY` (src/main/lib/github-pr-read-model.ts)
+// the mock routes and answers on; that query is not importable here.
+const PULL_REQUEST_STATUS_QUERY = `
+  query ($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        id
+        state
+        headRefOid
+        mergeable
+        reviewThreads(first: 100) {
+          totalCount
+          pageInfo { hasNextPage endCursor }
+          nodes { isResolved }
+        }
+        queueEvents: timelineItems(itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT], last: 10) {
+          filteredCount
+        }
+      }
+    }
+  }
+`;
+
+// The branch sweep's shape (src/main/lib/github-pr-sweep.ts): a
+// `pullRequests` connection that also reads `headRefOid`.
+const BRANCH_SWEEP_QUERY = `
+  query ($owner: String!, $name: String!, $b0: String!) {
+    repository(owner: $owner, name: $name) {
+      b0: pullRequests(headRefName: $b0, states: [OPEN], first: 1) { nodes { number url state headRefOid mergeable } }
+    }
+  }
+`;
+
+test('graphql mock answers the shared status query from `pullRequests` with its full projection', async () => {
+  resetAll();
+  const token = 'ghp_pull_request_status_query';
+  const scenario = {
+    github: {
+      pullRequests: {
+        'acme/api/7': { mergeable: 'CONFLICTING' },
+        'acme/api/8': { state: 'MERGED' },
+      },
+    },
+  };
+  registerScenario(token, scenario);
+  const { server, base } = await startServer();
+  try {
+    const read = (number) =>
+      graphqlPost(base, token, PULL_REQUEST_STATUS_QUERY, {
+        owner: 'acme',
+        name: 'api',
+        number,
+      }).then((response) => response.json());
+
+    const open = (await read(7)).data.repository.pullRequest;
+    assert.equal(open.id, 'PR_watched_7');
+    assert.equal(open.number, 7);
+    assert.equal(open.state, 'OPEN');
+    assert.equal(open.mergeable, 'CONFLICTING');
+    assert.equal(open.headRefOid, 'a'.repeat(40));
+    assert.deepEqual(open.reviewThreads, {
+      totalCount: 0,
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [],
+    });
+    assert.deepEqual(open.comments, { totalCount: 0 });
+    assert.equal(typeof open.updatedAt, 'string');
+    assert.deepEqual(open.queueEvents.nodes, []);
+
+    const merged = (await read(8)).data.repository.pullRequest;
+    assert.equal(merged.state, 'MERGED');
+    assert.equal(merged.merged, true);
+    assert.equal(merged.mergeable, 'UNKNOWN');
+
+    const unknown = await read(404);
+    assert.equal(unknown.data.repository.pullRequest, null);
+    assert.equal(unknown.errors[0].type, 'NOT_FOUND');
+
+    // The watcher's own query keeps its narrower answer.
+    const watched = (
+      await graphqlPost(base, token, WATCHED_PULL_REQUEST_QUERY, {
+        owner: 'acme',
+        name: 'api',
+        number: 7,
+      }).then((response) => response.json())
+    ).data.repository.pullRequest;
+    assert.equal(watched.mergeable, 'CONFLICTING');
+    assert.equal('reviewThreads' in watched, false);
+
+    const sweep = await graphqlPost(base, token, BRANCH_SWEEP_QUERY, {
+      owner: 'acme',
+      name: 'api',
+      b0: 'feature',
+    }).then((response) => response.json());
+    assert.deepEqual(sweep, { data: {} });
+
+    assert.deepEqual(
+      scenario.github.pullRequestRequests.map((entry) => entry.key),
+      ['acme/api/7', 'acme/api/8', 'acme/api/404', 'acme/api/7'],
+    );
+  } finally {
+    server.close();
+  }
+});
+
 function historyRead(base, token, number, before, repository = 'acme/api') {
   const [owner, name] = repository.split('/');
   return graphqlPost(base, token, PULL_REQUEST_QUEUE_HISTORY_QUERY, {

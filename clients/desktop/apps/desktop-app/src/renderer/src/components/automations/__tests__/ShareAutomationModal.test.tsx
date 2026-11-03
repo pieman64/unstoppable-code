@@ -44,6 +44,10 @@ jest.mock('@/lib/share-toast', () => ({
     mockPostShareToast(toast);
   },
 }));
+import {
+  chooseSettingsOption,
+  settingsSelectOptionValues,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import { ShareAutomationModal } from '../ShareAutomationModal';
 import * as accountStateModule from '@/hooks/useCanopyCloudAccountState';
 
@@ -852,19 +856,15 @@ it('adds a pipeline from the share dialog: saves it with the automation and anal
   });
   await waitFor(() => mockAnalyzePackage.mock.calls.length > 0);
   const select = detailsElement('share-automation-dependencies-pipeline-add');
-  if (!(select instanceof HTMLSelectElement))
-    throw new Error('expected a select');
+  if (
+    !(select instanceof HTMLButtonElement) ||
+    select.getAttribute('role') !== 'combobox'
+  )
+    throw new Error('expected a settings select');
   // Only the author's own pipelines are offered.
-  expect(Array.from(select.options).map((option) => option.value)).toEqual([
-    '',
-    workerId,
-  ]);
+  expect(settingsSelectOptionValues(select)).toEqual([workerId]);
 
-  await act(async (): Promise<void> => {
-    select.value = workerId;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    await Promise.resolve();
-  });
+  await chooseSettingsOption(select, workerId);
   await waitFor(() =>
     mockAnalyzePackage.mock.calls.some(
       ([request]) =>

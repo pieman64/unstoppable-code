@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
 
 export type ToggleSwitchSize = 'md' | 'sm';
 
@@ -51,7 +51,6 @@ const KNOB_ON_CLASS_NAMES: Record<SwitchTrackSize, string> = {
   sm: 'translate-x-3 group-hover:translate-x-2.5',
 };
 
-const TRACK_STYLE = { transition: 'background-color 100ms ease-out' };
 const KNOB_STYLE = {
   transition: 'width 100ms ease-out, translate 100ms ease-out',
 };
@@ -66,7 +65,6 @@ function SwitchTrack({
   return (
     <span
       aria-hidden="true"
-      style={TRACK_STYLE}
       className={`relative inline-flex ${TRACK_SIZE_CLASS_NAMES[size]} shrink-0 items-center rounded-full ${
         checked ? 'bg-accent' : 'bg-fg-quaternary group-hover:bg-fg-tertiary'
       }`}
@@ -114,8 +112,11 @@ export function ToggleSwitch({
       disabled={disabled}
       data-testid={dataTestId}
       onClick={() => onChange(!checked)}
-      // `pointer-events-none` while disabled also stops the hover stretch.
-      className="group focus-ring inline-flex shrink-0 rounded-full disabled:pointer-events-none disabled:opacity-60"
+      // `pointer-events-none` while disabled also stops the hover stretch. The
+      // track's color changes at once, like every hover and selection color;
+      // only the knob moves. On a coarse pointer the 32×18 track reaches a
+      // 44×42 hit area.
+      className="group focus-ring relative inline-flex shrink-0 rounded-full before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-x-1.5 pointer-coarse:before:-inset-y-3 disabled:pointer-events-none disabled:opacity-60"
     >
       <SwitchTrack checked={checked} size={size} />
     </button>
@@ -136,4 +137,35 @@ export function CompactToggleIndicator({
   readonly size?: 'sm' | 'lg';
 }): JSX.Element {
   return <SwitchTrack checked={checked} size={size} />;
+}
+
+export type ToggleSwitchFieldProps = Omit<ToggleSwitchProps, 'label'> & {
+  /** Accessible name; defaults to `caption` when that is plain text. */
+  readonly label?: string;
+  /** The visible text beside the switch; clicking it flips the switch. */
+  readonly caption: ReactNode;
+};
+
+/**
+ * A switch with a small caption beside it, inline (a card footer, a
+ * toolbar). The caption is the switch's `<label>`, so clicking the text flips
+ * it. In a Settings row use `SettingsRowsRow` instead.
+ */
+export function ToggleSwitchField({
+  caption,
+  label,
+  id,
+  ...props
+}: ToggleSwitchFieldProps): JSX.Element {
+  const generatedId = useId();
+  const switchId = id ?? generatedId;
+  const name = label ?? (typeof caption === 'string' ? caption : '');
+  return (
+    <span className="inline-flex items-center gap-2">
+      <ToggleSwitch {...props} id={switchId} label={name} />
+      <label htmlFor={switchId} className="text-xs fg-secondary">
+        {caption}
+      </label>
+    </span>
+  );
 }

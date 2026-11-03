@@ -69,11 +69,13 @@ jest.mock('@/lib/plans/open-tracked-plan', () => ({
 }));
 
 import { act, type JSX } from 'react';
+import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import { createRoot, type Root } from 'react-dom/client';
 import {
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  type ChatRuntimeState,
   type DetectedPlanEntry,
   type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
@@ -458,7 +460,7 @@ describe('PlansSection share button', () => {
     ['synced', 'Shared'],
     ['pending', 'Syncing…'],
     ['syncing', 'Syncing…'],
-    ['error', 'Retry share'],
+    ['error', 'Try sharing again'],
   ];
 
   it.each(shareStatusLabels)(
@@ -517,7 +519,7 @@ describe('PlansSection share button', () => {
       );
       expect(shareBtn?.textContent).toContain('Share');
       expect(shareBtn?.textContent).not.toContain('Shared');
-      expect(shareBtn?.textContent).not.toContain('Retry');
+      expect(shareBtn?.textContent).not.toContain('Try again');
 
       await click(shareBtn);
       await flush();
@@ -996,6 +998,78 @@ describe('PlansSection opens a plan in its Plan panel', () => {
 });
 
 describe('PlansSection pipeline execution', () => {
+  it.each([1, 2])(
+    'blocks an open workflow confirmation while chat admission is pending on current revision %s',
+    async (revision) => {
+      let finishSend: (() => void) | undefined;
+      const dispatchChatCommand = jest.fn(
+        () =>
+          new Promise<'accepted'>((resolve) => {
+            finishSend = (): void => resolve('accepted');
+          }),
+      );
+      useChatStore.setState({
+        dispatchChatCommand,
+        switchTab: jest.fn(),
+        worktreeChats: {
+          [KEY]: {
+            tabs: [makeChatTab('owning-chat')],
+            activeTabId: 'owning-chat',
+          },
+        },
+      });
+      const { container, cleanup } = render(<PlansSection />);
+      await flush();
+      await click(
+        container.querySelector('[data-testid="activity-plan-plan-1-execute"]'),
+      );
+      await click(
+        document.body.querySelector(
+          '[data-testid="activity-plan-plan-1-execute-pipeline"]',
+        ),
+      );
+      let pending: Promise<{ chatId: string }> | undefined;
+      const execute = jest.spyOn(window.pipelines, 'execute');
+      try {
+        const currentPlan = makePlan({
+          reviewStatus: 'approved',
+          latestRevisionNumber: revision,
+        });
+        await act(async () => {
+          useActivityStore.setState({ trackedPlans: { [KEY]: [currentPlan] } });
+          pending = implementTrackedPlan(currentPlan);
+          await Promise.resolve();
+        });
+        await flush();
+        await click(
+          container.querySelector(
+            '[data-testid="activity-plan-plan-1-execute"]',
+          ),
+        );
+        for (const action of ['implement', 'pipeline']) {
+          expect(
+            document.body
+              .querySelector(
+                `[data-testid="activity-plan-plan-1-execute-${action}"]`,
+              )
+              ?.getAttribute('disabled'),
+          ).not.toBeNull();
+        }
+        await click(
+          document.body.querySelector('[data-testid="mock-plan-ready-run"]'),
+        );
+        expect(execute).not.toHaveBeenCalled();
+      } finally {
+        finishSend?.();
+        await act(async () => {
+          await pending;
+        });
+        execute.mockRestore();
+        cleanup();
+      }
+    },
+  );
+
   it("opens a plan's run in its own panel with the plan owner as the hint", async () => {
     usePipelineRunsStore.setState({
       summaries: [
@@ -1081,11 +1155,13 @@ describe('PlansSection Implement follow-up targets the owning worktree (correcti
     // The listed plan belongs to wt-1 while the global selection is another
     // worktree, as for a plan list rendered for a scope other than the
     // selection. The follow-up must follow the plan.
-    const sendMessage = jest.fn().mockResolvedValue(undefined);
+    const dispatchChatCommand = jest
+      .fn<Promise<'accepted'>, [unknown, unknown]>()
+      .mockResolvedValue('accepted');
     const otherKey = `${PROJECT_ID}/wt-other`;
     useChatStore.setState({
       selectedWorktree: { projectId: PROJECT_ID, worktreeId: 'wt-other' },
-      sendMessage,
+      dispatchChatCommand,
       switchTab: jest.fn(),
       worktreeChats: {
         [otherKey]: {
@@ -1112,14 +1188,16 @@ describe('PlansSection Implement follow-up targets the owning worktree (correcti
     await flush();
 
     expect(addToastMock).not.toHaveBeenCalled();
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      'Implement this plan:\n\n# My Plan\n\nBody',
-      undefined,
-      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID, chatId: 'owning-chat' },
-      undefined,
-      expect.objectContaining({ throwOnDispatchFailure: true }),
-    );
+    expect(dispatchChatCommand).toHaveBeenCalledTimes(1);
+    const scope: unknown = dispatchChatCommand.mock.calls[0]?.[0];
+    const command: unknown = dispatchChatCommand.mock.calls[0]?.[1];
+    expect(scope).toEqual({ projectId: PROJECT_ID, worktreeId: WORKTREE_ID });
+    expect(command).toMatchObject({
+      type: 'chat.send_message',
+      chatId: 'owning-chat',
+      text: 'Implement this plan:\n\n# My Plan\n\nBody',
+      trackedPlanImplementation: { planId: 'plan-1', revisionNumber: 1 },
+    });
     cleanup();
   });
 });
@@ -1251,14 +1329,20 @@ describe('PlansSection status (CAN-5166)', () => {
     await flush();
 
     expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
-      'Implementing',
+      'Implementing in workflow',
+    );
+    expect(byTestId('activity-plan-plan-1-execute')).toBeNull();
+    expect(byTestId('activity-plan-status-plan-1-spinner')).not.toBeNull();
+    await click(byTestId('activity-plan-plan-1-open'));
+    expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'run-7' }),
     );
     cleanup();
   });
 
   it.each([
     ['failure', 'success', 'Approved'],
-    ['success', 'failure', 'Implemented'],
+    ['success', 'failure', 'Implemented in workflow'],
   ] as const)(
     'uses the root %s outcome instead of its nested %s outcome',
     async (rootStatus, childStatus, expectedLabel) => {
@@ -1291,13 +1375,13 @@ describe('PlansSection status (CAN-5166)', () => {
       expect(
         byTestId('activity-plan-status-note-plan-1')?.textContent ?? null,
       ).toBe(rootStatus === 'failure' ? 'Workflow failed·View run' : null);
-      if (rootStatus === 'failure')
-        expect(byTestId('activity-plan-execution-plan-1')).toBeNull();
+      // An outcome link or Open already reaches the run.
+      expect(byTestId('activity-plan-execution-plan-1')).toBeNull();
       await click(
         byTestId(
           rootStatus === 'failure'
             ? 'activity-plan-status-note-run-plan-1'
-            : 'activity-plan-execution-plan-1',
+            : 'activity-plan-plan-1-open',
         ),
       );
       expect(openPipelineExecutionFromUiMock).toHaveBeenLastCalledWith(
@@ -1358,11 +1442,167 @@ describe('PlansSection status (CAN-5166)', () => {
     });
     const { cleanup } = render(<PlansSection />);
     await flush();
-    await click(byTestId('activity-plan-execution-plan-1'));
+    await click(byTestId('activity-plan-plan-1-open'));
     expect(openPipelineExecutionFromUiMock).toHaveBeenCalledWith(
       expect.objectContaining({ executionId: 'new' }),
     );
     cleanup();
+  });
+
+  describe('linked chat implementation (CAN-5359)', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 1,
+      userMessageId: 'implement-1',
+      startedAt: '2026-06-02T00:00:00.000Z',
+    };
+
+    function linkedTab(id: string, overrides: Partial<ChatTab> = {}): ChatTab {
+      return {
+        ...makeChatTab(id),
+        trackedPlanId: 'plan-1',
+        trackedPlanImplementation: link,
+        ...overrides,
+      };
+    }
+
+    function setChat(
+      tabs: ChatTab[],
+      runtime: Record<string, ChatRuntimeState['status']> = {},
+    ): void {
+      useActivityStore.setState({
+        trackedPlans: { [KEY]: [makePlan({ reviewStatus: 'approved' })] },
+      });
+      useChatStore.setState({
+        worktreeChats: { [KEY]: { tabs, activeTabId: tabs[0]?.id ?? '' } },
+        runtimeByChatId: Object.fromEntries(
+          Object.entries(runtime).map(([chatId, status]) => [
+            chatId,
+            {
+              status,
+              queuedMessageIds: [],
+              activeTurn: { userMessageId: 'implement-1', startedAt: 1 },
+            },
+          ]),
+        ),
+      });
+    }
+
+    it('shows Implementing in chat with Open while the linked turn runs, and opens that chat', async () => {
+      setChat(
+        [
+          linkedTab('newer-chat', { trackedPlanImplementation: undefined }),
+          linkedTab('linked-chat'),
+        ],
+        { 'linked-chat': 'streaming' },
+      );
+      const { cleanup } = render(<PlansSection />);
+      await flush();
+
+      expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+        'Implementing in chat',
+      );
+      expect(byTestId('activity-plan-status-plan-1-spinner')).not.toBeNull();
+      expect(byTestId('activity-plan-plan-1-execute')).toBeNull();
+      expect(byTestId('activity-plan-status-note-chat-plan-1')).toBeNull();
+      await click(byTestId('activity-plan-plan-1-more'));
+      for (const action of ['pipeline', 'implement']) {
+        expect(
+          byTestId(`activity-plan-plan-1-execute-${action}`)?.hasAttribute(
+            'disabled',
+          ),
+        ).toBe(true);
+      }
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      });
+      act(() => {
+        byTestId('activity-plan-plan-1-open')?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+        );
+      });
+      expect(openTrackedPlanMock).not.toHaveBeenCalled();
+      await click(byTestId('activity-plan-plan-1-open'));
+      expect(revealWorktreeChatPanelMock).toHaveBeenCalledWith(
+        { projectId: PROJECT_ID, worktreeId: WORKTREE_ID },
+        'linked-chat',
+      );
+      cleanup();
+    });
+
+    it('shows Finished in chat once main settles the link, with retries in the overflow menu', async () => {
+      setChat([
+        linkedTab('linked-chat', {
+          trackedPlanImplementation: {
+            ...link,
+            outcome: 'completed',
+            endedAt: '2026-06-02T00:05:00.000Z',
+          },
+        }),
+      ]);
+      const { cleanup } = render(<PlansSection />);
+      await flush();
+
+      expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+        'Finished in chat',
+      );
+      expect(byTestId('activity-plan-status-plan-1-spinner')).toBeNull();
+      await click(byTestId('activity-plan-plan-1-more'));
+      expect(
+        byTestId('activity-plan-plan-1-execute-implement')?.textContent,
+      ).toBe('Implement again in chat');
+      expect(
+        byTestId('activity-plan-plan-1-execute-pipeline')?.textContent,
+      ).toBe('Run again as workflow');
+      cleanup();
+    });
+
+    it.each([
+      ['failed', 'Chat failed·View chat'],
+      ['cancelled', 'Chat stopped·View chat'],
+    ] as const)(
+      'keeps Approved and Execute for a sole %s attempt',
+      async (outcome, note) => {
+        setChat([
+          linkedTab('linked-chat', {
+            turnEnds: { 'implement-1': { outcome, endedAt: 1 } },
+          }),
+        ]);
+        const { cleanup } = render(<PlansSection />);
+        await flush();
+
+        expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+          'Approved',
+        );
+        expect(byTestId('activity-plan-status-note-plan-1')?.textContent).toBe(
+          note,
+        );
+        expect(byTestId('activity-plan-plan-1-execute')).not.toBeNull();
+        expect(byTestId('activity-plan-plan-1-open')).toBeNull();
+        cleanup();
+      },
+    );
+
+    it('does not claim implementation for an unrelated active turn or an idle link', async () => {
+      setChat([linkedTab('linked-chat')], { 'linked-chat': 'streaming' });
+      useChatStore.setState({
+        runtimeByChatId: {
+          'linked-chat': {
+            status: 'streaming',
+            queuedMessageIds: [],
+            activeTurn: { userMessageId: 'follow-up', startedAt: 1 },
+          },
+        },
+      });
+      const { cleanup } = render(<PlansSection />);
+      await flush();
+
+      expect(byTestId('activity-plan-status-plan-1')?.textContent).toBe(
+        'Approved',
+      );
+      expect(byTestId('activity-plan-plan-1-execute')).not.toBeNull();
+      cleanup();
+    });
   });
 
   it("reveals the plan's tracking chat from View chat", async () => {

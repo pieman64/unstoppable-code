@@ -6,6 +6,7 @@ import {
   Notice,
   ProviderStatusDot,
   ExternalTextLink,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   type JSX,
@@ -217,9 +218,7 @@ export function LinearKeyRow(): JSX.Element {
     linearHint = (
       <>
         {linearStatus ? (
-          <span className="fg-destructive">
-            {linearStatus.error || 'Invalid API key.'}
-          </span>
+          <StatusLabel>{linearStatus.error || 'Invalid API key.'}</StatusLabel>
         ) : (
           'Optional.'
         )}{' '}
@@ -237,7 +236,7 @@ export function LinearKeyRow(): JSX.Element {
     <SettingsRow
       label={
         <span className="inline-flex items-center gap-2">
-          <LinearIcon size={16} className="shrink-0 fg-primary" aria-hidden />
+          <LinearIcon size="md" className="shrink-0 fg-primary" aria-hidden />
           Linear
           {!linearError && linearStatus && (
             <ProviderStatusDot
@@ -268,9 +267,9 @@ export function LinearKeyRow(): JSX.Element {
             onClick={() => setLinearVisible((prev) => !prev)}
           >
             {linearVisible ? (
-              <EyeOffIcon size={16} aria-hidden />
+              <EyeOffIcon size="sm" aria-hidden />
             ) : (
-              <EyeIcon size={16} aria-hidden />
+              <EyeIcon size="sm" aria-hidden />
             )}
           </Button>
         </>

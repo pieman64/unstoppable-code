@@ -2,7 +2,11 @@
 
 import { useRef, useState, type JSX } from 'react';
 import { useCapabilities } from '@canopy/app-state';
-import { Button, useAgentVisualHostTheme } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  useAgentVisualHostTheme,
+} from '@canopy/ui-shared/components';
 import {
   CHAT_VISUAL_TEST_IDS,
   useChatVisualHost,
@@ -51,9 +55,10 @@ export function ChatVisualSourceButton({
         </p>
       ) : null}
       {open && error ? (
-        <p role="alert" className="text-xs fg-destructive">
-          Couldn't load this visual. Try again later.
-        </p>
+        <ErrorBanner
+          className=""
+          error="Couldn't load this visual. Try again later."
+        />
       ) : null}
       {open && document !== undefined ? (
         <ChatVisualDialog

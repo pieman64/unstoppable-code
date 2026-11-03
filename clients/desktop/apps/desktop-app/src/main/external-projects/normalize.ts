@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   ExternalProjectCandidate,
   ExternalProjectCandidateStatus,
+  ExternalProjectNestedRepositories,
   ExternalProjectProvider,
   ExternalProjectSessionSummary,
   ExternalProjectSurface,
@@ -10,6 +11,7 @@ import type {
 import { isPathInside } from '../lib/path-safety';
 import { compareText, laterIso } from './file-head';
 import type { ExternalProjectImportLedger } from './ledger';
+import type { NestedRepositoryScan } from './nested-repositories';
 import type {
   DiscoveredRoot,
   DiscoveredSession,
@@ -43,6 +45,7 @@ export interface NormalizeDeps {
   gitTopLevel(directory: string): Promise<string | null>;
   /** Git common directory (realpath) for a repository top level, or `null`. */
   gitCommonDir(topLevel: string): Promise<string | null>;
+  findNestedRepositories(root: string): Promise<NestedRepositoryScan>;
 }
 
 export interface ExistingWorkspaceIdentity {
@@ -73,6 +76,8 @@ export interface NormalizeContext {
   maxSessionsPerCandidate: number;
   /** Unavailable roots surfaced as candidates; the remainder is a diagnostic. */
   maxUnavailableCandidates: number;
+  /** Confirmed nested repositories listed per explicitly picked parent. */
+  maxNestedRepositoriesListed: number;
 }
 
 export interface NormalizeResult {
@@ -105,6 +110,9 @@ interface WorkingCandidate {
   lastActivityAt: string | null;
   sessions: Map<string, DiscoveredSession>;
   linkedWorktreePaths: Set<string>;
+  listed: boolean;
+  parentCandidateIds: Set<string>;
+  nestedRepositories?: ExternalProjectNestedRepositories;
 }
 
 interface UnavailableRoot {
@@ -155,6 +163,8 @@ function newWorkingCandidate(
     lastActivityAt: null,
     sessions: new Map(),
     linkedWorktreePaths: new Set(),
+    listed: false,
+    parentCandidateIds: new Set(),
   };
 }
 
@@ -183,7 +193,12 @@ function mergeSessionInto(
 function mergeRootInto(target: WorkingCandidate, root: DiscoveredRoot): void {
   // A folder the user picked is not evidence of any provider; merging its
   // placeholder provider would paint a phantom Claude badge on a Codex root.
-  if (root.surface !== 'custom-folder') target.providers.add(root.provider);
+  if (
+    root.surface !== 'custom-folder' &&
+    root.surface !== 'nested-repository'
+  ) {
+    target.providers.add(root.provider);
+  }
   for (const surface of root.surfaces ?? [root.surface]) {
     target.surfaces.add(surface);
   }
@@ -344,11 +359,20 @@ function sessionSummary(
   };
 }
 
+interface GitLookup {
+  value: string | null;
+  complete: boolean;
+}
+
 /** Memoized filesystem and git lookups shared across one normalization run. */
 class RootResolver {
   private readonly realpathCache = new Map<string, Promise<string | null>>();
-  private readonly topLevelCache = new Map<string, Promise<string | null>>();
-  private readonly commonDirCache = new Map<string, Promise<string | null>>();
+  private readonly topLevelCache = new Map<string, Promise<GitLookup>>();
+  private readonly commonDirCache = new Map<string, Promise<GitLookup>>();
+  private readonly nestedCache = new Map<
+    string,
+    Promise<NestedRepositoryScan>
+  >();
 
   constructor(private readonly deps: NormalizeDeps) {}
 
@@ -369,20 +393,37 @@ class RootResolver {
     return pending;
   }
 
-  topLevel(directory: string): Promise<string | null> {
+  topLevel(directory: string): Promise<GitLookup> {
     let pending = this.topLevelCache.get(directory);
     if (!pending) {
-      pending = this.deps.gitTopLevel(directory).catch(() => null);
+      pending = this.deps.gitTopLevel(directory).then(
+        (value) => ({ value, complete: true }),
+        () => ({ value: null, complete: false }),
+      );
       this.topLevelCache.set(directory, pending);
     }
     return pending;
   }
 
-  commonDir(topLevel: string): Promise<string | null> {
+  commonDir(topLevel: string): Promise<GitLookup> {
     let pending = this.commonDirCache.get(topLevel);
     if (!pending) {
-      pending = this.deps.gitCommonDir(topLevel).catch(() => null);
+      pending = this.deps.gitCommonDir(topLevel).then(
+        (value) => ({ value, complete: value !== null }),
+        () => ({ value: null, complete: false }),
+      );
       this.commonDirCache.set(topLevel, pending);
+    }
+    return pending;
+  }
+
+  nested(directory: string): Promise<NestedRepositoryScan> {
+    let pending = this.nestedCache.get(directory);
+    if (!pending) {
+      pending = Promise.resolve()
+        .then(() => this.deps.findNestedRepositories(directory))
+        .catch(() => ({ repositories: [], complete: false }));
+      this.nestedCache.set(directory, pending);
     }
     return pending;
   }
@@ -393,6 +434,7 @@ class CandidateGrouper {
   readonly byRoot = new Map<string, WorkingCandidate>();
   private readonly byCommonDir = new Map<string, WorkingCandidate>();
   readonly unavailable = new Map<string, UnavailableRoot>();
+  private readonly pickedFolders = new Map<string, WorkingCandidate>();
 
   constructor(
     private readonly ctx: NormalizeContext,
@@ -412,20 +454,76 @@ class CandidateGrouper {
     }
     if (isExcluded(canonical, this.ctx)) return;
 
-    const topLevelRaw = await this.resolver.topLevel(canonical);
-    const topLevel = topLevelRaw
-      ? await this.resolver.canonicalize(topLevelRaw)
+    const lookup = await this.resolver.topLevel(canonical);
+    const topLevel = lookup.value
+      ? await this.resolver.canonicalize(lookup.value)
       : null;
     if (!topLevel) {
-      mergeRootInto(this.folderCandidate(canonical), root);
+      const folder = this.folderCandidate(canonical);
+      folder.listed = true;
+      mergeRootInto(folder, root);
+      if (root.surface === 'custom-folder') {
+        if (lookup.complete && lookup.value === null) {
+          this.pickedFolders.set(canonical, folder);
+        } else {
+          folder.nestedRepositories = { count: 0, complete: false };
+        }
+      }
       return;
     }
     if (isExcluded(topLevel, this.ctx)) return;
 
-    const commonDir = await this.resolver.commonDir(topLevel);
+    const { value: commonDir } = await this.resolver.commonDir(topLevel);
     const target = await this.repositoryCandidate(topLevel, commonDir);
     if (!target) return;
+    target.listed = true;
     mergeRootInto(target, root);
+  }
+
+  /** Resolve every marker before counting or capping, reusing the request caches. */
+  async addNestedRepositories(): Promise<void> {
+    for (const [canonical, parent] of this.pickedFolders) {
+      const scan = await this.resolver.nested(canonical);
+      let complete = scan.complete;
+      const confirmed = new Set<WorkingCandidate>();
+      for (const markerPath of scan.repositories) {
+        const directory = await this.resolver.canonicalize(markerPath);
+        if (!directory) {
+          complete = false;
+          continue;
+        }
+        if (isExcluded(directory, this.ctx)) continue;
+        const lookup = await this.resolver.topLevel(directory);
+        if (!lookup.complete) complete = false;
+        if (!lookup.value) continue;
+        const topLevel = await this.resolver.canonicalize(lookup.value);
+        if (!topLevel) {
+          complete = false;
+          continue;
+        }
+        if (isExcluded(topLevel, this.ctx)) continue;
+        const common = await this.resolver.commonDir(topLevel);
+        if (!common.complete) {
+          complete = false;
+          continue;
+        }
+        const target = await this.repositoryCandidate(topLevel, common.value);
+        if (!target) continue;
+        confirmed.add(target);
+        target.parentCandidateIds.add(externalProjectCandidateId(canonical));
+      }
+      parent.nestedRepositories = { count: confirmed.size, complete };
+      const sorted = Array.from(confirmed).sort((a, b) =>
+        compareText(a.rootPath, b.rootPath),
+      );
+      for (const target of sorted.slice(
+        0,
+        this.ctx.maxNestedRepositoriesListed,
+      )) {
+        target.listed = true;
+        target.surfaces.add('nested-repository');
+      }
+    }
   }
 
   private recordUnavailable(root: DiscoveredRoot): void {
@@ -640,6 +738,12 @@ function toCandidate(
       importableSessionCount: summaries.filter(
         (session) => session.importedChatId === undefined,
       ).length,
+      ...(working.nestedRepositories
+        ? { nestedRepositories: working.nestedRepositories }
+        : {}),
+      ...(working.parentCandidateIds.size > 0
+        ? { parentCandidateIds: setToSortedArray(working.parentCandidateIds) }
+        : {}),
     },
     nativeSessionIds: nativeSessions.map((session) => session.id),
   };
@@ -683,10 +787,12 @@ export async function normalizeDiscoveredRoots(
 ): Promise<NormalizeResult> {
   const grouper = new CandidateGrouper(ctx, new RootResolver(deps));
   for (const root of inStableOrder(roots)) await grouper.add(root);
+  await grouper.addNestedRepositories();
 
   const named: NamedCandidate[] = [];
   const nativeSessionIdsByCandidate = new Map<string, string[]>();
   grouper.byRoot.forEach((working) => {
+    if (!working.listed) return;
     const { candidate, nameSource, nativeSessionIds } = toCandidate(
       working,
       ctx,

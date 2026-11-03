@@ -359,7 +359,7 @@ describe('TryItSignInNotice', () => {
       render({ state: 'retry', retry: 'setup', setup });
       expect(notice()?.getAttribute('data-retry')).toBe('setup');
       expect(notice()?.textContent).toBe(
-        "Authorization didn't finish. Linear still needs setup.Open in default browserRetry",
+        "Authorization didn't finish. Linear still needs setup.Open in default browserTry again",
       );
       mouse(control('retry'), 'click', 0);
       expect(setup.onActivate).toHaveBeenCalledTimes(1);
@@ -370,7 +370,7 @@ describe('TryItSignInNotice', () => {
         errorMessage: 'Add your Linear API key in Settings to continue.',
       });
       expect(notice()?.textContent).toBe(
-        'Add your Linear API key in Settings to continue.Open in default browserRetry',
+        'Add your Linear API key in Settings to continue.Open in default browserTry again',
       );
     });
 

@@ -6,11 +6,13 @@
 // cowork project, signs in a mock Canopy account, connects Linear and GitHub
 // against the shared mock and warms both providers. Observers go in BEFORE the
 // first click and every provider read is then held (Linear in main's fetch,
-// GitHub through the mock's reference holds), so a cleared cache shows as
-// plain text or a placeholder instead of hiding behind a fast answer.
+// GitHub through the mock's reference holds), so a cleared cache shows as an
+// unresolved chip instead of hiding behind a fast answer. Linear chips add the
+// title; GitHub chips show only the ID. A resolved bare reference declares its
+// canonical `data-link-url`.
 //
 // The trace records, per chat panel and for every DOM mutation and animation
-// frame, each reference's text, title/placeholder/plain state, icon, React
+// frame, each reference's text, ready/plain state, icon, React
 // reset epoch and box; plus reset-key writes, account notifications (detail
 // and dispatcher) and focus/visibility events with their target. Hidden test
 // windows never receive a native window focus, so app return dispatches the
@@ -76,13 +78,13 @@ const CHATS = {
       id: 'enrichment-wt-a',
       text: 'CAN-42 still needs evidence and ECW-7 ships after it. PR acme/app#1234 and bare #7 track it. End of alpha.',
       linear: [label('CAN-42', 'CAN-42'), label('ECW-7', 'ECW-7')],
-      github: [label('acme/app#1234', 1234), label('#7', 7)],
+      github: ['acme/app#1234', '#7'],
     },
     {
       id: 'enrichment-wt-b',
       text: 'CAN-77 is next and acme/app#55 is the issue. End of beta.',
       linear: [label('CAN-77', 'CAN-77')],
-      github: [label('acme/app#55', 55)],
+      github: ['acme/app#55'],
     },
   ],
   cowork: [
@@ -90,13 +92,13 @@ const CHATS = {
       id: 'enrichment-cw-a',
       text: 'In cowork CAN-42 and acme/app#1234 resolve while bare #7 stays plain. End of cowork alpha.',
       linear: [label('CAN-42', 'CAN-42')],
-      github: [label('acme/app#1234', 1234)],
+      github: ['acme/app#1234'],
     },
     {
       id: 'enrichment-cw-b',
       text: 'Cowork follow-up: CAN-77 with acme/app#55. End of cowork beta.',
       linear: [label('CAN-77', 'CAN-77')],
-      github: [label('acme/app#55', 55)],
+      github: ['acme/app#55'],
     },
   ],
 };
@@ -348,17 +350,12 @@ function traceObservers({ accountEvent, resetKey }) {
   };
   const referenceOf = (element) => {
     const provider = element.dataset.testid.replace('-reference', '');
-    const has = (suffix) =>
-      element.querySelector(`[data-testid="${provider}-reference-${suffix}"]`);
     const box = element.getBoundingClientRect();
     return {
       provider,
       text: element.textContent,
-      state: has('title')
-        ? 'title'
-        : has('title-placeholder')
-          ? 'placeholder'
-          : 'plain',
+      // A resolved bare reference declares its canonical URL.
+      state: element.hasAttribute('data-link-url') ? 'ready' : 'plain',
       icon: element.querySelector('svg[aria-hidden="true"]') !== null,
       epoch: epochOf(element),
       box: [box.x, box.y, box.width, box.height].map(Math.round),
@@ -455,8 +452,8 @@ const installTrace = (window) => window.evaluate(traceObservers, TRACE_ARGS);
 
 /**
  * Stops the trace, attaches it, and fails on any sample of a visible, fully
- * rendered chat that is not exactly its ready references (plain, placeholder,
- * missing icon or missing decoration).
+ * rendered chat that is not exactly its ready references (unresolved, missing
+ * icon or missing decoration).
  */
 async function recordTrace(window, name) {
   const trace = await window.evaluate(() => {
@@ -488,7 +485,7 @@ async function expectStable(window, origin, name) {
       const chat = CHATS[origin].find(({ id }) => panel === `panel-chat-${id}`);
       if (!chat || !visible || !text.includes(sentinelOf(chat))) continue;
       const shown = references.map(({ text: shownText, state, icon }) =>
-        state === 'title' && icon
+        state === 'ready' && icon
           ? shownText
           : `${state}${icon ? '' : ' (no icon)'}: ${shownText}`,
       );
@@ -526,15 +523,19 @@ const panelOf = (window, chat) =>
     `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${chat.id}"]`,
   );
 
+// Resolved references of one provider: each declares its canonical URL.
+const resolvedIn = (panel, provider) =>
+  panel.locator(`[data-testid="${provider}-reference"][data-link-url]`);
+
 async function expectReady(window, chat) {
   const panel = panelOf(window, chat);
   await expect(panel).toBeVisible({ timeout: 30_000 });
   for (const provider of ['linear', 'github']) {
-    await expect(panel.getByTestId(`${provider}-reference`)).toHaveText(
-      chat[provider],
-      {
-        timeout: 30_000,
-      },
+    const references = panel.getByTestId(`${provider}-reference`);
+    await expect(references).toHaveText(chat[provider], { timeout: 30_000 });
+    await expect(resolvedIn(panel, provider)).toHaveCount(
+      chat[provider].length,
+      { timeout: 30_000 },
     );
   }
 }
@@ -1104,8 +1105,8 @@ test('worktree: an unreadable initiating account read purges on confirmed refres
     });
     await returnToApp(window, electronApp);
     const panel = panelOf(window, CHATS.worktree[0]);
-    await expect(panel.getByTestId('linear-reference-title')).toHaveCount(0);
-    await expect(panel.getByTestId('github-reference-title')).toHaveCount(0);
+    await expect(resolvedIn(panel, 'linear')).toHaveCount(0);
+    await expect(resolvedIn(panel, 'github')).toHaveCount(0);
     const trace = await recordTrace(
       window,
       'worktree-unknown-to-confirmed-identity',
@@ -1141,6 +1142,12 @@ test('worktree: provider replacement and sign-out invalidate main and App Adviso
       await expect(secondPanel.getByTestId('github-reference')).toHaveText(
         CHATS.cowork[0].github,
       );
+      await expect(resolvedIn(secondPanel, 'linear')).toHaveCount(
+        CHATS.cowork[0].linear.length,
+      );
+      await expect(resolvedIn(secondPanel, 'github')).toHaveCount(
+        CHATS.cowork[0].github.length,
+      );
       await holdProviders(electronApp, tokens.github, true);
       const nextToken = `ghp_e2e_replaced_${Date.now()}`;
       await registerScenario(
@@ -1156,28 +1163,24 @@ test('worktree: provider replacement and sign-out invalidate main and App Adviso
           await window.api.saveGitHubPat(token);
           window.dispatchEvent(new Event('canopy:github-connection-changed'));
         }, nextToken);
-        for (const [panel, titles] of [
+        for (const [panel, labels] of [
           [mainPanel, CHATS.worktree[0].linear],
           [secondPanel, CHATS.cowork[0].linear],
         ]) {
-          await expect(panel.getByTestId('github-reference-title')).toHaveCount(
-            0,
-          );
+          await expect(resolvedIn(panel, 'github')).toHaveCount(0);
+          // Linear keeps its resolved references.
           await expect(panel.getByTestId('linear-reference')).toHaveText(
-            titles,
+            labels,
           );
+          await expect(resolvedIn(panel, 'linear')).toHaveCount(labels.length);
         }
         await window.evaluate(async () => {
           await window.api.disconnectCanopyCloudAccount();
           window.dispatchEvent(new Event('canopy:cloud-account-changed'));
         });
         for (const panel of [mainPanel, secondPanel]) {
-          await expect(panel.getByTestId('linear-reference-title')).toHaveCount(
-            0,
-          );
-          await expect(panel.getByTestId('github-reference-title')).toHaveCount(
-            0,
-          );
+          await expect(resolvedIn(panel, 'linear')).toHaveCount(0);
+          await expect(resolvedIn(panel, 'github')).toHaveCount(0);
         }
         await recordTrace(window, 'worktree-two-windows-main');
         await recordTrace(second, 'worktree-two-windows-advisor');

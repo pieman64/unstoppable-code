@@ -19,7 +19,12 @@ import {
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import type { GlobalInstructionOverlapWarning } from '@canopy/desktop-shared/lib/global-instructions';
 import { computeGlobalInstructionOverlapWarnings } from '@canopy/desktop-shared/lib/global-instructions';
-import { Button, Checkbox, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceList,
+  ChoiceListRow,
+  Notice,
+} from '@canopy/ui-shared/components';
 import {
   ChevronDown,
   ChevronUp,
@@ -158,10 +163,9 @@ function ScopeCheckbox({
   onToggle,
 }: ScopeCheckboxProps): JSX.Element {
   return (
-    <label className="flex items-center gap-2 text-s fg-primary">
-      <Checkbox checked={checked} onChange={onToggle} data-testid={testId} />
+    <ChoiceListRow selected={checked} onClick={onToggle} data-testid={testId}>
       {label}
-    </label>
+    </ChoiceListRow>
   );
 }
 
@@ -179,14 +183,15 @@ function ScopeOptionColumn({
   children,
 }: ScopeOptionColumnProps): JSX.Element {
   return (
-    <div role="group" aria-label={title} className="flex flex-col gap-1.5">
-      <span className="text-xs fg-tertiary">{title}</span>
+    <div className="flex flex-col gap-1.5">
+      <span aria-hidden="true" className="text-xs fg-tertiary">
+        {title}
+      </span>
+      {/* A long list scrolls inside the box instead of stretching it. */}
       <div
-        className={`flex flex-col gap-1 ${
-          scrolls ? 'max-h-32 overflow-y-auto pr-2' : ''
-        }`}
+        className={scrolls ? 'flex max-h-32 min-h-0 flex-col' : 'flex flex-col'}
       >
-        {children}
+        <ChoiceList aria-label={title}>{children}</ChoiceList>
       </div>
     </div>
   );
@@ -253,7 +258,7 @@ function ScopedInstructionItem({
               data-testid={`${idPrefix}-move-up`}
               aria-label={`Move scoped instruction ${index + 1} up`}
             >
-              <ChevronUp width={14} height={14} aria-hidden="true" />
+              <ChevronUp size="sm" aria-hidden="true" />
             </Button>
             <Button
               size="compact"
@@ -266,7 +271,7 @@ function ScopedInstructionItem({
               data-testid={`${idPrefix}-move-down`}
               aria-label={`Move scoped instruction ${index + 1} down`}
             >
-              <ChevronDown width={14} height={14} aria-hidden="true" />
+              <ChevronDown size="sm" aria-hidden="true" />
             </Button>
             <Button
               size="compact"
@@ -276,7 +281,7 @@ function ScopedInstructionItem({
               data-testid={`${idPrefix}-delete`}
               aria-label={`Delete scoped instruction ${index + 1}`}
             >
-              <TrashIcon width={14} height={14} aria-hidden="true" />
+              <TrashIcon size="sm" aria-hidden="true" />
             </Button>
           </div>
         </>
@@ -454,7 +459,7 @@ function SubSection({
               }
               data-testid={`global-instructions-${kind}-add`}
             >
-              <PlusIcon width={14} height={14} aria-hidden="true" />
+              <PlusIcon size="sm" aria-hidden="true" />
               Add
             </Button>
           }

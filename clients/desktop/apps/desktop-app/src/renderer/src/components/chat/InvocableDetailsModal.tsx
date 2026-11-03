@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { getDocument } from '@canopy/ui-shared/panels';
 import {
@@ -92,8 +91,9 @@ export function InvocableDetailsModal({
       </>
     ) : undefined;
 
-  return createPortal(
+  return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       ownerDocument={ownerDocument}
       title={content?.title || target.label}
@@ -103,7 +103,7 @@ export function InvocableDetailsModal({
       {...(headerActions ? { headerActions } : {})}
     >
       <div
-        className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex-1 overflow-y-auto px-5 pb-5`}
+        className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex-1 overflow-y-auto px-6 pb-6`}
       >
         <MarkdownFrontmatterContent
           loading={loading && !content}
@@ -112,8 +112,7 @@ export function InvocableDetailsModal({
           emptyText="This skill or command has no content."
         />
       </div>
-    </DialogModal>,
-    ownerDocument.body,
+    </DialogModal>
   );
 }
 

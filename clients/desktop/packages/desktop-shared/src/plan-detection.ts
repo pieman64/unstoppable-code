@@ -5,6 +5,8 @@ import type {
   WorkspacePlanDetectionConfig,
 } from './types';
 
+export { normalizePlanDetectionRule } from '@canopy/protocol/plan-detection';
+
 /**
  * Built-in plan-detection rules, structured like `file-indexing.ts`. Ids are
  * stable kebab-case strings; never change a shipped id. A finer tier disables
@@ -41,47 +43,6 @@ export const BUILTIN_PLAN_DETECTION_RULES: readonly PlanDetectionRule[] = [
 export const BUILTIN_PLAN_DETECTION_RULE_IDS: ReadonlySet<string> = new Set(
   BUILTIN_PLAN_DETECTION_RULES.map((rule) => rule.id),
 );
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isAbsolutePlanDetectionPattern(pattern: string): boolean {
-  return pattern.startsWith('/') || /^[a-zA-Z]:\//.test(pattern);
-}
-
-export function normalizePlanDetectionRule(
-  value: unknown,
-): PlanDetectionRule | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-  const pattern =
-    typeof value.pattern === 'string'
-      ? value.pattern.trim().replace(/\\/g, '/')
-      : '';
-  const id =
-    typeof value.id === 'string' && value.id.trim() ? value.id.trim() : '';
-  const label = typeof value.label === 'string' ? value.label.trim() : '';
-  const kind =
-    value.kind === 'include' || value.kind === 'exclude' ? value.kind : null;
-  if (!pattern || !id || !kind) {
-    return null;
-  }
-  if (
-    pattern.split('/').includes('..') ||
-    isAbsolutePlanDetectionPattern(pattern)
-  ) {
-    return null;
-  }
-  return {
-    id,
-    label: label || id,
-    kind,
-    pattern,
-    enabled: typeof value.enabled === 'boolean' ? value.enabled : true,
-  };
-}
 
 /**
  * Look up a built-in by id. Returns `undefined` if no built-in matches —

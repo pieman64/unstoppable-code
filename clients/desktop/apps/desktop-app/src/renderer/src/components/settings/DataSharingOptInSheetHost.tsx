@@ -4,6 +4,7 @@ import {
   Button,
   LoadingSpinner,
   DialogModal,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   DATA_SHARING_OPT_IN_SHEET_COPY as COPY,
@@ -89,6 +90,7 @@ export function DataSharingOptInSheet({
 
   return (
     <DialogModal
+      inset="flush"
       title={COPY.title}
       titleId={`${SHEET_ID}-title`}
       maxWidth="md"
@@ -127,7 +129,7 @@ function SheetLayout({
   actions: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+    <div className="flex flex-col gap-4 px-6 pb-6 pt-4">
       {children}
       <div className="flex items-center justify-end gap-2">{actions}</div>
     </div>
@@ -285,13 +287,11 @@ function ReviewContent({
           dataTestId={`${SHEET_ID}-summary`}
         />
         {phase.kind === 'error' && (
-          <p
-            role="alert"
-            className="fg-destructive"
-            data-testid={`${SHEET_ID}-error`}
-          >
-            {dataSharingOptInErrorText(phase.error)}
-          </p>
+          <ErrorBanner
+            className=""
+            error={dataSharingOptInErrorText(phase.error)}
+            testId={`${SHEET_ID}-error`}
+          />
         )}
       </div>
     </SheetLayout>

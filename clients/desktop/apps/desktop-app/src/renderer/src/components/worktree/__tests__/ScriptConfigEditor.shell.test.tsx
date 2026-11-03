@@ -40,29 +40,39 @@ describe('ScriptConfigEditor Linux shell', () => {
     });
   }
 
-  function select(platform: string): HTMLSelectElement {
+  function trigger(platform: string): HTMLElement {
     const element = container.querySelector(
-      `select[aria-label="Setup script ${platform} shell"]`,
+      `[role="combobox"][aria-label="Setup script ${platform} shell"]`,
     );
-    expect(element).not.toBeNull();
-    if (!(element instanceof HTMLSelectElement)) {
+    if (!(element instanceof HTMLElement)) {
       throw new Error(`Missing ${platform} shell selector`);
     }
     return element;
   }
 
+  function openOptions(platform: string): HTMLElement[] {
+    act(() => trigger(platform).click());
+    return Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+    );
+  }
+
   function change(platform: string, value: string): void {
-    const element = select(platform);
-    element.value = value;
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+    const option = openOptions(platform).find(
+      (element) => element.dataset.value === value,
+    );
+    if (!option) throw new Error(`Missing ${platform} option ${value}`);
+    act(() => option.click());
   }
 
   it('offers Default (Bash), bash and zsh without materializing defaults', () => {
     render();
-    const linux = select('Linux');
-    expect(linux.value).toBe('');
+    expect(trigger('Linux').textContent).toBe('Default (Bash)');
     expect(
-      Array.from(linux.options, ({ value, text }) => [value, text]),
+      openOptions('Linux').map((option) => [
+        option.dataset.value,
+        option.textContent,
+      ]),
     ).toEqual([
       ['', 'Default (Bash)'],
       ['bash', 'bash'],
@@ -73,17 +83,17 @@ describe('ScriptConfigEditor Linux shell', () => {
 
   it('merges rapid platform changes, preserving all overrides', () => {
     render();
-    act(() => {
-      change('Windows', 'powershell');
-      change('Mac', 'bash');
-      change('Linux', 'zsh');
-    });
+    change('Windows', 'powershell');
+    change('Mac', 'bash');
+    change('Linux', 'zsh');
     expect(onShellChange).toHaveBeenLastCalledWith({
       windows: 'powershell',
       mac: 'bash',
       linux: 'zsh',
     });
-    act(() => change('Linux', ''));
+    // The parent persists the merged value before the next pick.
+    render({ windows: 'powershell', mac: 'bash', linux: 'zsh' });
+    change('Linux', '');
     expect(onShellChange).toHaveBeenLastCalledWith({
       windows: 'powershell',
       mac: 'bash',
@@ -92,20 +102,18 @@ describe('ScriptConfigEditor Linux shell', () => {
 
   it('reflects persisted Linux overrides and clears the last optional shell', () => {
     render({ linux: 'zsh' });
-    expect(select('Linux').value).toBe('zsh');
-    act(() => change('Linux', 'bash'));
+    expect(trigger('Linux').dataset.value).toBe('zsh');
+    change('Linux', 'bash');
     expect(onShellChange).toHaveBeenLastCalledWith({ linux: 'bash' });
     render({ linux: 'bash' });
-    act(() => change('Linux', ''));
+    change('Linux', '');
     expect(onShellChange).toHaveBeenLastCalledWith(undefined);
   });
 
   it('preserves Linux when changing and clearing the other platforms', () => {
     render({ windows: 'cmd', mac: 'bash', linux: 'zsh' });
-    act(() => {
-      change('Windows', '');
-      change('Mac', '');
-    });
+    change('Windows', '');
+    change('Mac', '');
     expect(onShellChange).toHaveBeenLastCalledWith({ linux: 'zsh' });
   });
 });

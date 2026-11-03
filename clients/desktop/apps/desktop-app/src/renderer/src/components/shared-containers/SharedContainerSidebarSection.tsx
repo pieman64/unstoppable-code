@@ -298,8 +298,8 @@ export function SharedContainerSidebarSection({
               <RailIconButton
                 icon={RetryIcon}
                 data-testid="shared-container-list-retry"
-                aria-label="Retry"
-                tooltipLabel="Retry"
+                aria-label="Try again"
+                tooltipLabel="Try again"
                 tone="secondary"
                 hoverSurface
                 disabled={retrying}

@@ -19,6 +19,7 @@ import {
   runW5BoundaryOperation,
   w5ExpectedRevision,
   type W5BoundaryOptions,
+  type W5WireCall,
 } from './w5-boundary-operation';
 import {
   withW5Commit,
@@ -144,7 +145,9 @@ export type WorkspaceDeletionSource =
   | 'portal'
   | 'org-member-multi-repo-create'
   | 'shared_container_fork'
-  | 'chat_project_delete';
+  | 'chat_project_delete'
+  /** A registered `core.workspace.delete` wire call (W7b-2a). */
+  | 'desktop_canopy_client';
 
 /** At most one project-kind admission; the two contradict each other. */
 type WorkspaceDeletionKindAdmission =
@@ -270,6 +273,7 @@ export class WorkspaceDeletionRefusedError extends Error {
  */
 export async function deleteWorkspace(
   request: WorkspaceDeletionRequest,
+  wire?: W5WireCall,
 ): Promise<WorkspaceDeletionOutcome> {
   const { workspaceId } = request;
   validateId(workspaceId, 'workspaceId');
@@ -285,9 +289,10 @@ export async function deleteWorkspace(
   return runW5BoundaryOperation(
     {
       operation: 'core.workspace.delete',
-      caller: `desktop-host:${request.source}`,
+      caller: wire?.caller ?? `desktop-host:${request.source}`,
       idempotencyKey,
       parameters,
+      ...(wire?.admit && { admit: wire.admit }),
       isPreEffectRefusal: (error) =>
         error instanceof WorkspaceDeletionRefusedError ||
         error instanceof WorktreeArchiveRefusedError ||
@@ -398,10 +403,13 @@ export async function isWorkspaceIndexed(
  * CAN-5337: a user deletion's read-only admission checks other than its
  * lifecycle journals and its worktrees' sources and archives, in their order,
  * for the project-level discard description. Throws the deletion's own
- * refusal; resolves with the project's kind.
+ * refusal; resolves with the project's kind. CAN-5338: with
+ * `blockedArchives`, a retained archive whose recovery refuses the deletion
+ * is collected there instead.
  */
 export async function assertWorkspaceDeletableBesideItsWorktrees(
   workspaceId: string,
+  blockedArchives?: Set<string>,
 ): Promise<SidebarItem['type'] | undefined> {
   assertNoLiveDelegationsInWorkspace(workspaceId);
   assertNoLiveDelegationsInWorktree(STANDALONE_CHAT_PROJECT_ID, workspaceId);
@@ -420,7 +428,7 @@ export async function assertWorkspaceDeletableBesideItsWorktrees(
       sidebarItems.items.find((item) => item.id === workspaceId),
       kind,
     );
-  await assertArchivedRecoveriesCanFinish(workspaceId);
+  await assertArchivedRecoveriesCanFinish(workspaceId, blockedArchives);
   if (kind === 'single-repo' || kind === 'multi-repo')
     await assertWorkspaceWorktreesHaveNoLegacyArchiveRecovery(workspaceId);
   return kind;
@@ -625,6 +633,7 @@ const USER_DELETION_SOURCES: ReadonlySet<WorkspaceDeletionSource> =
     'single_repo_project_delete',
     'portal',
     'chat_project_delete',
+    'desktop_canopy_client',
   ]);
 
 /** Read what the deletion removes and run its admission checks. */
@@ -678,6 +687,7 @@ async function readDeletionTarget(request: WorkspaceDeletionRequest): Promise<{
  */
 async function assertArchivedRecoveriesCanFinish(
   workspaceId: string,
+  blocked?: Set<string>,
 ): Promise<void> {
   let manifests: ArchivedContainerManifest[];
   try {
@@ -687,12 +697,19 @@ async function assertArchivedRecoveriesCanFinish(
   }
   for (const listed of manifests) {
     if (listed.version !== 3 || !listed.recovery.gitCleanupPending) continue;
-    const manifest = await verifiedPendingRecovery(workspaceId, listed);
-    if (manifest && (await isArchivedContainerGitCleanupBlocked(manifest)))
-      throw new WorkspaceDeletionRefusedError(
-        'git-cleanup-pending',
-        GIT_CLEANUP_PENDING_REFUSAL,
-      );
+    try {
+      const manifest = await verifiedPendingRecovery(workspaceId, listed);
+      if (manifest && (await isArchivedContainerGitCleanupBlocked(manifest)))
+        throw new WorkspaceDeletionRefusedError(
+          'git-cleanup-pending',
+          GIT_CLEANUP_PENDING_REFUSAL,
+        );
+    } catch (error) {
+      // CAN-5338: collected for the discard description; its own refusal.
+      if (!blocked || !(error instanceof WorkspaceDeletionRefusedError))
+        throw error;
+      blocked.add(listed.id);
+    }
   }
 }
 

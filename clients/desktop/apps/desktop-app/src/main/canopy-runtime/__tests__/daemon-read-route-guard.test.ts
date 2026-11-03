@@ -107,15 +107,15 @@ describe('operation × platform table', () => {
     expect(cells).toEqual({
       'files.roots': ['E', 'E', 'E'],
       'files.directory': ['E', 'E', 'E'],
-      'files.file': ['E', 'CAN-4732', 'CAN-4966'],
-      'files.search': ['E', 'CAN-4732', 'CAN-4966'],
-      'files.link': ['E', 'CAN-4732', 'CAN-4966'],
-      'git.branch.list': ['E', 'CAN-4732', 'CAN-4966'],
+      'files.file': ['E', 'CAN-4732', 'E'],
+      'files.search': ['E', 'CAN-4732', 'E'],
+      'files.link': ['E', 'CAN-4732', 'E'],
+      'git.branch.list': ['E', 'CAN-4732', 'E'],
       'git.remote.get': ['CAN-4729', 'CAN-4729', 'CAN-4729'],
       'git.worktree.health.get': ['CAN-4729', 'CAN-4729', 'CAN-4729'],
       'git.executable.get': ['CAN-4729', 'CAN-4729', 'CAN-4729'],
-      'git.status.get': ['CAN-4103', 'CAN-4732', 'CAN-4966'],
-      'git.diff.get': ['CAN-4103', 'CAN-4732', 'CAN-4966'],
+      'git.status.get': ['CAN-4103', 'CAN-4732', 'CAN-4103'],
+      'git.diff.get': ['CAN-4103', 'CAN-4732', 'CAN-4103'],
     });
     expect(Object.keys(READ_ROUTE_TABLE).sort()).toEqual(
       [...OPERATIONS].sort(),
@@ -169,6 +169,29 @@ describe('operation × platform table', () => {
         worktreeId: 'task',
       });
   });
+
+  it.each<ReadRoutePlatform>(['darwin', 'linux'])(
+    'routes Files file, search and link and the branch list on %s',
+    (platform) => {
+      for (const operation of [
+        'files.file',
+        'files.search',
+        'files.link',
+      ] as const)
+        expect(evaluate({ operation, platform })).toEqual({
+          shape: 'worktree',
+          workspaceId: 'single',
+          worktreeId: 'task',
+        });
+      expect(
+        evaluate({
+          operation: 'git.branch.list',
+          platform,
+          scope: { workspaceId: 'multi', repoId: 'api' },
+        }),
+      ).toEqual({ shape: 'repository', workspaceId: 'multi', repoId: 'api' });
+    },
+  );
 });
 
 describe('platform resolution', () => {

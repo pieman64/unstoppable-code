@@ -788,7 +788,7 @@ require(${JSON.stringify(modulePath)});
       const viewer = window.getByTestId('archived-container-view');
       await expect(viewer).toBeVisible();
       await expect(viewer.getByTestId('archived-restore')).toHaveText(
-        'Retry Git cleanup',
+        'Try Git cleanup again',
       );
       await expect(
         viewer.getByTestId('archived-file-recovery-banner'),
@@ -877,7 +877,7 @@ require(${JSON.stringify(modulePath)});
 
       const viewer = window.getByTestId('archived-container-view');
       await expect(viewer.getByTestId('archived-restore')).toHaveText(
-        'Retry workflow import',
+        'Try workflow import again',
       );
       await expect(
         viewer.getByTestId('archived-partial-restore-banner'),

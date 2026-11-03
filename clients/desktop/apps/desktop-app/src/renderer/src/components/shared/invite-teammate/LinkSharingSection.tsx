@@ -7,6 +7,7 @@ import {
   FloatingMenu,
   PickerTrigger,
   PickerTriggerChevron,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   BuildingIcon,
@@ -117,7 +118,7 @@ export function LinkSharingSection({
       value: 'off',
       label: LINK_OFF_LABEL,
       description: LINK_OFF_DESCRIPTION,
-      icon: <Lock />,
+      icon: <Lock size="xl" />,
       disabled: false,
     },
     ...(organizationName
@@ -126,7 +127,7 @@ export function LinkSharingSection({
             value: 'ORGANIZATION' as const,
             label: linkOrganizationLabel(organizationName),
             description: linkOrganizationDescription(organizationName),
-            icon: <BuildingIcon />,
+            icon: <BuildingIcon size="xl" />,
             disabled: !availability.organization,
           },
         ]
@@ -135,7 +136,7 @@ export function LinkSharingSection({
       value: 'ANYONE',
       label: LINK_ANYONE_LABEL,
       description: linkAnyoneDescription(organizationName),
-      icon: <Globe />,
+      icon: <Globe size="xl" />,
       disabled: !availability.anyone,
     },
   ];
@@ -319,15 +320,11 @@ export function LinkSharingSection({
           Manage sharing policy
         </Button>
       )}
-      {link.error && (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
-          data-testid={`${TEST_ID}-error`}
-        >
-          {link.error}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={link.error}
+        testId={`${TEST_ID}-error`}
+      />
       {confirm && (
         <LinkSharingConfirmDialog
           variant={confirm.variant}

@@ -1,85 +1,213 @@
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
+import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { AutomationsIcon, PersonIcon, TriggerIcon } from '../icons/AppIcons';
+import { PersonIcon } from '../icons/AppIcons';
 import { curatedLogoKey } from '../lib/curated-logo-key';
-import {
-  customizeRowEditedLine,
-  customizeRowSecondLine,
-  pendingSignInLabel,
-  sharedByMeLine,
-} from '../lib/customize-row-copy';
+import { createdByViewer, pendingSignInLabel } from '../lib/customize-row-copy';
 import { displayVersion } from '../lib/display-version';
-import { formatRelativeTime } from '../lib/format-relative-time';
-import { useMinuteClock } from '../lib/useMinuteClock';
-import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { REPLAY_MASK_CLASS, REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import {
   CustomizeRowMenu,
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
-import { Button, buttonClassName } from './Button';
-import { CustomizeSharedByMeSubtitle } from './CustomizeSharedByMeSubtitle';
-import { EntrySourceLabel, showsEntrySourceLabel } from './EntrySourceLabel';
+import { Badge } from './Badge';
+import { Button } from './Button';
 import { EntrySurfaceIcon } from './EntrySurfaceIcon';
 import { McpConnectionStatusBadge } from './McpConnectionStatusBadge';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import { Tooltip } from './Tooltip';
-import { WorkflowLastRunText } from './WorkflowLastRunText';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 
-// The read-only sign-in chip wears the clickable one's compact warning look,
-// so the column keeps one chip size whether or not the row can connect.
-const SIGN_IN_CHIP_CLASS = buttonClassName({
-  variant: 'warning',
-  size: 'compact',
-});
+function compactMetadata(entry: UnifiedPluginEntry): {
+  source: string | undefined;
+  version: string | null;
+  tooltip: string;
+  visibleCounts: readonly (readonly [
+    number | undefined,
+    'plugin' | 'skill' | 'app' | 'agent',
+    string,
+  ])[];
+  triggerSummary: string | undefined;
+} {
+  const version = displayVersion(entry.version);
+  const own = createdByViewer(entry) && !entry.installedFrom;
+  const owner = own
+    ? 'You'
+    : entry.sharedSource?.sharedBy?.trim() ||
+      entry.installedFrom?.sharedByName?.trim() ||
+      entry.installedFrom?.ownerName?.trim() ||
+      entry.authorName?.trim();
+  const catalog = entry.sourceLabel?.trim();
+  const source =
+    entry.builtIn === true || entry.origin === 'built-in'
+      ? 'Built-in'
+      : own
+        ? 'You'
+        : entry.sharedSource?.sharedBy?.trim() ||
+          entry.installedFrom?.sharedByName?.trim() ||
+          entry.installedFrom?.ownerName?.trim() ||
+          (entry.origin === 'marketplace' ? catalog : undefined) ||
+          owner ||
+          entry.workflow?.sourceText?.replace(/^Shared by /, '') ||
+          entry.ownershipLabel?.trim() ||
+          (catalog &&
+          !['Curated', 'Local', 'Shared', 'Project'].includes(catalog)
+            ? catalog
+            : undefined);
+  const workflow = entry.workflow;
+  const triggers = workflow?.triggers ?? [];
+  const triggerSummary =
+    workflow?.schedule?.label ||
+    (triggers.length > 1
+      ? `${triggers.length} triggers`
+      : triggers[0]?.label) ||
+    workflow?.triggerText;
+  const scope = entry.sharedWith;
+  const scopeLabel = scope
+    ? scope.personal
+      ? 'Personal'
+      : scope.name || (scope.audience === 'team' ? 'Team' : 'Organization')
+    : undefined;
+  const receiptContextNames = entry.installedFrom
+    ? [
+        ...new Set([
+          entry.installedFrom.teamName?.trim(),
+          entry.installedFrom.ownerName?.trim(),
+        ]),
+      ].filter(
+        (name): boolean =>
+          Boolean(name) && name !== owner && name !== scopeLabel?.trim(),
+      )
+    : [];
+  const edited = formatDateOrEmpty(entry.editedAt);
+  const tooltip = [
+    owner ? `Created by ${own ? 'you' : owner}` : undefined,
+    scopeLabel ? `shared to ${scopeLabel}` : undefined,
+    ...receiptContextNames,
+    entry.publicShare ? 'Public link' : undefined,
+    entry.workflow?.sourceText,
+    entry.workflow?.triggerText,
+    ...(entry.workflow?.triggers?.map(
+      (trigger) => `${trigger.label}: ${trigger.explainer}`,
+    ) ?? []),
+    entry.workflow?.schedule?.tooltip,
+    entry.workflow?.stepCount !== undefined
+      ? `${entry.workflow.stepCount} steps`
+      : undefined,
+    edited ? `Edited ${edited}` : undefined,
+    entry.workflow?.lastRun
+      ? `Last run: ${entry.workflow.lastRun.state}${entry.workflow.lastRun.errorMessage ? `: ${entry.workflow.lastRun.errorMessage}` : ''}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const counts = [
+    [entry.components.plugins, 'plugin', 'plugins'],
+    [entry.components.skills, 'skill', 'skills'],
+    [entry.components.mcpServers, 'app', 'MCP servers'],
+    [entry.components.agents, 'agent', 'agents'],
+  ] as const;
+  const visibleCounts =
+    entry.kind === 'collection'
+      ? counts.filter(
+          ([count]) =>
+            count !== undefined && Number.isSafeInteger(count) && count > 0,
+        )
+      : [];
+  return { source, version, tooltip, visibleCounts, triggerSummary };
+}
 
-const EDITED_TIME_FORMAT = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'full',
-  timeStyle: 'long',
-});
-
-function CustomSkillMetadata({
+function CompactMetadata({
   entry,
+  metadata,
 }: {
-  readonly entry: UnifiedPluginEntry;
-}): JSX.Element | null {
-  const editedAt = entry.editedAt;
-  if (!editedAt || !Number.isFinite(Date.parse(editedAt))) return null;
+  entry: UnifiedPluginEntry;
+  metadata: ReturnType<typeof compactMetadata>;
+}): JSX.Element {
+  const { source, version, tooltip, visibleCounts, triggerSummary } = metadata;
   return (
     <span
       data-testid={`customize-row-subtitle-${entry.id}`}
-      className="mt-0.5 block min-w-0 text-xs fg-tertiary"
+      className={`mt-0.5 flex h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${entry.origin === 'shared' || entry.installedFrom || entry.sharedSource || entry.collectionProvenanceUnknown ? REPLAY_BLOCK_CLASS : entry.workflow?.sourceIsPerson ? REPLAY_MASK_CLASS : ''}`}
     >
-      <SkillUpdatedTime entryId={entry.id} editedAt={editedAt} />
+      {source && (
+        <Tooltip
+          label={
+            <span className={REPLAY_BLOCK_CLASS}>
+              {tooltip || entry.description || entry.name}
+            </span>
+          }
+        >
+          <span
+            data-testid={`customize-row-source-${entry.id}`}
+            className="min-w-0 truncate"
+          >
+            {source}
+          </span>
+        </Tooltip>
+      )}
+      {source && version && <span>·</span>}
+      {version && (
+        <span
+          data-testid={`customize-row-version-${entry.id}`}
+          className="shrink-0"
+        >
+          {version}
+        </span>
+      )}
+      {(source || version) && entry.bundledBy && <span>·</span>}
+      {entry.bundledBy && (
+        <span
+          data-testid={`customize-row-from-plugin-${entry.id}`}
+          className="truncate"
+        >
+          From {entry.bundledBy.name}
+        </span>
+      )}
+      {(source || version || entry.bundledBy) && visibleCounts.length > 0 && (
+        <span>·</span>
+      )}
+      {visibleCounts.length > 0 && (
+        <span className="flex shrink-0 items-center gap-2">
+          {visibleCounts.map(([count, kind, label]) => (
+            <Tooltip
+              key={kind}
+              label={`${count} ${count === 1 ? (label === 'MCP servers' ? 'MCP server' : label.slice(0, -1)) : label}`}
+            >
+              <span>
+                <span aria-hidden="true">
+                  <MarketplaceTypeLabel kind={kind} label={String(count)} />
+                </span>
+                <span className="sr-only">{`${count} ${count === 1 ? (label === 'MCP servers' ? 'MCP server' : label.slice(0, -1)) : label}`}</span>
+              </span>
+            </Tooltip>
+          ))}
+        </span>
+      )}
+      {(source || version || entry.bundledBy || visibleCounts.length > 0) &&
+        triggerSummary && <span>·</span>}
+      {triggerSummary && (
+        <Tooltip
+          label={
+            <span className={REPLAY_BLOCK_CLASS}>
+              {tooltip || triggerSummary}
+            </span>
+          }
+        >
+          <span
+            data-testid={`customize-row-trigger-${entry.id}`}
+            className="min-w-0 truncate"
+          >
+            {triggerSummary}
+          </span>
+        </Tooltip>
+      )}
     </span>
   );
 }
 
-function SkillUpdatedTime({
-  entryId,
-  editedAt,
-}: {
-  readonly entryId: string;
-  readonly editedAt: string;
-}): JSX.Element {
-  const now = useMinuteClock();
-  const fullDate = EDITED_TIME_FORMAT.format(new Date(editedAt));
-  return (
-    <Tooltip label={fullDate}>
-      <span
-        data-testid={`customize-row-edited-${entryId}`}
-        className="inline-flex items-center whitespace-nowrap"
-        aria-label={`Updated ${fullDate}`}
-      >
-        Updated&nbsp;
-        <time dateTime={editedAt}>{formatRelativeTime(editedAt, now)}</time>
-      </span>
-    </Tooltip>
-  );
-}
-
-function CustomSkillBadge({
+function CustomItemBadge({
   entry,
   selected,
 }: {
@@ -87,9 +215,12 @@ function CustomSkillBadge({
   readonly selected: boolean;
 }): JSX.Element {
   const creator = entry.authorName?.trim();
-  const label = creator ? `Custom skill by ${creator}` : 'Custom skill';
+  const kind = entry.typeLabel?.toLowerCase() || entry.kind;
+  const label = creator ? `Custom ${kind} by ${creator}` : `Custom ${kind}`;
   return (
-    <span className="absolute -bottom-1 -right-1 z-10 inline-flex overflow-visible">
+    <span
+      className={`absolute ${entry.kind === 'collection' ? '-bottom-1.5 -right-1.5' : '-bottom-1 -right-1'} z-10 inline-flex overflow-visible`}
+    >
       <Tooltip
         label={
           <span className={creator ? REPLAY_BLOCK_CLASS : undefined}>
@@ -107,12 +238,7 @@ function CustomSkillBadge({
               : 'ring-[var(--bg-primary)] group-hover/skill-row:ring-subtle'
           } ${creator ? REPLAY_BLOCK_CLASS : ''}`}
         >
-          <PersonIcon
-            size={10}
-            exactSize
-            drawnStrokeWidth={1.4}
-            aria-hidden="true"
-          />
+          <PersonIcon size="xs" drawnStrokeWidth={1.4} aria-hidden="true" />
         </span>
       </Tooltip>
     </span>
@@ -128,6 +254,8 @@ export interface CustomizeInstalledRowProps {
   readonly entry: UnifiedPluginEntry;
   /** Owning section; qualifies DOM ids and scopes test ids. */
   readonly sectionId: string;
+  readonly primaryTestId?: string;
+  readonly menuTestId?: string;
   readonly selected?: boolean;
   readonly showEntryType?: boolean;
   readonly onSelect: (entry: UnifiedPluginEntry) => void;
@@ -136,7 +264,8 @@ export interface CustomizeInstalledRowProps {
   readonly menuItems?: readonly CustomizeRowMenuItem[];
   /** Extension slot for status controls supplied by a later surface. */
   readonly status?: ReactNode;
-  /** Visible row actions such as Update or an unshare control. */
+  readonly values?: ReactNode;
+  /** Visible row actions such as Update. */
   readonly actions?: ReactNode;
   /**
    * Starts sign-in from the sign-in or attention chip. Omit when the row has
@@ -204,12 +333,15 @@ function HarnessIcons({
 export function CustomizeInstalledRow({
   entry,
   sectionId,
+  primaryTestId,
+  menuTestId,
   selected = false,
   showEntryType = false,
   onSelect,
   href,
   menuItems = [],
   status,
+  values,
   actions,
   onConnect,
   connectName,
@@ -217,53 +349,7 @@ export function CustomizeInstalledRow({
   McpServerLogoComponent = McpServerLogo,
 }: CustomizeInstalledRowProps): JSX.Element {
   const domId = customizeRowDomId(sectionId, entry.id);
-  const version = displayVersion(entry.version);
-  // The second line names where the item came from, or its description when
-  // no source is worth naming (CAN-4840). A server a plugin bundled names its
-  // plugin; the row menu leads there when the host can open entries
-  // (`onOpenEntryId`).
-  const bundledBy = entry.bundledBy;
-  // Workflow rows keep their dedicated metadata lines.
-  const workflow = bundledBy ? undefined : entry.workflow;
-  const triggers = workflow?.triggers ?? [];
-  const firstTrigger = triggers[0];
-  const triggerLabel =
-    triggers.length > 1
-      ? `${String(triggers.length)} triggers`
-      : firstTrigger?.label;
-  const triggerSteps =
-    workflow?.stepCount === undefined
-      ? ''
-      : ` · ${String(workflow.stepCount)} ${workflow.stepCount === 1 ? 'step' : 'steps'}`;
-  const triggerTooltip =
-    (triggers.length > 1
-      ? triggers
-          .map((trigger) => `${trigger.label}: ${trigger.explainer}`)
-          .join(' · ')
-      : `Trigger: ${firstTrigger?.explainer ?? ''}`) + triggerSteps;
-  const customSkill = entry.kind === 'skill' && entry.custom === true;
-  const showCustomMetadata =
-    customSkill &&
-    !entry.installedFrom &&
-    !bundledBy &&
-    sectionId !== 'shared-by-me';
-  const sharedLine =
-    sectionId === 'shared-by-me' ? sharedByMeLine(entry) : undefined;
-  const subtitle =
-    showCustomMetadata || sectionId === 'shared-by-me'
-      ? undefined
-      : customizeRowSecondLine(entry);
-  // Keep the edit date whole while the preceding words truncate in CSS.
-  const editedLine =
-    sectionId === 'shared-by-me' || showCustomMetadata
-      ? undefined
-      : customizeRowEditedLine(entry);
-  // Keep the source hook on catalog metadata only; authored, bundled and
-  // shared rows retain the copy helper's higher-priority source.
-  const showCatalogSource =
-    sectionId !== 'shared-by-me' &&
-    showsEntrySourceLabel(entry) &&
-    subtitle === entry.sourceLabel?.trim();
+  const metadata = compactMetadata(entry);
   // Only real pending sign-ins are counted (`pendingSignIns`, set by the
   // entry projection); any other problem keeps `Needs attention`. A plugin
   // counts the sign-ins its bundled servers wait for. The host decides what
@@ -294,7 +380,9 @@ export function CustomizeInstalledRow({
           shape="circle"
           fit="contain"
         />
-        {customSkill && <CustomSkillBadge entry={entry} selected={selected} />}
+        {createdByViewer(entry) && !entry.installedFrom && (
+          <CustomItemBadge entry={entry} selected={selected} />
+        )}
       </span>
       <span className="min-w-0 flex-1">
         {/* The name and its labels stay on one line: a long name truncates
@@ -307,7 +395,7 @@ export function CustomizeInstalledRow({
               The name truncates as space runs out;
               the kind and surface icon stay whole. */}
           <span
-            title={entry.name}
+            title={[entry.name, entry.description].filter(Boolean).join(' · ')}
             className="min-w-0 truncate text-s font-medium fg-primary"
           >
             {entry.name}
@@ -326,108 +414,18 @@ export function CustomizeInstalledRow({
             />
           )}
         </span>
-        {workflow ? (
-          <span className="mt-0.5 flex min-w-0 flex-col gap-0.5 text-xs fg-tertiary">
-            <span
-              data-testid={`customize-row-trigger-${entry.id}`}
-              className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5"
-            >
-              {firstTrigger && (
-                <Tooltip
-                  label={triggerTooltip}
-                  contentClassName={
-                    triggers.length > 1
-                      ? 'max-w-xs whitespace-normal'
-                      : undefined
-                  }
-                >
-                  <span
-                    tabIndex={0}
-                    aria-label={`${triggerLabel}. ${triggerTooltip}`}
-                    className="inline-flex items-center gap-1"
-                  >
-                    <TriggerIcon size={14} aria-hidden="true" />
-                    <span>{triggerLabel}</span>
-                  </span>
-                </Tooltip>
-              )}
-              {workflow.schedule && (
-                <Tooltip label={workflow.schedule.tooltip}>
-                  <span className="inline-flex items-center gap-1">
-                    <AutomationsIcon
-                      width={14}
-                      height={14}
-                      aria-hidden="true"
-                    />
-                    <span>{workflow.schedule.label}</span>
-                  </span>
-                </Tooltip>
-              )}
-              {!workflow.triggers && !workflow.schedule && workflow.triggerText}
-            </span>
-            {workflow.sourceText && (
-              <span
-                data-testid={`customize-row-source-meta-${entry.id}`}
-                className={
-                  workflow.sourceIsPerson ? REPLAY_MASK_CLASS : undefined
-                }
-              >
-                {workflow.sourceText}
-              </span>
-            )}
-            {workflow.lastRun !== undefined && workflow.lastRun !== null && (
-              <span data-testid={`customize-row-last-run-line-${entry.id}`}>
-                <WorkflowLastRunText
-                  lastRun={workflow.lastRun}
-                  dataTestId={`customize-row-last-run-${entry.id}`}
-                  variant="customize"
-                />
-              </span>
-            )}
-          </span>
-        ) : showCustomMetadata ? (
-          <CustomSkillMetadata entry={entry} />
-        ) : sharedLine ? (
-          <CustomizeSharedByMeSubtitle entryId={entry.id} line={sharedLine} />
-        ) : subtitle ? (
-          // A shared row's or shared copy's line names a person or their
-          // team, so session replay never records it. A local agent always
-          // reads `Created by you`, never its instructions.
-          <span
-            data-testid={
-              bundledBy
-                ? `customize-row-from-plugin-${entry.id}`
-                : `customize-row-subtitle-${entry.id}`
-            }
-            className={`mt-0.5 min-w-0 text-xs fg-tertiary ${editedLine ? 'flex overflow-hidden' : 'block truncate'} ${entry.origin === 'shared' || entry.installedFrom ? REPLAY_BLOCK_CLASS : ''}`}
-          >
-            {editedLine ? (
-              <>
-                <span className="min-w-0 truncate">{editedLine.lead}</span>
-                <span className="shrink-0 whitespace-pre">
-                  {` ${editedLine.edited}`}
-                </span>
-              </>
-            ) : showCatalogSource ? (
-              <EntrySourceLabel
-                entry={entry}
-                testId={`customize-row-source-${entry.id}`}
-                shrinkable
-              />
-            ) : (
-              subtitle
-            )}
-          </span>
-        ) : null}
+        <CompactMetadata entry={entry} metadata={metadata} />
       </span>
     </span>
   );
   const primaryProps = {
     id: domId,
+    'aria-describedby': `${domId}-description`,
     'data-marketplace-entry': 'true',
-    'data-testid': `customize-row-${entry.id}`,
+    'data-testid': primaryTestId ?? `customize-row-${entry.id}`,
     'data-selected': selected ? 'true' : 'false',
-    className: `focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-xl px-4 py-2.5 text-left pointer-coarse:min-h-11 ${
+    // Preserve the name floor; the trailing group wraps within the remaining space.
+    className: `focus-ring flex min-w-32 flex-1 items-center gap-3 rounded-xl px-4 py-2.5 text-left pointer-coarse:min-h-11 ${
       selected ? 'bg-selected' : ''
     }`,
   };
@@ -447,7 +445,7 @@ export function CustomizeInstalledRow({
     <li
       data-testid={`customize-${sectionId}-row-${entry.id}`}
       data-dimmed={dimmed ? 'true' : undefined}
-      className="group/skill-row -ml-4 flex min-w-0 items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle"
+      className="group/skill-row relative -ml-4 flex min-w-0 flex-wrap items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle"
     >
       {href !== undefined ? (
         <a {...primaryProps} href={href} onClick={onLinkClick}>
@@ -458,58 +456,66 @@ export function CustomizeInstalledRow({
           {content}
         </button>
       )}
-      {entry.custom !== true && version ? (
-        <span
-          data-testid={`customize-row-version-${entry.id}`}
-          className="flex max-w-28 shrink-0 items-center gap-1 text-xs fg-tertiary"
-        >
-          {version && (
-            <span className={`truncate${dimmed ? ' opacity-60' : ''}`}>
-              {version}
-            </span>
+      <span
+        id={`${domId}-description`}
+        className={`sr-only ${REPLAY_BLOCK_CLASS}`}
+      >
+        {metadata.tooltip}
+      </span>
+      <div className="ml-auto flex min-w-min max-w-full flex-wrap items-center justify-end gap-2 empty:hidden">
+        {attentionLabel !== undefined &&
+          (onConnect ? (
+            <Button
+              variant="link"
+              className="inline-flex shrink-0"
+              data-testid={`customize-row-sign-in-${entry.id}`}
+              aria-label={`${attentionLabel}. Connect ${connectName ?? entry.name}`}
+              onClick={() => onConnect(entry)}
+            >
+              <Badge tone="warning">{attentionLabel}</Badge>
+            </Button>
+          ) : (
+            <Badge
+              tone="warning"
+              data-testid={`customize-row-sign-in-${entry.id}`}
+            >
+              {attentionLabel}
+            </Badge>
+          ))}
+        <HarnessIcons entry={entry} />
+        {/* Health shows only once a check has a result; a server that was
+          never checked shows nothing rather than a "Not checked" chip. An
+          attention marker already says a sign-in is missing, so Auth
+          required is not repeated beside it. */}
+        {entry.connection &&
+          entry.connection.status !== 'unknown' &&
+          !(
+            attentionLabel !== undefined &&
+            entry.connection.status === 'auth_required'
+          ) && (
+            <McpConnectionStatusBadge
+              badge={{
+                status: entry.connection.status,
+                isProvider: entry.connection.provider === true,
+              }}
+              dataTestId={`plugins-connection-status-${entry.id}`}
+              providerTestId={`plugins-connection-provider-${entry.id}`}
+            />
           )}
+        {values}
+        {status ?? <span className="w-36 shrink-0" aria-hidden />}
+        <span className="flex w-7 shrink-0 items-center justify-end pointer-coarse:w-11">
+          {actions}
         </span>
-      ) : null}
-      {attentionLabel !== undefined &&
-        (onConnect ? (
-          <Button
-            variant="warning"
-            size="compact"
-            data-testid={`customize-row-sign-in-${entry.id}`}
-            aria-label={`${attentionLabel}. Connect ${connectName ?? entry.name}`}
-            onClick={() => onConnect(entry)}
-          >
-            {attentionLabel}
-          </Button>
-        ) : (
-          <span
-            data-testid={`customize-row-sign-in-${entry.id}`}
-            className={SIGN_IN_CHIP_CLASS}
-          >
-            {attentionLabel}
-          </span>
-        ))}
-      <HarnessIcons entry={entry} />
-      {/* Health shows only once a check has a result; a server that was
-          never checked shows nothing rather than a "Not checked" chip. */}
-      {entry.connection && entry.connection.status !== 'unknown' && (
-        <McpConnectionStatusBadge
-          badge={{
-            status: entry.connection.status,
-            isProvider: entry.connection.provider === true,
-          }}
-          dataTestId={`plugins-connection-status-${entry.id}`}
-          providerTestId={`plugins-connection-provider-${entry.id}`}
-        />
-      )}
-      {status}
-      {actions}
-      <CustomizeRowMenu
-        entryName={entry.name}
-        idPrefix={domId}
-        items={menuItems}
-        testId={`customize-row-menu-${entry.id}`}
-      />
+        <span className="flex w-7 shrink-0 justify-end pointer-coarse:w-11">
+          <CustomizeRowMenu
+            entryName={entry.name}
+            idPrefix={domId}
+            items={menuItems}
+            testId={menuTestId ?? `customize-row-menu-${entry.id}`}
+          />
+        </span>
+      </div>
     </li>
   );
 }

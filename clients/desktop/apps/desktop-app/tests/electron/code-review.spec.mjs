@@ -19,6 +19,10 @@ import {
 } from './seeders/index.mjs';
 import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  chooseSettingsOption,
+  settingsOptionValues,
+} from './helpers/settingsSelect.mjs';
 import { collectLeaves, getActiveGroupId, getLayout } from './panelHarness.mjs';
 
 // The takeover's resize/search/chat controls were retired. Its surviving
@@ -441,7 +445,7 @@ test('changed-file tree search and navigation preserve unrelated hidden labels',
         .filter({ hasText: 'tooling.yml' }),
     ).toHaveCount(0);
     await tree
-      .getByRole('textbox', { name: 'Search changed files' })
+      .getByRole('searchbox', { name: 'Search changed files' })
       .fill('ci.yml');
     await tree
       .locator('[data-testid^="diff-file-tree-row-"]')
@@ -517,9 +521,10 @@ test('overlapping generated annotations and diagram node comments survive in wor
       .filter({ hasText: 'README.md' })
       .click();
     const diff = window.locator('[data-testid="file-panel-diff"]:visible');
-    await diff
-      .getByRole('combobox', { name: 'Diff source' })
-      .selectOption('combined');
+    await chooseSettingsOption(
+      diff.getByRole('combobox', { name: 'Diff source' }),
+      'combined',
+    );
     const glyph = diff
       .locator('.modified .canopy-file-annotation-glyph')
       .first();
@@ -694,7 +699,7 @@ test('direct diff opens with a collapsed tree and independent consistent tree co
       .getByRole('button', { name: 'Search files', exact: true })
       .click();
     await tree
-      .getByRole('textbox', { name: 'Search changed files' })
+      .getByRole('searchbox', { name: 'Search changed files' })
       .fill('nested');
     await expect(tree).toContainText('change.ts');
     const listToggle = tree.getByRole('button', {
@@ -722,7 +727,7 @@ test('direct diff opens with a collapsed tree and independent consistent tree co
       .click();
     await expect(tree.getByText('change.ts', { exact: true })).toHaveCount(0);
     await tree
-      .getByRole('textbox', { name: 'Search changed files' })
+      .getByRole('searchbox', { name: 'Search changed files' })
       .fill('change.ts');
     await expect(tree.getByText('change.ts', { exact: true })).toBeVisible();
     await tree
@@ -839,12 +844,14 @@ test('file diff source options reflect only that file', async () => {
       const panel = window.locator(
         '[data-testid="panel-content-file-diff"]:visible',
       );
-      const source = panel.getByLabel('Diff source', { exact: true });
-      await expect(source).toHaveValue(expected);
-      await expect(source.locator(`option[value="${absent}"]`)).toHaveCount(0);
-      await expect(source.locator(`option[value="${expected}"]`)).toHaveCount(
-        1,
-      );
+      const source = panel.getByRole('combobox', {
+        name: 'Diff source',
+        exact: true,
+      });
+      await expect(source).toHaveAttribute('data-value', expected);
+      const values = await settingsOptionValues(source);
+      expect(values).not.toContain(absent);
+      expect(values).toContain(expected);
     }
     await changed
       .getByTestId('activity-changed-file')
@@ -853,11 +860,12 @@ test('file diff source options reflect only that file', async () => {
       .click();
     const source = window
       .locator('[data-testid="panel-content-file-diff"]:visible')
-      .getByLabel('Diff source', { exact: true });
-    await expect(source.locator('option[value="committed"]')).toHaveCount(1);
-    await expect(source.locator('option[value="uncommitted"]')).toHaveCount(1);
-    await source.selectOption('committed');
-    await expect(source).toHaveValue('committed');
+      .getByRole('combobox', { name: 'Diff source', exact: true });
+    const values = await settingsOptionValues(source);
+    expect(values).toContain('committed');
+    expect(values).toContain('uncommitted');
+    await chooseSettingsOption(source, 'committed');
+    await expect(source).toHaveAttribute('data-value', 'committed');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

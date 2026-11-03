@@ -5,7 +5,9 @@ import {
 } from './ArchivedOverviewRow';
 import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
-import { SearchIcon } from '../icons/AppIcons';
+import { SearchField } from './SearchField';
+import { Notice, NoticeButton } from './Notice';
+import { TRY_AGAIN_LABEL } from './useRetry';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
@@ -123,42 +125,35 @@ export function SharedContainerPastSharesList({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid={TEST_ID}>
-      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SearchIcon
-          width={13}
-          height={13}
-          aria-hidden="true"
-          className="shrink-0 fg-secondary"
-        />
-        <input
-          type="search"
+      <div className="shrink-0 border-b">
+        <SearchField
+          size="lg"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onValueChange={setQuery}
           placeholder="Search past shares"
           aria-label="Search past shares"
           data-testid={`${TEST_ID}-search`}
-          className="w-full min-w-0 bg-transparent text-s fg-primary outline-none placeholder:fg-tertiary"
         />
       </div>
       <div
         className={`${ARCHIVED_LIST_CONTAINER_CLASS_NAME} min-h-0 flex-1 overflow-y-auto px-3 py-2`}
       >
         {removedFailed && (
-          <div
-            className="flex items-center gap-2 px-2 py-2 text-xs fg-secondary"
-            role="alert"
+          <Notice
+            intent="destructive"
+            className="mb-2"
             data-testid={`${TEST_ID}-removed-error`}
+            actions={
+              <NoticeButton
+                onClick={onRetryRemoved}
+                data-testid={`${TEST_ID}-removed-retry`}
+              >
+                {TRY_AGAIN_LABEL}
+              </NoticeButton>
+            }
           >
-            <span>Couldn&rsquo;t load removed shares.</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onRetryRemoved}
-              data-testid={`${TEST_ID}-removed-retry`}
-            >
-              Retry
-            </Button>
-          </div>
+            Couldn&rsquo;t load removed shares.
+          </Notice>
         )}
         {removedLoading && (
           <div

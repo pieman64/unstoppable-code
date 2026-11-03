@@ -45,7 +45,8 @@ export interface WorkspaceCommitEventHandlers {
   refreshWorkspaceRegistries(): Promise<void>;
   /**
    * The lost-response reconcile: drops the cached layer, advances only on
-   * change; rejects when no read of the manifest decided it.
+   * change; rejects when no read of the manifest decided it within its
+   * bound.
    */
   reconcileManifestPluginDefaults(workspaceId: string): Promise<void>;
   /** Every workspace the registries know, for a broad reconcile. */

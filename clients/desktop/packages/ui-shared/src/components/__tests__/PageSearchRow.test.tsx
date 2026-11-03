@@ -104,12 +104,12 @@ describe('PageSearchRow', () => {
     expect(field.className).toContain('bg-subtle');
     expect(field.className).toContain('text-xs');
     // The shared inset hairline at rest; focus swaps it for the field focus
-    // edge and the secondary fill.
+    // edge and keeps the fill.
     expect(field.className).toContain('ring-line-base');
     expect(field.className).toContain('ring-inset');
     expect(field.className).toContain('has-[input:focus]:ring-0');
     expect(field.className).toContain('has-[input:focus]:shadow-field-focus');
-    expect(field.className).toContain('has-[input:focus]:bg-secondary');
+    expect(field.className).not.toContain('has-[input:focus]:bg-');
     expect(field.className).toContain('flex-1');
     expect(field.className).toContain('min-w-40');
     expect(field.querySelector('[data-search-field-count]')?.textContent).toBe(

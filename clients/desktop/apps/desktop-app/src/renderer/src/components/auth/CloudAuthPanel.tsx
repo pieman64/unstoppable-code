@@ -332,7 +332,7 @@ export function CloudAuthPanel({
     ? 'flex min-h-60 w-full flex-1 flex-col gap-5 text-center'
     : // `pt-0`: the host dialog's tight header spacing is the whole gap above
       // the lead, so the lead reads as the title's supporting line.
-      'flex min-h-60 flex-1 flex-col gap-5 px-5 pb-5 pt-0';
+      'flex min-h-60 flex-1 flex-col gap-5 px-6 pb-6 pt-0';
 
   // Shared by both panels and rendered directly above the action block. A
   // failure leaves the modal open, so the message has to stay next to the
@@ -487,7 +487,6 @@ export function CloudAuthPanel({
           onToggleVisible={(): void => setApiKeyVisible((prev) => !prev)}
           disabled={loading || !storageAvailable || busy || validating}
           inputRef={apiKeyInputRef}
-          inputClassName="fg-primary placeholder:fg-secondary"
         />
 
         <div className="mt-auto space-y-2">

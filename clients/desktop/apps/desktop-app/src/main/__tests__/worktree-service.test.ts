@@ -543,6 +543,11 @@ jest.mock(
   }),
 );
 
+import { WorktreeRegistryUnreadableError } from '../lib/worktree-list-repository';
+import {
+  W5AuthorityUnreachableError,
+  W5RecordUnservedError,
+} from '../lib/w5-file-store';
 import type { Dirent } from 'node:fs';
 import { lstat, readdir, readlink, rm } from 'node:fs/promises';
 import type {
@@ -622,6 +627,7 @@ import type { WorktreeArchiveLiveServices } from '../lib/worktree-service';
 import {
   beginWorktreeGitSetup,
   claimWorktreeGitSetup,
+  settleWorktreeGitSetup,
 } from '../lib/worktree-git-setup';
 import { createCliExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/cli-runtime';
 import { listExecutionSummaries } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
@@ -633,7 +639,11 @@ import {
   updateWorkspaceWorktree,
   updateWorkspaceWorktrees,
 } from '../lib/workspace-persistence';
-import { isWorktreeSetupCancellationRequested } from '../lib/worktree-setup-cancellation';
+import {
+  consumeWorktreeSetupCancellation,
+  isWorktreeSetupCancellationRequested,
+  markWorktreeSetupCancellation,
+} from '../lib/worktree-setup-cancellation';
 import { resolveProjectReferenceRepoPath } from '../lib/project-reference-repo';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { validateWorkspaceRootWorktree } from '../lib/workspace-source-control';
@@ -1314,6 +1324,12 @@ describe('worktree-service', () => {
       const item = await findFixtureWorkspace(workspaceId);
       return item && item.type !== 'cowork' ? item.worktrees : [];
     });
+    jest
+      .mocked(readWorkspaceWorktreesDetailed)
+      .mockImplementation(async (workspaceId) => ({
+        authority: 'ok',
+        worktrees: await mockedReadWorkspaceWorktrees(workspaceId),
+      }));
     mockedGenerateUniqueAnimalName.mockImplementation(
       (existingNames: Set<string>) =>
         existingNames.has('generated-worktree')
@@ -7977,6 +7993,413 @@ describe('worktree-service', () => {
     );
   });
 
+  describe.each(['single-repo', 'multi-repo'] as const)(
+    '%s reserved setup storage failures',
+    (kind) => {
+      it.each(['removed', 'replaced'] as const)(
+        'settles cancelled rather than failed when Git fails after its reservation is %s',
+        async (change) => {
+          let persisted: WorktreeData[] = [];
+          const workspaceId =
+            kind === 'single-repo' ? 'project-1' : 'workspace-1';
+          if (kind === 'multi-repo') {
+            mockedListWorkspaceItems.mockResolvedValue([
+              buildMultiRepoWorkspace(),
+            ]);
+          }
+          mockedReadWorkspaceWorktrees.mockImplementation(() =>
+            Promise.resolve(persisted),
+          );
+          mockedUpdateWorkspaceWorktrees.mockImplementation(
+            async (_id, updater) => {
+              persisted = await updater(persisted);
+              return persisted;
+            },
+          );
+          mockedCreateWorktree.mockImplementationOnce(() => {
+            persisted =
+              change === 'removed'
+                ? []
+                : persisted.map((row) => ({
+                    ...row,
+                    createdAt: '2026-04-21T00:00:00.000Z',
+                  }));
+            return Promise.reject(new Error('checkout interrupted by removal'));
+          });
+          const onGitFailed = jest.fn();
+          const onGitSetupSettled = jest.fn();
+          const create =
+            kind === 'single-repo'
+              ? createSingleRepoWorktree
+              : createMultiRepoWorktree;
+          const created = await create({
+            workspaceId,
+            existingWorktreeIds: [],
+            deferGitSetup: true,
+            onGitFailed,
+            onGitSetupSettled,
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(onGitFailed).not.toHaveBeenCalled();
+          expect(onGitSetupSettled).toHaveBeenCalledTimes(1);
+          expect(onGitSetupSettled).toHaveBeenCalledWith({
+            projectId: workspaceId,
+            worktreeId: created.id,
+            outcome: 'cancelled',
+          });
+          await expect(
+            claimWorktreeGitSetup(workspaceId, created.id),
+          ).resolves.toBe('cancelled');
+          if (change === 'replaced') {
+            expect(mockedRemoveWorktree).not.toHaveBeenCalled();
+            expect(mockedRm).not.toHaveBeenCalled();
+          }
+        },
+      );
+
+      it.each(
+        [
+          new WorktreeRegistryUnreadableError(),
+          new W5AuthorityUnreachableError('refused', 'connect'),
+          new W5RecordUnservedError('limit-exceeded', 'worktrees'),
+        ].flatMap((storageError) =>
+          (['setup write', 'failure write'] as const).map((stage) => ({
+            storageError,
+            stage,
+          })),
+        ),
+      )(
+        'retains a typed storage failure when authority recovers after $stage throws: $storageError',
+        async ({ storageError, stage }) => {
+          let persisted: WorktreeData[] = [];
+          let failNextWrite = false;
+          const workspaceId =
+            kind === 'single-repo' ? 'project-1' : 'workspace-1';
+          if (kind === 'multi-repo') {
+            mockedListWorkspaceItems.mockResolvedValue([
+              buildMultiRepoWorkspace(),
+            ]);
+          }
+          mockedReadWorkspaceWorktrees.mockImplementation(() =>
+            Promise.resolve(persisted),
+          );
+          jest
+            .mocked(readWorkspaceWorktreesDetailed)
+            .mockImplementation(() =>
+              Promise.resolve({ authority: 'ok', worktrees: persisted }),
+            );
+          mockedUpdateWorkspaceWorktrees.mockImplementation(
+            async (_id, updater) => {
+              if (failNextWrite) {
+                failNextWrite = false;
+                throw storageError;
+              }
+              persisted = await updater(persisted);
+              return persisted;
+            },
+          );
+          mockedCreateWorktree.mockImplementation((_repo, _path, branch) => {
+            failNextWrite = stage === 'setup write';
+            return Promise.resolve(branch);
+          });
+          const onGitFailed = jest.fn();
+          const onGitSetupSettled = jest.fn();
+          const create =
+            kind === 'single-repo'
+              ? createSingleRepoWorktree
+              : createMultiRepoWorktree;
+          const created = await create({
+            workspaceId,
+            existingWorktreeIds: [],
+            deferGitSetup: true,
+            beforeGitReady: () => {
+              if (stage === 'failure write') {
+                failNextWrite = true;
+                throw new Error('Git finalization failed');
+              }
+            },
+            onGitFailed,
+            onGitSetupSettled,
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(onGitFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+              error:
+                stage === 'failure write'
+                  ? 'Git finalization failed'
+                  : storageError.message,
+              failureReason: 'storage-unavailable',
+            }),
+          );
+          expect(onGitSetupSettled).toHaveBeenCalledWith({
+            projectId: workspaceId,
+            worktreeId: created.id,
+            outcome: 'failed',
+          });
+          expect(mockedRemoveWorktree).not.toHaveBeenCalled();
+          expect(mockedRm).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        ['unreadable', 'before checkout'],
+        ['unreadable', 'after checkout'],
+        ['unreadable', 'cancelled after checkout'],
+        ['partial', 'after checkout'],
+        ['absent', 'after checkout'],
+      ] as const)(
+        'fails without cleanup when storage becomes %s %s',
+        async (authority, moment) => {
+          let persisted: WorktreeData[] = [];
+          let storageUnavailable = false;
+          const workspaceId =
+            kind === 'single-repo' ? 'project-1' : 'workspace-1';
+          if (kind === 'multi-repo') {
+            mockedListWorkspaceItems.mockResolvedValue([
+              buildMultiRepoWorkspace(),
+            ]);
+          }
+          mockedReadWorkspaceWorktrees.mockImplementation(() =>
+            Promise.resolve(storageUnavailable ? [] : persisted),
+          );
+          jest.mocked(readWorkspaceWorktreesDetailed).mockImplementation(() =>
+            Promise.resolve({
+              authority: storageUnavailable ? authority : 'ok',
+              worktrees: storageUnavailable ? [] : persisted,
+            }),
+          );
+          mockedUpdateWorkspaceWorktrees.mockImplementation(
+            async (_id, updater, options) => {
+              if (storageUnavailable) {
+                if (
+                  authority === 'unreadable' ||
+                  (authority === 'partial' &&
+                    options?.requireAuthoritativeRead) ||
+                  (authority === 'absent' && options?.requireExistingList)
+                ) {
+                  throw new Error(`W5 storage is ${authority}`);
+                }
+                // A permissive updater sees missing rows, not a thrown read.
+                return updater([], { authority });
+              }
+              persisted = await updater(persisted);
+              if (moment === 'before checkout') storageUnavailable = true;
+              return persisted;
+            },
+          );
+          if (moment !== 'before checkout') {
+            mockedCreateWorktree.mockImplementationOnce(
+              (_repo, _path, branch) => {
+                storageUnavailable = true;
+                if (moment === 'cancelled after checkout') {
+                  const reservation = persisted[0];
+                  if (!reservation) throw new Error('Missing reservation');
+                  markWorktreeSetupCancellation({
+                    workspaceId,
+                    worktreeId: reservation.id,
+                    createdAt: reservation.createdAt,
+                  });
+                }
+                return Promise.resolve(branch);
+              },
+            );
+          }
+          const onGitFailed = jest.fn();
+          const onGitSetupSettled = jest.fn();
+          const create =
+            kind === 'single-repo'
+              ? createSingleRepoWorktree
+              : createMultiRepoWorktree;
+          const created = await create({
+            workspaceId,
+            existingWorktreeIds: [],
+            deferGitSetup: true,
+            onGitFailed,
+            onGitSetupSettled,
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+
+          const reservation = persisted[0];
+          if (moment === 'cancelled after checkout' && reservation) {
+            consumeWorktreeSetupCancellation({
+              workspaceId,
+              worktreeId: created.id,
+              createdAt: reservation.createdAt,
+            });
+          }
+          const expectedError: unknown = expect.stringMatching(
+            /storage.*(unreadable|partial|absent)/i,
+          );
+          expect(onGitFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+              error: expectedError,
+              failureReason: 'storage-unavailable',
+            }),
+          );
+          expect(onGitSetupSettled).toHaveBeenCalledWith({
+            projectId: workspaceId,
+            worktreeId: created.id,
+            outcome: 'failed',
+          });
+          await expect(
+            claimWorktreeGitSetup(workspaceId, created.id),
+          ).resolves.toBe('failed');
+          if (moment === 'before checkout') {
+            expect(mockedCreateWorktree).not.toHaveBeenCalled();
+          } else {
+            expect(mockedCreateWorktree).toHaveBeenCalledTimes(1);
+          }
+          expect(mockedRemoveWorktree).not.toHaveBeenCalled();
+          expect(mockedDeleteBranch).not.toHaveBeenCalled();
+          expect(mockedRm).not.toHaveBeenCalled();
+          expect(mockedRemoveWorkspaceWorktrees).not.toHaveBeenCalled();
+          expect(persisted).toEqual([
+            expect.objectContaining({ id: created.id }),
+          ]);
+        },
+      );
+
+      it('reports the original setup error when recording failure throws', async () => {
+        let persisted: WorktreeData[] = [];
+        let setupFailed = false;
+        const workspaceId =
+          kind === 'single-repo' ? 'project-1' : 'workspace-1';
+        if (kind === 'multi-repo') {
+          mockedListWorkspaceItems.mockResolvedValue([
+            buildMultiRepoWorkspace(),
+          ]);
+        }
+        mockedReadWorkspaceWorktrees.mockImplementation(() =>
+          Promise.resolve(persisted),
+        );
+        jest
+          .mocked(readWorkspaceWorktreesDetailed)
+          .mockImplementation(() =>
+            Promise.resolve({ authority: 'ok', worktrees: persisted }),
+          );
+        mockedUpdateWorkspaceWorktrees.mockImplementation(
+          async (_id, updater) => {
+            if (setupFailed) {
+              throw new Error('failure write failed');
+            }
+            persisted = await updater(persisted);
+            return persisted;
+          },
+        );
+        mockedCreateWorktree.mockImplementationOnce(() => {
+          setupFailed = true;
+          return Promise.reject(new Error('original Git failure'));
+        });
+        const onGitFailed = jest.fn();
+        const onGitSetupSettled = jest.fn();
+        const create =
+          kind === 'single-repo'
+            ? createSingleRepoWorktree
+            : createMultiRepoWorktree;
+        const created = await create({
+          workspaceId,
+          existingWorktreeIds: [],
+          deferGitSetup: true,
+          onGitFailed,
+          onGitSetupSettled,
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(onGitFailed).toHaveBeenCalledWith(
+          expect.objectContaining({ error: 'original Git failure' }),
+        );
+        expect(onGitSetupSettled).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'failed' }),
+        );
+        await expect(
+          claimWorktreeGitSetup(workspaceId, created.id),
+        ).resolves.toBe('failed');
+      });
+
+      it.each(['removed', 'replaced'] as const)(
+        'settles cancelled without cleanup when the reservation is %s during the failure write',
+        async (change) => {
+          let persisted: WorktreeData[] = [];
+          let replacement: WorktreeData[] = [];
+          let setupFailed = false;
+          let failureCheckReservation: WorktreeData | undefined;
+          const workspaceId =
+            kind === 'single-repo' ? 'project-1' : 'workspace-1';
+          if (kind === 'multi-repo') {
+            mockedListWorkspaceItems.mockResolvedValue([
+              buildMultiRepoWorkspace(),
+            ]);
+          }
+          mockedReadWorkspaceWorktrees.mockImplementation(() =>
+            Promise.resolve(persisted),
+          );
+          jest.mocked(readWorkspaceWorktreesDetailed).mockImplementation(() => {
+            if (setupFailed) failureCheckReservation = persisted[0];
+            return Promise.resolve({ authority: 'ok', worktrees: persisted });
+          });
+          mockedUpdateWorkspaceWorktrees.mockImplementation(
+            async (_id, updater) => {
+              if (setupFailed) {
+                // Replace under the write lock, after the catch's current check.
+                expect(failureCheckReservation).toBe(persisted[0]);
+                expect(failureCheckReservation).toBeDefined();
+                replacement =
+                  change === 'removed'
+                    ? []
+                    : persisted.map((row) => ({
+                        ...row,
+                        createdAt: '2026-04-21T00:00:00.000Z',
+                        branchName: 'feature/replacement',
+                        setupPhase: 'git-pending',
+                      }));
+                persisted = replacement;
+              }
+              persisted = await updater(persisted);
+              return persisted;
+            },
+          );
+          mockedCreateWorktree.mockImplementationOnce(() => {
+            setupFailed = true;
+            return Promise.reject(new Error('original Git failure'));
+          });
+          const onGitFailed = jest.fn();
+          const onGitSetupSettled = jest.fn();
+          const create =
+            kind === 'single-repo'
+              ? createSingleRepoWorktree
+              : createMultiRepoWorktree;
+          const created = await create({
+            workspaceId,
+            existingWorktreeIds: [],
+            deferGitSetup: true,
+            onGitFailed,
+            onGitSetupSettled,
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+
+          expect(failureCheckReservation).toMatchObject({
+            id: created.id,
+            createdAt: created.createdAt,
+          });
+          expect(onGitFailed).not.toHaveBeenCalled();
+          expect(onGitSetupSettled).toHaveBeenCalledTimes(1);
+          expect(onGitSetupSettled).toHaveBeenCalledWith({
+            projectId: workspaceId,
+            worktreeId: created.id,
+            outcome: 'cancelled',
+          });
+          await expect(
+            claimWorktreeGitSetup(workspaceId, created.id),
+          ).resolves.toBe('cancelled');
+          expect(persisted).toEqual(replacement);
+          expect(mockedRemoveWorktree).not.toHaveBeenCalled();
+          expect(mockedDeleteBranch).not.toHaveBeenCalled();
+          expect(mockedRm).not.toHaveBeenCalled();
+          expect(mockedRemoveWorkspaceWorktrees).not.toHaveBeenCalled();
+        },
+      );
+    },
+  );
+
   it('marks deferred multi-repo setup failures as broken instead of removing the reservation', async () => {
     let persistedWorktrees: WorktreeData[] = [];
     const onGitFailed = jest.fn();
@@ -8283,6 +8706,58 @@ describe('worktree-service', () => {
       ],
     });
   });
+
+  it.each(['ready', 'cancelled'] as const)(
+    'keeps the Git setup pending through a deferred needs-repair detour until the repair settles it %s',
+    async (outcome) => {
+      let persistedWorktrees: WorktreeData[] = [];
+      const onGitSetupSettled = jest.fn();
+      mockedListWorkspaceItems.mockResolvedValue([buildMultiRepoWorkspace()]);
+      mockedReadWorkspaceWorktrees.mockImplementation(() =>
+        Promise.resolve(persistedWorktrees),
+      );
+      mockedUpdateWorkspaceWorktrees.mockImplementation(
+        async (_workspaceId, updater) => {
+          persistedWorktrees = await updater(persistedWorktrees);
+          return persistedWorktrees;
+        },
+      );
+      mockedCreateWorktree.mockResolvedValue('generated-worktree');
+      mockedValidateWorkspaceRootWorktree.mockResolvedValue([
+        {
+          code: 'missing-claude-md',
+          message: 'CLAUDE.md is missing from the project root worktree.',
+          blocking: true,
+        },
+      ]);
+      const onNeedsRepair = jest.fn();
+
+      const created = await createMultiRepoWorktree({
+        workspaceId: 'workspace-1',
+        existingWorktreeIds: [],
+        deferGitSetup: true,
+        onNeedsRepair,
+        onGitSetupSettled,
+      });
+      const pendingSetup = claimWorktreeGitSetup('workspace-1', created.id);
+      expect(pendingSetup).toBeDefined();
+      let settled: string | undefined;
+      void pendingSetup?.then((value) => {
+        settled = value;
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      // A held send waits through the repair instead of ending cancelled.
+      expect(onNeedsRepair).toHaveBeenCalledTimes(1);
+      expect(settled).toBeUndefined();
+      expect(onGitSetupSettled).not.toHaveBeenCalled();
+
+      settleWorktreeGitSetup('workspace-1', created.id, outcome);
+      await expect(pendingSetup).resolves.toBe(outcome);
+    },
+  );
 
   it('reports deferred repair requirements through onGitFailed when no repair handler is registered', async () => {
     let persistedWorktrees: WorktreeData[] = [];

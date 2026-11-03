@@ -250,13 +250,12 @@ describe('BrowserPanelSurface', () => {
       '[data-testid="browser-panel-hydration-error"]',
     );
     expect(error).not.toBeNull();
-    expect(error?.textContent).toContain('Unable to open Browser');
-    expect(error?.textContent).toContain(
-      'Browser state could not be restored.',
+    expect(error?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't restore Browser.",
     );
 
     const retry = Array.from(error?.querySelectorAll('button') ?? []).find(
-      (button) => button.textContent?.includes('Retry'),
+      (button) => button.textContent?.includes('Try again'),
     );
     expect(retry).toBeDefined();
     await act(async () => {

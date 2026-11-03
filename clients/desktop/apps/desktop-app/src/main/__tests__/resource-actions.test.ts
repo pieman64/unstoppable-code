@@ -34,6 +34,9 @@ let mockShareContextEnabled = false;
 jest.mock('../pipelines/resource-lanes', () => ({
   pipelineResourceContextEnabled: jest.fn(() => mockShareContextEnabled),
   assertPipelineContext: jest.fn(() => Promise.resolve()),
+  isPipelineContextDenial: (error: unknown): boolean =>
+    error instanceof Error &&
+    /^Workflow unavailable \([a-z-]+\)$/.test(error.message),
 }));
 let mockWorkspaceContext:
   | { kind: 'personal' }

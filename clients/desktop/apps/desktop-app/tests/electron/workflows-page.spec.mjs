@@ -564,14 +564,24 @@ test.describe('Workflows page', () => {
       await window.getByTestId('confirm-dialog-confirm').click();
       // A cancelled watcher leaves the feed.
       await expect(watcherRow).toHaveCount(0);
-      // No runs, and a Library with something to run: the empty state offers
-      // Run a workflow alone, and the header still offers New workflow.
+      // No runs, and a Library with something to run: the empty state
+      // previews the Library with your own workflow first (CAN-4311), leads
+      // with See your library, keeps Run a workflow, and the header still
+      // offers New workflow.
       const empty = window.getByTestId('workflows-runs-empty');
       await expect(empty).toBeVisible();
+      const preview = empty.getByTestId('workflows-runs-library-preview-row');
+      await expect(preview).toHaveCount(3);
+      await expect(preview.first()).toHaveAttribute(
+        'data-row-key',
+        `pipeline:user:${PIPELINE_ID}`,
+      );
+      await expect(
+        empty.getByTestId('workflows-runs-empty-library'),
+      ).toHaveText('See your library');
       await expect(empty.getByTestId('workflows-runs-empty-run')).toHaveText(
         'Run a workflow',
       );
-      await expect(empty.getByRole('button')).toHaveCount(1);
       const heading = window.getByTestId('page-header');
       await expect(heading.getByTestId('workflows-new-manual')).toHaveText(
         'New workflow',
@@ -607,8 +617,8 @@ test.describe('Workflows page', () => {
       await expectWorkflowsTab(window, RUNS);
       const empty = window.getByTestId('workflows-runs-empty');
       await expect(empty).toBeVisible();
-      // The header offers creation with no runs; the empty state still
-      // offers Run a workflow alone.
+      // The header offers creation with no runs; the empty state previews
+      // the bundled workflows and offers Run a workflow behind the Library.
       const heading = window.getByTestId('page-header');
       const newWorkflow = heading.getByTestId('workflows-new-manual');
       await expect(newWorkflow).toHaveText('New workflow');
@@ -619,7 +629,14 @@ test.describe('Workflows page', () => {
       await expect(empty.getByTestId('workflows-runs-empty-run')).toHaveText(
         'Run a workflow',
       );
-      await expect(empty.getByRole('button')).toHaveCount(1);
+      await expect(
+        empty.getByTestId('workflows-runs-library-preview-row'),
+      ).toHaveCount(3);
+      // The bundled workflows always fill the Library, so Customize is
+      // offered beside Run a workflow rather than only with nothing to run.
+      await expect(
+        empty.getByTestId('workflows-runs-empty-marketplace'),
+      ).toHaveText('Browse Customize');
 
       // It opens the manual pipeline editor directly: no creation menu, no
       // dispatch dialog, and no missing-worktree error.
@@ -653,6 +670,62 @@ test.describe('Workflows page', () => {
     }
   });
 
+  test('Runs with no runs previews the Library and opens it (CAN-4311)', async () => {
+    test.setTimeout(120_000);
+    // A fresh install: no runs, and the bundled pipelines fill the Library.
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-workflows-runs-preview-'),
+    );
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await window.getByTestId('sidebar-nav-workflows').click();
+      await expectWorkflowsTab(window, RUNS);
+
+      const empty = window.getByTestId('workflows-runs-empty');
+      const preview = empty.getByTestId('workflows-runs-library-preview-row');
+      await expect(preview).toHaveCount(3);
+      for (const row of await preview.all()) {
+        await expect(row).toContainText('Built-in');
+      }
+      // A previewed workflow opens marked in the full Library.
+      await empty
+        .locator(
+          `[data-testid="workflows-runs-library-preview-row"][data-row-key="pipeline:bundled:${BUNDLED_PIPELINE_ID}"]`,
+        )
+        .click();
+      await expectWorkflowsTab(window, LIBRARY);
+      await expect(
+        app.workflowsLibraryPipelineRow(BUNDLED_PIPELINE_ID, 'bundled'),
+      ).toHaveAttribute('data-highlighted', 'true');
+      // A reveal clears the Library search rather than filtering to one.
+      await expect(window.getByTestId('workflows-library-search')).toHaveValue(
+        '',
+      );
+
+      // See your library opens the whole Library, with no search carried in.
+      await app.openWorkflowsTab(RUNS);
+      await empty.getByTestId('workflows-runs-empty-library').click();
+      await expectWorkflowsTab(window, LIBRARY);
+      await expect(window.getByTestId('workflows-library-search')).toHaveValue(
+        '',
+      );
+      await expect(
+        app.workflowsLibraryPipelineRow(BUNDLED_PIPELINE_ID, 'bundled'),
+      ).toBeVisible();
+
+      // Browse Customize, offered last, leaves Workflows for Customize.
+      await app.openWorkflowsTab(RUNS);
+      await empty.getByTestId('workflows-runs-empty-marketplace').click();
+      await app.expectPluginsPage();
+      await expect(window.getByTestId('workflows-runs')).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('New workflow remains on Runs with no runs or workflows and preserves the body creation action', async () => {
     test.setTimeout(120_000);
     const userDataDir = mkdtempSync(
@@ -678,6 +751,10 @@ test.describe('Workflows page', () => {
       ).toHaveCount(0);
       const empty = window.getByTestId('workflows-runs-empty');
       await expect(empty).toBeVisible();
+      // An empty Library has nothing to preview.
+      await expect(
+        empty.getByTestId('workflows-runs-library-preview'),
+      ).toHaveCount(0);
       await expect(empty.getByTestId('workflows-runs-empty-run')).toHaveCount(
         0,
       );
@@ -1853,10 +1930,7 @@ test.describe('Workflows page', () => {
 
       // Automations that are off stay out of the calendar until asked for.
       await expectShown([]);
-      await window
-        .getByTestId('automations-calendar-show-disabled')
-        .getByRole('checkbox')
-        .check();
+      await window.getByTestId('automations-calendar-show-disabled').check();
       await expect(filter).toHaveAttribute('data-active', 'false');
       await expect(filter).toHaveText('Any project');
       await expectShown(['schedule-vite', 'schedule-next', 'schedule-advisor']);

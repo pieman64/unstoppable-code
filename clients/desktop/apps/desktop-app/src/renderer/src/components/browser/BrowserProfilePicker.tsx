@@ -1,24 +1,22 @@
 import {
   useCallback,
   useEffect,
-  useId,
-  useLayoutEffect,
   useRef,
   useState,
   type JSX,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import {
   BrowserProfileBadge,
   Button,
   ChevronDownIcon,
   CloseButton,
   Notice,
+  Popover,
   SettingsIcon,
   Tooltip,
-  getMeasuredBadgePopoverPosition,
 } from '@canopy/ui-shared';
+import { ControlSelect, FormField } from '@canopy/ui-shared/components';
 import type {
   BrowserProfileRecord,
   BrowserTaskSlot,
@@ -82,57 +80,17 @@ export function BrowserProfilePicker({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [nextOffset, setNextOffset] = useState<number>();
-  const selectId = useId();
   const button = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState({ top: 8, left: 8 });
-  useLayoutEffect(() => {
-    if (!open) return;
-    const update = (): void => {
-      const anchor = anchorRef?.current ?? button.current;
-      if (!anchor || !menu.current) return;
-      setPosition(
-        getMeasuredBadgePopoverPosition(
-          anchor.getBoundingClientRect(),
-          menu.current.offsetHeight,
-          menu.current.offsetWidth,
-        ),
-      );
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    if (menu.current) observer.observe(menu.current);
-    window.addEventListener('resize', update);
-    window.addEventListener('scroll', update, true);
-    return (): void => {
-      observer.disconnect();
-      window.removeEventListener('resize', update);
-      window.removeEventListener('scroll', update, true);
-    };
-  }, [anchorRef, open]);
-  // Dismiss on a pointer press outside the popover, the way every other
-  // anchored surface behaves. Without it the only ways out are Escape and
-  // completing an action, so a mis-click leaves the menu floating over the
-  // page. Skipped while an operation is in flight: closing mid-switch would
-  // hide the progress and error the user still needs to see.
-  useEffect(() => {
-    if (!open || busy) return;
-    const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (
-        menu.current?.contains(target) ||
-        button.current?.contains(target) ||
-        anchorRef?.current?.contains(target)
-      )
-        return;
-      setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    return (): void => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [anchorRef, open, busy, setOpen]);
+  const selectionRef = useRef<HTMLSelectElement>(null);
+  // Escape and an outside press close the popover, except while an
+  // operation is in flight: closing mid-switch would hide the progress and
+  // error the user still needs to see. Meanwhile an outside press is ignored
+  // rather than swallowed (`closeOnOutsidePress`), so the page's leave/stay
+  // prompt stays answerable.
+  const handleOpenChange = (next: boolean): void => {
+    if (!next && busy) return;
+    setOpen(next);
+  };
   const scope = {
     projectId: snapshot.projectId,
     worktreeId: snapshot.worktreeId,
@@ -292,178 +250,177 @@ export function BrowserProfilePicker({
           </Tooltip>
         </>
       )}
-      {open &&
-        createPortal(
-          <div
-            ref={menu}
-            style={position}
-            role="dialog"
-            aria-label="Choose browser profile"
-            aria-modal="false"
-            data-testid="browser-profile-menu"
-            data-canopy-browser-native-overlay="true"
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && !busy) {
-                event.stopPropagation();
-                close();
-              }
-            }}
-            className="fixed z-dropdown flex max-h-[calc(100vh-16px)] w-80 max-w-[calc(100vw-16px)] flex-col gap-4 overflow-y-auto rounded-xl bg-popover p-4 shadow-lg"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h3 className="text-s font-medium fg-primary">
-                  Browser profile
-                </h3>
-                {switchChangesProfile && (
-                  <p className="mt-1 text-xs fg-secondary">
-                    Replacing reloads this tab in the selected profile. Unsaved
-                    changes may be lost, and other tabs keep their profiles.
-                  </p>
-                )}
-              </div>
-              <CloseButton onClick={close} />
-            </div>
-            <div className="space-y-1.5">
-              <label className="block text-xs fg-secondary" htmlFor={selectId}>
-                Use profile
-              </label>
-              <select
-                autoFocus
-                id={selectId}
-                aria-label="Use profile"
-                data-testid="browser-profile-selection"
-                value={selected}
-                onChange={(event) => select(event.target.value)}
-                disabled={busy}
-                className="focus-ring w-full cursor-pointer appearance-none rounded-lg border bg-base px-3 py-1.5 text-s fg-primary disabled:cursor-default disabled:opacity-60"
-              >
-                <option value="task">Task (this task only)</option>
-                {selected !== 'task' &&
-                  !profiles.some(
-                    (profile) => profile.profileId === selected,
-                  ) && <option value={selected}>Unavailable profile</option>}
-                {profiles
-                  .filter((profile) => profile.kind === 'named')
-                  .map((profile) => {
-                    const qualifier = profileNameQualifier(profile, colliding);
-                    return (
-                      <option key={profile.profileId} value={profile.profileId}>
-                        {qualifier
-                          ? `${profile.displayName} · ${qualifier}`
-                          : profile.displayName}
-                      </option>
-                    );
-                  })}
-              </select>
-              {nextOffset !== undefined && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  className="-ml-2.5"
-                  onClick={() =>
-                    void run(async () => {
-                      const page = await window.api.browser.profiles.list({
-                        ...scope,
-                        offset: nextOffset,
-                      });
-                      setProfiles((current) => [...current, ...page.profiles]);
-                      setNextOffset(page.nextOffset);
-                    })
-                  }
-                >
-                  Load more profiles
-                </Button>
+      <Popover
+        open={open}
+        onOpenChange={handleOpenChange}
+        closeOnOutsidePress={!busy}
+        anchorRef={anchorRef ?? button}
+        initialFocusRef={selectionRef}
+        width="lg"
+        aria-label="Choose browser profile"
+        data-testid="browser-profile-menu"
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="text-s font-medium fg-primary">Browser profile</h3>
+              {switchChangesProfile && (
+                <p className="mt-1 text-xs fg-secondary">
+                  Replacing reloads this tab in the selected profile. Unsaved
+                  changes may be lost, and other tabs keep their profiles.
+                </p>
               )}
             </div>
-            {switchChangesProfile && (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="primary"
-                  size="md"
-                  data-testid="browser-profile-replace"
+            <CloseButton onClick={close} />
+          </div>
+          <div className="space-y-1.5">
+            <FormField label="Use profile">
+              {(fieldControl) => (
+                // The operating system's menu on purpose: this popover sits
+                // over the page's native browser view, and only an OS menu
+                // draws above that view. Canopy's own menu (`Select`,
+                // `SettingsSelect`) would open underneath the page.
+                <ControlSelect
+                  {...fieldControl}
+                  ref={selectionRef}
+                  fill
+                  data-testid="browser-profile-selection"
+                  value={selected}
+                  onChange={(event) => select(event.target.value)}
                   disabled={busy}
-                  onClick={() => switchTo('replace')}
                 >
-                  Replace this tab
-                </Button>
-                <Button
-                  variant="outline"
-                  size="md"
-                  data-testid="browser-profile-new-tab"
-                  disabled={busy}
-                  onClick={() => switchTo('new-tab')}
-                >
-                  Open new tab
-                </Button>
-              </div>
-            )}
-            {/* Stacked rather than a justify-between row: at this width the
-                button wraps, and a wrapped `justify-between` child lands
-                inset by its own padding instead of on the popover's edge. */}
-            <div className="flex flex-col items-start gap-0.5 border-t pt-3">
-              <p className="min-w-0 text-xs fg-secondary">
-                New-tab default:{' '}
-                <span className="fg-primary">{defaultName}</span>
-              </p>
-              {defaultChangesProfile && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  data-testid="browser-profile-set-default"
-                  disabled={busy || !slot}
-                  className="-ml-2.5"
-                  onClick={() =>
-                    slot &&
-                    void run(async () => {
-                      setSlot(
-                        await window.api.browser.profiles.setDefault({
-                          ...scope,
-                          operationId: crypto.randomUUID(),
-                          incarnationId: slot.incarnationId,
-                          expectedMetadataRevision: slot.metadataRevision,
-                          selection,
-                        }),
+                  <option value="task">Task (this task only)</option>
+                  {selected !== 'task' &&
+                    !profiles.some(
+                      (profile) => profile.profileId === selected,
+                    ) && <option value={selected}>Unavailable profile</option>}
+                  {profiles
+                    .filter((profile) => profile.kind === 'named')
+                    .map((profile) => {
+                      const qualifier = profileNameQualifier(
+                        profile,
+                        colliding,
                       );
-                      setNotice(
-                        'Default updated for new tabs in this task. Existing tabs keep their profiles.',
+                      return (
+                        <option
+                          key={profile.profileId}
+                          value={profile.profileId}
+                        >
+                          {qualifier
+                            ? `${profile.displayName} · ${qualifier}`
+                            : profile.displayName}
+                        </option>
                       );
-                    })
-                  }
-                >
-                  Use selected for new tabs
-                </Button>
+                    })}
+                </ControlSelect>
               )}
-            </div>
-            {/* Everything above acts on this tab; this leaves for the page
-                that owns profiles themselves (create, rename, permissions,
-                stored data), so it sits below its own rule. */}
-            <div className="border-t pt-2">
+            </FormField>
+            {nextOffset !== undefined && (
               <Button
                 variant="ghost"
                 size="sm"
-                data-testid="browser-profile-open-settings"
+                disabled={busy}
                 className="-ml-2.5"
-                onClick={() => {
-                  setOpen(false);
-                  useNavigationStore.getState().openSettings('browser');
-                }}
+                onClick={() =>
+                  void run(async () => {
+                    const page = await window.api.browser.profiles.list({
+                      ...scope,
+                      offset: nextOffset,
+                    });
+                    setProfiles((current) => [...current, ...page.profiles]);
+                    setNextOffset(page.nextOffset);
+                  })
+                }
               >
-                <SettingsIcon className="shrink-0" />
-                Settings
+                Load more profiles
+              </Button>
+            )}
+          </div>
+          {switchChangesProfile && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="primary"
+                size="md"
+                data-testid="browser-profile-replace"
+                disabled={busy}
+                onClick={() => switchTo('replace')}
+              >
+                Replace this tab
+              </Button>
+              <Button
+                variant="outline"
+                size="md"
+                data-testid="browser-profile-new-tab"
+                disabled={busy}
+                onClick={() => switchTo('new-tab')}
+              >
+                Open new tab
               </Button>
             </div>
-            {busy && (
-              <Notice intent="neutral" title="Applying profile">
-                Respond to any page dialog to continue.
-              </Notice>
+          )}
+          {/* Stacked rather than a justify-between row: at this width the
+                button wraps, and a wrapped `justify-between` child lands
+                inset by its own padding instead of on the popover's edge. */}
+          <div className="flex flex-col items-start gap-0.5 border-t pt-3">
+            <p className="min-w-0 text-xs fg-secondary">
+              New-tab default: <span className="fg-primary">{defaultName}</span>
+            </p>
+            {defaultChangesProfile && (
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="browser-profile-set-default"
+                disabled={busy || !slot}
+                className="-ml-2.5"
+                onClick={() =>
+                  slot &&
+                  void run(async () => {
+                    setSlot(
+                      await window.api.browser.profiles.setDefault({
+                        ...scope,
+                        operationId: crypto.randomUUID(),
+                        incarnationId: slot.incarnationId,
+                        expectedMetadataRevision: slot.metadataRevision,
+                        selection,
+                      }),
+                    );
+                    setNotice(
+                      'Default updated for new tabs in this task. Existing tabs keep their profiles.',
+                    );
+                  })
+                }
+              >
+                Use selected for new tabs
+              </Button>
             )}
-            {error && <Notice intent="destructive">{error}</Notice>}
-            {notice && <Notice intent="neutral">{notice}</Notice>}
-          </div>,
-          document.body,
-        )}
+          </div>
+          {/* Everything above acts on this tab; this leaves for the page
+                that owns profiles themselves (create, rename, permissions,
+                stored data), so it sits below its own rule. */}
+          <div className="border-t pt-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="browser-profile-open-settings"
+              className="-ml-2.5"
+              onClick={() => {
+                setOpen(false);
+                useNavigationStore.getState().openSettings('browser');
+              }}
+            >
+              <SettingsIcon className="shrink-0" />
+              Settings
+            </Button>
+          </div>
+          {busy && (
+            <Notice intent="neutral" title="Applying profile">
+              Respond to any page dialog to continue.
+            </Notice>
+          )}
+          {error && <Notice intent="destructive">{error}</Notice>}
+          {notice && <Notice intent="neutral">{notice}</Notice>}
+        </div>
+      </Popover>
     </>
   );
 }

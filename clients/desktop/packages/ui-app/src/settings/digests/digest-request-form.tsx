@@ -7,7 +7,12 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  FormField,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import {
   SettingsOperationError,
   type DigestRequestCredits,
@@ -15,6 +20,7 @@ import {
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
 import { SettingsLink, useSettingsClient, useSettingsRouter } from '../host';
 import { requestDigest, type DigestOwner } from './digest-api';
+import type { SettingsFailure } from '../errors';
 
 /**
  * Server-read funding for the subject, from `readDigestBillingForPage`. The
@@ -127,7 +133,7 @@ export function DigestRequestForm({
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // The server snapshot is deliberately null so SSR and the first hydration
   // pass agree even if they straddle UTC midnight.
@@ -174,7 +180,7 @@ export function DigestRequestForm({
       } catch (error) {
         if (!(error instanceof SettingsOperationError)) {
           setError(
-            errorCopy.actionCopy(error, { action: REQUEST_DIGEST_ACTION }),
+            errorCopy.actionFailure(error, { action: REQUEST_DIGEST_ACTION }),
           );
           return;
         }
@@ -200,7 +206,7 @@ export function DigestRequestForm({
           status = 'enqueued';
         } else {
           setError(
-            errorCopy.actionCopy(error, {
+            errorCopy.actionFailure(error, {
               action: REQUEST_DIGEST_ACTION,
               known: DIGEST_REQUEST_KNOWN_ERRORS,
             }),
@@ -260,41 +266,45 @@ export function DigestRequestForm({
         billed to your AI credits based on usage.
       </p>
 
-      <ErrorBanner error={error} />
+      <ErrorBanner error={error?.copy} details={error?.details} />
 
       <form
         className="mt-4 flex flex-wrap items-end gap-3"
         onSubmit={handleSubmit}
       >
-        <label className="flex flex-col gap-1 text-xs fg-secondary">
-          <span>Start date</span>
-          <input
-            type="date"
-            required
-            value={startDate}
-            max={maxDate ?? undefined}
-            disabled={submitting || outOfCredits}
-            data-testid={`${testIdPrefix}-digest-request-start`}
-            onChange={(event) => setStartDate(event.target.value)}
-            className="rounded-md border bg-base px-2 py-1 text-s fg-primary disabled:cursor-not-allowed disabled:opacity-60"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs fg-secondary">
-          <span>End date</span>
-          <input
-            type="date"
-            required
-            value={endDate}
-            // The browser enforces the same rule the route re-checks:
-            // no end past today, and never before the start.
-            min={startDate || undefined}
-            max={maxDate ?? undefined}
-            disabled={submitting || outOfCredits}
-            data-testid={`${testIdPrefix}-digest-request-end`}
-            onChange={(event) => setEndDate(event.target.value)}
-            className="rounded-md border bg-base px-2 py-1 text-s fg-primary disabled:cursor-not-allowed disabled:opacity-60"
-          />
-        </label>
+        <FormField label="Start date">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="date"
+              required
+              value={startDate}
+              max={maxDate ?? undefined}
+              disabled={submitting || outOfCredits}
+              data-testid={`${testIdPrefix}-digest-request-start`}
+              onChange={(event) => setStartDate(event.target.value)}
+            />
+          )}
+        </FormField>
+        <FormField label="End date">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="date"
+              required
+              value={endDate}
+              // The browser enforces the same rule the route re-checks:
+              // no end past today, and never before the start.
+              min={startDate || undefined}
+              max={maxDate ?? undefined}
+              disabled={submitting || outOfCredits}
+              data-testid={`${testIdPrefix}-digest-request-end`}
+              onChange={(event) => setEndDate(event.target.value)}
+            />
+          )}
+        </FormField>
         <Button
           type="submit"
           size="compact"

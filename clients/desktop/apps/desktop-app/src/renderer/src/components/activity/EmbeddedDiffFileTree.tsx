@@ -14,7 +14,7 @@ import type {
   ChangedFileInfo,
   FileDiffSource,
 } from '@canopy/desktop-shared/types';
-import { Notice } from '@canopy/ui-shared';
+import { Notice, SearchField } from '@canopy/ui-shared';
 
 const EMPTY: ChangedFileInfo[] = [];
 export interface EmbeddedDiffFileTreeProps {
@@ -157,13 +157,15 @@ export function EmbeddedDiffFileTree({
         <div className="px-2 pt-2 text-xs fg-secondary">Turn changes</div>
       )}
       {searchOpen && (
-        <input
+        <SearchField
           autoFocus
+          className="m-2"
+          clearOnEscape={false}
           aria-label="Search changed files"
           placeholder="Search files…"
           value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
+          onValueChange={(next) => {
+            setQuery(next);
             setSearchRequest((value) => value + 1);
             setRevealFilteredFile(false);
           }}
@@ -173,7 +175,6 @@ export function EmbeddedDiffFileTree({
               setQuery('');
             }
           }}
-          className="m-2 rounded bg-base px-2 py-1 text-xs fg-primary ring-1 ring-inset ring-line-base"
         />
       )}
       {error && (

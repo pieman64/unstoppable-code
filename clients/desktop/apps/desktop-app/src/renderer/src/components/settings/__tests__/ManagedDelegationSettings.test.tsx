@@ -396,8 +396,8 @@ describe('ManagedDelegationSettings', () => {
     });
     const select = querySettingsSelects(container)[0] ?? null;
     if (!select) throw new Error('Expected consultation select');
-    // The shared settings dropdown: the 28px secondary capsule.
-    expect(select.trigger.classList.contains('rounded-full')).toBe(true);
+    // The shared settings dropdown: the 28px secondary rounded rectangle.
+    expect(select.trigger.classList.contains('rounded-row')).toBe(true);
     expect(select.trigger.classList.contains('h-7')).toBe(true);
 
     select.choose('off');
@@ -411,7 +411,7 @@ describe('ManagedDelegationSettings', () => {
       'some child sessions could not be stopped',
     );
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry shutdown',
+      (button) => button.textContent === 'Try again',
     );
     if (!retry) throw new Error('Expected retry shutdown button');
     // The shared secondary button draws its outline with a ring, because a

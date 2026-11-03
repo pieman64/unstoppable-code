@@ -162,6 +162,16 @@ function approveButton(): HTMLButtonElement {
   return btn;
 }
 
+/** Opens a reassignment dropdown and picks `Child <index>`. */
+function chooseChild(trigger: HTMLButtonElement, index: string): void {
+  act(() => trigger.click());
+  const option = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="option"]'),
+  ).find((candidate) => candidate.textContent === `Child ${index}`);
+  if (!option) throw new Error(`Missing option Child ${index}`);
+  act(() => option.click());
+}
+
 describe('SplitPlanReviewPanel', () => {
   it('records the plan review and blocks only the hunk previews from session replay', () => {
     render({ planResponse: makePlanResponse(makeValidPlan()) });
@@ -239,25 +249,15 @@ describe('SplitPlanReviewPanel', () => {
     // rendered). Reassignment selects for a given file appear once per hunk,
     // scoped by data-testid on the file container. Find all selects in that
     // container and pick the one for hunk 1 by its aria-label.
-    const selects = container.querySelectorAll<HTMLSelectElement>(
-      '[data-testid="split-plan-changes-file-1-client.ts"] select',
+    const selects = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="split-plan-changes-file-1-client.ts"] [role="combobox"]',
     );
     const hunk1Select = Array.from(selects).find((select) =>
       select.getAttribute('aria-label')?.includes('hunk 1'),
     );
     if (!hunk1Select) throw new Error('hunk 1 reassignment select not found');
 
-    act(() => {
-      // React tracks the controlled value via a private setter, so set
-      // through the native prototype setter before dispatching `change`.
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked via .call, not stored as a method reference
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLSelectElement.prototype,
-        'value',
-      )?.set;
-      nativeSetter?.call(hunk1Select, '2');
-      hunk1Select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseChild(hunk1Select, '2');
 
     expect(approveButton().disabled).toBe(false);
     expect(
@@ -294,23 +294,15 @@ describe('SplitPlanReviewPanel', () => {
       child1FileToggle.click();
     });
 
-    const selects = container.querySelectorAll<HTMLSelectElement>(
-      '[data-testid="split-plan-changes-file-1-client.ts"] select',
+    const selects = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="split-plan-changes-file-1-client.ts"] [role="combobox"]',
     );
     const hunk0Select = Array.from(selects).find((select) =>
       select.getAttribute('aria-label')?.includes('hunk 0'),
     );
     if (!hunk0Select) throw new Error('hunk 0 reassignment select not found');
 
-    act(() => {
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked via .call, not stored as a method reference
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLSelectElement.prototype,
-        'value',
-      )?.set;
-      nativeSetter?.call(hunk0Select, '2');
-      hunk0Select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseChild(hunk0Select, '2');
 
     // The original plan object passed in via props must not have been
     // mutated by the reassignment (component clones on mount, and the
@@ -423,8 +415,8 @@ describe('SplitPlanReviewPanel', () => {
       child1FileToggle.click();
     });
 
-    const selects = container.querySelectorAll<HTMLSelectElement>(
-      '[data-testid="split-plan-changes-file-1-logo.png"] select',
+    const selects = container.querySelectorAll<HTMLButtonElement>(
+      '[data-testid="split-plan-changes-file-1-logo.png"] [role="combobox"]',
     );
     // Zero-hunk files render a single whole-file reassign select with no hunk
     // suffix in the aria-label.
@@ -435,15 +427,7 @@ describe('SplitPlanReviewPanel', () => {
       throw new Error('whole-file reassignment select not found');
     }
 
-    act(() => {
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked via .call, not stored as a method reference
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLSelectElement.prototype,
-        'value',
-      )?.set;
-      nativeSetter?.call(wholeFileSelect, '2');
-      wholeFileSelect.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseChild(wholeFileSelect, '2');
 
     // Validation stays valid and Approve stays enabled after the move.
     expect(approveButton().disabled).toBe(false);

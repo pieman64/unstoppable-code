@@ -4,6 +4,7 @@ import {
   CHAT_DETAIL_COPY,
   CHAT_DETAIL_LABEL,
   ChatDetailControl,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   ensureChatDetailSubscription,
@@ -52,11 +53,7 @@ export function ChatDetailSettingsRow(): JSX.Element {
         />
       }
     >
-      {saveError && (
-        <p role="alert" className="text-xs fg-destructive">
-          {saveError}
-        </p>
-      )}
+      <ErrorBanner error={saveError} className="" />
     </SettingsRow>
   );
 }

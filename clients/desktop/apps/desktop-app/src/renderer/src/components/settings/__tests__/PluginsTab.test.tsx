@@ -151,9 +151,12 @@ describe('PluginsTab Active items summary', () => {
     installPreloads(() => Promise.reject(new Error('offline')));
     const { container, cleanup } = await renderPluginsTab();
     expect(container.textContent).not.toContain('Nothing is active yet.');
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      'Status could not be loaded. Refresh to try again.',
+    // A failed row status is a StatusLabel (destructive ink), not an alert.
+    const status = [...container.querySelectorAll('span.fg-destructive')].find(
+      (el) =>
+        el.textContent === 'Status could not be loaded. Refresh to try again.',
     );
+    expect(status).toBeDefined();
     cleanup();
   });
 

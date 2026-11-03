@@ -17,7 +17,12 @@ import { getFilenameMatchedIndices } from './file-search-palette-helpers';
 import { shouldFetchFileSearchPaletteEntry } from './file-search-palette-state';
 import { HighlightedSegments, splitMatchSegments } from '@canopy/ui-shared';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { KeyHintFooter } from '@canopy/ui-shared/components';
+import {
+  DialogModal,
+  ErrorState,
+  KeyHintFooter,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import { pickerKeyHints } from '@canopy/ui-shared/lib/shortcuts';
 import { isCoworkWorkspaceFileRoot } from '@canopy/ui-shared/lib/file-root-groups';
 
@@ -276,25 +281,29 @@ export function FileSearchPalette({
     !!selectedWorktree && !showLoading && allResults.length === 0 && !error;
 
   return (
-    <div
-      className="fixed inset-0 z-dropdown flex items-start justify-center bg-overlay-scrim px-4 pt-[10vh]"
-      onClick={onClose}
+    <DialogModal
+      onClose={onClose}
+      title="File search"
+      titleId="file-search-palette-title"
+      placement="top"
+      maxWidth="2xl"
+      inset="flush"
+      headerBorder={false}
+      scrollableBody={false}
+      dataTestId="file-search-palette"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="File search"
-        data-testid="file-search-palette"
-        className="flex w-full max-w-160 flex-col overflow-hidden rounded-2xl bg-card shadow-xl"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="border-b px-4 py-3">
-          <input
+      {/* The palette's own keys: Escape closes from anywhere inside, even a
+          focused result row, which the dialog's Escape leaves to the list. */}
+      <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
+        <div className="border-b">
+          <SearchField
             ref={inputRef}
+            size="lg"
+            aria-label="Search files"
+            clearOnEscape={false}
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
+            onValueChange={(next) => {
+              setQuery(next);
               setNavigation({
                 selectedIndex: 0,
                 visibleStart: 0,
@@ -308,13 +317,12 @@ export function FileSearchPalette({
             }
             data-testid="file-search-palette-input"
             disabled={!selectedWorktree}
-            className="w-full bg-transparent text-m fg-primary outline-none placeholder:fg-secondary disabled:cursor-not-allowed"
           />
         </div>
         <div
           ref={scrollRef}
           data-testid="file-search-palette-scroll"
-          className="max-h-88 overflow-y-auto"
+          className="max-h-88 min-h-0 overflow-y-auto"
           onScroll={(event) => {
             if (selectionScrollRef.current) return;
             const { scrollTop, scrollHeight, clientHeight } =
@@ -345,11 +353,7 @@ export function FileSearchPalette({
               <LoadingSpinner tone="secondary" />
             </div>
           )}
-          {error && (
-            <div className="px-4 py-8 text-center text-s fg-destructive">
-              {error}
-            </div>
-          )}
+          {error && <ErrorState space="panel" message={error} />}
           {showEmpty && (
             <div className="px-4 py-8 text-center text-s fg-secondary">
               {deferredQuery
@@ -431,6 +435,6 @@ export function FileSearchPalette({
         </div>
         <KeyHintFooter hints={pickerKeyHints('open')} />
       </div>
-    </div>
+    </DialogModal>
   );
 }

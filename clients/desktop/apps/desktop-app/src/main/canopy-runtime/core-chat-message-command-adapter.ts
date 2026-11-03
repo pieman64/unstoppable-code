@@ -143,6 +143,9 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         chatId: send.chatId,
         messageId: send.userMessageId,
         text: send.text,
+        ...(send.trackedPlanImplementation
+          ? { trackedPlanImplementation: send.trackedPlanImplementation }
+          : {}),
         ...(send.planReviewApproval
           ? { planReviewApproval: send.planReviewApproval }
           : {}),
@@ -380,6 +383,11 @@ export function createCoreChatMessageAdapter(
               chatId: params.chatId,
               userMessageId: params.messageId,
               text: params.text,
+              ...(params.trackedPlanImplementation
+                ? {
+                    trackedPlanImplementation: params.trackedPlanImplementation,
+                  }
+                : {}),
               ...(params.planReviewApproval
                 ? { planReviewApproval: params.planReviewApproval }
                 : {}),

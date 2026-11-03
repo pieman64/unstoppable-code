@@ -70,6 +70,24 @@ describe('UnifiedTable shared large-catalog path', () => {
     return onToggle;
   }
 
+  function kindTrigger(): HTMLButtonElement {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[role="combobox"][aria-label="Kind filter"]',
+    );
+    if (!trigger) throw new Error('Kind filter missing');
+    return trigger;
+  }
+
+  /** Opens the Kind filter's menu and chooses by value. */
+  function chooseKind(value: string): void {
+    act(() => kindTrigger().click());
+    const option = document.body.querySelector<HTMLButtonElement>(
+      `[role="listbox"] [role="option"][data-value="${value}"]`,
+    );
+    if (!option) throw new Error(`Kind option ${value} missing`);
+    act(() => option.click());
+  }
+
   it('lists source filter option names and subtitles', () => {
     act(() => {
       root.render(
@@ -103,6 +121,42 @@ describe('UnifiedTable shared large-catalog path', () => {
     );
     expect(label).toBeDefined();
     expect(subtitle).toBeDefined();
+  });
+
+  it('opens the source filter as a dialog with the search focused, and Escape closes it', () => {
+    act(() => {
+      root.render(
+        <UnifiedTable
+          rows={[row(0)]}
+          sourceOptions={[{ value: 'claude', label: 'Claude', icon: 'claude' }]}
+          selectedKeys={new Set()}
+          onToggle={jest.fn()}
+          onView={() => undefined}
+          showCollectionKind={false}
+        />,
+      );
+    });
+    const trigger = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.includes('All sources'),
+    );
+    act(() => trigger?.click());
+    const dialog = document.body.querySelector(
+      '[role="dialog"][aria-label="Sources"]',
+    );
+    expect(dialog).not.toBeNull();
+    expect(container.contains(dialog)).toBe(false);
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Search sources',
+    );
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(
+      document.body.querySelector('[role="dialog"][aria-label="Sources"]'),
+    ).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('reveals plugin members without changing its selection', () => {
@@ -219,14 +273,7 @@ describe('UnifiedTable shared large-catalog path', () => {
         ?.getAttribute('data-row-count'),
     ).toBe('1');
 
-    const kind = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Kind filter"]',
-    );
-    act(() => {
-      if (!kind) throw new Error('Kind filter missing');
-      kind.value = 'plugin';
-      kind.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseKind('plugin');
     expect(container.textContent).toContain(
       'No results match the current filters.',
     );
@@ -237,19 +284,15 @@ describe('UnifiedTable shared large-catalog path', () => {
     // desktop produced `kind: 'mcp'` for the same servers, so the dropdown
     // showed "App" and "MCP server" as two kinds for one concept.
     render([row(0), { ...row(1), kind: 'mcp', key: 'srv/default' }]);
-    const kind = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Kind filter"]',
-    );
-    const labels = Array.from(kind?.options ?? []).map(
-      (option) => option.textContent,
-    );
+    act(() => kindTrigger().click());
+    const labels = Array.from(
+      document.body.querySelectorAll('[role="listbox"] [role="option"]'),
+    ).map((option) => option.textContent);
     expect(labels).toEqual(['All kinds', 'Skill', 'Plugin', 'MCP server']);
     expect(labels).not.toContain('App');
-    act(() => {
-      if (!kind) throw new Error('Kind filter missing');
-      kind.value = 'mcp';
-      kind.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    act(() => kindTrigger().click());
+    chooseKind('mcp');
+    expect(kindTrigger().dataset.value).toBe('mcp');
     expect(
       container
         .querySelector('[data-testid="unified-table"]')
@@ -313,13 +356,17 @@ describe('UnifiedTable shared large-catalog path', () => {
   it('shows loading only when the backing row list is empty', () => {
     render([], { loading: true });
     expect(container.textContent).toContain('Loading…');
-    expect(container.querySelector('[aria-label="Loading"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).toBeNull();
     expect(container.textContent).not.toContain('No items available.');
   });
 
   it('shows a spinner for loading under the spinner style', () => {
     render([], { loading: true, spinnerStyle: true });
-    expect(container.querySelector('[aria-label="Loading"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     expect(container.textContent).not.toContain('Loading…');
     expect(container.textContent).not.toContain('No items available.');
   });

@@ -21,7 +21,10 @@ import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { SharedCollectionDetailModal } from '../CollectionsTab';
+import {
+  CollectionModal,
+  SharedCollectionDetailModal,
+} from '../CollectionsTab';
 
 jest.mock('../../shared', () => ({
   DialogModal: ({
@@ -568,5 +571,154 @@ describe('SharedCollectionDetailModal', () => {
       await flushPromises();
     });
     expect(updateShared).not.toHaveBeenCalled();
+  });
+});
+
+describe('CollectionModal guarded local saves', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const config: CollectionConfig = {
+    id: 'c1',
+    revision: 'rev-1',
+    name: 'Kit',
+    description: 'Exact',
+    skills: [{ sourceId: 'missing', skillName: 'keep-2' }],
+    plugins: [],
+    mcpServers: [],
+    createdAt: '2026-10-01',
+    updatedAt: '2026-10-02',
+  };
+  const loadCollection = jest.fn();
+  const saveCollection = jest.fn();
+  const onSaved = jest.fn();
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    loadCollection.mockReset().mockResolvedValue(config);
+    saveCollection.mockReset().mockResolvedValue(config);
+    onSaved.mockReset().mockResolvedValue(undefined);
+    Object.defineProperty(window, 'collections', {
+      configurable: true,
+      value: { loadCollection, saveCollection },
+    });
+  });
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+  it('echoes the revision and retains refs absent from the picker', async () => {
+    await act(async () => {
+      await flushPromises();
+      root.render(
+        <CollectionModal
+          collectionId="c1"
+          onClose={() => {}}
+          onSaved={onSaved}
+        />,
+      );
+    });
+    await act(async () => {
+      await flushPromises();
+      findButton(container, 'Save').click();
+    });
+    expect(saveCollection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'c1',
+        revision: 'rev-1',
+        skills: config.skills,
+      }),
+    );
+  });
+  it('locks an uncertain create reply and notifies the host instead of creating twice', async () => {
+    saveCollection.mockRejectedValue(new Error('Reply lost'));
+    const onUnknownCreate = jest.fn();
+    await act(async () => {
+      root.render(
+        <CollectionModal
+          collectionId={null}
+          onClose={() => {}}
+          onSaved={onSaved}
+          onUnknownCreate={onUnknownCreate}
+        />,
+      );
+      await flushPromises();
+    });
+    const input = container.querySelector('input');
+    if (!input) throw new Error('Name missing');
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(input, 'Kit');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      findButton(container, 'Save').click();
+      await flushPromises();
+    });
+    expect(findButton(container, 'Save').disabled).toBe(true);
+    expect(onUnknownCreate).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('save outcome is unknown');
+  });
+
+  it('never repeats a committed create when only refresh fails', async () => {
+    onSaved.mockRejectedValue(new Error('refresh failed'));
+    await act(async () => {
+      await flushPromises();
+      root.render(
+        <CollectionModal
+          collectionId={null}
+          onClose={() => {}}
+          onSaved={onSaved}
+        />,
+      );
+    });
+    const input = container.querySelector('input');
+    if (!input) throw new Error('Name missing');
+    act(() => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(input, 'Kit');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      await flushPromises();
+      findButton(container, 'Save').click();
+      findButton(container, 'Save').click();
+    });
+    expect(saveCollection).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain(
+      'Collection saved, but the list could not refresh.',
+    );
+    expect(findButton(container, 'Save').disabled).toBe(true);
+  });
+  it('ignores a committed save response after its editor unmounts', async () => {
+    let finish: () => void = () => {};
+    saveCollection.mockImplementation(
+      () =>
+        new Promise<CollectionConfig>((resolve) => {
+          finish = (): void => resolve(config);
+        }),
+    );
+    await act(async () => {
+      root.render(
+        <CollectionModal
+          collectionId="c1"
+          onClose={() => {}}
+          onSaved={onSaved}
+        />,
+      );
+      await flushPromises();
+    });
+    act(() => findButton(container, 'Save').click());
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      finish();
+      await flushPromises();
+    });
+    expect(onSaved).not.toHaveBeenCalled();
   });
 });

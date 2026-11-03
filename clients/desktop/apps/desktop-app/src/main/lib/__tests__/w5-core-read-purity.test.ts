@@ -94,6 +94,7 @@ import {
 import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
 import { getFeatureFlagService } from '../../feature-flags/service';
 import { getPrimaryProjectConfigFilePath } from '../canopy-json';
+import { W5AuthorityUnreachableError } from '@canopy/core-runtime/node/w5/file-store';
 
 jest.setTimeout(60_000);
 let dir: string;
@@ -232,6 +233,20 @@ afterEach(async () => {
   else process.env.CANOPY_DATA_DIR = originalDataDir;
   rmSync(dir, { recursive: true, force: true });
 });
+
+it.each(reads)(
+  '%s refuses typed W5 authority loss instead of projecting absence',
+  async (_name, read) => {
+    const lost = new W5AuthorityUnreachableError('refused', 'lost');
+    const capture = jest.spyOn(host, 'capture').mockRejectedValue(lost);
+    try {
+      await expect(read(createCoreWorkspaceAdapter())).rejects.toBe(lost);
+      expect(capture).toHaveBeenCalledTimes(1);
+    } finally {
+      capture.mockRestore();
+    }
+  },
+);
 
 describe('core read adapter never persists removal cleanup (RR1)', () => {
   it.each(reads)(

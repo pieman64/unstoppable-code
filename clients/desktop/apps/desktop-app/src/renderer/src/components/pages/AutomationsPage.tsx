@@ -15,6 +15,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -25,7 +26,6 @@ import { PageTitlebar } from '../shared/PageTitlebar';
 import { WorkflowsPageHeader } from '../workflows/WorkflowsPageHeader';
 import { WorkflowsTabPanel } from '../workflows/WorkflowsTabPanel';
 import { PageContent } from '../shared/PageContent';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
@@ -73,7 +73,6 @@ import {
   PlayCircleIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons';
-import { CheckIcon as AppCatalogCheckIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   DocumentPencilIcon,
   ShareIcon,
@@ -84,11 +83,17 @@ import {
   useAutomationScope,
   type AutomationScope,
 } from '@/hooks/useAutomationScope';
-import { useAnchoredMenu } from '@/hooks/useAnchoredMenu';
 import { TableActionButton, TableActionsCell } from '@canopy/ui-shared';
 import {
   Button,
+  FloatingPickerMenu,
   Notice,
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionDescription,
+  PickerMenuOptionLabel,
+  PickerMenuOptionLeading,
   SortableColumnHeader,
 } from '@canopy/ui-shared/components';
 import {
@@ -1350,8 +1355,6 @@ function PreviouslyTriggeredSection({
   );
 }
 
-const STATUS_DROPDOWN_WIDTH = 168;
-
 interface StatusBadgeDropdownProps {
   activity: ScheduledActivity;
   isRunning: boolean;
@@ -1365,14 +1368,7 @@ function StatusBadgeDropdown({
 }: StatusBadgeDropdownProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const position = useAnchoredMenu(
-    open,
-    setOpen,
-    anchorRef,
-    menuRef,
-    STATUS_DROPDOWN_WIDTH,
-  );
+  const menuId = useId();
 
   const failed = activity.lastResult?.status === 'failure' && !activity.enabled;
   const label = isRunning ? 'Running' : triggeredActivityStatusLabel(activity);
@@ -1407,6 +1403,7 @@ function StatusBadgeDropdown({
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         data-testid={`automations-toggle-${activity.id}`}
         className={`focus-ring inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-3xs font-medium transition-colors ${toneClasses}`}
       >
@@ -1414,48 +1411,43 @@ function StatusBadgeDropdown({
         <span>{label}</span>
         <ChevronDownIcon width={10} height={10} />
       </button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            role="listbox"
-            onClick={(event): void => event.stopPropagation()}
-            className="z-dropdown rounded-lg bg-popover p-1 shadow-lg"
-            style={{
-              position: 'fixed',
-              width: STATUS_DROPDOWN_WIDTH,
-              ...(position
-                ? { top: position.top, left: position.left }
-                : { visibility: 'hidden' }),
-            }}
-          >
-            <StatusDropdownOption
-              label="Enabled"
-              description="Runs when triggered"
-              dotClass="bg-success"
-              selected={activity.enabled}
-              onSelect={(): void => {
-                setOpen(false);
-                if (!activity.enabled) {
-                  void onToggleEnabled(activity);
-                }
-              }}
-            />
-            <StatusDropdownOption
-              label="Disabled"
-              description="Skips trigger events"
-              dotClass="bg-fg-secondary/70"
-              selected={!activity.enabled}
-              onSelect={(): void => {
-                setOpen(false);
-                if (activity.enabled) {
-                  void onToggleEnabled(activity);
-                }
-              }}
-            />
-          </div>,
-          document.body,
-        )}
+      <FloatingPickerMenu
+        id={menuId}
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={anchorRef}
+        placement="bottom-left"
+        interaction="listbox"
+        role="listbox"
+        aria-label="Automation status"
+        // The menu is portaled; keep its clicks off the row underneath.
+        onClick={(event): void => event.stopPropagation()}
+      >
+        <StatusDropdownOption
+          label="Enabled"
+          description="Runs when triggered"
+          dotClass="bg-success"
+          selected={activity.enabled}
+          onSelect={(): void => {
+            setOpen(false);
+            if (!activity.enabled) {
+              void onToggleEnabled(activity);
+            }
+          }}
+        />
+        <StatusDropdownOption
+          label="Disabled"
+          description="Skips trigger events"
+          dotClass="bg-fg-secondary/70"
+          selected={!activity.enabled}
+          onSelect={(): void => {
+            setOpen(false);
+            if (activity.enabled) {
+              void onToggleEnabled(activity);
+            }
+          }}
+        />
+      </FloatingPickerMenu>
     </>
   );
 }
@@ -1474,23 +1466,20 @@ function StatusDropdownOption({
   onSelect: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <PickerMenuOption
       role="option"
       aria-selected={selected}
+      selected={selected}
       onClick={onSelect}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
-        selected ? 'bg-secondary' : ''
-      }`}
     >
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="font-medium fg-primary">{label}</span>
-        <span className="text-3xs fg-secondary">{description}</span>
-      </span>
-      {selected && (
-        <AppCatalogCheckIcon width="12" height="12" className="fg-primary" />
-      )}
-    </button>
+      <PickerMenuOptionLeading>
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+      </PickerMenuOptionLeading>
+      <PickerMenuOptionContent>
+        <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
+        <PickerMenuOptionDescription>{description}</PickerMenuOptionDescription>
+      </PickerMenuOptionContent>
+      <PickerMenuOptionCheck selected={selected} />
+    </PickerMenuOption>
   );
 }

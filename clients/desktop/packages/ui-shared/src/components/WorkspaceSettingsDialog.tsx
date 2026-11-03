@@ -21,6 +21,8 @@ import { Select, TextArea, TextInput } from './Field';
 import { SegmentedControl } from './SegmentedControl';
 import { SettingsDangerConfirmBlock } from './SettingsDangerConfirmBlock';
 import { SettingsSaveStatus } from './SettingsSaveStatus';
+import { ErrorBanner } from './StatusBlocks';
+import { StatusLabel } from './StatusLabel';
 import { SettingsRowsGroup, SettingsRowsRow } from './settings/SettingsRows';
 import { WORKSPACE_COLOR_PALETTE } from './workspace-color-palette';
 
@@ -151,10 +153,34 @@ function isBuiltInTabId(id: string): id is WorkspaceSettingsTab {
   return Object.prototype.hasOwnProperty.call(TAB_LABELS, id);
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message.trim()
-    ? error.message
-    : fallback;
+/**
+ * A host's settings failure that carries a server's reason. `message` is our
+ * own sentence and renders; `details` is the raw reason, which never renders
+ * and is offered through `Copy details` (settings never show server text).
+ * Hosts throw a plain `Error` for copy of their own, such as validation.
+ */
+export class WorkspaceSettingsFailure extends Error {
+  readonly details: string | undefined;
+
+  constructor(message: string, details?: string) {
+    super(message);
+    this.name = 'WorkspaceSettingsFailure';
+    this.details = details;
+  }
+}
+
+interface DialogFailure {
+  readonly message: string;
+  readonly details?: string;
+}
+
+function failureFrom(error: unknown, fallback: string): DialogFailure {
+  const message =
+    error instanceof Error && error.message.trim() ? error.message : fallback;
+  return error instanceof WorkspaceSettingsFailure &&
+    error.details !== undefined
+    ? { message, details: error.details }
+    : { message };
 }
 
 /**
@@ -248,7 +274,7 @@ export function WorkspaceSettingsDialog({
   const [justSaved, setJustSaved] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<DialogFailure | null>(null);
 
   useEffect(() => {
     metadataBaselineRef.current = {
@@ -298,7 +324,7 @@ export function WorkspaceSettingsDialog({
   const save = async (): Promise<void> => {
     if (working || !trimmedName) return;
     setSaving(true);
-    setError(null);
+    setFailure(null);
     setJustSaved(false);
     const nameEditVersion = nameEditVersionRef.current;
     const colorEditVersion = colorEditVersionRef.current;
@@ -342,7 +368,7 @@ export function WorkspaceSettingsDialog({
       }
       setJustSaved(true);
     } catch (saveError: unknown) {
-      setError(errorMessage(saveError, "Couldn't save settings."));
+      setFailure(failureFrom(saveError, "Couldn't save settings."));
     } finally {
       nameSavingVersionRef.current = null;
       colorSavingVersionRef.current = null;
@@ -353,13 +379,13 @@ export function WorkspaceSettingsDialog({
   const remove = async (): Promise<void> => {
     if (!onDelete || working) return;
     setDeleting(true);
-    setError(null);
+    setFailure(null);
     try {
       await onDelete();
       onClose();
     } catch (deleteError: unknown) {
-      setError(
-        errorMessage(
+      setFailure(
+        failureFrom(
           deleteError,
           `Couldn't delete ${WORKSPACE_LABEL.toLowerCase()}.`,
         ),
@@ -444,12 +470,12 @@ export function WorkspaceSettingsDialog({
             onConfirm={() => {
               if (working) return;
               setSecondaryWorking(true);
-              setError(null);
+              setFailure(null);
               void secondaryDanger
                 .onConfirm()
                 .then(onClose)
                 .catch((error: unknown) => {
-                  setError(errorMessage(error, "Couldn't delete workspace."));
+                  setFailure(failureFrom(error, "Couldn't delete workspace."));
                   setSecondaryConfirming(false);
                 })
                 .finally(() => setSecondaryWorking(false));
@@ -462,6 +488,7 @@ export function WorkspaceSettingsDialog({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={working ? (): void => undefined : onClose}
       closeOnBackdrop={!working}
       closeOnEscape={!working}
@@ -478,7 +505,7 @@ export function WorkspaceSettingsDialog({
           them sideways rather than wrapping. */}
       {visibleTabs.length > 1 ? (
         <div
-          className="shrink-0 overflow-x-auto border-b px-5 pb-3 pt-1"
+          className="shrink-0 overflow-x-auto border-b px-6 pb-3 pt-1"
           data-testid="workspace-settings-pages"
         >
           <SegmentedControl
@@ -501,7 +528,7 @@ export function WorkspaceSettingsDialog({
       <div
         role="tabpanel"
         aria-label={activeLabel}
-        className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 py-2"
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-6 py-2"
       >
         <div className="flex flex-1 flex-col gap-4">
           {activeTab === 'details' && (
@@ -595,9 +622,7 @@ export function WorkspaceSettingsDialog({
                   }
                 >
                   {modelsError && (
-                    <span role="alert" className="text-xs fg-destructive">
-                      {modelsError}
-                    </span>
+                    <StatusLabel size="xs">{modelsError}</StatusLabel>
                   )}
                 </SettingsRowsRow>
               )}
@@ -701,20 +726,17 @@ export function WorkspaceSettingsDialog({
           {activeTab !== 'details' && removeRows && (
             <SettingsRowsGroup surface="plain">{removeRows}</SettingsRowsGroup>
           )}
-          {error && (
-            <div
-              role="alert"
-              className="text-xs fg-destructive"
-              data-testid={testIds?.error}
-            >
-              {error}
-            </div>
-          )}
+          <ErrorBanner
+            className=""
+            error={failure?.message}
+            details={failure?.details}
+            testId={testIds?.error}
+          />
         </div>
       </div>
       {/* One action: Save writes every page at once and keeps the dialog
           open; the title bar's close button leaves. */}
-      <div className="flex shrink-0 items-center justify-end gap-3 border-t px-5 py-3">
+      <div className="flex shrink-0 items-center justify-end gap-3 border-t px-6 py-3">
         <span className="mr-auto">
           <SettingsSaveStatus
             state={saving ? 'saving' : justSaved ? 'saved' : 'idle'}

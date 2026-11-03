@@ -86,6 +86,7 @@ import {
 } from '../services/files-service';
 import type { FileBrowserRoot } from '../lib/file-browser-roots';
 import { validateId } from '../lib/validation';
+import { logMainProcessError } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import { createCoreChatCommandAdapter } from './core-chat-command-adapter';
 import { getChatStateService } from '../services/chat-state-service';
@@ -120,12 +121,24 @@ import {
 import { createCoreWorkspaceRepoRulesAdapter } from './core-workspace-repo-rules-adapter';
 import { createCorePipelineDefinitionAdapter } from './core-pipeline-definition-adapter';
 import { createCoreScriptDefinitionsAdapter } from './core-script-definitions-adapter';
+import { createCoreWorkspaceMetadataAdapter } from './core-workspace-metadata-adapter';
+import { createCoreWorkspaceLifecycleAdapter } from './core-workspace-lifecycle-adapter';
+import { createCoreWorkspaceGuardedAdapter } from './core-workspace-guarded-adapter';
+import { createCoreSourceCompositionAdapter } from './core-source-composition-adapter';
 import { createCoreIntegrationAdapter } from './core-integration-adapter';
 import { createCorePullRequestAdapter } from './core-pull-request-adapter';
 import type {
   CoreIntegrationHost,
   CorePullRequestHost,
 } from '@canopy/core-runtime/node/github';
+import {
+  createWorkerScriptAdapter,
+  type WorkerScriptAdapter,
+} from './worker-script-adapter';
+import {
+  createWorkerPipelineAdapter,
+  type WorkerPipelineAdapter,
+} from './worker-pipeline-adapter';
 import {
   createWorkerGitAdapter,
   type DesktopHealthWorktree,
@@ -141,8 +154,19 @@ import type {
   WorkerGitWorktreeHealthHost,
 } from '@canopy/core-runtime/node/git';
 import type { CoreWorkspaceRepoRulesHost } from '@canopy/core-runtime/node/workspace/workspace-repo-rules';
-import type { CorePipelineDefinitionHost } from '@canopy/core-runtime/node/pipeline';
+import type { WorkerPipelineExecution } from '@canopy/protocol/canopy-core';
+import {
+  CorePipelineRuns,
+  type PipelineHostRequestBroker,
+  pipelineHostCoreCaller,
+  settlePipelineHostRequests,
+  type CorePipelineDefinitionHost,
+} from '@canopy/core-runtime/node/pipeline';
 import type { CoreScriptDefinitionsHost } from '@canopy/core-runtime/node/script/core-script-definitions';
+import type { CoreWorkspaceMetadataHost } from '@canopy/core-runtime/node/workspace/metadata-commands';
+import type { CoreWorkspaceLifecycleHost } from '@canopy/core-runtime/node/workspace/lifecycle-commands';
+import type { CoreWorkspaceGuardedHost } from '@canopy/core-runtime/node/workspace/guarded-commands';
+import type { CoreSourceCompositionHost } from '@canopy/core-runtime/node/workspace/source-composition-commands';
 import {
   createCoreAnnotationAdapter,
   type CoreAnnotationAdapter,
@@ -153,6 +177,7 @@ import {
   type CoreOperationAdapter,
 } from './core-operation-adapter';
 import { LocalWorkerExecution } from '@canopy/core-runtime/node/operations';
+import { CoreScriptRuns } from '@canopy/core-runtime/node/script/execution';
 import type { CostService } from '../cost-index/service';
 import {
   createWorkerFilesystemAdapter,
@@ -247,6 +272,21 @@ export interface CreateDesktopRuntimeOptions {
   sharedMultiRepoHost?: SharedMultiRepoHost;
   /** Host port for `core.script.definition.*`; defaults to the desktop sources. */
   scriptDefinitionsHost?: CoreScriptDefinitionsHost;
+  /** `worker.script.*` over this process's local worker (CAN-4143). */
+  workerScriptAdapter?: WorkerScriptAdapter;
+  /** Host port for the W5 `core.workspace.*` metadata commands (W7a). */
+  workspaceMetadataHost?: CoreWorkspaceMetadataHost;
+  /**
+   * Host port for the lifecycle commands: the creates #1, #2 and #21
+   * (W7b-3) and archive, restore and workspace delete (W7b-2a).
+   */
+  workspaceLifecycleHost?: CoreWorkspaceLifecycleHost;
+  /** Host port for the guarded W5 commands (W7b-1b and 1c). */
+  workspaceGuardedHost?: CoreWorkspaceGuardedHost;
+  /** Host port for the keyed source, composition, rename and fork lifecycles (W7b-4). */
+  sourceCompositionHost?: CoreSourceCompositionHost;
+  /** `worker.pipeline.execution.*`; defaults to the desktop pipeline worker. */
+  workerPipelineAdapter?: WorkerPipelineAdapter;
   /** Host port for `worker.git.branch.list`; defaults to the desktop checkouts. */
   workerGitHost?: WorkerGitBranchListHost<string>;
   /** Host port for `worker.git.executable.get`; defaults to the desktop detection. */
@@ -533,6 +573,18 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
    * of its parent operation, recorded before it starts.
    */
   readonly localWorker: LocalWorkerExecution;
+  /**
+   * Script runs (CAN-4143): each a `core.script.run` operation whose
+   * `worker.script.execute` dispatch runs on the local worker.
+   */
+  readonly scriptRuns: CoreScriptRuns;
+  /**
+   * Pipeline runs (CAN-4140): each run is a core operation whose start and
+   * cancel are dispatched to the local worker.
+   */
+  readonly pipelineRuns: CorePipelineRuns;
+  /** The local worker's host step requests, which core settles. */
+  readonly pipelineHostRequests: PipelineHostRequestBroker;
   queryWorkspaceListForLegacyIpc(
     params: CanopyQueryParams<'core.workspace.list'>,
     options: CanopyQueryOptions,
@@ -1031,8 +1083,36 @@ export function createDesktopRuntime(
   const pipelineDefinitionAdapter = createCorePipelineDefinitionAdapter(
     options.pipelineDefinitionHost,
   );
+  const workerPipelineAdapter =
+    options.workerPipelineAdapter ?? createWorkerPipelineAdapter();
+  const pipelineHostRequests = workerPipelineAdapter.hostRequests;
   const scriptDefinitionsAdapter = createCoreScriptDefinitionsAdapter(
     options.scriptDefinitionsHost,
+  );
+  const workerScriptAdapter =
+    options.workerScriptAdapter ?? createWorkerScriptAdapter();
+  const workerScriptHandlers: DesktopDomainAdapter = {
+    queries: workerScriptAdapter.queries,
+    instructions: workerScriptAdapter.instructions,
+  };
+  const workspaceMetadataAdapter = createCoreWorkspaceMetadataAdapter(
+    options.workspaceMetadataHost,
+  );
+  const workspaceLifecycleAdapter = createCoreWorkspaceLifecycleAdapter(
+    options.workspaceLifecycleHost,
+  );
+  const workspaceGuardedAdapter = createCoreWorkspaceGuardedAdapter(
+    options.workspaceGuardedHost,
+  );
+  // A wire lifecycle's Git effect dispatches on this runtime, once built.
+  const lifecycleEffects: { dispatcher?: DesktopCanopyDispatcher } = {};
+  const sourceCompositionAdapter = createCoreSourceCompositionAdapter(
+    options.sourceCompositionHost,
+    () => {
+      if (!lifecycleEffects.dispatcher)
+        throw new Error('Desktop Canopy runtime is unavailable.');
+      return lifecycleEffects.dispatcher;
+    },
   );
   const workerGitAdapter = createWorkerGitAdapter(
     options.workerGitHost,
@@ -1087,10 +1167,12 @@ export function createDesktopRuntime(
     pipelineDefinitionAdapter,
     sharedMultiRepoAdapter,
     scriptDefinitionsAdapter,
+    workerScriptHandlers,
     workerGitAdapter,
     workerGitSyncAdapter,
     integrationAdapter,
     pullRequestAdapter,
+    workerPipelineAdapter,
     annotationAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
@@ -1217,6 +1299,14 @@ export function createDesktopRuntime(
       ownedAdapter('core.pipeline', pipelineDefinitionAdapter),
       ownedAdapter('core.workspace.sharedMultiRepo', sharedMultiRepoAdapter),
       ownedAdapter('core.script.definition', scriptDefinitionsAdapter),
+      ownedAdapter('worker.script', workerScriptHandlers),
+      owned('core.workspace.metadata', workspaceMetadataAdapter.instructions),
+      owned('core.workspace.lifecycle', workspaceLifecycleAdapter.instructions),
+      owned('core.workspace.guarded', workspaceGuardedAdapter.instructions),
+      owned(
+        'core.workspace.lifecycle.sourceComposition',
+        sourceCompositionAdapter.instructions,
+      ),
       owned(
         'worker.git',
         workerGitAdapter.queries,
@@ -1225,6 +1315,7 @@ export function createDesktopRuntime(
       ),
       ownedAdapter('core.integration', integrationAdapter),
       ownedAdapter('core.pullRequest', pullRequestAdapter),
+      ownedAdapter('worker.pipeline', workerPipelineAdapter),
       ownedAdapter('core.annotation', annotationAdapter),
       owned(
         'core.operation',
@@ -1255,6 +1346,10 @@ export function createDesktopRuntime(
           instructions: {
             ...instructions,
             ...mutationAdapter,
+            ...workspaceMetadataAdapter.instructions,
+            ...workspaceLifecycleAdapter.instructions,
+            ...workspaceGuardedAdapter.instructions,
+            ...sourceCompositionAdapter.instructions,
             ...workerHandlers,
           },
           streams: { ...streams, ...input.runtimeHandlers.streams },
@@ -1285,6 +1380,37 @@ export function createDesktopRuntime(
       },
       receipts: workerReceipts,
     }),
+  });
+  const scriptRuns = new CoreScriptRuns({
+    operations: operationAdapter.service,
+    localWorker,
+    observe: (executionId, observer): Promise<() => void> =>
+      workerScriptAdapter.observe(executionId, observer),
+  });
+  const pipelineRuns = new CorePipelineRuns({
+    operations: operationAdapter.service,
+    localWorker,
+    worker: {
+      get: (executionId): Promise<WorkerPipelineExecution | null> =>
+        workerPipelineAdapter.loaded()?.get(executionId) ??
+        Promise.resolve(null),
+      observe: (executionId, observer): (() => void) | null =>
+        workerPipelineAdapter.loaded()?.observe(executionId, observer) ?? null,
+    },
+  });
+  // Core settles the local worker's host step requests; the desktop host
+  // loads on the first request.
+  const stopSettlingHostRequests = settlePipelineHostRequests({
+    dispatcher,
+    caller: pipelineHostCoreCaller(LOCAL_DESKTOP_AUTHORITY_ID),
+    apply: async (request, signal) =>
+      (
+        await import('../pipelines/pipeline-host-requests')
+      ).applyPipelineHostRequest(request, signal),
+    onError: (error) => logMainProcessError('Pipeline host step failed', error),
+  }).catch((error: unknown) => {
+    logMainProcessError('Pipeline host requests are unavailable', error);
+    return null;
   });
   const takeChatEventForLegacyIpc = (
     cursor: CanopyStreamCursor,
@@ -1810,6 +1936,9 @@ export function createDesktopRuntime(
   const desktopDispatcher: DesktopCanopyDispatcher = Object.assign(dispatcher, {
     isShuttingDown: (): boolean => shuttingDown,
     localWorker,
+    scriptRuns,
+    pipelineRuns,
+    pipelineHostRequests,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(
       queryWorkspaceListForLegacyIpc,
     ),
@@ -1825,6 +1954,7 @@ export function createDesktopRuntime(
       workspaceReadSnapshots.close();
       // An open stream is an active call that shutdown would wait out.
       closeFileTreeWatchesForLegacyIpc();
+      (await stopSettlingHostRequests)?.();
       await runtime.shutdown('desktop');
       // Unfinished work stays recorded; the next launch reconciles it.
       operationAdapter.close();
@@ -2043,6 +2173,7 @@ export function createDesktopRuntime(
       },
     ),
   });
+  lifecycleEffects.dispatcher = desktopDispatcher;
   activeDesktopRuntime = desktopDispatcher;
   return desktopDispatcher;
 }

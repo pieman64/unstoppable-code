@@ -25,6 +25,7 @@ import {
   pageLibraryRows,
   withoutAutomationOwnedPipelines,
   pipelineTriggerKinds,
+  selectRunsLibraryPreview,
   sortLibraryRows,
   truncateStepChain,
   type WorkflowLibraryRow,
@@ -543,6 +544,47 @@ describe('workflow library model', () => {
       'a',
       'b',
     ]);
+  });
+
+  it('previews up to three Library rows, built-in ones after the rest', () => {
+    // Recently run order is Weekly lint sweep, Morning PR triage, Nightly
+    // dependency check, Code review, Follow up, Implementation; the built-in
+    // Code review and Implementation move behind every other source.
+    expect(names(selectRunsLibraryPreview(rows, 'recently-run'))).toEqual([
+      'Weekly lint sweep',
+      'Morning PR triage',
+      'Nightly dependency check',
+    ]);
+    expect(
+      names(selectRunsLibraryPreview(rows, 'recently-run', rows.length)),
+    ).toEqual([
+      'Weekly lint sweep',
+      'Morning PR triage',
+      'Nightly dependency check',
+      'Follow up',
+      'Code review',
+      'Implementation',
+    ]);
+    // The Library's sort still orders each group.
+    expect(names(selectRunsLibraryPreview(rows, 'name', 4))).toEqual([
+      'Follow up',
+      'Morning PR triage',
+      'Nightly dependency check',
+      'Weekly lint sweep',
+    ]);
+  });
+
+  it('previews built-in rows when there is nothing else, skipping shares not yet added', () => {
+    const fresh = [
+      libraryRow('Refine plan', { kind: 'pipeline', source: 'built-in' }),
+      libraryRow('Code review', { kind: 'pipeline', source: 'built-in' }),
+      libraryRow('Shared digest', { source: 'shared', installable: true }),
+    ];
+    expect(names(selectRunsLibraryPreview(fresh, 'recently-run'))).toEqual([
+      'Code review',
+      'Refine plan',
+    ]);
+    expect(selectRunsLibraryPreview([], 'recently-run')).toEqual([]);
   });
 
   it('pages 25 at a time and clamps a page past the end', () => {

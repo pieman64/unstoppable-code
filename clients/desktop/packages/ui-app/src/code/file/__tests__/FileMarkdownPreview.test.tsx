@@ -48,11 +48,11 @@ describe('FileMarkdownPreview', () => {
         ].join('\n')}
       />,
     );
-    expect(out).toContain('Title<!-- -->:');
+    expect(out).toMatch(/<dt[^>]*>title<\/dt>/);
     expect(out).toContain('Frontmatter Preview');
-    expect(out).toContain('Draft<!-- -->:');
+    expect(out).toMatch(/<dt[^>]*>draft<\/dt>/);
     expect(out).toContain('No');
-    expect(out).toContain('Tags<!-- -->:');
+    expect(out).toMatch(/<dt[^>]*>tags<\/dt>/);
     expect(out).toContain('[&quot;alpha&quot;,&quot;beta&quot;]');
     expect(out).toContain('<h1');
     expect(out).toContain('Body Heading</h1>');

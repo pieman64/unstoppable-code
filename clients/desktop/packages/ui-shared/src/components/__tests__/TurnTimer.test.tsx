@@ -950,6 +950,12 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
           finishedAt={60_000}
           copyText="Done"
           trailing={<button>Fork</button>}
+          stampAccessory={
+            <>
+              <button>Share</button>
+              <button>More</button>
+            </>
+          }
         />
       </ChatLookProvider>,
     );
@@ -968,6 +974,21 @@ describe('TurnTimer reply Copy (CAN-4704)', () => {
         container.querySelector('[data-testid="turn-actions-reveal"]')
           ?.className,
       ).not.toContain('opacity-0');
+      expect(
+        container
+          .querySelector('[data-testid="turn-timer-stamp-accessory"]')
+          ?.classList.contains('gap-0.5'),
+      ).toBe(true);
+      const stamp = container.querySelector(
+        '[data-testid="turn-timer-relative"]',
+      );
+      expect(stamp?.classList.contains('tabular-nums')).toBe(false);
+      expect(stamp?.classList.contains('proportional-nums')).toBe(true);
+      expect(stamp?.classList.contains('text-xs')).toBe(true);
+      expect(stamp?.className).not.toContain('group-hover/turn:fg-secondary');
+      expect(stamp?.className).not.toContain(
+        'group-focus-within/turn:fg-secondary',
+      );
     } finally {
       act(() => root.unmount());
     }

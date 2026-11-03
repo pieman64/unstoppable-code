@@ -18,7 +18,7 @@ import {
   WarningIcon,
 } from '../icons/AppIcons';
 import { Button, buttonClassName } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
+import { BusyLayers } from './LoadingButton';
 
 /**
  * The two tiers of action a notice can offer. `primary` is the single
@@ -51,7 +51,7 @@ export function noticeButtonClassName(
   return buttonClassName({
     variant,
     size,
-    className: `h-auto! max-h-none! max-w-full whitespace-normal [overflow-wrap:anywhere] py-1 ${size === 'md' ? 'min-h-8' : 'min-h-7'} ${className}`,
+    className: `h-auto! max-h-none! max-w-full shrink-0 whitespace-nowrap py-1 ${size === 'md' ? 'min-h-8' : 'min-h-7'} ${className}`,
   });
 }
 
@@ -66,7 +66,10 @@ export interface NoticeButtonProps extends ButtonHTMLAttributes<HTMLButtonElemen
    * The work this button started is still running: the spinner takes the
    * glyph's place inside the capsule, `busyLabel` (when given) replaces the
    * label, and the button announces `aria-busy` and stops taking presses, so
-   * a retry never blanks or runs twice.
+   * a retry never blanks or runs twice. Pass it (`false` while resting) on
+   * any button whose work can run: the busy label's room is then held from
+   * the first render, so the capsule keeps one width and its neighbours
+   * never move.
    */
   busy?: boolean;
   /** The label while `busy`. Defaults to the resting label. */
@@ -85,7 +88,7 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
       type = 'button',
       className = '',
       icon,
-      busy = false,
+      busy,
       busyLabel,
       disabled,
       children,
@@ -94,26 +97,36 @@ export const NoticeButton = forwardRef<HTMLButtonElement, NoticeButtonProps>(
     ref,
   ): JSX.Element {
     const size = useContext(NoticeButtonSizeContext);
-    if (busy) {
+    const hasIcon = icon !== undefined && icon !== null;
+    if (busy !== undefined) {
+      // The resting and busy labels share one cell (`BusyLayers`, as in
+      // `LoadingButton`), so turning busy never widens the capsule.
       return (
         <button
           ref={ref}
           type={type}
-          className={noticeButtonClassName(
-            variant,
-            `gap-1.5 ${className}`,
-            size,
-          )}
+          className={noticeButtonClassName(variant, className, size)}
           {...props}
-          disabled
-          aria-busy="true"
+          disabled={busy || disabled}
+          aria-busy={busy || undefined}
         >
-          <LoadingSpinner className="shrink-0" decorative />
-          {busyLabel ?? children}
+          <BusyLayers
+            busy={busy}
+            busyLabel={busyLabel}
+            leading={
+              hasIcon ? (
+                <span aria-hidden="true" className="inline-flex shrink-0">
+                  {icon}
+                </span>
+              ) : undefined
+            }
+          >
+            {children}
+          </BusyLayers>
         </button>
       );
     }
-    if (icon === undefined || icon === null) {
+    if (!hasIcon) {
       return (
         <button
           ref={ref}
@@ -159,6 +172,18 @@ export type NoticeIntent = 'neutral' | 'attention' | 'destructive' | 'positive';
  * title and message, so three or more buttons never crowd the copy.
  */
 export type NoticeActionsPlacement = 'trailing' | 'below';
+
+/**
+ * In a narrow notice (`@container/notice` under 384px) a row of actions
+ * under the copy also runs under the dismiss column, which is empty below
+ * the close button: 28px plus the 8px gap. A long label such as
+ * `Open organizations` then keeps its padding in a 260px sidebar while the
+ * row stays lined up with the copy. A negative margin alone frees the space
+ * without widening the row, so the row also grows into it and drops the
+ * trailing row's `max-w-full` cap.
+ */
+const NARROW_UNDER_DISMISS =
+  '@max-sm/notice:-mr-9 @max-sm/notice:grow @max-sm/notice:max-w-none';
 
 export interface NoticeProps extends Omit<
   HTMLAttributes<HTMLDivElement>,
@@ -505,7 +530,7 @@ export function Notice({
       } ${trailingActions ? 'items-center' : 'items-start'} ${className}`}
       {...rest}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
+      <div className="@container/notice flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           <div
             // On the composer the glyph centres on a wrapped message, level
@@ -587,11 +612,19 @@ export function Notice({
                   ? // Without a dismiss control the buttons are the right
                     // edge: pull them in by the same 4px as the dismiss box
                     // so a button sits 8px from the top, bottom, and right
-                    // alike.
-                    `ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 ${
-                      onDismiss || !pullControlsIn ? '' : '-mr-1'
-                    }`
-                  : `flex basis-full flex-wrap items-center gap-2 ${
+                    // alike. In a notice narrower than 384px (a sidebar, a
+                    // popover) the buttons take their own row under the
+                    // copy, lined up with it, as `below` places them.
+                    `ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 @max-sm/notice:ml-0 @max-sm/notice:basis-full @max-sm/notice:justify-start ${
+                      resolvedIcon === null
+                        ? ''
+                        : composerShape
+                          ? '@max-sm/notice:pl-11'
+                          : toastShape
+                            ? '@max-sm/notice:pl-4'
+                            : '@max-sm/notice:pl-6'
+                    } ${onDismiss ? NARROW_UNDER_DISMISS : pullControlsIn ? '-mr-1' : ''}`
+                  : `flex basis-full flex-wrap items-center gap-2 ${onDismiss ? NARROW_UNDER_DISMISS : ''} ${
                       resolvedIcon === null
                         ? ''
                         : composerShape

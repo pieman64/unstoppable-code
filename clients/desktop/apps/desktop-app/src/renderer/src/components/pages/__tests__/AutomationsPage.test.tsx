@@ -558,8 +558,9 @@ describe('AutomationsPage triggered activity coverage', () => {
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
       '{isAppAdvisorTarget && runInControls}',
     );
+    // The enabled control is the shared switch, which takes `dataTestId`.
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
-      'data-testid="automations-form-enabled"',
+      'dataTestId="automations-form-enabled"',
     );
     expect(AUTOMATIONS_PAGE_SOURCE).toContain(
       'data-testid="automations-form-schedule-readonly"',
@@ -1116,6 +1117,48 @@ describe('AutomationsPage triggered activity interactions', () => {
     expect(resolveSharedPipelineInstallPin).toHaveBeenCalledWith({
       remoteId: 'remote-1',
     });
+  });
+
+  it('picks the status from the shared picker menu', async () => {
+    useAutomationsStore.setState({
+      activities: [activity({ id: 'activity-1', name: 'Morning review' })],
+      recentRuns: [],
+      loading: false,
+      hydrated: true,
+      error: null,
+      mutationError: null,
+    });
+    renderPage();
+
+    await clickTestId('automations-toggle-activity-1');
+    const trigger = container.querySelector(
+      '[data-testid="automations-toggle-activity-1"]',
+    );
+    const menu = document.body.querySelector<HTMLElement>(
+      '[role="listbox"][aria-label="Automation status"]',
+    );
+    expect(menu).not.toBeNull();
+    expect(trigger?.getAttribute('aria-controls')).toBe(menu?.id);
+    const options = Array.from(
+      menu?.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
+    );
+    expect(options.map((option) => option.textContent)).toEqual([
+      expect.stringContaining('Enabled'),
+      expect.stringContaining('Disabled'),
+    ]);
+    expect(options[0]?.getAttribute('aria-selected')).toBe('true');
+
+    await act(async () => {
+      options[1]?.click();
+      await Promise.resolve();
+    });
+    expect(updateMock).toHaveBeenCalledWith({
+      id: 'activity-1',
+      enabled: false,
+    });
+    expect(
+      document.body.querySelector('[aria-label="Automation status"]'),
+    ).toBeNull();
   });
 
   it('runs and deletes from the row controls, and opens the shell from Edit', async () => {

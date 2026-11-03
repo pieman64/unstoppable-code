@@ -106,14 +106,17 @@ export async function getWorktreePausedHookKeys(input: {
  * portal and App Advisor pause or resume named keys. An unknown worktree is
  * refused as `not_found`, as it always was.
  */
-export async function changeWorktreeHookPause(input: {
-  projectId: string;
-  worktreeId: string;
-  change: WorktreeHookPauseChange;
-  source: ScriptHookSettingsSource;
-}): Promise<{ worktree: WorktreeData; pausedHookKeys: string[] }> {
+export async function changeWorktreeHookPause(
+  input: {
+    projectId: string;
+    worktreeId: string;
+    change: WorktreeHookPauseChange;
+    source: ScriptHookSettingsSource;
+  },
+  setPaused: typeof setWorktreeHooksPaused = setWorktreeHooksPaused,
+): Promise<{ worktree: WorktreeData; pausedHookKeys: string[] }> {
   try {
-    const outcome = await setWorktreeHooksPaused({
+    const outcome = await setPaused({
       workspaceId: input.projectId,
       worktreeId: input.worktreeId,
       change: input.change,
@@ -134,17 +137,27 @@ export async function changeWorktreeHookPause(input: {
   }
 }
 
-export async function setWorktreePausedHookKeys(input: {
-  projectId: string;
-  worktreeId: string;
-  pausedHookKeys: readonly unknown[];
-}): Promise<WorktreeData> {
-  const { worktree } = await changeWorktreeHookPause({
-    projectId: input.projectId,
-    worktreeId: input.worktreeId,
-    change: { kind: 'replace', pausedHookKeys: input.pausedHookKeys },
-    source: 'desktop',
-  });
+/**
+ * The renderer's `worktree:set-paused-hooks`; its IPC handler passes the
+ * registered operation's projection (W7b-1b).
+ */
+export async function setWorktreePausedHookKeys(
+  input: {
+    projectId: string;
+    worktreeId: string;
+    pausedHookKeys: readonly unknown[];
+  },
+  setPaused: typeof setWorktreeHooksPaused = setWorktreeHooksPaused,
+): Promise<WorktreeData> {
+  const { worktree } = await changeWorktreeHookPause(
+    {
+      projectId: input.projectId,
+      worktreeId: input.worktreeId,
+      change: { kind: 'replace', pausedHookKeys: input.pausedHookKeys },
+      source: 'desktop',
+    },
+    setPaused,
+  );
   return worktree;
 }
 
@@ -819,13 +832,15 @@ export async function getHookSourceInfo(
 /**
  * `project:save-hooks`, `workspace:save-hooks` and
  * `workspace:save-repo-hooks`: compatibility adapters over the W5
- * `core.workspace.hooks.update` boundary (CAN-3816).
+ * `core.workspace.hooks.update` boundary (CAN-3816). The IPC handlers pass
+ * its registered operation's projection (W7b-1b).
  */
 export async function saveProjectHooksFromService(
   request: SaveProjectHooksRequest,
+  update: typeof updateWorkspaceHooks = updateWorkspaceHooks,
 ): Promise<void> {
   validateId(request.projectId, 'projectId');
-  await updateWorkspaceHooks({
+  await update({
     workspaceId: request.projectId,
     change: { kind: 'replace', hooks: request.hooks },
     source: 'desktop',
@@ -834,9 +849,10 @@ export async function saveProjectHooksFromService(
 
 export async function saveWorkspaceHooksFromService(
   request: SaveWorkspaceHooksRequest,
+  update: typeof updateWorkspaceHooks = updateWorkspaceHooks,
 ): Promise<void> {
   validateId(request.workspaceId, 'workspaceId');
-  await updateWorkspaceHooks({
+  await update({
     workspaceId: request.workspaceId,
     change: { kind: 'replace', hooks: request.hooks },
     source: 'desktop',
@@ -845,10 +861,11 @@ export async function saveWorkspaceHooksFromService(
 
 export async function saveWorkspaceRepoHooksFromService(
   request: SaveWorkspaceRepoHooksRequest,
+  update: typeof updateWorkspaceHooks = updateWorkspaceHooks,
 ): Promise<void> {
   validateId(request.workspaceId, 'workspaceId');
   try {
-    await updateWorkspaceHooks({
+    await update({
       workspaceId: request.workspaceId,
       change: { kind: 'repositories', repos: request.repos },
       source: 'desktop',

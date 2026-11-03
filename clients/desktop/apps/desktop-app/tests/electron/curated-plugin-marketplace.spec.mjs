@@ -191,7 +191,7 @@ test.describe('curated plugin marketplace', () => {
         detail.getByTestId('plugin-detail-provider-toggle-label'),
       ).toHaveText('Show:');
       await expect(
-        detail.getByRole('tablist', {
+        detail.getByRole('group', {
           name: 'Show plugin details for Claude or Codex',
         }),
       ).toBeVisible();

@@ -16,6 +16,7 @@ import {
 } from '@dnd-kit/sortable';
 import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
+import { Badge, EmptyState } from '@canopy/ui-shared/components';
 import { JobCard } from './JobCard';
 
 interface JobListProps {
@@ -183,12 +184,10 @@ export function JobList({
       {/* Job list */}
       <div className="flex-1 overflow-auto p-4 space-y-3">
         {jobOrder.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <p className="text-s fg-secondary mb-2">No jobs yet</p>
-            <p className="text-xs fg-secondary">
-              Click &quot;Add job&quot; to get started
-            </p>
-          </div>
+          <EmptyState
+            title="No jobs yet"
+            subtitle={'Click "Add job" to get started'}
+          />
         ) : (
           <DndContext
             sensors={sensors}
@@ -227,9 +226,7 @@ export function JobList({
                     {activeStep.name ?? activeStep.id ?? 'Step'}
                   </span>
                   {activeStep.uses && (
-                    <span className="shrink-0 px-1.5 py-0.5 text-3xs font-medium fg-secondary bg-secondary rounded">
-                      {activeStep.uses}
-                    </span>
+                    <Badge className="shrink-0">{activeStep.uses}</Badge>
                   )}
                 </div>
               ) : null}

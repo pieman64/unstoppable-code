@@ -33,10 +33,10 @@ import type {
   DiagramCanvasProps,
   DiagramCanvasViewportSize,
 } from '@canopy/ui-rich/diagram';
+import { ErrorState } from '@canopy/ui-shared/components';
 import { ChatIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
-  Button,
   FloatingPickerMenu,
   PickerTrigger,
   PickerTriggerChevron,
@@ -48,7 +48,6 @@ import {
   SUBAGENTS_LOAD_FAILED_LABEL,
   SUBAGENTS_LOADING_LABEL,
   SUBAGENTS_PARTIAL_TREE_NOTICE,
-  SUBAGENTS_RETRY_LABEL,
   SUBAGENTS_ROOT_PICKER_LABEL,
   SUBAGENTS_TREE_LABEL,
   SUBAGENTS_VIEW_GROUP_LABEL,
@@ -1018,22 +1017,13 @@ export function SubagentsPanel({
     );
   } else if (treeState.status === 'error') {
     content = (
-      <div
-        role="alert"
-        data-testid="subagents-load-error"
-        className="flex flex-1 flex-col items-center justify-center gap-2 text-xs"
-      >
-        <span className="fg-primary">{SUBAGENTS_LOAD_FAILED_LABEL}</span>
-        <span className="fg-tertiary">{treeState.error}</span>
-        {treeState.onRetry ? (
-          <Button
-            variant="secondary"
-            size="compact"
-            onClick={treeState.onRetry}
-          >
-            {SUBAGENTS_RETRY_LABEL}
-          </Button>
-        ) : null}
+      <div className="flex flex-1 flex-col items-center justify-center">
+        <ErrorState
+          space="panel"
+          testId="subagents-load-error"
+          message={SUBAGENTS_LOAD_FAILED_LABEL}
+          onRetry={treeState.onRetry}
+        />
       </div>
     );
   } else if (tree && tree.nodes.size === 0) {

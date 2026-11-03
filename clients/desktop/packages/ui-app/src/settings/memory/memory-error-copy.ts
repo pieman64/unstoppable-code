@@ -5,6 +5,7 @@ import {
   useSettingsAccessLostRefresh,
   useSettingsErrorCopy,
   type KnownSettingsError,
+  type SettingsFailure,
 } from '../errors';
 import { MEMORY_RATE_LIMIT_MESSAGE } from './api';
 
@@ -17,13 +18,16 @@ export const MEMORY_KNOWN_ERRORS: readonly KnownSettingsError[] = [
 ];
 
 export interface MemoryErrorCopy {
-  /** Logs a failed read and returns its copy, for a banner with Retry. */
-  loadCopy(error: unknown): string;
   /**
-   * Logs a failed action and returns its copy. `action` completes
+   * Logs a failed read and returns our sentence with the raw reason beside
+   * it, for a banner with Retry and Copy details.
+   */
+  loadFailure(error: unknown): SettingsFailure;
+  /**
+   * Logs a failed action and returns its failure. `action` completes
    * `Couldn't <action>.`, for example `preview retrieval`.
    */
-  actionCopy(error: unknown, action: string): string;
+  actionFailure(error: unknown, action: string): SettingsFailure;
 }
 
 /**
@@ -38,13 +42,13 @@ export function useMemoryErrorCopy(): MemoryErrorCopy {
   const refreshOnAccessLost = useSettingsAccessLostRefresh();
   return useMemo(
     (): MemoryErrorCopy => ({
-      loadCopy: (error): string => {
+      loadFailure: (error): SettingsFailure => {
         refreshOnAccessLost(error);
-        return errorCopy.loadCopy(error, MEMORY_KNOWN_ERRORS);
+        return errorCopy.loadFailure(error, MEMORY_KNOWN_ERRORS);
       },
-      actionCopy: (error, action): string => {
+      actionFailure: (error, action): SettingsFailure => {
         refreshOnAccessLost(error);
-        return errorCopy.actionCopy(error, {
+        return errorCopy.actionFailure(error, {
           action,
           known: MEMORY_KNOWN_ERRORS,
         });

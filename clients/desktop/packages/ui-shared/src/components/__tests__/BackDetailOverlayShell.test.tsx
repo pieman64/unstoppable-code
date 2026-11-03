@@ -6,9 +6,6 @@ import { BackDetailOverlayShell } from '../BackDetailOverlayShell';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
-const CARD_CLASSES =
-  'w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl bg-card shadow-xl';
-
 describe('BackDetailOverlayShell session replay', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -36,7 +33,7 @@ describe('BackDetailOverlayShell session replay', () => {
         </BackDetailOverlayShell>,
       ),
     );
-    const card = container.querySelector<HTMLElement>('[role="dialog"]');
+    const card = document.body.querySelector<HTMLElement>('[role="dialog"]');
     if (!card) throw new Error('Dialog card did not render');
     return card;
   }
@@ -54,15 +51,15 @@ describe('BackDetailOverlayShell session replay', () => {
         </BackDetailOverlayShell>,
       ),
     );
-    const card = container.querySelector<HTMLElement>('[role="dialog"]');
+    const card = document.body.querySelector<HTMLElement>('[role="dialog"]');
     if (!card) throw new Error('Dialog card did not render');
-    // The card, back button, and title stay recorded.
+    // The card, close button, and title stay recorded.
     expect(card.closest(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
     expect(
       card.querySelector('h2')?.closest(`.${REPLAY_BLOCK_CLASS}`),
     ).toBeNull();
     expect(card.querySelector('h2')?.textContent).toBe('My skill');
-    const blockRoot = container
+    const blockRoot = document.body
       .querySelector('[data-testid="shell-body"]')
       ?.closest(`.${REPLAY_BLOCK_CLASS}`);
     expect(blockRoot).not.toBeNull();
@@ -70,8 +67,39 @@ describe('BackDetailOverlayShell session replay', () => {
   });
 
   it('adds no replay marker unless the host asks for it', () => {
-    const card = renderShell();
-    expect(card.className).toBe(CARD_CLASSES);
-    expect(container.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
+    renderShell();
+    expect(document.body.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
+  });
+
+  it('is the shared dialog, and closing it goes back', () => {
+    const onBack = jest.fn();
+    act(() =>
+      root.render(
+        <BackDetailOverlayShell
+          title="Server"
+          titleId="shell-title"
+          onBack={onBack}
+          badge={<span data-testid="shell-badge">HTTP</span>}
+        >
+          <p>Body</p>
+        </BackDetailOverlayShell>,
+      ),
+    );
+    const card = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(card?.getAttribute('aria-labelledby')).toBe('shell-title');
+    expect(card?.querySelector('#shell-title')?.textContent).toBe('ServerHTTP');
+    expect(container.contains(card)).toBe(false);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onBack).toHaveBeenCalledTimes(1);
+    act(() => {
+      card
+        ?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')
+        ?.click();
+    });
+    expect(onBack).toHaveBeenCalledTimes(2);
   });
 });

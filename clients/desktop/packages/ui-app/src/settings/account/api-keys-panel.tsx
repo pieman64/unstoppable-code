@@ -13,7 +13,10 @@ import {
   Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  FormField,
   SettingsListSkeleton,
+  TextInput,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { Copy, Plus, Trash2 } from '@canopy/ui-shared/icons/AppIcons';
 import { formatDateTime } from '@canopy/ui-shared/lib';
@@ -29,6 +32,7 @@ import {
 import { withPrivacyClass } from './privacy-class';
 import { useSettingsErrorCopy } from '../errors';
 import { SETTINGS_CARD_ROW_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
+import type { SettingsFailure } from '../errors';
 
 const API_KEYS_ERROR_SCOPE = 'api-keys-panel';
 
@@ -112,8 +116,8 @@ export function ApiKeysManager({
   const { blockClassName } = useSettingsPrivacy();
   const [status, setStatus] = useState<PanelStatus>('loading');
   const [keys, setKeys] = useState<UserApiKeyListItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -143,7 +147,7 @@ export function ApiKeysManager({
       setStatus('ready');
     } catch (err: unknown) {
       setStatus('error');
-      setLoadError(errorCopy.loadCopy(err));
+      setLoadError(errorCopy.loadFailure(err));
     }
   }, [client, errorCopy]);
 
@@ -186,7 +190,7 @@ export function ApiKeysManager({
       setCreating(false);
       setNewName('');
     } catch (err: unknown) {
-      setError(errorCopy.actionCopy(err, { action: 'create the API key' }));
+      setError(errorCopy.actionFailure(err, { action: 'create the API key' }));
     } finally {
       setSubmitting(false);
     }
@@ -229,7 +233,7 @@ export function ApiKeysManager({
       setKeys((prev) => prev.filter((k) => k.id !== id));
       setPendingDeleteId(null);
     } catch (err: unknown) {
-      setError(errorCopy.actionCopy(err, { action: 'revoke the API key' }));
+      setError(errorCopy.actionFailure(err, { action: 'revoke the API key' }));
     } finally {
       setDeletingId(null);
     }
@@ -261,10 +265,15 @@ export function ApiKeysManager({
 
       <ErrorBanner
         className="mb-3"
-        error={loadError}
+        error={loadError?.copy}
+        details={loadError?.details}
         onRetry={() => void refresh()}
       />
-      <ErrorBanner className="mb-3" error={error} />
+      <ErrorBanner
+        className="mb-3"
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {createdToken && (
         <div
@@ -302,18 +311,20 @@ export function ApiKeysManager({
           onSubmit={(event) => void handleSubmitCreate(event)}
           className={`${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`}
         >
-          <label className="flex flex-col gap-1 text-s fg-secondary">
-            <span className="font-medium fg-primary">Name</span>
-            <input
-              type="text"
-              autoFocus
-              required
-              maxLength={256}
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              className="rounded-md border bg-card px-3 py-2 text-s fg-primary"
-            />
-          </label>
+          <FormField label="Name">
+            {(control) => (
+              <TextInput
+                {...control}
+                density="settings"
+                type="text"
+                autoFocus
+                required
+                maxLength={256}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+            )}
+          </FormField>
           <div className="flex items-center gap-2">
             <Button
               type="submit"
@@ -337,9 +348,9 @@ export function ApiKeysManager({
         </div>
       )}
       {status === 'ready' && keys.length === 0 && !creating && (
-        <p className={`${SETTINGS_CARD_ROW_CLASS} text-s fg-secondary`}>
-          No API keys yet.
-        </p>
+        <div className={SETTINGS_CARD_ROW_CLASS}>
+          <EmptyStateRow title="No API keys yet." />
+        </div>
       )}
       {status === 'ready' && keys.length > 0 && (
         <ul className="flex flex-col border-t">

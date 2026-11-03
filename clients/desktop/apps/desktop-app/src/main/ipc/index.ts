@@ -145,6 +145,7 @@ import { registerOrgProjectsHandlers } from './org-projects';
 import { registerAccountOrganizationSettingsHandlers } from './account-organization-settings';
 import { registerGlobalFocusShortcutHandlers } from './global-focus-shortcut';
 import { registerLaunchAtLoginHandlers } from './launch-at-login';
+import { registerBackgroundServiceHandlers } from './background-service';
 import { registerExternalProjectHandlers } from './external-projects';
 import {
   disposeDesktopSessionSnapshotHandlers,
@@ -264,7 +265,7 @@ export function registerAllIpcHandlers(
   registerActivityPanelHandlers(getMainWindow, canopyRuntime);
   registerPlansHandlers(getMainWindow);
   registerRunsHandlers();
-  registerSharedContainerHandlers();
+  registerSharedContainerHandlers(canopyRuntime);
   registerDetectedPlansHandlers(getMainWindow);
   registerCodeReviewHandlers(getMainWindow);
   registerPlanFileVisibilityHandlers();
@@ -319,7 +320,7 @@ export function registerAllIpcHandlers(
   registerLifecycleJournalHandlers();
   registerChatEventOutputHandlers();
   registerChatHandlers(accessors, canopyRuntime);
-  registerChatProjectHandlers();
+  registerChatProjectHandlers(canopyRuntime);
   registerChatSearchHandlers();
   registerAgentModelHandlers(getMainWindow);
   registerChatPersistenceHandlers(getMainWindow, canopyRuntime);
@@ -413,7 +414,7 @@ export function registerAllIpcHandlers(
   registerSlowActionHandlers(getMainWindow);
   registerWorkerHandlers(accessors);
   registerWakeLockHandlers(getMainWindow);
-  registerRecommendedPluginHandlers();
+  registerRecommendedPluginHandlers(canopyRuntime);
   registerInvocableInventoryHandlers();
   registerInstalledItemHandlers();
   registerUsageLimitedChatsHandlers(
@@ -431,8 +432,11 @@ export function registerAllIpcHandlers(
   registerSpaceNotificationHandlers();
   registerGlobalFocusShortcutHandlers();
   registerLaunchAtLoginHandlers();
+  const closeBackgroundService = registerBackgroundServiceHandlers(
+    canopyRuntime.resolveCaller,
+  );
   registerExternalProjectHandlers();
-  registerArchivedContainerHandlers();
+  registerArchivedContainerHandlers(canopyRuntime);
   registerLocalMemoryHandlers();
   return () => {
     closeRendererRelay();
@@ -442,6 +446,7 @@ export function registerAllIpcHandlers(
     closeCostHandlers();
     void closeScriptActions();
     closeAccountOrganizationSettings();
+    closeBackgroundService();
   };
 }
 

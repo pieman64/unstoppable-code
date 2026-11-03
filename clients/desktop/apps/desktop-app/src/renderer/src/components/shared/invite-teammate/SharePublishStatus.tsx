@@ -278,7 +278,7 @@ export function SharePublishIssue({
             onClick={onRetry}
           >
             {retrying && <LoadingSpinner decorative />}
-            {retrying ? 'Retrying…' : 'Retry'}
+            {retrying ? 'Trying again…' : 'Try again'}
           </NoticeButton>
           {offerBudgetPush && (
             <ShareBudgetPushAction

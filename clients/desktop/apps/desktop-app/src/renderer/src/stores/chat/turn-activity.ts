@@ -97,23 +97,16 @@ export function localTurnActivity(
     return 'dispatching';
   }
   const provisional = tab.provisionalFirstSend;
-  const waitingForSetup =
-    tab.queuedForSetup === true ||
-    (provisional?.phase === 'preparing' && provisional.queuedForSetup === true);
-  const pending =
-    !waitingForSetup &&
-    !(
-      provisional?.phase === 'queued' &&
-      provisional.userMessageId === tab.pendingTurn?.userMessageId
-    )
-      ? tab.pendingTurn
-      : undefined;
+  const pending = !(
+    provisional?.phase === 'queued' &&
+    provisional.userMessageId === tab.pendingTurn?.userMessageId
+  )
+    ? tab.pendingTurn
+    : undefined;
   // Let terminal evidence below decide whether an error ends this bridge.
-  const startingId = waitingForSetup
-    ? undefined
-    : startingTurnUserMessageId(
-        tab.status === 'error' ? { ...tab, status: 'idle' } : tab,
-      );
+  const startingId = startingTurnUserMessageId(
+    tab.status === 'error' ? { ...tab, status: 'idle' } : tab,
+  );
   const bridgeId = pending?.userMessageId ?? startingId;
   const bridgeAt = pending?.timerMessage.timestamp ?? provisional?.submittedAt;
   if (lease?.state === 'expired' || lease?.state === 'pending') {

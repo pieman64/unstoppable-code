@@ -19,7 +19,11 @@ import {
   registerScenario,
   seedWorktreeChat,
 } from './seeders/index.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { evaluateWithSyntheticIpcEvent } from './syntheticIpcEvent.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { withLateCodexCommand } from './late-codex-command.scenario.mjs';
@@ -3179,6 +3183,7 @@ test.describe('host-owned worktree chat queue', () => {
             // and cancel variants have already confirmed provider withdrawal.
             if (editing || cancelled)
               expect(before.attempts[0].withdrawnAt).toBeDefined();
+            await captureDaemonDryRunEvidence(electronApp);
             const mainPid = await electronApp.evaluate(() => process.pid);
             process.kill(mainPid, 'SIGKILL');
             await closeCanopy(electronApp, userDataDir, { keepUserData: true });

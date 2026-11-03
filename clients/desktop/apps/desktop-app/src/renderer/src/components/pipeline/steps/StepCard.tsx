@@ -6,6 +6,7 @@ import { PipelineDragHandleIcon } from './PipelinePanelPrimitives';
 import { Button } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/components';
 
 interface StepCardProps {
   step: Step;
@@ -17,24 +18,20 @@ interface StepCardProps {
   readonly?: boolean;
 }
 
-interface CategoryStyle {
-  bg: string;
-  text: string;
+interface StepCategory {
+  tone: BadgeTone;
   label: string;
 }
 
-function getCategory(step: Step): CategoryStyle {
+/** A step's kind is neutral; an incomplete step needs attention. */
+function getCategory(step: Step): StepCategory {
   if (step.uses) {
-    return { bg: 'bg-info-subtle', text: 'fg-info', label: 'Action' };
+    return { tone: 'neutral', label: 'Action' };
   }
   if (step.run) {
-    return { bg: 'bg-warning-subtle', text: 'fg-warning', label: 'Script' };
+    return { tone: 'neutral', label: 'Script' };
   }
-  return {
-    bg: 'bg-secondary',
-    text: 'fg-secondary',
-    label: 'Incomplete',
-  };
+  return { tone: 'warning', label: 'Incomplete' };
 }
 
 function getSubtitle(step: Step): string {
@@ -108,11 +105,9 @@ export function StepCard({
           <span className="text-s font-medium fg-primary truncate">
             {label}
           </span>
-          <span
-            className={`shrink-0 px-1.5 py-0.5 text-3xs font-medium rounded ${category.bg} ${category.text}`}
-          >
+          <Badge tone={category.tone} className="shrink-0">
             {category.label}
-          </span>
+          </Badge>
         </div>
         {/* Action refs are recorded; a script's first line is blocked. */}
         <p

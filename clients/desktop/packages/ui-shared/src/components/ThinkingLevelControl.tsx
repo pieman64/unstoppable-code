@@ -48,9 +48,10 @@ export interface ThinkingLevelControlProps {
    */
   selectFill?: boolean;
   /**
-   * `capsule` draws the shared Settings dropdown (`SettingsSelect`), so the
-   * control matches the Settings dropdowns beside it; composer controls keep
-   * the rounded native select.
+   * `capsule` draws the shared Settings dropdown (`SettingsSelect`, the
+   * Canopy menu), so the control matches the Settings dropdowns beside it;
+   * composer controls keep the native select (`ControlSelect`). Both are now
+   * the 28px rounded rectangle (2026-10-30); the name is kept for callers.
    */
   selectShape?: 'rounded' | 'capsule';
   variant?: 'cycle' | 'capsule' | 'select';

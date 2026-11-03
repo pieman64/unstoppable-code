@@ -17,7 +17,7 @@ import {
   ANNOTATION_KIND_TEXT_CLASS,
   annotationKindIcon,
 } from './code-review-icons';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, TextArea } from '@canopy/ui-shared/components';
 
 function toReviewAuthor(author: ReviewCommentAuthor): PlanReviewAuthor {
   if (author === 'agent') {
@@ -182,7 +182,8 @@ export function ReviewThreadCard({
               timestamp={comment.createdAt}
               pending={pending}
             >
-              <textarea
+              <TextArea
+                aria-label="Comment"
                 value={editingBody}
                 onChange={(event): void => setEditingBody(event.target.value)}
                 onKeyDown={(event): void => {
@@ -204,7 +205,6 @@ export function ReviewThreadCard({
                 }}
                 rows={3}
                 autoFocus
-                className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="mt-1 flex items-center justify-end gap-1.5">
                 <Button size="compact" onClick={cancelEditingComment}>

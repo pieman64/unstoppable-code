@@ -228,6 +228,14 @@ test.describe('usage popover', () => {
       await expect(
         popover.getByRole('tabpanel', { name: 'Session' }),
       ).toContainText('Turns');
+      // Each session figure is a boxless Settings row on its own 40px line,
+      // its value on the trailing edge.
+      const figures = popover.getByTestId('usage-indicator-details');
+      await expect(figures).toHaveAttribute('data-surface', 'list');
+      const turnsRow = figures.locator('.min-h-10', { hasText: 'Turns' });
+      await expect(turnsRow).toHaveCount(1);
+      const turnsBox = await turnsRow.boundingBox();
+      expect(turnsBox?.height).toBeGreaterThanOrEqual(40);
       await expect(
         popover.getByRole('tabpanel', { name: 'Context' }),
       ).toHaveCount(0);

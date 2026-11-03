@@ -135,9 +135,9 @@ function noticeCopy(code: CanopyProxyErrorCode): NoticeCopy {
       // CAN-4028: the fourth documented exception. The account is signed in
       // and may well hold spendable credits — the daily free credits do not
       // unlock advanced models — so this is NOT the `billing` action. That
-      // action's coverage read reports "your credits are available again"
-      // whenever any credit is spendable, which here would tell a non-payer
-      // the problem was solved and send them into the same refusal.
+      // action's coverage read treats the problem as solved whenever any
+      // credit is spendable, which here would tell a non-payer the same and
+      // send them into the same refusal.
       //
       // No Retry for the same reason as the billing branch: until the
       // purchase lands a retry fails identically. Copy is shared with the web
@@ -586,7 +586,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
                   }
                 : {})}
         >
-          Retry
+          Try again
         </NoticeButton>
       ) : null}
     </>

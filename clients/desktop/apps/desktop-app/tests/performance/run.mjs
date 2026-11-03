@@ -17,6 +17,7 @@ import {
   failedDiagnosticReplay,
 } from './diagnostic-replay.mjs';
 import { ensureMockServer } from './mock-server.mjs';
+import { frameAreaLines } from './monitor.mjs';
 import {
   WORK_RATCHET_PROFILE,
   parsePerformanceArgs,
@@ -31,6 +32,7 @@ import { shouldRunPerformanceDiagnostics } from './scenario-status.mjs';
 import { runPerformanceScenario } from './scenarios.mjs';
 import { pruneSmokeDiagnosticArtifacts } from './smoke-artifact-retention.mjs';
 import { formatWorkRatchetVerdict, judgeWorkRatchet } from './work-ratchet.mjs';
+import { w5StoreCaveats, w5StoreTreatment } from './w5-store-arms.mjs';
 
 const configPathsModule =
   await import('../../../../packages/desktop-shared/src/pipelines/config-paths.ts');
@@ -81,6 +83,21 @@ function selectE2eBuildRoot(options) {
   }
   options.e2eRoot = root;
   return { root, workingDirectory: root };
+}
+
+/** The W5 store arm treatment of the E2E bundle under `root`. */
+function w5StoreRunTreatment(arm, root) {
+  const bundleEntry = path.join(
+    root,
+    process.env.CANOPY_E2E_OUT_DIR ?? 'out-e2e',
+    'main',
+    'index.js',
+  );
+  if (!existsSync(bundleEntry))
+    throw new Error(
+      `--w5-store needs the E2E bundle ${bundleEntry}. Run \`pnpm run build:e2e --performance-sourcemaps\` first.`,
+    );
+  return w5StoreTreatment(arm, { bundleEntry });
 }
 
 function assertChatPrerequisite(scenarios) {
@@ -182,6 +199,7 @@ function printScenarioSummary(scenario) {
       `key-to-paint p95 ${response?.rendererKeyToPaintConfirmationMs?.p95?.toFixed(1) ?? 'n/a'}ms, ` +
       `working-set max ${response?.totalWorkingSetMb?.max?.toFixed(1) ?? 'n/a'}MB`,
   );
+  for (const line of frameAreaLines(scenario.frameBudgets)) console.log(line);
   for (const violation of scenario.responsiveness?.violations ?? []) {
     const unit = violation.unit === 'count' ? '' : (violation.unit ?? 'ms');
     console.error(
@@ -302,6 +320,9 @@ async function main() {
       ? selectE2eBuildRoot(options)
       : null;
   const gitStatus = gitValue(['status', '--porcelain'], '');
+  const treatment = options.w5Store
+    ? w5StoreRunTreatment(options.w5Store, measuredBuild?.root ?? repoRoot)
+    : null;
   const result = {
     schemaVersion: 2,
     suite: 'desktop-app-performance',
@@ -316,6 +337,7 @@ async function main() {
     label: options.label,
     startedAt: new Date().toISOString(),
     config: options.config,
+    ...(treatment ? { treatment } : {}),
     requestedScenarios: options.scenarios,
     source: {
       commit: gitValue(['rev-parse', 'HEAD']),
@@ -377,6 +399,7 @@ async function main() {
             'Git attribution replaces Git with a logging wrapper. Its elapsed, CPU, memory, process, and responsiveness timings are diagnostic-only and must not be compared with unwrapped runs.',
           ]
         : []),
+      ...(options.w5Store ? w5StoreCaveats(options.w5Store) : []),
     ],
     scenarios: [],
   };

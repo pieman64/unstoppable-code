@@ -518,7 +518,10 @@ describe('createWorkerFilesystemWatchAdapter', () => {
         definitions: {
           queries: {},
           instructions: {},
-          streams: WORKER_STREAM_DEFINITIONS,
+          streams: {
+            'worker.filesystem.watch':
+              WORKER_STREAM_DEFINITIONS['worker.filesystem.watch'],
+          },
         },
         handlers: { queries: {}, instructions: {}, streams: handlers },
         shutdownTimeoutMs: 100,

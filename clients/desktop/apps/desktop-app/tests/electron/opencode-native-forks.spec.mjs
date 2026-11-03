@@ -41,7 +41,7 @@ const interval = setInterval(() => {
         const workspace = JSON.parse(readFileSync(workspaceFile, 'utf8'));
         const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
         // Hold the user setup script after Git setup is ready. Chats may start
-        // during this phase; queueForSetup only waits for Git setup.
+        // during this phase; main holds a send only for Git setup.
         workspace.scripts.setup = [process.execPath, scriptFile, setupGate]
           .map(quote)
           .join(' ');

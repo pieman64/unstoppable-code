@@ -48,6 +48,8 @@ export interface LabsExperimentsSectionProps {
   readonly rows: readonly LabsExperimentRowView[];
   /** The save error to show above the rows, if any. */
   readonly error?: string | null;
+  /** The save error's raw reason: copied by `Copy details`, never shown. */
+  readonly errorDetails?: string;
   readonly onToggle: (experimentId: string, enabled: boolean) => void;
   readonly layout: LabsExperimentsSectionLayout;
 }
@@ -73,6 +75,7 @@ function toggleTestIdFor(id: string): string {
 export function LabsExperimentsSection({
   rows,
   error,
+  errorDetails,
   onToggle,
   layout,
 }: LabsExperimentsSectionProps): JSX.Element | null {
@@ -87,7 +90,7 @@ export function LabsExperimentsSection({
           headingId="settings-experimental-features-heading"
           dataTestId="settings-experimental-features"
         >
-          <ErrorBanner className="" error={error} />
+          <ErrorBanner className="" error={error} details={errorDetails} />
           <LabsExperimentRows
             rows={earlyAccessRows}
             onToggle={onToggle}
@@ -103,7 +106,7 @@ export function LabsExperimentsSection({
           dataTestId="settings-labs-pages"
         >
           {earlyAccessRows.length === 0 && (
-            <ErrorBanner className="" error={error} />
+            <ErrorBanner className="" error={error} details={errorDetails} />
           )}
           <LabsExperimentRows
             rows={pageRows}

@@ -62,9 +62,10 @@ describe('InvocableMention session-replay privacy', () => {
       );
     });
 
+    // The preview opens on hover (and on keyboard focus).
     const button = container.querySelector('button');
     act(() => {
-      button?.focus();
+      button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
 
     const tooltip = document.body.querySelector(':scope > [role="tooltip"]');

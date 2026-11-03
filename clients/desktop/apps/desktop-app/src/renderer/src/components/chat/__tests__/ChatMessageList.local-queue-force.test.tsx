@@ -83,7 +83,6 @@ function renderList(
   turn: TabTurn,
   queuedMessages: ChatTab['queuedMessages'],
   compactQueue: boolean,
-  queuedForSetup = false,
   runtime?: ChatRuntimeState,
 ): Document {
   mockChatState.runtimeByChatId = runtime ? { 'chat-1': runtime } : {};
@@ -98,7 +97,6 @@ function renderList(
           messages={[]}
           queuedMessages={queuedMessages}
           chatId="chat-1"
-          queuedForSetup={queuedForSetup}
           onClearQueuedMessage={jest.fn()}
           onForceQueuedMessage={jest.fn()}
           onEditQueuedMessage={jest.fn()}
@@ -174,7 +172,6 @@ describe('ChatMessageList force action for a renderer-local queued row (CAN-5031
             },
             localRow,
             compact,
-            false,
             {
               status: 'failed',
               queuedMessageIds: [],
@@ -277,11 +274,37 @@ describe('ChatMessageList force action for a renderer-local queued row (CAN-5031
   );
 
   it.each([false, true])(
-    'keeps local actions unavailable during setup even with recovery evidence (compact: %s)',
+    'locks Run now on a host row behind a setup hold, with no setup copy (compact: %s)',
     (compact) => {
+      const doc = renderList(
+        { status: 'streaming' },
+        [
+          {
+            text: 'follow-up',
+            hostQueueEntryId: 'q1',
+            turnPhase: 'foreground',
+            forceLocked: true,
+          },
+        ],
+        compact,
+      );
+      const actions = Array.from(
+        doc.querySelectorAll<HTMLElement>(
+          '[data-testid="queued-message-interrupt"], [data-testid="queued-message-run-now"]',
+        ),
+      );
+      expect(actions.every((action) => action.hasAttribute('disabled'))).toBe(
+        true,
+      );
+      expect(doc.body.textContent).not.toContain('Setting up');
+      // Edit stays: on the bubble directly, in the compact row's menu.
       expect(
-        forceActions(renderList({ status: 'error' }, localRow, compact, true)),
-      ).toEqual([]);
+        doc.querySelector(
+          compact
+            ? '[data-testid="queued-message-more"]'
+            : '[data-testid="queued-message-edit"]',
+        ),
+      ).not.toBeNull();
     },
   );
 

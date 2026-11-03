@@ -561,6 +561,14 @@ export function getStoredPipelineBySource(
   }
 }
 
+/** A stored definition's index entry, without reading its file. */
+export function getStoredPipelineIndexEntry(
+  id: string,
+  source: 'user' | 'bundled',
+): PipelineIndexEntry | null {
+  return resolvePipelineEntryBySource(source, id)?.entry ?? null;
+}
+
 /** A stored definition's index entry and raw text, read for core. */
 export type StoredPipelineDocumentRead =
   | { kind: 'missing' }

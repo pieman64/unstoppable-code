@@ -4,6 +4,7 @@ import {
   type MouseEventHandler,
   type ReactNode,
 } from 'react';
+import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { LoadingSpinner } from '../LoadingSpinner';
 import { STEP_ROW_TEXT_CLASS, StepRow } from './StepRow';
 import {
@@ -59,10 +60,77 @@ export interface TurnWorkHeaderProps {
    * hears it once. The other timing props are ignored.
    */
   starting?: boolean;
+  /**
+   * With `starting`: the chat's worktree is still being set up, so the
+   * status reads "Setting up this chat's copy of <project>" with a clock
+   * from `startedAtMs`, until the host drops it and the same status reads
+   * "Starting…". Resolve it with `resolveTurnStartingStatus`.
+   */
+  setup?: TurnStartingSetup;
+}
+
+/** The setup a starting turn waits on, as `TurnWorkHeader` shows it. */
+export interface TurnStartingSetup {
+  projectName?: string;
+  /** Epoch ms the setup began; the clock counts up from here. */
+  startedAtMs: number;
 }
 
 /** The pending turn's status label. */
 export const TURN_STARTING_LABEL = 'Starting…';
+
+/** Setup status words before the project name. */
+export const TURN_SETUP_LABEL_PREFIX = "Setting up this chat's copy of ";
+
+/** Stands in for a project with no name. */
+export const TURN_SETUP_FALLBACK_PROJECT_NAME = 'the project';
+
+export type TurnStartingStatus =
+  | ({ kind: 'setup' } & TurnStartingSetup)
+  | { kind: 'starting' }
+  | null;
+
+/**
+ * What a turn's starting slot shows on every host. A starting turn whose
+ * worktree's Git setup is still pending shows the setup status, clocked from
+ * the worktree's creation (so a repair detour counts), else from the user
+ * message; a starting turn otherwise reads "Starting…". Only `git-pending`
+ * counts: the host holds the turn for Git setup alone.
+ */
+export function resolveTurnStartingStatus({
+  starting,
+  worktreeSetupPhase,
+  worktreeCreatedAt,
+  fallbackStartedAtMs,
+  projectName,
+  nowMs,
+}: {
+  starting: boolean;
+  worktreeSetupPhase?: string | null;
+  /** ISO string on desktop and Portal rows, epoch ms on cloud worktrees. */
+  worktreeCreatedAt?: string | number | null;
+  fallbackStartedAtMs?: number;
+  projectName?: string | null;
+  nowMs: number;
+}): TurnStartingStatus {
+  if (!starting) return null;
+  if (worktreeSetupPhase !== 'git-pending') return { kind: 'starting' };
+  const createdAtMs =
+    typeof worktreeCreatedAt === 'number'
+      ? worktreeCreatedAt
+      : typeof worktreeCreatedAt === 'string'
+        ? Date.parse(worktreeCreatedAt)
+        : Number.NaN;
+  const origin = Number.isFinite(createdAtMs)
+    ? createdAtMs
+    : (fallbackStartedAtMs ?? nowMs);
+  const name = projectName?.trim();
+  return {
+    kind: 'setup',
+    ...(name ? { projectName: name } : {}),
+    startedAtMs: Math.min(origin, nowMs),
+  };
+}
 
 /** Visible reply/activity ends the first send's pending status on every host. */
 export function isStartingTurnOutput(kind: string, data: unknown): boolean {
@@ -106,11 +174,11 @@ export function formatWorkDuration(seconds: number): string {
 }
 
 function headerLabel(
-  state: 'starting' | 'live' | 'paused' | 'done',
+  state: 'setup' | 'starting' | 'live' | 'paused' | 'done',
   completionStatus: TurnWorkHeaderProps['completionStatus'],
   seconds: number | null,
 ): string {
-  if (state === 'starting') return TURN_STARTING_LABEL;
+  if (state === 'setup' || state === 'starting') return TURN_STARTING_LABEL;
   const time = seconds === null ? '' : formatWorkDuration(seconds);
   if (state === 'paused')
     return seconds === null
@@ -156,34 +224,42 @@ export const TurnWorkHeader = forwardRef<
     trailing,
     dataTestId,
     starting = false,
+    setup,
   },
   ref,
 ): JSX.Element {
+  const inSetup = starting && setup !== undefined;
   const running =
     !starting && finishedAt == null && (live ?? elapsedMs === undefined);
   const paused =
     running &&
     isTurnTimerPaused({ finishedAt, pausedAt, resumedAt, waitingForUser });
-  const tickingSecond = useTurnElapsedSecond({
-    startedAt,
-    finishedAt,
-    pausedAt,
-    resumedAt,
-    accumulatedPausedDurationMs,
-    waitingForUser: running && waitingForUser === true,
-    live: running && !paused,
-  });
+  const tickingSecond = useTurnElapsedSecond(
+    inSetup
+      ? { startedAt: setup.startedAtMs, live: true }
+      : {
+          startedAt,
+          finishedAt,
+          pausedAt,
+          resumedAt,
+          accumulatedPausedDurationMs,
+          waitingForUser: running && waitingForUser === true,
+          live: running && !paused,
+        },
+  );
   const seconds =
-    elapsedMs !== undefined
+    elapsedMs !== undefined && !inSetup
       ? Math.max(0, Math.floor(elapsedMs / 1000))
       : tickingSecond;
-  const state = starting
-    ? 'starting'
-    : paused
-      ? 'paused'
-      : running
-        ? 'live'
-        : 'done';
+  const state = inSetup
+    ? 'setup'
+    : starting
+      ? 'starting'
+      : paused
+        ? 'paused'
+        : running
+          ? 'live'
+          : 'done';
   const label = headerLabel(state, completionStatus, seconds);
   // One step row like every other, in the same text, starting at the step
   // icons' left edge, with a hairline under it that closes the header. It
@@ -192,12 +268,14 @@ export const TurnWorkHeader = forwardRef<
   // in the turn or pinned above it (padding, not margin, so a pinned
   // header's backdrop covers it). A starting turn has no steps for the
   // hairline to close yet, so it shows the working spinner and no hairline.
+  // Its words are one polite status node whether they read setup or
+  // "Starting…", so the hand-off is announced once; the setup clock sits
+  // outside that node and is silent.
   return (
     <div
       className="px-3 pt-2 pb-1"
       data-testid={dataTestId}
       data-turn-header={state}
-      {...(starting ? { role: 'status', 'aria-live': 'polite' as const } : {})}
     >
       <div
         className={`flex min-w-0 items-center gap-2 pb-1${starting ? '' : ' border-b'}`}
@@ -217,13 +295,37 @@ export const TurnWorkHeader = forwardRef<
             // Proportional figures: nothing follows the ticking time, so its
             // width changing moves nothing.
             <span title={title} data-turn-step-count={stepCount}>
-              {label}
+              {starting ? (
+                <>
+                  <span role="status" aria-live="polite">
+                    {inSetup ? (
+                      <>
+                        {TURN_SETUP_LABEL_PREFIX}
+                        <span className={REPLAY_MASK_CLASS}>
+                          {setup.projectName ??
+                            TURN_SETUP_FALLBACK_PROJECT_NAME}
+                        </span>
+                      </>
+                    ) : (
+                      label
+                    )}
+                  </span>
+                  {inSetup ? (
+                    <span aria-hidden="true" data-turn-setup-clock="">
+                      {` · ${formatTurnElapsed(seconds ?? 0)}`}
+                    </span>
+                  ) : null}
+                </>
+              ) : (
+                label
+              )}
             </span>
           }
           detail={detail}
           expandable={!starting && expandable}
           isOpen={isOpen}
           onToggle={onToggle}
+          revealScope="turn"
           ariaLabel={ariaLabel}
           chevronAtRest
         />

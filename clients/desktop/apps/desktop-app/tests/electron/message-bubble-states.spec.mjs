@@ -338,24 +338,6 @@ test('message bubble gallery clamps long content behind a hover-revealed toggle'
     await expect(
       window.getByTestId('bubble-gallery-row-queued-default'),
     ).toBeVisible();
-    await expect(
-      window
-        .getByTestId('bubble-gallery-row-queued-default')
-        .getByTestId('queued-message-setup-quote'),
-    ).toHaveCount(0);
-    await expect(
-      window
-        .getByTestId('bubble-gallery-row-queued-setup')
-        .getByTestId('queued-message-setup-quote'),
-    ).toBeVisible();
-    // Setup gallery clocks are fixed through the desktop wrapper, so the
-    // examples stay deterministic while the live queue clocks elsewhere tick.
-    await expect(
-      window.getByTestId('bubble-gallery-row-queued-setup'),
-    ).toContainText('0:12 elapsed');
-    await expect(
-      window.getByTestId('bubble-gallery-row-queued-setup-estimate'),
-    ).toContainText('about 0:15 left');
     const scheduledRow = window.getByTestId('bubble-gallery-row-scheduled');
     await expect(scheduledRow).toBeVisible();
     // One-time sends keep the bubble with a single "Sends …" row.

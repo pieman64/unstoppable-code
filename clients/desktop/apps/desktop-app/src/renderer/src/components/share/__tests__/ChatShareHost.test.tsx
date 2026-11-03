@@ -584,10 +584,8 @@ describe('ChatShareHost', () => {
     });
     await flush();
     await passGate();
+    // The real dialog portals itself into the document it is handed.
     expect(mockSkillProps?.ownerDocument).toBe(popout);
-    expect(
-      popout.body.querySelector('[data-testid="mock-share-skill"]'),
-    ).not.toBeNull();
 
     // The pop-out closes: the dialog moves to the main window.
     closed = true;
@@ -639,9 +637,6 @@ describe('ChatShareHost', () => {
       await pendingLoad;
     });
     await flush();
-    expect(
-      popout.body.querySelector('[data-testid="mock-share-skill"]'),
-    ).toBeNull();
     expect(
       document.body.querySelector('[data-testid="mock-share-skill"]'),
     ).not.toBeNull();

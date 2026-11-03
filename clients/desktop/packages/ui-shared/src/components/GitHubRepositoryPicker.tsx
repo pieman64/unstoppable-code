@@ -3,9 +3,11 @@
 import { useEffect, useId, useRef, type JSX, type RefObject } from 'react';
 import { Button } from './Button';
 import { TextInput } from './Field';
+import { FormField } from './FormField';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Notice } from './Notice';
 import { PickerMenuOptionCheck } from './PickerMenu';
+import { ErrorBanner, ErrorState } from './StatusBlocks';
 
 /**
  * One repository the picker can show. `id` is the host's stable identity for
@@ -231,9 +233,7 @@ function PagingFooter({
   return (
     <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t bg-base px-3 py-2">
       {error ? (
-        <div role="alert" className="min-w-0 text-xs fg-destructive">
-          {error}
-        </div>
+        <ErrorBanner className="min-w-0 flex-1" error={error} />
       ) : (
         <span aria-hidden="true" />
       )}
@@ -306,24 +306,26 @@ export function GitHubRepositoryPicker({
 
   return (
     <div className="space-y-2">
-      <label className="block">
-        <span className="mb-1.5 block text-xs fg-secondary">{label}</span>
-        <TextInput
-          ref={searchRef}
-          value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
-          // A host may wrap the picker in a form; Enter here only refines the
-          // search and must not submit it.
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.preventDefault();
-          }}
-          placeholder={searchPlaceholder}
-          autoComplete="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          enterKeyHint="search"
-        />
-      </label>
+      <FormField label={label}>
+        {(control) => (
+          <TextInput
+            {...control}
+            ref={searchRef}
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            // A host may wrap the picker in a form; Enter here only refines
+            // the search and must not submit it.
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') event.preventDefault();
+            }}
+            placeholder={searchPlaceholder}
+            autoComplete="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            enterKeyHint="search"
+          />
+        )}
+      </FormField>
 
       <div
         className="max-h-64 overflow-y-auto rounded-lg border bg-base"
@@ -361,15 +363,7 @@ export function GitHubRepositoryPicker({
         </div>
 
         {!loading && error && (
-          <div
-            role="alert"
-            className="flex items-center justify-between gap-3 px-3 py-4"
-          >
-            <div className="text-xs fg-destructive">{error}</div>
-            <Button size="compact" onClick={onRetry}>
-              Retry
-            </Button>
-          </div>
+          <ErrorState space="panel" message={error} onRetry={onRetry} />
         )}
 
         {settled && rowCount > 0 && (

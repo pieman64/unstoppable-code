@@ -646,7 +646,7 @@ const MEMORY_PAGE =
 async function expectMemoryView(memory, view) {
   for (const key of ['facts', 'graph', 'ops']) {
     await expect(memory.getByTestId(`memory-views-tab-${key}`)).toHaveAttribute(
-      'aria-pressed',
+      'aria-selected',
       key === view ? 'true' : 'false',
     );
   }

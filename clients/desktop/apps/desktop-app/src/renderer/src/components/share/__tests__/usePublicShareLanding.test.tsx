@@ -2611,10 +2611,15 @@ describe('scoped skill updates in place (CAN-5307)', () => {
 
   function SkillHarness({
     shareLink = skillLink,
+    skillTarget,
   }: {
     shareLink?: DeepLinkShareOpenEvent;
+    skillTarget?: SharedSkillImportModule.InstalledSharedSkillTarget;
   }): null {
-    probe.current = usePublicShareLanding(shareLink);
+    probe.current = usePublicShareLanding(
+      shareLink,
+      skillTarget ? { skillTarget } : undefined,
+    );
     return null;
   }
 
@@ -2624,9 +2629,11 @@ describe('scoped skill updates in place (CAN-5307)', () => {
     });
   }
 
-  async function arrive(): Promise<void> {
+  async function arrive(
+    skillTarget?: SharedSkillImportModule.InstalledSharedSkillTarget,
+  ): Promise<void> {
     act(() => {
-      root.render(<SkillHarness />);
+      root.render(<SkillHarness skillTarget={skillTarget} />);
     });
     await flush();
   }
@@ -2697,6 +2704,99 @@ describe('scoped skill updates in place (CAN-5307)', () => {
     expect(probe.current?.verificationError).toBe('');
   });
 
+  it('uses an installed-detail destination without forwarding it to the share resolver', async () => {
+    const target = { sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'helper' };
+    await arrive(target);
+    expect(mockLookupInstalledSharedSkill).toHaveBeenCalledWith(
+      expect.objectContaining({ id: SHARE_ID }),
+      target,
+    );
+    const anyTarget: unknown = expect.anything();
+    expect(resolveShare).toHaveBeenCalledWith(
+      expect.not.objectContaining({ skillTarget: anyTarget }),
+    );
+  });
+
+  it('never turns an installed destination into an ordinary public install', async () => {
+    resolveShare.mockResolvedValueOnce({
+      ok: true,
+      snapshot: {
+        entity: 'skill',
+        externalId: SHARE_ID,
+        name: 'helper',
+        description: '',
+        rawSkill: '# Helper v2',
+        contentHash: CONTENT_HASH,
+        dependencies: [],
+        scopedShare: false,
+        authorUsername: null,
+        updatedAt: '2026-10-29T00:00:00.000Z',
+      },
+    });
+    await arrive({ sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'helper' });
+    expect(probe.current?.verificationError).not.toBe('');
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(mockImportSharedSkill).not.toHaveBeenCalled();
+  });
+
+  it('does not revive an earlier destination when its read arrives late', async () => {
+    const pending =
+      deferred<
+        Awaited<
+          ReturnType<typeof SharedSkillImportModule.lookupInstalledSharedSkill>
+        >
+      >();
+    mockLookupInstalledSharedSkill.mockReturnValueOnce(pending.promise);
+    await arrive({ sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'copy-a' });
+    mockLookupInstalledSharedSkill.mockResolvedValue({
+      ...stale,
+      skillName: 'copy-b',
+    });
+    await arrive({ sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'copy-b' });
+    pending.resolve({
+      ...stale,
+      status: 'installed',
+      skillName: 'copy-a',
+      sourceId: CUSTOM_SKILL_SOURCE_ID,
+    });
+    await flush();
+    expect(probe.current?.installed).toMatchObject({ skillName: 'copy-b' });
+    expect(mockImportSharedSkill).not.toHaveBeenCalled();
+  });
+
+  it('blocks a removed destination instead of offering another install', async () => {
+    mockLookupInstalledSharedSkill.mockResolvedValue({
+      status: 'missing-copy',
+    });
+    await arrive({ sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'helper' });
+    expect(probe.current?.verificationError).not.toBe('');
+    await act(async () => {
+      await probe.current?.install();
+    });
+    expect(mockImportSharedSkill).not.toHaveBeenCalled();
+  });
+
+  it('releases its local destination only after deliberately uninstalling that copy', async () => {
+    await arrive({ sourceId: CUSTOM_SKILL_SOURCE_ID, skillName: 'helper' });
+    Object.assign(window.skills, {
+      removeSkill: jest.fn().mockResolvedValue({ success: true }),
+    });
+    mockLookupInstalledSharedSkill.mockResolvedValue({
+      ...stale,
+      skillName: 'sibling',
+      updateAvailable: false,
+    });
+    await act(async () => {
+      expect(await probe.current?.uninstall()).toBe(true);
+    });
+    expect(probe.current?.installed).toMatchObject({ skillName: 'sibling' });
+    expect(mockLookupInstalledSharedSkill).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: SHARE_ID }),
+    );
+  });
+
   it('replaces the reviewed copy in place and reloads its actual state', async () => {
     await arrive();
     mockLookupInstalledSharedSkill.mockResolvedValue({
@@ -2729,6 +2829,45 @@ describe('scoped skill updates in place (CAN-5307)', () => {
       status: '',
       partial: false,
     });
+  });
+
+  it('starts only one replacement when Update is activated again before it settles', async () => {
+    await arrive();
+    const pending =
+      deferred<
+        Awaited<ReturnType<typeof SharedSkillImportModule.importSharedSkill>>
+      >();
+    mockImportSharedSkill.mockReturnValueOnce(pending.promise);
+    let first: ReturnType<PublicShareLanding['install']> | undefined;
+    let second: ReturnType<PublicShareLanding['install']> | undefined;
+    act(() => {
+      first = probe.current?.install();
+      second = probe.current?.install();
+    });
+    await flush();
+    expect(mockImportSharedSkill).toHaveBeenCalledTimes(1);
+    await expect(second).resolves.toBeNull();
+    mockLookupInstalledSharedSkill.mockResolvedValue({
+      ...stale,
+      updateAvailable: false,
+      locallyEdited: false,
+      localContentHash: SOURCE_HASH,
+    });
+    await act(async () => {
+      pending.resolve({
+        skillId: 'custom:app/helper',
+        skillName: 'helper',
+        reused: false,
+      });
+      await first;
+    });
+    expect(probe.current?.installing).toBe(false);
+    expect(probe.current?.installed).toMatchObject({ skillName: 'helper' });
+    expect(
+      probe.current?.installed?.entity === 'skill' &&
+        probe.current.installed.updateAvailable,
+    ).not.toBe(true);
+    expect(mockImportSharedSkill).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the update available when the supporting files did not all land', async () => {

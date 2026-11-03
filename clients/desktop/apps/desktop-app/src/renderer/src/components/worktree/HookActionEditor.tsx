@@ -6,7 +6,16 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Button, SettingsSelect } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceField,
+  ErrorBanner,
+  FormField,
+  SearchField,
+  SettingsSelect,
+  TextArea,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import {
   SUPPORTED_HOOK_TRIGGERS,
   getHookTriggerDisplayName,
@@ -200,6 +209,44 @@ function updateShellPlatform(
   return Object.keys(next).length > 0 ? next : undefined;
 }
 
+const COMMAND_SHELL_PLATFORMS: ReadonlyArray<{
+  readonly platform: 'windows' | 'mac' | 'linux';
+  readonly label: string;
+  readonly options: ReadonlyArray<{
+    readonly value: string;
+    readonly label: string;
+  }>;
+}> = [
+  {
+    platform: 'windows',
+    label: 'Windows',
+    options: [
+      { value: '', label: 'Default' },
+      { value: 'cmd', label: 'Command Prompt' },
+      { value: 'powershell', label: 'PowerShell' },
+      { value: 'bash', label: 'Git Bash' },
+    ],
+  },
+  {
+    platform: 'mac',
+    label: 'Mac',
+    options: [
+      { value: '', label: 'Default' },
+      { value: 'zsh', label: 'zsh' },
+      { value: 'bash', label: 'bash' },
+    ],
+  },
+  {
+    platform: 'linux',
+    label: 'Linux',
+    options: [
+      { value: '', label: 'Default (Bash)' },
+      { value: 'bash', label: 'bash' },
+      { value: 'zsh', label: 'zsh' },
+    ],
+  },
+];
+
 function CommandShellFields({
   shell,
   onChange,
@@ -211,58 +258,37 @@ function CommandShellFields({
     <div className="space-y-1.5 pt-1">
       <span className="text-2xs font-medium fg-secondary">Shell</span>
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Windows</span>
-          <select
-            aria-label="Command action Windows shell"
-            value={shell?.windows ?? ''}
-            onChange={(event) =>
-              onChange(
-                updateShellPlatform(shell, 'windows', event.target.value),
-              )
-            }
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default</option>
-            <option value="cmd">Command Prompt</option>
-            <option value="powershell">PowerShell</option>
-            <option value="bash">Git Bash</option>
-          </select>
-        </label>
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Mac</span>
-          <select
-            aria-label="Command action Mac shell"
-            value={shell?.mac ?? ''}
-            onChange={(event) =>
-              onChange(updateShellPlatform(shell, 'mac', event.target.value))
-            }
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default</option>
-            <option value="zsh">zsh</option>
-            <option value="bash">bash</option>
-          </select>
-        </label>
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Linux</span>
-          <select
-            aria-label="Command action Linux shell"
-            value={shell?.linux ?? ''}
-            onChange={(event) =>
-              onChange(updateShellPlatform(shell, 'linux', event.target.value))
-            }
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default (Bash)</option>
-            <option value="bash">bash</option>
-            <option value="zsh">zsh</option>
-          </select>
-        </label>
+        {COMMAND_SHELL_PLATFORMS.map((entry) => (
+          <FormField key={entry.platform} label={entry.label}>
+            {(control) => (
+              <SettingsSelect
+                {...control}
+                width="fill"
+                aria-label={`Command action ${entry.label} shell`}
+                value={shell?.[entry.platform] ?? ''}
+                onValueChange={(value) =>
+                  onChange(updateShellPlatform(shell, entry.platform, value))
+                }
+                options={entry.options}
+              />
+            )}
+          </FormField>
+        ))}
       </div>
     </div>
   );
 }
+
+const HOOK_ACTION_TYPE_OPTIONS = [
+  { value: 'command', label: 'command' },
+  { value: 'chat', label: 'chat' },
+  { value: 'pipeline', label: 'workflow' },
+] as const;
+
+const BOOLEAN_INPUT_OPTIONS = [
+  { value: 'true', label: 'True' },
+  { value: 'false', label: 'False' },
+] as const;
 
 interface PipelineActionFieldsProps {
   action: Extract<HookActionFormAction, { type: 'pipeline' }>;
@@ -550,12 +576,11 @@ function PipelineActionFields({
       <div className="space-y-2">
         <span className="block text-xs fg-secondary">Workflow</span>
 
-        <input
-          type="text"
+        <SearchField
           value={searchQuery}
-          onChange={(event) => setSearchQuery(event.target.value)}
+          onValueChange={setSearchQuery}
+          aria-label="Search workflows"
           placeholder="Search workflows…"
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s placeholder:fg-secondary"
         />
 
         {pipelineLoading && (
@@ -563,11 +588,12 @@ function PipelineActionFields({
             Loading workflow definition…
           </div>
         )}
-        {pipelineLoadError && (
-          <div role="alert" className="text-xs fg-destructive">
-            {pipelineLoadError}
-          </div>
-        )}
+        {/* Settings never show a raw exception: our own sentence. */}
+        <ErrorBanner
+          error={pipelineLoadError ? "Couldn't load this workflow." : undefined}
+          details={pipelineLoadError}
+          className=""
+        />
         {sourceFilterOptions.length > 0 && (
           <SettingsSelect<PipelineSourceFilter>
             aria-label="Workflow source"
@@ -707,7 +733,10 @@ function PipelineActionFields({
                       )}
                     </div>
                     {raw ? (
-                      <textarea
+                      <TextArea
+                        mono
+                        aria-label={key}
+                        className="self-start"
                         ref={(element) => {
                           if (element) {
                             inputValueRefs.current.set(key, element);
@@ -725,45 +754,48 @@ function PipelineActionFields({
                         onKeyUp={() => rememberSelection(key)}
                         rows={2}
                         placeholder={defaultPlaceholder}
-                        className="focus-ring w-full resize-y self-start rounded-lg border bg-base px-3 py-2 font-mono text-xs"
                       />
                     ) : inputType === 'choice' ? (
-                      <select
-                        value={value || getTypedInputInitialValue(def)}
-                        onChange={(event) =>
-                          setInputValueForDef(key, def, event.target.value)
-                        }
-                        className="focus-ring h-8 w-full max-w-xs self-start rounded-lg border bg-base px-2 text-xs"
-                      >
-                        {(def.options ?? []).map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="self-start">
+                        <SettingsSelect
+                          width="field"
+                          aria-label={key}
+                          value={value || getTypedInputInitialValue(def)}
+                          onValueChange={(next) =>
+                            setInputValueForDef(key, def, next)
+                          }
+                          options={(def.options ?? []).map((opt) => ({
+                            value: opt,
+                            label: opt,
+                          }))}
+                        />
+                      </div>
                     ) : inputType === 'boolean' ? (
-                      <select
-                        value={value || getTypedInputInitialValue(def)}
-                        onChange={(event) =>
-                          setInputValueForDef(key, def, event.target.value)
-                        }
-                        className="focus-ring h-8 w-full max-w-40 self-start rounded-lg border bg-base px-2 text-xs"
-                      >
-                        <option value="true">True</option>
-                        <option value="false">False</option>
-                      </select>
+                      <div className="self-start">
+                        <SettingsSelect
+                          aria-label={key}
+                          value={value || getTypedInputInitialValue(def)}
+                          onValueChange={(next) =>
+                            setInputValueForDef(key, def, next)
+                          }
+                          options={BOOLEAN_INPUT_OPTIONS}
+                        />
+                      </div>
                     ) : (
-                      <input
-                        type="number"
-                        value={value}
-                        onChange={(event) =>
-                          setInputValueForDef(key, def, event.target.value)
-                        }
-                        min={def.min}
-                        max={def.max}
-                        placeholder={defaultPlaceholder}
-                        className="focus-ring h-8 w-full max-w-40 self-start rounded-lg border bg-base px-2 text-xs"
-                      />
+                      <div className="w-40 self-start">
+                        <TextInput
+                          density="settings"
+                          type="number"
+                          aria-label={key}
+                          value={value}
+                          onChange={(event) =>
+                            setInputValueForDef(key, def, event.target.value)
+                          }
+                          min={def.min}
+                          max={def.max}
+                          placeholder={defaultPlaceholder}
+                        />
+                      </div>
                     )}
                   </div>
                 </div>
@@ -777,31 +809,18 @@ function PipelineActionFields({
         </div>
       )}
 
-      <label className="flex items-start gap-2 text-s">
-        <input
-          type="checkbox"
-          checked={action.allowPipelineConcurrency === true}
-          onChange={(event) =>
-            onChange(
-              updatePipelineAction(action, {
-                allowPipelineConcurrency: event.target.checked
-                  ? true
-                  : undefined,
-              }),
-            )
-          }
-          className="mt-0.5"
-        />
-        <span className="flex flex-col">
-          <span className="text-xs font-medium fg-primary">
-            Allow workflow concurrency
-          </span>
-          <span className="text-2xs fg-secondary">
-            Start this hook workflow immediately even when another workflow is
-            running.
-          </span>
-        </span>
-      </label>
+      <ChoiceField
+        checked={action.allowPipelineConcurrency === true}
+        onChange={(event) =>
+          onChange(
+            updatePipelineAction(action, {
+              allowPipelineConcurrency: event.target.checked ? true : undefined,
+            }),
+          )
+        }
+        label="Allow workflow concurrency"
+        description="Start this hook workflow immediately even when another workflow is running."
+      />
 
       <FastModeButton
         value={action.modelConfig?.fastMode}
@@ -940,23 +959,25 @@ function HookActionFields(props: {
   if (action.type === 'command') {
     return (
       <div className="space-y-2">
-        <label className="block text-s">
-          <span className="mb-1.5 block text-xs fg-secondary">Command</span>
-          <textarea
-            ref={commandTextareaRef}
-            value={action.command}
-            onChange={(event) =>
-              onChange(
-                updateCommandAction(action, { command: event.target.value }),
-              )
-            }
-            onSelect={() => rememberSelection('command')}
-            onClick={() => rememberSelection('command')}
-            onKeyUp={() => rememberSelection('command')}
-            rows={3}
-            className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs"
-          />
-        </label>
+        <FormField label="Command">
+          {(control) => (
+            <TextArea
+              {...control}
+              mono
+              ref={commandTextareaRef}
+              value={action.command}
+              onChange={(event) =>
+                onChange(
+                  updateCommandAction(action, { command: event.target.value }),
+                )
+              }
+              onSelect={() => rememberSelection('command')}
+              onClick={() => rememberSelection('command')}
+              onKeyUp={() => rememberSelection('command')}
+              rows={3}
+            />
+          )}
+        </FormField>
 
         <VariableInsertDropdown
           variables={hookVariables}
@@ -1044,24 +1065,26 @@ function HookActionFields(props: {
         }))}
       />
 
-      <label className="block text-s">
-        <span className="mb-1.5 block text-xs fg-secondary">If command</span>
-        <textarea
-          ref={ifCommandTextareaRef}
-          value={action['if-command'] ?? ''}
-          onChange={(event) =>
-            onChange(
-              updateChatAction(action, { ifCommand: event.target.value }),
-            )
-          }
-          onSelect={() => rememberSelection('if-command')}
-          onClick={() => rememberSelection('if-command')}
-          onKeyUp={() => rememberSelection('if-command')}
-          rows={3}
-          placeholder="Optional shell command gate"
-          className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs"
-        />
-      </label>
+      <FormField label="If command">
+        {(control) => (
+          <TextArea
+            {...control}
+            mono
+            ref={ifCommandTextareaRef}
+            value={action['if-command'] ?? ''}
+            onChange={(event) =>
+              onChange(
+                updateChatAction(action, { ifCommand: event.target.value }),
+              )
+            }
+            onSelect={() => rememberSelection('if-command')}
+            onClick={() => rememberSelection('if-command')}
+            onKeyUp={() => rememberSelection('if-command')}
+            rows={3}
+            placeholder="Optional shell command gate"
+          />
+        )}
+      </FormField>
 
       <VariableInsertDropdown
         variables={hookVariables}
@@ -1075,53 +1098,31 @@ function HookActionFields(props: {
         Any other exit code fails the hook.
       </p>
 
-      <label className="flex items-start gap-2 text-s">
-        <input
-          type="checkbox"
-          checked={action.allowChatConcurrency === true}
-          onChange={(event) =>
-            onChange(
-              updateChatAction(action, {
-                allowChatConcurrency: event.target.checked ? true : undefined,
-              }),
-            )
-          }
-          className="mt-0.5"
-        />
-        <span className="flex flex-col">
-          <span className="text-xs font-medium fg-primary">
-            Allow chat concurrency
-          </span>
-          <span className="text-2xs fg-secondary">
-            Start this hook chat immediately even when another chat is running
-            in this worktree.
-          </span>
-        </span>
-      </label>
+      <ChoiceField
+        checked={action.allowChatConcurrency === true}
+        onChange={(event) =>
+          onChange(
+            updateChatAction(action, {
+              allowChatConcurrency: event.target.checked ? true : undefined,
+            }),
+          )
+        }
+        label="Allow chat concurrency"
+        description="Start this hook chat immediately even when another chat is running in this worktree."
+      />
 
-      <label className="flex items-start gap-2 text-s">
-        <input
-          type="checkbox"
-          checked={action.autoArchive === true}
-          onChange={(event) =>
-            onChange(
-              updateChatAction(action, {
-                autoArchive: event.target.checked ? true : undefined,
-              }),
-            )
-          }
-          className="mt-0.5"
-        />
-        <span className="flex flex-col">
-          <span className="text-xs font-medium fg-primary">
-            Auto-archive when finished
-          </span>
-          <span className="text-2xs fg-secondary">
-            Archive this hook chat automatically as soon as its agent turn
-            finishes (kept retrievable from the archive, unread if unseen).
-          </span>
-        </span>
-      </label>
+      <ChoiceField
+        checked={action.autoArchive === true}
+        onChange={(event) =>
+          onChange(
+            updateChatAction(action, {
+              autoArchive: event.target.checked ? true : undefined,
+            }),
+          )
+        }
+        label="Auto-archive when finished"
+        description="Archive this hook chat automatically as soon as its agent turn finishes (kept retrievable from the archive, unread if unseen)."
+      />
     </div>
   );
 }
@@ -1259,44 +1260,40 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
                 }
               >
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <label className="block text-s">
-                    <span className="mb-1.5 block text-xs fg-secondary">
-                      Action type
-                    </span>
-                    <select
-                      value={action.type}
-                      onChange={(event) => {
-                        const nextType = parseActionType(event.target.value);
-                        onChange((current) =>
-                          updateEditableHookAction(
-                            current,
-                            triggerName,
-                            index,
-                            nextType === 'chat'
-                              ? buildChatAction(
-                                  '',
-                                  undefined,
-                                  undefined,
-                                  action.uiId,
-                                )
-                              : nextType === 'pipeline'
-                                ? buildPipelineAction(
-                                    'bundled',
+                  <FormField label="Action type">
+                    {(control) => (
+                      <SettingsSelect
+                        {...control}
+                        value={action.type}
+                        options={HOOK_ACTION_TYPE_OPTIONS}
+                        onValueChange={(next) => {
+                          const nextType = parseActionType(next);
+                          onChange((current) =>
+                            updateEditableHookAction(
+                              current,
+                              triggerName,
+                              index,
+                              nextType === 'chat'
+                                ? buildChatAction(
                                     '',
+                                    undefined,
                                     undefined,
                                     action.uiId,
                                   )
-                                : buildCommandAction('', action.uiId),
-                          ),
-                        );
-                      }}
-                      className="focus-ring rounded-lg border bg-base px-3 py-2 text-s"
-                    >
-                      <option value="command">command</option>
-                      <option value="chat">chat</option>
-                      <option value="pipeline">workflow</option>
-                    </select>
-                  </label>
+                                : nextType === 'pipeline'
+                                  ? buildPipelineAction(
+                                      'bundled',
+                                      '',
+                                      undefined,
+                                      action.uiId,
+                                    )
+                                  : buildCommandAction('', action.uiId),
+                            ),
+                          );
+                        }}
+                      />
+                    )}
+                  </FormField>
 
                   <div className="flex items-center gap-1 self-start pt-6">
                     {index > 0 && (
@@ -1428,39 +1425,38 @@ export function HookActionEditor(props: HookActionEditorProps): JSX.Element {
           )}
 
           <div className="grid gap-3 md:grid-cols-2">
-            <label className="block text-s">
-              <span className="mb-1.5 block text-xs fg-secondary">Trigger</span>
-              <select
-                value={newHookTrigger}
-                onChange={(event) => setNewHookTrigger(event.target.value)}
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-              >
-                {SUPPORTED_HOOK_TRIGGERS.map((trigger) => (
-                  <option key={trigger} value={trigger}>
-                    {getHookTriggerDisplayName(trigger)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <FormField label="Trigger">
+              {(control) => (
+                <SettingsSelect
+                  {...control}
+                  width="fill"
+                  data-testid="hook-add-trigger"
+                  value={newHookTrigger}
+                  onValueChange={setNewHookTrigger}
+                  options={SUPPORTED_HOOK_TRIGGERS.map((trigger) => ({
+                    value: trigger,
+                    label: getHookTriggerDisplayName(trigger),
+                  }))}
+                />
+              )}
+            </FormField>
 
-            <label className="block text-s">
-              <span className="mb-1.5 block text-xs fg-secondary">
-                Action type
-              </span>
-              <select
-                value={newActionType}
-                onChange={(event) => {
-                  const nextType = parseActionType(event.target.value);
-                  setNewActionType(nextType);
-                  setNewAction(createBlankHookAction(nextType));
-                }}
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-              >
-                <option value="command">command</option>
-                <option value="chat">chat</option>
-                <option value="pipeline">workflow</option>
-              </select>
-            </label>
+            <FormField label="Action type">
+              {(control) => (
+                <SettingsSelect
+                  {...control}
+                  width="fill"
+                  data-testid="hook-add-action-type"
+                  value={newActionType}
+                  options={HOOK_ACTION_TYPE_OPTIONS}
+                  onValueChange={(next) => {
+                    const nextType = parseActionType(next);
+                    setNewActionType(nextType);
+                    setNewAction(createBlankHookAction(nextType));
+                  }}
+                />
+              )}
+            </FormField>
           </div>
 
           <div className="mt-3">

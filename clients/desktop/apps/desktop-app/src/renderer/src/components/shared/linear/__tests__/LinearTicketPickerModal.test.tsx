@@ -129,6 +129,100 @@ describe('LinearTicketPickerModal stacking', () => {
     }
   });
 
+  it('picks the highlighted search result on Enter, then closes', async () => {
+    const result: LinearTicketSearchResult = {
+      id: 'iss_2',
+      identifier: 'CAN-2',
+      title: 'Picked ticket',
+      description: 'A description',
+      url: 'https://linear.app/acme/issue/CAN-2',
+      priority: 3,
+      priorityLabel: 'Medium',
+      branchName: 'can-2',
+    };
+    const api = Reflect.get(window, 'api');
+    const scrollIntoView = Reflect.get(Element.prototype, 'scrollIntoView');
+    Reflect.set(window, 'api', {
+      searchLinearIssues: jest.fn().mockResolvedValue([result]),
+    });
+    Reflect.set(Element.prototype, 'scrollIntoView', () => undefined);
+    const onSelect = jest.fn();
+    const onClose = jest.fn();
+    jest.useFakeTimers();
+    try {
+      act(() => {
+        root.render(
+          <LinearTicketPickerModal onSelect={onSelect} onClose={onClose} />,
+        );
+      });
+      const input = document.querySelector(
+        '[data-testid="linear-ticket-picker-input"]',
+      );
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error('Linear ticket picker input not found');
+      }
+      expect(document.activeElement).toBe(input);
+      act(() => {
+        Object.getOwnPropertyDescriptor(
+          HTMLInputElement.prototype,
+          'value',
+        )?.set?.call(input, 'picked');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(300);
+      });
+      expect(
+        document.querySelector(
+          '[data-testid="linear-ticket-picker-result-iss_2"]',
+        ),
+      ).not.toBeNull();
+
+      act(() => {
+        input.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+
+      expect(onSelect).toHaveBeenCalledWith(result);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+      Reflect.set(window, 'api', api);
+      Reflect.set(Element.prototype, 'scrollIntoView', scrollIntoView);
+    }
+  });
+
+  it('closes on Escape from the search field', () => {
+    const onClose = jest.fn();
+    act(() => {
+      root.render(
+        <LinearTicketPickerModal
+          onSelect={() => undefined}
+          onClose={onClose}
+        />,
+      );
+    });
+    const input = document.querySelector(
+      '[data-testid="linear-ticket-picker-input"]',
+    );
+    act(() => {
+      input?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('portals into the composer document when it is popped out', () => {
     const popOutDocument = document.implementation.createHTMLDocument();
     act(() => {

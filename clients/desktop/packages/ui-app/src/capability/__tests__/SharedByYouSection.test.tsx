@@ -8,7 +8,10 @@ import {
   marketplaceUnshareErrorMessage,
   marketplaceUnshareMessage,
 } from '@canopy/ui-shared/lib/marketplace-unshare';
-import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '@canopy/ui-shared/lib/replay-privacy';
 import { SHARED_BY_YOU_REMOVE_LINK_ERROR } from '@canopy/ui-shared/lib/shared-by-you';
 import {
   sharedByYouAudiences,
@@ -350,5 +353,159 @@ describe('SharedByYouSection (CAN-4842)', () => {
     );
     expect(byTestId('shared-by-you-unshare-account-dialog')).toBeNull();
     expect(byTestId('shared-by-you-remove-public-link-confirm')).toBeNull();
+  });
+});
+
+// CAN-5452: the account row's Copy link sits before Unshare and copies the
+// member link through the host's port; the public-link row has none.
+describe('SharedByYouSection Copy link (CAN-5452)', () => {
+  const LINK = {
+    url: 'canopy://share/plugins/3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b?audience=ORGANIZATION',
+    audience: 'organization',
+    audienceName: 'Acme',
+    personal: false,
+    hasPublicLink: true,
+  } as const;
+
+  function withCopy(
+    write: (text: string) => Promise<boolean>,
+    notify = jest.fn(),
+  ): { audiences: SharedByYouAudience[]; notify: jest.Mock } {
+    return {
+      audiences: [
+        account({
+          alsoRevokesPublicLink: true,
+          copyLink: { link: LINK, port: { write, notify } },
+        }),
+        publicLink(),
+      ],
+      notify,
+    };
+  }
+
+  it('places a named Copy link before the account Unshare only', () => {
+    const { audiences } = withCopy(() => Promise.resolve(true));
+    render(audiences);
+    const copy = byTestId('shared-by-you-copy-link-account');
+    const unshare = byTestId('shared-by-you-unshare-account');
+    expect(copy?.textContent).toBe('Copy link');
+    expect(copy?.getAttribute('aria-label') ?? '').not.toContain('Acme');
+    const label = document.getElementById(
+      copy?.getAttribute('aria-labelledby') ?? '',
+    );
+    expect(label?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
+    expect(label?.textContent).toBe('Copy the Acme link for Slack');
+    expect(
+      (copy?.compareDocumentPosition(unshare as Node) ?? 0) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      byTestId('shared-by-you-row-public')?.querySelector(
+        '[data-testid^="shared-by-you-copy-link"]',
+      ),
+    ).toBeNull();
+  });
+
+  it('confirms with Copied and one notice after a successful write', async () => {
+    const write = jest.fn(() => Promise.resolve(true));
+    const { audiences, notify } = withCopy(write);
+    const onUnshared = render(audiences);
+    click('shared-by-you-copy-link-account');
+    await flush();
+    expect(write).toHaveBeenCalledWith(LINK.url);
+    expect(byTestId('shared-by-you-copy-link-account')?.textContent).toBe(
+      'Copied',
+    );
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: 'Link copied for Acme members. A public link is also active.',
+      blockMessageFromReplay: true,
+    });
+    expect(onUnshared).not.toHaveBeenCalled();
+    const [accountRow] = audiences;
+    if (accountRow?.id !== 'account' || !accountRow.action.available)
+      throw new Error('account row missing');
+    expect(accountRow.action.run).not.toHaveBeenCalled();
+  });
+
+  it('warns without Copied when the clipboard rejects', async () => {
+    const { audiences, notify } = withCopy(() =>
+      Promise.reject(new Error('denied')),
+    );
+    render(audiences);
+    click('shared-by-you-copy-link-account');
+    await flush();
+    expect(byTestId('shared-by-you-copy-link-account')?.textContent).toBe(
+      'Copy link',
+    );
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: 'warning' }),
+    );
+  });
+
+  it('shows no Copy link when the row carries none', () => {
+    render([account()]);
+    expect(byTestId('shared-by-you-copy-link-account')).toBeNull();
+  });
+
+  it.each([true, false])(
+    'drops a pending copy result after resource navigation (success=%s)',
+    async (ok) => {
+      let finish: (value: boolean) => void = () => {
+        throw new Error('copy not started');
+      };
+      const write = jest.fn(
+        () =>
+          new Promise<boolean>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const { audiences, notify } = withCopy(write);
+      render(audiences);
+      click('shared-by-you-copy-link-account');
+      render([
+        account({
+          copyLink: {
+            link: {
+              ...LINK,
+              url: LINK.url.replace('3f2b8c1e', '4f2b8c1e'),
+              audienceName: 'Other',
+            },
+            port: { write, notify },
+          },
+        }),
+      ]);
+      await act(async () => {
+        finish(ok);
+        await Promise.resolve();
+      });
+      expect(notify).not.toHaveBeenCalled();
+      expect(byTestId('shared-by-you-copy-link-account')?.textContent).toBe(
+        'Copy link',
+      );
+    },
+  );
+
+  it('clears Copied when the account link changes', async () => {
+    const { audiences, notify } = withCopy(() => Promise.resolve(true));
+    render(audiences);
+    click('shared-by-you-copy-link-account');
+    await flush();
+    expect(byTestId('shared-by-you-copy-link-account')?.textContent).toBe(
+      'Copied',
+    );
+    render([
+      account({
+        copyLink: {
+          link: { ...LINK, url: LINK.url.replace('3f2b8c1e', '4f2b8c1e') },
+          port: { write: jest.fn(), notify },
+        },
+      }),
+    ]);
+    expect(byTestId('shared-by-you-copy-link-account')?.textContent).toBe(
+      'Copy link',
+    );
   });
 });

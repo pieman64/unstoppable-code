@@ -58,6 +58,7 @@ import {
   readWorkspaceWorktreesDetailed,
 } from './workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from './workspace-reference-repo';
+import { w5LifecycleReceiptCaller, type W5WireCall } from './w5-wire-call';
 
 /** The caller of a project type conversion (CAN-3819). */
 export type WorkspaceTypeConversionSource =
@@ -72,6 +73,8 @@ export interface WorkspaceTypeConversionRequest extends W5BoundaryOptions {
   /** How a single-repo project's instructions file takes the multi-repo guidance. */
   claudeMdMode?: ClaudeMdConversionMode;
   source: WorkspaceTypeConversionSource;
+  /** A registered wire call's receipt scope and admission (W7b-4). */
+  wireCall?: W5WireCall;
 }
 
 export {
@@ -338,14 +341,19 @@ export function convertWorkspaceType(
       const parameters = { ...request };
       delete parameters.expectedRevision;
       delete parameters.idempotencyKey;
+      delete parameters.wireCall;
       if (idempotencyKey === undefined)
         return convertAdmittedWorkspaceType(request, { operation });
       return runKeyedW5Operation(
         {
           operation,
-          caller: 'desktop-host:workspace-type-conversion',
+          caller: w5LifecycleReceiptCaller(
+            'workspace-type-conversion',
+            request.wireCall,
+          ),
           idempotencyKey,
           parameters,
+          admit: request.wireCall?.admit,
           isPreEffectRefusal: (error) =>
             error instanceof WorkspaceTypeConversionRefusedError ||
             error instanceof W5RevisionConflictError ||

@@ -1,7 +1,8 @@
-import { useId, useState, type JSX, type ReactNode } from 'react';
+import { useId, useState, type JSX } from 'react';
 import type { SubagentNode } from '@canopy/agent-transcript';
 import { REPLAY_BLOCK_CLASS } from '../../../../lib/replay-privacy';
 import { DelegatedAgentCapabilities } from '../../DelegatedAgentCapabilities';
+import { StatusLabel } from '../../../StatusLabel';
 import {
   delegatedAgentCapabilityCountsLabel,
   hasDelegatedAgentCapabilityEntries,
@@ -34,26 +35,12 @@ import {
   subagentStartedCountLabel,
   subagentWorkspaceLabel,
 } from '../subagent-copy';
+import { Fact, FactList } from '../../../FactList';
 
 export interface SubagentSetupDetailsProps {
   readonly node: SubagentNode;
   readonly executionMode?: 'foreground' | 'background';
   readonly showUsage?: boolean;
-}
-
-function DetailRow({
-  label,
-  children,
-}: {
-  readonly label: string;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{label}</dt>
-      <dd className="min-w-0 break-words fg-primary">{children}</dd>
-    </>
-  );
 }
 
 function usageLabel(node: SubagentNode): string | undefined {
@@ -147,9 +134,9 @@ function ErrorDetail({ error }: { readonly error: string }): JSX.Element {
       <span
         id={textId}
         data-testid="subagent-chat-setup-error"
-        className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap wrap-anywhere fg-destructive`}
+        className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap wrap-anywhere`}
       >
-        {shown}
+        <StatusLabel>{shown}</StatusLabel>
       </span>
       {collapsible ? (
         <button
@@ -216,55 +203,53 @@ export function SubagentSetupDetails({
         : undefined;
 
   return (
-    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
+    <FactList>
       {longError ? (
-        <DetailRow label={SUBAGENT_SETUP_ERROR}>
+        <Fact label={SUBAGENT_SETUP_ERROR}>
           <ErrorDetail error={longError} />
-        </DetailRow>
+        </Fact>
       ) : null}
       {subagentType ? (
-        <DetailRow label={SUBAGENT_SETUP_TYPE}>{subagentType}</DetailRow>
+        <Fact label={SUBAGENT_SETUP_TYPE}>{subagentType}</Fact>
       ) : null}
       {model ? (
-        <DetailRow label={SUBAGENT_SETUP_MODEL}>
+        <Fact label={SUBAGENT_SETUP_MODEL}>
           {model}
           {modelId && modelId !== model ? (
             <span className="font-mono text-2xs fg-tertiary"> ({modelId})</span>
           ) : null}
-        </DetailRow>
+        </Fact>
       ) : null}
-      {harness ? (
-        <DetailRow label={SUBAGENT_SETUP_HARNESS}>{harness}</DetailRow>
-      ) : null}
+      {harness ? <Fact label={SUBAGENT_SETUP_HARNESS}>{harness}</Fact> : null}
       {thinking ? (
-        <DetailRow label={SUBAGENT_SETUP_THINKING}>{thinking}</DetailRow>
+        <Fact label={SUBAGENT_SETUP_THINKING}>{thinking}</Fact>
       ) : null}
       {shouldShowRuns ? (
-        <DetailRow label={SUBAGENT_SETUP_RUNS}>
+        <Fact label={SUBAGENT_SETUP_RUNS}>
           {subagentRunsLabel(executionMode, node.runs.length)}
-        </DetailRow>
+        </Fact>
       ) : null}
       {node.kind === 'managed' && node.workspace ? (
-        <DetailRow label={SUBAGENT_SETUP_WORKSPACE}>
+        <Fact label={SUBAGENT_SETUP_WORKSPACE}>
           {subagentWorkspaceLabel(node)}
-        </DetailRow>
+        </Fact>
       ) : null}
       {writePaths ? (
-        <DetailRow label={SUBAGENT_SETUP_PERMISSIONS}>
+        <Fact label={SUBAGENT_SETUP_PERMISSIONS}>
           <PermissionsDetail writePaths={writePaths} />
-        </DetailRow>
+        </Fact>
       ) : null}
       {capabilities && node.snapshot?.capabilities ? (
         <DelegatedAgentCapabilities summary={node.snapshot.capabilities} />
       ) : null}
       {node.kind === 'managed' ? (
-        <DetailRow label={SUBAGENT_SETUP_SUBAGENTS}>
+        <Fact label={SUBAGENT_SETUP_SUBAGENTS}>
           {subagentStartedCountLabel(node.childIds.length)}
-        </DetailRow>
+        </Fact>
       ) : null}
       {showUsage && usage ? (
-        <DetailRow label={SUBAGENT_SETUP_USAGE}>{usage}</DetailRow>
+        <Fact label={SUBAGENT_SETUP_USAGE}>{usage}</Fact>
       ) : null}
-    </dl>
+    </FactList>
   );
 }

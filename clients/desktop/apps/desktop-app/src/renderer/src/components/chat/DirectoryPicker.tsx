@@ -1,25 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
-import { createPortal } from 'react-dom';
+import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import {
   COMPOSER_ROW_MENU_GAP,
   FLOATING_PICKER_GAP,
   FloatingMenu,
   PickerTrigger,
   DirectoryPickerOptionRow,
+  RichHoverTooltip,
 } from '@canopy/ui-shared';
 import {
   ChevronDownMediumIcon,
   FolderIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { getDocument, getWindow } from '@canopy/ui-shared/panels';
 import { DirectoryPickerHeading } from '@canopy/ui-app';
 import {
   WORKSPACE_ROOT_REPO_ID,
@@ -61,10 +52,6 @@ interface DirectoryPickerProps {
   onSelect: (repoId: string | undefined) => void;
 }
 
-const TOOLTIP_WIDTH = 256; // w-64
-const TOOLTIP_GAP = 6;
-const VIEWPORT_PADDING = 8;
-
 export function DirectoryPicker({
   currentRepoId,
   childRepos,
@@ -76,16 +63,8 @@ export function DirectoryPicker({
   onSelect,
 }: DirectoryPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
-  const [tooltipVisible, setTooltipVisible] = useState(false);
-  const [tooltipPosition, setTooltipPosition] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
-  const tooltipId = useId();
   const menuId = useId();
-  const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
 
   const effectiveId = currentRepoId ?? WORKSPACE_ROOT_REPO_ID;
   const currentName =
@@ -102,33 +81,21 @@ export function DirectoryPicker({
     [onSelect],
   );
 
-  // The tooltip lives in a portal because composer toolbar containers clip
-  // overflow, which would otherwise clip it.
-  useLayoutEffect(() => {
-    if (!tooltipVisible || open) {
-      setTooltipPosition(null);
-      return;
-    }
-    const anchorEl = containerRef.current;
-    if (!anchorEl) return;
-    const rect = anchorEl.getBoundingClientRect();
-    const tooltipEl = tooltipRef.current;
-    const height = tooltipEl ? tooltipEl.offsetHeight : 0;
-    const preferredTop = rect.top - TOOLTIP_GAP - height;
-    const fallbackTop = rect.bottom + TOOLTIP_GAP;
-    const top = preferredTop >= VIEWPORT_PADDING ? preferredTop : fallbackTop;
-    const maxLeft = Math.max(
-      VIEWPORT_PADDING,
-      getWindow(anchorEl).innerWidth - TOOLTIP_WIDTH - VIEWPORT_PADDING,
-    );
-    const left = Math.min(Math.max(VIEWPORT_PADDING, rect.left), maxLeft);
-    setTooltipPosition({ top, left });
-  }, [tooltipVisible, open, sessionLocked, currentName]);
-
-  // Hide the tooltip the moment the menu opens.
-  useEffect(() => {
-    if (open) setTooltipVisible(false);
-  }, [open]);
+  const tooltipContent = (
+    <>
+      <p className="text-xs font-medium fg-primary">Working directory</p>
+      <p className="mt-1 text-xs fg-secondary">
+        The chat session runs in{' '}
+        <span className="fg-primary">{currentName}</span>. It can affect which
+        project-based agent commands and skills are discovered.
+      </p>
+      {sessionLocked && (
+        <p className="mt-2 text-xs fg-secondary">
+          Locked while this session is active — start a new chat to change it.
+        </p>
+      )}
+    </>
+  );
 
   const legacyTriggerClass = disabled
     ? 'flex items-center gap-1 rounded-md px-1.5 py-0.5 text-2xs fg-secondary/70 cursor-not-allowed'
@@ -153,97 +120,62 @@ export function DirectoryPicker({
       if (disabled) return;
       setOpen((prev) => !prev);
     },
-    onFocus: (): void => {
-      if (!open) setTooltipVisible(true);
-    },
-    onBlur: (): void => setTooltipVisible(false),
     disabled,
     'aria-label': `Select working directory, current ${currentName}`,
     'aria-haspopup': 'listbox' as const,
     'aria-expanded': open,
     'aria-controls': open ? menuId : undefined,
-    'aria-describedby': tooltipVisible && !open ? tooltipId : undefined,
   };
 
   return (
-    <div
-      ref={containerRef}
-      className={statusRow ? 'relative min-w-0' : 'relative'}
-      onMouseEnter={() => {
-        if (!open) setTooltipVisible(true);
-      }}
-      onMouseLeave={() => setTooltipVisible(false)}
-    >
-      {statusRow ? (
-        <PickerTrigger
-          ref={triggerRef}
-          data-testid="chat-directory-picker"
-          textTrail
-          className="max-w-full"
-          {...triggerProps}
-        >
-          {/* The model picker's glyph: secondary ink, 6px before the name. */}
-          <FolderIcon
-            width={16}
-            height={16}
-            className="mr-0.5 shrink-0 fg-secondary"
-          />
-          <span className="min-w-0 truncate fg-primary">{currentName}</span>
-        </PickerTrigger>
-      ) : capsule ? (
-        <ComposerIconButton
-          ref={triggerRef}
-          capsule
-          wide={hideLabel}
-          autoWidth={!hideLabel}
-          className={hideLabel ? undefined : 'max-w-48'}
-          {...triggerProps}
-        >
-          {triggerContents}
-        </ComposerIconButton>
-      ) : (
-        <button
-          ref={triggerRef}
-          type="button"
-          className={legacyTriggerClass}
-          {...triggerProps}
-        >
-          {triggerContents}
-        </button>
-      )}
-
-      {tooltipVisible &&
-        !open &&
-        createPortal(
-          <div
-            ref={tooltipRef}
-            id={tooltipId}
-            role="tooltip"
-            className="pointer-events-none rounded-md bg-popover p-3 shadow-tooltip"
-            style={{
-              position: 'fixed',
-              width: TOOLTIP_WIDTH,
-              zIndex: 'var(--z-index-tooltip)',
-              ...(tooltipPosition
-                ? { top: tooltipPosition.top, left: tooltipPosition.left }
-                : { visibility: 'hidden', top: 0, left: 0 }),
-            }}
+    <div className={statusRow ? 'relative min-w-0' : 'relative'}>
+      {/* On the tooltip layer, so composer toolbars that clip overflow
+          cannot cut it off; hidden while the menu is open. */}
+      <RichHoverTooltip
+        content={tooltipContent}
+        suppressed={open}
+        surfacePadding="card"
+        surfaceClassName="w-64"
+        triggerWrapperClassName={statusRow ? 'min-w-0 max-w-full' : ''}
+      >
+        {statusRow ? (
+          <PickerTrigger
+            ref={triggerRef}
+            data-testid="chat-directory-picker"
+            textTrail
+            className="max-w-full"
+            {...triggerProps}
           >
-            <p className="text-xs font-medium fg-primary">Working directory</p>
-            <p className="mt-1 text-xs fg-secondary">
-              The chat session runs in{' '}
-              <span className="fg-primary">{currentName}</span>. It can affect
-              which project-based agent commands and skills are discovered.
-            </p>
-            {sessionLocked && (
-              <p className="mt-2 text-xs fg-secondary">
-                Locked while this session is active — start a new chat to change
-                it.
-              </p>
-            )}
-          </div>,
-          getDocument(containerRef.current).body,
+            {/* The model picker's glyph: secondary ink, 6px before the name. */}
+            <FolderIcon
+              width={16}
+              height={16}
+              className="mr-0.5 shrink-0 fg-secondary"
+            />
+            <span className="min-w-0 truncate fg-primary">{currentName}</span>
+          </PickerTrigger>
+        ) : capsule ? (
+          <ComposerIconButton
+            ref={triggerRef}
+            capsule
+            wide={hideLabel}
+            autoWidth={!hideLabel}
+            className={hideLabel ? undefined : 'max-w-48'}
+            {...triggerProps}
+          >
+            {triggerContents}
+          </ComposerIconButton>
+        ) : (
+          <button
+            ref={triggerRef}
+            type="button"
+            className={legacyTriggerClass}
+            {...triggerProps}
+          >
+            {triggerContents}
+          </button>
         )}
+      </RichHoverTooltip>
 
       <FloatingMenu
         id={menuId}

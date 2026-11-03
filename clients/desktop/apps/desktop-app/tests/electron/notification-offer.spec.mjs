@@ -65,16 +65,38 @@ async function setFocused(window, focused) {
   }, focused);
 }
 
-async function completePipeline(electronApp, state) {
+// Counts execution events the renderer has received. App mounts its pipeline
+// completion listener before Home renders, so this later listener runs after
+// the delivery gate has read focus for the same event.
+async function countDeliveredExecutionEvents(window) {
+  await window.evaluate(() => {
+    window.__notificationOfferDelivered = 0;
+    window.__restoreNotificationOfferDelivered =
+      window.pipelines.onExecutionEvent(() => {
+        window.__notificationOfferDelivered += 1;
+      });
+  });
+}
+
+// Resolve only once the renderer has handled the completion, so the focus
+// state the test sets next cannot race the delivery gate's focus read.
+async function completePipeline({ electronApp, window }, state) {
+  const delivered = () =>
+    window.evaluate(() => window.__notificationOfferDelivered);
+  const before = await delivered();
   await injectPipelineExecutionEvent(electronApp, {
     state: { ...state, status: 'success' },
     type: 'execution.completed',
   });
+  await expect.poll(delivered).toBe(before + 1);
 }
 
 async function closeOfferApp(electronApp, userDataDir, options) {
   for (const window of electronApp.windows()) {
-    await window.evaluate(() => window.__restoreNotificationOfferFocus?.());
+    await window.evaluate(() => {
+      window.__restoreNotificationOfferFocus?.();
+      window.__restoreNotificationOfferDelivered?.();
+    });
   }
   await electronApp.evaluate(() => {
     globalThis.__restoreOfferNative?.();
@@ -125,6 +147,7 @@ async function launch(userDataDir) {
     timeout: 15_000,
   });
   await installFocusShim(window);
+  await countDeliveredExecutionEvents(window);
   await stubNative(launched.electronApp);
   return { ...launched, window };
 }
@@ -135,7 +158,7 @@ test('a failed Not now save retries that choice without enabling notifications',
   const { electronApp, window } = await launch(userDataDir);
   try {
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toBeVisible();
     // Fail only the next authoritative answer commit, with the real IPC and
@@ -188,7 +211,7 @@ test('a late Turn on answer does not override a newer Settings disable', async (
   const { electronApp, window } = await launch(userDataDir);
   try {
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toBeVisible();
     // Commit the offer answer normally, but hold its IPC reply so the user
@@ -237,7 +260,7 @@ test('a late Turn on answer does not override a newer Settings disable', async (
     // delivery. A fresh completion still cannot re-arm the answered offer.
     await app.closeSettings();
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
     expect(readPreferences(userDataDir).osNotifications.enabled).toBe(false);
@@ -254,8 +277,8 @@ test('a background completion offers notifications on return, and Not now sticks
   try {
     const offer = first.window.getByTestId('os-notification-offer');
     await setFocused(first.window, false);
-    await completePipeline(first.electronApp, state);
-    await completePipeline(first.electronApp, state);
+    await completePipeline(first, state);
+    await completePipeline(first, state);
     // Pending while away, never shown in the background.
     await expect(offer).toHaveCount(0);
 
@@ -281,7 +304,7 @@ test('a background completion offers notifications on return, and Not now sticks
 
     // Another completion in this session does not bring it back.
     await setFocused(first.window, false);
-    await completePipeline(first.electronApp, state);
+    await completePipeline(first, state);
     await setFocused(first.window, true);
     await expect(offer).toHaveCount(0);
 
@@ -303,7 +326,7 @@ test('a background completion offers notifications on return, and Not now sticks
     const second = await launch(userDataDir);
     try {
       await setFocused(second.window, false);
-      await completePipeline(second.electronApp, state);
+      await completePipeline(second, state);
       await setFocused(second.window, true);
       await expect(
         second.window.getByTestId('os-notification-offer'),
@@ -324,7 +347,7 @@ test('Turn on saves the answer and stays suppressed after completion and relaunc
   let closed = false;
   try {
     await setFocused(first.window, false);
-    await completePipeline(first.electronApp, state);
+    await completePipeline(first, state);
     await setFocused(first.window, true);
     await first.window.getByTestId('os-notification-offer-enable').click();
     await expect(first.window.getByTestId('os-notification-offer')).toHaveCount(
@@ -338,7 +361,7 @@ test('Turn on saves the answer and stays suppressed after completion and relaunc
     }).toPass({ timeout: 10_000 });
     const stamp = readPreferences(userDataDir).osNotificationOfferAnsweredAt;
     await setFocused(first.window, false);
-    await completePipeline(first.electronApp, state);
+    await completePipeline(first, state);
     await setFocused(first.window, true);
     await expect(first.window.getByTestId('os-notification-offer')).toHaveCount(
       0,
@@ -348,7 +371,7 @@ test('Turn on saves the answer and stays suppressed after completion and relaunc
     const second = await launch(userDataDir);
     try {
       await setFocused(second.window, false);
-      await completePipeline(second.electronApp, state);
+      await completePipeline(second, state);
       await setFocused(second.window, true);
       await expect(
         second.window.getByTestId('os-notification-offer'),
@@ -370,7 +393,7 @@ test('a completion delivered while focused never offers', async () => {
   const { electronApp, window } = await launch(userDataDir);
   try {
     await setFocused(window, true);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, false);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
@@ -384,7 +407,7 @@ test('a pending offer does not survive a relaunch', async () => {
   const { userDataDir, state } = seedProfile();
   const first = await launch(userDataDir);
   await setFocused(first.window, false);
-  await completePipeline(first.electronApp, state);
+  await completePipeline(first, state);
   await closeOfferApp(first.electronApp, userDataDir, { keepUserData: true });
 
   const second = await launch(userDataDir);
@@ -398,7 +421,7 @@ test('a pending offer does not survive a relaunch', async () => {
     );
     // A new qualifying completion can arm it again.
     await setFocused(second.window, false);
-    await completePipeline(second.electronApp, state);
+    await completePipeline(second, state);
     await setFocused(second.window, true);
     await expect(offer).toBeVisible();
   } finally {
@@ -417,7 +440,7 @@ for (const legacyNotifications of ['completed', 'dismissed']) {
     const { electronApp, window } = await launch(userDataDir);
     try {
       await setFocused(window, false);
-      await completePipeline(electronApp, state);
+      await completePipeline({ electronApp, window }, state);
       await setFocused(window, true);
       await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
       await window.evaluate(() =>
@@ -466,7 +489,7 @@ test('an already enabled profile is suppressed for good, even after turning them
     await app.closeSettings();
 
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
   } finally {
@@ -542,7 +565,7 @@ test('explicit Settings enable and disable permanently answer a fresh profile', 
     }).toPass();
     await app.closeSettings();
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await expect(window.getByTestId('os-notification-offer')).toHaveCount(0);
     expect(readPreferences(userDataDir).osNotificationOfferAnsweredAt).toBe(
@@ -561,7 +584,7 @@ test('OS denial keeps the answer and offers system settings exactly once', async
     await electronApp.evaluate(() => globalThis.__restoreOfferNative());
     await stubNative(electronApp, true);
     await setFocused(window, false);
-    await completePipeline(electronApp, state);
+    await completePipeline({ electronApp, window }, state);
     await setFocused(window, true);
     await window.getByTestId('os-notification-offer-enable').click();
     const settings = window.getByRole('button', {

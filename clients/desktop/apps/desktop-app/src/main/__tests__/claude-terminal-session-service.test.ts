@@ -25,6 +25,10 @@ import {
 import type { ClaudeTerminalHookEventName } from '@canopy/desktop-shared/lib/desktop-integration-transport';
 import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
 import { getAppAdvisorHomeDir } from '../lib/paths';
+import {
+  beginWorktreeGitSetup,
+  claimWorktreeGitSetup,
+} from '../lib/worktree-git-setup';
 
 type MockTabsFile = {
   tabs: Array<Record<string, unknown>>;
@@ -505,8 +509,14 @@ jest.mock('../services/terminal-service', () => ({
   },
 }));
 
+const mockRecordTerminalPlanImplementation = jest.fn<
+  Promise<boolean>,
+  [unknown, string]
+>(() => Promise.resolve(false));
+
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: jest.fn(() => ({
+    recordTerminalPlanImplementation: mockRecordTerminalPlanImplementation,
     get ingestProviderEvent(): typeof mockIngestProviderEvent {
       return mockIngestProviderEvent;
     },
@@ -680,6 +690,7 @@ describe('claude-terminal-session-service', () => {
       ),
     );
     mockCanonicalTerminal.mockReset();
+    mockRecordTerminalPlanImplementation.mockReset().mockResolvedValue(false);
     mockWatcherIngress.mockResolvedValue({ allowed: true });
     mockTerminalReceipt.mockReturnValue(false);
     mockResolveSessionWorkOwner.mockResolvedValue({ kind: 'personal' });
@@ -744,6 +755,7 @@ describe('claude-terminal-session-service', () => {
     recordOverrides: {
       approvalMode?: ApprovalMode;
       approvalSession?: { check: jest.Mock; dispose: jest.Mock };
+      ledgerTools?: { dispose: jest.Mock };
       planMode?: boolean;
       chatId?: string;
       codeGraphAvailableThisTurn?: boolean;
@@ -802,6 +814,311 @@ describe('claude-terminal-session-service', () => {
       await Promise.resolve();
     }
   }
+
+  it('does not complete a pending initial implementation from an unrelated terminal turn', async () => {
+    const service = createService();
+    mockReadChatTabsFile.mockResolvedValue({
+      tabs: [
+        {
+          id: 'chat',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 2,
+            userMessageId: 'implementation-1',
+            startedAt: '2026-05-28T11:00:00.000Z',
+          },
+        },
+      ],
+    });
+    await service.launch({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      cols: 80,
+      rows: 24,
+      initialPrompt: terminalPresentationPrompt(
+        'Implement.',
+        'implementation-1',
+      ),
+    });
+    await service.markHookState({
+      sessionKey: service.getState('p', 'w', 'chat')?.sessionKey ?? '',
+      hookEventName: 'UserPromptSubmit',
+      hookPayload: { prompt: 'An unrelated prompt' },
+    });
+    await service.markHookState({
+      sessionKey: service.getState('p', 'w', 'chat')?.sessionKey ?? '',
+      hookEventName: 'Stop',
+      hookPayload: {},
+    });
+    expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'completed',
+    );
+  });
+
+  it('settles an admitted delivery to an existing terminal that exits before its prompt hook', async () => {
+    const service = seedService();
+    service.retainPlanImplementationDelivery({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      userMessageId: 'implementation-existing',
+    });
+    expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'started',
+    );
+    mockTerminalEventListener?.({
+      type: 'exit',
+      payload: { terminalId: 'terminal', exitCode: 1, signal: null },
+    });
+    await flushTerminalEventTasks();
+    expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+      {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-existing',
+      },
+      'failed',
+    );
+  });
+
+  it('settles only the exact pending implementation on a refused terminal write without ending the live terminal', async () => {
+    const service = seedService();
+    service.retainPlanImplementationDelivery({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      userMessageId: 'implementation-large',
+    });
+    expect(
+      service.recordPlanImplementationWriteFailure(
+        'terminal',
+        'unrelated-paste',
+      ),
+    ).toBeUndefined();
+    expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalled();
+    await service.recordPlanImplementationWriteFailure(
+      'terminal',
+      'implementation-large-paste',
+    );
+    expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+      {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-large',
+      },
+      'failed',
+    );
+    expect(service.getState('p', 'w', 'chat')?.turnState).toBe('idle');
+    expect(
+      service.recordPlanImplementationWriteFailure(
+        'terminal',
+        'implementation-large-submit',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('settles an admitted initial prompt when the spawned terminal exits before its first hook', async () => {
+    const service = createService();
+    mockReadChatTabsFile.mockResolvedValue({
+      tabs: [
+        {
+          id: 'chat',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 2,
+            userMessageId: 'implementation-1',
+            startedAt: '2026-05-28T11:00:00.000Z',
+          },
+        },
+      ],
+    });
+    await service.launch({
+      projectId: 'p',
+      worktreeId: 'w',
+      chatId: 'chat',
+      cols: 80,
+      rows: 24,
+      initialPrompt: terminalPresentationPrompt(
+        'Implement.',
+        'implementation-1',
+      ),
+    });
+    expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'started',
+    );
+    mockTerminalEventListener?.({
+      type: 'exit',
+      payload: { terminalId: 'terminal', exitCode: 1, signal: null },
+    });
+    await flushTerminalEventTasks();
+    expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+      {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-1',
+      },
+      'failed',
+    );
+  });
+
+  it('settles an admitted implementation when terminal launch fails before its first hook', async () => {
+    const service = createService();
+    mockBuildClaudeTerminalLaunchConfig.mockRejectedValueOnce(
+      new Error('Launch refused'),
+    );
+    await expect(
+      service.launch({
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        cols: 80,
+        rows: 24,
+        initialPrompt: terminalPresentationPrompt(
+          'Implement.',
+          'implementation-1',
+        ),
+      }),
+    ).rejects.toThrow('Launch refused');
+    expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+      {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-1',
+      },
+      'failed',
+    );
+  });
+
+  it.each([
+    ['Stop', 'completed'],
+    ['StopFailure', 'failed'],
+    ['SessionEnd', 'cancelled'],
+  ] as const)(
+    'settles a linked terminal implementation from its exact %s hook',
+    async (hookEventName, outcome) => {
+      const service = seedService();
+      mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+      await service.markHookState({
+        sessionKey: 'session',
+        hookEventName: 'UserPromptSubmit',
+        hookPayload: {
+          prompt: terminalPresentationPrompt('Implement.', 'implementation-1'),
+        },
+      });
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+        {
+          projectId: 'p',
+          worktreeId: 'w',
+          chatId: 'chat',
+          userMessageId: 'implementation-1',
+        },
+        'started',
+      );
+      await service.markHookState({
+        sessionKey: 'session',
+        hookEventName,
+        hookPayload: {},
+      });
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenLastCalledWith(
+        {
+          projectId: 'p',
+          worktreeId: 'w',
+          chatId: 'chat',
+          userMessageId: 'implementation-1',
+        },
+        outcome,
+      );
+      mockRecordTerminalPlanImplementation.mockResolvedValue(false);
+    },
+  );
+
+  it.each(['syncing-stop', 'queued-stop', 'queued-prompt'] as const)(
+    'preserves received implementation completion across exit with %s',
+    async (stage) => {
+      const service = seedService();
+      const target = {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-exit-order',
+      };
+      const prompt = {
+        sessionKey: 'session',
+        hookEventName: 'UserPromptSubmit' as const,
+        hookPayload: {
+          prompt: terminalPresentationPrompt(
+            'Implement.',
+            target.userMessageId,
+          ),
+        },
+      };
+      mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+      if (stage === 'queued-prompt') {
+        service.retainPlanImplementationDelivery(target);
+      } else {
+        await service.markHookState(prompt);
+      }
+      let releaseSync: (() => void) | undefined;
+      let enterSync: (() => void) | undefined;
+      const syncEntered = new Promise<void>((resolve) => {
+        enterSync = resolve;
+      });
+      const syncResult = await mockSyncClaudeTerminalTranscript({});
+      mockSyncClaudeTerminalTranscript.mockImplementationOnce(() => {
+        enterSync?.();
+        return new Promise((resolve) => {
+          releaseSync = (): void => resolve(syncResult);
+        });
+      });
+      const blocker = service.markHookState({
+        sessionKey: 'session',
+        hookEventName: stage === 'syncing-stop' ? 'Stop' : 'PostCompact',
+        hookPayload: {},
+      });
+      await syncEntered;
+      const queuedPrompt =
+        stage === 'queued-prompt' ? service.markHookState(prompt) : undefined;
+      const queuedStop =
+        stage !== 'syncing-stop'
+          ? service.markHookState({
+              sessionKey: 'session',
+              hookEventName: 'Stop',
+              hookPayload: {},
+            })
+          : undefined;
+      try {
+        mockTerminalEventListener?.({
+          type: 'exit',
+          payload: { terminalId: 'terminal', exitCode: 0, signal: null },
+        });
+        await flushTerminalEventTasks();
+        expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+          target,
+          'cancelled',
+        );
+      } finally {
+        releaseSync?.();
+        await Promise.all([blocker, queuedPrompt, queuedStop]);
+        await flushTerminalEventTasks();
+      }
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+        target,
+        'completed',
+      );
+      expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+        target,
+        'failed',
+      );
+    },
+  );
 
   it('marks the runtime ready for input on the first hook callback', async () => {
     const service = seedService();
@@ -1181,6 +1498,121 @@ describe('claude-terminal-session-service', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(service.getState('p', 'w', 'chat')).toBeUndefined();
   });
+
+  it.each(['cleanup', 'full-access-downgrade'] as const)(
+    'tears down the terminal and reports settlement failure during %s',
+    async (path) => {
+      const disposeApproval = jest.fn();
+      const disposeLedger = jest.fn();
+      const service = seedService('p', 'w', 'default', {
+        approvalMode: 'full-access',
+        approvalSession: { check: jest.fn(), dispose: disposeApproval },
+        ledgerTools: { dispose: disposeLedger },
+      });
+      const target = {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-cleanup-failure',
+      };
+      service.retainPlanImplementationDelivery(target);
+      const failure = new Error('Canonical settlement persistence failed');
+      mockRecordTerminalPlanImplementation.mockRejectedValueOnce(failure);
+      await expect(
+        path === 'cleanup'
+          ? service.cleanup({ ...target, reason: 'chat-closed' })
+          : service.setApprovalMode('p', 'w', 'chat', 'ask'),
+      ).rejects.toBe(failure);
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+        target,
+        'cancelled',
+      );
+      expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      });
+      expect(mockUnregisterCanopyWorktreeSessionRoute).toHaveBeenCalledWith(
+        'session',
+      );
+      expect(mockUnregisterMcpProxyRoutesForSession).toHaveBeenCalledWith(
+        'session',
+      );
+      expect(disposeApproval).toHaveBeenCalledTimes(1);
+      expect(disposeLedger).toHaveBeenCalledTimes(1);
+      expect(mockRm).toHaveBeenCalled();
+      expect(service.getState('p', 'w', 'chat')).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['Stop', 'completed'],
+    ['StopFailure', 'failed'],
+  ] as const)(
+    'preserves a received %s outcome during full-access downgrade cleanup',
+    async (hookEventName, outcome) => {
+      const service = seedService('p', 'w', 'default', {
+        approvalMode: 'full-access',
+      });
+      const target = {
+        projectId: 'p',
+        worktreeId: 'w',
+        chatId: 'chat',
+        userMessageId: 'implementation-cleanup-order',
+      };
+      mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+      await service.markHookState({
+        sessionKey: 'session',
+        hookEventName: 'UserPromptSubmit',
+        hookPayload: {
+          prompt: terminalPresentationPrompt(
+            'Implement.',
+            target.userMessageId,
+          ),
+        },
+      });
+      let releaseSync: (() => void) | undefined;
+      let enterSync: (() => void) | undefined;
+      const entered = new Promise<void>((resolve) => {
+        enterSync = resolve;
+      });
+      const syncResult = await mockSyncClaudeTerminalTranscript({});
+      mockSyncClaudeTerminalTranscript.mockImplementationOnce(() => {
+        enterSync?.();
+        return new Promise((resolve) => {
+          releaseSync = (): void => resolve(syncResult);
+        });
+      });
+      const hook = service.markHookState({
+        sessionKey: 'session',
+        hookEventName,
+        hookPayload: {},
+      });
+      await entered;
+      const cleanup = service.setApprovalMode('p', 'w', 'chat', 'ask');
+      try {
+        await flushTerminalEventTasks();
+        expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+          target,
+          'cancelled',
+        );
+      } finally {
+        releaseSync?.();
+        await hook;
+        await cleanup;
+      }
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+        target,
+        outcome,
+      );
+      expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+        target,
+        'cancelled',
+      );
+      expect(mockPtyKill).toHaveBeenCalledWith('terminal', {
+        signal: TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+      });
+      expect(service.getState('p', 'w', 'chat')).toBeUndefined();
+    },
+  );
 
   it('retains approval-mode changes before the terminal runtime record exists', async () => {
     const service = createService();
@@ -6208,6 +6640,47 @@ describe('claude-terminal-session-service', () => {
     expect(trustOrder).toBeLessThan(spawnOrder);
   });
 
+  it.each([
+    ['ready', undefined],
+    ['failed', 'The worktree could not be set up.'],
+    ['cancelled', 'Setup for this worktree was cancelled.'],
+  ] as const)(
+    "waits for its worktree's pending Git setup before launching, which ends %s",
+    async (outcome, refusal) => {
+      const settle = beginWorktreeGitSetup('p', 'w');
+      const service = createService();
+      const launch = service
+        .launch({
+          projectId: 'p',
+          worktreeId: 'w',
+          chatId: 'chat',
+          cols: 80,
+          rows: 24,
+        })
+        .then(
+          () => 'launched',
+          (error: unknown) => error,
+        );
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(mockSpawnManagedTerminal).not.toHaveBeenCalled();
+
+      settle(outcome);
+
+      if (refusal === undefined) {
+        await expect(launch).resolves.toBe('launched');
+        expect(mockSpawnManagedTerminal).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(launch).resolves.toMatchObject({ message: refusal });
+        expect(mockSpawnManagedTerminal).not.toHaveBeenCalled();
+        // The wait leaves the outcome for the chat send that follows.
+        await expect(claimWorktreeGitSetup('p', 'w')).resolves.toBe(outcome);
+      }
+      await service.shutdown();
+    },
+  );
+
   it('rejects non-Claude launches with a typed error code', async () => {
     mockReadChatTabsFile.mockResolvedValueOnce({
       tabs: [{ id: 'chat', providerType: 'codex' }],
@@ -7230,6 +7703,154 @@ describe('claude-terminal-session-service', () => {
       }
     });
 
+    it.each(['catalog', 'cancel', 'timeout', 'during-sync'] as const)(
+      'settles an implementation when the real coordinator ends a suspended reload by %s before resume',
+      async (failure) => {
+        const service = createService();
+        await launchWithResumeHandler(service);
+        mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+        const scope = { projectId: 'p', worktreeId: 'w', chatId: 'chat' };
+        const target = {
+          ...scope,
+          userMessageId: 'implementation-before-resume',
+        };
+        const additions = { skillRefs: [], pluginRefs: [], mcpServerRefs: [] };
+        const restoreCatalog =
+          deferredToolsReloadCoordinator.setCatalogRevalidatorForTests(() =>
+            Promise.resolve('Catalog item disappeared'),
+          );
+        const restoreTimeout =
+          failure === 'timeout'
+            ? deferredToolsReloadCoordinator.setIntentTimeoutMsForTests(25)
+            : undefined;
+        try {
+          await markHook(
+            service,
+            'UserPromptSubmit',
+            sessionKeyOf(service),
+            terminalPresentationPrompt('Implement.', target.userMessageId),
+          );
+          const intent = deferredToolsReloadCoordinator.createIntent({
+            scope,
+            toolCallId: 'load-plan-tools',
+            providerType: 'claude',
+            additions,
+            enabledResources: [],
+          });
+          if (!intent.accepted) throw new Error('Expected reload intent');
+          if (failure === 'during-sync') {
+            mockSyncClaudeTerminalTranscript.mockImplementationOnce(() => {
+              deferredToolsReloadCoordinator.cancelActiveReload(scope);
+              return Promise.resolve({
+                projectId: 'p',
+                worktreeId: 'w',
+                chatId: 'chat',
+                importedEventCount: 0,
+                importedMessages: [],
+                transcriptPath: '/runtime/allowed.jsonl',
+                compactionAppended: false,
+              });
+            });
+          }
+          await markHook(service, 'Stop', sessionKeyOf(service));
+          expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+            target,
+            'completed',
+          );
+          if (failure === 'catalog') {
+            await deferredToolsReloadCoordinator.begin({
+              scope,
+              toolCallId: 'load-plan-tools',
+              requestId: intent.requestId,
+              additions,
+              enabledResources: [],
+            });
+          } else if (failure === 'cancel') {
+            deferredToolsReloadCoordinator.cancelActiveReload(scope);
+          } else if (failure === 'timeout') {
+            await new Promise((resolve) => setTimeout(resolve, 60));
+          }
+          await Promise.resolve();
+          expect(mockRecordTerminalPlanImplementation).toHaveBeenCalledWith(
+            target,
+            failure === 'cancel' || failure === 'during-sync'
+              ? 'cancelled'
+              : 'failed',
+          );
+          mockRecordTerminalPlanImplementation.mockClear();
+          await markHook(
+            service,
+            'UserPromptSubmit',
+            sessionKeyOf(service),
+            'Unrelated follow-up',
+          );
+          await markHook(service, 'Stop', sessionKeyOf(service));
+          expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalled();
+        } finally {
+          deferredToolsReloadCoordinator.cancelActiveReload(scope);
+          restoreCatalog();
+          restoreTimeout?.();
+        }
+      },
+    );
+
+    it('keeps an admitted implementation unsettled through an intermediate reload Stop and records the resumed failure', async () => {
+      const service = createService();
+      const resume = await launchWithResumeHandler(service);
+      mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+      const suppress = jest.spyOn(
+        deferredToolsReloadCoordinator,
+        'shouldSuppressProviderTerminal',
+      );
+      try {
+        await markHook(
+          service,
+          'UserPromptSubmit',
+          sessionKeyOf(service),
+          terminalPresentationPrompt('Implement.', 'implementation-reload'),
+        );
+        const target = {
+          projectId: 'p',
+          worktreeId: 'w',
+          chatId: 'chat',
+          userMessageId: 'implementation-reload',
+        };
+        expect(mockRecordTerminalPlanImplementation).toHaveBeenLastCalledWith(
+          target,
+          'started',
+        );
+        mockRecordTerminalPlanImplementation.mockClear();
+        suppress.mockReturnValue(true);
+        await markHook(service, 'Stop', sessionKeyOf(service));
+        expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalled();
+        suppress.mockReturnValue(false);
+        await resume(reloadRequest(new AbortController().signal));
+        const prompt =
+          mockBuildClaudeTerminalLaunchConfig.mock.lastCall?.[0].initialPrompt;
+        if (typeof prompt !== 'string')
+          throw new Error('Expected continuation prompt');
+        await markHook(
+          service,
+          'UserPromptSubmit',
+          sessionKeyOf(service),
+          prompt,
+        );
+        await markHook(service, 'StopFailure', sessionKeyOf(service));
+        expect(mockRecordTerminalPlanImplementation).toHaveBeenLastCalledWith(
+          target,
+          'failed',
+        );
+        expect(mockRecordTerminalPlanImplementation).not.toHaveBeenCalledWith(
+          target,
+          'completed',
+        );
+      } finally {
+        suppress.mockRestore();
+        await service.shutdown();
+        mockRecordTerminalPlanImplementation.mockResolvedValue(false);
+      }
+    });
+
     it('begins one lease in the chat worktree when a prompt starts a turn', async () => {
       const service = seedService();
 
@@ -7415,7 +8036,16 @@ describe('claude-terminal-session-service', () => {
     it('releases the running turn lease when a deferred-tools reload is aborted', async () => {
       const service = createService();
       const resume = await launchWithResumeHandler(service);
-      await markHook(service, 'UserPromptSubmit', sessionKeyOf(service));
+      mockRecordTerminalPlanImplementation.mockResolvedValue(true);
+      await markHook(
+        service,
+        'UserPromptSubmit',
+        sessionKeyOf(service),
+        terminalPresentationPrompt(
+          'Implement.',
+          'implementation-aborted-reload',
+        ),
+      );
       const controller = new AbortController();
       mockSpawnManagedTerminal.mockImplementationOnce(() => {
         controller.abort();
@@ -7426,6 +8056,15 @@ describe('claude-terminal-session-service', () => {
 
       expect(mockBeginPlanTurn).toHaveBeenCalledTimes(1);
       expect(planTurnLease(0).end).toHaveBeenCalledTimes(1);
+      expect(mockRecordTerminalPlanImplementation).toHaveBeenLastCalledWith(
+        {
+          projectId: 'p',
+          worktreeId: 'w',
+          chatId: 'chat',
+          userMessageId: 'implementation-aborted-reload',
+        },
+        'cancelled',
+      );
     });
 
     it('begins no lease for an App Advisor terminal', async () => {

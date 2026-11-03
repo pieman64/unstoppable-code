@@ -16,6 +16,7 @@ import type {
 import { countLedgerCodePoints } from '../../lib/ledger-display';
 import { Button } from '../Button';
 import { TextArea, TextInput } from '../Field';
+import { FormField } from '../FormField';
 import { Notice } from '../Notice';
 import { LedgerEntryTypePicker } from './LedgerEntryTypePicker';
 import { LedgerStatusControl } from './LedgerStatusControl';
@@ -179,96 +180,100 @@ export function LedgerEntryForm({
       )}
       {targetControl}
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <label
-            id={`${id}-type-label`}
-            htmlFor={`${id}-type`}
-            className="text-xs fg-secondary"
-          >
-            Type
-          </label>
-          <LedgerEntryTypePicker
+        <div className="min-w-0">
+          <FormField
             id={`${id}-type`}
-            labelId={`${id}-type-label`}
-            value={value.type}
-            disabled={saving}
-            onChange={(type) => onChange({ type })}
-          />
-        </div>
-        <div className="flex min-w-0 flex-col gap-1">
-          <label
-            id={`${id}-status-label`}
-            htmlFor={`${id}-status`}
-            className="text-xs fg-secondary"
+            label={<span id={`${id}-type-label`}>Type</span>}
           >
-            Status
-          </label>
-          <LedgerStatusControl
-            variant="field"
+            {(control) => (
+              <LedgerEntryTypePicker
+                id={control.id}
+                labelId={`${id}-type-label`}
+                value={value.type}
+                disabled={saving}
+                onChange={(type) => onChange({ type })}
+              />
+            )}
+          </FormField>
+        </div>
+        <div className="min-w-0">
+          <FormField
             id={`${id}-status`}
-            labelId={`${id}-status-label`}
-            status={value.status}
-            saving={saving}
-            onChange={(status) => onChange({ status })}
-            data-testid="ledger-entry-form-status"
-          />
-        </div>
-      </div>
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <label htmlFor={`${id}-title`} className="text-xs fg-secondary">
-            Title <span className="fg-tertiary">(optional)</span>
-          </label>
-          <Counter
-            id={`${id}-title-count`}
-            value={value.title}
-            limit={LEDGER_FORM_LIMITS.title}
-          />
-        </div>
-        <TextInput
-          id={`${id}-title`}
-          value={value.title}
-          disabled={saving}
-          aria-describedby={`${id}-title-count`}
-          data-testid="ledger-entry-form-title"
-          onChange={(event) => onChange({ title: event.target.value })}
-          className="w-full"
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <label htmlFor={`${id}-content`} className="text-xs fg-secondary">
-            Content
-          </label>
-          <Counter
-            id={`${id}-content-count`}
-            value={value.content}
-            limit={LEDGER_FORM_LIMITS.content}
-          />
-        </div>
-        <TextArea
-          id={`${id}-content`}
-          ref={contentRef}
-          value={value.content}
-          disabled={saving}
-          rows={5}
-          aria-describedby={`${id}-content-count`}
-          data-testid="ledger-entry-form-content"
-          onChange={(event) => onChange({ content: event.target.value })}
-          className="w-full"
-        />
-      </div>
-      {ownerControl !== undefined && (
-        <div className="flex flex-col gap-1">
-          <label
-            id={`${id}-owner`}
-            htmlFor={`${id}-owner-picker`}
-            className="text-xs fg-secondary"
+            label={<span id={`${id}-status-label`}>Status</span>}
           >
-            Owner
-          </label>
-          {ownerControl(`${id}-owner`)}
+            {(control) => (
+              <LedgerStatusControl
+                variant="field"
+                id={control.id}
+                labelId={`${id}-status-label`}
+                status={value.status}
+                saving={saving}
+                onChange={(status) => onChange({ status })}
+                data-testid="ledger-entry-form-status"
+              />
+            )}
+          </FormField>
         </div>
+      </div>
+      <FormField
+        id={`${id}-title`}
+        label={
+          <>
+            Title <span className="fg-tertiary">(optional)</span>
+          </>
+        }
+        description={
+          <span className="flex justify-end">
+            <Counter
+              id={`${id}-title-count`}
+              value={value.title}
+              limit={LEDGER_FORM_LIMITS.title}
+            />
+          </span>
+        }
+      >
+        {(control) => (
+          <TextInput
+            {...control}
+            value={value.title}
+            disabled={saving}
+            data-testid="ledger-entry-form-title"
+            onChange={(event) => onChange({ title: event.target.value })}
+          />
+        )}
+      </FormField>
+      <FormField
+        id={`${id}-content`}
+        label="Content"
+        description={
+          <span className="flex justify-end">
+            <Counter
+              id={`${id}-content-count`}
+              value={value.content}
+              limit={LEDGER_FORM_LIMITS.content}
+            />
+          </span>
+        }
+      >
+        {(control) => (
+          <TextArea
+            {...control}
+            ref={contentRef}
+            value={value.content}
+            disabled={saving}
+            rows={5}
+            data-testid="ledger-entry-form-content"
+            onChange={(event) => onChange({ content: event.target.value })}
+          />
+        )}
+      </FormField>
+      {ownerControl !== undefined && (
+        <FormField
+          id={`${id}-owner-picker`}
+          label={<span id={`${id}-owner`}>Owner</span>}
+        >
+          {() => ownerControl(`${id}-owner`)}
+        </FormField>
       )}
       <fieldset className="flex flex-col gap-1.5" disabled={saving}>
         <legend className="mb-1 text-xs fg-secondary">

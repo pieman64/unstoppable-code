@@ -10,6 +10,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { startAccountMcpCloud } from './fixtures/accountMcpCloud.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
@@ -54,7 +55,7 @@ import {
   completePendingPluginInstall,
 } from './pluginInstallCompletionFixture.mjs';
 
-test('CAN-4845 workflow triggers share a glyph, count configured triggers and expose failure reasons', async () => {
+test('CAN-4845 compact workflow triggers count configured triggers and expose failure reasons', async () => {
   test.setTimeout(120_000);
   const check = expect.configure({ soft: true, timeout: 1_000 });
   const userDataDir = mkdtempSync(
@@ -114,38 +115,31 @@ test('CAN-4845 workflow triggers share a glyph, count configured triggers and ex
     await app.openPluginsPage();
     await window.getByTestId('plugins-type-tab-workflow').click();
     const installed = window.getByTestId('customize-section-installed');
-    let manualGlyph;
     for (const [id, , label] of fixtures) {
       const line = installed.locator(
         `[data-testid^="customize-row-trigger-pipeline:"][data-testid$=":can4845-${id}"]`,
       );
       await expect(line).toBeVisible();
       await check(line).toHaveText(label);
-      await check(line.locator('svg')).toHaveCount(1);
-      const glyph = await line.locator('svg').first().innerHTML();
-      if (id === 'manual') manualGlyph = glyph;
-      else check(glyph).toBe(manualGlyph);
+      await check(line.locator('svg')).toHaveCount(0);
       if (id === 'two' || id === 'three') {
-        await line.locator('[tabindex="0"]').hover();
+        await line.hover();
         const tooltip = window.getByRole('tooltip');
         await check(tooltip).toContainText('Plan approval');
         await check(tooltip).toContainText('Task ready');
         if (id === 'three') await check(tooltip).toContainText('Manual');
         await window.mouse.move(0, 0);
-        const focusTarget = line.locator('[tabindex="0"]');
-        await check(focusTarget).toHaveCount(1);
-        if ((await focusTarget.count()) === 1) {
-          await focusTarget.focus();
-          await window.keyboard.press('Shift+Tab');
-          await window.keyboard.press('Tab');
-          await expect(tooltip).toContainText('Plan approval');
-          await expect(tooltip).toContainText('Task ready');
-          if (id === 'three') await expect(tooltip).toContainText('Manual');
-        }
+        const primary = line.locator('xpath=ancestor::button[1]');
+        await primary.focus();
+        await expect(primary).toBeFocused();
+        await expect(primary).toHaveAccessibleDescription(
+          /Plan approval.*Task ready/,
+        );
+        await expect(primary.locator('[tabindex="0"]')).toHaveCount(0);
       }
     }
     const failed = installed.getByTestId(
-      'customize-row-last-run-automation:local:can4845-failed',
+      'customize-row-trigger-automation:local:can4845-failed',
     );
     await expect(failed).toBeVisible();
     await check(failed.locator('circle')).toHaveCount(0);
@@ -154,20 +148,14 @@ test('CAN-4845 workflow triggers share a glyph, count configured triggers and ex
       'Digest source was unavailable.',
     );
     await window.mouse.move(0, 0);
-    const focusTarget = installed
-      .getByTestId(
-        'customize-row-last-run-line-automation:local:can4845-failed',
-      )
-      .locator('[tabindex="0"]');
-    await check(focusTarget).toHaveCount(1);
-    if ((await focusTarget.count()) === 1) {
-      await focusTarget.focus();
-      await window.keyboard.press('Shift+Tab');
-      await window.keyboard.press('Tab');
-      await expect(window.getByRole('tooltip')).toContainText(
-        'Digest source was unavailable.',
-      );
-    }
+    const primary = installed.getByTestId(
+      'customize-row-automation:local:can4845-failed',
+    );
+    await primary.focus();
+    await expect(primary).toBeFocused();
+    await expect(primary).toHaveAccessibleDescription(
+      /Last run: failure: Digest source was unavailable/,
+    );
   } finally {
     await closeCanopy(launch.electronApp, userDataDir);
   }
@@ -184,6 +172,7 @@ test('marketplace reflects an install that completes after leaving details', asy
       window.getByTestId('plugins-entry-add-mkt:demo/market/alpha-tool'),
     ).toHaveCount(0);
     await window.getByTestId('plugins-search-clear').click();
+    await window.getByTestId('customize-section-installed-show-all').click();
     await expect(
       window.getByTestId('customize-row-mkt:demo/market/alpha-tool'),
     ).toBeVisible();
@@ -2041,7 +2030,7 @@ test('marketplace Add signs in once for configured harnesses, then adds the serv
     expect(await projectDefaults()).not.toContainEqual(ref);
     const select = projects.getByTestId('mcp-browse-detail-projects-select');
     if ((await select.count()) > 0)
-      await select.selectOption('demo-ts-pnpm-vite');
+      await chooseSettingsOption(select, 'demo-ts-pnpm-vite');
     const add = projects.getByTestId('mcp-browse-detail-projects-add');
     await expect(add).toHaveText(/^Add to .+/);
     await add.click();
@@ -2620,7 +2609,7 @@ test.describe('plugins discovery page', () => {
         suggested.locator('[data-marketplace-entry="true"]'),
       ).toHaveText([/Figma/, /Canva/]);
       const visibleCardSubtitles = window.locator(
-        '[data-testid^="plugins-card-subtitle-"]:visible',
+        '[data-testid^="customize-row-subtitle-"]:visible',
       );
       expect(await visibleCardSubtitles.count()).toBeGreaterThan(0);
       const subtitleWordCounts = (
@@ -2767,9 +2756,8 @@ test.describe('plugins discovery page', () => {
       const visibleOfficialPluginCards = window.locator(
         '[data-testid^="plugins-entry-mkt:openai-curated/"]:visible, [data-testid^="customize-row-mkt:openai-curated/"]:visible',
       );
-      const visibleOfficialPluginLogos = window.locator(
-        '[data-testid^="marketplace-product-logo-mkt:openai-curated/"]:visible',
-      );
+      const visibleOfficialPluginLogos =
+        visibleOfficialPluginCards.locator('img:visible');
       // Count once the cleared search has re-rendered the browse sections.
       await expect(window.getByTestId('plugins-search')).toHaveValue('');
       await expect
@@ -2780,11 +2768,9 @@ test.describe('plugins discovery page', () => {
         )
         .toBe(0);
       await expect(visibleOfficialPluginCards).not.toHaveCount(0);
-      await expect(
-        window.locator(
-          '[data-testid^="marketplace-product-logo-fallback-mkt:openai-curated/"]:visible',
-        ),
-      ).toHaveCount(0);
+      for (const card of await visibleOfficialPluginCards.all()) {
+        await expect(card.locator('img')).toHaveCount(1);
+      }
 
       await window.getByTestId('plugins-type-tab-app').click();
       await window
@@ -2929,9 +2915,11 @@ test.describe('plugins discovery page', () => {
       ).toHaveCount(0);
       await expect(recommendedEntry).toBeVisible();
       await expect(recommendedEntry).toContainText('Recommended Tool');
-      // Recommended is a star icon named for assistive tech (CAN-4261).
+      // Compact rows retain the catalog source rather than a recommendation badge.
       await expect(
-        recommendedEntry.getByRole('img', { name: 'Recommended' }),
+        recommendedEntry.getByTestId(
+          'customize-row-source-curated:recommended-tool',
+        ),
       ).toBeVisible();
       const cardBox = await recommendedEntry.boundingBox();
       expect(cardBox).not.toBeNull();
@@ -3136,7 +3124,7 @@ test.describe('plugins discovery page', () => {
         searchResults.getByTestId(
           'plugins-entry-add-mkt:demo/market/alpha-tool',
         ),
-      ).toHaveText('Add');
+      ).toHaveText('Install');
       await expect(
         searchResults.getByTestId(
           'plugins-entry-menu-mkt:demo/market/gamma-tool',
@@ -3506,7 +3494,10 @@ test.describe('plugins discovery page', () => {
       await expect(
         installed.getByTestId(`customize-row-name-line-${installedEntryId}`),
       ).toHaveText('Team Digest');
-      await expect(installed).toContainText('Shared by Platform');
+      await expect(
+        installed.getByTestId(`customize-row-source-${installedEntryId}`),
+      ).toHaveText('Platform');
+      await expect(installed).toHaveAccessibleDescription(/Shared by Platform/);
       await expect(
         installed.getByTestId(`customize-row-trigger-${installedEntryId}`),
       ).toHaveText('Daily · 09:00');
@@ -3555,9 +3546,9 @@ test.describe('plugins discovery page', () => {
       ).toHaveText('Daily · 09:00');
       await expect(
         installedSection.getByTestId(
-          'customize-row-last-run-line-automation:local:morning-standup',
+          'customize-row-subtitle-automation:local:morning-standup',
         ),
-      ).toHaveCount(0);
+      ).not.toContainText('Last run:');
       await expect(
         installedSection.locator('[data-testid^="customize-workflow-run-"]'),
       ).not.toHaveCount(0);
@@ -4621,7 +4612,7 @@ test.describe('plugins discovery page', () => {
         'plugins-section-category-developer-tools',
       );
       await expect(
-        categorySection.getByRole('heading', { level: 2 }),
+        categorySection.getByRole('heading', { level: 3 }),
       ).toHaveText('Developer tools');
 
       // Browse categories show at most ten cards until the user opens the
@@ -4708,11 +4699,22 @@ test.describe('plugins discovery page', () => {
               : '',
           );
         const bounds = root.getBoundingClientRect();
+        const insetWindow = root.closest('[data-window-layout="inset"]');
+        const rightInset = insetWindow
+          ? Number.parseFloat(
+              getComputedStyle(insetWindow).getPropertyValue(
+                '--inset-card-gap',
+              ),
+            )
+          : 0;
         return {
           verticalScrollOwners,
           fixedOrSticky,
           right: bounds.right,
           viewportRight: window.innerWidth,
+          rightInset,
+          outerScrollHeight: document.documentElement.scrollHeight,
+          outerClientHeight: document.documentElement.clientHeight,
         };
       });
       expect(scrollState.verticalScrollOwners).toEqual(['page-plugins']);
@@ -4721,8 +4723,17 @@ test.describe('plugins discovery page', () => {
       // Nothing else may go fixed or sticky, or the page stops being the sole
       // scroll owner in practice.
       expect(scrollState.fixedOrSticky).toEqual(['plugins-page-titlebar']);
+      // Inset windows intentionally leave the shared 6px card gap. Keep the
+      // 1px alignment tolerance relative to that edge, and reject an outer
+      // scrollbar (CAN-4847: unanchored sr-only descriptions added 15px).
+      expect(scrollState.outerScrollHeight).toBeLessThanOrEqual(
+        scrollState.outerClientHeight + 1,
+      );
       expect(
-        Math.abs(scrollState.right - scrollState.viewportRight),
+        Math.abs(
+          scrollState.right -
+            (scrollState.viewportRight - scrollState.rightInset),
+        ),
       ).toBeLessThanOrEqual(1);
 
       const categoryHeading = categoryPage.getByRole('heading', {
@@ -4778,9 +4789,11 @@ test.describe('plugins discovery page', () => {
       await expect(
         window.getByTestId('plugins-category-breadcrumb-current'),
       ).toBeInViewport();
+      // Expanded categories use the same available-entry row as Browse,
+      // including its direct Install action (CAN-4847).
       await expect(
         section.getByTestId(`plugins-entry-add-${finalEntryId}`),
-      ).toHaveCount(0);
+      ).toBeVisible();
 
       await window.getByTestId('plugins-category-breadcrumb-root').click();
       const search = window.getByTestId('plugins-search');

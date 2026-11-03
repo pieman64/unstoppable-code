@@ -14,6 +14,10 @@ import {
 import {
   PipelineDefinitionDeleteParamsSchema,
   PipelineDefinitionDeleteResultSchema,
+  PipelineDefinitionDuplicateParamsSchema,
+  PipelineDefinitionDuplicateResultSchema,
+  PipelineDefinitionSetEnabledParamsSchema,
+  PipelineDefinitionSetEnabledResultSchema,
   PipelineDefinitionUpsertParamsSchema,
   PipelineDefinitionUpsertResultSchema,
   PipelineDefinitionGetParamsSchema,
@@ -27,6 +31,12 @@ import {
 export const PIPELINE_GRANTS = {
   read: 'core.pipeline.read',
   write: 'core.pipeline.write',
+  /**
+   * Reads a definition for a named run owner. No operation requires it, so
+   * an interface principal, whose grants are narrowed to its operations'
+   * required grants, never holds it.
+   */
+  ownerRead: 'core.pipeline.ownerRead',
 } as const;
 
 export const PIPELINE_DEFINITION_QUERY_ERROR_CODES = [
@@ -129,6 +139,28 @@ export const PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS =
       placement: 'core-only',
       params: PipelineDefinitionDeleteParamsSchema,
       result: PipelineDefinitionDeleteResultSchema,
+      error: PipelineDefinitionInstructionErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [PIPELINE_GRANTS.write],
+    }),
+    'core.pipeline.definition.duplicate': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'core-only',
+      params: PipelineDefinitionDuplicateParamsSchema,
+      result: PipelineDefinitionDuplicateResultSchema,
+      error: PipelineDefinitionInstructionErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [PIPELINE_GRANTS.write],
+    }),
+    'core.pipeline.definition.setEnabled': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'core-only',
+      params: PipelineDefinitionSetEnabledParamsSchema,
+      result: PipelineDefinitionSetEnabledResultSchema,
       error: PipelineDefinitionInstructionErrorSchema,
       idempotency: 'keyed',
       requiredGrants: [PIPELINE_GRANTS.write],

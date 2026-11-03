@@ -197,6 +197,37 @@ export function createStoredPipelineDefinitionWriter(
         return Promise.reject(asError(error));
       }
     },
+    copy: (copy): Promise<PipelineDefinitionSourceDocument> => {
+      try {
+        // A stored copy keeps the curated catalog entry its source came from.
+        const curatedOrigin =
+          copy.origin.source === 'user' || copy.origin.source === 'bundled'
+            ? listStoredPipelines().data?.find(
+                (info) => info.id === copy.origin.definitionId,
+              )?.curatedOrigin
+            : undefined;
+        const saved = saveStoredPipeline(
+          {
+            name: copy.name,
+            description: copy.description,
+            icon: copy.icon,
+            content: copy.pipeline,
+            rawContent: copy.text,
+            ...(curatedOrigin ? { curatedOrigin } : {}),
+          },
+          { id: copy.definitionId },
+        );
+        if (!saved.success || !saved.data)
+          throw storeFailure(saved.error, 'Failed to copy the workflow');
+        return Promise.resolve({
+          ...storedEntry(saved.data, 'user', options, () => null),
+          format: 'yaml',
+          text: copy.text,
+        });
+      } catch (error) {
+        return Promise.reject(asError(error));
+      }
+    },
     revision: (definitionId): Promise<number | null> => {
       try {
         const stored = readStoredPipelineRevision(definitionId);

@@ -434,11 +434,12 @@ export async function touchAllWorkspaceTargets(
     return;
   }
   // A partial registry cannot establish a baseline for every live target.
-  const { authority } = await readWorkspaceWorktreesDetailed(projectId, {
-    persistRemovalCleanup: false,
-  });
+  const { authority, unserved } = await readWorkspaceWorktreesDetailed(
+    projectId,
+    { persistRemovalCleanup: false },
+  );
   if (authority === 'unreadable' || authority === 'partial') {
-    throw new WorktreeRegistryUnreadableError();
+    throw new WorktreeRegistryUnreadableError(unserved);
   }
   await recordWorktreeActivity({
     source: 'auto_delete_baseline',

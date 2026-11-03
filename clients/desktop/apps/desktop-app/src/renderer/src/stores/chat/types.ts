@@ -57,12 +57,6 @@ export interface ProvisionalFirstSend {
   failure?: ProvisionalFirstSendFailure;
   /** Synchronous guard while the matching send prepares its real turn. */
   dispatchClaimed?: boolean;
-  /**
-   * The destination worktree was still setting up when Home presented this
-   * send. While `preparing`, it is shown as the setup queue row it is about
-   * to become, never as a starting turn. Dropped once a queue row holds it.
-   */
-  queuedForSetup?: true;
   /** Outbound live-terminal prompt, used only to reconcile this first send. */
   terminalPromptText?: string;
   /** Canonical terminal import identity; the submission id stays the UI key. */
@@ -194,6 +188,11 @@ export interface QueuedChatMessage {
    */
   blockedByBackgroundWork?: true;
   editLocked?: boolean;
+  /**
+   * Host-reported: Run now is locked while edit and delete still work, as for
+   * a row queued behind a turn its worktree's Git setup holds. Transient.
+   */
+  forceLocked?: true;
   canSteer?: boolean;
   steerBlockedByCapabilityChange?: boolean;
   /** Host: sending now would wait for background work to apply these settings. */
@@ -240,6 +239,8 @@ export interface QueuedChatMessage {
 export type QueuedWithoutDispatchLocation = 'renderer' | 'host';
 
 export interface SendMessageDispatchOptions {
+  /** Main-admitted plan delivery must dispatch with its exact identity, never queue locally. */
+  terminalPlanImplementation?: true;
   /** Renderer-only intent: a composer submission deliberately replaces this unsent failure. */
   replaceFailedFirstSend?: { userMessageId: string; failureId: string };
   planMode?: boolean;
@@ -285,12 +286,6 @@ export interface SendMessageDispatchOptions {
   reservedRevertAttachmentPath?: string;
   throwOnDispatchFailure?: boolean;
   onDispatchAccepted?: () => void;
-  /**
-   * Observed execution handoff, after the provider accepted or the terminal
-   * consumed this input. Queue admission and idempotent replays do not call
-   * this renderer-local observer.
-   */
-  onDispatchStarted?: () => void;
   onDispatchRejected?: () => void;
   /**
    * Called only when dispatch is rejected before the message is queued or
@@ -310,19 +305,6 @@ export interface SendMessageDispatchOptions {
    * re-enter it.
    */
   onQueuedWithoutDispatch?: (queue: QueuedWithoutDispatchLocation) => void;
-  /**
-   * Force the message through the two-phase "queued during setup" path even if
-   * the worktree is no longer observably `git-pending` at dispatch time. The
-   * Create Task → Chat / Plan flows set this because they create the worktree
-   * and send in one user action: the worktree starts `git-pending`, but Phase B
-   * `git-ready` can win the race before `sendMessage` runs, which would
-   * otherwise skip the queued bubble.
-   * When set and the worktree has already advanced past `git-pending`,
-   * `sendMessage` queues the message and then immediately flushes so the message is not stranded. This field is
-   * intentionally excluded from {@link QueuedChatDispatchOptions} so the flush's
-   * re-dispatch does not re-enter the queue path.
-   */
-  queueForSetup?: boolean;
 }
 
 export interface ClaudeTerminalLaunchOptions {
@@ -338,7 +320,6 @@ export type QueuedChatDispatchOptions = Omit<
   | 'throwOnDispatchFailure'
   | 'onPreDispatchRejected'
   | 'onQueuedWithoutDispatch'
-  | 'queueForSetup'
 >;
 
 /**
@@ -556,14 +537,6 @@ export interface ChatTab extends Omit<
    * no scheduled send is staged.
    */
   scheduledSendDraft?: { runAt: string };
-  /**
-   * Marks `tab.queuedMessages` as queued for a worktree that is still in
-   * `setupPhase: 'git-pending'`, distinct from the streaming-queue path.
-   * Cleared after the first flush kick on `worktree:git-ready`. Transient,
-   * not persisted: a renderer reload between Phase A and Phase B drops the
-   * queue entirely (see "Known limitations" in the plan).
-   */
-  queuedForSetup?: boolean;
   /**
    * Marks a tab created from a queued hook-chat event whose start has not
    * yet been emitted. Stripped by `toPersistedTabs` and cleared when the

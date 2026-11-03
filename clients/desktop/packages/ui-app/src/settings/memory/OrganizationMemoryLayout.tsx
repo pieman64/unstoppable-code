@@ -1,14 +1,13 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { EmptyState } from '@canopy/ui-shared/components';
+import { EmptyState, TabBar } from '@canopy/ui-shared/components';
 import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
 import type { OrganizationTeamPageData } from '@canopy/protocol/settings';
 import { canEditOrgEnforcedSettings } from '@canopy/protocol/settings/organization-permissions';
 import { SettingsLink, useSettingsRouter } from '../host';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 import { teamNavItem } from '../navigation/organization-nav-items';
-import { SubTabNav } from '../organization/SubTabNav';
 import { TeamPage } from '../organization/team-page';
 import { teamPagePropsFromData } from '../organization/team-page-props';
 
@@ -82,13 +81,17 @@ function MemoryViewsNav({
 }): JSX.Element {
   const router = useSettingsRouter();
   return (
-    <SubTabNav
-      tabs={VIEWS}
-      activeTab={view}
-      onSelect={(next) => router.push(memoryViewHref(orgId, next))}
-      testIdPrefix="memory-views"
-      ariaLabel="Memory views"
-      variant="underline"
+    <TabBar
+      items={VIEWS.map((entry) => ({
+        id: entry.key,
+        label: entry.label,
+        dataTestId: `memory-views-tab-${entry.key}`,
+      }))}
+      value={view}
+      onChange={(next): void => router.push(memoryViewHref(orgId, next))}
+      label="Memory views"
+      scrollable
+      dataTestId="memory-views-tabs"
     />
   );
 }

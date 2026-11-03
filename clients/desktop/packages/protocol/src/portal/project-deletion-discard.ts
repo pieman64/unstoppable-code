@@ -10,7 +10,10 @@ import type { WorktreeDiscardDescription } from './worktree-discard';
  */
 
 export interface ProjectDeletionDiscardItem {
-  /** The row's name; absent for an interrupted discard whose row is gone. */
+  /**
+   * The row's name, or a retained archive's (CAN-5338); absent for an
+   * interrupted discard whose row is gone.
+   */
   worktreeName?: string;
   description: WorktreeDiscardDescription;
 }
@@ -37,4 +40,10 @@ export interface ProjectDeletionDiscardDescription {
 /** Payload for `portal.workspace.delete.discard.describe`; read-only. */
 export interface PortalProjectDeletionDiscardDescribePayload {
   workspaceId: string;
+  /**
+   * CAN-5338: also list retained archives whose recovery keeps the deletion
+   * from finishing, each discarded with `retainedArchives`. A host without it
+   * ignores the field and refuses as before.
+   */
+  retainedArchives?: boolean;
 }

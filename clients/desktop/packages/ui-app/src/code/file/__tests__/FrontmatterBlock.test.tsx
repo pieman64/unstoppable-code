@@ -36,7 +36,7 @@ describe('FrontmatterBlock', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('renders formatted key-value pairs and drops empty values', () => {
+  it('renders each literal key beside its value and drops empty values', () => {
     act(() => {
       root.render(
         <FrontmatterBlock
@@ -57,7 +57,7 @@ describe('FrontmatterBlock', () => {
       (element) => element.textContent,
     );
 
-    expect(terms).toEqual(['Title:', 'Draft:', 'Tags:']);
+    expect(terms).toEqual(['title', 'draft', 'tags']);
     expect(definitions).toEqual(['My Doc', 'Yes', '["a","b"]']);
   });
 

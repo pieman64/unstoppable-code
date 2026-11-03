@@ -1,4 +1,5 @@
 import { CanopyClientError } from '@canopy/core-client';
+import { canopyDaemonRefusalError } from '@canopy/core-client/node';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   FakeLeaseCore,
@@ -6,9 +7,12 @@ import {
 } from '../../../../../../packages/core-client/src/__tests__/fixtures/lease-core';
 import {
   createElectronDaemonConnectionService,
+  daemonUnreachableReason,
   type ElectronDaemonConnectionOptions,
   type ElectronDaemonConnectionService,
+  type ElectronDaemonReachability,
 } from '../electron-daemon-connection';
+import { createElectronDaemonHealth } from '../electron-daemon-health';
 
 const caller: CanopyCallerDescriptor = {
   principalId: 'local-user',
@@ -353,4 +357,460 @@ it("observes the id each session's lease holds, which the daemon attributes its 
   ).toEqual(observed);
   expect(observed).toEqual(['renderer-1', 'renderer-2']);
   await observing.dispose();
+});
+
+describe('background service reachability (CAN-5541)', () => {
+  let events: ElectronDaemonReachability['kind'][];
+  let reasons: (string | undefined)[];
+  /** What the notice would show, from main's health record fed by `service`. */
+  let shown: (string | undefined)[];
+  beforeEach(() => {
+    events = [];
+    reasons = [];
+    shown = [];
+    const health = createElectronDaemonHealth({
+      warn: () => {},
+      info: () => {},
+    });
+    health.setConsumerEnabled('files_reads', true);
+    health.onStatusChanged(
+      (status) =>
+        void shown.push(
+          status.state === 'unavailable' ? status.reason : status.state,
+        ),
+    );
+    service = makeService({
+      onReachability: (event) => {
+        events.push(event.kind);
+        if (event.kind === 'unreachable') reasons.push(event.reason);
+        health.observe(event);
+      },
+    });
+  });
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 20; i += 1)
+      await new Promise((done) => setImmediate(done));
+  };
+  const typed = (
+    kind: CanopyClientError['payload']['kind'],
+  ): CanopyClientError =>
+    new CanopyClientError({
+      kind,
+      message: 'Refused.',
+      retry: { kind: 'never' },
+    });
+
+  it.each([
+    ['an exit before ready', 'start_failed', 'unavailable', 'Core exited.'],
+    ['a failed precondition', 'start_failed', 'failed_precondition', 'No.'],
+    // No connected daemon remains to refuse, so nothing could serve.
+    [
+      'an incompatible protocol',
+      'start_failed',
+      'failed_precondition',
+      'Core protocol version is incompatible',
+    ],
+    ['a handshake unauthenticated', 'start_failed', 'unauthenticated', 'No.'],
+    ['a deadline', 'connect_timeout', 'deadline_exceeded', 'Timed out.'],
+  ] as const)(
+    'tags %s attach rejection as %s and keeps its identity',
+    async (_case, reason, kind, message) => {
+      const rejection = new CanopyClientError({
+        kind,
+        message,
+        retry: { kind: 'never' },
+      });
+      attach.mockRejectedValueOnce(rejection);
+      await expect(service.get(caller, owner())).rejects.toBe(rejection);
+      expect(daemonUnreachableReason(rejection)).toBe(reason);
+      expect(events).toEqual(['unreachable']);
+      expect(reasons).toEqual([reason]);
+      expect(shown).toEqual([reason]);
+    },
+  );
+
+  // CAN-5543: refusals warn like any failed start (#7297) unless the app's
+  // own restart window claims them; that window shows nothing (q-13).
+  it.each(['writer_held', 'peer_held', 'version_skew'] as const)(
+    'tags a %s refusal a failed start outside a restart window',
+    async (refusal) => {
+      const rejection = canopyDaemonRefusalError(refusal, 'Refused.');
+      attach.mockRejectedValueOnce(rejection);
+      await expect(service.get(caller, owner())).rejects.toBe(rejection);
+      expect(daemonUnreachableReason(rejection)).toBe('start_failed');
+      expect(shown).toEqual(['start_failed']);
+    },
+  );
+
+  it('leaves a refusal the restart window claims untagged and unshown', async () => {
+    const claimed: unknown[] = [];
+    service = makeService({
+      onReachability: (event) => events.push(event.kind),
+      isRestartRefusal: (error) => {
+        claimed.push(error);
+        return true;
+      },
+    });
+    const rejection = canopyDaemonRefusalError('peer_held', 'Refused.');
+    attach.mockRejectedValueOnce(rejection);
+    await expect(service.get(caller, owner())).rejects.toBe(rejection);
+    expect(claimed).toEqual([rejection]);
+    expect(daemonUnreachableReason(rejection)).toBeNull();
+    await settle();
+    expect(events).toEqual([]);
+  });
+
+  it('never tags a cancelled attach rejection', async () => {
+    const rejection = typed('cancelled');
+    attach.mockRejectedValueOnce(rejection);
+    await expect(service.get(caller, owner())).rejects.toBe(rejection);
+    expect(daemonUnreachableReason(rejection)).toBeNull();
+    expect(events).toEqual([]);
+    expect(shown).toEqual([]);
+  });
+
+  it('never tags an attach that rejects after its owner closed', async () => {
+    let rejectAttach: (error: unknown) => void = () => {};
+    attach.mockImplementationOnce(
+      () =>
+        new Promise<LeaseTestClient>((_resolve, reject) => {
+          rejectAttach = reject;
+        }),
+    );
+    const pending = service
+      .get(caller, owner())
+      .catch((error: unknown) => error);
+    await settle();
+    expect(attach).toHaveBeenCalledTimes(1);
+    owners[0].abort();
+    // The aborted attach then fails as an unreachable daemon would.
+    const late = typed('unavailable');
+    rejectAttach(late);
+    await settle();
+    const rejection = await pending;
+    expect(rejection).toMatchObject(ownerClosed);
+    expect(daemonUnreachableReason(rejection)).toBeNull();
+    expect(daemonUnreachableReason(late)).toBeNull();
+    expect(events).toEqual([]);
+    expect(shown).toEqual([]);
+  });
+
+  it('tags an untyped attach rejection and a failed host lookup', async () => {
+    const spawn = new Error('spawn ENOENT');
+    attach.mockRejectedValueOnce(spawn);
+    await expect(service.get(caller, owner())).rejects.toBe(spawn);
+    expect(daemonUnreachableReason(spawn)).toBe('start_failed');
+    const host = new Error('data root unavailable');
+    identity.mockRejectedValueOnce(host);
+    await expect(service.get(caller, owner())).rejects.toBe(host);
+    expect(daemonUnreachableReason(host)).toBe('host_unavailable');
+    expect(reasons).toEqual(['start_failed', 'host_unavailable']);
+    expect(core.servers).toHaveLength(0);
+  });
+
+  it('tags a worker-profile daemon at setup as a failed start', async () => {
+    attach.mockImplementationOnce(async () => {
+      const client = await core.connect();
+      return { ...client, identity: { ...client.identity, profile: 'worker' } };
+    });
+    const rejection = await service
+      .get(caller, owner())
+      .catch((error: unknown) => error);
+    expect(rejection).toMatchObject({
+      payload: { kind: 'failed_precondition' },
+    });
+    expect(daemonUnreachableReason(rejection)).toBe('start_failed');
+    // Closing the rejected client is not a lost session.
+    expect(events).toEqual(['unreachable']);
+  });
+
+  it('tags the setup timer (setTimeout) firing on a stalled setup as a connect timeout', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    const delivery = gate<LeaseTestClient>();
+    attach.mockImplementationOnce(() => delivery.promise);
+    const bounded = makeService({
+      setupTimeoutMs: 50,
+      onReachability: (event) => void events.push(event.kind),
+    });
+    try {
+      const pending = bounded
+        .get(caller, owner())
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(50);
+      const rejection = await pending;
+      expect(rejection).toMatchObject(timedOut);
+      expect(daemonUnreachableReason(rejection)).toBe('connect_timeout');
+      expect(events).toEqual(['unreachable']);
+    } finally {
+      delivery.resolve(await core.connect());
+      await new Promise((done) => setImmediate(done));
+      jest.useRealTimers();
+      await bounded.dispose();
+    }
+  });
+
+  it('never tags a refusal, a cancellation or a disabled transport', async () => {
+    const off = makeService({
+      enabled: false,
+      onReachability: (event) => void events.push(event.kind),
+    });
+    const failures: unknown[] = [
+      await off.get(caller, owner()).catch((error: unknown) => error),
+      await service
+        .get({ ...caller, interfaceKind: 'cli' }, owner())
+        .catch((error: unknown) => error),
+      await service
+        .get({ ...caller, authorityId: 'foreign' }, owner())
+        .catch((error: unknown) => error),
+    ];
+    const closed = new AbortController();
+    closed.abort();
+    failures.push(
+      await service.get(caller, closed.signal).catch((error: unknown) => error),
+    );
+    attach.mockRejectedValueOnce(typed('cancelled'));
+    failures.push(
+      await service.get(caller, owner()).catch((error: unknown) => error),
+    );
+    expect(failures.map((failure) => daemonUnreachableReason(failure))).toEqual(
+      [null, null, null, null, null],
+    );
+    // A lease refusal from a connected daemon: it was reached.
+    core.script(
+      'core.client.lease.acquire',
+      typed('permission_denied').payload,
+    );
+    const refused = await service
+      .get({ ...caller, clientInstanceId: 'renderer-2' }, owner())
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ payload: { kind: 'permission_denied' } });
+    expect(daemonUnreachableReason(refused)).toBeNull();
+    expect(events).toEqual(['reached']);
+    await off.dispose();
+  });
+
+  it('reports a drop as lost, then reached once the lease reconnects', async () => {
+    const session = await service.get(caller, owner());
+    core.servers[0].close();
+    await settle();
+    expect(events).toEqual(['reached', 'lost', 'reached']);
+    expect(session.lease.state).toBe('active');
+    expect(core.servers).toHaveLength(2);
+    // A killed daemon the lease restarts stays hidden while it restarts.
+    expect(shown).toEqual(['reconnecting', 'ok']);
+  });
+
+  it('reports a failed reconnect as unreachable', async () => {
+    const signal = owner();
+    const first = await service.get(caller, signal);
+    attach.mockRejectedValueOnce(typed('failed_precondition'));
+    core.servers[0].close();
+    await settle();
+    expect(first.lease.state).toBe('failed');
+    expect(events).toEqual(['reached', 'lost', 'unreachable']);
+    expect(reasons).toEqual(['reconnect_failed']);
+    // The restart failed: shown at once.
+    expect(shown).toEqual(['reconnecting', 'reconnect_failed']);
+  });
+
+  const exitedBeforeReady = (): CanopyClientError =>
+    new CanopyClientError({
+      kind: 'unavailable',
+      message: 'Core exited before it was ready.',
+      retry: { kind: 'same_request' },
+    });
+
+  it('keeps a reconnect the lease retries hidden, then reached when a later attach succeeds', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    try {
+      const first = await service.get(caller, owner());
+      attach.mockRejectedValueOnce(exitedBeforeReady());
+      core.servers[0].close();
+      await settle();
+      // Still restarting while the lease backs off (Mike, q-13 GA3-1).
+      expect(first.lease.state).toBe('reconnecting');
+      expect(events).toEqual(['reached', 'lost']);
+      await jest.advanceTimersByTimeAsync(10_000);
+      await settle();
+      expect(first.lease.state).toBe('active');
+      expect(events).toEqual(['reached', 'lost', 'reached']);
+      expect(shown).toEqual(['reconnecting', 'ok']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('shows a reconnect the lease retries once the lease gives up', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    try {
+      const first = await service.get(caller, owner());
+      attach.mockRejectedValue(exitedBeforeReady());
+      core.servers[0].close();
+      await settle();
+      await jest.advanceTimersByTimeAsync(20_000);
+      await settle();
+      expect(first.lease.state).toBe('reconnecting');
+      expect(shown).toEqual(['reconnecting']);
+      // The reconnect's 30 s delivery deadline ends the restart.
+      await jest.advanceTimersByTimeAsync(10_000);
+      await settle();
+      expect(first.lease.state).toBe('failed');
+      expect(events).toEqual(['reached', 'lost', 'unreachable']);
+      expect(reasons).toEqual(['reconnect_failed']);
+      expect(shown).toEqual(['reconnecting', 'reconnect_failed']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('tags reading a session whose connection is down as connection lost, and a closed one as nothing', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    const thrown = (read: () => unknown): unknown => {
+      try {
+        read();
+      } catch (error) {
+        return error;
+      }
+      throw new Error('Expected the read to throw.');
+    };
+    try {
+      const session = await service.get(caller, owner());
+      attach.mockRejectedValueOnce(exitedBeforeReady());
+      core.servers[0].close();
+      await settle();
+      expect(session.lease.state).toBe('reconnecting');
+      // A Files read here reaches the daemon no more than a failed attach.
+      const down = thrown(() => session.client);
+      expect(down).toMatchObject({ payload: { kind: 'unavailable' } });
+      expect(daemonUnreachableReason(down)).toBe('connection_lost');
+      await jest.advanceTimersByTimeAsync(10_000);
+      await settle();
+      expect(session.client.signal.aborted).toBe(false);
+      await session.close();
+      expect(daemonUnreachableReason(thrown(() => session.client))).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('a late replacement the lease never adopted closing is no loss', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    const late = gate<LeaseTestClient>();
+    try {
+      const first = await service.get(caller, owner());
+      attach.mockImplementationOnce(() => late.promise);
+      core.servers[0].close();
+      await settle();
+      // The reconnect's 30 s delivery deadline passes with the attach pending.
+      await jest.advanceTimersByTimeAsync(30_000);
+      await settle();
+      expect(first.lease.state).toBe('failed');
+      expect(events).toEqual(['reached', 'lost', 'unreachable']);
+      const replacement = await core.connect();
+      late.resolve(replacement);
+      await settle();
+      // The lease closes the late client; reaching it is real, losing it is not.
+      expect(replacement.signal.aborted).toBe(true);
+      expect(events).toEqual(['reached', 'lost', 'unreachable', 'reached']);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('tags a setup whose connection dropped before its lease was acquired as connection lost', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'performance'],
+    });
+    const answer = gate<void>();
+    const late = gate<LeaseTestClient>();
+    // Longer than the lease's 30 s delivery deadline, so the lease gives up first.
+    const bounded = makeService({
+      setupTimeoutMs: 120_000,
+      onReachability: (event) => {
+        events.push(event.kind);
+        if (event.kind === 'unreachable') reasons.push(event.reason);
+      },
+    });
+    try {
+      core.script('core.client.lease.acquire', answer.promise);
+      attach
+        .mockImplementationOnce(() => core.connect())
+        .mockImplementationOnce(() => late.promise);
+      const pending = bounded
+        .get(caller, owner())
+        .catch((error: unknown) => error);
+      await settle();
+      expect(core.callsOf('core.client.lease.acquire')).toHaveLength(1);
+      core.servers[0].close();
+      await settle();
+      await jest.advanceTimersByTimeAsync(30_000);
+      const rejection = await pending;
+      expect(rejection).toBeInstanceOf(CanopyClientError);
+      expect(daemonUnreachableReason(rejection)).toBe('connection_lost');
+      expect(events).toEqual(['reached', 'lost', 'unreachable']);
+      expect(reasons).toEqual(['connection_lost']);
+    } finally {
+      answer.resolve();
+      late.resolve(await core.connect());
+      await settle();
+      jest.useRealTimers();
+      await bounded.dispose();
+    }
+  });
+
+  it('reports nothing when the owner closes or the service is disposed', async () => {
+    const signal = owner();
+    await service.get(caller, signal);
+    await service.get({ ...caller, clientInstanceId: 'renderer-2' }, owner());
+    owners[0].abort();
+    await settle();
+    await service.dispose();
+    await settle();
+    expect(events).toEqual(['reached', 'reached']);
+    expect(shown).toEqual([]);
+  });
+
+  it('a reload replacing its session is no loss', async () => {
+    const replaced = (await service.get(caller, owner())).client;
+    await service.get(caller, owner());
+    await settle();
+    expect(replaced.signal.aborted).toBe(true);
+    expect(events).toEqual(['reached', 'reached']);
+    expect(shown).toEqual([]);
+  });
+
+  it('a reprobe attempts again within the failed-setup reuse window', async () => {
+    const rejection = typed('unavailable');
+    attach.mockRejectedValueOnce(rejection);
+    const signal = owner();
+    await expect(service.get(caller, signal)).rejects.toBe(rejection);
+    await expect(service.get(caller, signal)).rejects.toBe(rejection);
+    expect(attach).toHaveBeenCalledTimes(1);
+    const session = await service.get(caller, signal, { reprobe: true });
+    expect(attach).toHaveBeenCalledTimes(2);
+    // A live session is reused, not replaced.
+    expect(await service.get(caller, signal, { reprobe: true })).toBe(session);
+    expect(attach).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(['unreachable', 'reached']);
+  });
+
+  it('an observer that throws never fails the read', async () => {
+    const throwing = makeService({
+      onReachability: () => {
+        throw new Error('observer');
+      },
+    });
+    await expect(throwing.get(caller, owner())).resolves.toBeDefined();
+    await throwing.dispose();
+  });
 });

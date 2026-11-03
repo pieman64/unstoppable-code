@@ -3,6 +3,7 @@
 import type { ComponentPropsWithoutRef, JSX } from 'react';
 import type { DigestReportData } from '@canopy/protocol/settings';
 import { Markdown, markdownOptions } from '@canopy/ui-shared';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import type { MarkdownOverrides } from '@canopy/ui-shared';
 import {
   formatCountExact,
@@ -143,30 +144,34 @@ export function DigestReport({
         </h1>
       </header>
 
-      <dl
-        className="grid grid-cols-2 gap-3 sm:grid-cols-4"
-        data-testid="digest-report-metrics"
+      <FactList
+        layout="stacked"
+        columns={4}
+        valueSize="large"
+        labelTone="secondary"
+        columnGap="3"
+        rowGap="3"
+        dataTestId="digest-report-metrics"
       >
         {metrics.map((metric) => (
-          <div
+          <Fact
             key={metric.key}
-            className="rounded-xl bg-card p-4 shadow-sm"
-            data-testid={`digest-metric-${metric.key}`}
+            label={metric.label}
+            testId={`digest-metric-${metric.key}`}
           >
-            <dt className="text-xs fg-secondary">{metric.label}</dt>
             {/*
               Both branches format through pinned-locale helpers. A bare
               `toLocaleString()` resolves from the server's locale during SSR
               and the viewer's in the browser, which is both a hydration
               mismatch and a reason two viewers can see one digest differently.
             */}
-            <dd className="mt-1 text-lg font-semibold fg-primary">
+            <div>
               {metric.value === null
                 ? '—'
                 : metric.key === 'cost'
                   ? formatUsdExact(metric.value)
                   : formatCountExact(metric.value)}
-            </dd>
+            </div>
             {/*
               More-is-better on every card, spend included: this report frames
               the period as output, so `flex` (up = green) rather than the
@@ -183,9 +188,9 @@ export function DigestReport({
                 data-testid={`digest-metric-${metric.key}-trend`}
               />
             )}
-          </div>
+          </Fact>
         ))}
-      </dl>
+      </FactList>
 
       {digest.variant === 'NUDGE' ? (
         <div

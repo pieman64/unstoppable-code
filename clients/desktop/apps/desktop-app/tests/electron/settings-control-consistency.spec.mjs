@@ -39,7 +39,7 @@ test('Settings number fields and model effort controls share capsule geometry an
     const selects = row.locator('button[role="combobox"]');
     await expect(selects).toHaveCount(2);
     for (const select of await selects.all()) {
-      await expect(select).toHaveClass(/\brounded-full\b/);
+      await expect(select).toHaveClass(/\brounded-row\b/);
       await expect(select).toHaveCSS('height', '28px');
       await expect(select).toHaveCSS('width', '144px');
     }
@@ -51,7 +51,7 @@ test('Settings number fields and model effort controls share capsule geometry an
     await chooseSettingsOption(effort, value ?? '');
     await app.openSettingsSection('canopy');
     await expect(retention).toHaveValue('12');
-    await expect(retention).toHaveClass(/\brounded-full\b/);
+    await expect(retention).toHaveClass(/\brounded-row\b/);
     await expect(retention).toHaveCSS('height', '28px');
     await connectMockCloudAccount(page, 'csk_settings_control_consistency');
     await app.openSettingsSection('remote-access');
@@ -175,9 +175,9 @@ test('Organization Statistics role uses one disclosure and saves through the sha
     const role = page.getByTestId('usage-min-role-select');
     await expect(role).toBeVisible();
     await expect(role).toHaveCSS('height', '28px');
-    await expect(role).toHaveClass(/\brounded-full\b/);
+    await expect(role).toHaveClass(/\brounded-row\b/);
     await expect(
-      role.locator('xpath=ancestor::label[1]').locator('svg'),
+      page.getByTestId('usage-min-role-field').locator('svg'),
     ).toHaveCount(1);
     await chooseSettingsOption(role, 'MEMBER');
     await expect

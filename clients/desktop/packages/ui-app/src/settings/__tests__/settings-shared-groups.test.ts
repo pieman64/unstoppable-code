@@ -34,10 +34,7 @@ const SHARED_SETTINGS_ROWS = join(
  * Lists that are not a settings group: a scrolling checklist inside a
  * dialog. Each entry names its file and why it keeps its own frame.
  */
-const NOT_A_SETTINGS_GROUP: Readonly<Record<string, string>> = {
-  'organization/team-subteams-section.tsx':
-    "the team membership dialog's scrolling checklist",
-};
+const NOT_A_SETTINGS_GROUP: Readonly<Record<string, string>> = {};
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap(

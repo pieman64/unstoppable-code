@@ -181,7 +181,7 @@ describe('OrganizationMemoryLayout', () => {
     expect(
       Array.from(views?.querySelectorAll('button') ?? []).map((tab) => [
         tab.textContent,
-        tab.getAttribute('aria-pressed'),
+        tab.getAttribute('aria-selected'),
       ]),
     ).toEqual([
       ['Facts', 'true'],
@@ -233,7 +233,7 @@ describe('OrganizationMemoryLayout', () => {
         }}
       />,
     );
-    expect(query('memory-views-tab-graph')?.getAttribute('aria-pressed')).toBe(
+    expect(query('memory-views-tab-graph')?.getAttribute('aria-selected')).toBe(
       'true',
     );
     expect(query('entity-graph-view')).not.toBeNull();
@@ -265,7 +265,7 @@ describe('OrganizationMemoryLayout', () => {
         }}
       />,
     );
-    expect(query('memory-views-tab-ops')?.getAttribute('aria-pressed')).toBe(
+    expect(query('memory-views-tab-ops')?.getAttribute('aria-selected')).toBe(
       'true',
     );
   });
@@ -288,7 +288,7 @@ describe('OrganizationMemoryLayout', () => {
       />,
     );
 
-    expect(query('memory-views-tab-facts')?.getAttribute('aria-pressed')).toBe(
+    expect(query('memory-views-tab-facts')?.getAttribute('aria-selected')).toBe(
       'true',
     );
     const back = query('memory-fact-back');

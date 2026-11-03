@@ -1,15 +1,12 @@
 import type { JSX } from 'react';
+import { TextArea, type TextAreaProps } from '@canopy/ui-shared/components';
 
-type TextAreaFieldProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
+type TextAreaFieldProps = Omit<TextAreaProps, 'mono'>;
 
-export function TextAreaField(props: TextAreaFieldProps): JSX.Element {
-  return (
-    <textarea
-      {...props}
-      className={`w-full px-3 py-2 text-s bg-base border rounded-md
- fg-primary placeholder:fg-secondary font-mono
- focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
- transition-colors resize-y min-h-20 ${props.className || ''}`}
-    />
-  );
+/** The pipeline editor's multi-line field: the shared monospace `TextArea`. */
+export function TextAreaField({
+  rows = 3,
+  ...props
+}: TextAreaFieldProps): JSX.Element {
+  return <TextArea mono rows={rows} {...props} />;
 }

@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { TabBar } from './TabBar';
 import {
   marketplaceTypeTabs,
   type MarketplaceTypeTab,
@@ -28,30 +29,18 @@ export function MarketplaceTypeTabs({
   className,
 }: MarketplaceTypeTabsProps): JSX.Element {
   return (
-    <div
-      role="tablist"
-      aria-label="Capability type"
-      data-testid="plugins-type-tabs"
-      className={`canopy-tab-list flex gap-2 overflow-x-auto overflow-y-hidden ${className ?? ''}`.trim()}
-    >
-      {tabs.map((tab) => {
-        const selected = value === tab.id;
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            data-testid={`plugins-type-tab-${tab.id}`}
-            aria-selected={selected}
-            onClick={() => onChange(tab.id)}
-            className={`canopy-tab-trigger focus-ring shrink-0 px-3 py-2 text-xs transition-colors pointer-coarse:min-h-11 ${
-              selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        );
-      })}
-    </div>
+    <TabBar
+      items={tabs.map((tab) => ({
+        id: tab.id,
+        label: tab.label,
+        dataTestId: `plugins-type-tab-${tab.id}`,
+      }))}
+      value={value}
+      onChange={(next): void => onChange(next)}
+      label="Capability type"
+      scrollable
+      dataTestId="plugins-type-tabs"
+      className={className}
+    />
   );
 }

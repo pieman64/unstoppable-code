@@ -1,3 +1,4 @@
+import { isNoBillingSourceErrorEventData } from '@canopy/desktop-shared/types';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
 import type { BrowserWindow } from 'electron';
 import type { AgentSession, AgentSessionOptions } from './types';
@@ -1095,8 +1096,21 @@ export async function getOrCreateRoutedSession(
         // A preview screenshot is for the agent only. It leaves the event
         // here, before any route can store, log, or forward it, for every
         // chat entry point.
+        // Startup can refuse before the provider has received sendMessage,
+        // so its pre-flight error has no turn metadata yet. Bind it to this
+        // creation dispatch, never to whichever newer route is now visible.
+        const scopedProviderData =
+          isRecord(providerData) &&
+          isNoBillingSourceErrorEventData(providerData) &&
+          typeof providerData.canopy_turn_user_message_id !== 'string' &&
+          typeof providerData.parent_tool_use_id !== 'string'
+            ? {
+                ...providerData,
+                canopy_turn_user_message_id: lifecycle.turnUserMessageId,
+              }
+            : providerData;
         const data = projectPreviewVisualResult(
-          providerData,
+          scopedProviderData,
           previewVisualTracker,
         );
         const active = currentRoutes.get(key);

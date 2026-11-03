@@ -404,6 +404,11 @@ interface ArchivedContainersState {
     containerId: string,
   ) => Promise<boolean>;
   /**
+   * After the container was removed some other way (CAN-5338: a retained
+   * archive discard): closes its viewer and reloads, as a deletion does.
+   */
+  settleDeleted: (workspaceId: string, containerId: string) => Promise<void>;
+  /**
    * Lock (exempt from retention cleanup) or unlock the container. Unlocking
    * restarts the retention window from the unlock time. Returns the updated
    * summary, or null on failure.
@@ -1314,6 +1319,11 @@ export const useArchivedContainersStore = create<ArchivedContainersState>(
       } catch {
         return false;
       }
+      await get().settleDeleted(workspaceId, containerId);
+      return true;
+    },
+
+    settleDeleted: async (workspaceId, containerId): Promise<void> => {
       const viewer = get().viewer;
       if (
         viewer?.workspaceId === workspaceId &&
@@ -1323,7 +1333,6 @@ export const useArchivedContainersStore = create<ArchivedContainersState>(
       }
       await get().loadForWorkspace(workspaceId);
       await refreshAuthoritativeSidebarData([workspaceId]);
-      return true;
     },
   }),
 );

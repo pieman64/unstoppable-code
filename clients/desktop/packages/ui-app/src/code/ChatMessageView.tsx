@@ -46,6 +46,7 @@ import {
   type MarkdownOptions,
   type PlanCopyState,
   type TurnTerminalStatus,
+  TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import { parseCanopyProxyError } from '@canopy/protocol';
 import { FailedIcon } from '@canopy/ui-shared/icons';
@@ -65,8 +66,7 @@ const USER_MARKDOWN_OPTIONS: MarkdownOptions = withSoftLineBreaks(
   DEFAULT_MARKDOWN_OPTIONS,
 );
 
-const PROSE_CLASSES =
-  'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
+const PROSE_CLASSES = TRANSCRIPT_PROSE_CLASS;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -109,7 +109,12 @@ export function normalizeChatMessageParts(
 ): PortalChatPart[] {
   // A merge can keep a result part beside the call it was already folded into.
   const folded = foldedPortalToolOccurrenceIds(inputParts);
-  const parts = inputParts;
+  const parts = inputParts.filter((part) => {
+    if (part.kind !== 'text' || !isRecord(part.data)) return true;
+    return !(
+      isRecord(part.data['composerRefusal']) && part.data['text'] === ''
+    );
+  });
   const pairs = pairToolResultOccurrences(parts, (part) => {
     if (
       (part.kind !== 'tool_use' && part.kind !== 'tool_result') ||

@@ -18,7 +18,9 @@ import {
 import { createPortal, flushSync } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
+import { isImeComposing, useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
+import { escapeStartedInBoundary } from './useOverlayEscape';
 
 const TOOLTIP_GAP = 6;
 const VIEWPORT_PADDING = 8;
@@ -230,8 +232,12 @@ interface RichHoverTooltipProps {
    */
   triggerOpenKeys?: readonly string[];
   /**
-   * Escape on the trigger closes a noninteractive surface until the pointer
-   * leaves or focus moves. Interactive surfaces handle Escape themselves.
+   * Escape closes the showing surface until the pointer leaves or focus
+   * moves, wherever focus is, and that press goes no further: a dialog under
+   * the surface stays open. A menu or listbox with focus keeps Escape and
+   * closes with the surface. On by default; a caller that forces `open` owns
+   * visibility and opts in explicitly. With focus inside an interactive
+   * surface, Escape also returns focus to the trigger.
    */
   dismissOnEscape?: boolean;
   /**
@@ -270,6 +276,7 @@ interface TooltipControllerHandlers {
   enter: () => void;
   leave: () => void;
   focus: FocusEventHandler<HTMLSpanElement>;
+  blur: FocusEventHandler<HTMLElement>;
   keyDown: KeyboardEventHandler<HTMLSpanElement>;
 }
 
@@ -374,7 +381,7 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
       onMouseMove={open ? undefined : enter}
       onMouseLeave={() => handlers.current?.leave()}
       onFocus={focus}
-      onBlur={() => handlers.current?.leave()}
+      onBlur={(event) => handlers.current?.blur(event)}
       onKeyDown={keyDown}
     >
       {trigger}
@@ -423,7 +430,7 @@ function RichHoverTooltipController({
   aboveBrowser = false,
   openOnTriggerKey = true,
   triggerOpenKeys = DEFAULT_TRIGGER_OPEN_KEYS,
-  dismissOnEscape = false,
+  dismissOnEscape = controlledOpen === undefined,
   containEvents = false,
   externalTrigger,
 }: RichHoverTooltipProps & {
@@ -438,6 +445,10 @@ function RichHoverTooltipController({
   const focusTooltipOnOpenRef = useRef(false);
   const suppressNextTriggerFocusRef = useRef(false);
   const pointerHoverRef = useRef(false);
+  // The pointer is over the trigger or the surface: React's enter and leave
+  // follow the component tree, so the portaled surface counts as inside the
+  // trigger's wrapper.
+  const pointerInsideRef = useRef(false);
   const escapeDismissedRef = useRef(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
@@ -515,6 +526,7 @@ function RichHoverTooltipController({
   );
 
   const showPointerTooltip = useCallback((): void => {
+    pointerInsideRef.current = true;
     if (suppressPointerHover) return;
     pointerHoverRef.current = true;
     showTooltipAfter(handoff.pointerOpenDelay(openDelay));
@@ -565,6 +577,49 @@ function RichHoverTooltipController({
     setOpen,
   ]);
 
+  const handlePointerLeave = useCallback((): void => {
+    pointerInsideRef.current = false;
+    requestClose();
+  }, [requestClose]);
+
+  // React bubbles the portaled surface's focus events to the trigger's
+  // wrapper too. Focus moving between the trigger and the surface is not
+  // leaving, and neither is a press on the hovered card's text or another of
+  // its controls: the pointer is still there, and leaving will close it.
+  const handleBlur: FocusEventHandler<HTMLElement> = useCallback(
+    (event): void => {
+      const next = event.relatedTarget;
+      if (
+        next !== null &&
+        isDomNode(next) &&
+        (triggerRef.current?.contains(next) ||
+          tooltipRef.current?.contains(next))
+      ) {
+        return;
+      }
+      if (interactive && pointerInsideRef.current) return;
+      requestClose();
+    },
+    [interactive, requestClose],
+  );
+
+  const showing = open && !suppressed && !disabled;
+  // A surface removed under the pointer (Escape, a card action) fires no
+  // mouseleave, so every close clears the pointer flag; otherwise blur would
+  // keep skipping requestClose and an Escape dismissal could never reset.
+  useEffect((): void => {
+    if (!showing) pointerInsideRef.current = false;
+  }, [showing]);
+  const dismissByEscape = useCallback((): void => {
+    escapeDismissedRef.current = true;
+    closeTooltip();
+  }, [closeTooltip]);
+  useTooltipEscape({
+    active: dismissOnEscape && showing,
+    triggerRef,
+    onEscape: dismissByEscape,
+  });
+
   const focusTooltipContent = useCallback((): boolean => {
     const focusTarget = tooltipRef.current?.querySelector<HTMLElement>(
       '[data-rich-tooltip-autofocus], [tabindex]:not([tabindex="-1"]), button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
@@ -600,12 +655,26 @@ function RichHoverTooltipController({
   const handleTriggerKeyDown: KeyboardEventHandler<HTMLSpanElement> =
     useCallback(
       (event): void => {
-        if (dismissOnEscape && !interactive && event.key === 'Escape') {
-          if (!open && openTimerRef.current === null) return;
+        if (
+          dismissOnEscape &&
+          event.key === 'Escape' &&
+          !isImeComposing(event.nativeEvent) &&
+          !escapeStartedInBoundary(
+            event.target,
+            event.currentTarget.ownerDocument,
+          )
+        ) {
+          // A pending open is cancelled without claiming the press: with no
+          // surface showing, Escape still belongs to whatever is beneath.
+          if (!showing) {
+            if (openTimerRef.current === null) return;
+            clearOpenTimer();
+            escapeDismissedRef.current = true;
+            return;
+          }
           event.preventDefault();
           event.stopPropagation();
-          escapeDismissedRef.current = true;
-          closeTooltip();
+          dismissByEscape();
           return;
         }
         if (
@@ -633,13 +702,14 @@ function RichHoverTooltipController({
       },
       [
         clearCloseTimer,
-        closeTooltip,
+        clearOpenTimer,
+        dismissByEscape,
         dismissOnEscape,
         focusTooltipContent,
         interactive,
-        open,
         openOnTriggerKey,
         setOpen,
+        showing,
         triggerOpenKeys,
       ],
     );
@@ -870,8 +940,9 @@ function RichHoverTooltipController({
     if (!externalTrigger) return undefined;
     externalTrigger.handlers.current = {
       enter: showPointerTooltip,
-      leave: requestClose,
+      leave: handlePointerLeave,
       focus: handleTriggerFocus,
+      blur: handleBlur,
       keyDown: handleTriggerKeyDown,
     };
     return (): void => {
@@ -915,7 +986,7 @@ function RichHoverTooltipController({
         onMouseEnter={interactive ? showTooltip : undefined}
         onMouseLeave={interactive ? requestClose : undefined}
         onFocus={interactive ? handleFocusVisible : undefined}
-        onBlur={interactive ? requestClose : undefined}
+        onBlur={interactive ? handleBlur : undefined}
         onKeyDown={interactive ? handleTooltipKeyDown : undefined}
         onPointerDown={containsEvents ? stopAtSurface : undefined}
         onMouseDown={containsEvents ? stopAtSurface : undefined}
@@ -948,9 +1019,9 @@ function RichHoverTooltipController({
       // `onMouseEnter`; the pointer's next `mousemove` inside the trigger
       // opens the tooltip instead. Only wired while closed.
       onMouseMove={open ? undefined : showPointerTooltip}
-      onMouseLeave={requestClose}
+      onMouseLeave={handlePointerLeave}
       onFocus={handleTriggerFocus}
-      onBlur={requestClose}
+      onBlur={handleBlur}
       onKeyDown={handleTriggerKeyDown}
     >
       {trigger}

@@ -2,6 +2,11 @@ import { createHash } from 'node:crypto';
 import type * as ProviderAuthStateModule from '../auth/provider-auth-state';
 import type * as ShareablePluginResolution from '../plugins/shareable-plugin-resolution';
 // Capability summaries use a local fixture rather than provider discovery.
+// A shared read checks the account's pipeline capability first.
+jest.mock('../canopy-cloud/client', () => ({
+  ...jest.requireActual<object>('../canopy-cloud/client'),
+  assertCanopyCloudCapability: jest.fn(() => Promise.resolve()),
+}));
 jest.mock('../plugins/shareable-plugin-resolution', () => ({
   ...jest.requireActual<typeof ShareablePluginResolution>(
     '../plugins/shareable-plugin-resolution',
@@ -169,6 +174,10 @@ jest.mock(
 jest.mock('../pipelines/run-definition-admission', () => ({
   admitStoredRunDefinition: (): Promise<null> => Promise.resolve(null),
 }));
+// The execution golden drives the dispatcher; here the worker host runs alone.
+jest.mock('../pipelines/pipeline-worker-dispatch', () =>
+  jest.requireActual<object>('./helpers/pipeline-worker-dispatch-double'),
+);
 jest.mock('../pipelines/pipeline-service', () => ({
   listPipelines: jest.fn(),
   listPipelineCapabilityData: jest.fn(),
@@ -601,6 +610,10 @@ import {
   retryMatrixJobFromMain,
   startPipelineExecutionFromMain,
 } from '../pipelines/pipeline-handlers';
+import {
+  attachPipelineHandle,
+  desktopPipelineWorker,
+} from '../pipelines/pipeline-worker-host';
 import { loadProjectPipelineFromDisk } from '../pipelines/project-pipeline-discovery';
 import { writePipelineAdvisorSnapshot } from '../pipelines/pipeline-advisor-store';
 import { getLedgerPipelineAgentOwners } from '../ledger/pipeline-agent-owners';
@@ -996,20 +1009,21 @@ describe('project pipeline handlers', () => {
       actualExecutorModule.saveExecutionState,
     );
 
-    mockedSavePipeline.mockReturnValue({
+    // The store saves a trusted copy under the id it is given.
+    mockedSavePipeline.mockImplementation((input) => ({
       success: true,
       data: {
-        id: 'copy-id',
+        id: input.id ?? 'copy-id',
         name: 'Deploy (Copy)',
         description: '',
         icon: '',
-        filename: 'copy-id.yaml',
+        filename: `${input.id ?? 'copy-id'}.yaml`,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         source: 'user',
         readonly: false,
       },
-    });
+    }));
 
     mockReadPreferencesFile.mockResolvedValue(makePipelinePreferences());
     mockIsFeatureFlagEnabled.mockImplementation(
@@ -3185,10 +3199,27 @@ describe('project pipeline handlers', () => {
       it('records the selected owner for a DUPLICATE copy', async () => {
         mockBackgroundEnabled.mockReturnValue(true);
         mockCaptureBackgroundContext.mockResolvedValue(ORG_A);
-        jest.mocked(pipelineService.duplicatePipeline).mockReturnValue({
+        jest.mocked(pipelineService.getPipeline).mockReturnValue({
           success: true,
           data: {
-            id: 'duplicate-id',
+            info: {
+              id: 'source-id',
+              name: 'Source',
+              description: '',
+              icon: '',
+              filename: 'source-id.yaml',
+              createdAt: '',
+              updatedAt: '',
+              source: 'user',
+              readonly: false,
+            },
+            content: { name: 'Source', on: 'dispatch', jobs: {} },
+          },
+        });
+        mockedSavePipeline.mockImplementation((input) => ({
+          success: true,
+          data: {
+            id: input.id ?? 'duplicate-id',
             name: 'Copy',
             description: '',
             icon: '',
@@ -3198,11 +3229,15 @@ describe('project pipeline handlers', () => {
             source: 'user',
             readonly: false,
           },
-        });
+        }));
 
-        await getHandler(PIPELINE_CHANNELS.DUPLICATE)(undefined, 'source-id');
+        const duplicated: unknown = await getHandler(
+          PIPELINE_CHANNELS.DUPLICATE,
+        )(undefined, 'source-id');
+        expect(duplicated).toMatchObject({ success: true });
+        const copyId = mockedSavePipeline.mock.calls[0]?.[0].id;
 
-        expect(mockPipelineMetadata.get('duplicate-id')).toEqual({
+        expect(mockPipelineMetadata.get(copyId ?? '')).toEqual({
           owner: ORG_A,
         });
       });
@@ -3361,8 +3396,9 @@ describe('project pipeline handlers', () => {
       name: 'Deploy (Copy)',
       description: 'Ship it',
       icon: '🚢',
+      // A copy's document carries the name it is listed under (CAN-5368).
       content: {
-        name: 'Deploy',
+        name: 'Deploy (Copy)',
       },
     });
     expect(result).toMatchObject({
@@ -4646,7 +4682,7 @@ describe('project pipeline handlers', () => {
       description: 'Remote description',
       icon: '🛰️',
     });
-    expect(saveInput?.content.name).toBe('Shared Copy Source');
+    expect(saveInput?.content.name).toBe('Shared Copy Source (Copy)');
     expect(result).toMatchObject({
       success: true,
       data: {
@@ -6336,6 +6372,194 @@ describe('pipeline-handlers', () => {
         state: cancelledState,
       }),
     );
+  });
+
+  it('keeps execution subscribers across handles and tells them of a durable cancel', async () => {
+    const events: string[] = [];
+    const stop = desktopPipelineWorker.observe('exec-subscribed', {
+      onExecution: (event, execution) =>
+        events.push(`${event}:${execution.status}`),
+      onOutput: () => undefined,
+    });
+    const addObservers = jest.fn(() => (): void => undefined);
+    attachPipelineHandle({
+      id: 'exec-subscribed',
+      cancel: jest.fn(),
+      getState: jest.fn(),
+      waitForCompletion: jest.fn(),
+      addObservers,
+    });
+    // The subscriber's own observer and the router for the handle's nested runs.
+    expect(addObservers).toHaveBeenCalledTimes(2);
+
+    const cancelledState = createState({
+      id: 'exec-subscribed',
+      status: 'cancelled',
+      pending_pauses: [],
+    });
+    mockCancelPipelineExecution.mockResolvedValueOnce(cancelledState);
+    await cancelPipelineExecutionFromMain({
+      executionId: 'exec-subscribed',
+      getWindow,
+    });
+    expect(events).toEqual(['execution.cancelled:cancelled']);
+    stop?.();
+  });
+
+  it("routes a nested run's events to its own subscribers, not its parent's", () => {
+    const statuses: string[] = [];
+    const outputs: string[] = [];
+    const childStatuses: string[] = [];
+    const childOutputs: string[] = [];
+    const stop = desktopPipelineWorker.observe('exec-parent', {
+      onExecution: (_event, execution) => statuses.push(execution.status),
+      onOutput: ({ text }) => outputs.push(text),
+    });
+    const stopChild = desktopPipelineWorker.observe('exec-child', {
+      onExecution: (_event, execution) => childStatuses.push(execution.status),
+      onOutput: ({ text }) => childOutputs.push(text),
+    });
+    type Observers = Parameters<
+      NonNullable<ExecutionHandle['addObservers']>
+    >[0];
+    const observers: Observers[] = [];
+    const forward: Observers = {
+      onEvent: (event) => {
+        for (const observer of observers) observer.onEvent?.(event);
+      },
+      onStepOutput: (event) => {
+        for (const observer of observers) observer.onStepOutput?.(event);
+      },
+    };
+    attachPipelineHandle({
+      id: 'exec-parent',
+      cancel: jest.fn(),
+      getState: jest.fn(),
+      waitForCompletion: jest.fn(),
+      addObservers: (added) => {
+        observers.push(added);
+        return (): void => undefined;
+      },
+    });
+    const output = (executionId: string, data: string): StepOutputEvent => ({
+      executionId,
+      jobId: 'build',
+      jobName: 'Build',
+      stepId: 'run',
+      stepName: 'Run',
+      attempt: 1,
+      stream: 'stdout',
+      data,
+    });
+    forward.onEvent?.({
+      executionId: 'exec-child',
+      type: 'execution.completed',
+      state: createState({
+        id: 'exec-child',
+        status: 'success',
+        pending_pauses: [],
+      }),
+      timestamp: '2026-03-27T12:00:00.000Z',
+    });
+    forward.onStepOutput?.(output('exec-child', 'child'));
+    forward.onEvent?.({
+      executionId: 'exec-parent',
+      type: 'execution.updated',
+      state: createState({
+        id: 'exec-parent',
+        status: 'running',
+        pending_pauses: [],
+      }),
+      timestamp: '2026-03-27T12:00:00.000Z',
+    });
+    forward.onStepOutput?.(output('exec-parent', 'parent'));
+    expect(statuses).toEqual(['running']);
+    expect(outputs).toEqual(['parent']);
+    expect(childStatuses).toEqual(['success']);
+    expect(childOutputs).toEqual(['child']);
+    stop?.();
+    stopChild?.();
+  });
+
+  it('broadcasts a cancel that reaches the worker without the desktop cancel path', async () => {
+    const cancelledState = createState({
+      id: 'exec-direct-cancel',
+      status: 'cancelled',
+      pending_pauses: [],
+    });
+    mockCancelPipelineExecution.mockResolvedValueOnce(cancelledState);
+
+    await desktopPipelineWorker.cancel('exec-direct-cancel', 'finalize');
+
+    expect(mockSendToAllWindows).toHaveBeenCalledWith(
+      PIPELINE_CHANNELS.EXECUTION_EVENT,
+      expect.objectContaining({
+        executionId: 'exec-direct-cancel',
+        type: 'execution.cancelled',
+        state: cancelledState,
+      }),
+    );
+  });
+
+  it('gives concurrent cancels of one execution the same cancelled state', async () => {
+    const cancelledState = createState({
+      id: 'exec-concurrent-cancel',
+      status: 'cancelled',
+    });
+    let finish = (): void => undefined;
+    mockCancelPipelineExecution.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = (): void => resolve(cancelledState);
+      }),
+    );
+
+    const first = cancelPipelineExecutionFromMain({
+      executionId: cancelledState.id,
+      getWindow,
+    });
+    const second = cancelPipelineExecutionFromMain({
+      executionId: cancelledState.id,
+      getWindow,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finish();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      cancelledState,
+      cancelledState,
+    ]);
+    expect(mockCancelPipelineExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a forced cancel the store recorded while the handle still runs', async () => {
+    const runningState = createState({
+      id: 'exec-forced-cancel',
+      status: 'running',
+    });
+    const completionDeferred = createDeferred<ExecutionState>();
+    const handle: ExecutionHandle = {
+      id: runningState.id,
+      cancel: () => completionDeferred.promise,
+      getState: () => runningState,
+      waitForCompletion: () => completionDeferred.promise,
+    };
+    reserveExecution(handle.id);
+    trackExecution(handle);
+    try {
+      mockLoadExecutionState.mockResolvedValueOnce(runningState);
+      await expect(desktopPipelineWorker.get(handle.id)).resolves.toMatchObject(
+        { status: 'running' },
+      );
+      mockLoadExecutionState.mockResolvedValueOnce(
+        createState({ id: handle.id, status: 'cancelled' }),
+      );
+      await expect(desktopPipelineWorker.get(handle.id)).resolves.toMatchObject(
+        { status: 'cancelled' },
+      );
+    } finally {
+      completionDeferred.resolve(runningState);
+      await completionDeferred.promise;
+    }
   });
 
   it('falls back to persisted cancellation when an active handle does not settle', async () => {

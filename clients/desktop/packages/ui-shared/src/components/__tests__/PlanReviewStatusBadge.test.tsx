@@ -5,6 +5,7 @@ import {
   PlanReviewStatusBadge,
   PlanStatusNote,
 } from '../PlanReviewStatusBadge';
+import { PlanOpenImplementationAction } from '../PlanOpenImplementationAction';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -45,6 +46,28 @@ describe('PlanReviewStatusBadge', () => {
     expect(badge?.getAttribute('data-badge-tone')).toBe(tone);
   });
 
+  it('shows a decorative spinner only while implementing', () => {
+    act(() =>
+      root.render(
+        <PlanReviewStatusBadge
+          status={{ kind: 'implementing', label: 'Implementing in chat' }}
+          data-testid="badge"
+        />,
+      ),
+    );
+    expect(byTestId('badge-spinner')?.getAttribute('aria-hidden')).toBe('true');
+    expect(byTestId('badge')?.textContent).toBe('Implementing in chat');
+    act(() =>
+      root.render(
+        <PlanReviewStatusBadge
+          status={{ kind: 'implemented', label: 'Finished in chat' }}
+          data-testid="badge"
+        />,
+      ),
+    );
+    expect(byTestId('badge-spinner')).toBeNull();
+  });
+
   it('renders nothing without a label', () => {
     act(() =>
       root.render(
@@ -79,5 +102,31 @@ describe('PlanStatusNote', () => {
   it('renders nothing without text or a link', () => {
     act(() => root.render(<PlanStatusNote />));
     expect(container.innerHTML).toBe('');
+  });
+});
+
+describe('PlanOpenImplementationAction', () => {
+  it.each([
+    ['chat', 'Open chat'],
+    ['pipeline', 'Open run'],
+  ] as const)('names the %s venue in full and compact forms', (venue, name) => {
+    const onOpen = jest.fn();
+    for (const compact of [false, true]) {
+      act(() =>
+        root.render(
+          <PlanOpenImplementationAction
+            venue={venue}
+            compact={compact}
+            onOpen={onOpen}
+            dataTestIdPrefix="plan"
+          />,
+        ),
+      );
+      const button = byTestId('plan-open');
+      expect(button?.getAttribute('aria-label')).toBe(name);
+      expect(button?.textContent).toBe(compact ? '' : 'Open');
+      act(() => button?.click());
+    }
+    expect(onOpen).toHaveBeenCalledTimes(2);
   });
 });

@@ -5,6 +5,7 @@ import type {
   PlanDisplayStatusKind,
 } from '../lib/planDisplayStatus';
 import { Badge } from './Badge';
+import { LoadingSpinner } from './LoadingSpinner';
 
 const STATUS_TONES: Record<PlanDisplayStatusKind, BadgeTone> = {
   pending: 'warning',
@@ -24,7 +25,8 @@ export interface PlanReviewStatusBadgeProps {
 /**
  * A tracked plan's review or implementation status, shared by the plan
  * header and the Plans cards on desktop and web. Pure display: hosts resolve
- * the status with `resolvePlanDisplayStatus`.
+ * the status with `resolvePlanDisplayStatus`. Implementing carries a
+ * decorative spinner; the label alone names the state.
  */
 export function PlanReviewStatusBadge({
   status,
@@ -39,6 +41,14 @@ export function PlanReviewStatusBadge({
       data-testid={testId}
       className={className}
     >
+      {status.kind === 'implementing' ? (
+        <LoadingSpinner
+          decorative
+          sizePx={10}
+          className="shrink-0"
+          dataTestId={testId ? `${testId}-spinner` : undefined}
+        />
+      ) : null}
       {status.label}
     </Badge>
   );

@@ -1459,6 +1459,36 @@ describe('applyCanonicalChanges', () => {
   });
 });
 
+describe('a turn main holds for its worktree setup', () => {
+  it('shows Stop for a canonical starting turn the renderer never presented', () => {
+    const projection = baseProjection();
+    expect(projection.chatState.tabs[0].provisionalFirstSend).toBeUndefined();
+    const held = apply(
+      projection,
+      {
+        type: 'message.upserted',
+        chatId: 'a',
+        message: message('held-user', 'Fix the deck'),
+      },
+      {
+        type: 'runtime.patched',
+        chatId: 'a',
+        runtime: {
+          status: 'starting',
+          activeTurn: { userMessageId: 'held-user', startedAt: 20 },
+          queuedMessageIds: [],
+          lastActivityAt: 20,
+        },
+      },
+    );
+    const tab = held.chatState.tabs[0];
+    expect(tab.status).toBe('streaming');
+    expect(tab.messages.filter((row) => row.id === 'held-user')).toHaveLength(
+      1,
+    );
+  });
+});
+
 describe('chatRuntimeStatusToTabStatus', () => {
   it('keeps live turns streaming and terminal turns idle', () => {
     expect(chatRuntimeStatusToTabStatus(runtimeState('starting'))).toBe(
@@ -1645,7 +1675,7 @@ describe('preserveRendererOnlyTabFields', () => {
     });
   });
 
-  it('preserves the setup queue marker without re-adding a dropped setup annotation', () => {
+  it('preserves local queue rows without re-adding a dropped setup annotation', () => {
     const previous = fromPersistedTab(persistedTab('setup'));
     const next = fromPersistedTab(persistedTab('setup'));
     const intro = {
@@ -1662,14 +1692,12 @@ describe('preserveRendererOnlyTabFields', () => {
     };
     previous.messages = [intro, ...previous.messages];
     previous.queuedMessages = [{ text: 'queued while cloning' }];
-    previous.queuedForSetup = true;
 
     const preserved = preserveRendererOnlyTabFields(previous, next);
 
     expect(preserved.queuedMessages).toEqual([
       { text: 'queued while cloning' },
     ]);
-    expect(preserved.queuedForSetup).toBe(true);
     expect(preserved.messages).toEqual(next.messages);
   });
 

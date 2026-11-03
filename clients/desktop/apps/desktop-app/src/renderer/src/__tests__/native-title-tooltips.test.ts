@@ -107,7 +107,6 @@ const MIGRATED_FILES: readonly string[] = [
   `${UI_SHARED}/SourceInfoButton.tsx`,
   `${UI_SHARED}/UsageGroup.tsx`,
   `${UI_SHARED}/UserBubble.tsx`,
-  `${UI_SHARED}/chat/TurnDiffSummary.tsx`,
   `${UI_SHARED}/diff/DiffFileTree.tsx`,
   `${UI_SHARED}/panels/PanelTabBar.tsx`,
   `${UI_APP}/capability/PluginCatalogDetail.tsx`,

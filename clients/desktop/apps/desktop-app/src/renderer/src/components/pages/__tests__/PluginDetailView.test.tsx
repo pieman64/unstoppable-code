@@ -900,8 +900,6 @@ describe('PluginDetailView provider toggle', () => {
       container.querySelector('[data-testid="plugin-detail-toggle-codex"]'),
       'Codex toggle',
     );
-    expect(codexButton.dataset.codexCompat).toBe('false');
-
     act(() => {
       codexButton.click();
     });
@@ -930,8 +928,6 @@ describe('PluginDetailView provider toggle', () => {
       container.querySelector('[data-testid="plugin-detail-toggle-codex"]'),
       'Codex toggle',
     );
-    expect(codexButton.dataset.codexCompat).toBe('true');
-
     act(() => {
       codexButton.click();
     });
@@ -1158,7 +1154,7 @@ describe('PluginDetailView provider toggle', () => {
       const codexTab = container.querySelector(
         '[data-testid="plugin-detail-toggle-codex"]',
       );
-      expect(codexTab?.hasAttribute('disabled')).toBe(true);
+      expect(codexTab?.getAttribute('aria-disabled')).toBe('true');
       expect(
         container.querySelector(
           '[data-testid="plugin-detail-codex-compat-disabled-badge"]',

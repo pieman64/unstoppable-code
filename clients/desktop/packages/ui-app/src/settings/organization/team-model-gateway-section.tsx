@@ -12,9 +12,16 @@ import {
   Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  Notice,
   SettingsFormSkeleton,
   Tooltip,
   SettingsSelect,
+  ChoiceList,
+  ChoiceListRow,
+  FormField,
+  SettingsRowsRow,
+  TextInput,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
@@ -37,7 +44,7 @@ import {
   useSettingsClient,
   useSettingsPrivacy,
 } from '../host';
-import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import { useSettingsErrorCopy, useSettingsLoadFailure } from '../errors';
 import { ORGANIZATION_LAPSED_ERROR } from './organization-known-errors';
 import { joinClassNames } from './settings/join-class-names';
 import {
@@ -45,6 +52,7 @@ import {
   getOrgBillingSummary,
   updateModelGatewayConfig,
 } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 /** Levels an admin can tick for a model, in the canonical ascending order. */
 const SELECTABLE_THINKING_LEVELS: readonly AiGatewayThinkingLevel[] =
@@ -133,14 +141,14 @@ function ModelGatewayCard({
 }: TeamModelGatewaySectionProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(MODEL_GATEWAY_ERROR_SCOPE);
-  const loadErrorCopy = useSettingsLoadErrorCopy(MODEL_GATEWAY_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(MODEL_GATEWAY_ERROR_SCOPE);
   const { maskClassName } = useSettingsPrivacy();
   const orgId = detail.id;
 
   const [gateway, setGateway] = useState<GatewayState | null>(null);
   const [baseUrlDraft, setBaseUrlDraft] = useState('');
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
@@ -155,7 +163,8 @@ function ModelGatewayCard({
   const [planEntitled, setEntitled] = useState<boolean | null>(null);
   const entitled = freeAccess ? true : planEntitled;
   /** Held apart from `error` so a save does not erase an unresolved plan read. */
-  const [entitlementError, setEntitlementError] = useState<string | null>(null);
+  const [entitlementError, setEntitlementError] =
+    useState<SettingsFailure | null>(null);
 
   /**
    * The gateway configuration the SERVER last confirmed. Every PATCH sends the
@@ -203,7 +212,7 @@ function ModelGatewayCard({
           setEntitled(summary.capabilities.includes(MODEL_GATEWAY_CAPABILITY));
         }
       } catch (err) {
-        if (!cancelled) setEntitlementError(errorCopy.loadCopy(err));
+        if (!cancelled) setEntitlementError(errorCopy.loadFailure(err));
       }
     })();
     return (): void => {
@@ -239,7 +248,7 @@ function ModelGatewayCard({
       return true;
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'update your model gateway',
           known: [ORGANIZATION_LAPSED_ERROR],
         }),
@@ -319,12 +328,22 @@ function ModelGatewayCard({
         </div>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner className="mt-3" error={error} />
-        <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
+        <ErrorBanner
+          className="mt-3"
+          error={loadError?.copy}
+          details={loadError?.details}
+          onRetry={retryLoad}
+        />
         <ErrorBanner
           className="mt-3"
           // One load banner: both share the same copy and Retry.
-          error={loadError === null ? entitlementError : null}
+          error={loadError === null ? entitlementError?.copy : null}
+          details={loadError === null ? entitlementError?.details : undefined}
           onRetry={retryLoad}
         />
 
@@ -343,38 +362,33 @@ function ModelGatewayCard({
            */
           <div className="mt-4 space-y-3">
             <div className="rounded-lg border bg-subtle/45 p-4">
-              <label className="flex cursor-pointer items-start gap-3">
-                <input
-                  type="checkbox"
-                  checked={gateway.enabled}
-                  disabled={saving || (!gateway.enabled && !canEnableGateway)}
-                  data-testid="enforce-member-model-gateway-checkbox"
-                  onChange={(event) => {
-                    if (!event.target.checked) {
-                      setError(null);
-                      setConfirmDisable(true);
-                      return;
-                    }
-                    // Turning it ON is a tightening the lapsed-plan state may
-                    // not perform; the switch is checked whenever `relaxOnly`
-                    // holds, so this only guards a race.
-                    if (relaxOnly) return;
-                    void save({ ...latestRef.current, enabled: true });
-                  }}
-                  className="mt-0.5 h-4 w-4 rounded"
-                />
-                <span className="min-w-0">
-                  <span className="block text-s font-medium fg-primary">
-                    Route member traffic through your gateway
-                  </span>
-                  <span className="block text-xs fg-secondary">
-                    Members add their own gateway key in desktop settings.
-                  </span>
-                </span>
-              </label>
+              <SettingsRowsRow
+                label="Route member traffic through your gateway"
+                description="Members add their own gateway key in desktop settings."
+                control={
+                  <ToggleSwitch
+                    label="Route member traffic through your gateway"
+                    checked={gateway.enabled}
+                    disabled={saving || (!gateway.enabled && !canEnableGateway)}
+                    dataTestId="enforce-member-model-gateway-checkbox"
+                    onChange={(next) => {
+                      if (!next) {
+                        setError(null);
+                        setConfirmDisable(true);
+                        return;
+                      }
+                      // Turning it ON is a tightening the lapsed-plan state
+                      // may not perform; the switch is checked whenever
+                      // `relaxOnly` holds, so this only guards a race.
+                      if (relaxOnly) return;
+                      void save({ ...latestRef.current, enabled: true });
+                    }}
+                  />
+                }
+              />
 
               {!gateway.enabled && !canEnableGateway ? (
-                <p className="mt-2 pl-7 text-xs fg-secondary">
+                <p className="mt-2 text-xs fg-secondary">
                   Add a gateway URL and one model to turn this on.
                 </p>
               ) : null}
@@ -385,132 +399,124 @@ function ModelGatewayCard({
                     onlyRouteLocked ? 'opacity-60' : ''
                   }`}
                 >
-                  <label className="flex cursor-pointer items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={gateway.enforced}
-                      disabled={saving || onlyRouteLocked}
-                      data-testid="model-gateway-enforced-checkbox"
-                      onChange={(event) =>
-                        void save({
-                          ...latestRef.current,
-                          enforced: event.target.checked,
-                        })
-                      }
-                      className="mt-0.5 h-4 w-4 rounded"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-s font-medium fg-primary">
-                        Make this the only route
-                      </span>
-                      <span className="block text-xs fg-secondary">
-                        Members can&apos;t use their own provider sign-ins or
-                        hosted credits.
-                      </span>
-                    </span>
-                  </label>
+                  <SettingsRowsRow
+                    label="Make this the only route"
+                    description="Members can't use their own provider sign-ins or hosted credits."
+                    control={
+                      <ToggleSwitch
+                        label="Make this the only route"
+                        checked={gateway.enforced}
+                        disabled={saving || onlyRouteLocked}
+                        dataTestId="model-gateway-enforced-checkbox"
+                        onChange={(next) =>
+                          void save({
+                            ...latestRef.current,
+                            enforced: next,
+                          })
+                        }
+                      />
+                    }
+                  />
                 </div>
               ) : null}
             </div>
 
             {relaxOnly ? (
-              <div
-                className="flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
+              <Notice
+                intent="attention"
+                icon={<Lock size={14} />}
                 data-testid="model-gateway-relax-only-note"
               >
-                <Lock
-                  size={14}
-                  aria-hidden="true"
-                  className="mt-0.5 shrink-0 fg-warning"
-                />
-                <p className="text-xs fg-secondary">
-                  Your plan no longer includes a model gateway, but yours is
-                  still routing your members. You can
-                  {gateway.enforced
-                    ? ' turn it off or stop making it the only route.'
-                    : ' turn it off or remove models.'}{' '}
-                  Changing the endpoint, caching, or models needs the capability
-                  back.{' '}
-                  <SettingsLink
-                    href={billingHref}
-                    data-testid="model-gateway-relax-only-upgrade"
-                    className="underline fg-accent"
-                  >
-                    {upgradeText}
-                  </SettingsLink>
-                </p>
-              </div>
+                Your plan no longer includes a model gateway, but yours is still
+                routing your members. You can
+                {gateway.enforced
+                  ? ' turn it off or stop making it the only route.'
+                  : ' turn it off or remove models.'}{' '}
+                Changing the endpoint, caching, or models needs the capability
+                back.{' '}
+                <SettingsLink
+                  href={billingHref}
+                  data-testid="model-gateway-relax-only-upgrade"
+                  className="underline fg-accent"
+                >
+                  {upgradeText}
+                </SettingsLink>
+              </Notice>
             ) : null}
 
             {gateway.enabled || editable ? (
               <>
                 <div className="rounded-lg border p-4">
-                  <label
-                    className="block text-s font-medium fg-primary"
-                    htmlFor="model-gateway-base-url"
+                  <FormField
+                    id="model-gateway-base-url"
+                    label="Gateway URL"
+                    description={
+                      <>
+                        The HTTPS base serving{' '}
+                        <code className="font-mono">/v1/messages</code> and{' '}
+                        <code className="font-mono">/v1/responses</code>
+                      </>
+                    }
                   >
-                    Gateway URL
-                  </label>
-                  <p className="mt-0.5 text-xs fg-secondary">
-                    The HTTPS base serving{' '}
-                    <code className="font-mono">/v1/messages</code> and{' '}
-                    <code className="font-mono">/v1/responses</code>
-                  </p>
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      id="model-gateway-base-url"
-                      type="url"
-                      value={baseUrlDraft}
-                      disabled={saving || relaxOnly}
-                      placeholder="https://gateway.example.com"
-                      data-testid="model-gateway-base-url-input"
-                      onChange={(event) => setBaseUrlDraft(event.target.value)}
-                      className={joinClassNames(
-                        'focus-ring min-w-0 flex-1 rounded-lg border bg-base px-3 py-2 text-s font-mono disabled:opacity-50',
-                        maskClassName,
-                      )}
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="compact"
-                      disabled={saving || relaxOnly || !baseUrlChanged}
-                      data-testid="model-gateway-base-url-save"
-                      onClick={() =>
-                        void save({
-                          ...latestRef.current,
-                          baseUrl: trimmedDraft,
-                        })
-                      }
-                    >
-                      Save
-                    </Button>
-                  </div>
+                    {(control) => (
+                      <div className="flex gap-2">
+                        <div
+                          className={joinClassNames(
+                            'min-w-0 flex-1',
+                            maskClassName,
+                          )}
+                        >
+                          <TextInput
+                            {...control}
+                            density="settings"
+                            mono
+                            type="url"
+                            value={baseUrlDraft}
+                            disabled={saving || relaxOnly}
+                            placeholder="https://gateway.example.com"
+                            data-testid="model-gateway-base-url-input"
+                            onChange={(event) =>
+                              setBaseUrlDraft(event.target.value)
+                            }
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="compact"
+                          disabled={saving || relaxOnly || !baseUrlChanged}
+                          data-testid="model-gateway-base-url-save"
+                          onClick={() =>
+                            void save({
+                              ...latestRef.current,
+                              baseUrl: trimmedDraft,
+                            })
+                          }
+                        >
+                          Save
+                        </Button>
+                      </div>
+                    )}
+                  </FormField>
                   <div className="mt-3 border-t pt-3">
-                    <label className="flex cursor-pointer items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={gateway.promptCachePassthrough}
-                        disabled={saving || relaxOnly}
-                        data-testid="model-gateway-prompt-cache-checkbox"
-                        onChange={(event) =>
-                          void save({
-                            ...latestRef.current,
-                            promptCachePassthrough: event.target.checked,
-                          })
-                        }
-                        className="mt-0.5 h-4 w-4 rounded"
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-s font-medium fg-primary">
-                          Gateway supports prompt caching
-                        </span>
-                        <span className="block text-xs fg-secondary">
-                          Most of the savings come from caching. Turn it off
-                          only if your gateway rejects cache markers.
-                        </span>
-                      </span>
-                    </label>
+                    <SettingsRowsRow
+                      label="Gateway supports prompt caching"
+                      description="Most of the savings come from caching. Turn it off only if your gateway rejects cache markers."
+                      control={
+                        <ToggleSwitch
+                          label="Gateway supports prompt caching"
+                          checked={gateway.promptCachePassthrough}
+                          disabled={saving || relaxOnly}
+                          dataTestId="model-gateway-prompt-cache-checkbox"
+                          onChange={(next) =>
+                            void save({
+                              ...latestRef.current,
+                              promptCachePassthrough: next,
+                            })
+                          }
+                        />
+                      }
+                    />
                   </div>
                 </div>
 
@@ -624,6 +630,8 @@ function ModelGatewayCard({
         {confirmDisable ? (
           <SettingsConfirmDialog
             dataTestId="model-gateway-disable-dialog"
+            errorMessage={error?.copy}
+            errorDetails={error?.details}
             title="Turn off your model gateway?"
             confirmLabel="Turn it off"
             busyLabel="Saving…"
@@ -648,15 +656,6 @@ function ModelGatewayCard({
                   Your endpoint and model list are kept, so you can turn it back
                   on later.
                 </p>
-                {error !== null ? (
-                  <p
-                    role="alert"
-                    data-testid="model-gateway-disable-error"
-                    className="fg-destructive"
-                  >
-                    {error}
-                  </p>
-                ) : null}
               </div>
             }
           />
@@ -809,106 +808,107 @@ function AddGatewayModelForm({
       </p>
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="block text-xs">
-          <span className="mb-1 block fg-secondary">Name</span>
-          <input
-            type="text"
-            value={label}
-            disabled={busy}
-            placeholder="Acme Qwen3 Coder"
-            data-testid="model-gateway-add-label"
-            onChange={(event) => setLabel(event.target.value)}
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s disabled:opacity-50"
-          />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block fg-secondary">Gateway model ID</span>
-          <input
-            type="text"
-            value={gatewayId}
-            disabled={busy}
-            placeholder="vertex/qwen3-coder"
-            data-testid="model-gateway-add-gateway-id"
-            onChange={(event) => setGatewayId(event.target.value)}
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono disabled:opacity-50"
-          />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block fg-secondary">Harness</span>
-          <SettingsSelect
-            value={harness}
-            disabled={busy}
-            data-testid="model-gateway-add-harness"
-            onValueChange={(value) =>
-              setHarness(value === 'claude' ? 'claude' : 'codex')
-            }
-            width="fill"
-            options={[
-              { value: 'codex', label: 'Codex' },
-              { value: 'claude', label: 'Claude' },
-            ]}
-          />
-        </label>
-        <label className="block text-xs">
-          <span className="mb-1 block fg-secondary">Context window</span>
-          <input
-            type="number"
-            min={1}
-            value={contextWindow}
-            disabled={busy}
-            data-testid="model-gateway-add-context-window"
-            onChange={(event) => setContextWindow(event.target.value)}
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s disabled:opacity-50"
-          />
-        </label>
+        <FormField label="Name">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="text"
+              value={label}
+              disabled={busy}
+              placeholder="Acme Qwen3 Coder"
+              data-testid="model-gateway-add-label"
+              onChange={(event) => setLabel(event.target.value)}
+            />
+          )}
+        </FormField>
+        <FormField label="Gateway model ID">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              mono
+              type="text"
+              value={gatewayId}
+              disabled={busy}
+              placeholder="vertex/qwen3-coder"
+              data-testid="model-gateway-add-gateway-id"
+              onChange={(event) => setGatewayId(event.target.value)}
+            />
+          )}
+        </FormField>
+        <FormField label="Harness">
+          {(control) => (
+            <SettingsSelect
+              {...control}
+              value={harness}
+              disabled={busy}
+              data-testid="model-gateway-add-harness"
+              onValueChange={(value) =>
+                setHarness(value === 'claude' ? 'claude' : 'codex')
+              }
+              width="fill"
+              options={[
+                { value: 'codex', label: 'Codex' },
+                { value: 'claude', label: 'Claude' },
+              ]}
+            />
+          )}
+        </FormField>
+        <FormField label="Context window">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="number"
+              min={1}
+              value={contextWindow}
+              disabled={busy}
+              data-testid="model-gateway-add-context-window"
+              onChange={(event) => setContextWindow(event.target.value)}
+            />
+          )}
+        </FormField>
       </div>
 
-      <fieldset className="mt-4">
-        <legend className="text-xs fg-secondary">Thinking levels</legend>
-        <div className="mt-1.5 flex flex-wrap gap-2">
+      <div className="mt-4 flex flex-col gap-1.5">
+        <p className="text-xs font-medium fg-primary">Thinking levels</p>
+        <ChoiceList aria-label="Thinking levels">
           {SELECTABLE_THINKING_LEVELS.map((level) => (
-            <label
+            <ChoiceListRow
               key={level}
-              className="flex cursor-pointer items-center gap-1.5 rounded-md bg-subtle/45 px-2 py-1 text-xs"
+              selected={thinking.has(level)}
+              disabled={busy}
+              data-testid={`model-gateway-add-thinking-${level}`}
+              onClick={() =>
+                setThinking((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(level)) {
+                    next.delete(level);
+                  } else {
+                    next.add(level);
+                  }
+                  return next;
+                })
+              }
             >
-              <input
-                type="checkbox"
-                checked={thinking.has(level)}
-                disabled={busy}
-                data-testid={`model-gateway-add-thinking-${level}`}
-                onChange={(event) =>
-                  setThinking((prev) => {
-                    const next = new Set(prev);
-                    if (event.target.checked) {
-                      next.add(level);
-                    } else {
-                      next.delete(level);
-                    }
-                    return next;
-                  })
-                }
-                className="h-3.5 w-3.5 rounded"
-              />
-              <span className="fg-primary">{level}</span>
-            </label>
+              {level}
+            </ChoiceListRow>
           ))}
-        </div>
-      </fieldset>
+        </ChoiceList>
+      </div>
 
-      <label className="mt-4 flex cursor-pointer items-start gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={flatSchema}
+      <ChoiceList aria-label="Tool schemas" className="mt-4">
+        <ChoiceListRow
+          selected={flatSchema}
           disabled={busy}
           data-testid="model-gateway-add-flat-schema"
-          onChange={(event) => setFlatSchema(event.target.checked)}
-          className="mt-0.5 h-3.5 w-3.5 rounded"
-        />
-        <span className="fg-secondary">
+          onClick={() => setFlatSchema((prev) => !prev)}
+        >
           Send simplified tool schemas. Try this if the model errors on tool
           calls.
-        </span>
-      </label>
+        </ChoiceListRow>
+      </ChoiceList>
 
       {duplicateLabel && trimmedLabel.length > 0 ? (
         <p

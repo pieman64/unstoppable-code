@@ -92,7 +92,7 @@ export function RemoteAccessConnectionNotice(): JSX.Element | null {
         data-testid="remote-access-connection-notice"
         data-state="reconnecting"
       >
-        {host.error ? `${host.error} Retrying…` : 'Retrying…'}
+        {host.error ? `${host.error} Trying again…` : 'Trying again…'}
       </Notice>
     );
   }

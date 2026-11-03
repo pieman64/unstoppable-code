@@ -33,7 +33,10 @@ import {
   type ShareInstallDialogPrimary,
 } from '@canopy/ui-shared/components/ShareInstallDialog';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
-import { LoadingPlaceholder } from '../shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   useNavigationStore,
@@ -52,6 +55,7 @@ import {
   usePublicShareLanding,
   type PublicShareInstalledTarget,
   type PublicShareLanding,
+  type PublicShareLandingOptions,
 } from './usePublicShareLanding';
 import {
   shareLandingErrorCopy,
@@ -95,6 +99,7 @@ import { SharedContainerLinkLandingModal } from '@/components/shared-containers/
 interface ShareInstallModalProps {
   link: DeepLinkShareOpenEvent;
   origin: ShareInstallOrigin;
+  skillTarget?: PublicShareLandingOptions['skillTarget'];
   onClose: () => void;
 }
 
@@ -355,11 +360,13 @@ function hasTryNow(entity: DeepLinkShareOpenEvent['entity']): boolean {
 export function ShareInstallModal({
   link,
   origin,
+  skillTarget,
   onClose,
 }: ShareInstallModalProps): JSX.Element | null {
   const landing = usePublicShareLanding(link, {
     onAutoNavigate: onClose,
     reportHandoffEvents: origin === 'deep-link',
+    ...(skillTarget ? { skillTarget } : {}),
   });
   const { snapshot, installReview } = landing;
   const { personalOrganizationId } = useResourceContext();
@@ -798,9 +805,11 @@ export function ShareInstallModal({
         loading={
           state.phase === 'loading' ||
           (state.phase === 'ready' && landing.openingInstallReview) ? (
-            <LoadingPlaceholder
-              label={`Loading ${placeholder.toLowerCase()}…`}
-            />
+            <DelayedLoadingPlaceholder
+              slowNote={`Still loading ${placeholder.toLowerCase()}…`}
+            >
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           ) : undefined
         }
         blocker={blocker}
@@ -963,6 +972,7 @@ export function ShareInstallModalHost(): JSX.Element | null {
       key={shareLandingInstanceKey(pending)}
       link={link}
       origin={origin}
+      {...(pending.skillTarget ? { skillTarget: pending.skillTarget } : {})}
       onClose={handleClose}
     />
   );

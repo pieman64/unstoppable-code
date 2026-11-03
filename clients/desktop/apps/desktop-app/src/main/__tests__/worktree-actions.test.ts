@@ -111,6 +111,13 @@ beforeEach(() => {
   pinOrgProjectsFlagOff();
 });
 
+jest.mock(
+  '../canopy-runtime/pipeline-definition-dispatch',
+  (): object =>
+    jest.requireActual<{ pipelineWriteDispatchFake: object }>(
+      './helpers/pipeline-write-dispatch-fake',
+    ).pipelineWriteDispatchFake,
+);
 jest.mock('../pipelines/curated-pipeline-catalog', () => ({
   listManagedCuratedPipelines: jest.fn(() => Promise.resolve([])),
   getManagedCuratedPipeline: jest.fn(),

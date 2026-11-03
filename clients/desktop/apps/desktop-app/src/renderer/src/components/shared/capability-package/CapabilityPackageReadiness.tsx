@@ -11,6 +11,7 @@ import {
 } from '@canopy/ui-shared/lib/pipeline-package-display';
 import { Button } from '@/components/shared/Button';
 import type { PipelinePackageReadiness as PipelinePackageReadinessData } from '@canopy/desktop-shared/types/pipeline';
+import { StatusLabel } from '@canopy/ui-shared/components';
 
 /**
  * Local readiness of a pipeline's packaged content, shown before Run
@@ -155,8 +156,8 @@ export function CapabilityPackageReadiness({
           </div>
           <p className="mt-1 text-xs fg-secondary">{setupNote}</p>
           {readiness.status === 'invalid' && (
-            <p className="mt-1 text-xs fg-destructive" role="alert">
-              {invalidLabel}
+            <p className="mt-1 text-xs">
+              <StatusLabel>{invalidLabel}</StatusLabel>
             </p>
           )}
           {isDefinitionOnly && (

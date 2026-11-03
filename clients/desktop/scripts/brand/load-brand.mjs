@@ -24,6 +24,8 @@ const BRAND_COLOR_MODES = new Set(['light', 'dark', 'system']);
  * it; see the collision check in `loadBrand`.
  */
 const SYNTHESIZED_SOCIAL_GROUP_HEADING = 'Connect';
+const SOURCE_CODE_FOOTER_LABEL = 'Source code';
+const SPDX_LICENSE_ID_PATTERN = /^[A-Za-z0-9.+-]+$/;
 
 function assertNoDuplicateStrings(values, label) {
   const seen = new Set();
@@ -616,6 +618,48 @@ export function loadBrand(brandId, options = {}) {
       if (conflictIndex !== -1) {
         throw new Error(
           `web.marketing.footerLinkGroups[${conflictIndex}].heading must not be "${SYNTHESIZED_SOCIAL_GROUP_HEADING}" when web.marketing.socialLinks is non-empty: the footer appends its own "${SYNTHESIZED_SOCIAL_GROUP_HEADING}" group for those links`,
+        );
+      }
+    }
+
+    // Public client source. OPTIONAL and additive like copyrightHolder: an
+    // omitted field hides every open-source surface. The license must look like
+    // an SPDX identifier so the web's SPDX license URL is always well formed.
+    if (marketing.sourceRepository !== undefined) {
+      const sourceRepository = marketing.sourceRepository;
+      if (!isRecord(sourceRepository)) {
+        throw new Error(
+          'web.marketing.sourceRepository must be an object when provided',
+        );
+      }
+      validateHttpsUrl(
+        sourceRepository.url,
+        'web.marketing.sourceRepository.url',
+      );
+      // The web parses this with `new URL()` at render time to derive the fork
+      // command, so a value that is only https-prefixed must fail the build.
+      if (!URL.canParse(sourceRepository.url)) {
+        throw new Error(
+          'web.marketing.sourceRepository.url must be a valid URL',
+        );
+      }
+      if (
+        typeof sourceRepository.license !== 'string' ||
+        !SPDX_LICENSE_ID_PATTERN.test(sourceRepository.license)
+      ) {
+        throw new Error(
+          'web.marketing.sourceRepository.license must be an SPDX license identifier',
+        );
+      }
+      // The marketing footer appends a link with this exact label to the
+      // Connect group and keys it by label. Keep in sync with
+      // SOURCE_CODE_FOOTER_LABEL in apps/web/src/lib/marketing-surface.ts.
+      const conflictIndex = marketing.socialLinks.findIndex(
+        (link) => link.label === SOURCE_CODE_FOOTER_LABEL,
+      );
+      if (conflictIndex !== -1) {
+        throw new Error(
+          `web.marketing.socialLinks[${conflictIndex}].label must not be "${SOURCE_CODE_FOOTER_LABEL}" when web.marketing.sourceRepository is declared: the footer appends its own "${SOURCE_CODE_FOOTER_LABEL}" link`,
         );
       }
     }

@@ -1,3 +1,4 @@
+import { TrackedPlanImplementationSchema } from '@canopy/protocol/portal';
 import type {
   ArchivedChatsFile,
   ChatCoreMutation,
@@ -178,6 +179,46 @@ function applySettingsPatch(
     // `false` on Ultra fast), and unrelated patches preserve it.
     next.modelConfig = mergeAgentModelConfig(tab.modelConfig, modelConfig);
   }
+  return reconcilePlanImplementation(tab, next);
+}
+
+/** Deterministic canonical reduction: settlement survives bounded end eviction. */
+function reconcilePlanImplementation(
+  previous: PersistedChatTab,
+  next: PersistedChatTab,
+): PersistedChatTab {
+  const link = next.trackedPlanImplementation;
+  if (!link) return next;
+  if (
+    link === previous.trackedPlanImplementation &&
+    next.trackedPlanId === link.planId &&
+    next.turnEnds === previous.turnEnds
+  )
+    return next;
+  if (!TrackedPlanImplementationSchema.safeParse(link).success)
+    throw new ChatStateInvariantError('Invalid tracked plan implementation');
+  if (next.trackedPlanId !== link.planId) {
+    delete next.trackedPlanImplementation;
+    return next;
+  }
+  const prior = previous.trackedPlanImplementation;
+  if (
+    prior?.planId === link.planId &&
+    prior.userMessageId === link.userMessageId &&
+    prior.revisionNumber === link.revisionNumber &&
+    prior.startedAt === link.startedAt &&
+    prior.outcome
+  ) {
+    next.trackedPlanImplementation = prior;
+    return next;
+  }
+  const end = next.turnEnds?.[link.userMessageId];
+  if (!link.outcome && end)
+    next.trackedPlanImplementation = {
+      ...link,
+      outcome: end.outcome,
+      endedAt: new Date(end.endedAt).toISOString(),
+    };
   return next;
 }
 
@@ -192,8 +233,12 @@ export function applyMutation(
         (tab) => tab.id === mutation.tab.id,
       );
       const tabs = state.tabsFile.tabs.slice();
-      if (existingIndex < 0) tabs.push(mutation.tab);
-      else tabs[existingIndex] = mutation.tab;
+      const nextTab = reconcilePlanImplementation(
+        existingIndex < 0 ? mutation.tab : tabs[existingIndex],
+        { ...mutation.tab },
+      );
+      if (existingIndex < 0) tabs.push(nextTab);
+      else tabs[existingIndex] = nextTab;
       return {
         ...state,
         tabsFile: {

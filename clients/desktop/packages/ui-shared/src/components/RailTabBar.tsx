@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { SegmentedControl } from './SegmentedControl';
 
 export interface RailTabBarTab<TId extends string> {
   id: TId;
@@ -29,9 +30,9 @@ export interface RailTabBarProps<TId extends string> {
 }
 
 /**
- * Top header row used on the activity right rail. Matches canopy's
- * desktop activity panel header: small all-caps tab labels with the active
- * tab in `fg-primary` and inactive tabs in `fg-secondary`.
+ * Top header row of the activity right rail and the plan panel: the panel's
+ * two to four tabs as a `SegmentedControl` with tab semantics, and optional
+ * actions at the end. A single tab draws no control.
  */
 export function RailTabBar<TId extends string>({
   tabs,
@@ -41,36 +42,34 @@ export function RailTabBar<TId extends string>({
   electronDrag = false,
   touchTarget = false,
 }: RailTabBarProps<TId>): JSX.Element {
-  const rowClass = `${electronDrag ? 'electron-drag ' : ''}flex items-center justify-between border-b px-4 py-2`;
-  // `min-h-11 min-w-11` + centering give each tab a ≥44px touch target
-  // in the mobile drawer without changing the text metrics the desktop header
-  // relies on.
-  const buttonClass = `${electronDrag ? 'electron-no-drag ' : ''}${
-    touchTarget
-      ? 'inline-flex min-h-11 min-w-11 items-center justify-center '
-      : ''
-  }focus-ring text-2xs font-medium transition-colors`;
+  const rowClass = `${electronDrag ? 'electron-drag ' : ''}flex items-center justify-between border-b px-3 py-1.5`;
   return (
     <div className={rowClass}>
-      <div className="flex items-center gap-3">
-        {tabs.map((tab) => {
-          const isActive = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={(): void => onTabChange(tab.id)}
-              className={`${buttonClass} ${
-                isActive ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-              }`}
-              aria-pressed={isActive}
-              data-testid={tab.dataTestId}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      {tabs.length < 2 ? (
+        // One view is not a choice: draw no control, but keep its 28px (44px
+        // on touch) so the header keeps its height.
+        <span
+          aria-hidden="true"
+          data-testid="rail-tab-bar-spacer"
+          className={`h-7${touchTarget ? ' pointer-coarse:h-11' : ''}`}
+        />
+      ) : (
+        <div className={electronDrag ? 'electron-no-drag' : undefined}>
+          <SegmentedControl
+            value={activeTab}
+            options={tabs.map((tab) => ({
+              value: tab.id,
+              label: tab.label,
+              dataTestId: tab.dataTestId,
+            }))}
+            onChange={onTabChange}
+            label="Panel views"
+            semantics="tabs"
+            width="content"
+            touchTarget={touchTarget}
+          />
+        </div>
+      )}
       {actions != null && (
         <div className="flex items-center gap-1.5">{actions}</div>
       )}

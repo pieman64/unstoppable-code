@@ -69,7 +69,7 @@ export const HeaderActionDefaultToneContext =
   createContext<HeaderActionButtonTone>('accent');
 
 const BASE_CLASS_NAME =
-  "electron-no-drag focus-ring relative inline-flex h-7 shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-xs font-normal transition-[opacity,transform] duration-150 before:absolute before:inset-x-0 before:content-[''] active:scale-97 disabled:pointer-events-none";
+  "electron-no-drag focus-ring relative inline-flex h-7 shrink-0 select-none items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-xs font-normal transition-[opacity,transform,scale] duration-150 before:absolute before:inset-x-0 before:content-[''] active:scale-97 disabled:pointer-events-none";
 
 const TONE_CLASS_NAMES: Record<HeaderActionButtonTone, string> = {
   accent: 'bg-transparent fg-accent enabled:hover:bg-accent-subtle',

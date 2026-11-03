@@ -74,6 +74,7 @@ import { ipcRenderer, remoteWindowContext } from './ipc-router';
 import { createChatStateApi } from './api/chat-state-api';
 import { createChatEventSubscription } from './api/chat-event-api';
 import { createCodexSpeedApi } from './api/codex-speed-api';
+import { createBackgroundServiceApi } from './api/background-service-api';
 import { createPanelLayoutApi } from './api/panel-layout-api';
 import { createAccountOrganizationSettingsApi } from './api/account-organization-settings-api';
 import { createAuthenticatedPortalApi } from './api/authenticated-portal-api';
@@ -4372,6 +4373,7 @@ const canopyApi: CanopyApi = {
       };
     },
   },
+  backgroundService: createBackgroundServiceApi(ipcRenderer),
   voice: {
     isSupported: () => ipcRenderer.invoke(IPC_CHANNELS.voiceIsSupported),
     recheckSupported: () => ipcRenderer.invoke(IPC_CHANNELS.voiceResetSupport),

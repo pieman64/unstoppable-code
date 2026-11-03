@@ -174,3 +174,106 @@ describe('worktree discard store (CAN-5336)', () => {
     },
   );
 });
+
+describe('worktree discard store, retained archives (CAN-5338)', () => {
+  const RETAINED: WorktreeDiscardDescription = {
+    ...DISCARDABLE,
+    worktreeId: 'archived',
+    targets: [
+      {
+        kind: 'retained-archive',
+        path: '/data/a/archived-containers/archived',
+        identity: '1:2:3',
+        identityVerified: false,
+        reason: 'source-gone',
+      },
+    ],
+  };
+
+  function recordingClient(described: WorktreeDiscardDescription): {
+    client: CanopyClient;
+    calls: { name: CommandName; args: unknown }[];
+  } {
+    const calls: { name: CommandName; args: unknown }[] = [];
+    const { client } = clientWithDiscard(Promise.resolve(DISCARDED));
+    function command<K extends CommandName>(
+      name: K,
+      args: CommandMap[K]['args'],
+    ): Promise<CommandMap[K]['result']>;
+    function command(name: CommandName, args: unknown): Promise<unknown> {
+      calls.push({ name, args });
+      if (name === 'worktree.discard.describe')
+        return Promise.resolve(described);
+      if (name === 'worktree.discard') return Promise.resolve(DISCARDED);
+      return Promise.reject(new Error(`Unexpected command: ${name}`));
+    }
+    return { client: { ...client, command }, calls };
+  }
+
+  const DISCARDED: WorktreeDiscardResult = {
+    status: 'discarded',
+    removed: ['retained-archive'],
+    gitCleanup: [],
+    warnings: [],
+  };
+
+  it('describes a retained offer with the opt-in, discards with it, and reports the archive', async () => {
+    const { client, calls } = recordingClient(RETAINED);
+    const store = worktreeDiscardStoreFor(client);
+    await expect(
+      store.getState().open({
+        workspaceId: 'ws',
+        worktreeId: 'archived',
+        worktreeName: 'Archived',
+        message: "Couldn't permanently delete this item",
+        retainedArchives: true,
+        retry: jest.fn(),
+      }),
+    ).resolves.toBe(true);
+    await expect(store.getState().discard()).resolves.toEqual({
+      warnings: [],
+      retainedArchive: true,
+    });
+    expect(calls).toEqual([
+      {
+        name: 'worktree.discard.describe',
+        args: {
+          workspaceId: 'ws',
+          worktreeId: 'archived',
+          retainedArchives: true,
+        },
+      },
+      {
+        name: 'worktree.discard',
+        args: {
+          workspaceId: 'ws',
+          worktreeId: 'archived',
+          confirmation: 'token-1',
+          retainedArchives: true,
+        },
+      },
+    ]);
+  });
+
+  it('sends no opt-in for an ordinary offer', async () => {
+    const { client, calls } = recordingClient({
+      ...DISCARDABLE,
+      worktreeId: 'live',
+    });
+    const store = worktreeDiscardStoreFor(client);
+    await store.getState().open({
+      workspaceId: 'ws',
+      worktreeId: 'live',
+      worktreeName: 'live',
+      message: 'refused',
+      retry: jest.fn(),
+    });
+    await expect(store.getState().discard()).resolves.toEqual({
+      warnings: [],
+    });
+    expect(calls.map((call) => call.args)).toEqual([
+      { workspaceId: 'ws', worktreeId: 'live' },
+      { workspaceId: 'ws', worktreeId: 'live', confirmation: 'token-1' },
+    ]);
+  });
+});

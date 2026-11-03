@@ -28,6 +28,8 @@ import {
   BusyLabel,
   DialogModal,
   LoadingIndicator,
+  ErrorBanner,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   Badge,
@@ -115,11 +117,9 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unable to create folder.';
 }
 
-function getUpdateErrorMessage(error: unknown): string {
-  return error instanceof Error
-    ? error.message
-    : `${brandText.appName} could not start the selected update.`;
-}
+// Settings never show the update server's error text.
+const VERSION_LIST_ERROR = "Couldn't load versions. Try again.";
+const TARGET_UPDATE_ERROR = "Couldn't start this update. Try again.";
 
 function waitForNextPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -192,32 +192,32 @@ function DependenciesSection({
     <SettingsSection title="Dependencies" dataTestId="settings-dependencies">
       <SettingsGroup>
         <DependencyRow
-          icon={<ClaudeIcon size={16} aria-hidden />}
+          icon={<ClaudeIcon size="md" aria-hidden />}
           label="Claude CLI"
           version={dependencyVersions?.claudeCli}
         />
         <DependencyRow
-          icon={<ClaudeIcon size={16} aria-hidden />}
+          icon={<ClaudeIcon size="md" aria-hidden />}
           label="Claude SDK"
           version={dependencyVersions?.claudeSdk}
         />
         <DependencyRow
-          icon={<CodexIcon size={16} aria-hidden />}
+          icon={<CodexIcon size="md" aria-hidden />}
           label="Codex CLI"
           version={dependencyVersions?.codexCli}
         />
         <DependencyRow
-          icon={<GitHubIcon size={16} aria-hidden />}
+          icon={<GitHubIcon size="md" aria-hidden />}
           label="GitHub CLI"
           version={dependencyVersions?.ghCli}
         />
         <DependencyRow
-          icon={<GitHubIcon size={16} aria-hidden />}
+          icon={<GitHubIcon size="md" aria-hidden />}
           label="Octokit"
           version={dependencyVersions?.octokit}
         />
         <DependencyRow
-          icon={<TerminalIcon size={16} aria-hidden />}
+          icon={<TerminalIcon size="sm" aria-hidden />}
           label="RTK CLI"
           version={dependencyVersions?.rtkCli}
         />
@@ -421,8 +421,8 @@ export function CanopyTab(): JSX.Element {
         options?.append ? [...current, ...result.items] : result.items,
       );
       setVersionCursor(result.nextCursor);
-    } catch (error) {
-      setVersionError(getUpdateErrorMessage(error));
+    } catch {
+      setVersionError(VERSION_LIST_ERROR);
     } finally {
       setVersionLoading(false);
     }
@@ -441,8 +441,8 @@ export function CanopyTab(): JSX.Element {
       await window.api.update.checkForVersion({ tag: version.tag });
       setVersionPickerOpen(false);
       setSelectedDowngrade(null);
-    } catch (error) {
-      setVersionError(getUpdateErrorMessage(error));
+    } catch {
+      setVersionError(TARGET_UPDATE_ERROR);
     } finally {
       setTargetUpdatePending(false);
     }
@@ -517,21 +517,11 @@ export function CanopyTab(): JSX.Element {
           data-testid="settings-data-dir-fallback-notice"
           title="Using an existing data folder from a previous install."
           detail={
-            <>
-              <p>
-                Switching creates an empty primary data folder and restarts{' '}
-                {brandText.appName}. Existing projects are not moved. The
-                restart lets {brandText.appName} pick up the new folder.
-              </p>
-              {dataDirError && (
-                <p
-                  className="mt-1 fg-destructive"
-                  data-testid="settings-data-dir-error"
-                >
-                  {dataDirError}
-                </p>
-              )}
-            </>
+            <p>
+              Switching creates an empty primary data folder and restarts{' '}
+              {brandText.appName}. Existing projects are not moved. The restart
+              lets {brandText.appName} pick up the new folder.
+            </p>
           }
           actions={
             <NoticeButton
@@ -551,6 +541,17 @@ export function CanopyTab(): JSX.Element {
           because the primary folder is not present.
         </Notice>
       )}
+
+      <ErrorBanner
+        className=""
+        testId="settings-data-dir-error"
+        error={
+          dataDirError
+            ? "Couldn't create the primary data folder. Try again."
+            : null
+        }
+        {...(dataDirError ? { details: dataDirError } : {})}
+      />
 
       {dataDirMessage && (
         <Notice
@@ -580,8 +581,7 @@ export function CanopyTab(): JSX.Element {
             description={
               <>
                 Bring projects and chats from Claude Code, Claude Desktop, and
-                Codex into {brandText.appName}. Source folders stay where they
-                are. {CODE_CHAT_DESTINATION_NOTE}
+                Codex into {brandText.appName}. {CODE_CHAT_DESTINATION_NOTE}
               </>
             }
             control={
@@ -687,7 +687,7 @@ export function CanopyTab(): JSX.Element {
           overlayClassName="z-modal"
         >
           <div
-            className="space-y-4 px-5 pb-5"
+            className="space-y-4"
             data-testid="settings-update-version-picker"
           >
             <form
@@ -716,9 +716,7 @@ export function CanopyTab(): JSX.Element {
               </Button>
             </form>
 
-            {versionError && (
-              <p className="text-s fg-destructive">{versionError}</p>
-            )}
+            <ErrorBanner error={versionError} className="" />
 
             <div
               className={`max-h-80 overflow-y-auto rounded-lg p-1 ${HAIRLINE_INSET_RING_CLASS} ring-line-base`}
@@ -851,11 +849,13 @@ export function CanopyTab(): JSX.Element {
             )}
 
             {cliStatus?.state === 'foreign-symlink' && (
-              <p className="text-xs fg-destructive">
-                Existing target:{' '}
-                <code className="break-all font-mono fg-primary">
-                  {cliStatus.symlinkTarget ?? 'unknown'}
-                </code>
+              <p className="text-xs">
+                <StatusLabel>
+                  Existing target:{' '}
+                  <code className="break-all font-mono fg-primary">
+                    {cliStatus.symlinkTarget ?? 'unknown'}
+                  </code>
+                </StatusLabel>
               </p>
             )}
 
@@ -868,12 +868,14 @@ export function CanopyTab(): JSX.Element {
 
             {cliMessage && (
               <p
-                className={`text-xs ${
-                  isCliSuccessMessage ? 'fg-secondary' : 'fg-destructive'
-                }`}
+                className="text-xs fg-secondary"
                 data-testid="settings-shell-integration-message"
               >
-                {cliMessage}
+                {isCliSuccessMessage ? (
+                  cliMessage
+                ) : (
+                  <StatusLabel>{cliMessage}</StatusLabel>
+                )}
               </p>
             )}
           </SettingsRow>

@@ -104,6 +104,17 @@ import {
   type CoworkSettingsUpdateOutcome,
 } from '../cowork-workspace-crud';
 import { isRecord } from '../type-guards';
+import * as workspacePersistence from '../workspace-persistence';
+import {
+  __pluginDefaultsHandOffsForTests,
+  __setInlinePluginDefaultsReconcileBoundForTests,
+} from '../workspace-plugin-defaults';
+import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+import {
+  commitsLandingOnEveryPass,
+  settlesWithin,
+  stalledManifestCommit,
+} from './fixtures/plugin-defaults-reconcile-bound';
 
 jest.setTimeout(90_000);
 let dir: string;
@@ -1185,5 +1196,114 @@ describe('CW0/CW1 compatibility: updateCoworkWorkspace stays unkeyed', () => {
       receiptless('core.workspace.fork', [manifestPath()]),
     ]);
     expect(cowork().startPage).toEqual({ kind: 'file', path: 'README.md' });
+  });
+});
+
+describe('the replay reconcile waits within a bound, then hands off to the background (CAN-4409 D1)', () => {
+  const BOUND = { passes: 3, deadlineMs: 250 };
+  const PRESET = normalizePluginSelections(PRESET_SELECTIONS);
+  const request = { defaultPresetId: 'preset', idempotencyKey: 'key' };
+
+  beforeEach(() => {
+    __setInlinePluginDefaultsReconcileBoundForTests(BOUND);
+  });
+  afterEach(async () => {
+    __setInlinePluginDefaultsReconcileBoundForTests(undefined);
+    await settleDetachedWork();
+  });
+
+  /** A lost keyed decision, then a read that cached the old layer. */
+  async function staleAfterLostResponse(): Promise<number> {
+    loseNextResponse();
+    await expect(update(request)).rejects.toThrow('response lost');
+    cacheStaleDefaults(undefined);
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(undefined),
+    );
+    return sessionRevision();
+  }
+
+  it('a replay behind a commit that never settles returns within the bound; chat reads serve the manifest and the revision advances once', async () => {
+    loseNextResponse();
+    await expect(update(request)).rejects.toThrow('response lost');
+    const stalled = await stalledManifestCommit('one');
+    cacheStaleDefaults(undefined);
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(undefined),
+    );
+    const stale = sessionRevision();
+
+    await expect(settlesWithin(update(request))).resolves.toEqual(OUTCOME);
+    expect(sessionRevision()).toBe(stale);
+    expect(await cachedDefaults()).toEqual(PRESET);
+    // The other refreshes still ran.
+    expect(schedulePortalStructuralSync).toHaveBeenCalled();
+    expect(notifyPortalStructureChanged).toHaveBeenCalled();
+
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+    for (let replay = 0; replay < 2; replay += 1) {
+      await expect(update(request)).resolves.toEqual(OUTCOME);
+      await settleDetachedWork();
+      expect(await cachedDefaults()).toEqual(PRESET);
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+  });
+
+  it('repeated replays behind a commit that never settles keep one hand-off, and one background read decides them all', async () => {
+    const stale = await staleAfterLostResponse();
+    const stalled = await stalledManifestCommit('one');
+    for (let replay = 0; replay < 3; replay += 1)
+      await expect(settlesWithin(update(request))).resolves.toEqual(OUTCOME);
+    const retained = __pluginDefaultsHandOffsForTests('one');
+
+    const loads = jest.spyOn(
+      workspacePersistence,
+      'readWorkspaceConfigDetailed',
+    );
+    await stalled.release();
+    await settleDetachedWork();
+    expect(retained).toBe(1);
+    expect(loads).toHaveBeenCalledTimes(1);
+    expect(__pluginDefaultsHandOffsForTests('one')).toBe(0);
+    expect(sessionRevision()).toBe(stale + 1);
+    expect(await cachedDefaults()).toEqual(PRESET);
+  });
+
+  it('a replay hand-off left undecided by an unreadable manifest is retried once a later replay decides inline, and the layer settles', async () => {
+    const stale = await staleAfterLostResponse();
+    const stalled = await stalledManifestCommit('one');
+    await expect(settlesWithin(update(request))).resolves.toEqual(OUTCOME);
+    const readable = readFileSync(manifestPath(), 'utf8');
+    writeFileSync(manifestPath(), '{ not json');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(__pluginDefaultsHandOffsForTests('one')).toBe(1);
+    writeFileSync(manifestPath(), readable);
+
+    await expect(update(request)).resolves.toEqual(OUTCOME);
+    await settleDetachedWork();
+    expect(__pluginDefaultsHandOffsForTests('one')).toBe(0);
+    expect(sessionRevision()).toBe(stale + 1);
+    expect(await cachedDefaults()).toEqual(PRESET);
+    const loads = jest.spyOn(
+      workspacePersistence,
+      'readWorkspaceConfigDetailed',
+    );
+    expect(await cachedDefaults()).toEqual(PRESET);
+    expect(loads).not.toHaveBeenCalled();
+  });
+
+  it('a replay while commits keep landing stops at the pass bound, and the background advances the revision once', async () => {
+    const stale = await staleAfterLostResponse();
+    const commits = commitsLandingOnEveryPass();
+    await expect(settlesWithin(update(request))).resolves.toEqual(OUTCOME);
+    expect(commits.passes()).toBe(BOUND.passes);
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(PRESET);
+    expect(sessionRevision()).toBe(stale + 1);
+    await update(request);
+    expect(sessionRevision()).toBe(stale + 1);
   });
 });

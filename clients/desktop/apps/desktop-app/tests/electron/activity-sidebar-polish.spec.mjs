@@ -883,15 +883,15 @@ test('empty Memory stays hidden and updates when memory files change', async () 
     await expect(card).toBeHidden();
     await electronApp.evaluate(() => globalThis.releaseInitialMemory());
     await expect(card.getByRole('alert')).toBeVisible();
-    // Recover behind a gate, so no list (Retry's or an incidental refresh)
-    // can succeed and clear the alert before Retry is clicked.
+    // Recover behind a gate, so no list (Try again's or an incidental
+    // refresh) can succeed and clear the alert before Try again is clicked.
     await electronApp.evaluate(() => {
       globalThis.retryGate = new Promise((resolve) => {
         globalThis.releaseRetry = resolve;
       });
       globalThis.memoryUnavailable = false;
     });
-    await card.getByRole('button', { name: 'Retry', exact: true }).click();
+    await card.getByRole('button', { name: 'Try again', exact: true }).click();
     await electronApp.evaluate(() => globalThis.releaseRetry());
     await expect(card).toBeHidden();
     await expect(card.getByPlaceholder('Search memories')).toHaveCount(0);

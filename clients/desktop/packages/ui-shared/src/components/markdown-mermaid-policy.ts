@@ -209,11 +209,15 @@ function isColor(value: string): boolean {
   );
 }
 
+const DECLARATION = /^[ \t]*([A-Za-z-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/;
+
+const isDashLength = (value: string): boolean => isNumber(value, 10_000);
+const isDashPattern = (value: string): boolean =>
+  value.split(/[ \t]+/).every(isDashLength);
+
 /** The resource-free styling Mermaid diagrams may carry into rendering. */
 function isAllowedDeclaration(declaration: string): boolean {
-  const match = /^[ \t]*([A-Za-z-]+)[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(
-    declaration,
-  );
+  const match = DECLARATION.exec(declaration);
   if (!match) return false;
   const [, property, value] = match;
   switch (property.toLowerCase()) {
@@ -224,10 +228,7 @@ function isAllowedDeclaration(declaration: string): boolean {
     case 'stroke-width':
       return isNumber(value, 10_000, 'px') || isNumber(value, 10_000);
     case 'stroke-dasharray':
-      return (
-        value.toLowerCase() === 'none' ||
-        value.split(/[ \t]+/).every((part) => isNumber(part, 10_000))
-      );
+      return value.toLowerCase() === 'none' || isDashPattern(value);
     case 'font-weight':
       return /^(?:normal|bold|bolder|lighter|[1-9]00)$/i.test(value);
     default:
@@ -254,6 +255,34 @@ function splitDeclarations(text: string): string[] | null {
   if (depth !== 0) return null;
   declarations.push(text.slice(start));
   return declarations;
+}
+
+/**
+ * Respell a valid numeric dash pattern split at commas (`stroke-dasharray:5,5`)
+ * with spaces. Merging stops at the first fragment that is not a dash length,
+ * which the filter then removes together with the pattern it follows.
+ */
+function joinDashPatterns(declarations: readonly string[]): string[] {
+  const joined: string[] = [];
+  for (let index = 0; index < declarations.length; index += 1) {
+    let declaration = declarations[index];
+    const match = DECLARATION.exec(declaration);
+    if (
+      match &&
+      match[1].toLowerCase() === 'stroke-dasharray' &&
+      isDashPattern(match[2])
+    ) {
+      while (index + 1 < declarations.length) {
+        // A property, blank or non-length fragment ends the pattern.
+        const next = declarations[index + 1].trim();
+        if (!isDashLength(next)) break;
+        declaration = `${declaration.replace(/[ \t]+$/, '')} ${next}`;
+        index += 1;
+      }
+    }
+    joined.push(declaration);
+  }
+  return joined;
 }
 
 const STYLING_TARGET: Readonly<Record<string, RegExp>> = {
@@ -283,12 +312,13 @@ function filterStylingStatement(statement: string): FilteredText | null {
   const [, indent, keyword, beforeTarget, target, beforeStyles, styles] = match;
   const targetPattern = STYLING_TARGET[keyword.toLowerCase()];
   if (!targetPattern) return null;
-  const declarations =
+  const fragments =
     target !== undefined && styles && targetPattern.test(target)
       ? splitDeclarations(styles)
       : null;
+  const declarations = fragments && joinDashPatterns(fragments);
   // A fragment without a property continues the previous value (for example
-  // `stroke-dasharray:5,5`), so neither half is kept.
+  // `stroke-width:2,5`), so neither half is kept.
   const kept =
     declarations?.filter((declaration, index) => {
       const next = declarations[index + 1];
@@ -297,13 +327,14 @@ function filterStylingStatement(statement: string): FilteredText | null {
         (next === undefined || next.includes(':') || !next.trim())
       );
     }) ?? [];
-  if (declarations && kept.length === declarations.length) {
+  const dropped = !declarations || kept.length !== declarations.length;
+  if (!dropped && kept.length === fragments?.length) {
     return { text: statement, dropped: false };
   }
   if (kept.length === 0) return { text: '', dropped: true };
   return {
     text: `${indent}${keyword}${beforeTarget}${target}${beforeStyles}${kept.join(',')}${terminator}`,
-    dropped: true,
+    dropped,
   };
 }
 
@@ -516,7 +547,10 @@ function filterStylingLine(
   return { text: line, dropped: false };
 }
 
-/** Drop unsupported resource-free styling; `null` refuses the diagram. */
+/**
+ * Drop unsupported resource-free styling and respell comma dash patterns;
+ * `null` refuses the diagram.
+ */
 function filterMermaidStyling(
   source: string,
   labels: LabelSyntax,
@@ -533,15 +567,17 @@ function filterMermaidStyling(
     edgeEnd: null,
   };
   let dropped = false;
+  let changed = false;
   for (let index = 0; index < parts.length; index += 2) {
     const line = filterStylingLine(parts[index], labels, state);
     if (!line) return null;
+    changed ||= line.text !== parts[index];
     parts[index] = line.text;
     dropped ||= line.dropped;
   }
   return state.edgeEnd
     ? null
-    : { text: dropped ? parts.join('') : source, dropped };
+    : { text: changed ? parts.join('') : source, dropped };
 }
 
 export function planMermaidRender(source: string): MermaidRenderPlan {
@@ -591,7 +627,7 @@ export function planMermaidRender(source: string): MermaidRenderPlan {
     piped: family === 'flowchart' || family === 'graph',
     stateDiagram: family === 'stateDiagram' || family === 'stateDiagram-v2',
   });
-  if (!styled || (styled.dropped && usesRefusedFeature(styled.text))) {
+  if (!styled || (styled.text !== source && usesRefusedFeature(styled.text))) {
     return refuse(UNSUPPORTED_ISSUE);
   }
   const prepared = prepareMermaidSource(styled.text);

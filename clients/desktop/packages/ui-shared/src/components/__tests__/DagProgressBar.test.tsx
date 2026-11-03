@@ -234,3 +234,49 @@ describe('DagProgressBar overflow measurement', () => {
     }
   });
 });
+
+describe('DagProgressBar job card', () => {
+  it('shows a job card on the shared hover tooltip', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <DagProgressBar
+            tiers={[['build']]}
+            jobs={{
+              build: {
+                jobId: 'build',
+                name: 'Build',
+                status: 'success',
+                stepProgress: '2/5',
+              },
+            }}
+          />,
+        );
+      });
+      const dot = container.querySelector<HTMLElement>('[data-job-id="build"]');
+      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+      act(() => {
+        dot?.parentElement?.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+      });
+      const card = document.body.querySelector(
+        '[data-testid="dag-job-detail-build"]',
+      );
+      expect(card?.getAttribute('role')).toBe('tooltip');
+      expect(container.contains(card)).toBe(false);
+      expect(card?.textContent).toContain('Build');
+      expect(card?.textContent).toContain('2/5');
+      expect(dot?.getAttribute('aria-describedby')).toBe(card?.id);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
+  });
+});

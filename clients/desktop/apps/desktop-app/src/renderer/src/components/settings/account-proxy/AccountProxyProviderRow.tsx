@@ -60,7 +60,7 @@ export function AccountProxyProviderRow(): JSX.Element | null {
       dataTestId="settings-account-proxy-provider"
       label={
         <span className="inline-flex items-center gap-2">
-          <GlobeIcon size={16} aria-hidden />
+          <GlobeIcon size="sm" aria-hidden />
           Multi-account proxy
           {connected ? (
             <ProviderStatusDot tone={status.error ? 'failed' : 'connected'} />

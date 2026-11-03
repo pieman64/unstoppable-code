@@ -6,7 +6,7 @@ import type {
   WorktreeDiscardRefusal,
   WorktreeDiscardResult,
 } from '@canopy/protocol/portal/worktree-discard';
-import { failureText } from './discard-store';
+import { describesRetainedArchive, failureText } from './discard-store';
 import type { ProjectDeletionDiscardOffer } from './project-deletion-offer';
 
 /**
@@ -70,6 +70,8 @@ export interface ProjectDeletionItemDiscarded {
   readonly workspaceId: string;
   readonly worktreeId: string;
   readonly warnings: readonly string[];
+  /** CAN-5338: a retained archive, not a listed row. */
+  readonly retainedArchive?: true;
   readonly removedTemporaryWorkspaceId?: string;
 }
 
@@ -201,6 +203,7 @@ function createProjectDeletionDiscardStore(
         const fresh = await client
           .command('workspace.delete.discard.describe', {
             workspaceId: offer.workspaceId,
+            retainedArchives: true,
           })
           .catch(() => undefined);
         if (
@@ -239,12 +242,14 @@ function createProjectDeletionDiscardStore(
       if (!latest || finished(latest)) return 'next';
       const { workspaceId } = view.offer;
       setRow(current, latest.worktreeId, { progress: 'discarding' });
+      const retainedArchive = describesRetainedArchive(latest.description);
       let result: WorktreeDiscardResult;
       try {
         result = await client.command('worktree.discard', {
           workspaceId,
           worktreeId: latest.worktreeId,
           confirmation: latest.description.confirmation,
+          ...(retainedArchive ? { retainedArchives: true } : {}),
         });
       } catch (error) {
         setRow(current, latest.worktreeId, { progress: 'stopped' });
@@ -257,6 +262,7 @@ function createProjectDeletionDiscardStore(
           workspaceId,
           worktreeId: latest.worktreeId,
           warnings: result.warnings,
+          ...(retainedArchive ? { retainedArchive: true } : {}),
           ...(result.removedTemporaryWorkspaceId
             ? {
                 removedTemporaryWorkspaceId: result.removedTemporaryWorkspaceId,
@@ -330,9 +336,11 @@ function createProjectDeletionDiscardStore(
         let description = offer.description;
         if (!description) {
           set({ view: { phase: 'describing', offer } });
+          // CAN-5338: an older host ignores the opt-in and refuses as before.
           description = await client
             .command('workspace.delete.discard.describe', {
               workspaceId: offer.workspaceId,
+              retainedArchives: true,
             })
             .catch(() => undefined);
           if (current !== generation) return false;

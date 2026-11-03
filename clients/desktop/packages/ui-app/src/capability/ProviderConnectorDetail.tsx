@@ -12,6 +12,7 @@ import {
   Button,
   PluginConnectionRouteSection,
   RefreshSpinner,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -114,9 +115,7 @@ export function ProviderConnectorDetail({
 
   const providerRows =
     providers.length === 0 ? (
-      <p className="text-sm fg-secondary">
-        No provider offers this connector yet.
-      </p>
+      <EmptyStateRow title="No provider offers this connector yet" />
     ) : (
       <ul className="divide-y overflow-hidden rounded-lg border">
         {providers.map((entry) => (

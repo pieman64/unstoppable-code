@@ -1,5 +1,4 @@
 import { useCallback, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import {
   PIPELINE_NOW_OWNED_ERROR_CODE,
   type PipelineData,
@@ -220,39 +219,33 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
     [target, watcher],
   );
 
-  const dispatchPipelineModal = workflowsRun
-    ? createPortal(
-        <WorkflowsRunPipelineModal
-          currentTarget={workflowsRun.currentTarget}
-          initialPipelineId={workflowsRun.initialPipelineId}
-          onClose={closeDispatchModal}
-          onRun={handleDispatchRun}
-          isRunning={dispatchRunning}
-          runError={dispatchRunError}
-          onClearError={clearDispatchError}
-          reloadToken={reloadToken}
-          watcherRecipientGroups={watcher.recipientGroups}
-          onWatcherSelectionChange={watcher.onWatcherSelectionChange}
-        />,
-        document.body,
-      )
-    : target
-      ? createPortal(
-          <DispatchPipelineModal
-            projectId={target.projectId}
-            worktreeId={target.worktreeId}
-            initialPipelineId={target.initialPipelineId}
-            onClose={closeDispatchModal}
-            onRun={handleDispatchRun}
-            isRunning={dispatchRunning}
-            runError={dispatchRunError}
-            onClearError={clearDispatchError}
-            watcherRecipientGroups={watcher.recipientGroups}
-            onWatcherSelectionChange={watcher.onWatcherSelectionChange}
-          />,
-          document.body,
-        )
-      : null;
+  const dispatchPipelineModal = workflowsRun ? (
+    <WorkflowsRunPipelineModal
+      currentTarget={workflowsRun.currentTarget}
+      initialPipelineId={workflowsRun.initialPipelineId}
+      onClose={closeDispatchModal}
+      onRun={handleDispatchRun}
+      isRunning={dispatchRunning}
+      runError={dispatchRunError}
+      onClearError={clearDispatchError}
+      reloadToken={reloadToken}
+      watcherRecipientGroups={watcher.recipientGroups}
+      onWatcherSelectionChange={watcher.onWatcherSelectionChange}
+    />
+  ) : target ? (
+    <DispatchPipelineModal
+      projectId={target.projectId}
+      worktreeId={target.worktreeId}
+      initialPipelineId={target.initialPipelineId}
+      onClose={closeDispatchModal}
+      onRun={handleDispatchRun}
+      isRunning={dispatchRunning}
+      runError={dispatchRunError}
+      onClearError={clearDispatchError}
+      watcherRecipientGroups={watcher.recipientGroups}
+      onWatcherSelectionChange={watcher.onWatcherSelectionChange}
+    />
+  ) : null;
 
   return {
     openDispatchPipelineModal,

@@ -57,6 +57,7 @@ import {
   type FileTreeRootsResponse,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
+import type { BackgroundServiceUnreachableReason } from '@canopy/desktop-shared/lib/background-service-status';
 import {
   recordFilesRouteOutcome,
   recordFilesRouteSelected,
@@ -70,6 +71,7 @@ import {
   type ReadRoutePlatform,
 } from './daemon-read-route-guard';
 import { translateFilesServiceError } from './worker-filesystem-adapter';
+import { daemonUnreachableReason } from './electron-daemon-connection';
 import type {
   CallerLifetimeSender,
   ElectronDaemonCallerLifetime,
@@ -82,8 +84,13 @@ import type {
  * Only the Files IPC handlers mark a request as routable; every other caller
  * of the same operations keeps the direct desktop reader. The backend is
  * chosen once, before any daemon contact. A request selected for the daemon
- * never falls back: every failure is returned typed, and the direct reader is
- * not called for it.
+ * falls back to the direct reader only when the daemon can't be reached: its
+ * data root can't be prepared, its connection can't be set up (a tagged
+ * `get` failure), or the attempt's own connection closed under it (CAN-5541).
+ * Every refusal from a reached daemon, and every check before contact, is
+ * returned typed with no direct read. Search walks pin their backend before
+ * their first page and never fall back mid-walk; a walk selected while the
+ * daemon is latched unreachable reads directly from the start (q-6, CAN-5556).
  */
 
 /**
@@ -103,11 +110,18 @@ export type FilesRouteObservedOperation = DaemonFilesOperation;
 
 /**
  * Production selection: the reads that may leave with a plan. File, search
- * and link stay direct until CAN-4729 widens it; a new read never becomes
- * selectable by accident.
+ * and link joined roots and directory in CAN-5556; the read-route table still
+ * keeps them direct on Windows (CAN-4732). Listed literally, so a new read
+ * never becomes selectable by accident.
  */
 export const DAEMON_FILES_PRODUCTION_SELECTION: ReadonlySet<DaemonFilesOperation> =
-  new Set<DaemonFilesOperation>(['roots', 'directory']);
+  new Set<DaemonFilesOperation>([
+    'roots',
+    'directory',
+    'file',
+    'search',
+    'link',
+  ]);
 
 export interface DaemonFilesRouteSender extends CallerLifetimeSender {
   readonly id: number;
@@ -119,6 +133,8 @@ export interface DaemonFilesRouteRequest {
 }
 
 export interface DaemonFilesQueryClient {
+  /** Aborts when this connection closes, whatever closed it. */
+  readonly signal: AbortSignal;
   query(
     name: 'worker.filesystem.roots.list',
     params: WorkerFilesystemRootsListParams,
@@ -158,6 +174,19 @@ export interface DaemonFilesConnections {
   ): Promise<DaemonFilesSession>;
 }
 
+/** Main's background service record, as the Files reads consume it. */
+export interface DaemonFilesReachability {
+  /** Selected reads skip the daemon and read in-process. */
+  readonly isLatched: () => boolean;
+  /** Called before the direct reader answers a selected read instead. */
+  readonly noteFallback: (reason: BackgroundServiceUnreachableReason) => void;
+}
+
+const UNOBSERVED_REACHABILITY: DaemonFilesReachability = {
+  isLatched: () => false,
+  noteFallback: () => undefined,
+};
+
 export interface DaemonFilesHostContext {
   /** The verified local authority the daemon serves. */
   readonly authorityId: string;
@@ -186,6 +215,8 @@ export interface DaemonFilesRouteOptions {
   readonly createScopeResolver?: (
     context: DaemonFilesHostContext,
   ) => Promise<FilesystemScopeResolver>;
+  /** Omitted: never latched, and fallbacks report to no one. */
+  readonly reachability?: DaemonFilesReachability;
   /** Failure bound for one daemon query, not a performance budget. */
   readonly queryDeadlineMs?: number;
   /** Whose entry-name rules a listing must satisfy; defaults to this host's. */
@@ -448,12 +479,18 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 type FilesRouteEvidenceEvent = {
   operation: FilesRouteObservedOperation;
+  /** The backend selected at the start; `fallback` ends a daemon read served directly. */
   backend: 'direct' | 'daemon';
   senderId: number;
   generation: number;
   request: number;
-  phase: 'started' | 'success' | 'failed';
+  phase: 'started' | 'success' | 'fallback' | 'failed';
 };
+
+/** One observed read; set when the direct reader answered a daemon selection. */
+interface ObservedRead {
+  fellBack: boolean;
+}
 
 export interface FilesRouteEvidenceSnapshot extends ReadEvidenceSnapshot<FilesRouteEvidenceEvent> {
   enabled: boolean;
@@ -476,13 +513,14 @@ export function createDaemonFilesRoute(
       ? options.platform
       : resolveReadRoutePlatform();
   const selectable = options.selectable ?? DAEMON_FILES_PRODUCTION_SELECTION;
+  const reachability = options.reachability ?? UNOBSERVED_REACHABILITY;
   const evidence = createRouteEvidence();
   let requestSequence = 0;
   const observeRead = async <T>(
     operation: FilesRouteObservedOperation,
     backend: 'direct' | 'daemon',
     senderId: number,
-    run: () => Promise<T>,
+    run: (read: ObservedRead) => Promise<T>,
   ): Promise<T> => {
     const event = {
       operation,
@@ -491,10 +529,14 @@ export function createDaemonFilesRoute(
       generation,
       request: ++requestSequence,
     };
+    const read: ObservedRead = { fellBack: false };
     evidence.record({ ...event, phase: 'started' });
     try {
-      const result = await run();
-      evidence.record({ ...event, phase: 'success' });
+      const result = await run(read);
+      evidence.record({
+        ...event,
+        phase: read.fellBack ? 'fallback' : 'success',
+      });
       return result;
     } catch (error) {
       evidence.record({ ...event, phase: 'failed' });
@@ -626,8 +668,10 @@ export function createDaemonFilesRoute(
     isRoutable: () => boolean,
     direct: () => Promise<Result>,
     startedAt = generation,
+    /** A fallback: the request already counted its `daemon` selection. */
+    selected = false,
   ): Promise<Result> => {
-    recordFilesRouteSelected(operation, 'direct');
+    if (!selected) recordFilesRouteSelected(operation, 'direct');
     const discardIfFlipped = (): void => {
       if (generation === startedAt || !isRoutable()) return;
       recordFilesRouteOutcome(operation, 'direct.discarded');
@@ -643,6 +687,8 @@ export function createDaemonFilesRoute(
     readonly generation: number;
     /** `owner` is the requesting document at the start; its reload ends the walk. */
     readonly daemon: { plan: DaemonPlan; owner: AbortSignal } | null;
+    /** Selected while latched: every page reads directly, counted as bypassed. */
+    readonly bypassed: boolean;
   }
   const searchWalks = new WeakMap<DaemonFilesSearchWalk, SearchWalkPin>();
   const documentLanes = new WeakMap<AbortSignal, number>();
@@ -654,6 +700,35 @@ export function createDaemonFilesRoute(
     documentLanes.set(owner, documentLaneSequence);
     return documentLaneSequence;
   };
+
+  /**
+   * Where a selected read goes when the daemon can't be reached. Omitted (a
+   * search page), every failure stays typed.
+   */
+  interface DaemonFallback<Result> {
+    readonly direct: () => Promise<Result>;
+    readonly routable: () => boolean;
+    readonly read: ObservedRead;
+  }
+  type DaemonAttempt<Canonical, Legacy> =
+    | {
+        readonly kind: 'served';
+        readonly canonical: Canonical;
+        readonly legacy: Legacy;
+      }
+    | {
+        readonly kind: 'unreachable';
+        readonly reason: BackgroundServiceUnreachableReason | 'bypassed';
+        readonly fallback: DaemonFallback<Canonical>;
+      };
+  /** `legacy` only for a daemon result; the direct reader captured its own. */
+  type DaemonRead<Canonical, Legacy> =
+    | {
+        readonly served: true;
+        readonly canonical: Canonical;
+        readonly legacy: Legacy;
+      }
+    | { readonly served: false; readonly canonical: Canonical };
 
   const runDaemon = async <
     Canonical extends { catalogRevision?: string },
@@ -677,6 +752,7 @@ export function createDaemonFilesRoute(
       startedAt = generation,
       owner = options.lifetime.ownerFor(plan.sender),
       refreshOnConflict = true,
+      fallback,
     }: {
       /** The plan's generation; a flip since then fails before contact. */
       readonly startedAt?: number;
@@ -684,26 +760,42 @@ export function createDaemonFilesRoute(
       readonly owner?: AbortSignal;
       /** False for a cursor page: the daemon already consumed its cursor. */
       readonly refreshOnConflict?: boolean;
+      readonly fallback?: DaemonFallback<Canonical>;
     } = {},
-  ): Promise<{ canonical: Canonical; legacy: Legacy }> => {
+  ): Promise<DaemonRead<Canonical, Legacy>> => {
     const signal = AbortSignal.any([context.signal, owner, flagEpoch.signal]);
     const throwIfInvalidated = (): void => {
       if (generation !== startedAt || disposed) throw routeChangedError();
       if (owner.aborted) throw documentClosedError();
     };
+    // The current attempt's stage, so only a host, connect or connection
+    // failure reads as an unreachable daemon.
+    let hostFailed = false;
+    let contacted: DaemonFilesQueryClient | null = null;
+    const unreachableReason = (
+      error: unknown,
+    ): BackgroundServiceUnreachableReason | null => {
+      if (hostFailed) return 'host_unavailable';
+      if (contacted === null) return daemonUnreachableReason(error);
+      // Its own connection closed, and not because the request ended (its
+      // document, the flag and disposal were checked before this).
+      return contacted.signal.aborted && !signal.aborted
+        ? 'connection_lost'
+        : null;
+    };
     const attempt = async (
       retrying: boolean,
-    ): Promise<{
-      canonical: Canonical;
-      legacy: Legacy;
-    }> => {
+    ): Promise<DaemonAttempt<Canonical, Legacy>> => {
       throwIfInvalidated();
+      hostFailed = false;
+      contacted = null;
       let host: DaemonFilesHostContext;
       let resolveScope: FilesystemScopeResolver;
       try {
         host = await options.hostContext();
         resolveScope = await scopeResolverFor(host);
       } catch (error) {
+        hostFailed = true;
         throw error instanceof CanopyOperationError ||
           error instanceof CanopyClientError
           ? error
@@ -720,6 +812,8 @@ export function createDaemonFilesRoute(
       // The trusted owner resolves first: a malformed owner fails before contact.
       const dependencies = await resolveScope(scope, operation);
       throwIfInvalidated();
+      if (fallback && reachability.isLatched())
+        return { kind: 'unreachable', reason: 'bypassed', fallback };
       const session = await raceAbort(
         options
           .connections()
@@ -727,6 +821,7 @@ export function createDaemonFilesRoute(
         signal,
       );
       const client = session.client;
+      contacted = client;
       recordFilesRouteOutcome(operation, 'daemon.queries');
       const result = await query(client, scope, {
         signal,
@@ -766,33 +861,64 @@ export function createDaemonFilesRoute(
       );
       requireSameBackend();
       throwIfInvalidated();
-      return { canonical: result, legacy };
+      return { kind: 'served', canonical: result, legacy };
     };
-    try {
-      for (let conflicts = 0; ; conflicts += 1) {
-        try {
-          const served = await attempt(conflicts > 0);
-          recordFilesRouteOutcome(operation, 'daemon.served');
-          return served;
-        } catch (error) {
-          throwIfInvalidated();
-          const failure = normalizeDaemonFilesError(operation, error);
-          if (failure.payload.kind !== 'conflict' || !refreshOnConflict)
-            throw failure;
-          // One bounded refresh: re-resolve, re-query and re-project once.
-          if (conflicts >= 1)
-            throw filesystemScopeError(operation, 'revisionConflict');
-          recordFilesRouteOutcome(operation, 'daemon.retries');
+    const attempts = async (): Promise<DaemonAttempt<Canonical, Legacy>> => {
+      try {
+        for (let conflicts = 0; ; conflicts += 1) {
+          try {
+            const outcome = await attempt(conflicts > 0);
+            if (outcome.kind === 'served')
+              recordFilesRouteOutcome(operation, 'daemon.served');
+            return outcome;
+          } catch (error) {
+            throwIfInvalidated();
+            // On the raw error: normalizing drops the connection's tag.
+            const reason = fallback ? unreachableReason(error) : null;
+            if (fallback && reason)
+              return { kind: 'unreachable', reason, fallback };
+            const failure = normalizeDaemonFilesError(operation, error);
+            if (failure.payload.kind !== 'conflict' || !refreshOnConflict)
+              throw failure;
+            // One bounded refresh: re-resolve, re-query and re-project once.
+            if (conflicts >= 1)
+              throw filesystemScopeError(operation, 'revisionConflict');
+            recordFilesRouteOutcome(operation, 'daemon.retries');
+          }
         }
+      } catch (error) {
+        const failure = normalizeDaemonFilesError(operation, error);
+        recordFilesRouteOutcome(
+          operation,
+          `daemon.failed.${failure.payload.kind}`,
+        );
+        throw failure;
       }
-    } catch (error) {
-      const failure = normalizeDaemonFilesError(operation, error);
-      recordFilesRouteOutcome(
-        operation,
-        `daemon.failed.${failure.payload.kind}`,
-      );
-      throw failure;
+    };
+    const outcome = await attempts();
+    if (outcome.kind === 'served')
+      return {
+        served: true,
+        canonical: outcome.canonical,
+        legacy: outcome.legacy,
+      };
+    if (outcome.reason === 'bypassed')
+      recordFilesRouteOutcome(operation, 'daemon.bypassed');
+    else {
+      recordFilesRouteOutcome(operation, `daemon.fallback.${outcome.reason}`);
+      // Before the direct reply: one read is enough to warn.
+      reachability.noteFallback(outcome.reason);
     }
+    outcome.fallback.read.fellBack = true;
+    // The plan's generation: a flip during either backend discards the read.
+    const canonical = await runDirect(
+      operation,
+      outcome.fallback.routable,
+      outcome.fallback.direct,
+      startedAt,
+      true,
+    );
+    return { served: false, canonical };
   };
 
   return {
@@ -807,13 +933,14 @@ export function createDaemonFilesRoute(
         'roots',
         plan ? 'daemon' : 'direct',
         request.sender.id,
-        async () => {
-          if (!plan)
-            return runDirect(
-              'roots',
-              routable('roots', params.scope, context.caller, request),
-              run.direct,
-            );
+        async (read) => {
+          const isRoutable = routable(
+            'roots',
+            params.scope,
+            context.caller,
+            request,
+          );
+          if (!plan) return runDirect('roots', isRoutable, run.direct);
           recordFilesRouteSelected('roots', 'daemon');
           checkDirectReaderRequest('roots', params.scope);
           const served = await runDaemon<
@@ -830,8 +957,9 @@ export function createDaemonFilesRoute(
                 queryOptions,
               ),
             projectRoots,
+            { fallback: { direct: run.direct, routable: isRoutable, read } },
           );
-          run.capture(served.legacy);
+          if (served.served) run.capture(served.legacy);
           return served.canonical;
         },
       );
@@ -847,13 +975,14 @@ export function createDaemonFilesRoute(
         'directory',
         plan ? 'daemon' : 'direct',
         request.sender.id,
-        async () => {
-          if (!plan)
-            return runDirect(
-              'directory',
-              routable('directory', params.scope, context.caller, request),
-              run.direct,
-            );
+        async (read) => {
+          const isRoutable = routable(
+            'directory',
+            params.scope,
+            context.caller,
+            request,
+          );
+          if (!plan) return runDirect('directory', isRoutable, run.direct);
           recordFilesRouteSelected('directory', 'daemon');
           const relativePath = checkDirectReaderRequest(
             'directory',
@@ -885,8 +1014,9 @@ export function createDaemonFilesRoute(
                 entryNamePlatform,
                 checks,
               ),
+            { fallback: { direct: run.direct, routable: isRoutable, read } },
           );
-          run.capture(served.legacy);
+          if (served.served) run.capture(served.legacy);
           return served.canonical;
         },
       );
@@ -902,13 +1032,14 @@ export function createDaemonFilesRoute(
         'file',
         plan ? 'daemon' : 'direct',
         request.sender.id,
-        async () => {
-          if (!plan)
-            return runDirect(
-              'file',
-              routable('file', params.scope, context.caller, request),
-              run.direct,
-            );
+        async (read) => {
+          const isRoutable = routable(
+            'file',
+            params.scope,
+            context.caller,
+            request,
+          );
+          if (!plan) return runDirect('file', isRoutable, run.direct);
           recordFilesRouteSelected('file', 'daemon');
           checkDirectReaderRequest('file', params.scope);
           const served = await runDaemon<
@@ -925,17 +1056,22 @@ export function createDaemonFilesRoute(
                 queryOptions,
               ),
             (result, catalog) => projectFileRead(params, result, catalog),
+            { fallback: { direct: run.direct, routable: isRoutable, read } },
           );
-          run.capture(served.legacy);
+          if (served.served) run.capture(served.legacy);
           return served.canonical;
         },
       );
     },
     searchWalk(scope, caller, request): DaemonFilesSearchWalk {
       const plan = select('search', scope, caller, request);
-      const daemon = plan
-        ? { plan, owner: options.lifetime.ownerFor(plan.sender) }
-        : null;
+      // Decided once, before contact: a latched walk reads directly (q-6),
+      // and a walk already on the daemon stays there.
+      const bypassed = plan !== null && reachability.isLatched();
+      const daemon =
+        plan && !bypassed
+          ? { plan, owner: options.lifetime.ownerFor(plan.sender) }
+          : null;
       const walk: DaemonFilesSearchWalk = daemon
         ? {
             backend: 'daemon',
@@ -947,7 +1083,7 @@ export function createDaemonFilesRoute(
               ? `direct:${generation}`
               : null,
           };
-      searchWalks.set(walk, { generation, daemon });
+      searchWalks.set(walk, { generation, daemon, bypassed });
       return walk;
     },
     async search(
@@ -960,9 +1096,22 @@ export function createDaemonFilesRoute(
       const daemon = pin?.daemon ?? null;
       return observeRead(
         'search',
-        daemon ? 'daemon' : 'direct',
+        daemon || pin?.bypassed ? 'daemon' : 'direct',
         request.sender.id,
-        async () => {
+        async (read) => {
+          if (pin?.bypassed) {
+            recordFilesRouteSelected('search', 'daemon');
+            checkDirectReaderRequest('search', params.scope);
+            recordFilesRouteOutcome('search', 'daemon.bypassed');
+            read.fellBack = true;
+            return runDirect(
+              'search',
+              routable('search', params.scope, context.caller, request),
+              run.direct,
+              pin.generation,
+              true,
+            );
+          }
           if (!pin || !daemon)
             return runDirect(
               'search',
@@ -1001,7 +1150,7 @@ export function createDaemonFilesRoute(
               refreshOnConflict: params.cursor === undefined,
             },
           );
-          run.capture(served.legacy);
+          if (served.served) run.capture(served.legacy);
           return served.canonical;
         },
       );
@@ -1019,15 +1168,11 @@ export function createDaemonFilesRoute(
         'link',
         plan ? 'daemon' : 'direct',
         request.sender.id,
-        async () => {
-          if (!plan)
-            return runDirect(
-              'link',
-              run.hostBase
-                ? NEVER_ROUTABLE
-                : routable('link', params.scope, context.caller, request),
-              run.direct,
-            );
+        async (read) => {
+          const isRoutable = run.hostBase
+            ? NEVER_ROUTABLE
+            : routable('link', params.scope, context.caller, request);
+          if (!plan) return runDirect('link', isRoutable, run.direct);
           recordFilesRouteSelected('link', 'daemon');
           checkDirectReaderRequest('link', params.scope);
           const served = await runDaemon<
@@ -1045,8 +1190,9 @@ export function createDaemonFilesRoute(
               ),
             (result, catalog, projectPath) =>
               projectLink(result, catalog, projectPath, entryNamePlatform),
+            { fallback: { direct: run.direct, routable: isRoutable, read } },
           );
-          run.capture(served.legacy);
+          if (served.served) run.capture(served.legacy);
           return served.canonical;
         },
       );

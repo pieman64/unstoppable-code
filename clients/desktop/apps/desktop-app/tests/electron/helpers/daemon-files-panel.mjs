@@ -601,6 +601,12 @@ export async function withDaemonFilesApp(
       userDataDir: dataRoot,
       env: {
         ...launchEnv,
+        // This spec drives the offered rollout's own choice, so it keeps
+        // `offered` when the Files dry run forces the suite default `on`.
+        CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+          ...JSON.parse(launchEnv.CANOPY_E2E_CLIENT_FEATURE_FLAGS ?? '{}'),
+          [FILES_FLAG]: 'offered',
+        }),
       },
     });
     Object.assign(context, launched);

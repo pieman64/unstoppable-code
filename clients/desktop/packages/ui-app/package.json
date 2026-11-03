@@ -23,6 +23,7 @@
     "./pull-requests": "./src/pull-requests.ts",
     "./pull-request-steps": "./src/pull-request-steps.ts",
     "./plans": "./src/plans.ts",
+    "./plan-markdown": "./src/plan-markdown.ts",
     "./activity-section-body": "./src/activity-section-body.ts",
     "./agent-activity": "./src/agent-activity.ts",
     "./guest-files": "./src/guest-files.ts",
@@ -65,6 +66,7 @@
     "./repo-rules": "./src/repo-rules/index.ts",
     "./script-actions": "./src/script-actions/index.ts",
     "./onboarding-tips": "./src/onboarding-tips/index.ts",
+    "./composer-recovery": "./src/composer-recovery/index.ts",
     "./marketplace-sources": "./src/marketplace-sources/index.ts"
   },
   "dependencies": {
@@ -102,6 +104,7 @@
     "./src/*.tsx",
     "./src/billing/**",
     "./src/code/**",
+    "./src/composer-recovery/**",
     "./src/cost/**",
     "./src/external-agents/**",
     "./src/feedback/**",

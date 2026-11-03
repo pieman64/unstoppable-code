@@ -20,6 +20,11 @@ import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
 import { GOLDEN_INVALID_PIPELINE_YAML } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
 import { getStoredPipelinePath } from '@canopy/desktop-shared/pipelines/store';
 import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../canopy-runtime/desktop-runtime';
+import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
+import {
   dispatchAgentAction,
   forkGoldenUtilityProcess,
   goldenWorktreeActionRuntime,
@@ -66,11 +71,15 @@ jest.setTimeout(180_000);
 const ORG = 'org:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 
 let world: GoldenWorld;
+let runtime: DesktopCanopyDispatcher;
 let executionsDir: string;
 const pipelineIds: Record<string, string> = {};
 
 beforeAll(async () => {
   world = await createPipelineGoldenWorld();
+  // Run admission reads definitions through the desktop dispatcher.
+  runtime = createDesktopRuntime();
+  setDesktopCanopyRuntime(runtime);
   mkdirSync(join(world.root, 'markers'), { recursive: true });
   for (const [name, yaml] of Object.entries({
     success: SUCCESS_YAML,
@@ -94,6 +103,10 @@ afterAll(async () => {
   const { shutdownPipelineProcessHost } =
     await import('../../pipelines/process-host-runner');
   await shutdownPipelineProcessHost().catch(() => undefined);
+  (
+    await import('../../canopy-runtime/desktop-runtime-access')
+  ).setDesktopCanopyRuntime(null);
+  await runtime.shutdown();
   world.dispose();
 });
 
@@ -882,6 +895,15 @@ describe('desktop shutdown', () => {
     );
     // A relaunch: fresh main-process modules, so nothing is draining.
     jest.resetModules();
+    // The relaunched main composes its own dispatcher.
+    const previous = runtime;
+    runtime = (
+      await import('../../canopy-runtime/desktop-runtime')
+    ).createDesktopRuntime();
+    (
+      await import('../../canopy-runtime/desktop-runtime-access')
+    ).setDesktopCanopyRuntime(runtime);
+    await previous.shutdown();
     const relaunched = await import('../../pipelines/pipeline-handlers');
     relaunched.registerPipelineHandlers();
     relaunched.registerExecutionHandlers(() => null);
@@ -899,6 +921,58 @@ describe('desktop shutdown', () => {
         resumed,
       }),
     ).toMatchSnapshot();
+  });
+});
+
+// CAN-4140: each run is a core operation that follows its execution across
+// the pause and the resume's new handle.
+describe('core run records', () => {
+  const waitFor = async (check: () => Promise<boolean>): Promise<void> => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (await check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error('The run record never reached the expected status.');
+  };
+  const runRecord = async (
+    executionId: string | undefined,
+  ): Promise<string | undefined> => {
+    const { items } = await runtime.query(
+      'core.operation.list',
+      {
+        kinds: ['core.pipeline.run'],
+        scope: { executionId: executionId ?? '' },
+      },
+      {
+        caller: {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'golden',
+          authorityId: 'local-desktop',
+          interfaceKind: 'test',
+          grants: ['core.operation.read'],
+        },
+      },
+    );
+    return items[0]?.status;
+  };
+
+  it('pauses, resumes and finishes the run with its execution', async () => {
+    const run = await start('record-pause', () =>
+      executeIpc('pause', PAUSE_YAML),
+    );
+    const pausedState = await waitForExecution(
+      executionsDir,
+      run.executionId ?? '',
+      ['paused'],
+    );
+    await waitFor(async () => (await runRecord(run.executionId)) === 'paused');
+    await invokeIpc(PIPELINE_CHANNELS.RESUME, run.executionId, {
+      pauseResponses: [pauseResponse(pausedState, { approved: true })],
+    });
+    await settled(run.executionId);
+    await waitFor(
+      async () => (await runRecord(run.executionId)) === 'completed',
+    );
   });
 });
 

@@ -48,6 +48,7 @@ import {
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { useCanopyDesktopPrSplitEnabled } from '@/hooks/useCanopyDesktopPrSplitEnabled';
 import { ArchivedContainerActionsMenu } from '@/components/archive/ArchivedContainerActionsMenu';
+import { offerRetainedArchiveDiscard } from '@/components/archive/offerRetainedArchiveDiscard';
 import { useSplitPrGatingPreferences } from '@/hooks/useSplitPrPreferences';
 import { useActivityStore } from '@/stores/activityStore';
 import {
@@ -743,7 +744,7 @@ export const removeDesktopWorktreeInBatch = async (
     });
   } catch (error) {
     if (error instanceof TeardownFailedError) {
-      throw new Error('Teardown script failed. Retry from the row menu.');
+      throw new Error('Teardown script failed. Try again from the row menu.');
     }
     const discard = await batchDiscardDescription(error, workspaceId);
     if (discard) throw new Error(worktreeDiscardBatchPointer(discard));
@@ -2416,7 +2417,7 @@ export function DesktopSharedSidebarHost({
                     }}
                   >
                     <DropdownMenuItemIcon>
-                      <BuildingIcon />
+                      <BuildingIcon size="xl" />
                     </DropdownMenuItemIcon>
                     <span className="truncate">Move to org…</span>
                   </DropdownMenuItem>
@@ -2588,9 +2589,22 @@ export function DesktopSharedSidebarHost({
             .restore(workspaceId, worktreeId);
         }}
         onDeleteArchived={(workspaceId, worktreeId) => {
-          void useArchivedContainersStore
-            .getState()
-            .deletePermanently(workspaceId, worktreeId);
+          const remove = (): void => {
+            void useArchivedContainersStore
+              .getState()
+              .deletePermanently(workspaceId, worktreeId)
+              .then((ok) =>
+                // CAN-5338: offer the discard when the deletion can't finish.
+                ok
+                  ? undefined
+                  : offerRetainedArchiveDiscard(
+                      workspaceId,
+                      worktreeId,
+                      remove,
+                    ),
+              );
+          };
+          remove();
         }}
         renderArchivedActions={(workspaceId, entry) => {
           const summary = archivedByWorkspace[workspaceId]?.find(

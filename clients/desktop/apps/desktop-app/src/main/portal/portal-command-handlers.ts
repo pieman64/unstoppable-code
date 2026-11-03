@@ -173,6 +173,8 @@ import {
   handlePortalMcpDeleteServer,
   handlePortalMcpListServers,
   handlePortalMcpSetConfigEnabled,
+  handlePortalCollectionsSave,
+  handlePortalCollectionsApplyUpdate,
   handlePortalPluginsGetPluginDetail,
   handlePortalPluginsInstallBuiltin,
   handlePortalPluginsSharePlugin,
@@ -250,6 +252,7 @@ export interface PortalCommandHandlerContext {
   sessionId?: string | null;
   chatDispatcher?: DesktopCanopyDispatcher;
   canReadAssets?: () => boolean;
+  canMutateResources?: () => boolean;
   canReadTranscripts?: () => boolean;
   pairingCode: string | null;
   getWindow: () => BrowserWindow | null;
@@ -742,6 +745,8 @@ const FEATURE_ADAPTERS: Partial<
     handlePortalCollectionsList as PortalCommandAdapter<unknown>,
   'portal.collections.get':
     handlePortalCollectionsGet as PortalCommandAdapter<unknown>,
+  'portal.collections.save': handlePortalCollectionsSave,
+  'portal.collections.apply_update': handlePortalCollectionsApplyUpdate,
   'portal.provider_usage.refresh': handlePortalProviderUsageRefresh,
 };
 
@@ -779,6 +784,7 @@ function createAdapterContext(
     sessionId: context.sessionId,
     ...(origin ? { origin } : {}),
     canReadAssets: context.canReadAssets,
+    canMutateResources: context.canMutateResources,
     canReadTranscripts: context.canReadTranscripts,
     chatStatePort,
     ...(chatStatePort && chatDispatcher

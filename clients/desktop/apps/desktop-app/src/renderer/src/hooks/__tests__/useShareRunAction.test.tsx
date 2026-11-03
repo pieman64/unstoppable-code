@@ -223,7 +223,7 @@ describe('useShareRunAction', () => {
     };
     await act(async () => {
       await expect(probe.current?.onShared(result)).rejects.toThrow(
-        'Session share was revoked, but its local status could not be cleared. Retry to finish cleaning up.',
+        'Session share was revoked, but its local status could not be cleared. Try again to finish cleaning up.',
       );
     });
 
@@ -271,7 +271,7 @@ describe('useShareRunAction', () => {
           teamName: 'Platform',
         }),
       ).rejects.toThrow(
-        'Session shared, but its local status could not be saved or revoked. Retry sharing to restore local control.',
+        'Session shared, but its local status could not be saved or revoked. Try sharing again to restore local control.',
       );
     });
 

@@ -250,7 +250,7 @@ describe('BrowserFilesPanel', () => {
       );
       expect(byTestId(view.container, 'browser-files-empty')).toBeNull();
       const retry = Array.from(view.container.querySelectorAll('button')).find(
-        (button) => button.textContent === 'Retry',
+        (button) => button.textContent === 'Try again',
       );
       click(retry ?? null);
       await flush();

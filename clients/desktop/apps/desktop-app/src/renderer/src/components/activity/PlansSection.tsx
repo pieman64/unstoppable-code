@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   DetectedPlanEntry,
   TrackedPlanData,
@@ -36,14 +35,15 @@ import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { buildPlanReadyExecuteOptions } from '@/lib/planReadyPipelineExecuteOptions';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
 import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
+import { PLAN_DISPATCH_BUSY_MESSAGE } from '@/stores/chat/plan-utils';
 import { reconcileExecutedPlan } from '@/lib/plans/reconcile-tracked-plans';
 import { revealWorktreeChatPanel } from '@/lib/panels/plan-panel-open';
 import {
   planExecuteAvailability,
   usePlanImplementationState,
+  beginPlanWorkflowDispatch,
   type PlanStatusNoteTarget,
 } from '@/components/plan-explore/usePlanImplementationState';
-import { PlansEmptyMessage } from '@canopy/ui-app/plans';
 import {
   useActivitySectionChrome,
   FRAMELESS_HIDDEN_GROUP_MAX_H,
@@ -53,11 +53,12 @@ import { ActivitySection } from './ActivitySection';
 import { PlanSourceMark } from './PlanSourceMark';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import { usePanelWorktreeSelection } from '@/lib/panels/panel-worktree-context';
+import { PlansEmptyMessage } from '@canopy/ui-app/plans';
 import {
   INLINE_PLAN_MARKDOWN_OPTIONS,
   PLAN_MARKDOWN_OPTIONS,
   stripPlanTitleLine,
-} from './plan-markdown';
+} from '@canopy/ui-app/plan-markdown';
 import {
   EyeIcon,
   EyeOffIcon,
@@ -110,12 +111,17 @@ function PlanCard({
       (summary) => summary.id === implementation.navigationExecutionId,
     ),
   );
-  const executionHasOutcomeLink = implementation.notes.some(
-    (note) =>
-      note.text &&
-      note.target.kind === 'run' &&
-      note.target.executionId === navigationExecution?.id,
-  );
+  const openTarget = implementation.openTarget;
+  // Open already reaches the selected run, like an outcome note's link.
+  const executionHasOutcomeLink =
+    (openTarget?.kind === 'run' &&
+      openTarget.executionId === navigationExecution?.id) ||
+    implementation.notes.some(
+      (note) =>
+        note.text &&
+        note.target.kind === 'run' &&
+        note.target.executionId === navigationExecution?.id,
+    );
   const openNoteTarget = (target: PlanStatusNoteTarget): void => {
     if (target.kind === 'run') {
       onOpenExecution(target.executionId);
@@ -126,7 +132,6 @@ function PlanCard({
       );
     }
   };
-  const linkedPipelineRunning = implementation.status.kind === 'implementing';
 
   return (
     <div
@@ -136,7 +141,10 @@ function PlanCard({
       data-testid={`activity-plan-row-${plan.id}`}
       onClick={onOpen}
       onKeyDown={(e): void => {
-        if (e.key === 'Enter' || e.key === ' ') {
+        if (
+          e.target === e.currentTarget &&
+          (e.key === 'Enter' || e.key === ' ')
+        ) {
           e.preventDefault();
           onOpen();
         }
@@ -195,7 +203,7 @@ function PlanCard({
             .filter((note) => note.text || note.target.kind === 'chat')
             .map((note) => (
               <PlanStatusNote
-                key={`${note.target.kind}-${note.linkLabel}`}
+                key={`${note.target.kind}-${note.target.kind === 'run' ? note.target.executionId : note.target.chatId}-${note.text ?? ''}`}
                 text={note.text}
                 data-testid={`activity-plan-status-note-${plan.id}`}
                 link={{
@@ -237,7 +245,11 @@ function PlanCard({
             planContent={plan.content}
             {...planExecuteAvailability(plan, implementation)}
             executeEmphasis={implementation.status.executeEmphasis}
-            menuPortal
+            primaryAction={implementation.status.primaryAction}
+            openVenue={openTarget?.kind === 'run' ? 'pipeline' : 'chat'}
+            onOpen={
+              openTarget ? (): void => openNoteTarget(openTarget) : undefined
+            }
             onExplore={onExplore}
             onImplement={onChatFollowUp}
             onPipeline={onPipelineFollowUp}
@@ -247,12 +259,6 @@ function PlanCard({
           />
         </div>
       )}
-
-      {!readOnly && linkedPipelineRunning ? (
-        <div className="pointer-events-none absolute bottom-2 left-3 fg-info">
-          <PipelineIcon width={14} height={14} className="animate-pulse" />
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -514,6 +520,12 @@ export function PlansSection(): JSX.Element {
         return;
       }
 
+      const release = beginPlanWorkflowDispatch(pipelinePlan);
+      if (!release) {
+        setPipelineRunError(PLAN_DISPATCH_BUSY_MESSAGE);
+        return;
+      }
+
       setPipelineRunning(true);
       setPipelineRunError(null);
 
@@ -556,10 +568,11 @@ export function PlansSection(): JSX.Element {
       } catch (error: unknown) {
         setPipelineRunError(extractIpcErrorMessage(error));
       } finally {
+        release();
         setPipelineRunning(false);
       }
     },
-    [loadTrackedPlans, markTrackedPlanExecuted, pipelinePlan, selectedWorktree],
+    [markTrackedPlanExecuted, pipelinePlan, selectedWorktree],
   );
 
   // A plan's run opens in its own panel; the plan's worktree is the owner
@@ -761,41 +774,38 @@ export function PlansSection(): JSX.Element {
         </ActivitySection>
       </div>
 
-      {pipelinePlan &&
-        createPortal(
-          <PlanReadyPipelineModal
-            projectId={selectedWorktree?.projectId}
-            worktreeId={selectedWorktree?.worktreeId}
-            onClose={(): void => {
-              if (pipelineRunning) {
-                return;
-              }
-              setPipelinePlan(null);
-              setPipelineRunError(null);
-            }}
-            onRun={handlePipelineRun}
-            isRunning={pipelineRunning}
-            runError={pipelineRunError}
-          />,
-          document.body,
-        )}
+      {/* Both dialogs portal themselves through DialogModal. */}
+      {pipelinePlan && (
+        <PlanReadyPipelineModal
+          projectId={selectedWorktree?.projectId}
+          worktreeId={selectedWorktree?.worktreeId}
+          onClose={(): void => {
+            if (pipelineRunning) {
+              return;
+            }
+            setPipelinePlan(null);
+            setPipelineRunError(null);
+          }}
+          onRun={handlePipelineRun}
+          isRunning={pipelineRunning}
+          runError={pipelineRunError}
+        />
+      )}
 
-      {sharePlan &&
-        createPortal(
-          <SharePlanModal
-            planId={sharePlan.id}
-            planTitle={sharePlan.title}
-            existingShare={sharePlan.share}
-            onClose={(): void => {
-              if (sharingPlanId) {
-                return;
-              }
-              setSharePlan(null);
-            }}
-            onShare={handleShareSubmit}
-          />,
-          document.body,
-        )}
+      {sharePlan && (
+        <SharePlanModal
+          planId={sharePlan.id}
+          planTitle={sharePlan.title}
+          existingShare={sharePlan.share}
+          onClose={(): void => {
+            if (sharingPlanId) {
+              return;
+            }
+            setSharePlan(null);
+          }}
+          onShare={handleShareSubmit}
+        />
+      )}
 
       {shareGateModal}
     </>

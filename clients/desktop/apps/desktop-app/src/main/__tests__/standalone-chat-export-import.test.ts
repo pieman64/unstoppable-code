@@ -98,6 +98,10 @@ import {
   resetChatStateServiceForTests,
 } from '../services/chat-state-service';
 import { registerChatProjectHandlers } from '../ipc/chat-projects';
+import {
+  createWorkspaceMetadataTestDispatcher,
+  TEST_IPC_CALLER,
+} from './fixtures/workspace-metadata-dispatcher';
 import { registerStandaloneChatHandlers } from '../ipc/standalone-chat';
 import * as chatProjectUtils from '../lib/chat-project-utils';
 import {
@@ -205,7 +209,10 @@ describe('standalone chat export/import project (real fs)', () => {
     process.env.CANOPY_DATA_DIR = dataDir;
     flushScopeMock.mockClear();
     resetChatStateServiceForTests(new ChatStateService({ recordDiagnostic }));
-    registerChatProjectHandlers();
+    registerChatProjectHandlers({
+      dispatcher: createWorkspaceMetadataTestDispatcher(),
+      resolveCaller: () => TEST_IPC_CALLER,
+    });
     registerStandaloneChatHandlers();
   });
 

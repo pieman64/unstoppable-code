@@ -1450,6 +1450,15 @@ async function leasedKernel(): Promise<LeasedKernel> {
             'worker.git.diff.get': (): never => {
               throw new Error('Not exercised.');
             },
+            'worker.script.execution.get': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.script.execution.list': (): never => {
+              throw new Error('Not exercised.');
+            },
+            'worker.pipeline.execution.get': (): never => {
+              throw new Error('Not exercised.');
+            },
           },
         },
       }),
@@ -1527,6 +1536,7 @@ posix('lease-bound operations', () => {
     options: {
       readonly clock?: CanopyDaemonClock;
       readonly grants?: readonly CanopyCallerDescriptor['grants'][number][];
+      readonly sameKeyFencedOperations?: readonly string[];
     } = {},
   ): Promise<
     Awaited<ReturnType<typeof controlPlane>> & {
@@ -1540,6 +1550,9 @@ posix('lease-bound operations', () => {
       dispatcher: kernel.runtime.dispatcher,
       operations: kernel.runtime.operations,
       leaseBoundOperations: Object.keys(WORKER_QUERY_DEFINITIONS),
+      ...(options.sameKeyFencedOperations && {
+        sameKeyFencedOperations: options.sameKeyFencedOperations,
+      }),
       callerFor: ({ connectionId, lease }) => ({
         principalId: 'local-user',
         clientInstanceId: lease?.clientInstanceId ?? connectionId,
@@ -1806,6 +1819,43 @@ posix('lease-bound operations', () => {
         kind: 'cancelled',
         message: 'The client lease was released.',
         retry: { kind: 'never' },
+      });
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  // DM-5 #4: a keyed operation whose receipts never name the lease is retried
+  // with its key; every other lease-bound operation keeps `never`.
+  it('answers a fenced same-key operation with same_idempotency_key, and an unleased one with never', async () => {
+    const daemon = await leasedPlane({
+      sameKeyFencedOperations: ['worker.filesystem.roots.list'],
+    });
+    try {
+      const peer = await daemon.open();
+      expect(refusal(await read(peer))).toEqual(REQUIRED);
+      const first = await daemon.open();
+      await acquire(first, 'same-key');
+      const releasedHold = daemon.hold();
+      const released = read(first);
+      await releasedHold.entered;
+      await release(first);
+      releasedHold.release();
+      expect(refusal(await released)).toEqual({
+        kind: 'cancelled',
+        message: 'The client lease was released.',
+        retry: { kind: 'same_idempotency_key' },
+      });
+      await acquire(first, 'moved-key');
+      const movedHold = daemon.hold();
+      const moved = read(first);
+      await movedHold.entered;
+      await acquire(peer, 'moved-key');
+      movedHold.release();
+      expect(refusal(await moved)).toEqual({
+        kind: 'failed_precondition',
+        message: 'The client lease moved to another connection.',
+        retry: { kind: 'same_idempotency_key' },
       });
     } finally {
       await daemon.close();

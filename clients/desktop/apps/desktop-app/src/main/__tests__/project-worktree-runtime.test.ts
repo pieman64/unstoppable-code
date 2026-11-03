@@ -1,3 +1,15 @@
+import type * as NodeCrypto from 'node:crypto';
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
+// The setup runtime names the run; the worker's log takes that id.
+jest.mock('node:crypto', () => ({
+  ...jest.requireActual<typeof NodeCrypto>('node:crypto'),
+  randomUUID: (): string => 'run-setup-1',
+}));
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('../lib/paths', () => ({
   getWorktreeDataDir: jest.fn(
     (projectId: string, worktreeId: string) =>
@@ -278,10 +290,11 @@ describe('runProjectWorktreePostCreateSetup', () => {
       observer: recorder.observer,
     });
 
+    // The worker starts the run's log once the run is reported started.
     expect(recorder.events).toEqual([
       'resolved:true',
-      'log-started',
       'started:project:setup',
+      'log-started',
       'process',
       'log-completed',
       'completed:project:setup',
@@ -385,8 +398,9 @@ describe('runProjectWorktreePostCreateSetup', () => {
       status: 'timed_out',
       exitCode: null,
       timedOut: true,
-      logRef: null,
     });
+    // The worker writes the log under the run's id.
+    expect(result.script?.logRef?.runId).toBe('run-setup-1');
     expect(typeof result.script?.runId).toBe('string');
     expect(recorder.completed).toEqual([result.script]);
     expect(mockedRunShellScript.mock.calls[0]?.[0]?.timeoutSeconds).toBe(5);

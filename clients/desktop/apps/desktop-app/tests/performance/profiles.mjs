@@ -46,6 +46,8 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 24,
     fileExplorerFilesPerDirectory: 80,
     fileExplorerMutationBurst: 40,
+    frameSmoothnessIterations: 3,
+    frameSmoothnessSidebarEntries: 40,
     startupSettleMs: 8_000,
     startupTypingIntervalMs: 250,
     startupBackgroundIdleDwellMs: 5_500,
@@ -129,6 +131,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     gitGateMaxHoldMs: 180_000,
     worktreesToCreate: 2,
     preexistingWorktrees: 52,
+    w5StoreWorkspaces: 5,
+    w5StoreLargeWorkspaceWorktrees: 30,
+    w5StoreReloads: 3,
+    w5StoreWriteCycles: 1,
+    w5StoreBurstSequential: 20,
+    w5StoreBurstWarmup: 5,
+    w5StoreBurstConcurrent: 5,
     codeGraphBuildWorktrees: 3,
     codeGraphFixtureFilesPerWorktree: 1_200,
     ledgerScopeEntries: 1_000,
@@ -199,6 +208,8 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 80,
     fileExplorerFilesPerDirectory: 120,
     fileExplorerMutationBurst: 200,
+    frameSmoothnessIterations: 6,
+    frameSmoothnessSidebarEntries: 80,
     startupSettleMs: 15_000,
     startupTypingIntervalMs: 250,
     startupBackgroundIdleDwellMs: 5_500,
@@ -282,6 +293,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     gitGateMaxHoldMs: 180_000,
     worktreesToCreate: 8,
     preexistingWorktrees: 52,
+    w5StoreWorkspaces: 25,
+    w5StoreLargeWorkspaceWorktrees: 250,
+    w5StoreReloads: 10,
+    w5StoreWriteCycles: 3,
+    w5StoreBurstSequential: 200,
+    w5StoreBurstWarmup: 20,
+    w5StoreBurstConcurrent: 20,
     codeGraphBuildWorktrees: 9,
     codeGraphFixtureFilesPerWorktree: 3_000,
     ledgerScopeEntries: 10_000,
@@ -352,6 +370,8 @@ const WORKLOAD_PROFILES = Object.freeze({
     fileExplorerDirectories: 160,
     fileExplorerFilesPerDirectory: 160,
     fileExplorerMutationBurst: 500,
+    frameSmoothnessIterations: 10,
+    frameSmoothnessSidebarEntries: 160,
     startupSettleMs: 30_000,
     startupTypingIntervalMs: 250,
     startupBackgroundIdleDwellMs: 5_500,
@@ -435,6 +455,13 @@ const WORKLOAD_PROFILES = Object.freeze({
     gitGateMaxHoldMs: 180_000,
     worktreesToCreate: 16,
     preexistingWorktrees: 75,
+    w5StoreWorkspaces: 40,
+    w5StoreLargeWorkspaceWorktrees: 250,
+    w5StoreReloads: 10,
+    w5StoreWriteCycles: 5,
+    w5StoreBurstSequential: 400,
+    w5StoreBurstWarmup: 40,
+    w5StoreBurstConcurrent: 40,
     codeGraphBuildWorktrees: 15,
     codeGraphFixtureFilesPerWorktree: 6_000,
     ledgerScopeEntries: 20_000,
@@ -483,6 +510,29 @@ const MANAGED_DELEGATION_SCENARIOS = Object.freeze([
   'managed-delegation-concurrency',
 ]);
 
+/**
+ * W5 store arms (CAN-5532): the launch's W5 store, a treatment rather than
+ * workload configuration (`w5-store-arms.mjs`). Kept here so the release
+ * study's helper closure gains no file.
+ */
+export const W5_STORE_ARMS = Object.freeze([
+  'in-process',
+  'daemon-record-port',
+]);
+
+export function parseW5StoreArm(value, option = '--w5-store') {
+  if (!W5_STORE_ARMS.includes(value))
+    throw new Error(`${option} expects ${W5_STORE_ARMS.join(' or ')}`);
+  return value;
+}
+
+/** W5 store arm workloads (CAN-5532): startup, sidebar reloads, writes. */
+export const W5_STORE_SCENARIOS = Object.freeze([
+  'w5-store-startup',
+  'w5-store-reload',
+  'w5-store-writes',
+]);
+
 /** The uninstrumented workload and its separately named traced variant. */
 const CODE_REVIEW_REGISTRY_SCENARIOS = Object.freeze([
   'code-review-registry-cleanup',
@@ -527,6 +577,8 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   claudeGraphOrientationFixtureFiles: Object.freeze([
     'claude-graph-orientation',
   ]),
+  frameSmoothnessIterations: Object.freeze(['frame-smoothness']),
+  frameSmoothnessSidebarEntries: Object.freeze(['frame-smoothness']),
   ledgerScopeEntries: Object.freeze(['ledger-panel']),
   ledgerOtherScopes: Object.freeze(['ledger-panel']),
   ledgerOtherScopeEntries: Object.freeze(['ledger-panel']),
@@ -546,6 +598,13 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   codeReviewRegistryMatchingRows: CODE_REVIEW_REGISTRY_SCENARIOS,
   codeReviewRegistryUnrelatedRows: CODE_REVIEW_REGISTRY_SCENARIOS,
   codeReviewRegistryRegisterIterations: CODE_REVIEW_REGISTRY_SCENARIOS,
+  w5StoreWorkspaces: W5_STORE_SCENARIOS,
+  w5StoreLargeWorkspaceWorktrees: W5_STORE_SCENARIOS,
+  w5StoreReloads: Object.freeze(['w5-store-reload']),
+  w5StoreWriteCycles: Object.freeze(['w5-store-writes']),
+  w5StoreBurstSequential: Object.freeze(['w5-store-writes']),
+  w5StoreBurstWarmup: Object.freeze(['w5-store-writes']),
+  w5StoreBurstConcurrent: Object.freeze(['w5-store-writes']),
 });
 
 /**
@@ -559,6 +618,7 @@ export const SCENARIO_SCOPED_OPTIONS = Object.freeze({
   '--browser-agent-actions-iterations': 'browserAgentActionsIterations',
   '--multi-chat-streaming-ms': 'multiChatStreamingMs',
   '--code-graph-queued-refreshes': 'codeGraphQueuedRefreshes',
+  '--w5-store-workspaces': 'w5StoreWorkspaces',
 });
 
 /** Opt-in switches only some scenarios read; no profile sizes them. */
@@ -581,9 +641,11 @@ export const OPT_IN_SCENARIO_NAMES = Object.freeze([
   'code-graph-small-edit',
   'claude-graph-orientation',
   'linear-reference-transcripts',
+  'frame-smoothness',
   'cost-index-first-build',
   'skill-suggestions-backfill',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
+  ...W5_STORE_SCENARIOS,
 ]);
 
 /**
@@ -641,6 +703,7 @@ export const SCENARIO_NAMES = Object.freeze([
   'cowork-default-500',
   'math-transcripts',
   'linear-reference-transcripts',
+  'frame-smoothness',
   'chat-search-indexing',
   'plugin-picker',
   'file-explorer',
@@ -672,6 +735,7 @@ export const SCENARIO_NAMES = Object.freeze([
   'cost-index-first-build',
   'skill-suggestions-backfill',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
+  ...W5_STORE_SCENARIOS,
 ]);
 
 export const DEFAULT_SCENARIO_NAMES = Object.freeze(
@@ -749,6 +813,8 @@ export function parsePerformanceArgs(argv) {
     releaseLike: false,
     releaseLikeRoot: '',
     e2eRoot: '',
+    // The W5 store arm (`w5-store-arms.mjs`); a launch treatment, not config.
+    w5Store: '',
     repeat: 1,
     overrides: {},
   };
@@ -803,10 +869,13 @@ export function parsePerformanceArgs(argv) {
       option === '--browser-panels-viewport' ||
       option === '--study-window-mode' ||
       option === '--release-like-root' ||
-      option === '--e2e-root'
+      option === '--e2e-root' ||
+      option === '--w5-store'
     ) {
       const result = readOptionValue(argv, index, option);
       index = result.nextIndex;
+      if (option === '--w5-store')
+        options.w5Store = parseW5StoreArm(result.value);
       if (option === '--profile') options.profile = result.value;
       if (option === '--output') options.output = result.value;
       if (option === '--label') options.label = result.value;
@@ -856,6 +925,7 @@ export function parsePerformanceArgs(argv) {
       option === '--code-graph-queued-refreshes' ||
       option === '--multi-chat-streaming-ms' ||
       option === '--chat-switch-hover-ms' ||
+      option === '--w5-store-workspaces' ||
       option === '--sample-interval-ms' ||
       option === '--repeat'
     ) {
@@ -933,6 +1003,9 @@ export function parsePerformanceArgs(argv) {
       if (option === '--multi-chat-streaming-ms') {
         options.overrides.multiChatStreamingMs = value;
       }
+      if (option === '--w5-store-workspaces') {
+        options.overrides.w5StoreWorkspaces = value;
+      }
       if (option === '--sample-interval-ms') {
         options.overrides.sampleIntervalMs = value;
       }
@@ -960,6 +1033,11 @@ export function parsePerformanceArgs(argv) {
   if (options.e2eRoot && options.releaseLike) {
     throw new Error(
       '--e2e-root names an E2E build; use --release-like-root with --release-like',
+    );
+  }
+  if (options.w5Store && options.releaseLike) {
+    throw new Error(
+      '--w5-store selects an E2E-only W5 store arm and cannot be used with --release-like',
     );
   }
   if (options.scenarios.length === 0) {
@@ -1103,6 +1181,16 @@ export function parsePerformanceArgs(argv) {
       'code-graph-concurrency requires at least three worktrees so running and queued builds overlap',
     );
   }
+  if (
+    W5_STORE_SCENARIOS.some((scenario) =>
+      options.scenarios.includes(scenario),
+    ) &&
+    config.w5StoreWorkspaces < 2
+  ) {
+    throw new Error(
+      '--w5-store-workspaces must be at least 2, so the large workspace has peers',
+    );
+  }
   if (config.startupWorkspaces > config.startupWorktrees) {
     throw new Error(
       '--startup-workspaces cannot exceed the startup worktree count',
@@ -1163,7 +1251,7 @@ export function performanceUsage() {
 
 Options:
   --profile <smoke|baseline|stress|counters> Workload size (default baseline); counters runs the smoke-sized work-counter ratchet
-  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,code-review-registry-cleanup,code-review-registry-cleanup-trace
+  --scenarios <csv>                  sidebar-reorder,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
   --output <path>                    JSON result path
   --label <text>                     Human-readable run label
   --repeat <n>                       Run every scenario n times, each a fresh launch, and keep every sample (default 1)
@@ -1204,6 +1292,8 @@ Options:
   --cold-background-streams          background-streaming: start each stream through chat IPC without opening its chat, so no stream is focused or warm
   --chat-switch-hover-ms <ms>        chat-switch-catch-up: rest the pointer on each target worktree row for <ms> before the timed click (prefetch on intent)
   --warm-launches <1-3>              Before each startup scenario's measured launch, launch that profile n times unmeasured (repeat-state startup)
+  --w5-store <${W5_STORE_ARMS.join('|')}> Launch every scenario with this W5 store arm (E2E builds only; recorded as the result's treatment)
+  --w5-store-workspaces <n>          w5-store-* scenarios: seeded workspaces (at least 2; above 127 passes the capture limit)
   --release-like                     Launch the existing production bundle under the deterministic scenario driver
   --release-like-root <path>         Checkout containing the production out/ bundle (default current checkout)
   --e2e-root <path>                  Checkout containing the E2E out-e2e/ bundle (default current checkout)

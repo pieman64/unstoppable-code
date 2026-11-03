@@ -4,8 +4,10 @@ import type {
   MarketplaceSourceAddReview,
 } from '@canopy/app-core/client';
 import {
+  ErrorBanner,
   ExternalTextLink,
   SecurityAuditSummary,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -51,10 +53,10 @@ function MarketplaceSourceAddPluginPreview({
       )}
       {plugin.syncError && (
         <p
-          className={`mt-1 text-xs fg-destructive ${REPLAY_BLOCK_CLASS}`}
+          className={`mt-1 ${REPLAY_BLOCK_CLASS}`}
           data-testid="cloud-marketplace-plugin-error"
         >
-          {plugin.syncError}
+          <StatusLabel size="xs">{plugin.syncError}</StatusLabel>
         </p>
       )}
       {plugin.hooksStripped && (
@@ -97,14 +99,11 @@ export function MarketplaceSourceAddPreview({
           </p>
         )}
       </div>
-      {review.syncError && (
-        <p
-          className={`text-s fg-destructive ${REPLAY_BLOCK_CLASS}`}
-          role="status"
-        >
-          {review.syncError}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={review.syncError}
+        blockMessageFromReplay
+      />
       <div className="max-h-64 space-y-2 overflow-y-auto">
         {review.plugins.length === 0 ? (
           <p className="text-xs fg-secondary">No plugins were detected.</p>
@@ -118,14 +117,11 @@ export function MarketplaceSourceAddPreview({
         )}
       </div>
       {review.pluginsReported && !review.canConfirm && (
-        <p
-          className="text-s fg-destructive"
-          role="status"
-          data-testid="cloud-marketplace-no-usable-plugins"
-        >
-          This marketplace preview has no usable plugins. Add or fix a plugin
-          before confirming.
-        </p>
+        <ErrorBanner
+          className=""
+          testId="cloud-marketplace-no-usable-plugins"
+          error="This marketplace preview has no usable plugins. Add or fix a plugin before confirming."
+        />
       )}
     </div>
   );

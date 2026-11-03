@@ -14,6 +14,7 @@ import {
   AnsiOutput,
   SpinnerStyleProvider,
   StatusGlyph,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   AgentIcon,
@@ -243,7 +244,7 @@ function DetailsInspector({
         </p>
       )}
       {task.lastDescription === null && task.summary === null && (
-        <p className="fg-tertiary">No updates yet</p>
+        <EmptyStateRow title="No updates yet" />
       )}
     </Subtitle>
   );

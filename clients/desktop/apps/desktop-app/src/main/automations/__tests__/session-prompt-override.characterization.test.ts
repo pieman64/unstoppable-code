@@ -9,6 +9,7 @@
  * so the rows below run on the native route (`mockSharedPort` off) with their
  * values unchanged, and "through the shared port" pins the moved route.
  */
+import type * as SidebarModule from '../../lib/sidebar-items';
 import type * as PathsModule from '../../lib/paths';
 import type * as BackgroundContextModule from '../../services/background-execution-context';
 import type * as ChatServiceModule from '../../services/chat-service';
@@ -85,7 +86,7 @@ let mockOpenCodeGeneration = 0;
 let mockOnOwnerResolve: () => void = () => undefined;
 const mockRunPort = jest.fn<
   Promise<object>,
-  [object, object, PipelineProjectBotOptions]
+  Required<Parameters<typeof ProjectBotPortModule.runPipelineProjectBotAction>>
 >();
 const mockEnsureAdvisor = jest.fn();
 const mockSendOptions = jest.fn<void, [{ executionContext?: string }]>();
@@ -145,6 +146,8 @@ jest.mock('../../lib/paths', () => ({
   ...jest.requireActual<typeof PathsModule>('../../lib/paths'),
   getDataDir: (): string => mockDir,
   getAutomationsFilePath: (): string => join(mockDir, 'automations.json'),
+  getAutomationRunArchiveFilePath: (id: string): string =>
+    join(mockDir, 'automation-runs', `${id}.jsonl`),
 }));
 jest.mock('../../lib/resource-context', () => ({
   resourceContextEnabled: (): boolean => false,
@@ -160,6 +163,12 @@ jest.mock('../../services/background-execution-context', () => ({
   describeAutomationContextMismatch: (): Promise<null> => Promise.resolve(null),
 }));
 jest.mock('../../lib/sidebar-items', () => ({
+  getWorkspaceIndexRepository: (): ReturnType<
+    typeof SidebarModule.getWorkspaceIndexRepository
+  > =>
+    jest
+      .requireActual<typeof SidebarModule>('../../lib/sidebar-items')
+      .getWorkspaceIndexRepository(),
   readAllSidebarItems: (): Promise<object> =>
     Promise.resolve({
       items: [
@@ -810,6 +819,150 @@ describe('worktree_session_prompt through the shared port (CAN-4549)', () => {
     expect(mockRunPort).not.toHaveBeenCalled();
   });
 
+  it.each(['inventory', 'after inventory', 'during config'] as const)(
+    'persists storage-unavailable guidance when the index fails %s (CAN-5565)',
+    async (failureStage) => {
+      const sidebar = jest.requireActual<typeof SidebarModule>(
+        '../../lib/sidebar-items',
+      );
+      const { __setDesktopW5FileStoreForTests } =
+        await import('../../lib/w5-commit-log-file-store');
+      const persistence = await import('../../lib/workspace-persistence');
+      const { readEffectiveWorkspaceConfig } =
+        await import('../../lib/workspace-source');
+      const { createDesktopRuntime } =
+        await import('../../canopy-runtime/desktop-runtime');
+      const actualPort = jest.requireActual<typeof ProjectBotPortModule>(
+        '../../agent-actions/desktop-project-bot-port',
+      );
+      let unreadable = failureStage === 'inventory';
+      const indexReads: string[] = [];
+      __setDesktopW5FileStoreForTests({
+        read: (filePath) => {
+          if (filePath.endsWith('index.json')) {
+            indexReads.push(unreadable ? 'unreadable' : 'present');
+            return Promise.resolve(
+              unreadable
+                ? { state: 'unreadable' }
+                : {
+                    state: 'present',
+                    raw: JSON.stringify({
+                      version: 1,
+                      workspaces: [
+                        {
+                          id: 'workspace-1',
+                          type: 'single-repo',
+                          name: 'Workspace',
+                          color: 'blue',
+                          collapsed: false,
+                          order: 0,
+                        },
+                      ],
+                    }),
+                  },
+            );
+          }
+          return Promise.resolve({
+            state: 'present',
+            raw: JSON.stringify(
+              filePath.endsWith('workspace.json')
+                ? {
+                    version: 1,
+                    type: 'single-repo',
+                    repoPath: '/repo',
+                    repos: [],
+                  }
+                : {
+                    version: 1,
+                    worktrees: [
+                      {
+                        id: 'worktree-1',
+                        branchName: 'main',
+                        createdAt: '2026-05-28T00:00:00Z',
+                      },
+                    ],
+                  },
+            ),
+          });
+        },
+        replace: () => Promise.reject(new Error('Read must not write')),
+        remove: () => Promise.reject(new Error('Read must not write')),
+      });
+      const runtime = createDesktopRuntime({
+        workspaceServices: {
+          readAllSidebarItems: sidebar.readAllSidebarItems,
+          readAllSidebarItemsSnapshot: sidebar.readAllSidebarItemsSnapshot,
+          readWorkspaceIndexEntry: sidebar.readWorkspaceIndexEntry,
+          readWorkspaceIndexEntryDetailed:
+            sidebar.readWorkspaceIndexEntryDetailed,
+          readWorkspaceConfig: persistence.readWorkspaceConfig,
+          readWorkspaceWorktrees: persistence.readWorkspaceWorktrees,
+          readEffectiveWorkspaceConfig,
+        },
+      });
+      const readInventory =
+        runtime.queryWorkspaceListForLegacyIpc.bind(runtime);
+      const inventory = jest
+        .spyOn(runtime, 'queryWorkspaceListForLegacyIpc')
+        .mockImplementation(async (...args) => {
+          const result = await readInventory(...args);
+          if (failureStage === 'after inventory') {
+            expect(result.legacyAuthority?.indexAuthority).toBe('ok');
+            expect(result.legacyResult.items.map((item) => item.id)).toContain(
+              'workspace-1',
+            );
+            unreadable = true;
+          }
+          return result;
+        });
+      const readConfig = runtime.queryWorkspaceGetForLegacyIpc.bind(runtime);
+      const config = jest
+        .spyOn(runtime, 'queryWorkspaceGetForLegacyIpc')
+        .mockImplementation((...args) => {
+          if (failureStage === 'during config') unreadable = true;
+          return readConfig(...args);
+        });
+      mockRunPort.mockImplementation(actualPort.runPipelineProjectBotAction);
+      try {
+        mockTab = codexTab();
+        const instance = service();
+        const id = await create(instance, sessionAction());
+        const result = await instance.runNow({ id });
+        if (!result.ok || !result.run) throw new Error(JSON.stringify(result));
+        expect(result.run.status).toBe('failure');
+        expect(result.run.error).toMatch(/storage.*unavailable/i);
+        expect(result.run.error).toMatch(/try again/i);
+        expect(result.run.error).not.toContain('can no longer reach that chat');
+        expect(mockSend).not.toHaveBeenCalled();
+        expect(mockRunPort).toHaveBeenCalledTimes(1);
+        expect(inventory).toHaveBeenCalled();
+        expect(indexReads).toContain('unreadable');
+        if (failureStage !== 'inventory') {
+          expect(indexReads.indexOf('present')).toBeLessThan(
+            indexReads.indexOf('unreadable'),
+          );
+        }
+        if (failureStage === 'during config') {
+          expect(config).toHaveBeenCalled();
+        }
+        // A new service must read the durable failure, not the original in-memory run.
+        const restarted = service();
+        const history = await restarted.listRuns({ activityId: id });
+        expect(history.runs).toHaveLength(1);
+        expect(history.runs[0]).toMatchObject({
+          id: result.run.id,
+          status: 'failure',
+          error: result.run.error,
+        });
+      } finally {
+        config.mockRestore();
+        inventory.mockRestore();
+        await runtime.shutdown();
+        __setDesktopW5FileStoreForTests(undefined);
+      }
+    },
+  );
+
   it('reads a hidden target as an owner mismatch', async () => {
     mockRunPort.mockRejectedValue(
       new AgentChatSendError('not_found', 'The target chat is not available.'),
@@ -946,19 +1099,41 @@ describe('worktree_session_prompt parity with its native send (CAN-4549)', () =>
       }),
     );
     const instance = service();
-    await instance.start();
-    try {
-      for (let attempt = 0; attempt < 200; attempt++) {
-        const [run] = (await instance.list()).recentRuns;
-        if (run && run.status !== 'running') {
-          await flushWatchers();
-          return run;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 10));
+    const completed = Promise.withResolvers<string>();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    mockWatcherEvent.mockImplementation((event) => {
+      if (
+        event.activityId === 'automation-1' &&
+        event.manual === false &&
+        typeof event.runId === 'string'
+      ) {
+        completed.resolve(event.runId);
       }
-      throw new Error('The scheduled run did not finish.');
+    });
+    try {
+      await instance.start();
+      // The in-memory status becomes terminal before the final disk write.
+      // Watcher delivery follows persistence, so reseeding cannot race it.
+      const runId = await Promise.race([
+        completed.promise,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error('The scheduled run did not finish.')),
+            2_000,
+          );
+        }),
+      ]);
+      await flushWatchers();
+      const run = (await instance.list()).recentRuns.find(
+        (entry) => entry.id === runId,
+      );
+      if (!run) throw new Error('The scheduled run was not retained.');
+      expect(run.status).toBe('success');
+      return run;
     } finally {
+      clearTimeout(timeout);
       instance.stop();
+      mockWatcherEvent.mockImplementation(() => undefined);
     }
   }
 

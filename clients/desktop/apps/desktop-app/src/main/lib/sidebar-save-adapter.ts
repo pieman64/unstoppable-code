@@ -10,6 +10,7 @@ import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import {
   readAllSidebarItemsSnapshot,
   validateSidebarItems,
+  WorkspaceIndexUnreadableError,
 } from './sidebar-items';
 import { IdentifierValidationError, validateId } from './validation';
 import {
@@ -40,6 +41,16 @@ export interface SidebarSaveRequest {
   options?: SidebarItemsSaveOptions;
   /** Host-held projection delivered to this window, never a writer option. */
   previousItems?: readonly SidebarItem[];
+  /**
+   * Each workspace's metadata update (D10): the IPC projection of the
+   * registered `core.workspace.update`; defaults to the in-process command.
+   */
+  updateWorkspaceMetadata?: typeof updateWorkspaceMetadata;
+  /**
+   * Each worktree's patch: the IPC projection of the registered
+   * `core.worktree.update` (W7b-1b); defaults to the in-process command.
+   */
+  updateWorktree?: typeof updateWorktree;
 }
 
 export type SidebarSaveRefusal = 'invalid-request' | 'index-unavailable';
@@ -226,7 +237,7 @@ export async function saveSidebarItems(
     if (snapshot.indexAuthority === 'unreadable')
       throw new SidebarSaveRefusedError(
         'index-unavailable',
-        'The workspace index could not be read, so it was not rewritten',
+        new WorkspaceIndexUnreadableError(snapshot.indexUnserved).message,
       );
     const currentById = new Map(
       snapshot.file.items.map((item) => [item.id, item]),
@@ -261,7 +272,7 @@ export async function saveSidebarItems(
         const before = beforeById.get(incoming.id) ?? current;
         const patch = metadataPatch(incoming, before, current);
         if (Object.keys(patch).length)
-          await updateWorkspaceMetadata({
+          await (request.updateWorkspaceMetadata ?? updateWorkspaceMetadata)({
             workspaceId: incoming.id,
             patch,
             source: 'projects_save',
@@ -285,7 +296,7 @@ export async function saveSidebarItems(
           if (previous) {
             const patch = worktreePatch(worktree, previous, stored);
             if (Object.keys(patch).length)
-              await updateWorktree({
+              await (request.updateWorktree ?? updateWorktree)({
                 workspaceId: incoming.id,
                 worktreeId: worktree.id,
                 expectedCreatedAt: worktree.createdAt,

@@ -14,6 +14,15 @@ describe('LoadingSpinner', () => {
     expect(markup).toContain('aria-label="Loading"');
   });
 
+  it('names itself as an image, so assistive technology reads the label', () => {
+    // `aria-label` on a span with no role is ignored by screen readers.
+    const container = document.createElement('div');
+    container.innerHTML = renderToStaticMarkup(<LoadingSpinner />);
+    const spinner = container.firstElementChild;
+    expect(spinner?.getAttribute('role')).toBe('img');
+    expect(spinner?.getAttribute('aria-label')).toBe('Loading');
+  });
+
   it.each<[SpinnerTone, string]>([
     ['primary', 'fg-primary'],
     ['secondary', 'fg-secondary'],
@@ -67,6 +76,7 @@ describe('LoadingSpinner', () => {
     expect(markup).toContain('data-testid="busy"');
     expect(markup).toContain('aria-hidden="true"');
     expect(markup).not.toContain('aria-label');
+    expect(markup).not.toContain('role=');
   });
 
   it('stops the march under reduced motion, leaving the ring visible', () => {

@@ -5,11 +5,20 @@ import {
   createNodeW5FileStore,
   createSerialQueue,
   isJsonObject,
+  W5_HOSTLESS_READ_MESSAGE,
+  W5_UNREACHABLE_READ_MESSAGE,
+  W5AuthorityUnreachableError,
+  W5RecordUnservedError,
+  w5ReadUnreachable,
+  w5UnreadableMessage,
   withUnknownFields,
   type W5AtomicFileWriter,
   type W5FileReplacement,
 } from '../file-store';
 import type { W5StorageTarget } from '../storage-target';
+import { WorkspaceIndexUnreadableError } from '../workspace-index-repository';
+import { WorkspaceConfigUnreadableError } from '../workspace-manifest-repository';
+import { WorktreeRegistryUnreadableError } from '../worktree-list-repository';
 
 const storage: W5StorageTarget = {
   namespace: 'workspace_index',
@@ -136,6 +145,196 @@ describe('JSON helpers', () => {
     expect(withUnknownFields({ id: 'a' }, undefined, known)).toEqual({
       id: 'a',
     });
+  });
+});
+
+describe('W5RecordUnservedError (CAN-5531)', () => {
+  it('names each capture class the record port cannot serve, by file', () => {
+    expect(
+      [
+        new W5RecordUnservedError('unsupported-id', 'worktrees'),
+        new W5RecordUnservedError('unsupported-id', 'manifest'),
+        new W5RecordUnservedError('limit-exceeded', 'worktrees'),
+        new W5RecordUnservedError('limit-exceeded', 'manifest'),
+        new W5RecordUnservedError('limit-exceeded', 'index'),
+        new W5RecordUnservedError('limit-exceeded', 'index-backup'),
+      ].map(({ name, reason, message }) => ({ name, reason, message })),
+    ).toEqual([
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'unsupported-id',
+        message:
+          "Couldn't read this project's worktree list. The project's ID isn't supported.",
+      },
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'unsupported-id',
+        message:
+          "Couldn't read this project's settings. The project's ID isn't supported.",
+      },
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'limit-exceeded',
+        message:
+          "Couldn't read this project's worktree list. It's too large to read.",
+      },
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'limit-exceeded',
+        message:
+          "Couldn't read this project's settings. It's too large to read.",
+      },
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'limit-exceeded',
+        message: "Couldn't read the project list. It's too large to read.",
+      },
+      {
+        name: 'W5RecordUnservedError',
+        reason: 'limit-exceeded',
+        message: "Couldn't read the project list. It's too large to read.",
+      },
+    ]);
+  });
+
+  it('keeps the refusal it describes as its cause', () => {
+    const refusal = new Error('The W5 capture exceeds its limits.');
+    expect(
+      new W5RecordUnservedError('limit-exceeded', 'index', refusal).cause,
+    ).toBe(refusal);
+    expect(
+      'cause' in new W5RecordUnservedError('unsupported-id', 'worktrees'),
+    ).toBe(false);
+  });
+
+  it('gives each unreadable-file refusal its specific message, and no other cause', () => {
+    const unserved = new W5RecordUnservedError('unsupported-id', 'manifest');
+    for (const Refusal of [
+      WorktreeRegistryUnreadableError,
+      WorkspaceConfigUnreadableError,
+      WorkspaceIndexUnreadableError,
+    ]) {
+      expect(new Refusal(unserved).message).toBe(unserved.message);
+      expect(new Refusal(new Error('EACCES')).message).toBe(
+        new Refusal().message,
+      );
+    }
+    expect(new WorktreeRegistryUnreadableError().message).toBe(
+      'Worktree registry is unreadable',
+    );
+  });
+});
+
+describe('W5AuthorityUnreachableError (CAN-5542)', () => {
+  it('says whether the change was refused or may have saved, keeping its cause', () => {
+    const drop = new Error('Connection closed.');
+    const refused = new W5AuthorityUnreachableError('refused', 'connect');
+    const unknown = new W5AuthorityUnreachableError(
+      'outcome-unknown',
+      'lost',
+      drop,
+    );
+    expect(refused).toMatchObject({
+      name: 'W5AuthorityUnreachableError',
+      certainty: 'refused',
+      reason: 'connect',
+      message:
+        "Couldn't save this change because the background service isn't running. Reconnect from the notice, then try again.",
+    });
+    expect('cause' in refused).toBe(false);
+    expect(unknown).toMatchObject({
+      certainty: 'outcome-unknown',
+      reason: 'lost',
+      cause: drop,
+      message:
+        'This change may not have saved. The background service stopped before it confirmed. Reconnect, check the project, then try again.',
+    });
+  });
+
+  it('gives each unreadable-file refusal its message instead of "could not be read"', () => {
+    for (const certainty of ['refused', 'outcome-unknown'] as const) {
+      const unreachable = new W5AuthorityUnreachableError(certainty, 'lost');
+      for (const Refusal of [
+        WorktreeRegistryUnreadableError,
+        WorkspaceConfigUnreadableError,
+        WorkspaceIndexUnreadableError,
+      ]) {
+        const refusal = new Refusal(unreachable);
+        expect(refusal.message).toBe(unreachable.message);
+        expect(refusal.cause).toBe(unreachable);
+      }
+    }
+  });
+
+  it('never gives a read-only refusal the save copy', () => {
+    const unserved = new W5RecordUnservedError('limit-exceeded', 'manifest');
+    for (const certainty of ['refused', 'outcome-unknown'] as const) {
+      const unreachable = new W5AuthorityUnreachableError(certainty, 'connect');
+      expect(w5UnreadableMessage('fallback', unreachable, 'read')).toBe(
+        W5_UNREACHABLE_READ_MESSAGE,
+      );
+      expect(
+        new WorkspaceConfigUnreadableError(unreachable, 'read').message,
+      ).toBe(W5_UNREACHABLE_READ_MESSAGE);
+    }
+    expect(W5_UNREACHABLE_READ_MESSAGE).not.toMatch(/save/i);
+    // A class the port can't serve reads the same either way.
+    expect(w5UnreadableMessage('fallback', unserved, 'read')).toBe(
+      unserved.message,
+    );
+    expect(w5UnreadableMessage('fallback', new Error('EACCES'), 'read')).toBe(
+      'fallback',
+    );
+  });
+
+  it('says a reached service that serves no project records needs a restart, not the notice', () => {
+    const hostless = new W5AuthorityUnreachableError(
+      'refused',
+      'w5_host_unavailable',
+    );
+    expect(hostless.message).toBe(
+      "Couldn't save this change because the background service can't save projects. Restart the app, then try again.",
+    );
+    expect(w5UnreadableMessage('fallback', hostless, 'read')).toBe(
+      W5_HOSTLESS_READ_MESSAGE,
+    );
+    expect(W5_HOSTLESS_READ_MESSAGE).toBe(
+      "Couldn't load this because the background service can't load projects. Restart the app, then try again.",
+    );
+    for (const message of [hostless.message, W5_HOSTLESS_READ_MESSAGE])
+      expect(message).not.toMatch(/notice|isn't running|reconnect/i);
+    expect(new WorkspaceConfigUnreadableError(hostless).message).toBe(
+      hostless.message,
+    );
+    expect(new WorkspaceConfigUnreadableError(hostless, 'read').message).toBe(
+      W5_HOSTLESS_READ_MESSAGE,
+    );
+    // Every other reason keeps the not-running copy.
+    for (const reason of ['connect', 'lost', 'held'] as const)
+      expect(
+        w5UnreadableMessage(
+          'fallback',
+          new W5AuthorityUnreachableError('refused', reason),
+          'read',
+        ),
+      ).toBe(W5_UNREACHABLE_READ_MESSAGE);
+    // A change that may have saved says so, whatever the reason.
+    expect(
+      new W5AuthorityUnreachableError('outcome-unknown', 'w5_host_unavailable')
+        .message,
+    ).toMatch(/^This change may not have saved\./);
+  });
+
+  it('is found only on an unreadable read that carries it', () => {
+    const unreachable = new W5AuthorityUnreachableError('refused', 'held');
+    expect(w5ReadUnreachable({ state: 'unreadable', error: unreachable })).toBe(
+      unreachable,
+    );
+    expect(
+      w5ReadUnreachable({ state: 'unreadable', error: new Error('EACCES') }),
+    ).toBeUndefined();
+    expect(w5ReadUnreachable({ state: 'unreadable' })).toBeUndefined();
+    expect(w5ReadUnreachable({ state: 'absent' })).toBeUndefined();
   });
 });
 

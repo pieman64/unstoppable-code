@@ -19,31 +19,136 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 type Choice = 'short' | 'complete' | 'off';
 
 /** jsdom does no layout; segments report the offsets a real track would. */
-const LAYOUT: Record<string, { left: number; width: number }> = {
+const LAYOUT: Readonly<Record<string, { left: number; width: number }>> = {
   'segment-short': { left: 2, width: 60 },
   'segment-complete': { left: 64, width: 90 },
   'segment-off': { left: 156, width: 40 },
 };
 
+/** The layout segments report; a test may widen the track by replacing it. */
+let layout = LAYOUT;
+
 function stubOffsets(): () => void {
   const prototype = HTMLElement.prototype;
   const left = Object.getOwnPropertyDescriptor(prototype, 'offsetLeft');
   const width = Object.getOwnPropertyDescriptor(prototype, 'offsetWidth');
+  layout = LAYOUT;
   Object.defineProperty(prototype, 'offsetLeft', {
     configurable: true,
     get(this: HTMLElement): number {
-      return LAYOUT[this.dataset.testid ?? '']?.left ?? 0;
+      return layout[this.dataset.testid ?? '']?.left ?? 0;
     },
   });
   Object.defineProperty(prototype, 'offsetWidth', {
     configurable: true,
     get(this: HTMLElement): number {
-      return LAYOUT[this.dataset.testid ?? '']?.width ?? 0;
+      return layout[this.dataset.testid ?? '']?.width ?? 0;
     },
   });
   return (): void => {
     if (left) Object.defineProperty(prototype, 'offsetLeft', left);
     if (width) Object.defineProperty(prototype, 'offsetWidth', width);
+  };
+}
+
+/**
+ * The surface reports the box its own styles lay it out in, and the
+ * compositor slide is recorded. Returns the recorder and a restore.
+ */
+function stubSurfaceSlide(): { animate: jest.Mock; restore: () => void } {
+  const prototype = HTMLElement.prototype;
+  const descriptors = {
+    offsetLeft: Object.getOwnPropertyDescriptor(prototype, 'offsetLeft'),
+    offsetWidth: Object.getOwnPropertyDescriptor(prototype, 'offsetWidth'),
+    offsetHeight: Object.getOwnPropertyDescriptor(prototype, 'offsetHeight'),
+  };
+  const surfaceOr = (
+    element: HTMLElement,
+    own: number,
+    fallback: PropertyDescriptor | undefined,
+  ): number =>
+    element.dataset.testid === 'picker-indicator'
+      ? own
+      : Number(fallback?.get?.call(element) ?? 0);
+  Object.defineProperty(prototype, 'offsetLeft', {
+    configurable: true,
+    get(this: HTMLElement): number {
+      return surfaceOr(
+        this,
+        Number.parseFloat(this.style.left),
+        descriptors.offsetLeft,
+      );
+    },
+  });
+  Object.defineProperty(prototype, 'offsetWidth', {
+    configurable: true,
+    get(this: HTMLElement): number {
+      return surfaceOr(
+        this,
+        Number.parseFloat(this.style.width),
+        descriptors.offsetWidth,
+      );
+    },
+  });
+  Object.defineProperty(prototype, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement): number {
+      return surfaceOr(this, 24, descriptors.offsetHeight);
+    },
+  });
+  const animate = jest.fn();
+  Object.defineProperty(prototype, 'animate', {
+    configurable: true,
+    writable: true,
+    value: animate,
+  });
+  return {
+    animate,
+    restore: (): void => {
+      Reflect.deleteProperty(prototype, 'animate');
+      for (const [name, descriptor] of Object.entries(descriptors)) {
+        if (descriptor) Object.defineProperty(prototype, name, descriptor);
+      }
+    },
+  };
+}
+
+/** Records the resize observers the control creates, and what they watch. */
+function stubResizeObserver(): {
+  readonly created: () => number;
+  readonly resize: () => void;
+  readonly restore: () => void;
+} {
+  const original = Object.getOwnPropertyDescriptor(window, 'ResizeObserver');
+  const live = new Set<{ callback: () => void; watching: boolean }>();
+  let created = 0;
+  Object.defineProperty(window, 'ResizeObserver', {
+    configurable: true,
+    writable: true,
+    value: class {
+      private readonly entry: { callback: () => void; watching: boolean };
+      constructor(callback: () => void) {
+        created += 1;
+        this.entry = { callback, watching: false };
+        live.add(this.entry);
+      }
+      observe(): void {
+        this.entry.watching = true;
+      }
+      disconnect(): void {
+        live.delete(this.entry);
+      }
+    },
+  });
+  return {
+    created: () => created,
+    resize: (): void => {
+      for (const entry of live) if (entry.watching) entry.callback();
+    },
+    restore: (): void => {
+      if (original) Object.defineProperty(window, 'ResizeObserver', original);
+      else Reflect.deleteProperty(window, 'ResizeObserver');
+    },
   };
 }
 
@@ -127,53 +232,7 @@ describe('SegmentedControl', () => {
   });
 
   it('slides the surface on the compositor instead of animating left and width', () => {
-    // The surface reports the box its own styles lay it out in.
-    const prototype = HTMLElement.prototype;
-    const descriptors = {
-      offsetLeft: Object.getOwnPropertyDescriptor(prototype, 'offsetLeft'),
-      offsetWidth: Object.getOwnPropertyDescriptor(prototype, 'offsetWidth'),
-      offsetHeight: Object.getOwnPropertyDescriptor(prototype, 'offsetHeight'),
-    };
-    const surfaceOr = (
-      element: HTMLElement,
-      own: number,
-      fallback: PropertyDescriptor | undefined,
-    ): number =>
-      element.dataset.testid === 'picker-indicator'
-        ? own
-        : Number(fallback?.get?.call(element) ?? 0);
-    Object.defineProperty(prototype, 'offsetLeft', {
-      configurable: true,
-      get(this: HTMLElement): number {
-        return surfaceOr(
-          this,
-          Number.parseFloat(this.style.left),
-          descriptors.offsetLeft,
-        );
-      },
-    });
-    Object.defineProperty(prototype, 'offsetWidth', {
-      configurable: true,
-      get(this: HTMLElement): number {
-        return surfaceOr(
-          this,
-          Number.parseFloat(this.style.width),
-          descriptors.offsetWidth,
-        );
-      },
-    });
-    Object.defineProperty(prototype, 'offsetHeight', {
-      configurable: true,
-      get(this: HTMLElement): number {
-        return surfaceOr(this, 24, descriptors.offsetHeight);
-      },
-    });
-    const animate = jest.fn();
-    Object.defineProperty(prototype, 'animate', {
-      configurable: true,
-      writable: true,
-      value: animate,
-    });
+    const { animate, restore } = stubSurfaceSlide();
     try {
       act(() => root.render(<Harness onChange={jest.fn()} />));
       const surface = query('picker-indicator');
@@ -195,10 +254,67 @@ describe('SegmentedControl', () => {
         { duration: 200, easing: 'cubic-bezier(0, 0, 0.2, 1)' },
       );
     } finally {
-      Reflect.deleteProperty(prototype, 'animate');
-      for (const [name, descriptor] of Object.entries(descriptors)) {
-        if (descriptor) Object.defineProperty(prototype, name, descriptor);
-      }
+      restore();
+    }
+  });
+
+  it('follows a resized track at once and slides only to a newly picked segment', () => {
+    const surfaceSlide = stubSurfaceSlide();
+    const observers = stubResizeObserver();
+    try {
+      act(() => root.render(<Harness onChange={jest.fn()} />));
+      const surface = query('picker-indicator');
+
+      // The panel widens: every segment grows with the track.
+      layout = {
+        'segment-short': { left: 2, width: 80 },
+        'segment-complete': { left: 84, width: 120 },
+        'segment-off': { left: 206, width: 60 },
+      };
+      act(() => observers.resize());
+      expect(surface?.style.width).toBe('80px');
+      expect(surfaceSlide.animate).not.toHaveBeenCalled();
+
+      act(() => query('segment-complete')?.click());
+      expect(surface?.style.left).toBe('84px');
+      expect(surfaceSlide.animate).toHaveBeenCalledTimes(1);
+    } finally {
+      observers.restore();
+      surfaceSlide.restore();
+    }
+  });
+
+  it('measures again only when the choice or the options change, not on every parent render', () => {
+    const observers = stubResizeObserver();
+    // Callers pass a fresh but equal options array on every render.
+    const renderWith = (options: typeof OPTIONS): void =>
+      act(() =>
+        root.render(
+          <SegmentedControl
+            value="short"
+            options={options.map((option) => ({ ...option }))}
+            onChange={jest.fn()}
+            label="Diff stats"
+            dataTestId="picker"
+          />,
+        ),
+      );
+    try {
+      renderWith(OPTIONS);
+      const created = observers.created();
+      renderWith(OPTIONS);
+      renderWith(OPTIONS);
+      expect(observers.created()).toBe(created);
+
+      // A renamed option is a real change: the surface follows its width.
+      layout = { ...LAYOUT, 'segment-short': { left: 2, width: 72 } };
+      renderWith([
+        { value: 'short', label: 'Brief', dataTestId: 'segment-short' },
+        ...OPTIONS.slice(1),
+      ]);
+      expect(query('picker-indicator')?.style.width).toBe('72px');
+    } finally {
+      observers.restore();
     }
   });
 
@@ -282,6 +398,64 @@ describe('SegmentedControl', () => {
     expect(query('segment-short')?.getAttribute('role')).toBe('tab');
     expect(query('segment-short')?.getAttribute('aria-selected')).toBe('true');
     expect(query('segment-short')?.hasAttribute('aria-pressed')).toBe(false);
+  });
+
+  describe('as tabs, from the keyboard', () => {
+    const press = (testId: string, key: string): KeyboardEvent => {
+      const event = new KeyboardEvent('keydown', {
+        key,
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        query(testId)?.dispatchEvent(event);
+      });
+      return event;
+    };
+
+    it('keeps only the selected tab in the Tab order', () => {
+      act(() => root.render(<Harness onChange={jest.fn()} semantics="tabs" />));
+      expect(query('segment-short')?.tabIndex).toBe(0);
+      expect(query('segment-complete')?.tabIndex).toBe(-1);
+      expect(query('segment-off')?.tabIndex).toBe(-1);
+    });
+
+    it('moves and selects with the arrow keys', () => {
+      const onChange = jest.fn();
+      act(() => root.render(<Harness onChange={onChange} semantics="tabs" />));
+      const event = press('segment-short', 'ArrowRight');
+      expect(event.defaultPrevented).toBe(true);
+      expect(onChange).toHaveBeenLastCalledWith('complete');
+      expect(document.activeElement).toBe(query('segment-complete'));
+      expect(query('segment-complete')?.tabIndex).toBe(0);
+      press('segment-complete', 'ArrowLeft');
+      expect(onChange).toHaveBeenLastCalledWith('short');
+      expect(document.activeElement).toBe(query('segment-short'));
+    });
+
+    it('focuses an unavailable tab without selecting it, then wraps', () => {
+      const onChange = jest.fn();
+      act(() => root.render(<Harness onChange={onChange} semantics="tabs" />));
+      press('segment-short', 'End');
+      expect(document.activeElement).toBe(query('segment-off'));
+      expect(onChange).not.toHaveBeenCalled();
+      press('segment-off', 'ArrowRight');
+      expect(document.activeElement).toBe(query('segment-short'));
+      expect(onChange).not.toHaveBeenCalled();
+      press('segment-short', 'ArrowLeft');
+      expect(document.activeElement).toBe(query('segment-off'));
+      press('segment-off', 'Home');
+      expect(document.activeElement).toBe(query('segment-short'));
+    });
+
+    it('leaves the toggle form to Tab and the browser', () => {
+      const onChange = jest.fn();
+      act(() => root.render(<Harness onChange={onChange} />));
+      expect(query('segment-complete')?.tabIndex).toBe(0);
+      const event = press('segment-short', 'ArrowRight');
+      expect(onChange).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    });
   });
 
   it('keeps an unavailable option focusable but never selects it', () => {

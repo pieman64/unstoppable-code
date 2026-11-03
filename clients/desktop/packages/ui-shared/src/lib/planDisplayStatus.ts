@@ -23,12 +23,19 @@ export type PlanExecutionOutcome =
   | 'cancelled';
 
 export interface PlanExecutionEvidence {
-  /** `pipeline` attempts navigate with View run, `chat` with View chat. */
+  /** `pipeline` attempts navigate with Open run, `chat` with Open chat. */
   readonly kind: 'pipeline' | 'chat';
+  /**
+   * The attempt's identity, unique within its kind. A chat attempt is one
+   * linked turn, so hosts compose it from the chat and its user message
+   * rather than reusing the chat id.
+   */
   readonly id: string;
   readonly outcome: PlanExecutionOutcome;
   /** ISO time the attempt started; attempts without one cannot be placed. */
   readonly startedAt?: string;
+  /** ISO time a terminal attempt ended, when the host knows it. */
+  readonly endedAt?: string;
   /** Plan revision the attempt executed, when the host knows it. */
   readonly revisionNumber?: number;
 }
@@ -47,7 +54,7 @@ export interface PlanDisplayStatusInput {
 
 export interface PlanDisplayStatus {
   readonly kind: PlanDisplayStatusKind;
-  /** Sentence-case badge label. */
+  /** Sentence-case badge label, naming the venue once execution is known. */
   readonly label: string;
   /** The attempt behind Implementing or Implemented. */
   readonly selected?: PlanExecutionEvidence;
@@ -55,12 +62,28 @@ export interface PlanDisplayStatus {
   readonly latestUnsuccessful?: PlanExecutionEvidence;
   /** Execute stays primary only while the plan awaits review. */
   readonly executeEmphasis: 'primary' | 'secondary';
+  /**
+   * `open` replaces Execute with a link to the selected attempt while it
+   * runs and after it succeeds; retries move to the overflow menu.
+   */
+  readonly primaryAction: 'execute' | 'open';
 }
 
 const STORED_LABELS = {
   pending: 'Pending',
   approved: 'Approved',
   dismissed: 'Dismissed',
+} as const;
+
+const EXECUTION_LABELS = {
+  implementing: {
+    chat: 'Implementing in chat',
+    pipeline: 'Implementing in workflow',
+  },
+  implemented: {
+    chat: 'Finished in chat',
+    pipeline: 'Implemented in workflow',
+  },
 } as const;
 
 // Duplicate live/persisted reports share a start time. Prefer a terminal
@@ -158,6 +181,7 @@ export function resolvePlanDisplayStatus(
       kind: 'pending',
       label: STORED_LABELS.pending,
       executeEmphasis: 'primary',
+      primaryAction: 'execute',
     };
   }
   if (review === 'dismissed') {
@@ -165,6 +189,7 @@ export function resolvePlanDisplayStatus(
       kind: 'dismissed',
       label: STORED_LABELS.dismissed,
       executeEmphasis: 'secondary',
+      primaryAction: 'execute',
     };
   }
   if (review !== 'approved') {
@@ -172,6 +197,7 @@ export function resolvePlanDisplayStatus(
       kind: 'unknown',
       label: review ? sentenceCase(review) : '',
       executeEmphasis: 'primary',
+      primaryAction: 'execute',
     };
   }
 
@@ -185,20 +211,22 @@ export function resolvePlanDisplayStatus(
   if (active) {
     return {
       kind: 'implementing',
-      label: 'Implementing',
+      label: EXECUTION_LABELS.implementing[active.kind],
       selected: active,
       ...(latestUnsuccessful ? { latestUnsuccessful } : {}),
       executeEmphasis: 'secondary',
+      primaryAction: 'open',
     };
   }
   const succeeded = attempts.find((attempt) => attempt.outcome === 'succeeded');
   if (succeeded) {
     return {
       kind: 'implemented',
-      label: 'Implemented',
+      label: EXECUTION_LABELS.implemented[succeeded.kind],
       selected: succeeded,
       ...(latestUnsuccessful ? { latestUnsuccessful } : {}),
       executeEmphasis: 'secondary',
+      primaryAction: 'open',
     };
   }
   return {
@@ -206,5 +234,6 @@ export function resolvePlanDisplayStatus(
     label: STORED_LABELS.approved,
     ...(latestUnsuccessful ? { latestUnsuccessful } : {}),
     executeEmphasis: 'secondary',
+    primaryAction: 'execute',
   };
 }

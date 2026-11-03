@@ -120,7 +120,7 @@ describe('removeDesktopWorktreeInBatch (CAN-3975)', () => {
     );
     await expect(
       removeDesktopWorktreeInBatch('project-a', 'wt-2', { mode: 'archive' }),
-    ).rejects.toThrow('Teardown script failed. Retry from the row menu.');
+    ).rejects.toThrow('Teardown script failed. Try again from the row menu.');
     expect(finish).not.toHaveBeenCalled();
   });
 

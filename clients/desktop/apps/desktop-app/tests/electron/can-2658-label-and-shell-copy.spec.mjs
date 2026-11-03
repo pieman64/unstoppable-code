@@ -28,10 +28,12 @@ test('run-defaults unset shell option names the platform default', async () => {
     const shellSelect = runDefaults.getByRole('combobox');
     await shellSelect.scrollIntoViewIfNeeded();
     await expect(shellSelect).toBeVisible();
-    await expect(shellSelect).toHaveValue('');
-    const unsetOption = shellSelect.locator('option').first();
-    await expect(unsetOption).toHaveAttribute('value', '');
+    await expect(shellSelect).toHaveAttribute('data-value', '');
+    await shellSelect.click();
+    const unsetOption = window.getByRole('option').first();
+    await expect(unsetOption).toHaveAttribute('data-value', '');
     await expect(unsetOption).toHaveText(`Default (${defaultShell})`);
+    await expect(unsetOption).toHaveAttribute('aria-selected', 'true');
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

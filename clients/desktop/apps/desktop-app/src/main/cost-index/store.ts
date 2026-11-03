@@ -18,7 +18,7 @@ import {
   type CostErrorReason,
   type PipelineRunCostView,
 } from '@canopy/protocol/cost-view';
-import { normalizeAuditEntry } from '../observability/audit-entry-parser';
+import { normalizeAuditEntry } from '@canopy/core-runtime/observability';
 import {
   sameAuditDayFileIdentity,
   type AuditDayFileIdentity,

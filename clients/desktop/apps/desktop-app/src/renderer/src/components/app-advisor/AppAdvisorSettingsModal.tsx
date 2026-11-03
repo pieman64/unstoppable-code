@@ -17,6 +17,7 @@
  * tab remains available in the main window.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
+import { TabBar } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -25,7 +26,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared';
 import { AutoArchiveSettingsControl } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
 import { ModelThinkingPreferenceRow } from '@/components/settings/ModelThinkingPreferenceRow';
 import { SettingsPluginPicker } from '@/components/settings/SettingsPluginPicker';
 import { saveAppAdvisorPreferencePatch } from '@/lib/appAdvisorPreferenceSave';
@@ -205,6 +206,7 @@ export function AppAdvisorSettingsModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={ORCHESTRATOR_LABEL}
       titleId="app-advisor-settings-title"
@@ -212,28 +214,21 @@ export function AppAdvisorSettingsModal({
       minHeight="28rem"
       dataTestId="app-advisor-settings-modal"
     >
-      <div className="canopy-tab-list flex gap-1 px-5" role="tablist">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            data-testid={`app-advisor-settings-tab-${tab.id}`}
-            className={`canopy-tab-trigger flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors ${
-              activeTab === tab.id
-                ? 'fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        items={tabs.map((tab) => ({
+          id: tab.id,
+          label: tab.label,
+          dataTestId: `app-advisor-settings-tab-${tab.id}`,
+        }))}
+        value={activeTab}
+        onChange={(next): void => setActiveTab(next)}
+        label={`${ORCHESTRATOR_LABEL} settings sections`}
+        density="compact"
+        inset="dialog"
+      />
 
       <div
-        className={`flex-1 p-5 ${
+        className={`flex-1 p-6 ${
           activeTab === 'instructions'
             ? 'flex min-h-0 flex-col'
             : 'overflow-y-auto'
@@ -291,14 +286,15 @@ export function AppAdvisorSettingsModal({
             >
               Instructions loaded into every {ORCHESTRATOR_LABEL} chat.
             </p>
-            <textarea
+            <TextArea
+              mono
               value={claudeMd}
               onChange={(event) => setClaudeMd(event.target.value)}
               disabled={claudeMdLoading}
               aria-labelledby="app-advisor-claude-md-label"
               aria-describedby="app-advisor-claude-md-description"
               data-testid="app-advisor-settings-claude-md"
-              className="focus-ring mt-2 min-h-0 w-full flex-1 resize-y rounded-lg bg-base px-3 py-2 font-mono text-xs ring-1 ring-inset ring-line-base disabled:opacity-50"
+              className="mt-2 min-h-0 flex-1"
               placeholder={`# ${ORCHESTRATOR_LABEL} instructions\n\nAdd assistant instructions here...`}
             />
           </div>
@@ -318,12 +314,18 @@ export function AppAdvisorSettingsModal({
                   {`Deleted and archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
                 </p>
                 <div className="mt-3 flex items-center gap-3">
-                  <label className="flex items-center gap-2">
-                    <span className="text-sm fg-primary">
-                      Keep deleted chats for
-                    </span>
-                    <input
+                  <span
+                    id="app-advisor-retention-days-label"
+                    className="text-sm fg-primary"
+                  >
+                    Keep deleted chats for
+                  </span>
+                  <div className="w-28">
+                    <TextInput
+                      density="settings"
                       type="number"
+                      aria-labelledby="app-advisor-retention-days-label"
+                      trailing="days"
                       value={retentionDays}
                       onChange={(e) =>
                         setRetentionDays(
@@ -340,10 +342,8 @@ export function AppAdvisorSettingsModal({
                       min={1}
                       max={MAX_ARCHIVE_RETENTION_DAYS}
                       data-testid="app-advisor-settings-retention-days"
-                      className="w-20 rounded-lg border bg-secondary/30 px-3 py-2 text-sm fg-primary outline-none"
                     />
-                    <span className="text-sm fg-secondary">days</span>
-                  </label>
+                  </div>
                 </div>
                 <AutoArchiveSettingsControl
                   enabled={autoArchiveEnabled}
@@ -363,7 +363,7 @@ export function AppAdvisorSettingsModal({
       </div>
 
       {(isDirty || saveError) && (
-        <div className="flex items-center justify-end gap-3 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-3">
           {saveError && (
             <span className="min-w-0 flex-1 truncate text-xs text-destructive">
               {saveError}

@@ -27,11 +27,20 @@ import type { AiCreditsScopeRequest } from '@canopy/desktop-shared/types';
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { useModelUnlockReturn } from '@/hooks/useModelUnlockReturn';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   resetAiCreditsArrivalForTests,
   useAiCreditsArrivalStore,
   type AiCreditsArrivalOrigin,
 } from '@/lib/aiCreditsArrivalConfirmation';
+import {
+  resetAiCreditsHandoffsForTests,
+  reconcileAiCreditsHandoffAccount,
+  suspendAiCreditsHandoffAccount,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
 
 const mockHostedSettingsOpenable = jest.fn<boolean, []>();
 jest.mock('@/components/settings/hosted/hosted-settings-availability', () => ({
@@ -183,6 +192,14 @@ afterEach(() => {
   useNavigationStore.setState({
     openAccountOrganizationSettings: realOpenAccountOrganizationSettings,
   });
+});
+
+// The retained checkout outlives a render (CAN-5534); never leak it across cases.
+beforeEach(() => {
+  resetAiCreditsHandoffsForTests();
+});
+afterEach(() => {
+  resetAiCreditsHandoffsForTests();
 });
 
 describe('GetAiCreditsCta', () => {
@@ -1808,6 +1825,374 @@ describe('Check again feedback and Reopen billing (CAN-5162)', () => {
 
       expect(reports.at(-1)?.feedback).toBe('check-failed');
       expect(reports.at(-1)?.onReopenBilling).toBeUndefined();
+    });
+  });
+
+  describe('retained hand-off (CAN-5534)', () => {
+    const CHAT_A = { projectId: 'project', worktreeId: 'wt', chatId: 'chat-a' };
+    const CHAT_B = { ...CHAT_A, chatId: 'chat-b' };
+
+    function scopeOf(target: typeof CHAT_A): AiCreditsScopeRequest {
+      return { kind: 'work', ...target };
+    }
+
+    function retainedCta(
+      target: typeof CHAT_A,
+      dataTestId: string,
+      extra: Partial<GetAiCreditsCtaProps> = {},
+    ): ReturnType<typeof createElement> {
+      return createElement(GetAiCreditsCta, {
+        key: dataTestId,
+        label: 'Get AI Credits',
+        onCovered: jest.fn(),
+        aiCreditsScope: scopeOf(target),
+        billingDestination: 'browser',
+        confirmArrival: 'no-billing-source',
+        handoffLayout: 'compact',
+        persistHandoffFor: target,
+        dataTestId,
+        ...extra,
+      });
+    }
+
+    async function show(
+      ...elements: ReturnType<typeof createElement>[]
+    ): Promise<void> {
+      root ??= createRoot(document.body);
+      await act(async () => {
+        root?.render(elements);
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+      });
+    }
+
+    function byTestId(testId: string): HTMLButtonElement | null {
+      return document.querySelector<HTMLButtonElement>(
+        `[data-testid="${testId}"]`,
+      );
+    }
+
+    function records(): number {
+      return Object.keys(useAiCreditsHandoffStore.getState().records).length;
+    }
+
+    function AccountRoot(): null {
+      useModelUnlockReturn();
+      return null;
+    }
+
+    it('rejects a different buyer in the store read after the browser opens', async () => {
+      openAuthenticatedPortalPage.mockImplementationOnce(
+        (): Promise<boolean> => {
+          loadCanopyCloudAccount.mockResolvedValue({
+            account: { id: 'acct_2' },
+          });
+          return Promise.resolve(true);
+        },
+      );
+      await show(retainedCta(CHAT_A, 'cta'));
+      await clickAndSettle(byTestId('cta') ?? cta());
+      expect(records()).toBe(0);
+      expect(useAiCreditsArrivalStore.getState().arrival).toBeNull();
+    });
+
+    it('retains the buyer identified before opening when the store identity read fails', async () => {
+      openAuthenticatedPortalPage.mockImplementationOnce(
+        (): Promise<boolean> => {
+          loadCanopyCloudAccount.mockRejectedValue(new Error('offline'));
+          return Promise.resolve(true);
+        },
+      );
+      await show(retainedCta(CHAT_A, 'cta'));
+      await clickAndSettle(byTestId('cta') ?? cta());
+      expect(records()).toBe(1);
+      expect(
+        Object.values(useAiCreditsHandoffStore.getState().records)[0]
+          ?.identityUnverified,
+      ).toBe(true);
+      loadCanopyCloudAccount.mockResolvedValue({ account: { id: 'acct_1' } });
+      await show(
+        createElement(AccountRoot, { key: 'account-root' }),
+        retainedCta(CHAT_A, 'cta'),
+      );
+      loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+      await clickAndSettle(byTestId('cta-check-again') ?? cta());
+      await act(async () => {
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      expect(records()).toBe(0);
+      expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+        'chat-a',
+      );
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the winning arrival when a sibling clicks during the browser open', async () => {
+      const opening = deferred<boolean>();
+      openAuthenticatedPortalPage.mockReturnValueOnce(opening.promise);
+      await show(retainedCta(CHAT_A, 'cta-a'), retainedCta(CHAT_B, 'cta-b'));
+      await clickAndSettle(byTestId('cta-a') ?? cta());
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      await clickAndSettle(byTestId('cta-b') ?? cta());
+      await act(async () => {
+        opening.resolve(true);
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+      await clickAndSettle(byTestId('cta-b-check-again') ?? cta());
+      expect(records()).toBe(0);
+      expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+        'chat-a',
+      );
+      expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['check', 'remount'])(
+      'recovers an unreadable account on %s without another account-change event',
+      async (trigger) => {
+        const accountRoot = createElement(AccountRoot, { key: 'account-root' });
+        await show(accountRoot, retainedCta(CHAT_A, 'cta'));
+        await clickAndSettle(byTestId('cta') ?? cta());
+        loadCanopyCloudAccount.mockRejectedValue(new Error('offline'));
+        await act(async () => {
+          window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+          for (let i = 0; i < 30; i++) await Promise.resolve();
+        });
+        expect(
+          Object.values(useAiCreditsHandoffStore.getState().records)[0]
+            ?.identityUnverified,
+        ).toBe(true);
+        loadCanopyCloudAccount.mockResolvedValue({ account: { id: 'acct_1' } });
+        loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+        if (trigger === 'check') {
+          await clickAndSettle(byTestId('cta-check-again') ?? cta());
+        } else {
+          await show(accountRoot);
+          await show(accountRoot, retainedCta(CHAT_A, 'cta'));
+        }
+        await act(async () => {
+          for (let i = 0; i < 30; i++) await Promise.resolve();
+        });
+        expect(records()).toBe(0);
+        expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+          'chat-a',
+        );
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([CHAT_A, CHAT_B])(
+      'opens one checkout and completes once for mounted CTAs targeting $chatId',
+      async (secondTarget) => {
+        const onCoveredA = jest.fn();
+        const onCoveredB = jest.fn();
+        await show(
+          retainedCta(CHAT_A, 'cta-a', { onCovered: onCoveredA }),
+          retainedCta(secondTarget, 'cta-b', { onCovered: onCoveredB }),
+        );
+        await act(async () => {
+          byTestId('cta-a')?.click();
+          byTestId('cta-b')?.click();
+          for (let i = 0; i < 30; i += 1) await Promise.resolve();
+        });
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+        expect(byTestId('cta-a-check-again')).not.toBeNull();
+        expect(byTestId('cta-b-check-again')).not.toBeNull();
+
+        // Whichever click won the open owns the arrival; the other CTA finds
+        // the credits.
+        const [record] = Object.values(
+          useAiCreditsHandoffStore.getState().records,
+        );
+        const originChat = record?.originChatKey?.split('/')[2];
+        expect(originChat).toBeDefined();
+        const sibling = originChat === 'chat-a' ? 'cta-b' : 'cta-a';
+        loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+        await act(async () => {
+          byTestId(`${sibling}-check-again`)?.click();
+          for (let i = 0; i < 30; i += 1) await Promise.resolve();
+        });
+        expect(records()).toBe(0);
+        expect(
+          (sibling === 'cta-a' ? onCoveredA : onCoveredB).mock.calls,
+        ).toHaveLength(1);
+        expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+          originChat,
+        );
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each([
+      { ...CHAT_A, projectId: 'other-project' },
+      { ...CHAT_A, worktreeId: 'other-worktree' },
+    ])(
+      'restores its purchase after visiting an isolated scope $projectId/$worktreeId',
+      async (other) => {
+        await show(retainedCta(CHAT_A, 'cta'));
+        await clickAndSettle(byTestId('cta') ?? cta());
+        await show(retainedCta(other, 'cta'));
+        expect(byTestId('cta')).not.toBeNull();
+        expect(records()).toBe(1);
+        await show(retainedCta(CHAT_A, 'cta'));
+        expect(byTestId('cta-check-again')).not.toBeNull();
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('restores its purchase after leaving and returning to the navigation context', async () => {
+      const original = useWorkspaceContextStore.getState().state;
+      try {
+        await show(retainedCta(CHAT_A, 'cta'));
+        await clickAndSettle(byTestId('cta') ?? cta());
+        await act(async () => {
+          useWorkspaceContextStore.setState({
+            state: {
+              ...original,
+              context: {
+                kind: 'organization',
+                organizationId: '11111111-1111-4111-8111-111111111111',
+              },
+            },
+          });
+          for (let i = 0; i < 30; i++) await Promise.resolve();
+        });
+        expect(byTestId('cta')).not.toBeNull();
+        expect(records()).toBe(1);
+        await act(async () => {
+          useWorkspaceContextStore.setState({ state: original });
+          for (let i = 0; i < 30; i++) await Promise.resolve();
+        });
+        expect(byTestId('cta-check-again')).not.toBeNull();
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      } finally {
+        act(() => {
+          useWorkspaceContextStore.setState({ state: original });
+        });
+      }
+    });
+
+    it('survives an unmount and finds credits on remount without Check again', async () => {
+      await show(retainedCta(CHAT_A, 'cta-a'));
+      await clickAndSettle(byTestId('cta-a') ?? cta());
+      await show();
+      expect(records()).toBe(1);
+
+      loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+      await show(retainedCta(CHAT_A, 'cta-a'));
+      await act(async () => {
+        for (let i = 0; i < 30; i += 1) await Promise.resolve();
+      });
+      expect(records()).toBe(0);
+      expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe(
+        'chat-a',
+      );
+    });
+
+    it('preserves the explicit failed-check feedback through an uncovered background return', async () => {
+      await show(retainedCta(CHAT_A, 'cta-a'));
+      await clickAndSettle(byTestId('cta-a') ?? cta());
+      loadNativeAiCreditsAvailability.mockResolvedValueOnce(null);
+      await clickAndSettle(byTestId('cta-a-check-again') ?? cta());
+      await advance(500);
+      const pendingFeedback = (): string | null | undefined =>
+        Object.values(useAiCreditsHandoffStore.getState().records)[0]?.feedback;
+      expect(pendingFeedback()).toBe('check-failed');
+      await advance(61_000);
+      loadNativeAiCreditsAvailability.mockResolvedValue(uncovered);
+      await act(async () => {
+        window.dispatchEvent(new Event('focus'));
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      expect(pendingFeedback()).toBe('check-failed');
+    });
+
+    it('keeps the hand-off when Reopen billing fails or opens Settings', async () => {
+      const reports: (GetAiCreditsHandoffState | null)[] = [];
+      await show(
+        retainedCta(CHAT_A, 'cta-a', {
+          onHandoffChange: (state) => reports.push(state),
+        }),
+      );
+      await clickAndSettle(byTestId('cta-a') ?? cta());
+      const spy = jest
+        .spyOn(openBillingPageModule, 'openBillingPage')
+        .mockResolvedValueOnce('failed')
+        .mockResolvedValueOnce('settings');
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await act(async () => {
+            reports.at(-1)?.onReopenBilling?.();
+            for (let i = 0; i < 30; i += 1) await Promise.resolve();
+          });
+          expect(records()).toBe(1);
+          expect(byTestId('cta-a-check-again')).not.toBeNull();
+          // The retry is released.
+          expect(reports.at(-1)?.reopenPending).toBe(false);
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('rechecks after identity verification even when an older check is still pending', async () => {
+      const onCovered = jest.fn();
+      await show(retainedCta(CHAT_A, 'cta', { onCovered }));
+      await clickAndSettle(byTestId('cta') ?? cta());
+      const old = deferred<typeof uncovered>();
+      loadNativeAiCreditsAvailability.mockReturnValueOnce(old.promise);
+      await clickAndSettle(byTestId('cta-check-again') ?? cta());
+      act(() => {
+        suspendAiCreditsHandoffAccount();
+      });
+      loadNativeAiCreditsAvailability.mockResolvedValue(covered);
+      await act(async () => {
+        reconcileAiCreditsHandoffAccount({
+          kind: 'account',
+          key: 'account:acct_1',
+        });
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      expect(records()).toBe(0);
+      expect(onCovered).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        old.resolve(uncovered);
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      expect(records()).toBe(0);
+      expect(onCovered).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not open checkout after the account changes during the initial coverage read', async () => {
+      await show(retainedCta(CHAT_A, 'cta'));
+      const read = deferred<typeof uncovered>();
+      loadNativeAiCreditsAvailability.mockReturnValueOnce(read.promise);
+      await clickAndSettle(byTestId('cta') ?? cta());
+      await act(async () => {
+        suspendAiCreditsHandoffAccount();
+        read.resolve(uncovered);
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      });
+      expect(openAuthenticatedPortalPage).not.toHaveBeenCalled();
+      expect(records()).toBe(0);
+      expect(byTestId('cta')?.disabled).toBe(false);
+    });
+
+    it('attaches nothing when the first open settles after the chat changed', async () => {
+      let finishOpen: (opened: boolean) => void = () => {};
+      openAuthenticatedPortalPage.mockReturnValueOnce(
+        new Promise<boolean>((resolve) => {
+          finishOpen = resolve;
+        }),
+      );
+      await show(retainedCta(CHAT_A, 'cta'));
+      await clickAndSettle(byTestId('cta') ?? cta());
+      await show(retainedCta({ ...CHAT_A, worktreeId: 'other' }, 'cta'));
+      await act(async () => {
+        finishOpen(true);
+        for (let i = 0; i < 30; i += 1) await Promise.resolve();
+      });
+      expect(records()).toBe(0);
+      expect(byTestId('cta')).not.toBeNull();
     });
   });
 });

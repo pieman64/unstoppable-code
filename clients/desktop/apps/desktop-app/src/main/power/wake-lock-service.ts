@@ -6,7 +6,7 @@ import {
 } from '@canopy/core-runtime';
 import { isWakeLockSupportedPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import type { WakeLockState } from '@canopy/desktop-shared/types';
-import { getObservabilityService } from '../observability';
+import { getExecutionObservabilityIngest } from '../observability/ingest';
 import type { AppDiagnosticRecord } from '../observability/service';
 import {
   createElectronPowerServices,
@@ -38,7 +38,7 @@ let diagWarningEmitted = false;
 
 function defaultRecordDiagnostic(record: AppDiagnosticRecord): void {
   try {
-    getObservabilityService().recordAppDiagnostic(record);
+    getExecutionObservabilityIngest().recordAppDiagnostic(record);
   } catch (error) {
     // Diagnostics are best-effort and must not affect wake-lock cleanup, but
     // emit a one-shot warning so a broken telemetry pipeline is not invisible.

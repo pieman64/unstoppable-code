@@ -118,6 +118,7 @@ import { isModelBlockedByStoredPolicy } from '../lib/model-policy-state';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
 import { assertTurnAuthDependencies } from '../lib/auth-preflight';
+import { waitForWorktreeGitSetup } from '../lib/worktree-git-setup';
 import { TurnDispatchTiming } from '../lib/turn-dispatch-timing';
 import {
   captureChatTurnStop,
@@ -674,8 +675,45 @@ export async function dispatchLocalWorktreeChatMessage(
     const prepared = sendModelPreparer
       ? await sendModelPreparer(request)
       : request;
-    const { getChatQueueService } = await import('./chat-queue-service');
-    await getChatQueueService().submit(prepared, 'desktop');
+    // A send held for setup commits its prompt now and dispatches after this
+    // returns, so refuse a known-broken dependency first, as dispatch would,
+    // while the reply can still offer to reconnect it. While a setup is
+    // pending this judges every send to the worktree now, including one that
+    // queues behind the held turn; dispatch checks again.
+    if (waitForWorktreeGitSetup(prepared.projectId, prepared.worktreeId)) {
+      await assertTurnAuthDependencies({
+        target: {
+          projectId: prepared.projectId,
+          worktreeId: prepared.worktreeId,
+          chatId: prepared.chatId,
+        },
+        ...(prepared.pluginSelections
+          ? { pluginSelections: prepared.pluginSelections }
+          : {}),
+        ...(prepared.providerType
+          ? { providerType: prepared.providerType }
+          : {}),
+      });
+    }
+    // A send into a worktree whose Git setup is still running waits in main:
+    // the first becomes the held turn, shown as a sent prompt that is
+    // starting, and later ones queue behind it.
+    await getChatStateService().holdLocalSendForWorktreeSetup(
+      prepared,
+      (timestamp) =>
+        buildPersistedUserMessage(prepared, prepared.userMessageId, timestamp),
+      async () => {
+        const { getChatQueueService } = await import('./chat-queue-service');
+        await getChatQueueService().submit(prepared, 'desktop');
+      },
+      // A held send dispatches after this returns; its failure, or its setup
+      // ending, undoes the claim there, as this catch does for one that
+      // fails here.
+      () =>
+        getChatStateService().restoreRetainedTerminalAgentInputAfterFailedNativeAdmission(
+          request,
+        ),
+    );
   } catch (error) {
     await getChatStateService().restoreRetainedTerminalAgentInputAfterFailedNativeAdmission(
       request,
@@ -1322,8 +1360,29 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
     : request.modelSelectionMode === 'auto' && autoModelRoutingDispatcher
       ? await autoModelRoutingDispatcher(request, origin, fromQueue)
       : request;
+  const terminalPlanImplementation =
+    (dispatchRequest.providerType ??
+      (dispatchRequest.model
+        ? getProviderForModel(dispatchRequest.model)
+        : 'claude')) === 'claude' &&
+    isTerminalBackedInterfaceMode(
+      getEffectiveClaudeChatInterfaceMode(dispatchRequest.interfaceMode),
+    ) &&
+    (
+      await readChatTabsFile(
+        dispatchRequest.projectId,
+        dispatchRequest.worktreeId,
+        { chatIds: [dispatchRequest.chatId] },
+      )
+    ).tabs.some(
+      (tab) =>
+        tab.id === dispatchRequest.chatId &&
+        tab.trackedPlanImplementation?.userMessageId ===
+          dispatchRequest.userMessageId &&
+        !tab.trackedPlanImplementation.outcome,
+    );
   if (
-    dispatchRequest.agentSent &&
+    (dispatchRequest.agentSent || terminalPlanImplementation) &&
     isTerminalBackedInterfaceMode(
       getEffectiveClaudeChatInterfaceMode(dispatchRequest.interfaceMode),
     )
@@ -1344,7 +1403,7 @@ async function dispatchHostQueuedWorktreeChatMessageNow(
       dispatchRequest = { ...dispatchRequest, interfaceMode: liveMode };
   }
   if (
-    dispatchRequest.agentSent &&
+    (dispatchRequest.agentSent || terminalPlanImplementation) &&
     isTerminalBackedInterfaceMode(
       getEffectiveClaudeChatInterfaceMode(dispatchRequest.interfaceMode),
     )
@@ -2161,6 +2220,7 @@ function chatSummaryEntity(input: {
         ? { retryBlockedReason: message.retryBlockedReason }
         : {}),
       ...(message.editLocked === true ? { editLocked: true } : {}),
+      ...(message.forceLocked === true ? { forceLocked: true } : {}),
       ...(message.canSteer === true ? { canSteer: true } : {}),
       ...(message.agentSent ? { agentSent: message.agentSent } : {}),
       ...(message.steerBlockedByCapabilityChange === true
@@ -3311,13 +3371,19 @@ async function sendWorktreeChatMessageNow(
       allowMissingTarget: !existingTab,
     });
 
+  const planImplementation = existingTab?.trackedPlanImplementation;
+  const implementsPlan =
+    planImplementation?.userMessageId === userMessageId &&
+    !planImplementation.outcome;
   if (
     existingTab &&
     existingTabSource === 'claude-managed' &&
     isTerminalBackedInterfaceMode(
       getEffectiveClaudeChatInterfaceMode(existingTab.interfaceMode),
     ) &&
-    (initiationSource === 'automation' || trustedAgentRequest !== undefined)
+    (initiationSource === 'automation' ||
+      trustedAgentRequest !== undefined ||
+      implementsPlan)
   ) {
     // The terminal event carries prompt content only. Forwarding a request
     // whose settings differ from the live tab would acknowledge a successful
@@ -3332,7 +3398,27 @@ async function sendWorktreeChatMessageNow(
       );
     }
     await appAdvisorSurfaces?.ensureAppAdvisorWindow();
+    if (implementsPlan) {
+      const { MAX_TERMINAL_WRITE_BYTES, TerminalServiceError } =
+        await import('./terminal-service');
+      // Reject a known transport refusal before acknowledging the handoff,
+      // while canonical admission can still restore previous plan evidence.
+      if (Buffer.byteLength(request.text, 'utf8') > MAX_TERMINAL_WRITE_BYTES)
+        throw new TerminalServiceError(
+          'invalid_payload',
+          'Terminal write exceeds maximum data size',
+        );
+      const { getClaudeTerminalSessionService } =
+        await import('../integration/claude-terminal-session-service');
+      getClaudeTerminalSessionService().retainPlanImplementationDelivery({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId,
+        userMessageId,
+      });
+    }
     const scheduledPrompt: ClaudeTerminalScheduledPromptEvent = {
+      ...(implementsPlan ? { terminalPlanImplementation: true as const } : {}),
       projectId: request.projectId,
       worktreeId: request.worktreeId,
       chatId,
@@ -3379,7 +3465,7 @@ async function sendWorktreeChatMessageNow(
         stageTerminalPresentationTurn(
           presentationKey,
           userMessageId,
-          'automation',
+          implementsPlan ? 'user' : 'automation',
         );
       return sendToWindowDetailed(
         (getScheduledPromptWindow ?? getNullWindow)(),

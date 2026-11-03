@@ -233,10 +233,8 @@ test('Pull request cards show status without an opt-in', async () => {
     };
 
     let chat = await openChat();
-    await expect(chat.getByTestId('github-reference')).toHaveText([
-      `#7: ${CONFLICT_TITLE}`,
-      `#8: ${MERGED_TITLE}`,
-    ]);
+    // Chips show the short ID only; titles live in the cards.
+    await expect(chat.getByTestId('github-reference')).toHaveText(['#7', '#8']);
     let tooltip = await hoverCard(chat, 0);
     let card = tooltip.getByTestId('github-reference-preview-card');
     await expect(card).toHaveAttribute('data-layout', 'status');

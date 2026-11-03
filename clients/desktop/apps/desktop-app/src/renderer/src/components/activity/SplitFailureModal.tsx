@@ -1,5 +1,5 @@
 import { type JSX } from 'react';
-import { createPortal } from 'react-dom';
+import { Notice } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
 import type { SplitPrExecutionErrorCode } from '@canopy/desktop-shared/types/github';
@@ -59,41 +59,47 @@ export function SplitFailureModal({
 }: SplitFailureModalProps): JSX.Element {
   const isMismatch = failure.code === 'plan_mismatch';
 
-  return createPortal(
+  return (
     <DialogModal
+      inset="flush"
       onClose={onLeave}
       title="Split PR failed"
       subtitle={`Worktree ${worktreeId}`}
       maxWidth="lg"
       dataTestId="split-failure-modal"
     >
-      <div className="space-y-3 px-5 py-4">
-        <div
+      <div className="space-y-3 px-6 py-4">
+        <Notice
+          intent="attention"
+          role="none"
           data-testid="split-failure-message"
-          className="rounded-md border border-line-attention/40 bg-warning-subtle px-3 py-2 text-xs fg-warning"
+          detail={
+            failure.childIndex !== undefined ||
+            failure.verifyTail !== undefined ? (
+              <>
+                {failure.childIndex !== undefined && (
+                  <span data-testid="split-failure-child-index">
+                    Failed on child #{failure.childIndex}.
+                  </span>
+                )}
+                {failure.verifyTail !== undefined && (
+                  <pre
+                    data-testid="split-failure-verify-tail"
+                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-base/40 p-2 text-2xs`}
+                  >
+                    {failure.verifyTail}
+                  </pre>
+                )}
+              </>
+            ) : undefined
+          }
         >
-          <p
+          <span
             className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words`}
           >
             {failure.message}
-          </p>
-          {failure.childIndex !== undefined && (
-            <p
-              data-testid="split-failure-child-index"
-              className="mt-1 fg-warning/80"
-            >
-              Failed on child #{failure.childIndex}.
-            </p>
-          )}
-          {failure.verifyTail !== undefined && (
-            <pre
-              data-testid="split-failure-verify-tail"
-              className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-base/40 p-2 text-2xs fg-warning/90`}
-            >
-              {failure.verifyTail}
-            </pre>
-          )}
-        </div>
+          </span>
+        </Notice>
 
         {isMismatch && (
           <p
@@ -116,7 +122,7 @@ export function SplitFailureModal({
         )}
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
         <Button
           size="compact"
           onClick={onLeave}
@@ -150,7 +156,7 @@ export function SplitFailureModal({
               onClick={onRetry}
               data-testid="split-failure-retry"
             >
-              Retry
+              Try again
             </Button>
           </>
         ) : (
@@ -164,7 +170,6 @@ export function SplitFailureModal({
           </Button>
         )}
       </div>
-    </DialogModal>,
-    document.body,
+    </DialogModal>
   );
 }

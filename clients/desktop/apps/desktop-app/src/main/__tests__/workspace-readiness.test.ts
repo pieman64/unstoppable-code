@@ -78,7 +78,10 @@ import {
   resolveWorkspaceRepoHooks,
 } from '../lib/hook-resolver';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
-import { computeWorkspaceReadinessIssues } from '../lib/workspace-readiness';
+import {
+  computeWorkspaceReadinessAudit,
+  computeWorkspaceReadinessIssues,
+} from '../lib/workspace-readiness';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 
 const mockedAccess = jest.mocked(access);
@@ -121,6 +124,19 @@ describe('project readiness audit', () => {
     mockedResolveProjectHooks.mockResolvedValue({});
     mockedResolveWorkspaceRootHooks.mockResolvedValue({});
     mockEnqueueWorkspaceClaudeMemoryImportBatch.mockResolvedValue(undefined);
+  });
+
+  it('marks a missing audited checkout incomplete rather than resolved', async () => {
+    expect(await computeWorkspaceReadinessAudit('app', 'missing')).toEqual({
+      issues: [],
+      complete: false,
+    });
+  });
+
+  it('confirms completeness when every requested repository was inspected', async () => {
+    const audit = await computeWorkspaceReadinessAudit('app');
+    expect(audit.complete).toBe(true);
+    expect(audit.issues).toHaveLength(3);
   });
 
   it('recommends scripts, hooks, and instructions without treating teardown as required', async () => {
@@ -600,14 +616,13 @@ describe('project readiness audit', () => {
       );
     });
 
-    const issues = await computeWorkspaceReadinessIssues(
-      'workspace',
-      'audited',
-    );
+    const audit = await computeWorkspaceReadinessAudit('workspace', 'audited');
+    const issues = audit.issues;
 
     expect(new Set(issues.map((issue) => issue.repoId))).toEqual(
       new Set(['present']),
     );
+    expect(audit.complete).toBe(false);
     expect(mockedResolveWorkspaceRepoScripts).toHaveBeenCalledTimes(1);
     expect(mockedResolveWorkspaceRepoScripts).toHaveBeenCalledWith(
       'workspace',

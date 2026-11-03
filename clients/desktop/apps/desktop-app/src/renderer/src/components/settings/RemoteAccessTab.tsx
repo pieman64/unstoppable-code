@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/shallow';
 import {
   Button,
   ConfirmDialog,
+  Dot,
   Notice,
   NoticeButton,
   ToggleSwitch,
@@ -18,7 +19,7 @@ import {
   REMOTE_ACCESS_LABEL,
   describeError,
   platformLabel,
-  remoteHostDotClassName,
+  remoteHostDotTone,
   remoteHostStatus,
 } from '@/components/remote-access/remote-access-copy';
 import {
@@ -184,7 +185,7 @@ export function RemoteAccessTab(): JSX.Element {
         <SettingsGroup>
           {state.hosts.map((host) => {
             const status = remoteHostStatus(host);
-            const dot = remoteHostDotClassName(status.tone);
+            const dot = remoteHostDotTone(status.tone);
             return (
               <SettingsRow
                 key={host.deviceId}
@@ -192,12 +193,7 @@ export function RemoteAccessTab(): JSX.Element {
                 label={
                   <span className="inline-flex min-w-0 items-center gap-2">
                     <span className="truncate">{host.name}</span>
-                    {dot ? (
-                      <span
-                        aria-hidden="true"
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`}
-                      />
-                    ) : null}
+                    {dot ? <Dot tone={dot} /> : null}
                   </span>
                 }
                 description={

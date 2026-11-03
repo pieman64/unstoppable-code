@@ -13,6 +13,7 @@ import {
   transferStatusLabel,
   type BrowserTransferRowCommand,
 } from './browserTransferFormat';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface BrowserTransferRowProps {
   browserId: string;
@@ -167,11 +168,7 @@ export function BrowserTransferRow({
           </RowButton>
         </div>
       )}
-      {error !== null && (
-        <div role="alert" className="text-2xs fg-destructive">
-          {error}
-        </div>
-      )}
+      <ErrorBanner className="" error={error} />
     </li>
   );
 }

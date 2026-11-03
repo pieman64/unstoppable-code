@@ -1,7 +1,7 @@
 'use client';
 
 import { SettingsSelect } from '@canopy/ui-shared/components';
-import { useState, type JSX } from 'react';
+import { useId, useState, type JSX } from 'react';
 import { RoutingBacktestCard } from '../organization/statistics/RoutingBacktestCard';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -19,6 +19,7 @@ const RANGE_OPTIONS: ReadonlyArray<{ ms: number; label: string }> = [
  */
 export function ProfileRoutingBacktestSection(): JSX.Element {
   const [rangeMs, setRangeMs] = useState(RANGE_OPTIONS[1].ms);
+  const rangeLabelId = useId();
   const rangeLabel =
     RANGE_OPTIONS.find((option) => option.ms === rangeMs)?.label ?? '';
   return (
@@ -32,9 +33,10 @@ export function ProfileRoutingBacktestSection(): JSX.Element {
         rangeLabel={rangeLabel}
         billingHref="/account/billing"
         controls={
-          <label className="flex items-center gap-2 text-xs fg-secondary">
-            Range
+          <span className="flex items-center gap-2 text-xs fg-secondary">
+            <span id={rangeLabelId}>Range</span>
             <SettingsSelect
+              aria-labelledby={rangeLabelId}
               value={String(rangeMs)}
               onValueChange={(value) => setRangeMs(Number(value))}
               data-testid="profile-routing-backtest-range"
@@ -43,7 +45,7 @@ export function ProfileRoutingBacktestSection(): JSX.Element {
                 label: option.label,
               }))}
             />
-          </label>
+          </span>
         }
       />
     </section>

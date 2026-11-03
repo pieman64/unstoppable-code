@@ -13,6 +13,7 @@ import {
 } from 'react';
 import { ChevronRightIcon } from '../../icons';
 import { StepBadgeLine, useStepBadgeRows } from '../chat-look';
+import { revealDisclosure } from './reveal-disclosure';
 
 /**
  * The clean chat look's one row for every agent step: tool calls, step
@@ -25,7 +26,7 @@ import { StepBadgeLine, useStepBadgeRows } from '../chat-look';
  * - work in progress shimmers its words instead of showing a spinner, a
  *   primary-ink band over words drawn a step lighter, so it reads at a glance
  *   in light and dark;
- * - small icons draw a 1.5px stroke, like the text's own strokes;
+ * - icons keep the app's 14px compact size and default stroke;
  * - a chevron after the words appears on hover and turns down while open;
  * - nothing is clipped: one line, truncated with an ellipsis only when the
  *   row is wider than its column.
@@ -48,6 +49,8 @@ export interface StepRowProps {
   expandable?: boolean;
   isOpen?: boolean;
   onToggle?: MouseEventHandler<HTMLButtonElement>;
+  /** The Worked header reveals turn content; other rows reveal their own body. */
+  revealScope?: 'local' | 'turn';
   ariaLabel?: string;
   dataTestId?: string;
   /** Extra classes for the row (host padding, alignment). */
@@ -58,8 +61,8 @@ export interface StepRowProps {
   chevronAtRest?: boolean;
   /**
    * The row of one step (a tool call, a helper agent, a thought), not a turn
-   * header or a run's line. At chat detail `detailed` it takes the tool call
-   * card's row: `text-xs`, a 14px icon at the default stroke, and its words
+   * header or a run's line. At every chat detail level it takes the tool call
+   * row: message-sized text, a 14px icon at the default stroke, and its words
    * and code badges on one line.
    */
   step?: boolean;
@@ -91,9 +94,11 @@ const BADGE_LINE_CLASS =
   'flex min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap';
 
 /**
- * A badge row's words: each run of plain text in its own truncating span, so
- * it ends in an ellipsis inside the flex line the badges shrink in. A label
- * wrapped in one span becomes a line of its own that shrinks the same way.
+ * A badge row's words: each run of plain text in its own span that keeps its
+ * width while a badge or snippet beside it shrinks, so the tool name stays
+ * whole and the target ends in "…" first. Only when the words alone outgrow
+ * the line do they end in an ellipsis too. A label wrapped in one span
+ * becomes a line of its own that keeps the same order.
  */
 function truncatingWords(label: ReactNode): ReactNode {
   if (
@@ -124,7 +129,7 @@ function truncatingWords(label: ReactNode): ReactNode {
     // A lone space stays plain text: a flex line draws no box for it (the
     // gap spaces the parts), but copied and spoken text keeps the space.
     if (String(part).trim() === '') return part;
-    return <span className="min-w-0 truncate">{part}</span>;
+    return <span className="max-w-full flex-shrink-0 truncate">{part}</span>;
   });
 }
 
@@ -139,6 +144,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
       expandable = false,
       isOpen = false,
       onToggle,
+      revealScope = 'local',
       ariaLabel,
       dataTestId,
       className = '',
@@ -150,7 +156,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
   ): JSX.Element {
     const shimmerStyle = useShimmerPhase(running);
     const motionRef = useContinuousMotion<HTMLSpanElement>(running);
-    // Chat detail `detailed`: the row of a tool call card, its words and
+    // The row of a tool call card, its words and
     // code badges on one line where only a badge's text shrinks.
     const badgeRow = useStepBadgeRows();
     const badges = step && badgeRow;
@@ -181,11 +187,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
       <>
         {icon != null && (
           <span
-            className={
-              badges
-                ? 'flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center fg-secondary [&_svg]:size-3.5'
-                : 'flex h-5 flex-shrink-0 items-center [&_svg]:size-3.5'
-            }
+            className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center fg-secondary [&_svg]:size-3.5"
             aria-hidden="true"
           >
             {icon}
@@ -197,7 +199,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
             className="flex-shrink-0 fg-tertiary"
             data-testid="tool-call-failed"
           >
-            error
+            Failed
           </span>
         )}
         {trailing}
@@ -219,9 +221,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
         )}
       </>
     );
-    const rowClass = `group ${badges ? 'text-xs fg-secondary' : `canopy-small-icon-stroke ${STEP_ROW_TEXT_CLASS}`} flex min-w-0 max-w-full items-center gap-2 py-1 text-left${
-      className === '' ? '' : ` ${className}`
-    }`;
+    const rowClass = `group ${STEP_ROW_TEXT_CLASS} flex min-w-0 max-w-full items-center gap-2 py-1 text-left${className === '' ? '' : ` ${className}`}`;
     if (!expandable) {
       return (
         <div className={rowClass} data-testid={dataTestId} data-step-row="">
@@ -233,7 +233,11 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
       <button
         ref={ref}
         type="button"
-        onClick={onToggle}
+        onClick={(event) => {
+          if (!isOpen && event.detail > 0)
+            revealDisclosure(event.currentTarget, revealScope);
+          onToggle?.(event);
+        }}
         aria-expanded={isOpen}
         aria-label={ariaLabel}
         data-testid={dataTestId}
@@ -252,5 +256,5 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
  */
 export const STEP_ROW_BODY_CLASS = 'ml-5.5 mt-1 text-s';
 
-/** An opened run of steps: its rows sit on the run row's own left edge. */
-export const STEP_GROUP_BODY_CLASS = 'mt-0.5';
+/** Steps keep a 4px gap, including across provider message boundaries. */
+export const STEP_GROUP_BODY_CLASS = 'flex flex-col gap-1 pt-1';

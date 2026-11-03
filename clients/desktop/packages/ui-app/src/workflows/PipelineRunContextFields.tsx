@@ -1,5 +1,6 @@
 import { useId, type JSX } from 'react';
 import {
+  Notice,
   NoticeButton,
   SegmentedControl,
   Select,
@@ -22,8 +23,8 @@ export const PIPELINE_RUN_CONTEXT_COPY = {
   owner: 'Owner',
   ownerHelper: "This run appears in the owner's Runs list.",
   ownersLoading: 'Loading owners…',
-  ownersFailed: 'Owners could not be loaded. Try again.',
-  retry: 'Retry',
+  ownersFailed: "Couldn't load owners.",
+  retry: 'Try again',
   ownerStale: 'Choose an available owner.',
   ownerPlaceholder: 'Choose an owner',
 } as const;
@@ -166,18 +167,17 @@ function OwnerControl({
       );
     case 'error':
       return (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-3"
+        <Notice
+          intent="destructive"
           data-testid="pipeline-run-owner-error"
+          actions={
+            <NoticeButton type="button" onClick={owner.onRetry}>
+              {PIPELINE_RUN_CONTEXT_COPY.retry}
+            </NoticeButton>
+          }
         >
-          <p className="text-s fg-destructive">
-            {PIPELINE_RUN_CONTEXT_COPY.ownersFailed}
-          </p>
-          <NoticeButton type="button" onClick={owner.onRetry}>
-            {PIPELINE_RUN_CONTEXT_COPY.retry}
-          </NoticeButton>
-        </div>
+          {PIPELINE_RUN_CONTEXT_COPY.ownersFailed}
+        </Notice>
       );
     case 'choose':
       return (

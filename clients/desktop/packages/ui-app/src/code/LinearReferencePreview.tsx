@@ -32,6 +32,9 @@ import {
   RichHoverTooltip,
   WordBoundaryTruncatedText,
   type LinearIssuePreviewCardView,
+  TRANSCRIPT_LINK_CLASS,
+  INLINE_CHIP_CLASS,
+  INLINE_CHIP_ICON_CLASS,
 } from '@canopy/ui-shared/components';
 import { LinearIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useWatchWhileVisible } from './reference-preview-visibility';
@@ -111,10 +114,11 @@ function LinearReferencePreviewContent({
 /**
  * `[icon] CAN-123: Title` once the issue resolves. While a title is still
  * expected, the identifier and a text-free placeholder reserve its width; a
- * reference that can't resolve keeps its original text. The title stays whole in the DOM, so native selection and the
- * accessible name carry it, and only CSS clips it. A measured max width moves
- * that clip to the last whole word that fits. A bare identifier keeps its
- * text node, so a selection made before the title arrives survives.
+ * reference that can't resolve keeps its original text. The title stays whole
+ * in the DOM, so native selection and the accessible name carry it, and only
+ * CSS clips it. A measured max width moves that clip to the last whole word
+ * that fits. A bare identifier keeps its text node, so a selection made
+ * before the title arrives survives.
  */
 function ReferenceLabel({
   request,
@@ -138,32 +142,34 @@ function ReferenceLabel({
   const pending = slot !== null && typeof slot !== 'string' ? slot : null;
   return (
     <>
-      <LinearIcon
-        width={13}
-        height={13}
-        aria-hidden="true"
-        className="mr-0.5 inline-block shrink-0 align-text-bottom"
-      />
+      <LinearIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
       {(title !== null || pending?.kind === 'pending') && !bare
         ? request.identifier
         : children}
       {title !== null && (
         <>
           {': '}
-          <WordBoundaryTruncatedText
-            text={title}
-            data-testid="linear-reference-title"
-            className="inline-block max-w-[min(40ch,100%)] align-bottom"
-          />
+          {/* Two caps, so the chip hugs the clipped title: the title's fixed
+              40ch cap sizes the chip (a percentage inside the shrink-to-fit
+              chip would size it to the whole title), and this wrapper keeps
+              it within a narrower column. */}
+          <span className="inline-block max-w-full overflow-hidden align-bottom">
+            <WordBoundaryTruncatedText
+              text={title}
+              data-testid="linear-reference-title"
+              className="inline-block max-w-[40ch] align-bottom"
+            />
+          </span>
         </>
       )}
       {pending?.kind === 'pending' && (
         // 36ch: most titles outrun the 40ch clip, which then ends on a word
-        // boundary near 36ch. The margin stands in for the `: ` separator.
+        // boundary near 36ch. The margin stands in for the `: ` separator. A
+        // fixed width sizes the chip; `max-w-full` keeps it in the column.
         <InlineTextSkeleton
           active={pending.reading}
           data-testid="linear-reference-title-placeholder"
-          className="ml-2 w-[min(36ch,100%)]"
+          className="ml-2 w-[36ch] max-w-full"
         />
       )}
     </>
@@ -198,7 +204,7 @@ const BareIdentifierLink = forwardRef<
       role="link"
       tabIndex={0}
       data-testid="linear-reference"
-      className="focus-ring cursor-pointer rounded-sm fg-accent hover:underline"
+      className={INLINE_CHIP_CLASS}
       onClick={openIssue}
       onKeyDown={(event) => {
         if (event.key === 'Enter') openIssue(event);
@@ -225,9 +231,9 @@ export interface LinearReferencePreviewProps {
 }
 
 /**
- * A Linear reference in transcript prose: an inline icon, a title resolved
- * while the reference is visible, and a hover/focus preview card. A URL stays
- * an ordinary external link; a bare identifier opens the canonical URL Linear
+ * A Linear reference in transcript prose: a chip with an icon, the
+ * identifier and a title resolved while the reference is visible, and a
+ * hover/focus preview card. A URL stays an ordinary external link; a bare identifier opens the canonical URL Linear
  * returns. Hosts without the capability render the text unchanged.
  */
 export function LinearReferencePreview({
@@ -241,7 +247,12 @@ export function LinearReferencePreview({
   const supported = useCapabilities().referencePreviews === true;
   if (!supported || mode === 'off') {
     return href ? (
-      <a href={href} target="_blank" rel="noopener noreferrer">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={TRANSCRIPT_LINK_CLASS}
+      >
         {children}
       </a>
     ) : (
@@ -280,7 +291,10 @@ function SupportedLinearReference({
   const epoch = useVisibleTitleRead(triggerRef, request, mode === 'replace');
   const label =
     mode === 'hover' ? (
-      children
+      <>
+        <LinearIcon aria-hidden="true" className={INLINE_CHIP_ICON_CLASS} />
+        {children}
+      </>
     ) : (
       <ReferenceLabel
         request={request}
@@ -297,6 +311,7 @@ function SupportedLinearReference({
       target="_blank"
       rel="noopener noreferrer"
       data-testid="linear-reference"
+      className={INLINE_CHIP_CLASS}
     >
       {label}
     </a>

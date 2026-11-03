@@ -82,6 +82,7 @@ export function LabsSettingsSection(): JSX.Element | null {
     <LabsExperimentsSection
       rows={port.rows}
       error={port.error}
+      errorDetails={port.errorDetails}
       onToggle={port.onToggle}
       layout={port.layout ?? CARD_LAYOUT}
     />

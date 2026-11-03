@@ -15,7 +15,8 @@
 //      structured `not_found` for a missing execution without creating a
 //      tab.
 //   4. An ownerless run (no `project_id`/`worktree_id`) opens in the
-//      app-level `pipeline-execution-compat-host`, never a workspace panel.
+//      app-level `pipeline-execution-compat-host` as a page dialog, never a
+//      workspace panel.
 //   5. A stale open is superseded: opening run A and then, before it
 //      resolves, run B leaves focus on B and never lets A's slower
 //      resolution steal it back.
@@ -429,9 +430,17 @@ test('an ownerless run opens in the app-level compatibility host', async () => {
     expect(result.status).toBe('ownerless');
     expect(result.reason).toBe('no-owner');
 
-    const host = window.getByTestId('pipeline-execution-compat-host');
-    await expect(host).toBeVisible({ timeout: 15_000 });
-    await expect(host.getByTestId('pipeline-details-nav')).toBeVisible();
+    // The compat host mounts the run as a page dialog, which portals itself
+    // to the document body, so the host stays empty and the dialog is
+    // checked on its own.
+    await expect(
+      window.getByTestId('pipeline-execution-compat-host'),
+    ).toHaveCount(1, { timeout: 15_000 });
+    await expect(
+      window
+        .getByRole('dialog')
+        .filter({ has: window.getByTestId('pipeline-details-nav') }),
+    ).toBeVisible();
     // Never acquired a workspace panel tab.
     await expect(window.getByTestId('pipeline-execution-panel')).toHaveCount(0);
   } finally {

@@ -1,3 +1,4 @@
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
 import {
   STANDALONE_CHAT_PROJECT_ID,
   type WorkspaceType,
@@ -5,6 +6,11 @@ import {
 
 let workspaceType: WorkspaceType | null = null;
 
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('../lib/workspace-registry', () => ({
   getWorkspaceType: jest.fn(() => workspaceType),
   isCoworkWorkspace: jest.fn((id: string) => id === STANDALONE_CHAT_PROJECT_ID),

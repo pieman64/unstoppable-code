@@ -1,8 +1,8 @@
 /**
- * CAN-4099: under the production selection, scoped `file:read-content` reads
- * pass the Files route's eligibility check, are journaled and counted as
- * `direct`, and never reach the daemon, whatever the Files reads experiment
- * says. CAN-5509 gives them a daemon path; CAN-4729 selects them.
+ * CAN-4099: scoped `file:read-content` reads pass the Files route's
+ * eligibility check and are journaled and counted. CAN-5509 gives them a
+ * daemon path and CAN-5556 selects them: with the Files reads experiment on,
+ * a window's read reaches the daemon on macOS; off, it stays direct.
  */
 import { join } from 'node:path';
 import {
@@ -22,6 +22,7 @@ import {
   deferred,
   FakeSender,
   localCaller,
+  rejection,
   type RouteHarness,
   untilReached,
 } from './daemon-files-route-harness';
@@ -76,17 +77,22 @@ function fileEntries(
     .map(({ operation, backend, phase }) => ({ operation, backend, phase }));
 }
 
-it.each([true, false])(
-  'serves a window read directly and counts it with the experiment %s',
-  async (flag) => {
-    h = await createRouteHarness({ flag });
-    // Any daemon contact fails the read.
-    h.connectionsFactory.mockImplementation(() => {
-      throw new Error('connections() must not be called for file reads.');
-    });
-    h.hostContext.mockImplementation(() => {
-      throw new Error('hostContext() must not be called for file reads.');
-    });
+it.each([
+  [true, 'daemon'],
+  [false, 'direct'],
+] as const)(
+  'serves a window read and counts it with the experiment %s, through the %s reader',
+  async (flag, backend) => {
+    h = await createRouteHarness({ flag, platform: 'darwin' });
+    if (backend === 'direct') {
+      // Any daemon contact fails the read.
+      h.connectionsFactory.mockImplementation(() => {
+        throw new Error('connections() must not be called for file reads.');
+      });
+      h.hostContext.mockImplementation(() => {
+        throw new Error('hostContext() must not be called for file reads.');
+      });
+    }
     resetWorkCounters();
     const local = sender();
     const before = cursor();
@@ -106,24 +112,28 @@ it.each([true, false])(
       relativePath: 'README.md',
       contentKind: 'markdown',
     });
-    expectNoDaemonContact();
+    if (backend === 'direct') expectNoDaemonContact();
+    else expect(h.daemon.names()).toEqual(['worker.filesystem.file.read']);
     expect(fileEntries(before)).toEqual([
-      { operation: 'file', backend: 'direct', phase: 'started' },
-      { operation: 'file', backend: 'direct', phase: 'success' },
+      { operation: 'file', backend, phase: 'started' },
+      { operation: 'file', backend, phase: 'success' },
     ]);
     const counters = snapshotFilesWorkCounters();
-    expect(counters.route['files.file.direct']).toBe(1);
-    expect(counters.route['files.file.daemon']).toBe(0);
+    expect(counters.route[`files.file.${backend}`]).toBe(1);
+    expect(
+      counters.route[
+        `files.file.${backend === 'daemon' ? 'direct' : 'daemon'}`
+      ],
+    ).toBe(0);
   },
 );
 
-it('does not discard a direct read when the experiment flips mid-read', async () => {
+it('discards a direct read that finishes after the experiment turns on, without contact', async () => {
   const directStarted = deferred();
   const releaseDirect = deferred();
-  // Holds the direct read the real route runs, after its journal entry, so
-  // both flips land while the read is in flight.
   h = await createRouteHarness({
-    flag: true,
+    flag: false,
+    platform: 'darwin',
     wrapRoute: (route) => {
       const holding: DaemonFilesRoute = {
         ...route,
@@ -142,11 +152,60 @@ it('does not discard a direct read when the experiment flips mid-read', async ()
   });
   resetWorkCounters();
   const local = sender();
+  const read = rejection(
+    h.runtime.queryFileContentForLegacyIpc(
+      { scope: SINGLE, absolutePath: readme() },
+      { caller: localCaller(local) },
+      { sender: local },
+    ),
+  );
+  try {
+    await untilReached(directStarted.promise, read);
+    h.flag.set(true);
+  } finally {
+    releaseDirect.resolve();
+  }
+  expect(await read).toMatchObject({
+    kind: 'cancelled',
+    retry: { kind: 'after_refresh' },
+  });
+  expect(snapshotFilesWorkCounters().route['files.file.direct.discarded']).toBe(
+    1,
+  );
+  expectNoDaemonContact();
+});
+
+it('does not discard a remote-bridge read when the experiment flips mid-read', async () => {
+  const directStarted = deferred();
+  const releaseDirect = deferred();
+  // Holds the direct read the real route runs, after its journal entry, so
+  // both flips land while the read is in flight.
+  h = await createRouteHarness({
+    flag: true,
+    platform: 'darwin',
+    wrapRoute: (route) => {
+      const holding: DaemonFilesRoute = {
+        ...route,
+        file: (params, context, request, run) =>
+          route.file(params, context, request, {
+            ...run,
+            direct: async () => {
+              directStarted.resolve();
+              await releaseDirect.promise;
+              return run.direct();
+            },
+          }),
+      };
+      return holding;
+    },
+  });
+  resetWorkCounters();
+  const bridge = sender();
   const before = cursor();
   const read = h.runtime.queryFileContentForLegacyIpc(
     { scope: SINGLE, absolutePath: readme() },
-    { caller: localCaller(local) },
-    { sender: local },
+    { caller: bridgeCaller(bridge, 'controller-1') },
+    { sender: bridge },
   );
   try {
     await untilReached(directStarted.promise, read);
@@ -175,7 +234,7 @@ it('does not discard a direct read when the experiment flips mid-read', async ()
 });
 
 it('counts a remote-bridge read as direct after it fails eligibility', async () => {
-  h = await createRouteHarness({ flag: true });
+  h = await createRouteHarness({ flag: true, platform: 'darwin' });
   resetWorkCounters();
   const bridge = sender();
   await h.runtime.queryFileContentForLegacyIpc(
@@ -188,7 +247,7 @@ it('counts a remote-bridge read as direct after it fails eligibility', async () 
 });
 
 it('leaves reads without an IPC sender unjournaled and uncounted', async () => {
-  h = await createRouteHarness({ flag: true });
+  h = await createRouteHarness({ flag: true, platform: 'darwin' });
   resetWorkCounters();
   const local = sender();
   const before = cursor();
@@ -215,7 +274,7 @@ it('leaves reads without an IPC sender unjournaled and uncounted', async () => {
   expectNoDaemonContact();
 });
 
-it('gives the Electron daemon client the five Files reads with a daemon path, and selects two', () => {
+it('gives the Electron daemon client the five Files reads with a daemon path, and selects all five', () => {
   expect(
     Object.keys(ELECTRON_DAEMON_DEFINITIONS.queries).filter((name) =>
       name.startsWith('worker.'),
@@ -230,11 +289,14 @@ it('gives the Electron daemon client the five Files reads with a daemon path, an
   for (const name of Object.keys(ELECTRON_DAEMON_DEFINITIONS.queries))
     if (name.startsWith('worker.'))
       expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toContain(name);
-  // CAN-4729 widens production selection; until then file, search and link
-  // reach the daemon only under an injected selection.
+  // CAN-5556: production selects every Files read with a daemon path; the
+  // read-route table still decides each host.
   expect([...DAEMON_FILES_PRODUCTION_SELECTION]).toEqual([
     'roots',
     'directory',
+    'file',
+    'search',
+    'link',
   ]);
 });
 

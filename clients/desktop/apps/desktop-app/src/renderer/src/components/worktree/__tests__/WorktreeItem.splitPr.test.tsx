@@ -850,6 +850,29 @@ describe('WorktreeItem Delete gating while split-locked', () => {
     expect(query('worktree-archive-button')).toBeNull();
   });
 
+  it('closes the ••• menu on Escape and returns focus to the button', async () => {
+    await render();
+    await openActionsMenu();
+    const menu = requireElement('worktree-actions-menu');
+    expect(menu.getAttribute('role')).toBe('menu');
+    expect(menu.classList.contains('canopy-floating-menu')).toBe(true);
+
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await Promise.resolve();
+    });
+    expect(query('worktree-actions-menu')).toBeNull();
+    expect(document.activeElement).toBe(
+      requireElement('worktree-actions-menu-button'),
+    );
+  });
+
   it('opens the actions menu on right-click, matching the ••• button', async () => {
     await render();
     const row = requireElement('worktree-row');
@@ -871,12 +894,13 @@ describe('WorktreeItem Delete gating while split-locked', () => {
     const menuTrigger = requireElement('worktree-actions-menu-button');
     expect(menuTrigger.className).toContain('opacity-0');
     // The menu opens AT the right-click point (top just below the cursor,
-    // right edge at the cursor), not at the ••• button.
+    // right edge at the cursor), not at the ••• button. jsdom lays nothing
+    // out, so the zero-width menu's left edge is the cursor too.
     const surface = document.querySelector<HTMLElement>(
       '[data-testid="worktree-actions-menu"]',
     );
     expect(surface?.style.top).toBe('204px');
-    expect(surface?.style.right).toBe(`${window.innerWidth - 300}px`);
+    expect(surface?.style.left).toBe('300px');
   });
 
   it('enables Delete when the worktree is not split-locked', async () => {

@@ -97,7 +97,7 @@ export function QueuedMessageSettingsHeldWarning({
         data-testid="queued-message-settings-held-warning"
         className="inline-flex size-7 shrink-0 items-center justify-center rounded-full fg-warning"
       >
-        <WarningIcon width={14} height={14} aria-hidden />
+        <WarningIcon size="sm" aria-hidden />
       </span>
     </ActionTooltip>
   );

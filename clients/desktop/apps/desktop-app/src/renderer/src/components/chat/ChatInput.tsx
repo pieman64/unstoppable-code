@@ -257,6 +257,19 @@ import {
   useVisibleUsageLimitBanner,
   type ChatBannerTarget,
 } from '@/stores/aiCreditsBannerStore';
+import {
+  canRestoreComposerDraft,
+  applyComposerRecovery,
+  decideComposerRecovery,
+} from '@canopy/ui-app/composer-recovery';
+import {
+  composerRecoveryHead,
+  composerRecoveryKey,
+  composerRecoveryStore,
+  composerRecoveryTranscript,
+  restoreRejectedComposerInputs,
+} from '@/stores/composerRecoveryStore';
+import { draftHasContent } from '@/lib/chat-draft-content';
 import { useCatchingUpLag } from '@/stores/ingestionLagStore';
 import {
   isGatewayOnlyModel,
@@ -1165,6 +1178,10 @@ function ChatInputContent({
       chatId: tabId,
     };
   }, [selectedWorktree, tabId, targetOverride]);
+  // Same target the send reserves inputs for and refusal events carry.
+  const composerRecoveryTargetKey = approvalModeTarget
+    ? composerRecoveryKey(approvalModeTarget)
+    : undefined;
   const approvalDefaultForProject = useChatStore((s) => {
     const projectId =
       approvalModeTarget?.projectId ?? selectedWorktree?.projectId;
@@ -4132,6 +4149,9 @@ function ChatInputContent({
   const submittingDraftRevisionsRef = useRef(new Set<number>());
   const pendingSendRef = useRef<Promise<void>>(Promise.resolve());
   const draftRevisionRef = useRef(0);
+  const recoveryOperationsRef = useRef(
+    new WeakSet<(typeof editor.operations)[number]>(),
+  );
 
   /**
    * Enable plugins for this chat the way the Plugins picker does: persist the
@@ -4348,6 +4368,14 @@ function ChatInputContent({
         );
       }
     }
+    const recoveryKey =
+      !editingState && !isTerminalMode && attachmentTarget
+        ? composerRecoveryKey(attachmentTarget)
+        : undefined;
+    // A newer send supersedes a refused submission still waiting to return.
+    const recoverySubmissionGeneration = recoveryKey
+      ? composerRecoveryStore.beginSubmission(recoveryKey)
+      : undefined;
     let reservedInputsSettled = false;
     const restoreReservedInputs = (): void => {
       if (!reserveComposerInputs || reservedInputsSettled) return;
@@ -4524,8 +4552,12 @@ function ChatInputContent({
       const restoreRejectedDraft = (): void => {
         restoreReservedInputs();
         if (
-          clearedDraftRevision === undefined ||
-          draftRevisionRef.current !== clearedDraftRevision
+          !canRestoreComposerDraft({
+            submittedTarget: recoveryKey,
+            currentTarget: recoveryContextRef.current.key,
+            submittedRevision: clearedDraftRevision,
+            currentRevision: draftRevisionRef.current,
+          })
         ) {
           return;
         }
@@ -4580,7 +4612,64 @@ function ChatInputContent({
         );
         acceptSend();
       } else {
+        // Recorded with the final outbound text, before dispatch can emit a
+        // refusal, so a no-billing abort can hand this submission back
+        // (CAN-5348). The newest user message now predates this turn.
+        const recoveryUserMessageId = crypto.randomUUID();
+        const recoveryGeneration =
+          recoveryKey && attachmentTarget
+            ? composerRecoveryStore.record(
+                recoveryKey,
+                {
+                  editorValue: submittedEditorValue,
+                  reservedInputs: {
+                    attachments: submittedAttachments,
+                    selections: stagedSelections,
+                    revertAttachmentPath: submittedRevertAttachmentPath,
+                  },
+                  outboundText: rewritten.text,
+                  userMessageId: recoveryUserMessageId,
+                  priorLastUserMessageId: composerRecoveryHead(
+                    useChatStore
+                      .getState()
+                      .worktreeChats[
+                        `${attachmentTarget.projectId}/${attachmentTarget.worktreeId}`
+                      ]?.tabs.find((candidate) => candidate.id === attachmentTarget.chatId)
+                      ?.messages ?? [],
+                  ).lastUserMessageId,
+                  // Input typed while plugins were enabling is the user's own.
+                  composerCleared:
+                    clearedDraftRevision !== undefined &&
+                    draftRevisionRef.current === clearedDraftRevision,
+                },
+                recoverySubmissionGeneration,
+              )
+            : undefined;
+        const settleRecovery = (
+          settlement: 'accepted' | 'reserved-inputs-restored',
+        ): void => {
+          if (recoveryKey && recoveryGeneration !== undefined) {
+            composerRecoveryStore.settle(
+              recoveryKey,
+              recoveryGeneration,
+              settlement,
+            );
+          }
+        };
+        const releaseRecovery = (): void => {
+          if (recoveryKey && recoveryGeneration !== undefined) {
+            composerRecoveryStore.release(recoveryKey, recoveryGeneration);
+          }
+        };
+        const isCurrentRecovery = (): boolean =>
+          !recoveryKey ||
+          recoveryGeneration === undefined ||
+          composerRecoveryStore.isCurrentSubmission(
+            recoveryKey,
+            recoveryGeneration,
+          );
         const acceptNativeSend = (): void => {
+          if (!isCurrentRecovery()) return;
           acceptSend();
           if (submittedPlanMode)
             void getPlanModeHintStore().getState().markTried();
@@ -4589,36 +4678,65 @@ function ChatInputContent({
               retry: Boolean(tab?.failedFirstSend),
             });
           }
+          settleRecovery('accepted');
         };
-        await sendMessage(
-          rewritten.text,
-          outboundFileReferences,
-          targetOverride,
-          inputMode,
-          attachmentPaths || attachmentPromptContexts
-            ? {
-                ...(attachmentPaths ? { attachmentPaths } : {}),
-                ...(attachmentPromptContexts
-                  ? { attachmentPromptContexts }
-                  : {}),
-                ...(activePlan ? { activePlan } : {}),
-                replaceFailedFirstSend: tab?.failedFirstSend,
-                composerAttachmentsReserved: reserveComposerInputs,
-                reservedRevertAttachmentPath: submittedRevertAttachmentPath,
-                onDispatchAccepted: acceptNativeSend,
-                onDispatchRejected: restoreReservedInputs,
-                onPreDispatchRejected: restoreRejectedDraft,
-              }
-            : {
-                ...(activePlan ? { activePlan } : {}),
-                replaceFailedFirstSend: tab?.failedFirstSend,
-                composerAttachmentsReserved: reserveComposerInputs,
-                reservedRevertAttachmentPath: submittedRevertAttachmentPath,
-                onDispatchAccepted: acceptNativeSend,
-                onDispatchRejected: restoreReservedInputs,
-                onPreDispatchRejected: restoreRejectedDraft,
-              },
-        );
+        const rejectNativeDispatch = (): void => {
+          // Returning the send's own reservations is not a new user edit.
+          if (recoveryKey && recoveryGeneration !== undefined) {
+            restoreRejectedComposerInputs(
+              recoveryKey,
+              recoveryGeneration,
+              restoreReservedInputs,
+            );
+          } else {
+            restoreReservedInputs();
+          }
+        };
+        const rejectNativePreDispatch = (): void => {
+          // A newer send only supersedes editor recovery, never ownership of
+          // the rejected send's already-reserved attachments and selections.
+          restoreReservedInputs();
+          if (!isCurrentRecovery()) return;
+          // The existing rejection path restores the whole draft itself.
+          releaseRecovery();
+          restoreRejectedDraft();
+        };
+        try {
+          await sendMessage(
+            rewritten.text,
+            outboundFileReferences,
+            targetOverride,
+            inputMode,
+            attachmentPaths || attachmentPromptContexts
+              ? {
+                  ...(attachmentPaths ? { attachmentPaths } : {}),
+                  ...(attachmentPromptContexts
+                    ? { attachmentPromptContexts }
+                    : {}),
+                  ...(activePlan ? { activePlan } : {}),
+                  replaceFailedFirstSend: tab?.failedFirstSend,
+                  composerAttachmentsReserved: reserveComposerInputs,
+                  reservedRevertAttachmentPath: submittedRevertAttachmentPath,
+                  userMessageId: recoveryUserMessageId,
+                  onDispatchAccepted: acceptNativeSend,
+                  onDispatchRejected: rejectNativeDispatch,
+                  onPreDispatchRejected: rejectNativePreDispatch,
+                }
+              : {
+                  ...(activePlan ? { activePlan } : {}),
+                  replaceFailedFirstSend: tab?.failedFirstSend,
+                  composerAttachmentsReserved: reserveComposerInputs,
+                  reservedRevertAttachmentPath: submittedRevertAttachmentPath,
+                  userMessageId: recoveryUserMessageId,
+                  onDispatchAccepted: acceptNativeSend,
+                  onDispatchRejected: rejectNativeDispatch,
+                  onPreDispatchRejected: rejectNativePreDispatch,
+                },
+          );
+        } catch (error) {
+          releaseRecovery();
+          throw error;
+        }
       }
     });
     // A later draft must reach the host after this one, including when prompt
@@ -4672,6 +4790,157 @@ function ChatInputContent({
     noteOnboardingTurnSent,
     worktreeChatTarget,
     onSendMessage,
+    useChatStore,
+  ]);
+
+  // CAN-5348: a no-billing refusal before any agent work hands the refused
+  // submission back to this composer once send cleanup and the tab's draft
+  // load are done, so the user can press Send again after recovering credits.
+  // Runs imperatively from store notifications to keep streaming re-renders
+  // out of the composer; most notifications return before any work.
+  const recoveryContextRef = useRef({
+    key: composerRecoveryTargetKey,
+    target: approvalModeTarget,
+    terminal: isTerminalMode,
+  });
+  recoveryContextRef.current = {
+    key: composerRecoveryTargetKey,
+    target: approvalModeTarget,
+    terminal: isTerminalMode,
+  };
+  const runComposerRecovery = useCallback((): void => {
+    const { key, target, terminal } = recoveryContextRef.current;
+    if (!key || !target) return;
+    const entry = composerRecoveryStore.get(key);
+    if (!entry) return;
+    const state = useChatStore.getState();
+    const liveTab = state.worktreeChats[
+      `${target.projectId}/${target.worktreeId}`
+    ]?.tabs.find((candidate) => candidate.id === target.chatId);
+    const decision = decideComposerRecovery(entry, {
+      composerHydrated: prevTabIdRef.current === target.chatId,
+      transcript: liveTab ? composerRecoveryTranscript(liveTab.messages) : null,
+      occupancy: {
+        editorContent: draftHasContent(editor.children),
+        attachments: (liveTab?.pendingAttachments?.length ?? 0) > 0,
+        selections:
+          (state.pendingEditorSelections[target.chatId]?.length ?? 0) > 0,
+        revertAttachment: Boolean(liveTab?.pendingRevertAttachmentPath),
+        savedDraft: draftHasContent(state.getTabDraft(target.chatId) ?? []),
+      },
+      mode: terminal ? 'terminal' : 'compose',
+    });
+    if (decision.kind === 'wait') return;
+    if (decision.kind === 'skip') {
+      composerRecoveryStore.release(key, entry.generation);
+      return;
+    }
+    const editorBefore = structuredClone(editor.children);
+    const draftBefore = state.getTabDraft(target.chatId);
+    const operationsBefore = new Set(editor.operations);
+    const applied = applyComposerRecovery(
+      composerRecoveryStore,
+      key,
+      decision.generation,
+      () => {
+        restoreEditorContent(
+          editor,
+          structuredClone(entry.submission.editorValue),
+        );
+        // Save the restored tree itself, not the stale pre-update React value.
+        const restoredValue = structuredClone(editor.children);
+        setValue(restoredValue);
+        if (decision.restoreReservedInputs) {
+          const { attachments, selections, revertAttachmentPath } =
+            entry.submission.reservedInputs;
+          for (const selection of selections) {
+            state.addPendingEditorSelection(target.chatId, selection);
+          }
+          if (attachments.length > 0) {
+            state.addPendingAttachments([...attachments], target);
+          }
+          if (revertAttachmentPath) {
+            state.restorePendingRevertAttachment(revertAttachmentPath, target);
+          }
+        }
+        state.saveTabDraft(target.chatId, restoredValue);
+      },
+      () => {
+        // Restore only this composer's fields; preserve unrelated transcript/state.
+        useChatStore.setState((current) => {
+          const worktreeKey = `${target.projectId}/${target.worktreeId}`;
+          const worktree = current.worktreeChats[worktreeKey];
+          return {
+            worktreeChats: worktree
+              ? {
+                  ...current.worktreeChats,
+                  [worktreeKey]: {
+                    ...worktree,
+                    tabs: worktree.tabs.map((candidate) =>
+                      candidate.id === target.chatId
+                        ? {
+                            ...candidate,
+                            pendingAttachments: liveTab?.pendingAttachments,
+                            pendingRevertAttachmentPath:
+                              liveTab?.pendingRevertAttachmentPath,
+                          }
+                        : candidate,
+                    ),
+                  },
+                }
+              : current.worktreeChats,
+            pendingEditorSelections: {
+              ...current.pendingEditorSelections,
+              [target.chatId]:
+                state.pendingEditorSelections[target.chatId] ?? [],
+            },
+          };
+        });
+        restoreEditorContent(editor, editorBefore);
+        setValue(editorBefore);
+        if (draftBefore) state.saveTabDraft(target.chatId, draftBefore);
+        else state.clearTabDraft(target.chatId);
+      },
+    );
+    for (const operation of editor.operations) {
+      if (!operationsBefore.has(operation))
+        recoveryOperationsRef.current.add(operation);
+    }
+    if (!applied) return;
+    setHintDraftSession((current) => current + 1);
+    // Never pull focus from billing UI, another field, or another tab.
+    const focused = document.activeElement;
+    if (
+      isComposerVisible() &&
+      (focused === null ||
+        focused === document.body ||
+        composerRootRef.current?.contains(focused) === true)
+    ) {
+      focusEditor(editor);
+    }
+  }, [editor, isComposerVisible, useChatStore]);
+  useEffect(() => {
+    if (!composerRecoveryTargetKey) return undefined;
+    if (isEditingQueued) {
+      composerRecoveryStore.release(composerRecoveryTargetKey);
+      return undefined;
+    }
+    composerRecoveryStore.retryApplication(composerRecoveryTargetKey);
+    runComposerRecovery();
+    const unsubscribeRecovery =
+      composerRecoveryStore.subscribe(runComposerRecovery);
+    const unsubscribeChat = useChatStore.subscribe(runComposerRecovery);
+    return (): void => {
+      unsubscribeRecovery();
+      unsubscribeChat();
+    };
+    // `tabId` and terminal mode re-run the check after a tab's draft loads.
+  }, [
+    composerRecoveryTargetKey,
+    isEditingQueued,
+    isTerminalMode,
+    runComposerRecovery,
+    tabId,
     useChatStore,
   ]);
 
@@ -4729,6 +4998,19 @@ function ChatInputContent({
       ) {
         draftRevisionRef.current += 1;
       }
+      // A user edit, even one deleted again, makes the cleared composer theirs:
+      // a refused submission must not reappear over it (CAN-5348).
+      if (
+        !isEditingQueued &&
+        composerRecoveryTargetKey &&
+        editor.operations.some(
+          (operation) =>
+            operation.type !== 'set_selection' &&
+            !recoveryOperationsRef.current.has(operation),
+        )
+      ) {
+        composerRecoveryStore.noteUserInput(composerRecoveryTargetKey);
+      }
       if (
         !historyNavigationProgrammaticChangeRef.current &&
         messageHistoryNavigationRef.current?.tabId === tabId
@@ -4741,7 +5023,13 @@ function ChatInputContent({
           .getState()
           .saveTabDraft(tabId, getDraftForSave(tabId, newValue));
     },
-    [editor, tabId, isEditingQueued, getDraftForSave],
+    [
+      editor,
+      tabId,
+      isEditingQueued,
+      getDraftForSave,
+      composerRecoveryTargetKey,
+    ],
   );
 
   const editingAddAttachmentsRef = useRef(editingState?.onAddAttachments);
@@ -7035,34 +7323,31 @@ function ChatInputContent({
         </Suspense>
       )}
 
-      {pipelineModalOpen &&
-        planPipelineAllowed &&
-        pendingExit &&
-        createPortal(
-          <PlanReadyPipelineModal
-            projectId={pendingExit.projectId}
-            worktreeId={pendingExit.worktreeId}
-            onClose={() => {
-              setPipelineModalOpen(false);
-              setPipelineRunError(null);
-              planPipelineWatcher.reset();
-            }}
-            onRun={handlePipelineRun}
-            isRunning={pipelineRunning}
-            runError={pipelineRunError}
-            watcherRecipientGroups={planPipelineWatcher.recipientGroups}
-            onWatcherSelectionChange={
-              planPipelineWatcher.onWatcherSelectionChange
-            }
-          />,
-          getDocument(composerRootRef.current).body,
-        )}
+      {pipelineModalOpen && planPipelineAllowed && pendingExit && (
+        <PlanReadyPipelineModal
+          projectId={pendingExit.projectId}
+          worktreeId={pendingExit.worktreeId}
+          onClose={() => {
+            setPipelineModalOpen(false);
+            setPipelineRunError(null);
+            planPipelineWatcher.reset();
+          }}
+          onRun={handlePipelineRun}
+          isRunning={pipelineRunning}
+          runError={pipelineRunError}
+          watcherRecipientGroups={planPipelineWatcher.recipientGroups}
+          onWatcherSelectionChange={
+            planPipelineWatcher.onWatcherSelectionChange
+          }
+          ownerDocument={getDocument(composerRootRef.current)}
+        />
+      )}
 
       {/* Cross-harness continue confirmation. Hosted here rather than inside
           ModelPicker because the picker is shared with pipelines, hooks,
           automations, the Agent base-model modal and the Home composer, none of
-          which have a chat to continue. Portaled through the composer root so a
-          popped-out composer mounts it into its own document.
+          which have a chat to continue. Opened in the composer's own document
+          so a popped-out composer shows it, and takes its Escape, there.
 
           The copy names the MODEL and nothing else. "Claude", "Codex" and
           "harness" are internal vocabulary; the model the user just clicked is
@@ -7070,8 +7355,7 @@ function ChatInputContent({
           written entirely in terms of it. Keep provider labels out of here. */}
       {continueTargetModel !== undefined &&
         continueTargetProvider !== undefined &&
-        lockedProvider !== undefined &&
-        createPortal(
+        lockedProvider !== undefined && (
           <ConfirmDialog
             dataTestId="continue-on-provider-dialog"
             confirmTestId="continue-on-provider-confirm"
@@ -7092,8 +7376,8 @@ function ChatInputContent({
             errorMessage={continueError}
             onConfirm={handleConfirmContinue}
             onCancel={closeContinueDialog}
-          />,
-          getDocument(composerRootRef.current).body,
+            ownerDocument={getDocument(composerRootRef.current)}
+          />
         )}
     </div>
   );

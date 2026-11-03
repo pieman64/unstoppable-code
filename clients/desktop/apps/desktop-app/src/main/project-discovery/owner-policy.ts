@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import type {
   ProjectOwnerContext,
   SidebarItem,
@@ -254,7 +255,12 @@ async function readConfigForReadiness(
 ): Promise<ProjectConfigSnapshot | undefined> {
   try {
     return await readProjectConfigSnapshot(projectId);
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.kind === 'unavailable'
+    )
+      throw error;
     return undefined;
   }
 }

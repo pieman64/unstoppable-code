@@ -56,7 +56,11 @@ import {
 import { Button } from '@canopy/ui-shared';
 import {
   AutomationPipelineTaskField,
+  FormField,
   isAutomationPipelineTaskStale,
+  Select,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import {
   pipelineAutomationTaskId,
@@ -397,38 +401,32 @@ export function InstallSharedAutomationModal({
   );
   const copyPicker =
     staleList.length > 1 ? (
-      <label className="block text-s">
-        <span className="mb-1.5 block fg-secondary">{COPY_PICKER_LABEL}</span>
-        <select
-          value={targetActivityId}
-          onChange={(e) => setTargetActivityId(e.target.value)}
-          data-testid="install-automation-copy"
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-        >
-          {staleList.map((activity) => {
-            // A global action's inert `workspaceId` names no project.
-            const workspaceId =
-              activity.action.type === 'worktree_pipeline'
-                ? pipelineAutomationWorkspaceId(activity.action)
-                : 'workspaceId' in activity.action
-                  ? activity.action.workspaceId
-                  : undefined;
-            const activityWorkspace = workspaceId
-              ? workspaceNameById.get(workspaceId)
-              : undefined;
-            return (
-              <option key={activity.id} value={activity.id}>
-                {activity.name}
-                {activityWorkspace ? ` — ${activityWorkspace}` : ''}
-                {activity.enabled ? '' : ' (disabled)'}
-              </option>
-            );
-          })}
-        </select>
-        <span className="mt-1 block text-xs fg-secondary">
-          {COPY_PICKER_NOTE}
-        </span>
-      </label>
+      <FormField label={COPY_PICKER_LABEL} description={COPY_PICKER_NOTE}>
+        {(control) => (
+          <Select
+            {...control}
+            value={targetActivityId ?? null}
+            onValueChange={setTargetActivityId}
+            data-testid="install-automation-copy"
+            options={staleList.map((activity) => {
+              // A global action's inert `workspaceId` names no project.
+              const workspaceId =
+                activity.action.type === 'worktree_pipeline'
+                  ? pipelineAutomationWorkspaceId(activity.action)
+                  : 'workspaceId' in activity.action
+                    ? activity.action.workspaceId
+                    : undefined;
+              const activityWorkspace = workspaceId
+                ? workspaceNameById.get(workspaceId)
+                : undefined;
+              return {
+                value: activity.id,
+                label: `${activity.name}${activityWorkspace ? ` — ${activityWorkspace}` : ''}${activity.enabled ? '' : ' (disabled)'}`,
+              };
+            })}
+          />
+        )}
+      </FormField>
     ) : null;
   // Remount the form when the target copy changes so binding state re-seeds
   // from the newly selected copy.
@@ -2102,23 +2100,22 @@ function InstallSharedAutomationForm({
       )}
 
       {needsWorkspace && !noCompatibleProjects && (
-        <label className="block text-s">
-          <span className="mb-1.5 block fg-secondary">{WORKSPACE_LABEL}</span>
-          <select
-            value={workspaceId}
-            onChange={(e) => setWorkspaceId(e.target.value)}
-            disabled={submitting || !targetsSettled}
-            data-testid="install-automation-workspace"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="">{WORKSPACE_PLACEHOLDER}</option>
-            {eligibleWorkspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <FormField label={WORKSPACE_LABEL}>
+          {(control) => (
+            <Select
+              {...control}
+              value={workspaceId === '' ? null : workspaceId}
+              onValueChange={setWorkspaceId}
+              placeholder={WORKSPACE_PLACEHOLDER}
+              disabled={submitting || !targetsSettled}
+              data-testid="install-automation-workspace"
+              options={eligibleWorkspaces.map((workspace) => ({
+                value: workspace.id,
+                label: workspace.name,
+              }))}
+            />
+          )}
+        </FormField>
       )}
 
       {destination === 'task' &&
@@ -2137,90 +2134,88 @@ function InstallSharedAutomationForm({
         )}
 
       {needsCoworkWorkspace && !noCompatibleProjects && (
-        <label className="block text-s">
-          <span className="mb-1.5 block fg-secondary">
-            {COWORK_WORKSPACE_LABEL}
-          </span>
-          <select
-            value={coworkWorkspaceId}
-            onChange={(e) => setCoworkWorkspaceId(e.target.value)}
-            disabled={submitting || !targetsSettled}
-            data-testid="install-automation-cowork-project"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="">{COWORK_WORKSPACE_PLACEHOLDER}</option>
-            {coworkWorkspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-          <span className="mt-1 block text-xs fg-secondary">
-            {COWORK_WORKSPACE_NOTE}
-          </span>
-        </label>
+        <FormField
+          label={COWORK_WORKSPACE_LABEL}
+          description={COWORK_WORKSPACE_NOTE}
+        >
+          {(control) => (
+            <Select
+              {...control}
+              value={coworkWorkspaceId === '' ? null : coworkWorkspaceId}
+              onValueChange={setCoworkWorkspaceId}
+              placeholder={COWORK_WORKSPACE_PLACEHOLDER}
+              disabled={submitting || !targetsSettled}
+              data-testid="install-automation-cowork-project"
+              options={coworkWorkspaces.map((workspace) => ({
+                value: workspace.id,
+                label: workspace.name,
+              }))}
+            />
+          )}
+        </FormField>
       )}
 
       {pipelineRef?.source === 'unresolved' && (
-        <label className="block text-s">
-          <span className="mb-1.5 block fg-secondary">{PIPELINE_LABEL}</span>
-          <select
-            value={chosenPipelineId}
-            onChange={(e) => setChosenPipelineId(e.target.value)}
-            disabled={submitting || pipelinesLoading}
-            data-testid="install-automation-pipeline"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-          >
-            <option value="">
-              {pipelinesLoading ? PIPELINE_LOADING_LABEL : PIPELINE_PLACEHOLDER}
-            </option>
-            {localPipelines.map((pipeline) => (
-              <option key={pipeline.id} value={pipeline.id}>
-                {pipeline.name}
-              </option>
-            ))}
-          </select>
-          <span className="mt-1 block text-xs fg-secondary">
-            {!pipelinesLoading && localPipelines.length === 0
+        <FormField
+          label={PIPELINE_LABEL}
+          description={
+            !pipelinesLoading && localPipelines.length === 0
               ? PIPELINE_EMPTY_LABEL
-              : PIPELINE_NOTE}
-          </span>
-        </label>
+              : PIPELINE_NOTE
+          }
+        >
+          {(control) => (
+            <Select
+              {...control}
+              value={chosenPipelineId === '' ? null : chosenPipelineId}
+              onValueChange={setChosenPipelineId}
+              placeholder={
+                pipelinesLoading ? PIPELINE_LOADING_LABEL : PIPELINE_PLACEHOLDER
+              }
+              disabled={submitting || pipelinesLoading}
+              data-testid="install-automation-pipeline"
+              options={localPipelines.map((pipeline) => ({
+                value: pipeline.id,
+                label: pipeline.name,
+              }))}
+            />
+          )}
+        </FormField>
       )}
 
       {action.type === 'worktree_prompt' && (
-        <label className="block text-s">
-          <span className="mb-1.5 block fg-secondary">
-            Branch (optional, suggested by the author)
-          </span>
-          <input
-            type="text"
-            value={existingBranch}
-            onChange={(e) => setExistingBranch(e.target.value)}
-            disabled={submitting}
-            data-testid="install-automation-branch"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-          />
-        </label>
+        <FormField label="Branch (optional, suggested by the author)">
+          {(control) => (
+            <TextInput
+              {...control}
+              type="text"
+              value={existingBranch}
+              onChange={(e) => setExistingBranch(e.target.value)}
+              disabled={submitting}
+              data-testid="install-automation-branch"
+            />
+          )}
+        </FormField>
       )}
 
       {inputKeys.length > 0 && (
         <fieldset className="space-y-2" data-testid="install-automation-inputs">
           <legend className="text-s fg-secondary">Workflow inputs</legend>
           {inputKeys.map((key) => (
-            <label key={key} className="block text-s">
-              <span className="mb-1 block text-xs fg-secondary">{key}</span>
-              <input
-                type="text"
-                value={inputs[key] ?? ''}
-                onChange={(e) =>
-                  setInputs((prev) => ({ ...prev, [key]: e.target.value }))
-                }
-                disabled={submitting}
-                data-testid={`install-automation-input-${key}`}
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary"
-              />
-            </label>
+            <FormField key={key} label={key}>
+              {(control) => (
+                <TextInput
+                  {...control}
+                  type="text"
+                  value={inputs[key] ?? ''}
+                  onChange={(e) =>
+                    setInputs((prev) => ({ ...prev, [key]: e.target.value }))
+                  }
+                  disabled={submitting}
+                  data-testid={`install-automation-input-${key}`}
+                />
+              )}
+            </FormField>
           ))}
         </fieldset>
       )}
@@ -2240,7 +2235,8 @@ function InstallSharedAutomationForm({
           </ShareCheckbox>
           {/* Shown even while off, so the command can be read before it's
               turned on. */}
-          <textarea
+          <TextArea
+            mono
             value={runConditionCommand}
             onChange={(e) => setRunConditionCommand(e.target.value)}
             disabled={submitting}
@@ -2251,7 +2247,7 @@ function InstallSharedAutomationForm({
             data-testid="install-automation-run-condition-command"
             // Grows with the command, uncapped, so the whole of it shows
             // before install and padding can't push a payload out of view.
-            className={`focus-ring w-full rounded-lg border bg-base px-3 py-2 font-mono text-xs field-sizing-content ${runConditionEnabled ? 'fg-primary' : 'fg-secondary'}`}
+            className="field-sizing-content"
           />
           {/* Declining an update keeps a local gate, which still fills it. */}
           {!runConditionEnabled &&

@@ -260,6 +260,40 @@ describe('App icons', () => {
     expect(html).not.toContain('exactsize');
   });
 
+  // docs/design/icons.md#sizes: xs 12, sm 14, md 16, lg 18, xl 20, 2xl 24.
+  // Lucide artwork draws every step exactly; sm and xl are the sizes it
+  // already snaps to, so they keep that behavior instead of opting out.
+  it.each([
+    ['xs', '12px', true],
+    ['sm', '14px', false],
+    ['md', '16px', true],
+    ['lg', '18px', true],
+    ['xl', '20px', false],
+    ['2xl', '24px', true],
+  ] as const)('renders the step %s at %s', (size, px, exact) => {
+    const lucide = renderToString(<FastModeIcon size={size} />);
+    expect(lucide).toContain(`width="${px}"`);
+    expect(lucide).toContain(`height="${px}"`);
+    expect(lucide).toContain(`style="width:${px};height:${px}"`);
+    expect(lucide.includes('data-icon-size="exact"')).toBe(exact);
+
+    const logo = renderToString(<ClaudeIcon size={size} />);
+    expect(logo).toContain(`width="${px}"`);
+    expect(logo).toContain(`height="${px}"`);
+  });
+
+  // docs/design/icons.md#sizes: an icon with no size is sm.
+  it('renders every icon with no size at 14px', () => {
+    const unsized: Record<string, string> = {};
+    for (const [name, Icon] of ICON_EXPORTS) {
+      const width = renderToString(createElement(Icon)).match(
+        /^<svg[^>]* width="([^"]+)"/,
+      )?.[1];
+      if (width !== undefined && width !== '14px') unsized[name] = width;
+    }
+    expect(unsized).toEqual({});
+  });
+
   it('drops exactSize before markup on repository logos', () => {
     // React omits the unknown attribute but warns, so watch for the warning.
     const consoleError = jest
@@ -379,12 +413,12 @@ describe('App icons', () => {
     expect(glyphOf(renderToString(<Icon />))).toBe(glyph);
   });
 
-  it('keeps the GitHub mark defaults after moving off the repository logo', () => {
+  it('draws the GitHub marks at the sm default after moving off the repository logo', () => {
     expect(renderToString(<GitHubIcon />)).toMatch(
       /width="14px"[^>]*height="14px"/,
     );
     expect(renderToString(<Github />)).toMatch(
-      /width="24px"[^>]*height="24px"/,
+      /width="14px"[^>]*height="14px"/,
     );
   });
 
@@ -400,7 +434,7 @@ describe('App icons', () => {
     expect(html).toContain('aria-hidden="false"');
     expect(html).toContain('data-app-icon="true"');
     expect(glyphOf(html)).toBe('ClaudeLogo');
-    expect(renderToString(<ClaudeIcon />)).toContain('width="16px"');
+    expect(renderToString(<ClaudeIcon />)).toContain('width="14px"');
   });
 
   it('uses plain panel outlines and dividers without open arrows', () => {
@@ -495,5 +529,15 @@ describe('drawnStrokeWidth', () => {
     );
     expect(strokeOf(merge)).toBe(undefined);
     expect(merge).not.toContain('drawnStrokeWidth');
+  });
+});
+
+describe('an AppIcon named by its caller', () => {
+  it('keeps a caller aria-label when it has no title', () => {
+    const markup = renderToString(
+      createElement(CloseIcon, { ariaHidden: false, 'aria-label': 'Close' }),
+    );
+    expect(markup).toContain('role="img"');
+    expect(markup).toContain('aria-label="Close"');
   });
 });

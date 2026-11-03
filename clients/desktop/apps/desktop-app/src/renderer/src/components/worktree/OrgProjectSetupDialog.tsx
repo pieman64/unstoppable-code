@@ -10,7 +10,14 @@ import {
   type RefObject,
   type JSX,
 } from 'react';
-import { Button, DialogModal, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogFormField,
+  DialogModal,
+  Fact,
+  FactList,
+  Notice,
+} from '@canopy/ui-shared/components';
 import type {
   OrgProjectPlaceholderState,
   OrgProjectSummary,
@@ -157,7 +164,7 @@ export function OrgProjectSetupDialog({
       closeOnEscape
       showCloseButton
     >
-      <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-col gap-4">
         {relationship && separate === false && (
           <OrgProjectRelationshipNotice
             actions={relationship}
@@ -165,26 +172,23 @@ export function OrgProjectSetupDialog({
           />
         )}
         {cowork === false && project.repository && (
-          <dl className="flex flex-col gap-2 text-s">
-            <div>
-              <dt className="fg-secondary">Repository</dt>
-              <dd
-                className="truncate fg-primary"
-                title={`${project.repository.owner}/${project.repository.name}`}
-              >
-                {project.repository.owner}/{project.repository.name}
-              </dd>
-            </div>
-            <div>
-              <dt className="fg-secondary">Default branch</dt>
-              <dd
-                className="truncate font-mono fg-primary"
-                title={project.repository.defaultBranch ?? undefined}
-              >
-                {project.repository.defaultBranch}
-              </dd>
-            </div>
-          </dl>
+          <FactList layout="stacked" size="s" rowGap="2" labelTone="secondary">
+            <Fact
+              label="Repository"
+              fit="truncate"
+              title={`${project.repository.owner}/${project.repository.name}`}
+            >
+              {project.repository.owner}/{project.repository.name}
+            </Fact>
+            <Fact
+              label="Default branch"
+              fit="truncate"
+              mono
+              title={project.repository.defaultBranch ?? undefined}
+            >
+              {project.repository.defaultBranch}
+            </Fact>
+          </FactList>
         )}
         {cowork ? (
           <p
@@ -207,13 +211,10 @@ export function OrgProjectSetupDialog({
           )
         ) : (
           <>
-            <div className="flex flex-col gap-2">
-              <label
-                className="text-s fg-secondary"
-                htmlFor="org-project-setup-destination"
-              >
-                Destination folder
-              </label>
+            <DialogFormField
+              label="Destination folder"
+              htmlFor="org-project-setup-destination"
+            >
               <Button
                 id="org-project-setup-destination"
                 data-testid="org-project-setup-destination"
@@ -233,7 +234,7 @@ export function OrgProjectSetupDialog({
                 </span>
                 <span className="shrink-0 fg-secondary">Change</span>
               </Button>
-            </div>
+            </DialogFormField>
             <p className="text-s fg-secondary">
               Cloned with your Git credentials. No scripts run until you open a
               task.

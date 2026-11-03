@@ -19,7 +19,11 @@ import {
   type DigestPreferencesValue,
 } from './digest-format';
 import { SettingsOperationError } from '@canopy/protocol/settings';
-import { SETTINGS_LOAD_ERROR_COPY, useSettingsErrorCopy } from '../errors';
+import {
+  SETTINGS_LOAD_ERROR_COPY,
+  useSettingsErrorCopy,
+  type SettingsFailure,
+} from '../errors';
 import { useSettingsClient } from '../host';
 import {
   ACCOUNT_DIGEST_OWNER,
@@ -32,8 +36,7 @@ const SAVE_ACTION = 'save digest settings';
 const SAVE_ERROR_COPY = `Couldn't ${SAVE_ACTION}. Try again.`;
 
 /** A failed read offers Retry; a failed save is retried by saving again. */
-interface PreferencesError {
-  readonly copy: string;
+interface PreferencesError extends SettingsFailure {
   readonly retryLoad: boolean;
 }
 
@@ -155,7 +158,7 @@ export function DigestPreferencesCard({
           setAvailable(false);
           return;
         }
-        setError({ copy: errorCopy.loadCopy(loadError), retryLoad: true });
+        setError({ ...errorCopy.loadFailure(loadError), retryLoad: true });
       } finally {
         if (active) setLoading(false);
       }
@@ -205,7 +208,7 @@ export function DigestPreferencesCard({
         }
         setPreferences(previous);
         setError({
-          copy: errorCopy.actionCopy(saveError, { action: SAVE_ACTION }),
+          ...errorCopy.actionFailure(saveError, { action: SAVE_ACTION }),
           retryLoad: false,
         });
       } finally {
@@ -246,6 +249,7 @@ export function DigestPreferencesCard({
     >
       <ErrorBanner
         error={error?.copy}
+        details={error?.details}
         onRetry={error?.retryLoad === true ? retryLoad : undefined}
       />
 
@@ -266,8 +270,10 @@ export function DigestPreferencesCard({
                   {cadence.describe(preferences)}
                 </p>
                 {anchorField && (
-                  <label className="mt-2 flex items-center gap-2 text-xs fg-secondary">
-                    <span>
+                  <div className="mt-2 flex items-center gap-2 text-xs fg-secondary">
+                    {/* The dropdown carries its own name; this is its visible
+                        lead-in. */}
+                    <span aria-hidden="true">
                       {anchorField === 'weeklyAnchorDay'
                         ? 'Send on'
                         : 'Send on day'}
@@ -295,7 +301,7 @@ export function DigestPreferencesCard({
                             }))
                       }
                     />
-                  </label>
+                  </div>
                 )}
               </div>
               <SettingsCardSwitch

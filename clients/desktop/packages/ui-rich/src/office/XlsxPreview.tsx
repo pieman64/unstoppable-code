@@ -5,18 +5,14 @@ import {
   type OfficePreviewCopy,
   type OfficePreviewRenderFailure,
 } from './office-preview-copy';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  TabBar,
+} from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type JSX,
-  type KeyboardEvent,
-} from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { XlsxSheetModel } from './office-parse';
 import { parseOfficeDocument } from './office-parse-client';
 import { OfficePreviewBanner } from './OfficePreviewBanner';
@@ -83,69 +79,34 @@ export function XlsxPreview({
           className="flex min-h-0 flex-1 items-center justify-center"
           data-testid="xlsx-preview-loading"
         >
-          <LoadingPlaceholder />
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       </div>
     );
   }
   const sheet = state.sheets[activeSheet] ?? state.sheets[0];
-  const selectByKey = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ): void => {
-    const count = state.sheets.length;
-    if (count === 0) return;
-    const next =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? count - 1
-          : event.key === 'ArrowRight'
-            ? (index + 1) % count
-            : event.key === 'ArrowLeft'
-              ? (index + count - 1) % count
-              : undefined;
-    if (next === undefined) return;
-    event.preventDefault();
-    setActiveSheet(next);
-    document.getElementById(`${tabsId}-tab-${next}`)?.focus();
-  };
   return (
     <div
       className={`${REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 flex-col`}
       data-testid="xlsx-preview"
     >
       <OfficePreviewBanner text={copy.banner} />
-      <div
-        role="tablist"
-        aria-label={`Sheets in ${fileName}`}
-        className="flex shrink-0 gap-1 overflow-x-auto border-b px-2"
-      >
-        {state.sheets.map((entry, index) => (
-          <button
-            key={`${index}:${entry.name}`}
-            type="button"
-            role="tab"
-            id={`${tabsId}-tab-${index}`}
-            aria-controls={`${tabsId}-panel`}
-            tabIndex={index === activeSheet ? 0 : -1}
-            aria-selected={index === activeSheet}
-            onKeyDown={(event): void => selectByKey(event, index)}
-            onClick={(): void => setActiveSheet(index)}
-            data-testid="xlsx-sheet-tab"
-            className={`relative px-3 py-1.5 text-xs ${index === activeSheet ? 'fg-primary' : 'fg-secondary hover:fg-primary'}`}
-          >
-            {entry.name}
-            {index === activeSheet && (
-              <span
-                aria-hidden="true"
-                data-testid="xlsx-active-sheet-indicator"
-                className="absolute inset-x-0 bottom-0 h-0.5 bg-accent"
-              />
-            )}
-          </button>
-        ))}
-      </div>
+      <TabBar
+        items={state.sheets.map((entry, index) => ({
+          id: String(index),
+          label: entry.name,
+          dataTestId: 'xlsx-sheet-tab',
+          tabId: `${tabsId}-tab-${index}`,
+        }))}
+        value={String(activeSheet)}
+        onChange={(next): void => setActiveSheet(Number(next))}
+        label={`Sheets in ${fileName}`}
+        density="compact"
+        panelId={`${tabsId}-panel`}
+        scrollable
+      />
       <div
         role="tabpanel"
         data-selectable

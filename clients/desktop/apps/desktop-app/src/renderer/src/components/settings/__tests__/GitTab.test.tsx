@@ -426,9 +426,9 @@ describe('MergeQueueSettingsSection', () => {
     };
   }
 
-  function radio(container: HTMLElement, value: string): HTMLInputElement {
-    const input = container.querySelector<HTMLInputElement>(
-      `input[type="radio"][value="${value}"]`,
+  function radio(container: HTMLElement, value: string): HTMLButtonElement {
+    const input = container.querySelector<HTMLButtonElement>(
+      `[role="radio"][value="${value}"]`,
     );
     if (!input) throw new Error(`Missing ${value} option`);
     return input;
@@ -447,8 +447,11 @@ describe('MergeQueueSettingsSection', () => {
       );
       expect(
         Array.from(
-          container.querySelectorAll<HTMLInputElement>('input[type="radio"]'),
-        ).map((input) => [input.value, input.checked]),
+          container.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+        ).map((row) => [
+          row.value,
+          row.getAttribute('aria-checked') === 'true',
+        ]),
       ).toEqual([
         ['always', false],
         ['when_hook_absent', true],

@@ -103,7 +103,7 @@ describe('share components', () => {
       '[data-testid="share-agent-submit"]',
     );
     expect(submit?.textContent).toBe('Sharing…');
-    expect(submit?.disabled).toBe(true);
+    expect(submit?.getAttribute('aria-disabled')).toBe('true');
     expect(submit?.getAttribute('aria-busy')).toBe('true');
     expect(
       container.querySelector('[data-testid="share-agent-submit-spinner"]'),

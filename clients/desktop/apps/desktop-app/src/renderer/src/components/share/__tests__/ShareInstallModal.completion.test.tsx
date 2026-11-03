@@ -56,9 +56,6 @@ jest.mock('../../shared', () => ({
       {children}
     </section>
   ),
-  LoadingPlaceholder: ({ label }: { label: string }): JSX.Element => (
-    <p data-testid="loading-placeholder">{label}</p>
-  ),
 }));
 jest.mock('@canopy/ui-shared/components/ShareInstallDialog', () => ({
   ShareInstallDialog: ({
@@ -215,6 +212,7 @@ afterEach(() => {
   act(() => {
     root.unmount();
   });
+  jest.useRealTimers();
   container.remove();
   useNavigationStore.setState({
     pendingShareInstall: undefined,
@@ -339,6 +337,7 @@ describe('ShareInstallModal automation completion handoff (CAN-3651)', () => {
   });
 
   it('shows a loading state instead of the landing while the review opens', () => {
+    jest.useFakeTimers();
     mockInstallReview = null;
     mockOpeningInstallReview = true;
     renderHost();
@@ -346,10 +345,37 @@ describe('ShareInstallModal automation completion handoff (CAN-3651)', () => {
     expect(
       container.querySelector('[data-testid="deep-link-share-landing"]'),
     ).not.toBeNull();
+    const placeholder = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>(
+        '[data-testid="delayed-loading-placeholder"]',
+      );
+    const slowNote = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>('[data-testid="slow-load-note"]');
+    // The first 200ms reserve the box and show nothing, so a fast open never
+    // flashes a spinner.
+    expect(placeholder()?.dataset.visible).toBe('false');
+    expect(placeholder()?.classList.contains('invisible')).toBe(true);
     expect(
-      container.querySelector('[data-testid="loading-placeholder"]')
-        ?.textContent,
-    ).toBe('Loading shared automation…');
+      placeholder()?.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain('Loading shared automation');
+
+    act(() => {
+      jest.advanceTimersByTime(199);
+    });
+    expect(placeholder()?.dataset.visible).toBe('false');
+    act(() => {
+      jest.advanceTimersByTime(1);
+    });
+    expect(placeholder()?.dataset.visible).toBe('true');
+    expect(placeholder()?.classList.contains('invisible')).toBe(false);
+    expect(slowNote()?.textContent).toBe('');
+
+    // A long open says what is still coming, below the spinner.
+    act(() => {
+      jest.advanceTimersByTime(8_000);
+    });
+    expect(slowNote()?.textContent).toBe('Still loading shared automation…');
     // Nothing to click until the review is up.
     expect(
       container

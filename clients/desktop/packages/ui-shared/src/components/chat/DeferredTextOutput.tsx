@@ -2,6 +2,8 @@ import { memo, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
+import { Notice, NoticeButton } from '../Notice';
+import { TRY_AGAIN_LABEL } from '../useRetry';
 import { useCleanChatLook } from '../chat-look';
 
 interface DeferredTextOutputProps {
@@ -113,20 +115,24 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
             {loadingLabel}
           </span>
         )}
-        {error && (
-          <>
-            <span role="alert">{error}</span>
-            <Button
-              variant="ghost"
-              size="compact"
+      </div>
+      {error && (
+        <Notice
+          intent="destructive"
+          className="mx-2.5 my-2"
+          liveRegionScope="content"
+          actions={
+            <NoticeButton
               data-testid="chat-tool-output-retry"
               onClick={onRetry}
             >
-              Retry
-            </Button>
-          </>
-        )}
-      </div>
+              {TRY_AGAIN_LABEL}
+            </NoticeButton>
+          }
+        >
+          {error}
+        </Notice>
+      )}
     </div>
   );
 });

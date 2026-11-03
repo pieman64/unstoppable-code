@@ -1,4 +1,7 @@
-import type { ResolvePipelineTargetResult } from '@canopy/desktop-shared/node/pipelines/executor/types';
+import type {
+  PipelineHostActionRequest,
+  ResolvePipelineTargetResult,
+} from '@canopy/desktop-shared/node/pipelines/executor/types';
 import { runStep } from '@canopy/desktop-shared/node/pipelines/executor/step-runner';
 import { assertPipelineContext } from '../pipelines/resource-lanes';
 import * as workspacePersistence from '../lib/workspace-persistence';
@@ -291,10 +294,36 @@ describe('createElectronExecutionRuntime', () => {
     });
   });
 
-  it('supplies the desktop pipeline host actions port', () => {
-    expect(createElectronExecutionRuntime().pipelineHostActions).toBe(
-      mockPipelineHostActions,
-    );
+  it('supplies the desktop host actions behind the worker host request port', async () => {
+    const port = createElectronExecutionRuntime().pipelineHostActions;
+    expect(port).not.toBe(mockPipelineHostActions);
+    // Every host step crosses the boundary: without a core settling host
+    // requests, the step fails as it does without a desktop.
+    const request: PipelineHostActionRequest = {
+      action: 'wait-for-agent-reply',
+      inputs: {
+        chat: { kind: 'bot', botId: 'bot-1', taskId: 'task-1', chatId: 'c-1' },
+        replyTimeoutMinutes: 5,
+      },
+    };
+    await expect(
+      port?.run(
+        request,
+        {
+          executionId: 'run-1',
+          jobId: 'build',
+          stepId: 'wait',
+          attempt: 0,
+          iteration: 0,
+          idempotencyKey: 'key',
+        },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      status: 'failure',
+      failureReason: 'needs_desktop',
+    });
+    expect(mockPipelineHostActions.run).not.toHaveBeenCalled();
   });
 
   it('wires the execution-owner check and the window into host actions', () => {

@@ -4,7 +4,8 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   InlineTextSkeleton,
-  Radio,
+  ChoiceList,
+  ChoiceListRow,
   SettingsBackButton,
   SettingsFormSkeleton,
   SettingsRowsGroup,
@@ -367,41 +368,27 @@ export function SettingsRadioGroup<T extends string>({
   dataTestId,
 }: SettingsRadioGroupProps<T>): JSX.Element {
   return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      data-testid={dataTestId}
-      className="flex flex-col gap-3"
-    >
+    <ChoiceList kind="radio" aria-label={label} data-testid={dataTestId}>
       {options.map((option) => (
-        <label
+        <ChoiceListRow
           key={option.value}
-          className={`flex items-start gap-2.5 ${
-            disabled || option.disabled ? 'opacity-60' : 'cursor-pointer'
-          }`}
+          kind="radio"
+          name={name}
+          value={option.value}
+          selected={value === option.value}
+          disabled={disabled || option.disabled}
+          onClick={() => onChange(option.value)}
+          data-testid={option.dataTestId}
         >
-          <Radio
-            name={name}
-            value={option.value}
-            checked={value === option.value}
-            disabled={disabled || option.disabled}
-            onChange={() => onChange(option.value)}
-            data-testid={option.dataTestId}
-            className="mt-0.5"
-          />
-          <span className="min-w-0 space-y-0.5">
-            <span className="block text-s font-medium fg-primary">
-              {option.label}
+          <span className="block font-medium">{option.label}</span>
+          {option.description ? (
+            <span className="block text-xs text-pretty fg-secondary">
+              {option.description}
             </span>
-            {option.description ? (
-              <span className="block text-xs text-pretty fg-secondary">
-                {option.description}
-              </span>
-            ) : null}
-          </span>
-        </label>
+          ) : null}
+        </ChoiceListRow>
       ))}
-    </div>
+    </ChoiceList>
   );
 }
 

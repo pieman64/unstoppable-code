@@ -5,6 +5,11 @@ import {
   defaultConfigAuthToken,
   CLOUD_SINGLE_CONFIG_REQUIRED,
 } from './mcpManagementOperations';
+import {
+  ChoiceField,
+  FormField,
+  TextInput,
+} from '@canopy/ui-shared/components';
 
 interface McpMoveToCloudDialogProps {
   serverName: string;
@@ -42,7 +47,7 @@ export function McpMoveToCloudDialog({
       onClose={onClose}
       dataTestId={dataTestId}
     >
-      <div className="space-y-4 p-6">
+      <div className="space-y-4">
         {blockedReason ? (
           <p className="text-s fg-secondary" data-testid="mcp-move-blocked">
             {blockedReason}
@@ -64,24 +69,24 @@ export function McpMoveToCloudDialog({
           </>
         )}
         {token && !blockedReason && (
-          <label className="block text-sm">
-            <span className="mb-1.5 block fg-secondary">Access token</span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={token.value}
-              disabled={token.loading}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
-                token.onChange(e.target.value)
-              }
-              placeholder="Optional"
-              data-testid="mcp-promote-access-token"
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
-            />
-            <span className="mt-1 block text-xs fg-secondary">
-              Clear it to move the server without a token, or enter another one.
-            </span>
-          </label>
+          <FormField
+            label="Access token (optional)"
+            description="Clear it to move the server without a token, or enter another one."
+          >
+            {(control) => (
+              <TextInput
+                {...control}
+                type="password"
+                autoComplete="off"
+                value={token.value}
+                disabled={token.loading}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                  token.onChange(e.target.value)
+                }
+                data-testid="mcp-promote-access-token"
+              />
+            )}
+          </FormField>
         )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
@@ -178,7 +183,7 @@ export function McpMoveToDeviceDialog({
       onClose={onClose}
       dataTestId="mcp-move-to-device-dialog"
     >
-      <div className="space-y-4 p-6">
+      <div className="space-y-4">
         <p className="text-s fg-secondary">
           Cloud chats, cloud project defaults, and your other desktops lose{' '}
           {serverName}, because they can't use a server on this device. Chats
@@ -196,18 +201,14 @@ export function McpMoveToDeviceDialog({
                 ? "This server has stored headers that can't be copied to this device. Enter them again in the editor, or move it without them."
                 : "This server may have stored headers that can't be copied to this device. Enter them again in the editor, or move it without them."}
             </p>
-            <label className="flex cursor-pointer items-start gap-2 text-s fg-primary">
-              <input
-                type="checkbox"
-                checked={storedHeadersChoice.confirmed}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
-                  storedHeadersChoice.onChange(e.target.checked)
-                }
-                className="mt-0.5 rounded"
-                data-testid="mcp-move-drop-stored-headers"
-              />
-              <span>Move without its stored headers</span>
-            </label>
+            <ChoiceField
+              label="Move without its stored headers"
+              checked={storedHeadersChoice.confirmed}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
+                storedHeadersChoice.onChange(e.target.checked)
+              }
+              data-testid="mcp-move-drop-stored-headers"
+            />
           </>
         )}
         <div className="flex justify-end gap-2">

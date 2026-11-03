@@ -168,9 +168,12 @@ async function flush(): Promise<void> {
 }
 
 function clickButton(label: string): void {
+  // The last match: an open dialog renders after the page it covers.
   const button = Array.from(
     document.querySelectorAll<HTMLButtonElement>('button'),
-  ).find((candidate) => candidate.textContent?.trim() === label);
+  )
+    .filter((candidate) => candidate.textContent?.trim() === label)
+    .pop();
   if (!button) throw new Error(`Button not found: ${label}`);
   act(() => button.click());
 }
@@ -272,7 +275,7 @@ describe('ProjectSettingsModal close-blocking deletion', () => {
     expect(document.body.textContent).toContain(SOURCE_UNAVAILABLE);
   });
 
-  it.each(['Delete without teardown', 'Retry teardown'])(
+  it.each(['Delete without teardown', 'Try again'])(
     'shows a refusal from %s after a teardown failure',
     async (action) => {
       archiveWorktree
@@ -301,7 +304,11 @@ describe('ProjectSettingsModal close-blocking deletion', () => {
 
     expect(archiveWorktree).not.toHaveBeenCalled();
     expect(deleteProject).not.toHaveBeenCalled();
-    expect(document.body.textContent).toContain('IPC failed');
+    // Settings show our own sentence, never the raw exception.
+    expect(document.body.textContent).toContain(
+      'Couldn’t delete the project. Try again.',
+    );
+    expect(document.body.textContent).not.toContain('IPC failed');
   });
 
   it('does not archive any worktree or delete the project when a target cannot be checked', async () => {
@@ -424,7 +431,7 @@ describe('WorkspaceSettingsModal close-blocking deletion', () => {
     expect(document.body.textContent).toContain(SOURCE_UNAVAILABLE);
   });
 
-  it.each(['Delete without teardown', 'Retry teardown'])(
+  it.each(['Delete without teardown', 'Try again'])(
     'shows a refusal from %s after a teardown failure',
     async (action) => {
       archiveWorktree
@@ -647,8 +654,10 @@ describe('CAN-5337 a deletion refused only for discardable worktrees', () => {
       await open();
       await flush();
 
+      // CAN-5338: the shared store always asks for retained archives too.
       expect(describeProjectDeletionDiscard).toHaveBeenCalledWith({
         workspaceId: projectId,
+        retainedArchives: true,
       });
       expect(discardDialog()?.textContent).toContain(
         `/data/${projectId}/worktrees/wt-busy`,

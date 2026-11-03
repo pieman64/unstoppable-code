@@ -8,9 +8,6 @@ import type {
 import { isPipelineExecutionActiveStatus } from './utils';
 
 const ADVISOR_ETA_TICK_MS = 30_000;
-const ADVISOR_PREVIEW_WIDTH = 280;
-const ADVISOR_PREVIEW_GAP = 4;
-const ADVISOR_PREVIEW_VIEWPORT_PADDING = 8;
 
 export function usePipelineAdvisorEtaNow(active: boolean): number {
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -135,38 +132,6 @@ export function formatAdvisorReportEta(
     }
   }
   return 'ETA unknown';
-}
-
-export function computeAdvisorPreviewPosition(args: {
-  anchorRect: Pick<DOMRect, 'top' | 'bottom' | 'left' | 'right'>;
-  popoverWidth?: number;
-  popoverHeight?: number;
-  viewportWidth?: number;
-  viewportHeight?: number;
-}): { top: number; left: number } {
-  const popoverWidth = args.popoverWidth ?? ADVISOR_PREVIEW_WIDTH;
-  const popoverHeight = args.popoverHeight ?? 0;
-  const viewportWidth = args.viewportWidth ?? window.innerWidth;
-  const viewportHeight = args.viewportHeight ?? window.innerHeight;
-  const padding = ADVISOR_PREVIEW_VIEWPORT_PADDING;
-
-  const spaceBelow = viewportHeight - args.anchorRect.bottom - padding;
-  const spaceAbove = args.anchorRect.top - padding;
-  const shouldPlaceAbove =
-    popoverHeight > 0 &&
-    popoverHeight + ADVISOR_PREVIEW_GAP > spaceBelow &&
-    spaceAbove > spaceBelow;
-  const preferredTop = shouldPlaceAbove
-    ? args.anchorRect.top - popoverHeight - ADVISOR_PREVIEW_GAP
-    : args.anchorRect.bottom + ADVISOR_PREVIEW_GAP;
-  const maxTop = Math.max(padding, viewportHeight - popoverHeight - padding);
-  const top = Math.min(Math.max(padding, preferredTop), maxTop);
-
-  const preferredLeft = args.anchorRect.right - popoverWidth;
-  const maxLeft = Math.max(padding, viewportWidth - popoverWidth - padding);
-  const left = Math.min(Math.max(padding, preferredLeft), maxLeft);
-
-  return { top, left };
 }
 
 /**

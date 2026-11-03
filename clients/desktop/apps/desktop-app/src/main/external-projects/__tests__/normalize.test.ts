@@ -18,7 +18,13 @@ function fakeDeps(world: {
   symlinks?: Record<string, string>;
   repos?: Record<string, string>;
   commonDirs?: Record<string, string>;
-}): NormalizeDeps {
+  nested?: Record<string, { repositories: string[]; complete: boolean }>;
+}): NormalizeDeps & {
+  findNestedRepositories: jest.Mock<
+    ReturnType<NormalizeDeps['findNestedRepositories']>,
+    [string]
+  >;
+} {
   const symlinks = world.symlinks ?? {};
   const repos = world.repos ?? {};
   const commonDirs = world.commonDirs ?? {};
@@ -36,6 +42,11 @@ function fakeDeps(world: {
       Promise.resolve(repos[directory] ?? null),
     gitCommonDir: (topLevel): Promise<string | null> =>
       Promise.resolve(commonDirs[topLevel] ?? null),
+    findNestedRepositories: jest.fn((directory: string) =>
+      Promise.resolve(
+        world.nested?.[directory] ?? { repositories: [], complete: true },
+      ),
+    ),
   };
 }
 
@@ -83,6 +94,7 @@ function context(overrides: Partial<NormalizeContext> = {}): NormalizeContext {
     sessionScratchRoots: [],
     maxSessionsPerCandidate: 50,
     maxUnavailableCandidates: 25,
+    maxNestedRepositoriesListed: 20,
     ...overrides,
   };
 }
@@ -784,5 +796,298 @@ describe('normalizeDiscoveredRoots', () => {
       { ...deps, gitCommonDir },
     );
     expect(gitCommonDir).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('picked parent nested repositories', () => {
+  const parent = '/Users/me/AndroidStudioProjects';
+  const picked = (directory: string): DiscoveredRoot =>
+    root(directory, { surface: 'custom-folder' });
+
+  it('lists three confirmed repositories and their plain parent without provider evidence', async () => {
+    const repositories = [
+      'pantry-android',
+      'wear-timer',
+      'compose-playground',
+    ].map((name) => `${parent}/${name}`);
+    const deps = fakeDeps({
+      directories: [parent, ...repositories],
+      repos: Object.fromEntries(repositories.map((repo) => [repo, repo])),
+      commonDirs: Object.fromEntries(
+        repositories.map((repo) => [repo, `${repo}/.git`]),
+      ),
+      nested: { [parent]: { repositories, complete: true } },
+    });
+    const result = await normalizeDiscoveredRoots(
+      [picked(parent)],
+      context(),
+      deps,
+    );
+    expect(result.candidates).toHaveLength(4);
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent),
+    ).toMatchObject({
+      kind: 'folder',
+      nestedRepositories: { count: 3, complete: true },
+      providers: [],
+    });
+    for (const repo of repositories)
+      expect(
+        result.candidates.find((candidate) => candidate.rootPath === repo),
+      ).toMatchObject({
+        id: externalProjectCandidateId(repo),
+        kind: 'git',
+        providers: [],
+        surfaces: ['nested-repository'],
+        parentCandidateIds: [externalProjectCandidateId(parent)],
+      });
+  });
+
+  it('merges adapter, direct and overlapping picks into the exact repository family, even outside the parents', async () => {
+    const group = `${parent}/group`;
+    const worktree = `${group}/worktree`;
+    const alias = `${group}/other-worktree`;
+    const main = '/Users/me/main';
+    const deps = fakeDeps({
+      directories: [parent, group, worktree, alias, main],
+      symlinks: { '/Users/me/pick-link': parent },
+      repos: { [worktree]: worktree, [alias]: alias, [main]: main },
+      commonDirs: {
+        [worktree]: `${main}/.git`,
+        [alias]: `${main}/.git`,
+        [main]: `${main}/.git`,
+      },
+      nested: {
+        [parent]: { repositories: [alias, worktree], complete: true },
+        [group]: { repositories: [worktree], complete: true },
+      },
+    });
+    const probe = jest.fn(deps.gitTopLevel.bind(deps));
+    deps.gitTopLevel = probe;
+    const result = await normalizeDiscoveredRoots(
+      [
+        picked(parent),
+        picked('/Users/me/pick-link'),
+        picked(group),
+        picked(worktree),
+        root(main, {
+          provider: 'codex',
+          surface: 'codex-cli',
+          lastActivityAt: '2026-10-01T00:00:00.000Z',
+          sessions: [
+            session('native', main, {
+              provider: 'codex',
+              surface: 'codex-cli',
+            }),
+          ],
+        }),
+      ],
+      context(),
+      deps,
+    );
+    expect(result.candidates).toHaveLength(3);
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === main),
+    ).toMatchObject({
+      id: externalProjectCandidateId(main),
+      providers: ['codex'],
+      surfaces: ['codex-cli', 'custom-folder', 'nested-repository'],
+      parentCandidateIds: [
+        externalProjectCandidateId(parent),
+        externalProjectCandidateId(group),
+      ].sort(),
+      linkedWorktreePaths: [alias, worktree].sort(),
+      sessionCount: 1,
+      lastActivityAt: '2026-10-01T00:00:00.000Z',
+    });
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent)
+        ?.nestedRepositories,
+    ).toEqual({ count: 1, complete: true });
+    expect(deps.findNestedRepositories).toHaveBeenCalledTimes(2);
+    expect(
+      probe.mock.calls.filter(([directory]) => directory === worktree),
+    ).toHaveLength(1);
+    expect(
+      result.nativeSessionIdsByCandidate.get(externalProjectCandidateId(main)),
+    ).toEqual(['native']);
+  });
+
+  it('validates every marker, ignores invalid markers, and marks identity failures incomplete', async () => {
+    const good = `${parent}/good`,
+      invalid = `${parent}/invalid`,
+      failed = `${parent}/failed`,
+      commonFailure = `${parent}/common-failure`;
+    const deps = fakeDeps({
+      directories: [parent, good, invalid, failed, commonFailure],
+      repos: { [good]: good, [commonFailure]: commonFailure },
+      commonDirs: { [good]: `${good}/.git` },
+      nested: {
+        [parent]: {
+          repositories: [good, invalid, failed, commonFailure],
+          complete: true,
+        },
+      },
+    });
+    const resolve = deps.gitTopLevel.bind(deps);
+    deps.gitTopLevel = async (directory): Promise<string | null> => {
+      if (directory === failed) throw new Error('timeout');
+      return resolve(directory);
+    };
+    const result = await normalizeDiscoveredRoots(
+      [picked(parent)],
+      context(),
+      deps,
+    );
+    expect(
+      result.candidates.map((candidate) => candidate.rootPath).sort(),
+    ).toEqual([parent, good].sort());
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent)
+        ?.nestedRepositories,
+    ).toEqual({ count: 1, complete: false });
+  });
+
+  it('counts 25 identities, caps deterministic nested listings at 20 and preserves independent discoveries', async () => {
+    const repositories = Array.from(
+      { length: 25 },
+      (_, index) => `${parent}/repo-${String(index).padStart(2, '0')}`,
+    );
+    const deps = fakeDeps({
+      directories: [parent, ...repositories],
+      repos: Object.fromEntries(repositories.map((repo) => [repo, repo])),
+      commonDirs: Object.fromEntries(
+        repositories.map((repo) => [repo, `${repo}/.git`]),
+      ),
+      nested: {
+        [parent]: { repositories: [...repositories].reverse(), complete: true },
+      },
+    });
+    const probe = jest.fn(deps.gitTopLevel.bind(deps));
+    deps.gitTopLevel = probe;
+    const result = await normalizeDiscoveredRoots(
+      [picked(parent), root(`${parent}/repo-24`)],
+      context(),
+      deps,
+    );
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent)
+        ?.nestedRepositories,
+    ).toEqual({ count: 25, complete: true });
+    expect(
+      result.candidates
+        .filter((candidate) => candidate.kind === 'git')
+        .map((candidate) => candidate.rootPath)
+        .sort(),
+    ).toEqual([...repositories.slice(0, 20), `${parent}/repo-24`]);
+    expect(probe).toHaveBeenCalledTimes(26);
+    expect(
+      result.candidates.filter((candidate) =>
+        candidate.surfaces.includes('nested-repository'),
+      ),
+    ).toHaveLength(20);
+    expect(
+      result.candidates.find(
+        (candidate) => candidate.rootPath === `${parent}/repo-24`,
+      ),
+    ).toMatchObject({
+      providers: ['claude'],
+      surfaces: ['claude-code'],
+      parentCandidateIds: [externalProjectCandidateId(parent)],
+    });
+  });
+
+  it('keeps confirmed counts and parent summary when tracking makes them unavailable', async () => {
+    const repo = `${parent}/tracked`;
+    const deps = fakeDeps({
+      directories: [parent, repo],
+      repos: { [repo]: repo },
+      commonDirs: { [repo]: `${repo}/.git` },
+      nested: { [parent]: { repositories: [repo], complete: true } },
+    });
+    const result = await normalizeDiscoveredRoots(
+      [picked(parent)],
+      context({
+        existingWorkspaces: [
+          {
+            id: 'tracked',
+            name: 'Tracked',
+            type: 'single-repo',
+            rootPaths: [repo],
+            gitCommonDirs: [`${repo}/.git`],
+          },
+        ],
+      }),
+      deps,
+    );
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent),
+    ).toMatchObject({
+      status: 'unavailable',
+      nestedRepositories: { count: 1, complete: true },
+    });
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === repo),
+    ).toMatchObject({ status: 'already-tracked' });
+  });
+
+  it.each([true, false])(
+    'propagates empty scan completeness %s',
+    async (complete) => {
+      const deps = fakeDeps({
+        directories: [parent],
+        nested: { [parent]: { repositories: [], complete } },
+      });
+      const result = await normalizeDiscoveredRoots(
+        [picked(parent)],
+        context(),
+        deps,
+      );
+      expect(result.candidates[0]?.nestedRepositories).toEqual({
+        count: 0,
+        complete,
+      });
+    },
+  );
+
+  it('turns scan exceptions into incomplete summaries', async () => {
+    const deps = fakeDeps({ directories: [parent] });
+    deps.findNestedRepositories = jest
+      .fn()
+      .mockRejectedValue(new Error('unreadable'));
+    const result = await normalizeDiscoveredRoots(
+      [picked(parent)],
+      context(),
+      deps,
+    );
+    expect(result.candidates[0]?.nestedRepositories).toEqual({
+      count: 0,
+      complete: false,
+    });
+  });
+
+  it('does not walk git picks, adapter roots, excluded home or failed root identity', async () => {
+    const repo = '/Users/me/repo',
+      provider = '/Users/me/provider';
+    const deps = fakeDeps({
+      directories: ['/Users/me', parent, repo, provider],
+      repos: { [repo]: repo },
+      commonDirs: { [repo]: `${repo}/.git` },
+    });
+    const resolve = deps.gitTopLevel.bind(deps);
+    deps.gitTopLevel = async (directory): Promise<string | null> => {
+      if (directory === parent) throw new Error('timeout');
+      return resolve(directory);
+    };
+    const result = await normalizeDiscoveredRoots(
+      [picked('/Users/me'), picked(repo), root(provider), picked(parent)],
+      context(),
+      deps,
+    );
+    expect(deps.findNestedRepositories).not.toHaveBeenCalled();
+    expect(
+      result.candidates.find((candidate) => candidate.rootPath === parent)
+        ?.nestedRepositories,
+    ).toEqual({ count: 0, complete: false });
   });
 });

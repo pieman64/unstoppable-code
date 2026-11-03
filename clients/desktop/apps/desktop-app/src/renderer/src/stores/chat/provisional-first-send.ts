@@ -1,8 +1,5 @@
 import { normalizeFingerprintText } from '@canopy/desktop-shared/lib/transcript-fingerprint';
-import {
-  reconcilePendingTurn,
-  setupQueuedFirstSend,
-} from './optimistic-presentation';
+import { reconcilePendingTurn } from './optimistic-presentation';
 import type { FileReference } from '@canopy/desktop-shared/types';
 import {
   chatTabHasConversationContent,
@@ -14,7 +11,6 @@ import type {
   ChatTab,
   ProvisionalFirstSend,
   ProvisionalFirstSendFailure,
-  QueuedChatMessage,
 } from './types';
 
 export interface ProvisionalFirstSendInput {
@@ -23,8 +19,6 @@ export interface ProvisionalFirstSendInput {
   text: string;
   fileReferences?: readonly FileReference[];
   attachmentPaths?: readonly string[];
-  /** The destination worktree is still setting up, so the send will queue. */
-  queuedForSetup?: boolean;
 }
 
 export function provisionalTimerMessageId(userMessageId: string): string {
@@ -107,7 +101,6 @@ export function presentProvisionalFirstSendOnTab(
       userMessageId: input.userMessageId,
       submittedAt: input.submittedAt,
       phase: 'preparing',
-      ...(input.queuedForSetup ? { queuedForSetup: true } : {}),
       ...(titlePatch
         ? {
             ownedTitle: titlePatch,
@@ -300,8 +293,6 @@ export function handOffProvisionalFirstSendToQueue(
   if (!userMessageId || record?.userMessageId !== userMessageId) return tab;
   if (record.phase === 'queued') return tab;
   const queued: ProvisionalFirstSend = { ...record, phase: 'queued' };
-  // The real row now shows it. A later flush presents the starting turn.
-  delete queued.queuedForSetup;
   return {
     ...retireProvisionalEcho(tab, record, false),
     provisionalFirstSend: queued,
@@ -327,50 +318,9 @@ export function cancelProvisionalFirstSendQueue(
   return next;
 }
 
-/** Queue removal and the next echo commit together, before send preparation. */
-export function resumeQueuedProvisionalFirstSend(
-  tab: ChatTab,
-  row: QueuedChatMessage,
-): ChatTab {
-  const record = tab.provisionalFirstSend;
-  if (
-    record?.phase !== 'queued' ||
-    row.dispatchOptions?.userMessageId !== record.userMessageId
-  )
-    return tab;
-  const echo = presentProvisionalFirstSendOnTab(
-    {
-      ...tab,
-      messages: [],
-      transcript: undefined,
-      queuedMessages: [],
-      provisionalFirstSend: undefined,
-    },
-    {
-      userMessageId: record.userMessageId,
-      submittedAt: record.submittedAt,
-      text: row.text,
-      fileReferences: row.fileReferences,
-      attachmentPaths: row.attachmentPaths,
-    },
-  );
-  if (!echo) return tab;
-  return {
-    ...tab,
-    messages: [...tab.messages, ...echo.messages],
-    pendingTurn: echo.pendingTurn,
-    pendingUserMessages: echo.pendingUserMessages,
-    provisionalFirstSend: {
-      ...record,
-      phase: 'preparing',
-      dispatchClaimed: false,
-    },
-  };
-}
-
 /**
  * The submission `sendMessage` is adopting, when its message id matches the
- * presented echo. Setup-queued first sends retain it when they flush.
+ * presented echo.
  */
 export function adoptableProvisionalFirstSend(
   tab: ChatTab | undefined,
@@ -435,8 +385,7 @@ export function isProvisionalFirstSendAdmissionPending(
 
 /**
  * The user message whose turn shows the pending "Starting…" status: the
- * provisional first send, until it queues or the chat errors. A send headed
- * for the setup queue never shows it. The turn
+ * provisional first send, until it queues or the chat errors. The turn
  * renderer ends it on the first visible output or a finished timer.
  */
 export function startingTurnUserMessageId(tab: ChatTab): string | undefined {
@@ -445,8 +394,7 @@ export function startingTurnUserMessageId(tab: ChatTab): string | undefined {
     !record ||
     record.phase === 'queued' ||
     record.phase === 'failed' ||
-    tab.status === 'error' ||
-    setupQueuedFirstSend(tab)
+    tab.status === 'error'
   ) {
     return undefined;
   }

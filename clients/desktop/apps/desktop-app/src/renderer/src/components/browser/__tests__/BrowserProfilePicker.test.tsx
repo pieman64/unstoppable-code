@@ -165,7 +165,8 @@ describe('BrowserProfilePicker', () => {
     expect(trigger.className).not.toContain('ring-line-base');
 
     const menu = await openMenu(container);
-    expect(menu.className).toContain('z-dropdown');
+    // The shared Popover's floating layer, never an invented tier.
+    expect(menu.className).toContain('canopy-floating-menu');
     expect(menu.className).not.toContain('z-popover');
     // Native select preserved for Playwright selectOption.
     expect(
@@ -182,6 +183,9 @@ describe('BrowserProfilePicker', () => {
       // jsdom has no PointerEvent constructor; the handler only reads
       // `event.target`, so a generic bubbling event exercises the same path.
       document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      // Finish the press: the menu swallows the click that completes an
+      // outside-dismiss press, so a later test's click is not eaten.
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       return Promise.resolve();
     });
     expect(menuEl()).toBeNull();
@@ -240,6 +244,98 @@ describe('BrowserProfilePicker', () => {
     await choose(select, 'p1');
     expect(inMenu('browser-profile-replace')).toBeNull();
     expect(inMenu('browser-profile-set-default')).toBeNull();
+  });
+});
+
+describe('BrowserProfilePicker while a switch is in flight', () => {
+  let container: HTMLElement;
+  let root: Root;
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const escape = async (): Promise<void> => {
+    await act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+      return Promise.resolve();
+    });
+  };
+
+  it('ignores Escape and outside presses until the switch settles', async () => {
+    let settle: (() => void) | undefined;
+    const switchProfile = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          settle = (): void =>
+            resolve({ status: 'cancelled', browser: snapshot });
+        }),
+    );
+    stubApi();
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        browser: { ...window.api.browser, switchProfile },
+      },
+    });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(() => {
+      root.render(<BrowserProfilePicker snapshot={snapshot} />);
+      return Promise.resolve();
+    });
+    const menu = await openMenu(container);
+    await choose(
+      menu.querySelector(
+        'select[data-testid="browser-profile-selection"]',
+      ) as HTMLSelectElement,
+      'task',
+    );
+    await act(() => {
+      inMenu('browser-profile-replace')?.click();
+      return Promise.resolve();
+    });
+    expect(switchProfile).toHaveBeenCalledTimes(1);
+
+    // Closing mid-switch would hide the progress and any error.
+    await escape();
+    expect(menuEl()).not.toBeNull();
+    await act(() => {
+      document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return Promise.resolve();
+    });
+    expect(menuEl()).not.toBeNull();
+    // An outside press must not swallow its click either: the page's
+    // leave/stay prompt the notice points at has to stay answerable.
+    const leave = document.createElement('button');
+    const onLeave = jest.fn();
+    leave.addEventListener('click', onLeave);
+    document.body.appendChild(leave);
+    await act(() => {
+      for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+        leave.dispatchEvent(
+          new MouseEvent(type, { bubbles: true, cancelable: true }),
+        );
+      }
+      return Promise.resolve();
+    });
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(menuEl()).not.toBeNull();
+    leave.remove();
+
+    await act(async () => {
+      settle?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(menuEl()?.textContent).toContain('Profile switch cancelled');
+    await escape();
+    expect(menuEl()).toBeNull();
   });
 });
 

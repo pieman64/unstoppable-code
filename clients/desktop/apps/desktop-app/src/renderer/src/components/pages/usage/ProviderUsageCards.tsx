@@ -289,6 +289,7 @@ function RetainedReviewChatDialog({
 
   return (
     <DialogModal
+      inset="flush"
       title="Interrupted review chat"
       subtitle="Viewing this chat doesn't resume it."
       onClose={onClose}

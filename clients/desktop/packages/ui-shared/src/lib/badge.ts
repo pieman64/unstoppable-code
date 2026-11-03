@@ -9,8 +9,11 @@
  *   figures (DESIGN.md Typography: counts in a row are not tabular); a 16px
  *   tabular capsule on an icon, neutral, blue for unread, or orange for
  *   waiting on you. On an icon it caps at 99+.
- * - Dot: 6px, with three meanings only: unread (blue), waiting on you
- *   (orange), and filter on (grey).
+ * - Badge `compact`: a 16px square tag at 10px for dense views only
+ *   (diagrams, code views, schema tags such as PK or added).
+ * - Dot: 6px, with five meanings only: unread (blue), waiting on you
+ *   (orange), filter on (grey), connected or working (green), and offline or
+ *   failed (red).
  *
  * Every marker composes these builders so the app cannot drift back into a
  * mix of heights, radii, rings and weights.
@@ -24,9 +27,23 @@ export type BadgeTone =
   | 'danger'
   | 'special';
 
+export type BadgeSize = 'regular' | 'compact';
+
 /** 18px capsule, 11px label at 450, 12px icons. */
 export const BADGE_BASE_CLASS =
   'inline-flex h-4.5 shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-1.75 text-2xs font-medium leading-none';
+
+/**
+ * 16px square tag, 10px label at 450, 10px icons. Dense views only:
+ * diagrams, code views and schema tags (PK, FK, added, changed).
+ */
+export const BADGE_COMPACT_BASE_CLASS =
+  'inline-flex h-4 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-sm px-1 text-3xs font-medium leading-none';
+
+export const BADGE_BASE_CLASS_BY_SIZE: Readonly<Record<BadgeSize, string>> = {
+  regular: BADGE_BASE_CLASS,
+  compact: BADGE_COMPACT_BASE_CLASS,
+};
 
 /** Fill and ink per tone. Fills are the `-subtle` roles; inks the strong roles. */
 export const BADGE_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
@@ -54,8 +71,18 @@ export const BADGE_MUTED_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
 /** 12px leading glyph inside a badge. */
 export const BADGE_ICON_CLASS = 'size-3 shrink-0';
 
+/** Leading glyph class and drawn size per badge size. */
+export const BADGE_ICON_BY_SIZE: Readonly<
+  Record<BadgeSize, { readonly className: string; readonly px: number }>
+> = {
+  regular: { className: BADGE_ICON_CLASS, px: 12 },
+  compact: { className: 'size-2.5 shrink-0', px: 10 },
+};
+
 export interface BadgeClassNameOptions {
   readonly muted?: boolean;
+  /** Defaults to `regular`, the 18px capsule. */
+  readonly size?: BadgeSize;
 }
 
 /** Full class string for a badge: shared geometry plus the tone's fill and ink. */
@@ -67,7 +94,7 @@ export function badgeClassName(
     options.muted === true
       ? BADGE_MUTED_TONE_CLASS[tone]
       : BADGE_TONE_CLASS[tone];
-  return `${BADGE_BASE_CLASS} ${toneClass}`;
+  return `${BADGE_BASE_CLASS_BY_SIZE[options.size ?? 'regular']} ${toneClass}`;
 }
 
 /** Largest number a count on an icon shows before it reads `99+`. */
@@ -110,7 +137,11 @@ export function iconCountClassName(tone: CountTone): string {
   return `${ICON_COUNT_BASE_CLASS} ${ICON_COUNT_TONE_CLASS[tone]}`;
 }
 
-export type DotTone = 'unread' | 'attention' | 'filter';
+/**
+ * `success` is connected or working, `danger` offline or failed; both take
+ * the solid status roles, never a raw hue.
+ */
+export type DotTone = 'unread' | 'attention' | 'filter' | 'success' | 'danger';
 
 export const DOT_BASE_CLASS = 'inline-block size-1.5 shrink-0 rounded-full';
 
@@ -118,6 +149,8 @@ export const DOT_TONE_CLASS: Readonly<Record<DotTone, string>> = {
   unread: 'bg-fg-info',
   attention: 'bg-fg-warning',
   filter: 'bg-fg-quaternary',
+  success: 'bg-fg-success-strong',
+  danger: 'bg-fg-destructive-strong',
 };
 
 export function dotClassName(tone: DotTone): string {

@@ -171,8 +171,8 @@ describe('ChatPanel credit-held queued retry', () => {
   });
 
   it.each([
-    ['transcript bubble', false, 'queued-message-retry', 'Retry'],
-    ['compact row', true, 'queued-message-retry', 'Retry'],
+    ['transcript bubble', false, 'queued-message-retry', 'Try again'],
+    ['compact row', true, 'queued-message-retry', 'Try again'],
   ] as const)(
     'keeps the %s disabled until the hold lifts, then sends once',
     async (_surface, compact, testId, label) => {
@@ -185,7 +185,9 @@ describe('ChatPanel credit-held queued retry', () => {
         container.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
 
       expect(action()?.textContent).toBe(label);
-      expect(container.textContent).toContain('Add credits, then click Retry');
+      expect(container.textContent).toContain(
+        'Add credits, then click Try again',
+      );
       expect(action()?.getAttribute('aria-disabled')).toBe('true');
       expect(
         container.querySelector('[data-testid="queued-message-steer"]'),

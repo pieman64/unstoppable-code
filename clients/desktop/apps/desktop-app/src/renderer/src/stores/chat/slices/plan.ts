@@ -4,11 +4,13 @@ import { isCoworkChatTarget } from '@/lib/cowork';
 import { worktreeKey } from '../utils';
 import {
   applyApprovedTrackedPlanToTab,
+  beginPlanDispatch,
   applyDismissedTrackedPlanToTab,
   applyExecutedTrackedPlanToTab,
   applyPlanExitTabReviewState,
   applyPlanExitToTab,
   applyProposalTrackedPlanToTab,
+  createTrackedPlanImplementation,
   findPendingPlanExitRequestIdForChat,
   getPendingPlanExitSource,
   getPlanExitTarget,
@@ -19,6 +21,7 @@ import {
 } from '../plan-utils';
 import { restartClaudeTerminalForSettingsChange } from '../claudeTerminalPrompt';
 import { canReceiveWorktreeChatActivity } from '../surface';
+import { useGitHubStore } from '../../githubStore';
 import {
   recordWorktreeChatTouch,
   scheduleIdleChatUnload,
@@ -138,22 +141,43 @@ async function approveResolvedPlanExit(
   // coordinated with the durable review resolution.
   if (source === 'cursor') return;
 
+  // A legacy tab cannot identify the revision the user reviewed. Keep its
+  // proposal available and refuse before approving or starting any work.
+  if (
+    target.tab.trackedPlanId &&
+    target.tab.latestRevisionNumber === undefined
+  ) {
+    useGitHubStore
+      .getState()
+      .addToast(
+        "Couldn't identify the reviewed plan revision. Open the plan to implement it.",
+        'error',
+      );
+    return;
+  }
+
   if (source === 'opencode') {
     const requestId =
       target.pending?.requestId ?? target.tab.pendingPlanExitRequestId;
     const planId = target.tab.trackedPlanId;
     const revisionNumber = target.tab.latestRevisionNumber;
     if (!requestId || !planId || revisionNumber === undefined) return;
-    // The canonical send atomically validates this proposal and persists
-    // its approval before starting implementation. Do not clear it first.
+    // The canonical send atomically validates this proposal, persists its
+    // approval and registers the implementation link before starting
+    // implementation. Do not clear it first.
+    const implementation = createTrackedPlanImplementation(
+      planId,
+      revisionNumber,
+    );
     const disposition = await get().dispatchChatCommand(
       { projectId: target.projectId, worktreeId: target.worktreeId },
       {
         type: 'chat.send_message',
         chatId: target.targetChatId,
-        userMessageId: `plan-implementation-${crypto.randomUUID()}`,
+        userMessageId: implementation.userMessageId,
         text: 'Approved. Implement the plan.',
         planReviewApproval: { requestId, planId, revisionNumber },
+        trackedPlanImplementation: implementation,
       },
     );
     if (disposition !== 'accepted') return;
@@ -197,16 +221,43 @@ async function approveResolvedPlanExit(
   );
   scheduleIdleChatUnload();
 
-  void get().sendMessage(
-    proposal ? 'Approved. Implement the plan.' : 'Approved',
-    undefined,
-    {
+  const text = proposal ? 'Approved. Implement the plan.' : 'Approved';
+  const planId = target.tab.trackedPlanId;
+  const revisionNumber = target.tab.latestRevisionNumber;
+  const sendUntracked = (): void => {
+    void get().sendMessage(text, undefined, {
       projectId: target.projectId,
       worktreeId: target.worktreeId,
       chatId: target.targetChatId,
+    });
+  };
+  if (!planId || revisionNumber === undefined) {
+    await reviewSync;
+    sendUntracked();
+    return;
+  }
+  // Snapshot the reviewed revision before waiting: main links an
+  // implementation only to an approved revision, so the send follows the
+  // plan's approval. A failed sync is already reported; keep the approved
+  // chat available for recovery without starting an untracked turn.
+  const implementation = createTrackedPlanImplementation(
+    planId,
+    revisionNumber,
+  );
+  const synced = await reviewSync;
+  if (synced === 'update-failed' || synced === 'skipped') {
+    return;
+  }
+  await get().dispatchChatCommand(
+    { projectId: target.projectId, worktreeId: target.worktreeId },
+    {
+      type: 'chat.send_message',
+      chatId: target.targetChatId,
+      userMessageId: implementation.userMessageId,
+      text,
+      trackedPlanImplementation: implementation,
     },
   );
-  await reviewSync;
 }
 
 export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
@@ -666,8 +717,25 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     const inFlight = planApprovalsInFlight.get(inFlightKey);
     if (inFlight) return inFlight;
 
+    const release =
+      target.tab.trackedPlanId && target.tab.latestRevisionNumber !== undefined
+        ? beginPlanDispatch({
+            projectId: target.projectId,
+            worktreeId: target.worktreeId,
+            id: target.tab.trackedPlanId,
+            latestRevisionNumber: target.tab.latestRevisionNumber,
+          })
+        : undefined;
+    if (
+      target.tab.trackedPlanId &&
+      target.tab.latestRevisionNumber !== undefined &&
+      !release
+    )
+      return Promise.resolve();
+
     const approval = approveResolvedPlanExit(target, get, set).finally(() => {
       planApprovalsInFlight.delete(inFlightKey);
+      release?.();
     });
     planApprovalsInFlight.set(inFlightKey, approval);
     return approval;

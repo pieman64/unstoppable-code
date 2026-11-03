@@ -1,5 +1,9 @@
 import { useState, type JSX, type ReactNode } from 'react';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  ErrorBanner,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import type {
   PipelinePackageAnalysisBlocker,
   PipelinePackageInvocationDismissal,
@@ -229,13 +233,11 @@ export function CapabilityPackageProblems({
       )}
 
       {problems.length > 0 && onFixWithAI !== undefined && fixWithAIFailed && (
-        <p
-          role="alert"
-          className={`pb-2 text-xs fg-destructive ${COPY_INSET_CLASS}`}
-          data-testid={`${testIdPrefix}-dependency-problems-fix-with-ai-error`}
-        >
-          {FIX_WITH_AI_FAILURE_LABEL}
-        </p>
+        <ErrorBanner
+          className="mb-2"
+          error={FIX_WITH_AI_FAILURE_LABEL}
+          testId={`${testIdPrefix}-dependency-problems-fix-with-ai-error`}
+        />
       )}
 
       {single === undefined && problems.length > 0 && (

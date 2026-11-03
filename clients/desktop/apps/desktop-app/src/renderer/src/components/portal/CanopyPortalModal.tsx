@@ -30,6 +30,7 @@ import { GUEST_WORK_PRESERVED } from '@/lib/guest-cta-copy';
 import { brandText, getBrandMobileApps } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
+import { ErrorBanner, Fact, FactList } from '@canopy/ui-shared/components';
 
 const PORTAL_NAME = REMOTE_CONTROL_LABEL;
 const CLOUD_NAME = `${brandText.appName} Cloud`;
@@ -587,6 +588,7 @@ export function CanopyPortalModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={isBusy ? (): void => {} : onClose}
       title={TITLE}
       subtitle={getBrandMobileApps() ? SUBTITLE_WITH_MOBILE : SUBTITLE}
@@ -594,7 +596,7 @@ export function CanopyPortalModal({
       closeOnBackdrop={!isBusy}
       dataTestId="canopy-portal-modal"
     >
-      <div className="px-5 py-4 space-y-4">
+      <div className="px-6 py-4 space-y-4">
         {cloudLoading && (
           <p className="text-s fg-secondary">{ACCOUNT_LOADING_LABEL}</p>
         )}
@@ -695,7 +697,7 @@ export function CanopyPortalModal({
             {(portal.status === 'pending_auth' ||
               (portal.status === 'active' && portal.pairingCode !== null)) && (
               <div
-                className="rounded-2xl border bg-base p-5 text-center"
+                className="rounded-2xl border bg-base p-6 text-center"
                 data-testid="canopy-portal-pairing-code"
               >
                 {pairingQrVisible && pairingQrSrc !== null && (
@@ -745,17 +747,16 @@ export function CanopyPortalModal({
               typeof portal.hostCode === 'string' &&
               portal.hostCode.length > 0 && (
                 <div className="space-y-1" data-testid="portal-host-id">
-                  <dl>
-                    <dt className="text-s fg-secondary">{HOST_ID_LABEL}</dt>
-                    <dd>
+                  <FactList layout="stacked" size="s" labelTone="secondary">
+                    <Fact label={HOST_ID_LABEL} fit="break-all">
                       <code
-                        className="font-mono text-s fg-primary select-all"
+                        className="font-mono select-all"
                         data-testid="portal-host-id-value"
                       >
                         {portal.hostCode}
                       </code>
-                    </dd>
-                  </dl>
+                    </Fact>
+                  </FactList>
                   <p className="text-xs fg-secondary">{HOST_ID_HELPER}</p>
                 </div>
               )}
@@ -785,15 +786,11 @@ export function CanopyPortalModal({
           </div>
         )}
 
-        {actionError && (
-          <p
-            className="text-s fg-destructive"
-            role="alert"
-            data-testid="canopy-portal-action-error"
-          >
-            {actionError}
-          </p>
-        )}
+        <ErrorBanner
+          className=""
+          error={actionError}
+          testId="canopy-portal-action-error"
+        />
 
         {/* Deliberate download surface, appended unconditionally as the last
             child of the body so it covers every modal state at once. It sits
@@ -802,7 +799,7 @@ export function CanopyPortalModal({
         <RemoteControlMobileAppsCta />
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
         <Button
           variant="secondary"
           size="compact"
@@ -911,7 +908,7 @@ export function CanopyPortalModal({
             disabled={isBusy || !cloudReady}
             data-testid="canopy-portal-try-again"
           >
-            {busy === 'starting' ? 'Retrying…' : TRY_AGAIN_BUTTON}
+            {busy === 'starting' ? 'Trying again…' : TRY_AGAIN_BUTTON}
           </Button>
         )}
       </div>

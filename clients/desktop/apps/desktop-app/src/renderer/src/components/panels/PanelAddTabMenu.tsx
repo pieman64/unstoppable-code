@@ -573,7 +573,7 @@ export function PanelAddTabMenu({
               id: 'automations',
               label: 'Automations',
               presentation: 'submenu' as const,
-              icon: <AutomationsIcon />,
+              icon: <AutomationsIcon size="xl" />,
               entries: automationsEntries.map(toViewEntry),
             },
             ...(sessionBreakdownEntries.length > 0

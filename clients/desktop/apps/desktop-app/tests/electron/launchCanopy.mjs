@@ -184,7 +184,9 @@ const defaultViewportSize = { width: 1400, height: 900 };
 //   LaunchDarkly; its spec drives it off explicitly.
 const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-labs-early-access': 'offered',
-  // Keep ordinary UI specs direct; Files acceptance opts in through Labs.
+  // Keep ordinary UI specs direct; Files acceptance opts in through Labs. The
+  // CAN-5544 dry run (`CANOPY_E2E_DAEMON_FILES_DRY_RUN=1`) forces it `on`; see
+  // resolveDefaultE2eClientFeatureFlags.
   'canopy-desktop-labs-daemon-files-reads': 'offered',
   // Chat automations save natively unless a spec opts in through Labs.
   'canopy-desktop-labs-chat-automation-pipelines': 'offered',
@@ -224,6 +226,25 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   // shared-container entry points silently vanish from every spec.
   'canopy-desktop-shared-containers': true,
 };
+
+export const DAEMON_FILES_FLAG = 'canopy-desktop-labs-daemon-files-reads';
+export const DAEMON_FILES_DRY_RUN_ENV = 'CANOPY_E2E_DAEMON_FILES_DRY_RUN';
+
+export function isDaemonFilesDryRun(env = process.env) {
+  return env[DAEMON_FILES_DRY_RUN_ENV] === '1';
+}
+
+/**
+ * The suite-wide flag defaults for a runner environment. Only the dry run
+ * changes them: it forces Files reads `on` as a Cut A rehearsal. A spec's own
+ * `CANOPY_E2E_CLIENT_FEATURE_FLAGS` still wins over every default.
+ */
+export function resolveDefaultE2eClientFeatureFlags(env = process.env) {
+  return {
+    ...DEFAULT_E2E_CLIENT_FEATURE_FLAGS,
+    [DAEMON_FILES_FLAG]: isDaemonFilesDryRun(env) ? 'on' : 'offered',
+  };
+}
 
 const E2E_CLIENT_FEATURE_FLAGS_ENV = 'CANOPY_E2E_CLIENT_FEATURE_FLAGS';
 const SUPERVISED_PID_FILE_ENV = 'CANOPY_E2E_SUPERVISED_PID_FILE';
@@ -828,14 +849,15 @@ async function closeElectronAppWithDeadline(
   return closeOutcome.status;
 }
 
-function mergeE2eClientFeatureFlags(extraEnv) {
+export function mergeE2eClientFeatureFlags(extraEnv, env = process.env) {
+  const defaults = resolveDefaultE2eClientFeatureFlags(env);
   const raw = extraEnv?.[E2E_CLIENT_FEATURE_FLAGS_ENV];
   if (typeof raw === 'string' && raw.trim()) {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         return JSON.stringify({
-          ...DEFAULT_E2E_CLIENT_FEATURE_FLAGS,
+          ...defaults,
           ...parsed,
         });
       }
@@ -845,7 +867,7 @@ function mergeE2eClientFeatureFlags(extraEnv) {
       return raw;
     }
   }
-  return JSON.stringify(DEFAULT_E2E_CLIENT_FEATURE_FLAGS);
+  return JSON.stringify(defaults);
 }
 
 function isPositiveInteger(value) {
@@ -2366,6 +2388,9 @@ async function launchCanopyUnmeasured(options) {
       trackedGroupsFile: supervisedGroupsFile,
       runNonce: supervisedRunNonce,
     });
+    trackDaemonDryRunLaunch(electronApp, userDataDir, {
+      testInfo: options.testInfo ?? currentPlaywrightTestInfo(),
+    });
     // Diagnostics only: a failed relay must never fail the launch.
     await relayRendererCrashes(electronApp).catch(() => undefined);
     if (sidecar)
@@ -2438,7 +2463,10 @@ async function launchCanopyUnmeasured(options) {
     launchEntryPath: sidecar?.launchEntryPath ?? mainEntryPath,
     headlessAdapter: sidecar?.evidence,
     supervisedTreePid,
-    killAbruptly: createAbruptTreeKiller(supervisedTreePid),
+    killAbruptly: endingWithDaemonDryRunEvidence(
+      electronApp,
+      createAbruptTreeKiller(supervisedTreePid),
+    ),
   };
 }
 
@@ -2559,7 +2587,379 @@ export async function closeWithRetainedFailures(close, cleanup, validate) {
     );
 }
 
+const DAEMON_DRY_RUN_EVIDENCE_TIMEOUT_MS = 2_000;
+// GA3's (CAN-5541) in-process answers to daemon-selected reads, wherever they
+// land in the snapshot: `daemon.fallback.<reason>`, and `daemon.bypassed` once
+// a latched failure skips the daemon, which a connection event can latch
+// without any read falling back first.
+const DAEMON_FALLBACK_COUNTER =
+  /(?:^|\.)daemon\.(?:fallback(?:\.|$)|bypassed$)/;
+
+/**
+ * Every nonzero numeric `daemon.fallback.*` or `daemon.bypassed` leaf, keyed
+ * by its dotted path.
+ */
+export function daemonFallbackCounters(snapshot) {
+  const found = {};
+  const visit = (value, at) => {
+    if (typeof value === 'number') {
+      if (value !== 0 && DAEMON_FALLBACK_COUNTER.test(at)) found[at] = value;
+    } else if (value && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value))
+        visit(child, at ? `${at}.${key}` : key);
+    }
+  };
+  visit(snapshot, '');
+  return found;
+}
+
+// packages/core-platform endpoints: the daemon binds beside this probe name.
+const DAEMON_SOCKET_LIMIT = { darwin: 103, linux: 107 };
+
+/**
+ * The data root's daemon socket probe length against the platform limit. The
+ * host binds under the canonical data root, so a resolvable root is resolved.
+ */
+export function daemonSocketBudget(userDataDir, platform = process.platform) {
+  const limit = DAEMON_SOCKET_LIMIT[platform];
+  if (typeof userDataDir !== 'string' || limit === undefined) return null;
+  let root = userDataDir;
+  try {
+    root = realpathSync(userDataDir);
+  } catch {
+    // Already removed or never created: the lexical root is the best estimate.
+  }
+  const bytes = Buffer.byteLength(path.join(root, 'runtime', '.000000000000'));
+  return { bytes, limit, fits: bytes <= limit };
+}
+
+const FILES_EVIDENCE_SOURCE = 'desktop-main-files-singleton-v1';
+const isRecord = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Why a snapshot is not `snapshotDesktopFilesEvidence`'s, or null. Before the
+ * first Files read its route is null and its counters are zeroed, which is
+ * valid: a launch need not read Files.
+ */
+function filesEvidenceContractError(snapshot) {
+  const problem = (() => {
+    if (!isRecord(snapshot)) return 'no snapshot (missing evidence hook?)';
+    if (snapshot.source !== FILES_EVIDENCE_SOURCE)
+      return `source ${String(snapshot.source)}`;
+    if (!('route' in snapshot)) return 'no route';
+    const { route } = snapshot;
+    if (route !== null) {
+      if (!isRecord(route) || typeof route.enabled !== 'boolean')
+        return 'route.enabled is not a boolean';
+      if (
+        !isRecord(route.cursor) ||
+        !Number.isSafeInteger(route.cursor.sequence) ||
+        route.cursor.sequence < 0
+      )
+        return 'route.cursor.sequence is not a count';
+    }
+    if (!isRecord(snapshot.counters) || !isRecord(snapshot.counters.route))
+      return 'counters.route is not an object';
+    return null;
+  })();
+  return (
+    problem &&
+    `Files evidence snapshot is not ${FILES_EVIDENCE_SOURCE}: ${problem}`
+  );
+}
+
+/** The dry-run line for one launch, from the Files counters. */
+function summarizeDaemonDryRunLaunch({
+  snapshot,
+  descriptorPresent,
+  evidenceError = null,
+  evidenceInvalid = false,
+}) {
+  const routeCounters = snapshot?.counters?.route ?? {};
+  const total = (suffix) =>
+    Object.entries(routeCounters)
+      .filter(([key]) => key.endsWith(suffix))
+      .reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+  return {
+    descriptorPresent,
+    evidenceError,
+    evidenceInvalid,
+    routeEnabled: snapshot?.route?.enabled ?? null,
+    // Reads the route sent to the daemon, which need its socket.
+    daemonRouted: total('.daemon'),
+    daemonServed: total('.daemon.served'),
+    direct: total('.direct'),
+    daemonFailed: Object.fromEntries(
+      Object.entries(routeCounters).filter(
+        ([key, value]) => key.includes('.daemon.failed.') && value !== 0,
+      ),
+    ),
+    fallbacks: daemonFallbackCounters(snapshot),
+    // Read without a cursor, the route journal lists no entries, only its total.
+    routeEventsRecorded: snapshot?.route?.cursor?.sequence ?? 0,
+    counters: snapshot?.counters ?? null,
+  };
+}
+
+export const DAEMON_DRY_RUN_DIRECTORY = path.join(
+  repoRoot,
+  '.playwright',
+  'daemon-dry-run',
+);
+// Set by the lane's global setup, so its teardown checks only that run's launches.
+export const DAEMON_DRY_RUN_ID_ENV = 'CANOPY_E2E_DAEMON_DRY_RUN_ID';
+
+function dryRunTestIdentity(testInfo) {
+  return testInfo
+    ? {
+        file: path.relative(repoRoot, testInfo.file ?? ''),
+        title: testInfo.titlePath?.slice(1).join(' > ') ?? testInfo.title,
+        project: testInfo.project?.name ?? null,
+        retry: testInfo.retry ?? 0,
+      }
+    : null;
+}
+
+// One file per runner process, so parallel workers never interleave lines.
+function appendDryRunLine(directory, prefix, record) {
+  mkdirSync(directory, { recursive: true });
+  appendFileSync(
+    path.join(directory, `${prefix}-${process.pid}.ndjson`),
+    `${JSON.stringify(record)}\n`,
+  );
+}
+
+const daemonDryRunLaunches = new WeakMap();
+const daemonDryRunEvidence = new WeakMap();
+
+/**
+ * Dry run only: registers the launch for the lane teardown's count and makes
+ * every close of it, a spec's direct `electronApp.close()` included, record
+ * its evidence first.
+ */
+export function trackDaemonDryRunLaunch(
+  electronApp,
+  userDataDir,
+  {
+    directory = DAEMON_DRY_RUN_DIRECTORY,
+    env = process.env,
+    testInfo = currentPlaywrightTestInfo(),
+  } = {},
+) {
+  if (!isDaemonFilesDryRun(env)) return null;
+  const launch = {
+    launchId: randomUUID(),
+    runId: env[DAEMON_DRY_RUN_ID_ENV] ?? null,
+    userDataDir,
+    directory,
+  };
+  appendDryRunLine(directory, 'registered', {
+    at: new Date().toISOString(),
+    runId: launch.runId,
+    launchId: launch.launchId,
+    lane: env.CANOPY_UI_TIMINGS_LANE ?? null,
+    test: dryRunTestIdentity(testInfo),
+  });
+  daemonDryRunLaunches.set(electronApp, launch);
+  const close = electronApp.close;
+  electronApp.close = (...args) =>
+    closeWithDaemonDryRunEvidence(electronApp, () =>
+      close.apply(electronApp, args),
+    );
+  return launch;
+}
+
+/**
+ * Appends one JSON line per launch to the dry-run directory from Electron
+ * main's Files evidence and the data root's daemon descriptor, read before
+ * close. Unreadable evidence is recorded, never thrown.
+ */
+async function recordDaemonDryRunLaunch(
+  electronApp,
+  userDataDir,
+  launch,
+  {
+    directory = launch?.directory ?? DAEMON_DRY_RUN_DIRECTORY,
+    timeoutMs = DAEMON_DRY_RUN_EVIDENCE_TIMEOUT_MS,
+    env = process.env,
+    testInfo = currentPlaywrightTestInfo(),
+    platform = process.platform,
+  } = {},
+) {
+  let snapshot = null;
+  let evidenceError = null;
+  let timer;
+  try {
+    snapshot = await Promise.race([
+      electronApp.evaluate(
+        () => globalThis.__CANOPY_FILES_MAIN_EVIDENCE__?.snapshot() ?? null,
+      ),
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Files evidence read timed out')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } catch (error) {
+    // Never empty: an empty reason would read as evidence that was read.
+    evidenceError =
+      String(error?.message ?? error ?? '') || 'Files evidence read failed';
+  } finally {
+    clearTimeout(timer);
+  }
+  const contractError =
+    evidenceError === null ? filesEvidenceContractError(snapshot) : null;
+  const record = {
+    at: new Date().toISOString(),
+    runId: launch?.runId ?? env[DAEMON_DRY_RUN_ID_ENV] ?? null,
+    launchId: launch?.launchId ?? null,
+    lane: env.CANOPY_UI_TIMINGS_LANE ?? null,
+    test: dryRunTestIdentity(testInfo),
+    ...summarizeDaemonDryRunLaunch({
+      snapshot,
+      descriptorPresent:
+        typeof userDataDir === 'string' &&
+        existsSync(path.join(userDataDir, 'runtime', 'core.json')),
+      evidenceError: evidenceError ?? contractError,
+      evidenceInvalid: contractError !== null,
+    }),
+    // Spec-made data roots can be too deep for the daemon socket, which the
+    // lane's preflight of the launcher's own roots cannot see.
+    socket: daemonSocketBudget(userDataDir, platform),
+  };
+  appendDryRunLine(directory, 'launches', record);
+  return record;
+}
+
+/**
+ * Reads a launch's evidence once, however many closes, kills or captures
+ * reach it. Only the first close (`reports`) reports its failures, so
+ * `closeCanopy` and the wrapped `electronApp.close()` it calls never report
+ * them twice, and a kill or capture leaves them to the close that follows.
+ */
+async function recordDaemonDryRunOnce(
+  electronApp,
+  userDataDir,
+  options,
+  { report = true } = {},
+) {
+  let entry = daemonDryRunEvidence.get(electronApp);
+  if (!entry) {
+    const launch = daemonDryRunLaunches.get(electronApp);
+    entry = {
+      reported: false,
+      settled: recordDaemonDryRunLaunch(
+        electronApp,
+        userDataDir ?? launch?.userDataDir,
+        launch,
+        options,
+      ).then(
+        (record) => ({ record, error: null }),
+        (error) => ({ record: null, error }),
+      ),
+    };
+    // A failed launch can reach closeCanopy without an app to key on.
+    if (electronApp && typeof electronApp === 'object')
+      daemonDryRunEvidence.set(electronApp, entry);
+  }
+  const outcome = await entry.settled;
+  const reports = report && !entry.reported;
+  if (reports) entry.reported = true;
+  return { ...outcome, reports };
+}
+
+/** The failures a close must report for its evidence: [before, after] close. */
+function daemonDryRunFailures(evidence) {
+  if (!evidence?.reports) return [[], []];
+  const fallbacks = evidence.record?.fallbacks ?? {};
+  return [
+    evidence.error ? [evidence.error] : [],
+    Object.keys(fallbacks).length > 0
+      ? [
+          new Error(
+            `Files dry run: the daemon route fell back ${JSON.stringify(fallbacks)}`,
+          ),
+        ]
+      : [],
+  ];
+}
+
+function throwCloseFailures(failures) {
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(
+      failures,
+      `Electron close and its Files dry run failed: ${failures.map((error) => error?.message ?? String(error)).join('; ')}`,
+    );
+}
+
+async function closeWithDaemonDryRunEvidence(electronApp, close) {
+  const [before, after] = daemonDryRunFailures(
+    await recordDaemonDryRunOnce(electronApp, undefined, {}),
+  );
+  const failures = [...before];
+  try {
+    await close();
+  } catch (error) {
+    failures.push(error);
+  }
+  throwCloseFailures([...failures, ...after]);
+}
+
+/**
+ * Wraps a way to end a launch other than a close, such as the harness's
+ * `killAbruptly`, so a dry-run launch's evidence is read while the app is
+ * still alive. It never throws for the dry run: its callers tear down right
+ * after it, and that close reports a fallback. Outside the dry run it is
+ * `end` unchanged.
+ */
+export function endingWithDaemonDryRunEvidence(electronApp, end) {
+  return (...args) =>
+    daemonDryRunLaunches.has(electronApp)
+      ? captureDaemonDryRunEvidence(electronApp).then(() => end(...args))
+      : end(...args);
+}
+
+/**
+ * For a spec that ends a launch itself (`process.kill(mainPid, 'SIGKILL')`,
+ * `app.quit()`, `app.exit()`): reads its dry-run evidence while the app is
+ * alive, since the lane teardown fails a launch whose evidence could only be
+ * read after it exited. Call it right before the end: the first read is the
+ * launch's only one. Never throws, so it is safe in cleanup paths; the close
+ * that follows reports a fallback. Resolves null outside the dry run.
+ */
+export async function captureDaemonDryRunEvidence(electronApp) {
+  if (!daemonDryRunLaunches.has(electronApp)) return null;
+  const { record } = await recordDaemonDryRunOnce(
+    electronApp,
+    undefined,
+    {},
+    { report: false },
+  );
+  return record;
+}
+
 export async function closeCanopy(electronApp, userDataDir, options = {}) {
+  const dryRunOptions = options.daemonDryRun ?? {};
+  const evidence =
+    daemonDryRunLaunches.has(electronApp) ||
+    isDaemonFilesDryRun(dryRunOptions.env ?? process.env)
+      ? await recordDaemonDryRunOnce(electronApp, userDataDir, dryRunOptions)
+      : null;
+  const [before, after] = daemonDryRunFailures(evidence);
+  // Teardown runs even when the evidence could not be written.
+  const failures = [...before];
+  try {
+    await closeCanopyUnrecorded(electronApp, userDataDir, options);
+  } catch (error) {
+    failures.push(error);
+  }
+  throwCloseFailures([...failures, ...after]);
+}
+
+async function closeCanopyUnrecorded(electronApp, userDataDir, options) {
   const {
     keepUserData = false,
     reapTree = reapSupervisedProcessTree,

@@ -16,6 +16,8 @@ import {
   DelayedLoadingPlaceholder,
   EmptyState,
   ErrorBanner,
+  Fact,
+  FactList,
   SettingsTableSkeleton,
 } from '@canopy/ui-shared/components';
 import {
@@ -75,7 +77,7 @@ import {
   useSettingsSearchParams,
   useSettingsWorkspaceContext,
 } from '../host';
-import { useSettingsLoadErrorCopy } from '../errors';
+import { useSettingsLoadFailure } from '../errors';
 import { withPrivacyClass } from '../account/privacy-class';
 import {
   getCreditsBalance,
@@ -84,6 +86,7 @@ import {
   getOrgChargeHistory,
   getOrgInvoices,
 } from '../organization/team-api';
+import type { SettingsFailure } from '../errors';
 
 interface TeamBillingSectionProps {
   detail: OrganizationDetail;
@@ -155,11 +158,11 @@ export function TeamBillingSection({
   const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [card, setCard] = useState<CardDisplay | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [creditsReloadSignal, setCreditsReloadSignal] = useState(0);
   const [historyReloadSignal, setHistoryReloadSignal] = useState(0);
   const planCardRef = useRef<HTMLElement | null>(null);
-  const loadError = useSettingsLoadErrorCopy('billing:organization-summary');
+  const loadError = useSettingsLoadFailure('billing:organization-summary');
 
   const loadSummary = useCallback(
     async (options?: { silent?: boolean }): Promise<void> => {
@@ -266,7 +269,8 @@ export function TeamBillingSection({
             banner. */}
         <ErrorBanner
           className=""
-          error={error}
+          error={error?.copy}
+          details={error?.details}
           onRetry={() => void loadSummary()}
         />
 
@@ -518,49 +522,37 @@ function PlanCard({
                 </p>
               )}
 
-              <dl className="mt-4 grid grid-cols-1 gap-2 text-s sm:grid-cols-2">
+              <FactList
+                layout="stacked"
+                columns={2}
+                size="s"
+                rowGap="2"
+                columnGap="2"
+                labelTone="secondary"
+                placement="mt-4"
+              >
                 {complimentary ? (
                   <>
                     {seatCount !== null && seatCount > 0 ? (
-                      <div>
-                        <dt className="text-xs fg-secondary">Seats</dt>
-                        <dd
-                          className="fg-primary"
-                          data-testid="team-billing-seats"
-                        >
-                          {seatCount} seat{seatCount === 1 ? '' : 's'}
-                        </dd>
-                      </div>
+                      <Fact label="Seats" dataTestId="team-billing-seats">
+                        {seatCount} seat{seatCount === 1 ? '' : 's'}
+                      </Fact>
                     ) : null}
-                    <div>
-                      <dt className="text-xs fg-secondary">Price</dt>
-                      <dd
-                        className="fg-primary"
-                        data-testid="team-billing-complimentary"
-                      >
-                        Complimentary
-                      </dd>
-                    </div>
+                    <Fact label="Price" dataTestId="team-billing-complimentary">
+                      Complimentary
+                    </Fact>
                   </>
                 ) : null}
                 {!complimentary && seatCount !== null && perSeat !== null ? (
-                  <div>
-                    <dt className="text-xs fg-secondary">Seats</dt>
-                    <dd className="fg-primary">
-                      {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
-                      {formatUsd(perSeat)}
-                    </dd>
-                  </div>
+                  <Fact label="Seats">
+                    {seatCount} seat{seatCount === 1 ? '' : 's'} ×{' '}
+                    {formatUsd(perSeat)}
+                  </Fact>
                 ) : null}
                 {!complimentary && summary.nextBillingAmountUsd !== null ? (
-                  <div>
-                    <dt className="text-xs fg-secondary">
-                      {trialActive ? 'Monthly cost' : 'Next charge'}
-                    </dt>
-                    <dd className="fg-primary">
-                      {formatUsd(summary.nextBillingAmountUsd)}
-                    </dd>
-                  </div>
+                  <Fact label={trialActive ? 'Monthly cost' : 'Next charge'}>
+                    {formatUsd(summary.nextBillingAmountUsd)}
+                  </Fact>
                 ) : null}
                 {/* A pending cancellation REPLACES the next-billing row: there is
                   no next charge, and a silently-canceling plan that still
@@ -569,30 +561,23 @@ function PlanCard({
                   conveys the timing, so the plain "Next billing date" is hidden
                   and the amount above reads as the monthly cost. */}
                 {pendingCancellation !== null ? (
-                  <div>
-                    <dt className="text-xs fg-secondary">
-                      {pendingCancellationLapsed ? 'Status' : 'Cancels on'}
-                    </dt>
-                    <dd
-                      className="fg-secondary"
-                      data-testid="team-billing-cancels-on"
-                    >
-                      {pendingCancellationLapsed
-                        ? 'Canceling'
-                        : formatPlanDate(pendingCancellation.effectiveAt)}
-                    </dd>
-                  </div>
+                  <Fact
+                    label={pendingCancellationLapsed ? 'Status' : 'Cancels on'}
+                    valueTone="secondary"
+                    dataTestId="team-billing-cancels-on"
+                  >
+                    {pendingCancellationLapsed
+                      ? 'Canceling'
+                      : formatPlanDate(pendingCancellation.effectiveAt)}
+                  </Fact>
                 ) : !trialActive &&
                   !complimentary &&
                   summary.nextBillingDate !== null ? (
-                  <div>
-                    <dt className="text-xs fg-secondary">Next billing date</dt>
-                    <dd className="fg-primary">
-                      {formatPlanDate(summary.nextBillingDate)}
-                    </dd>
-                  </div>
+                  <Fact label="Next billing date">
+                    {formatPlanDate(summary.nextBillingDate)}
+                  </Fact>
                 ) : null}
-              </dl>
+              </FactList>
 
               {pendingCancellation !== null ? (
                 <p
@@ -822,11 +807,11 @@ function BillingHistoryCard({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // The page whose read failed, so Retry repeats that read: the first page,
   // or the "Load more" page after it.
   const [failedCursor, setFailedCursor] = useState<string | null>(null);
-  const loadError = useSettingsLoadErrorCopy('billing:organization-history');
+  const loadError = useSettingsLoadFailure('billing:organization-history');
 
   const loadPage = useCallback(
     async (cursor: string | null): Promise<void> => {
@@ -908,7 +893,8 @@ function BillingHistoryCard({
       <div className="flex flex-col gap-4">
         <ErrorBanner
           className=""
-          error={error}
+          error={error?.copy}
+          details={error?.details}
           onRetry={() => void loadPage(failedCursor)}
         />
 
@@ -1008,8 +994,8 @@ function AiCreditPoolCard({
   const [summary, setSummary] = useState<CreditsSummary | null>(null);
   const [entries, setEntries] = useState<AiCreditsLedgerEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const loadError = useSettingsLoadErrorCopy('billing:organization-credits');
+  const [error, setError] = useState<SettingsFailure | null>(null);
+  const loadError = useSettingsLoadFailure('billing:organization-credits');
 
   const load = useCallback(
     async (options?: { silent?: boolean }): Promise<void> => {
@@ -1104,7 +1090,11 @@ function AiCreditPoolCard({
         {/* Default `mb-4` kept: the banner sits above the body content and
             owns the gutter below itself, since the card body wrapper already
             supplies the gutter above. */}
-        <ErrorBanner error={error} onRetry={() => void load()} />
+        <ErrorBanner
+          error={error?.copy}
+          details={error?.details}
+          onRetry={() => void load()}
+        />
         {topUpDialog}
 
         {loading ? (

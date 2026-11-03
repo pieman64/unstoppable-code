@@ -30,7 +30,7 @@ describe('SettingsPage drill-in back control', () => {
     container.remove();
   });
 
-  it('uses the shared compact capsule field with a neutral focus edge', () => {
+  it('uses the shared 28px rounded field with a neutral focus edge', () => {
     act(() =>
       root.render(
         <SettingsTextField
@@ -43,7 +43,8 @@ describe('SettingsPage drill-in back control', () => {
       ),
     );
     const field = container.querySelector('input');
-    expect(field?.classList.contains('rounded-full')).toBe(true);
+    // Fields are rounded rectangles; only buttons are capsules.
+    expect(field?.classList.contains('rounded-row')).toBe(true);
     expect(field?.classList.contains('shadow-field')).toBe(true);
     expect(field?.classList.contains('focus-visible:shadow-field-focus')).toBe(
       true,

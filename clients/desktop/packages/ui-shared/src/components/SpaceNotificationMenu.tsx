@@ -9,6 +9,7 @@ import {
   DropdownMenuLabel,
 } from './DropdownMenu';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
+import { ErrorBanner } from './StatusBlocks';
 
 /** Mirrors the wire levels without importing a contract package. */
 export type SpaceNotificationMenuLevel = 'all' | 'attention' | 'mute';
@@ -294,13 +295,16 @@ export function SpaceNotificationMenuStatusLine({
   readonly status: SpaceNotificationMenuStatus;
   readonly testId?: string;
 }): JSX.Element {
+  if (status.tone === 'failure' && !status.loading) {
+    return <ErrorBanner className="m-1" error={status.text} testId={testId} />;
+  }
   // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
-  // owns its ink, and this line must wrap and can carry the failure ink.
+  // owns its ink, and this line must wrap.
   return (
     <div
-      role={status.tone === 'failure' ? 'alert' : 'status'}
+      role="status"
       data-testid={testId}
-      className={`px-2 py-1 text-xs font-normal ${status.tone === 'failure' ? 'fg-destructive' : 'fg-secondary'}`}
+      className="px-2 py-1 text-xs font-normal fg-secondary"
     >
       {status.loading ? <LoadingIndicator text={status.text} /> : status.text}
     </div>

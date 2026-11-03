@@ -30,6 +30,33 @@ export function extractIpcErrorMessage(err: unknown): string {
   return message.length > 0 ? message : 'Unknown error';
 }
 
+/**
+ * Our sentence for a failure, paired with the raw reason behind it. Settings
+ * show `shown` and hand `details` to `ErrorBanner`'s Copy details action, so
+ * the raw text never renders.
+ */
+export interface FailureDetails {
+  readonly shown: string;
+  readonly details: string;
+}
+
+/** Pairs the sentence a surface shows with the caught failure's raw reason. */
+export function failureDetails(shown: string, cause: unknown): FailureDetails {
+  return { shown, details: extractIpcErrorMessage(cause) };
+}
+
+/**
+ * The raw reason for the error a surface shows now, or `undefined` once the
+ * shown error is a different one (a later validation message, a cleared
+ * error), so stale details never ride along.
+ */
+export function detailsFor(
+  shown: string | null | undefined,
+  failure: FailureDetails | null,
+): string | undefined {
+  return shown && failure?.shown === shown ? failure.details : undefined;
+}
+
 const IPC_ERROR_NAME_REGEX =
   /^(?:Error invoking remote method '[^']*':\s*)?([A-Z][A-Za-z0-9_]*Error):\s/;
 

@@ -1,4 +1,5 @@
 import { memo, useState, type JSX } from 'react';
+import { EmptyState, ErrorBanner } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -10,10 +11,8 @@ import {
   buildStepInstanceKey,
   findChildExecutionSummary,
 } from '@/lib/pipelineAttemptTimeline';
-import {
-  getPipelineJobStatusBadgeClassName,
-  getPipelineJobStatusDotClassName,
-} from '../utils';
+import { Badge, StatusGlyph } from '@canopy/ui-shared/components';
+import { pipelineStatusBadge, pipelineStatusGlyphState } from '../utils';
 import { PipelineChildExecution } from './PipelineChildExecution';
 import { TimingSummaryGrid } from './PipelineStepDetailParts';
 import { PipelineStepRow } from './PipelineStepRow';
@@ -129,9 +128,7 @@ function PipelineJobViewComponent({
             <h2 className="text-lg font-medium fg-primary">
               {logicalJob.name}
             </h2>
-            <span className="rounded-full bg-fg-primary/[0.06] px-2 py-0.5 text-3xs fg-secondary">
-              matrix
-            </span>
+            <Badge>matrix</Badge>
           </div>
           <div className="mt-2 text-s fg-secondary">
             {group.variant_job_ids.length} variants
@@ -176,10 +173,10 @@ function PipelineJobViewComponent({
                   }}
                 >
                   {matrixBusy
-                    ? 'Retrying…'
+                    ? 'Trying again…'
                     : canRetryExpansion
-                      ? 'Retry expansion'
-                      : 'Retry all variants'}
+                      ? 'Try expansion again'
+                      : 'Try all variants again'}
                 </Button>
               ) : null}
               {canRetryFailed ? (
@@ -198,14 +195,12 @@ function PipelineJobViewComponent({
                     });
                   }}
                 >
-                  Retry failed variants
+                  Try failed variants again
                 </Button>
               ) : null}
             </div>
           ) : null}
-          {matrixError ? (
-            <p className="mt-2 text-xs fg-destructive">{matrixError}</p>
-          ) : null}
+          <ErrorBanner error={matrixError} className="mt-2" />
         </div>
         <div className="max-h-96 space-y-1 overflow-y-auto rounded-xl border bg-base p-2">
           {group.variant_job_ids.map((variantJobId) => {
@@ -274,7 +269,7 @@ function PipelineJobViewComponent({
                       );
                     }}
                   >
-                    Retry variant
+                    Try variant again
                   </Button>
                 ) : null}
               </div>
@@ -311,9 +306,9 @@ function PipelineJobViewComponent({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span
-                className={`h-2.5 w-2.5 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(jobStatus)}`}
-                aria-hidden="true"
+              <StatusGlyph
+                state={pipelineStatusGlyphState(jobStatus)}
+                size={20}
               />
               <h2 className="truncate text-lg font-medium fg-primary">
                 {jobName}
@@ -323,18 +318,14 @@ function PipelineJobViewComponent({
               {displayJobId}
             </div>
           </div>
-          <span
-            className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getPipelineJobStatusBadgeClassName(jobStatus)}`}
-          >
-            {jobStatus}
-          </span>
+          <Badge {...pipelineStatusBadge(jobStatus)}>{jobStatus}</Badge>
         </div>
 
         {(jobDef?.max_retries ?? 0) > 0 || (jobDef?.max_iterations ?? 0) > 0 ? (
           <div className="mt-3 flex flex-wrap gap-2 text-2xs fg-secondary">
             {(jobDef?.max_retries ?? 0) > 0 && (
               <span>
-                Retry {jobResult?.retry_count ?? 0}/{jobDef?.max_retries}
+                Retries {jobResult?.retry_count ?? 0}/{jobDef?.max_retries}
               </span>
             )}
             {(jobDef?.max_iterations ?? 0) > 0 && (
@@ -359,9 +350,7 @@ function PipelineJobViewComponent({
       </div>
 
       {!hasStartedSteps ? (
-        <div className="rounded-xl border bg-base px-4 py-6 text-center text-s fg-secondary">
-          No steps have started for this job yet.
-        </div>
+        <EmptyState title="No steps have started for this job yet." />
       ) : (
         <div className="space-y-4">
           {attemptViews.map((attemptView, attemptViewIndex) => (

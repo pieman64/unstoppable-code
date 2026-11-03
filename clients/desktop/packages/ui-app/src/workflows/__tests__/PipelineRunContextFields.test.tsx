@@ -71,7 +71,7 @@ describe('PipelineRunContextFields', () => {
     );
   });
 
-  it('shows loading, and a failure with Retry', () => {
+  it('shows loading, and a failure with Try again', () => {
     render({ owner: { kind: 'loading' } });
     expect(byTestId('pipeline-run-owner-loading')?.textContent).toBe(
       PIPELINE_RUN_CONTEXT_COPY.ownersLoading,
@@ -80,7 +80,7 @@ describe('PipelineRunContextFields', () => {
     const onRetry = jest.fn();
     render({ owner: { kind: 'error', onRetry } });
     const retry = byTestId('pipeline-run-owner-error')?.querySelector('button');
-    expect(retry?.textContent).toBe('Retry');
+    expect(retry?.textContent).toBe('Try again');
     act(() => retry?.click());
     expect(onRetry).toHaveBeenCalledTimes(1);
   });

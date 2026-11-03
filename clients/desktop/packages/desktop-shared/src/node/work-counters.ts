@@ -1,6 +1,10 @@
 import { CANOPY_ERROR_KINDS } from '@canopy/protocol/canopy-core';
 import { serialize } from 'node:v8';
 import {
+  BACKGROUND_SERVICE_UNREACHABLE_REASONS,
+  type BackgroundServiceUnreachableReason,
+} from '../lib/background-service-status';
+import {
   recordChatStorageScopeCommit,
   recordChatStorageScopeMutations,
   recordChatStorageScopeSync,
@@ -13,7 +17,8 @@ import {
  *
  * Counting is a cheap, always-on increment on paths that already run: IPC
  * handler invocations and main → renderer deliveries, canonical chat-storage
- * writes, provider event ingestion, and the backend each routed read used.
+ * writes, provider event ingestion, the backend each routed read used, and
+ * W5 store reads, captures and commits.
  * Nothing here changes what the instrumented code does, in what order, or
  * with which payloads. Costly byte estimation runs only in an E2E build
  * (`__CANOPY_E2E__`) whose harness asked for it, and the snapshot and reset
@@ -27,7 +32,12 @@ import {
  * reset never touches it.
  */
 
-export type WorkCounterSource = 'ipc' | 'chatStorage' | 'provider' | 'route';
+export type WorkCounterSource =
+  | 'ipc'
+  | 'chatStorage'
+  | 'provider'
+  | 'route'
+  | 'w5';
 
 export interface WorkCountersSnapshot {
   /** Changes on every reset, so a reader can tell counts were cleared. */
@@ -40,6 +50,12 @@ export interface WorkCountersSnapshot {
    * performance harness does not sample it.
    */
   route: Record<string, number>;
+  /**
+   * W5 store work (CAN-5532): reads, captures, commits and record-port
+   * calls, with their microsecond totals. Evidence for the store arms, not a
+   * judged work metric.
+   */
+  w5: Record<string, number>;
 }
 
 export interface WorkCountersResetOptions {
@@ -132,6 +148,7 @@ const counters: Record<WorkCounterSource, BoundedCounters> = {
   chatStorage: new BoundedCounters(),
   provider: new BoundedCounters(),
   route: new BoundedCounters(),
+  w5: new BoundedCounters(),
 };
 let generation = 0;
 let estimateIpcBytes = false;
@@ -148,6 +165,7 @@ export function snapshotWorkCounters(): WorkCountersSnapshot {
     chatStorage: counters.chatStorage.snapshot(),
     provider: counters.provider.snapshot(),
     route: counters.route.snapshot(),
+    w5: counters.w5.snapshot(),
   };
 }
 
@@ -159,6 +177,7 @@ export function resetWorkCounters(
   counters.chatStorage.clear();
   counters.provider.clear();
   counters.route.clear();
+  counters.w5.clear();
   generation += 1;
   estimateIpcBytes = options.estimateIpcBytes === true;
   estimateDelegationBytes = options.estimateDelegationBytes === true;
@@ -412,10 +431,9 @@ export function recordDelegationSnapshot(
 }
 
 /**
- * Files IPC reads the route observes. `file` (scoped `file:read-content`),
- * `search` (one `file-index:get` search page) and `link`
- * (`file-reference:resolve`, CAN-5038) are always served directly before
- * CAN-4729, so they only count `direct`.
+ * Files IPC reads the route observes: roots and directory listings, `file`
+ * (scoped `file:read-content`), `search` (one `file-index:get` search page)
+ * and `link` (`file-reference:resolve`, CAN-5038).
  */
 export type FilesRouteOperation =
   | 'roots'
@@ -440,7 +458,9 @@ export function recordFilesRouteSelected(
  * `daemon.retries` per conflict refresh, `daemon.served` when a daemon result
  * was returned, `daemon.failed.<kind>` for a typed failure, and
  * `direct.discarded` when a direct result was dropped because the route
- * changed while it ran.
+ * changed while it ran. A read selected for a daemon that couldn't be reached
+ * counts `daemon.fallback.<reason>` when the direct reader answered it
+ * instead, or `daemon.bypassed` when a latched failure skipped the daemon.
  */
 export function recordFilesRouteOutcome(
   operation: FilesRouteOperation,
@@ -449,9 +469,19 @@ export function recordFilesRouteOutcome(
     | 'daemon.retries'
     | 'daemon.served'
     | `daemon.failed.${string}`
+    | `daemon.fallback.${BackgroundServiceUnreachableReason}`
+    | 'daemon.bypassed'
     | 'direct.discarded',
 ): void {
   counters.route.add(`files.${operation}.${outcome}`, 1);
+}
+
+/**
+ * One unit of W5 store work, or `delta` of a total such as microseconds.
+ * Keys are documented in `docs/desktop-app-performance.md` ("W5 store arms").
+ */
+export function recordW5Work(key: string, delta = 1): void {
+  counters.w5.add(key, delta);
 }
 
 /**
@@ -510,6 +540,10 @@ export function snapshotFilesWorkCounters(): FilesWorkCountersSnapshot {
     'daemon.queries',
     'daemon.retries',
     'daemon.served',
+    'daemon.bypassed',
+    ...BACKGROUND_SERVICE_UNREACHABLE_REASONS.map(
+      (reason) => `daemon.fallback.${reason}`,
+    ),
     'direct.discarded',
   ];
   const failures = CANOPY_ERROR_KINDS;

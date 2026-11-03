@@ -827,7 +827,7 @@ it('loads only the active organization and keeps placeholders outside real proje
       '[data-testid="sidebar-org-project-retry-catalog"]',
     );
     if (!(retry instanceof HTMLButtonElement)) throw new Error('Missing retry');
-    expect(retry.textContent).toBe('Retry');
+    expect(retry.textContent).toBe('Try again');
     await act(async (): Promise<void> => {
       await Promise.resolve();
       retry.click();
@@ -1733,7 +1733,7 @@ it('offers no retry for an offline completion, and Retry for a lapsed claim (CAN
   const reclaim = container.querySelector<HTMLButtonElement>(
     '[data-testid="sidebar-org-project-retry-catalog"]',
   );
-  expect(reclaim?.textContent).toBe('Retry');
+  expect(reclaim?.textContent).toBe('Try again');
   await act(async (): Promise<void> => {
     reclaim?.click();
     await Promise.resolve();
@@ -1824,7 +1824,7 @@ it.each(['needs-credentials', 'github-not-authenticated'])(
       container.querySelector(
         '[data-testid="sidebar-org-project-retry-catalog"]',
       )?.textContent,
-    ).toBe('Retry');
+    ).toBe('Try again');
     act((): void => root.unmount());
     container.remove();
   },

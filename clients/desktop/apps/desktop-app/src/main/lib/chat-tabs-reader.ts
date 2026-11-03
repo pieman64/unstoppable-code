@@ -1,3 +1,4 @@
+import { TrackedPlanImplementationSchema } from '@canopy/protocol/portal';
 import type {
   ChatReadSelection,
   TranscriptConsumeOptions,
@@ -256,6 +257,10 @@ export function isPersistedChatTab(value: unknown): value is PersistedChatTab {
     Array.isArray(messages) &&
     messages.every(isPersistedChatMessage) &&
     typeof createdAt === 'string' &&
+    (value.trackedPlanImplementation === undefined ||
+      value.trackedPlanImplementation === null ||
+      TrackedPlanImplementationSchema.safeParse(value.trackedPlanImplementation)
+        .success) &&
     (value.executionHarness === undefined ||
       value.executionHarness === 'cursor' ||
       value.executionHarness === 'copilot' ||

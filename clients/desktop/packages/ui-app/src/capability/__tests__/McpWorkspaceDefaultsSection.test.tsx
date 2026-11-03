@@ -5,6 +5,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  chooseSettingsOptionSync,
+  settingsSelectOptionLabels,
+  settingsSelectTrigger,
+} from '../../settings/__tests__/helpers/settings-select';
+import {
   McpWorkspaceDefaultsSection,
   type McpWorkspaceDefaultsChoice,
 } from '../McpWorkspaceDefaultsSection';
@@ -70,13 +75,11 @@ describe('McpWorkspaceDefaultsSection', () => {
       { id: 'acme', name: 'Acme', enabled: true },
       { id: 'beta', name: 'Beta', enabled: false },
     ]);
-    const options = Array.from(
-      byTestId('projects-select')?.querySelectorAll('option') ?? [],
-    );
-    expect(options.map((option) => option.textContent)).toEqual([
-      'Acme',
-      'Beta',
-    ]);
+    expect(
+      settingsSelectOptionLabels(
+        settingsSelectTrigger(container, '[data-testid="projects-select"]'),
+      ),
+    ).toEqual(['Acme', 'Beta']);
     const status = byTestId('projects-status')?.querySelector('span');
     expect(status?.textContent).toBe('Enabled in Acme.');
   });
@@ -88,17 +91,18 @@ describe('McpWorkspaceDefaultsSection', () => {
     ]);
     const masked = (node: Element | null | undefined): boolean =>
       node?.closest(`.${REPLAY_MASK_CLASS}`) !== null && node !== undefined;
-    const select = byTestId('projects-select');
-    for (const option of Array.from(select?.querySelectorAll('option') ?? []))
-      expect(masked(option)).toBe(true);
+    const select = settingsSelectTrigger(
+      container,
+      '[data-testid="projects-select"]',
+    );
+    // The chosen project name on the trigger.
+    const chosen = Array.from(select.querySelectorAll('span')).find(
+      (span) => span.childElementCount === 0 && span.textContent === 'Acme',
+    );
+    expect(masked(chosen)).toBe(true);
     const status = byTestId('projects-status')?.querySelector('span');
     expect(masked(status)).toBe(true);
-    act(() => {
-      if (select instanceof HTMLSelectElement) {
-        select.value = 'beta';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-    });
+    chooseSettingsOptionSync(select, 'beta');
     const add = byTestId('projects-add');
     expect(add?.textContent).toBe('Add to Beta');
     // The action word stays readable; only the project name is masked.

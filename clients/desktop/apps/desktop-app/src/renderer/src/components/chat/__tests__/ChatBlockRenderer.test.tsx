@@ -2066,9 +2066,9 @@ describe('ChatBlockRenderer AI Credits proxy notice', () => {
   });
 
   // The account here HOLDS spendable credits (the daily free ones), which is
-  // exactly the state the `no_billing_source` flow would report as "your
-  // credits are available again". For a locked model that would be false, so
-  // the click must go to checkout instead.
+  // exactly the state the `no_billing_source` flow treats as resolved. For a
+  // locked model that would be false, so the click must go to checkout
+  // instead.
   it('opens purchase recovery for a locked model even when credits are spendable', async () => {
     const originalApi = Object.getOwnPropertyDescriptor(window, 'api');
     const loadNativeAiCreditsAvailability = jest.fn().mockResolvedValue({

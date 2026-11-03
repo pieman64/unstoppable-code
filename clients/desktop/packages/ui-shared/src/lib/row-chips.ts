@@ -95,6 +95,13 @@ export const SECONDARY_SURFACE_HOVER_CLASS =
   'hover:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]';
 
 /**
+ * The secondary surface's hover look, held while the control's menu is open
+ * (`aria-expanded`), so a dropdown or menu button reads as engaged.
+ */
+export const SECONDARY_SURFACE_OPEN_CLASS =
+  'aria-expanded:[background-image:linear-gradient(var(--bg-subtle),var(--bg-subtle))]';
+
+/**
  * The house SECONDARY CONTROL SURFACE: the quaternary shell, `shadow-sm`
  * elevation, and 0.5px `line-secondary` hairline of the worktree header
  * `Open in` pill, with the `--bg-subtle` overlay on hover. Every secondary

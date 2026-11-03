@@ -18,6 +18,11 @@ import {
   expectReplayBlocksOnlyValue,
   outermostReplayBlock,
 } from '@/test-utils/replay';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import {
+  querySettingsSelect,
+  type SettingsSelectProbe,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 const NOW = Date.UTC(2026, 6, 8, 12, 0, 0);
 
@@ -195,17 +200,11 @@ function expandToggle(container: HTMLDivElement): void {
   );
 }
 
-// Drives a controlled <select> the way React expects: set the value through the
-// native prototype setter, then dispatch a bubbling change event.
-function selectAccount(select: HTMLSelectElement, value: string): void {
-  const descriptor = Object.getOwnPropertyDescriptor(
-    HTMLSelectElement.prototype,
-    'value',
+function accountSelect(container: HTMLElement): SettingsSelectProbe | null {
+  return querySettingsSelect(
+    container,
+    '[data-testid="other-account-select-claude"]',
   );
-  act(() => {
-    descriptor?.set?.call(select, value);
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
 }
 
 it('shows a collapsed header and expands to a single-account label (no dropdown)', () => {
@@ -308,16 +307,13 @@ it('renders a dropdown instead of stacked tabs when there are multiple accounts'
   expect(
     container.querySelector('[data-testid="other-account-single-claude"]'),
   ).toBeNull();
-  const select = container.querySelector<HTMLSelectElement>(
-    '[data-testid="other-account-select-claude"]',
-  );
+  const select = accountSelect(container);
   expect(select).not.toBeNull();
-  const options = select?.querySelectorAll('option');
+  const options = select?.options;
   expect(options?.length).toBe(2);
-  expect(options?.[0]?.value).toBe('claude:other@x.com:max');
   expect(options?.[0]?.textContent).toBe('max · other@x.com');
   expect(options?.[1]?.textContent).toBe('pro · second@x.com');
-  expect(select?.value).toBe('claude:other@x.com:max');
+  expect(select?.value).toBe(options?.[0]?.value);
 });
 
 it('switches the selected account when the dropdown changes', () => {
@@ -336,13 +332,13 @@ it('switches the selected account when the dropdown changes', () => {
     />,
   );
   expandToggle(container);
-  const select = container.querySelector<HTMLSelectElement>(
-    '[data-testid="other-account-select-claude"]',
-  );
+  const select = accountSelect(container);
   expect(select).not.toBeNull();
   if (select) {
-    selectAccount(select, 'claude:second@x.com:pro');
-    expect(select.value).toBe('claude:second@x.com:pro');
+    const secondValue = select.options[1]?.value ?? '';
+    select.choose(secondValue);
+    expect(select.value).toBe(secondValue);
+    expect(select.trigger.textContent).toBe('pro · second@x.com');
   }
 });
 
@@ -375,14 +371,12 @@ it('keeps the selected account stable when snapshots reorder', () => {
       />,
     );
   });
-  const select = container.querySelector<HTMLSelectElement>(
-    '[data-testid="other-account-select-claude"]',
-  );
+  const select = accountSelect(container);
   expect(select).not.toBeNull();
   if (!select) return;
 
-  selectAccount(select, second.accountKey);
-  expect(select.value).toBe(second.accountKey);
+  select.choose(select.options[1]?.value ?? '');
+  expect(select.trigger.textContent).toBe('pro · second@x.com');
   expect(container.textContent).toContain('77');
 
   act(() => {
@@ -394,7 +388,7 @@ it('keeps the selected account stable when snapshots reorder', () => {
       />,
     );
   });
-  expect(select.value).toBe(second.accountKey);
+  expect(select.trigger.textContent).toBe('pro · second@x.com');
   expect(container.textContent).toContain('77');
 });
 
@@ -414,15 +408,54 @@ it('blocks each account option of the dropdown from session replay', () => {
     />,
   );
   expandToggle(container);
-  const select = container.querySelector(
-    '[data-testid="other-account-select-claude"]',
+  const trigger = accountSelect(container)?.trigger ?? null;
+  // The label text is blocked; the trigger, which the user interacts with,
+  // stays recorded.
+  expect(outermostReplayBlock(trigger)).toBeNull();
+  const chosenLabel = trigger?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`);
+  expect(chosenLabel?.textContent).toBe('max · other@x.com');
+  act(() => trigger?.click());
+  const listId = trigger?.getAttribute('aria-controls');
+  const listbox = listId ? document.getElementById(listId) : null;
+  const options = Array.from(
+    listbox?.querySelectorAll('[role="option"]') ?? [],
   );
-  // A native option cannot hold a span, so the option itself is blocked; the
-  // select, which the user interacts with, stays recorded.
-  expect(outermostReplayBlock(select)).toBeNull();
-  const options = Array.from(select?.querySelectorAll('option') ?? []);
   expect(options).toHaveLength(2);
   for (const option of options) {
-    expect(outermostReplayBlock(option)).toBe(option);
+    expect(outermostReplayBlock(option)).toBeNull();
+    expect(
+      option.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)?.textContent,
+    ).toBe(option.textContent);
   }
+  act(() => trigger?.click());
+});
+
+it('keeps account emails out of the dropdown values that session replay records', () => {
+  const second = futureSnapshot({
+    accountKey: 'claude:second@x.com:pro',
+    accountEmail: 'second@x.com',
+    subscriptionLabel: 'pro',
+  });
+  const container = renderInto(
+    <OtherAccountSnapshots
+      provider="claude"
+      activeEmail="active@x.com"
+      activeSubscriptionLabel="max"
+      snapshots={[futureSnapshot(), second]}
+      nowMs={NOW}
+    />,
+  );
+  expandToggle(container);
+  const trigger = accountSelect(container)?.trigger ?? null;
+  act(() => trigger?.click());
+  // Replay masks `value` but keeps `data-value`, so no value may name an
+  // account: not on the trigger, and not on any option in the open menu.
+  const values = Array.from(document.querySelectorAll('[data-value]')).map(
+    (element) => element.getAttribute('data-value') ?? '',
+  );
+  expect(values.length).toBe(3);
+  for (const value of values) {
+    expect(value).not.toContain('@');
+  }
+  act(() => trigger?.click());
 });

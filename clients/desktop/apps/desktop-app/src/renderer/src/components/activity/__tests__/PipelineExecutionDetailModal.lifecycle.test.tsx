@@ -221,7 +221,7 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
 
     expect(getExecution).toHaveBeenCalledTimes(1);
     expect(getPipelineDetailLeaseCount('exec-1')).toBe(1);
-    expect(container.textContent).toContain('Build pipeline');
+    expect(document.body.textContent).toContain('Build pipeline');
 
     // An out-of-scope event for the leased run reaches the open detail.
     await act(async () => {
@@ -294,7 +294,7 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
       await flushAsyncWork();
     });
 
-    expect(container.textContent).toContain(
+    expect(document.body.textContent).toContain(
       'Failed to load execution details.',
     );
   });
@@ -345,9 +345,9 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
       );
       await flushAsyncWork();
     });
-    const stepButton = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Compile'),
-    );
+    const stepButton = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((button) => button.textContent?.includes('Compile'));
     await act(async () => {
       stepButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await flushAsyncWork();
@@ -421,7 +421,7 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
       await flushAsyncWork();
     });
     expect(
-      container.querySelector('[data-testid="ansi-lines"]')?.textContent,
+      document.body.querySelector('[data-testid="ansi-lines"]')?.textContent,
     ).toBe('persisted line|live line');
 
     await act(async () => {
@@ -450,9 +450,9 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
 
     expect(readStepLog).toHaveBeenCalledTimes(1);
     expect(hasRenderableTranscriptPrefix).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="transcript-lines"]')).toBe(
-      null,
-    );
+    expect(
+      document.body.querySelector('[data-testid="transcript-lines"]'),
+    ).toBe(null);
   });
 
   it('serves an agent step plain and rich views from one read and parses only when rich is shown', async () => {
@@ -487,19 +487,20 @@ describe('PipelineExecutionDetailModal detail data lifecycle', () => {
     // transcript lines go to the (single) viewer parse.
     expect(hasRenderableTranscriptPrefix).toHaveBeenCalledTimes(1);
     expect(
-      container.querySelector('[data-testid="transcript-lines"]')?.textContent,
+      document.body.querySelector('[data-testid="transcript-lines"]')
+        ?.textContent,
     ).toBe('{"type":"assistant"}');
 
-    const rawButton = container.querySelector(
+    const rawButton = document.body.querySelector(
       '[data-testid="pipeline-step-log-mode-raw-compile"]',
     );
     await act(async () => {
       rawButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await flushAsyncWork();
     });
-    expect(container.querySelector('[data-testid="transcript-lines"]')).toBe(
-      null,
-    );
+    expect(
+      document.body.querySelector('[data-testid="transcript-lines"]'),
+    ).toBe(null);
     expect(hasRenderableTranscriptPrefix).toHaveBeenCalledTimes(1);
   });
 });

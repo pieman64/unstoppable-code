@@ -695,7 +695,9 @@ describe('CuratedAutomationMarketplaceDetail', () => {
   it('waits for the catalog detail before showing anything to add', async () => {
     await render(curated({ detail: null, loading: true }));
 
-    expect(container.textContent).toContain('Loading automation…');
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     expect(byTestId('automation-source-install')).toBeNull();
   });
 

@@ -1,14 +1,10 @@
 /**
  * @jest-environment jsdom
  */
-import type * as UiSharedComponents from '@canopy/ui-shared/components';
 jest.mock('@canopy/ui-shared/components', () => ({
-  Button: jest.requireActual<typeof UiSharedComponents>(
-    '@canopy/ui-shared/components',
-  ).Button,
-  SegmentedControl: jest.requireActual<typeof UiSharedComponents>(
-    '@canopy/ui-shared/components',
-  ).SegmentedControl,
+  // The real fields (search, dialog fields, choice rows, dropdowns) render;
+  // only the overlay and tooltip shells below are stubbed.
+  ...jest.requireActual<object>('@canopy/ui-shared/components'),
   ActionTooltip: ({
     children,
   }: {
@@ -756,24 +752,25 @@ describe('PipelineTriggerModal', () => {
 
     await flushAsync();
 
-    const select = rendered.container.querySelector<HTMLSelectElement>(
+    const select = rendered.container.querySelector<HTMLButtonElement>(
       '#pipeline-trigger-modal-repo',
     );
-    expect(select).toBeInstanceOf(HTMLSelectElement);
+    if (!select) throw new Error('No working directory select');
+    expect(select.textContent).toBe(WORKSPACE_ROOT_REPO_NAME);
+    act(() => select.click());
     expect(
-      Array.from(select?.querySelectorAll('option') ?? []).map((option) => ({
-        value: option.value,
-        label: option.textContent,
-      })),
+      Array.from(document.querySelectorAll('[role="option"]')).map(
+        (option) => ({
+          label: option.textContent,
+          selected: option.getAttribute('aria-selected'),
+        }),
+      ),
     ).toEqual([
-      {
-        value: WORKSPACE_ROOT_REPO_ID,
-        label: WORKSPACE_ROOT_REPO_NAME,
-      },
-      { value: 'app', label: 'App' },
-      { value: 'api', label: 'API' },
+      { label: WORKSPACE_ROOT_REPO_NAME, selected: 'true' },
+      { label: 'App', selected: 'false' },
+      { label: 'API', selected: 'false' },
     ]);
-    expect(select?.value).toBe(WORKSPACE_ROOT_REPO_ID);
+    act(() => select.click());
 
     rendered.cleanup();
   });
@@ -791,14 +788,16 @@ describe('PipelineTriggerModal', () => {
     await flushAsync();
     expect(onRepoChange).toHaveBeenLastCalledWith('app');
 
-    const select = rendered.container.querySelector<HTMLSelectElement>(
+    const select = rendered.container.querySelector<HTMLButtonElement>(
       '#pipeline-trigger-modal-repo',
     );
     if (!select) throw new Error('No working directory select');
-    act(() => {
-      select.value = 'api';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    act(() => select.click());
+    const api = Array.from(
+      document.querySelectorAll<HTMLElement>('[role="option"]'),
+    ).find((option) => option.textContent === 'API');
+    if (!api) throw new Error('No API option');
+    act(() => api.click());
     expect(onRepoChange).toHaveBeenLastCalledWith('api');
 
     rendered.cleanup();
@@ -1350,7 +1349,7 @@ describe('PipelineTriggerModal — model aliases', () => {
     );
     expect(
       rendered.container.querySelector(
-        '[data-testid="pipeline-model-alias-reviewer-error"]',
+        '[id="pipeline-model-alias-reviewer-error"]',
       )?.textContent,
     ).toBe('Agent is not available locally.');
     rendered.cleanup();

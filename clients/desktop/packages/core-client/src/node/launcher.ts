@@ -4,12 +4,14 @@ import type {
   CanopyRuntimeDescriptor,
   CanopyRuntimeDescriptorSource,
 } from './daemon-ports';
+import { canopyDaemonRefusalError } from './daemon-refusal';
 import { classifyCanopyDescriptor } from './descriptor';
 import {
   canopyConnectError,
   validateCanopyTimeout,
   type CanopyClientEndpoint,
 } from './endpoint';
+import { Deadline, fixed, ignore, typed } from './launch-deadline';
 import type {
   CanopyDaemonSupervisor,
   CanopySpawnedDaemon,
@@ -29,7 +31,17 @@ export interface CanopyDaemonLaunchOptions<T> {
     readonly args?: readonly string[];
     /** Trusted host requests fd 3; never a daemon argument supplied by a peer. */
     readonly migrationChannel?: boolean;
+    /** Trusted host only: a spawned daemon opens the W5 host (`--w5-host v1`). */
+    readonly w5Host?: boolean;
   };
+  /**
+   * Runs once, only when this launch is about to spawn: after it holds the
+   * startup claim, which the child then adopts, and before `spawnDaemon`. Its
+   * own budget replaces the launch deadline meanwhile; caller abort still
+   * applies. A failure spawns nothing and releases the claim once `run`
+   * settles. Needs a startup claim, so Windows refuses it.
+   */
+  readonly beforeSpawn?: CanopyDaemonBeforeSpawn;
   readonly ports: {
     readonly descriptor: CanopyRuntimeDescriptorSource;
     readonly supervisor: CanopyDaemonSupervisor;
@@ -56,6 +68,12 @@ export interface CanopyDaemonLaunchOptions<T> {
   readonly signal?: AbortSignal;
 }
 
+export interface CanopyDaemonBeforeSpawn {
+  /** Integer from 1 to the timer maximum; expiry fails the launch `deadline_exceeded`. */
+  readonly timeoutMs: number;
+  readonly run: (signal: AbortSignal) => PromiseLike<void>;
+}
+
 export interface CanopyDaemonLaunchResult<T> {
   readonly value: T;
   readonly descriptor: CanopyRuntimeDescriptor;
@@ -65,126 +83,25 @@ export interface CanopyDaemonLaunchResult<T> {
   readonly migration?: 'launcher' | 'not_launcher';
 }
 
-type Redact = (error: unknown) => CanopyClientError;
-const ignore = (): void => {};
 const RESERVED_SWITCHES = [
   '--data-root',
   '--runtime-mode',
   '--migration-channel',
-  // The W5 qualification host (W5b): only its packaged smoke passes it.
+  // The W5 host: only the trusted `w5Host` option sets it.
   '--w5-host',
 ];
 
-/** Port failures keep their kind but take fixed text: details may name paths or tokens. */
-const fixed =
-  (message: string): Redact =>
-  (error) =>
-    canopyConnectError(
-      error instanceof CanopyClientError ? error.payload.kind : 'unavailable',
-      message,
-    );
-/** For ports whose typed errors are already redacted (classification, K1 attach). */
-const typed =
-  (message: string): Redact =>
-  (error) =>
-    error instanceof CanopyClientError
-      ? error
-      : canopyConnectError('internal', message);
 const ambiguousClaim = (): CanopyClientError =>
   canopyConnectError(
     'failed_precondition',
     'Core startup claim state is ambiguous.',
   );
 const exitedBeforeReady = (): CanopyClientError =>
-  canopyConnectError('unavailable', 'Core exited before it was ready.');
-
-/** One monotonic deadline plus caller abort, bounding every awaited port call. */
-class Deadline {
-  failure: CanopyClientError | undefined;
-  private readonly controller = new AbortController();
-  private readonly failed: Promise<never>;
-  private readonly expiresAt: number;
-  private readonly timer: ReturnType<typeof setTimeout>;
-  private readonly onAbort = (): void =>
-    this.fail('cancelled', 'Core startup was cancelled.');
-  private readonly expire = (): void =>
-    this.fail('deadline_exceeded', 'Core startup timed out.');
-
-  constructor(
-    timeoutMs: number,
-    private readonly caller?: AbortSignal,
-  ) {
-    this.failed = new Promise<never>((_resolve, reject) =>
-      this.controller.signal.addEventListener('abort', () => {
-        if (this.failure) reject(this.failure);
-      }),
-    );
-    this.failed.catch(ignore);
-    this.expiresAt = performance.now() + timeoutMs;
-    this.timer = setTimeout(this.expire, timeoutMs);
-    caller?.addEventListener('abort', this.onAbort, { once: true });
-    if (caller?.aborted) this.onAbort();
-  }
-
-  get signal(): AbortSignal {
-    return this.controller.signal;
-  }
-
-  remainingMs(): number {
-    return Math.max(1, Math.ceil(this.expiresAt - performance.now()));
-  }
-
-  isBeforeExpiration(): boolean {
-    return !this.failure && performance.now() < this.expiresAt;
-  }
-
-  /** Once a failure wins, `late` owns the still-settling call. */
-  async run<V>(
-    call: (signal: AbortSignal) => PromiseLike<V>,
-    redact: Redact,
-    late?: (pending: Promise<V>) => void,
-  ): Promise<V> {
-    if (performance.now() >= this.expiresAt) this.expire();
-    const { failure } = this;
-    if (failure) throw failure;
-    const pending = new Promise<V>((resolve) =>
-      resolve(call(this.controller.signal)),
-    );
-    pending.catch(ignore);
-    try {
-      const value = await Promise.race([pending, this.failed]);
-      if (performance.now() >= this.expiresAt) this.expire();
-      if (!this.failure) return value;
-    } catch (error) {
-      if (performance.now() >= this.expiresAt) this.expire();
-      if (!this.failure) throw redact(error);
-    }
-    late?.(pending);
-    throw this.failure ?? redact(undefined);
-  }
-
-  async sleep(ms: number): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const wait = (): Promise<void> =>
-      new Promise((resolve) => (timer = setTimeout(resolve, ms)));
-    try {
-      await this.run(wait, fixed('Core startup failed.'));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  dispose(): void {
-    clearTimeout(this.timer);
-    this.caller?.removeEventListener('abort', this.onAbort);
-  }
-
-  private fail(kind: 'cancelled' | 'deadline_exceeded', message: string): void {
-    if (this.failure) return;
-    this.failure = canopyConnectError(kind, message);
-    this.controller.abort(this.failure);
-  }
-}
+  canopyDaemonRefusalError(
+    'exited_before_ready',
+    'Core exited before it was ready.',
+    'unavailable',
+  );
 
 function invalid(message: string): never {
   throw canopyConnectError('invalid_argument', message);
@@ -202,6 +119,26 @@ interface LaunchConfig {
   readonly timeoutMs: number;
   readonly probeMs: number;
   readonly cleanupMs: number;
+  readonly beforeSpawn: CanopyDaemonBeforeSpawn | undefined;
+}
+
+const trustedSwitches = (
+  daemon: CanopyDaemonLaunchOptions<unknown>['daemon'],
+): string[] => [
+  ...(daemon.migrationChannel ? ['--migration-channel'] : []),
+  ...(daemon.w5Host ? ['--w5-host', 'v1'] : []),
+];
+
+function validateBeforeSpawn(
+  step: CanopyDaemonBeforeSpawn,
+  windows: boolean,
+): void {
+  validateCanopyTimeout(step.timeoutMs);
+  if (windows)
+    throw canopyConnectError(
+      'capability_unavailable',
+      'A pre-spawn step needs a startup claim, which Windows lacks.',
+    );
 }
 
 function validate<T>(options: CanopyDaemonLaunchOptions<T>): LaunchConfig {
@@ -219,6 +156,8 @@ function validate<T>(options: CanopyDaemonLaunchOptions<T>): LaunchConfig {
   const windows = (options.platform ?? process.platform) === 'win32';
   if (!windows && !ports.claim)
     invalid('A startup claim port is required off Windows.');
+  const { beforeSpawn } = options;
+  if (beforeSpawn) validateBeforeSpawn(beforeSpawn, windows);
   return {
     args: [
       ...args,
@@ -226,13 +165,14 @@ function validate<T>(options: CanopyDaemonLaunchOptions<T>): LaunchConfig {
       dataRoot,
       '--runtime-mode',
       runtimeMode,
-      ...(daemon.migrationChannel ? ['--migration-channel'] : []),
+      ...trustedSwitches(daemon),
     ],
     versions,
     claim: windows ? undefined : ports.claim,
     timeoutMs: validateCanopyTimeout(options.timeoutMs ?? 30_000),
     probeMs: validateCanopyTimeout(options.probeIntervalMs ?? 100),
     cleanupMs: validateCanopyTimeout(options.cleanupTimeoutMs ?? 5_000),
+    beforeSpawn,
   };
 }
 
@@ -334,6 +274,7 @@ export async function attachOrStartCanopyDaemon<T>(
     let acquired = false;
     let acquiring: Promise<CanopyStartupClaimAcquisition> | undefined;
     let spawning: Promise<CanopySpawnedDaemon> | undefined;
+    let preparing: Promise<void> | undefined;
     let probed = false;
     try {
       for (;;) {
@@ -370,6 +311,15 @@ export async function attachOrStartCanopyDaemon<T>(
           // our child lost; probe for its descriptor until the deadline.
           if (exitSeen && claim) throw exitedBeforeReady();
         } else if (acquired) {
+          const { beforeSpawn } = config;
+          if (beforeSpawn)
+            await deadline.runOwnBudget(
+              beforeSpawn.timeoutMs,
+              'Core pre-spawn step timed out.',
+              (signal) =>
+                (preparing = Promise.resolve(beforeSpawn.run(signal))),
+              typed('Core pre-spawn step failed.'),
+            );
           child = await deadline.run(
             (signal) =>
               (spawning = supervisor
@@ -414,6 +364,8 @@ export async function attachOrStartCanopyDaemon<T>(
       // Foreground deadline/cancel can return while this owner consumes a late port.
       const acquisition = !handle ? await acquiring?.catch(ignore) : undefined;
       if (acquisition?.kind === 'acquired') handle = acquisition.handle;
+      // The claim keeps maintenance out until a late pre-spawn step settles.
+      await preparing?.catch(ignore);
       const late =
         !child && spawning ? await spawning.catch(ignore) : undefined;
       let cleanup: Deadline | undefined;

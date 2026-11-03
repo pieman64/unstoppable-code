@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import {
   Button,
+  EmptyStateRow,
   SegmentedControl,
   TextInput,
   ToggleSwitch,
@@ -117,12 +118,10 @@ export function PlanDetectionRulesEditor({
       <SettingsSection title="Project rules">
         <SettingsGroup>
           {customRules.length === 0 ? (
-            <div
-              className="flex min-h-10 items-center text-s fg-secondary"
-              data-testid={`${dataTestIdPrefix}-empty`}
-            >
-              No project rules yet.
-            </div>
+            <EmptyStateRow
+              testId={`${dataTestIdPrefix}-empty`}
+              title="No project rules yet."
+            />
           ) : (
             customRules.map((rule) => (
               <SettingsRow

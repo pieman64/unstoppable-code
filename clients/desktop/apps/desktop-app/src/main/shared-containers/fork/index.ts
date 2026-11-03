@@ -29,6 +29,10 @@ import {
   checkW5CompositionRevisions,
   decodeW5CompositionOutcome,
 } from '../../lib/w5-composition-operation';
+import {
+  w5LifecycleReceiptCaller,
+  type W5WireCall,
+} from '../../lib/w5-wire-call';
 
 const forkOutcomeSchema = z.object({
   containerType: z.enum(['CODE_WORKTREE', 'COWORK_WORK_ENTRY']),
@@ -40,24 +44,26 @@ const forkOutcomeSchema = z.object({
   ),
 });
 export type SharedContainerForkCommand = SharedContainerForkRequest &
-  W5BoundaryOptions;
+  W5BoundaryOptions & {
+    /** A registered wire call's receipt scope and admission (W7b-4). */
+    wireCall?: W5WireCall;
+  };
 
-/**
- * Fork, then install the capability package the recipient was shown. The
- * install runs only after `runW5BoundaryOperation` has committed the copy and
- * outside its composition and rollback: a package failure becomes a warning
- * and never changes or undoes the fork.
- */
+/** IPC keeps its post-copy install; wire calls save the install warnings too. */
 export async function forkSharedContainer(
   request: SharedContainerForkCommand,
 ): Promise<SharedContainerForkResponse> {
   const response = await forkSharedContainerCopy(request);
-  const packageWarnings = await installForkCapabilityPackage({
-    request,
-    response,
-  });
-  return packageWarnings.length > 0
-    ? { ...response, warnings: [...response.warnings, ...packageWarnings] }
+  return request.wireCall ? response : installForkPackage(request, response);
+}
+
+async function installForkPackage(
+  request: SharedContainerForkCommand,
+  response: SharedContainerForkResponse,
+): Promise<SharedContainerForkResponse> {
+  const warnings = await installForkCapabilityPackage({ request, response });
+  return warnings.length > 0
+    ? { ...response, warnings: [...response.warnings, ...warnings] }
     : response;
 }
 
@@ -74,33 +80,48 @@ async function forkSharedContainerCopy(
     throw new Error('Invalid sourceOwnerDisplayName');
   }
   const destination = validateForkDestination(request.destination);
-  const sourceContext = await resolveForkSourceContext(request);
-  request = {
-    ...request,
-    destination,
-    organizationId: sourceContext.organizationId,
+  request = { ...request, destination };
+  const authorize = async (): Promise<
+    Awaited<ReturnType<typeof resolveForkSourceContext>>
+  > => {
+    await request.wireCall?.admit?.();
+    const context = await resolveForkSourceContext(request);
+    if (destination.kind === 'new-workspace') {
+      assertNewForkOwner(destination, context.owner);
+    } else {
+      await assertForkWorkspaceOwner(destination.workspaceId, context.owner);
+    }
+    return context;
   };
-  if (destination.kind === 'new-workspace') {
-    assertNewForkOwner(destination, sourceContext.owner);
-  } else {
-    await assertForkWorkspaceOwner(
-      destination.workspaceId,
-      sourceContext.owner,
-    );
-  }
+  // IPC retains its receipt bytes and admission; wire identity is request-only.
+  let sourceContext = request.wireCall ? undefined : await authorize();
+  if (sourceContext)
+    request = { ...request, organizationId: sourceContext.organizationId };
   const { expectedRevision, idempotencyKey } = request;
   return runW5BoundaryOperation(
     {
       operation: 'core.sharedContainer.fork',
-      caller: 'desktop-host:shared-container-fork',
+      caller: w5LifecycleReceiptCaller(
+        'shared-container-fork',
+        request.wireCall,
+      ),
       idempotencyKey,
+      admit: request.wireCall
+        ? async () => {
+            sourceContext = await authorize();
+          }
+        : undefined,
       parameters: {
         containerId: request.containerId,
         revisionId: request.revisionId,
         organizationId: request.organizationId,
         sourceOwnerDisplayName: request.sourceOwnerDisplayName,
-        owner: sourceContext.owner,
-        acceptedAt: sourceContext.acceptedAt,
+        ...(request.wireCall
+          ? { expectedPackageDigest: request.expectedPackageDigest }
+          : {
+              owner: sourceContext?.owner,
+              acceptedAt: sourceContext?.acceptedAt,
+            }),
         destination:
           request.destination.kind === 'existing-workspace'
             ? {
@@ -125,12 +146,14 @@ async function forkSharedContainerCopy(
     },
     (outcome) => decodeW5CompositionOutcome(forkOutcomeSchema, outcome),
     async (commit, attempt) => {
+      const context = sourceContext ?? (await authorize());
+      request = { ...request, organizationId: context.organizationId };
       commit.expectedRevisions = w5ExpectedRevision(
         { kind: 'workspaces' },
         expectedRevision,
       );
       await checkW5CompositionRevisions(commit);
-      return admitW5Composition(attempt, () =>
+      const response = await admitW5Composition(attempt, () =>
         withSharedContainerForkGuard(
           request,
           async (revisionRoot, revision) => {
@@ -146,8 +169,8 @@ async function forkSharedContainerCopy(
             // Authorize after that read, immediately before dispatching effects.
             const latestContext = await resolveForkSourceContext(request);
             if (
-              latestContext.acceptedAt !== sourceContext.acceptedAt ||
-              latestContext.access !== sourceContext.access
+              latestContext.acceptedAt !== context.acceptedAt ||
+              latestContext.access !== context.access
             ) {
               throw new SharedContainerForkError(
                 'source-unavailable',
@@ -157,7 +180,7 @@ async function forkSharedContainerCopy(
             if (request.destination.kind === 'existing-workspace') {
               await assertForkWorkspaceOwner(
                 request.destination.workspaceId,
-                sourceContext.owner,
+                context.owner,
               );
             }
             const provenance = {
@@ -172,7 +195,7 @@ async function forkSharedContainerCopy(
             };
             const options = {
               request,
-              owner: sourceContext.owner,
+              owner: context.owner,
               organizationName: latestContext.organizationName,
               provenance,
               revisionRoot,
@@ -199,6 +222,9 @@ async function forkSharedContainerCopy(
           },
         ),
       );
+      if (!request.wireCall) return response;
+      attempt?.beforeEffects();
+      return installForkPackage(request, response);
     },
   );
 }

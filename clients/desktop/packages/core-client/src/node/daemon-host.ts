@@ -4,7 +4,10 @@ import path from 'node:path';
 import { CanopyClientError } from '../errors';
 import type { CanopyRuntimeDescriptorSource } from './daemon-ports';
 import { canopyConnectError } from './endpoint';
-import type { CanopyDaemonLaunchOptions } from './launcher';
+import type {
+  CanopyDaemonBeforeSpawn,
+  CanopyDaemonLaunchOptions,
+} from './launcher';
 import type {
   CanopyDaemonSupervisor,
   CanopySpawnedDaemon,
@@ -61,6 +64,10 @@ export interface CanopyDaemonHostLaunchOptions {
   readonly ownedChildren?: CanopyOwnedDaemonChildren;
   /** Electron main's private launcher adapter; absent for CLI and every generic host. */
   readonly migration?: CanopyDaemonMigrationLaunch;
+  /** Every spawn from this launch opens the W5 host; see the launcher's `w5Host`. */
+  readonly w5Host?: boolean;
+  /** Shared by every attach-or-start on this launch, so each spawn runs it. */
+  readonly beforeSpawn?: CanopyDaemonBeforeSpawn;
   /** Filtered through `supervision.childEnvironment`'s allowlist. */
   readonly environmentSource: Environment;
   readonly claim?: CanopyStartupClaimPort;
@@ -340,7 +347,9 @@ export function createCanopyDaemonHostLaunch(
     daemon: {
       executable,
       ...(options.migration && { migrationChannel: true }),
+      ...(options.w5Host && { w5Host: true }),
     },
+    ...(options.beforeSpawn && { beforeSpawn: options.beforeSpawn }),
     ports: {
       descriptor,
       supervisor,

@@ -4,7 +4,12 @@ import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
 import type { DetectedApp } from '@canopy/desktop-shared/types';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
-import { SettingsGroup, SettingsPage, SettingsLoading } from './SettingsLayout';
+import {
+  SettingsGroup,
+  SettingsPage,
+  SettingsLoading,
+  SettingsRow,
+} from './SettingsLayout';
 
 const CATEGORY_LABELS: Record<string, string> = {
   'file-manager': 'File manager',
@@ -87,24 +92,23 @@ export function ApplicationsTab(): JSX.Element {
               ) : (
                 <span className="h-6 w-6 shrink-0" />
               )}
-              <label
-                htmlFor={switchId}
-                className="min-w-0 flex-1 space-y-0.5"
-                data-settings-row-label=""
-              >
-                <span className="block truncate text-s font-medium fg-primary">
-                  {appItem.name}
-                </span>
-                <span className="block text-xs fg-secondary">
-                  {CATEGORY_LABELS[appItem.category] ?? appItem.category}
-                </span>
-              </label>
-              <ToggleSwitch
-                id={switchId}
-                checked={!disabledApps.includes(appItem.id)}
-                label={appItem.name}
-                onChange={() => toggleApp(appItem.id)}
-              />
+              <div className="min-w-0 flex-1">
+                <SettingsRow
+                  htmlFor={switchId}
+                  label={appItem.name}
+                  description={
+                    CATEGORY_LABELS[appItem.category] ?? appItem.category
+                  }
+                  control={
+                    <ToggleSwitch
+                      id={switchId}
+                      checked={!disabledApps.includes(appItem.id)}
+                      label={appItem.name}
+                      onChange={() => toggleApp(appItem.id)}
+                    />
+                  }
+                />
+              </div>
             </div>
           );
         })}

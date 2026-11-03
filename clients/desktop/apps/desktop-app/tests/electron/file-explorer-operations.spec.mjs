@@ -67,7 +67,9 @@ async function observeExplorerLoadingFlashes(explorer) {
     const state = { flashes: 0 };
     const inspect = () => {
       if (
-        element.querySelector('[data-testid="loading-placeholder"]') ||
+        element.querySelector(
+          '[data-testid="delayed-loading-placeholder"], [data-testid="centered-loading-spinner"]',
+        ) ||
         element.textContent?.includes('Loading…')
       ) {
         state.flashes += 1;

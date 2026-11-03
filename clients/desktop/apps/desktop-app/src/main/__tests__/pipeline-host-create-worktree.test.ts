@@ -1,3 +1,28 @@
+import type * as ScriptExecutionModule from '@canopy/core-runtime/node/script/execution';
+import type { WorkerScriptExecutionGetResult } from '@canopy/protocol/canopy-core';
+import type * as ScriptLogStore from '../lib/script-log-store';
+// Setup replay reads the recorded run through worker.script.execution.get.
+jest.mock('../lib/script-execution', () => ({
+  readScriptRun: async (request: {
+    projectId: string;
+    worktreeId: string;
+    scriptKey: string;
+  }): Promise<WorkerScriptExecutionGetResult> => {
+    const logStore = jest.requireMock<typeof ScriptLogStore>(
+      '../lib/script-log-store',
+    );
+    const execution = jest.requireActual<typeof ScriptExecutionModule>(
+      '@canopy/core-runtime/node/script/execution',
+    );
+    const meta = await logStore.readScriptRunMeta(request);
+    return {
+      run: meta
+        ? { execution: execution.toWorkerScriptExecution(meta), lines: [] }
+        : null,
+    };
+  },
+}));
+
 jest.mock('../lib/worktree-creation', () => ({
   createWorktreeFromSelection: jest.fn(),
 }));
@@ -1871,6 +1896,7 @@ describe('runCreateWorktreeHostAction replay', () => {
       projectId: PROJECT,
       worktreeId: TASK,
       scriptKey: 'setup',
+      tailLines: 0,
     });
     expect(result).toEqual({
       status: 'success',

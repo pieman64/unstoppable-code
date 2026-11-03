@@ -774,7 +774,7 @@ test.describe('archived container behaviors', () => {
         // Read-only: no lifecycle actions may render for archived executions.
         await expect(
           modal.getByRole('button', {
-            name: /^(Cancel|Retry|Rerun|Debug|Resume)/,
+            name: /^(Cancel|Try|Rerun|Debug|Resume)/,
           }),
         ).toHaveCount(0);
 

@@ -44,6 +44,7 @@ import type { W5CommitLogHostPort } from './commit-log-file-store';
 const WORKER_NAME = 'w5-commit-log';
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_QUEUED_READ_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_QUEUED_CALLS = 256;
 // A worker blocked in a native SQLite call stops only once that call returns.
@@ -71,6 +72,10 @@ export interface W5CommitLogHostOptions {
   startupTimeoutMs?: number;
   /** Bounds each request, from send to response. */
   requestTimeoutMs?: number;
+  /** Bounds queue waits for capture, revision and recoveryReport only. */
+  queuedReadTimeoutMs?: number;
+  /** Operational warnings only; defaults to stderr outside a logging host. */
+  warn?: (message: string, context: Record<string, unknown>) => void;
   /** Bounds the wait for the in-flight request during shutdown. */
   shutdownTimeoutMs?: number;
   /** Calls allowed to wait for their turn before new calls are refused. */
@@ -209,6 +214,8 @@ interface PendingCall {
   readonly reject: (error: W5CommitLogCallError) => void;
   /** A capture that already replaced a worker that had no capture root. */
   reanchored: boolean;
+  queuedTimer: ReturnType<typeof setTimeout> | undefined;
+  queuedDeadline: number | undefined;
 }
 
 interface WorkerSession {
@@ -237,6 +244,11 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   private readonly workerEntry: string;
   private readonly startupTimeoutMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly queuedReadTimeoutMs: number;
+  private readonly warn: (
+    message: string,
+    context: Record<string, unknown>,
+  ) => void;
   private readonly shutdownTimeoutMs: number;
   private readonly maxQueuedCalls: number;
   private readonly workerExitWaitMs: number;
@@ -275,6 +287,16 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       DEFAULT_REQUEST_TIMEOUT_MS,
       'requestTimeoutMs',
     );
+    this.queuedReadTimeoutMs = positiveOption(
+      options.queuedReadTimeoutMs,
+      DEFAULT_QUEUED_READ_TIMEOUT_MS,
+      'queuedReadTimeoutMs',
+    );
+    this.warn =
+      options.warn ??
+      ((message, context): void => {
+        process.stderr.write(`${message} ${JSON.stringify(context)}\n`);
+      });
     this.shutdownTimeoutMs = positiveOption(
       options.shutdownTimeoutMs,
       DEFAULT_SHUTDOWN_TIMEOUT_MS,
@@ -494,9 +516,53 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       args,
     };
     return new Promise<unknown>((resolve, reject) => {
-      this.queue.push({ request, resolve, reject, reanchored: false });
+      const call: PendingCall = {
+        request,
+        resolve,
+        reject,
+        reanchored: false,
+        queuedTimer: undefined,
+        queuedDeadline: undefined,
+      };
+      this.queue.push(call);
+      this.armQueuedRead(call);
       this.pump();
     });
+  }
+
+  private armQueuedRead(call: PendingCall): void {
+    const method = call.request.method;
+    // Only these reads have an admission/queue deadline. Durable writes keep
+    // their existing wait policy until sent or refused by the host lifecycle.
+    if (
+      method !== 'capture' &&
+      method !== 'revision' &&
+      method !== 'recoveryReport'
+    )
+      return;
+    call.queuedDeadline = performance.now() + this.queuedReadTimeoutMs;
+    call.queuedTimer = setTimeout(
+      (): void => this.expireQueuedRead(call),
+      this.queuedReadTimeoutMs,
+    );
+    call.queuedTimer.unref();
+  }
+
+  private expireQueuedRead(call: PendingCall): void {
+    const index = this.queue.indexOf(call);
+    if (index === -1) return;
+    this.queue.splice(index, 1);
+    this.clearQueuedTimer(call);
+    call.reject(
+      unavailable(
+        `The W5 commit log ${call.request.method} exceeded its queued wait; the call was not sent`,
+      ),
+    );
+  }
+
+  private clearQueuedTimer(call: PendingCall): void {
+    if (call.queuedTimer) clearTimeout(call.queuedTimer);
+    call.queuedTimer = undefined;
   }
 
   private async stop(): Promise<void> {
@@ -523,6 +589,14 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
       }
       if (!session.ready || session.active) return;
       const next = this.queue[0];
+      // Worker I/O can run after a deadline but before its timer callback.
+      if (
+        next?.queuedDeadline !== undefined &&
+        performance.now() >= next.queuedDeadline
+      ) {
+        this.expireQueuedRead(next);
+        continue;
+      }
       if (next && this.needsAnchor(session, next)) {
         next.reanchored = true;
         this.replaceIdle(session);
@@ -645,6 +719,7 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private send(session: WorkerSession, call: PendingCall): boolean {
+    this.clearQueuedTimer(call);
     session.active = call;
     this.arm(
       session,
@@ -766,10 +841,35 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
     message: string,
   ): void {
     this.clearTimer(session);
-    session.timer = setTimeout(
-      (): void => this.fail(session, outcomeUnknown(message)),
-      timeoutMs,
-    );
+    const startedAt = performance.now();
+    session.timer = setTimeout((): void => {
+      if (this.session !== session) return;
+      const method = session.active?.request.method;
+      if (method === undefined) {
+        this.fail(session, outcomeUnknown(message));
+        return;
+      }
+      const context = {
+        method,
+        elapsedMs: Math.round(performance.now() - startedAt),
+        queueDepth: this.queue.length,
+        workerNumber: session.number,
+      };
+      try {
+        this.warn('W5 commit log request timed out', context);
+      } catch {
+        // A logging failure must not prevent timeout settlement or retirement.
+      }
+      this.fail(
+        session,
+        outcomeUnknown(
+          `${message}: ${method}, elapsed ${context.elapsedMs} ms, queue depth ${context.queueDepth}, worker ${context.workerNumber}`,
+        ),
+        unavailable(
+          `The W5 commit log worker timed out running ${method}; this call was not sent`,
+        ),
+      );
+    }, timeoutMs);
     session.timer.unref();
   }
 
@@ -779,7 +879,10 @@ export class W5CommitLogHost implements W5CommitLogHostPort {
   }
 
   private rejectQueued(error: W5CommitLogCallError): void {
-    for (const call of this.queue.splice(0)) call.reject(error);
+    for (const call of this.queue.splice(0)) {
+      this.clearQueuedTimer(call);
+      call.reject(error);
+    }
   }
 
   private whenIdle(session: WorkerSession): Promise<void> {

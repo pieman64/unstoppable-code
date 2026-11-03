@@ -14,7 +14,7 @@ import {
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
-import { act, type JSX, type ReactNode, useEffect } from 'react';
+import { act, type JSX, type ReactNode, useEffect, useMemo } from 'react';
 import { getShareablePluginRefKey } from '@canopy/protocol/plugins';
 import { computePluginShareableRef } from '@canopy/desktop-shared/plugin-refs';
 import { createRoot, type Root } from 'react-dom/client';
@@ -87,6 +87,25 @@ const mockOpenEditSkillWithAIChat = jest.fn<
   Promise<void>,
   [{ sourceId: string; name: string }]
 >();
+
+import type * as UiSharedModule from '@canopy/ui-shared/components';
+
+const mockBrowseRowRender = jest.fn<void, [string]>();
+jest.mock('@canopy/ui-shared/components', () => {
+  const actual = jest.requireActual<typeof UiSharedModule>(
+    '@canopy/ui-shared/components',
+  );
+  return {
+    ...actual,
+    CustomizeInstalledRow: (
+      props: Parameters<typeof actual.CustomizeInstalledRow>[0],
+    ): JSX.Element => {
+      if (props.sectionId === 'browse') mockBrowseRowRender(props.entry.id);
+      return <actual.CustomizeInstalledRow {...props} />;
+    },
+  };
+});
+
 jest.mock('@/lib/editSkillWithAI', () => ({
   ...jest.requireActual<typeof EditSkillWithAIModule>('@/lib/editSkillWithAI'),
   openEditSkillWithAIChat: (skill: {
@@ -372,14 +391,23 @@ let mockCustomSkillEditCapability = true;
 let mockWorkflowManagementCapability = true;
 jest.mock('@canopy/app-state', () => ({
   ...jest.requireActual<Record<string, unknown>>('@canopy/app-state'),
-  useCapabilities: (): Record<string, unknown> => ({
-    marketplaceOwnedAutomationShares: mockOwnedAutomationSharesCapability,
-    marketplaceOwnedShares: mockOwnedSharesCapability,
-    marketplaceSharedCollectionEdit: mockSharedCollectionEditCapability,
-    pipelines: 'execute',
-    automations: true,
-    workflowManagement: mockWorkflowManagementCapability,
-  }),
+  useCapabilities: (): Record<string, unknown> => {
+    const ownedAutomations = mockOwnedAutomationSharesCapability;
+    const ownedShares = mockOwnedSharesCapability;
+    const collectionEdit = mockSharedCollectionEditCapability;
+    const workflowManagement = mockWorkflowManagementCapability;
+    return useMemo(
+      () => ({
+        marketplaceOwnedAutomationShares: ownedAutomations,
+        marketplaceOwnedShares: ownedShares,
+        marketplaceSharedCollectionEdit: collectionEdit,
+        pipelines: 'execute',
+        automations: true,
+        workflowManagement: workflowManagement,
+      }),
+      [ownedAutomations, ownedShares, collectionEdit, workflowManagement],
+    );
+  },
   // No source client: the Marketplaces tab stays hidden unless a test wires one.
   useCanopyClient: (): Record<string, unknown> => ({
     capabilities: mockMarketplaceSourcesClient
@@ -542,10 +570,12 @@ jest.mock('../CollectionsTab', () => ({
   // tab. Only its identity and its close/save callbacks matter here.
   CollectionModal: ({
     presentation,
+    collectionId,
     onClose,
     onSaved,
     onDeleted,
   }: {
+    collectionId?: string | null;
     presentation?: 'modal' | 'page';
     onClose: () => void;
     onSaved: () => Promise<void>;
@@ -555,6 +585,7 @@ jest.mock('../CollectionsTab', () => ({
       data-testid="plugins-entry-detail"
       data-presentation={presentation}
       aria-labelledby="collection-modal-title"
+      data-collection-id={collectionId ?? 'new'}
     >
       <button
         type="button"
@@ -998,6 +1029,9 @@ describe('PluginsPage discovery', () => {
   let authChangedListeners: Set<() => void>;
   let collectionsApi: {
     getShared: jest.Mock;
+    loadCollection: jest.Mock;
+    duplicateCollection: jest.Mock;
+    applySharedUpdate: jest.Mock;
     inspectImport: jest.Mock;
     installCapabilityPackage: jest.Mock;
     saveCollection: jest.Mock<
@@ -1204,6 +1238,9 @@ describe('PluginsPage discovery', () => {
     };
     collectionsApi = {
       getShared: jest.fn(),
+      loadCollection: jest.fn(),
+      duplicateCollection: jest.fn(),
+      applySharedUpdate: jest.fn(),
       inspectImport: jest.fn(),
       installCapabilityPackage: jest.fn(),
       saveCollection: jest.fn<
@@ -1318,6 +1355,40 @@ describe('PluginsPage discovery', () => {
       await Promise.resolve();
     });
   }
+
+  it('CAN-4847 host does not rerender unchanged Browse rows while search narrows', async () => {
+    await mountFullFixture();
+    const field = container.querySelector<HTMLInputElement>(
+      '[data-testid="plugins-search"]',
+    );
+    if (!field) throw new Error('No search field');
+    const rowId = 'mcp-catalog:linear';
+    expect(
+      container.querySelector(`[data-testid="plugins-entry-${rowId}"]`),
+    ).not.toBeNull();
+    // Enter search mode first: the initial keystroke changes Browse grouping.
+    await typeQuery('l');
+    mockBrowseRowRender.mockClear();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(field, 'lin');
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(
+      container.querySelector(`[data-testid="plugins-entry-${rowId}"]`),
+    ).not.toBeNull();
+    expect(
+      mockBrowseRowRender.mock.calls.filter(([id]) => id === rowId),
+    ).toHaveLength(0);
+    await openEntry(rowId);
+    expect(
+      useNavigationStore.getState().pluginsPresentation?.entry?.browseReturn
+        ?.query,
+    ).toBe('lin');
+  });
 
   async function mountFullFixture(overrides: MountOptions = {}): Promise<void> {
     await mount({
@@ -2335,6 +2406,33 @@ describe('PluginsPage discovery', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('renders the collection footnote exactly once on the desktop mount', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'footnote',
+        name: 'Design kit',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+      },
+    ];
+    await mount();
+    await click(
+      container.querySelector('[data-testid="plugins-type-tab-collection"]'),
+      'Collections type tab',
+    );
+    const text =
+      'Adding a collection adds everything in it. Removing it keeps what you already use.';
+    expect((container.textContent ?? '').split(text).length - 1).toBe(1);
+    expect(
+      container.querySelector(
+        '[data-testid="customize-section-installed-footnote"]',
+      )?.textContent,
+    ).toBe(text);
+  });
+
   it('offers to create a collection from the empty Collections tab', async () => {
     await mountFullFixture();
 
@@ -2902,7 +3000,7 @@ describe('PluginsPage discovery', () => {
       container.querySelector('[data-testid="plugins-section-category-other"]'),
       'Other category section',
     );
-    expect(other.querySelector('h2')?.textContent).toBe('Other');
+    expect(other.querySelector('h3')?.textContent).toBe('Other');
     // A recommended entry that is not a role pick stays in its category.
     // This fixture is explicitly uninstalled so Browse remains exercised (CAN-5272).
     expect(entryTestIdsWithin(other)).toEqual([
@@ -3112,11 +3210,14 @@ describe('PluginsPage discovery', () => {
       'Writer Toolkit card',
     );
     // The tile is the card's leading element.
-    const tile = requireElement(card.firstElementChild, 'Card icon tile');
+    const tile = requireElement(
+      card.querySelector('.rounded-full'),
+      'Card icon tile',
+    );
     expect(tile.className).toContain('rounded-full');
     expect(tile.className).not.toContain('rounded-xl');
-    expect(card.className).toContain('py-3');
-    expect(card.className).not.toContain('py-2');
+    expect(card.className).toContain('py-2.5');
+    expect(card.className).not.toContain('py-3');
   });
 
   it('caps a browse category section and makes its headline clickable', async () => {
@@ -4966,7 +5067,7 @@ describe('PluginsPage discovery', () => {
         "Couldn't load curated automations.",
       );
       expect(notice.textContent).toContain('Catalog unavailable');
-      await click(notice.querySelector('button'), 'Retry');
+      await click(notice.querySelector('button'), 'Try again');
 
       expect(
         mockCapabilityMarketplaceInventory.curatedAutomations.onRefresh,
@@ -5130,6 +5231,298 @@ describe('PluginsPage discovery', () => {
     });
   });
 
+  it('duplicates a local added collection once and opens the persisted copy for editing', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'added',
+        name: 'Design kit',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+        sharedSource: { remoteId: 'gone', contentHash: 'a' },
+      },
+    ];
+    collectionsApi.duplicateCollection.mockResolvedValue({
+      id: 'copy',
+      revision: 'r2',
+      name: 'Design kit copy',
+      description: '',
+      skills: [],
+      plugins: [],
+      mcpServers: [],
+      createdAt: '2026-10-26',
+      updatedAt: '2026-10-26',
+    });
+    await mount();
+    await click(
+      container.querySelector(
+        '[data-testid="customize-row-menu-collection:local:added"]',
+      ),
+      'Added menu',
+    );
+    await click(
+      document.querySelector(
+        '[data-testid="customize-row-menu-collection:local:added-duplicate"]',
+      ),
+      'Duplicate',
+    );
+    expect(collectionsApi.duplicateCollection).toHaveBeenCalledWith({
+      collectionId: 'added',
+    });
+    expect(collectionsApi.duplicateCollection).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelector('[data-collection-id="copy"]'),
+    ).not.toBeNull();
+    expect(
+      mockCapabilityMarketplaceInventory.refreshLocalCollections,
+    ).toHaveBeenCalled();
+  });
+
+  it('keeps a lost duplicate reply unresolved after a successful inventory refresh', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'added',
+        name: 'Design kit',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+        sharedSource: { remoteId: 'gone', contentHash: 'a' },
+      },
+    ];
+    collectionsApi.duplicateCollection.mockRejectedValue(
+      new Error('Reply lost'),
+    );
+    await mount();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await click(
+        container.querySelector(
+          '[data-testid="customize-row-menu-collection:local:added"]',
+        ),
+        'Added menu',
+      );
+      await click(
+        document.querySelector(
+          '[data-testid="customize-row-menu-collection:local:added-duplicate"]',
+        ),
+        'Duplicate',
+      );
+      await settle();
+    }
+    expect(collectionsApi.duplicateCollection).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('outcome is still unknown');
+  });
+
+  it('withdraws competing collection entry points while a duplicate is pending', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'added',
+        name: 'Design kit',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+        sharedSource: { remoteId: 'gone', contentHash: 'a' },
+      },
+    ];
+    let finish: () => void = () => {};
+    collectionsApi.duplicateCollection.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = (): void =>
+            resolve({
+              id: 'copy',
+              revision: 'r2',
+              name: 'Copy',
+              description: '',
+              skills: [],
+              plugins: [],
+              mcpServers: [],
+              createdAt: '2026-10-26',
+              updatedAt: '2026-10-26',
+            });
+        }),
+    );
+    await mount();
+    await click(
+      container.querySelector('[data-testid="plugins-type-tab-collection"]'),
+      'Collections tab',
+    );
+    await click(
+      container.querySelector(
+        '[data-testid="customize-row-menu-collection:local:added"]',
+      ),
+      'Added menu',
+    );
+    await click(
+      document.querySelector(
+        '[data-testid="customize-row-menu-collection:local:added-duplicate"]',
+      ),
+      'Duplicate',
+    );
+    expect(
+      container.querySelector('[data-testid="customize-add-collection"]'),
+    ).toBeNull();
+    expect(container.querySelector('[data-collection-id="new"]')).toBeNull();
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+    });
+    expect(
+      container.querySelector('[data-collection-id="copy"]'),
+    ).not.toBeNull();
+  });
+
+  it('names the upstream bundled skill addition in desktop Updates', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'added',
+        name: 'Design review',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+        revision: 'r1',
+        sharedSource: { remoteId: 's1', contentHash: 'a' },
+      },
+    ];
+    mockCapabilityMarketplaceInventory.sharedCollections = [
+      {
+        id: 's1',
+        name: 'Design review',
+        description: '',
+        contentHash: 'b',
+        itemCounts: { skills: 2, plugins: 0, customSkills: 0 },
+        shareScope: 'team',
+        owner: {
+          type: 'team',
+          id: 'team',
+          name: 'Design',
+          organization: { id: 'org-1', name: 'Organization' },
+        },
+        createdBy: { id: 'someone', name: 'Priya Shah', email: null },
+        createdAt: '2026-10-13',
+        updatedAt: '2026-10-14',
+        canUpdate: false,
+        canDelete: false,
+      },
+    ];
+    collectionsApi.loadCollection.mockResolvedValue({
+      revision: 'r1',
+      skills: [{ sourceId: 'builtin/app', skillName: 'review' }],
+      plugins: [],
+    });
+    collectionsApi.getShared.mockResolvedValue({
+      id: 's1',
+      contentHash: 'b',
+      collection: {
+        version: 1,
+        name: 'Design review',
+        description: '',
+        items: [
+          {
+            type: 'skill',
+            source: { type: 'builtin', id: 'app' },
+            skill_name: 'review',
+          },
+          {
+            type: 'skill',
+            source: { type: 'builtin', id: 'app' },
+            skill_name: 'figma-handoff',
+          },
+        ],
+      },
+    });
+    await mount();
+    await openManagement('collections');
+    expect(
+      container.querySelector('[data-testid="customize-section-browse"] h2')
+        ?.textContent,
+    ).toContain('Shared with you');
+    const updates = container.querySelector(
+      '[data-testid="customize-section-updates"]',
+    );
+    expect(updates?.textContent).not.toContain(
+      'Priya Shah added the figma-handoff skill',
+    );
+    act(() => {
+      updates
+        ?.querySelector(
+          '[data-testid="customize-update-collection:local:added"]',
+        )
+        ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(
+      'Priya Shah added the figma-handoff skill',
+    );
+  });
+
+  it('applies a collection update through the guarded preload operation and refreshes after failure', async () => {
+    mockCapabilityMarketplaceInventory.localCollections = [
+      {
+        id: 'added',
+        name: 'Design kit',
+        description: '',
+        skillCount: 1,
+        pluginCount: 0,
+        mcpServerCount: 0,
+        updatedAt: '2026-10-14',
+        sharedSource: { remoteId: 's1', contentHash: 'a' },
+      },
+    ];
+    mockCapabilityMarketplaceInventory.sharedCollections = [
+      {
+        id: 's1',
+        name: 'Design kit',
+        description: '',
+        contentHash: 'b',
+        itemCounts: { skills: 2, plugins: 0, customSkills: 0 },
+        shareScope: 'team',
+        owner: {
+          type: 'team',
+          id: 'team',
+          name: 'Design',
+          organization: { id: 'org-1', name: 'Organization' },
+        },
+        createdBy: { id: 'someone', name: 'Priya', email: null },
+        createdAt: '2026-10-13',
+        updatedAt: '2026-10-14',
+        canUpdate: false,
+        canDelete: false,
+      },
+    ];
+    collectionsApi.loadCollection.mockResolvedValue({
+      id: 'added',
+      revision: 'current-revision',
+      skills: [],
+      plugins: [],
+    });
+    collectionsApi.applySharedUpdate.mockRejectedValue(
+      new Error('Collection changed.'),
+    );
+    await mount();
+    await click(
+      container.querySelector(
+        '[data-testid="customize-update-collection:local:added"]',
+      ),
+      'Update',
+    );
+    expect(collectionsApi.applySharedUpdate).toHaveBeenCalledWith({
+      collectionId: 'added',
+      expectedRevision: 'current-revision',
+    });
+    expect(container.textContent).toContain('Collection changed.');
+    expect(
+      mockCapabilityMarketplaceInventory.refreshLocalCollections,
+    ).toHaveBeenCalled();
+    expect(collectionsApi.saveCollection).not.toHaveBeenCalled();
+  });
+
   it('renders an installed local collection as a Marketplace detail sub-page', async () => {
     const collection: CollectionIndexEntry = {
       id: 'release-collection',
@@ -5189,7 +5582,7 @@ describe('PluginsPage discovery', () => {
       container.querySelector(
         '[data-testid="plugins-entry-menu-curated:writer-toolkit"]',
       ),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       container.querySelector(
         '[data-testid="plugins-entry-add-curated:writer-toolkit"]',
@@ -8454,7 +8847,7 @@ describe('PluginsPage discovery', () => {
         ).not.toBeNull();
       });
 
-      it('shows validation inline and keeps Save disabled', async () => {
+      it('shows the name error under the field after Save and clears it on edit', async () => {
         await openEditPage();
         const nameInput = container.querySelector(
           'input[placeholder="my-skill-name"]',
@@ -8462,26 +8855,44 @@ describe('PluginsPage discovery', () => {
         if (!(nameInput instanceof HTMLInputElement)) {
           throw new Error('Skill name input not found');
         }
+        const nameError = (): Element | null =>
+          container.querySelector(
+            '[data-testid="skill-editor-name-field-error"]',
+          );
         await act(async () => {
           setInputValue(nameInput, 'Review_Checklist');
           await Promise.resolve();
         });
         await settle();
 
-        expect(nameInput.getAttribute('aria-invalid')).toBe('true');
-        expect(
-          container.querySelector('#skill-name-help')?.textContent,
-        ).toContain(
-          'Skill name can only contain lowercase letters, numbers, and hyphens.',
-        );
+        // Nothing is said while the person is still typing.
+        expect(nameInput.getAttribute('aria-invalid')).toBeNull();
+        expect(nameError()).toBeNull();
+
         const save = requireButton(
           container.querySelector('[data-testid="skill-editor-save"]'),
           'Editor Save',
         );
-        expect(save.disabled).toBe(true);
+        expect(save.disabled).toBe(false);
         await click(save, 'Editor Save');
         expect(skillsApi.saveCustomSkill).not.toHaveBeenCalled();
         expect(editorPage()).not.toBeNull();
+        expect(nameError()?.textContent).toContain(
+          'Skill name can only contain lowercase letters, numbers, and hyphens.',
+        );
+        expect(nameInput.getAttribute('aria-invalid')).toBe('true');
+        expect(nameInput.getAttribute('aria-describedby')).toContain(
+          nameError()?.id ?? 'missing',
+        );
+
+        // Editing the field drops its message.
+        await act(async () => {
+          setInputValue(nameInput, 'review_checklist');
+          await Promise.resolve();
+        });
+        await settle();
+        expect(nameError()).toBeNull();
+        expect(nameInput.getAttribute('aria-invalid')).toBeNull();
       });
 
       it('saves, refreshes the installed list, and lands on the updated details', async () => {
@@ -8973,14 +9384,14 @@ describe('PluginsPage discovery', () => {
         ]);
         expect(
           container.querySelector(
-            '[data-testid="plugins-card-shared-with-agent:shared:agent-1"]',
+            '[data-testid="customize-row-subtitle-agent:shared:agent-1"]',
           )?.textContent,
-        ).toBe('Team: Growth');
+        ).toBe('Aaron');
         expect(
           container.querySelector(
-            '[data-testid="plugins-card-shared-with-plugin:shared:plugin-share-1"]',
+            '[data-testid="customize-row-subtitle-plugin:shared:plugin-share-1"]',
           )?.textContent,
-        ).toBe('Organization');
+        ).toBe('Aaron');
         // Neither is installed, so neither joins the installed strip.
         expect(
           installedTileIds().some(
@@ -11003,7 +11414,7 @@ describe('PluginsPage discovery', () => {
       ];
     }
 
-    it('unshares a Shared by me row inline', async () => {
+    it('CAN-4847 unshares a Shared by me row from the menu with confirmation', async () => {
       seedOwnedSharedSkill(true);
       const deleteShared = jest.fn(() => Promise.resolve());
       defineWindowApi('skills', { ...skillsApi, deleteShared });
@@ -11014,23 +11425,24 @@ describe('PluginsPage discovery', () => {
       const line = section?.querySelector(
         '[data-testid="customize-row-subtitle-skill:shared:s1"]',
       );
-      expect(line?.textContent).toContain('Northwind');
-      // CAN-5220: a named audience omits its redundant kind.
-      expect(line?.textContent).not.toContain('Organization');
-      expect(line?.textContent).toContain('Since');
-      expect(line?.textContent).not.toContain('Shared by');
-      const unshare = section?.querySelector(
-        '[data-testid="customize-row-unshare-skill:shared:s1"]',
-      );
-      expect(unshare?.tagName).toBe('BUTTON');
-      expect(unshare?.getAttribute('aria-label')).toBe('Unshare');
-      expect(unshare?.textContent).toBe('');
+      expect(line?.textContent).not.toContain('Since');
       expect(
-        container.querySelector(
-          '[data-testid="customize-section-installed"] [data-testid="customize-row-unshare-skill:shared:s1"]',
+        section?.querySelector(
+          '[data-testid="customize-row-unshare-skill:shared:s1"]',
         ),
       ).toBeNull();
-      await click(unshare ?? null, 'Row Unshare');
+      await click(
+        section?.querySelector(
+          '[data-testid="customize-row-menu-skill:shared:s1"]',
+        ) ?? null,
+        'Row menu',
+      );
+      const unshare = document.querySelector(
+        '[data-testid="customize-row-menu-skill:shared:s1-unshare"]',
+      );
+      expect(unshare?.textContent).toBe('Unshare…');
+      expect(deleteShared).not.toHaveBeenCalled();
+      await click(unshare, 'Row Unshare');
       expect(
         document.querySelector(
           '[data-testid="customize-row-unshare-skill:shared:s1-dialog"]',
@@ -11505,9 +11917,7 @@ describe('PluginsPage discovery', () => {
           `[data-testid="customize-row-${part}-${customId}"]`,
         );
       expect(q('creator')).toBeNull();
-      expect(q('edited')?.textContent?.replace(/\s/g, ' ')).toMatch(
-        /^Updated \d+[smhd] ago$/,
-      );
+      expect(q('subtitle')?.textContent).toBe('You');
       const marker = q('custom');
       expect(marker?.getAttribute('aria-label')).toBe('Custom skill');
       expect(q('name-line')?.contains(marker)).toBe(false);

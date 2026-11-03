@@ -9,6 +9,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { writeJson } from './seeders/fsHelpers.mjs';
 import { seedMcpServers } from './seeders/seedMcpServers.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
@@ -1134,7 +1135,10 @@ for (const choice of ['', 'provider', 'canopy']) {
         0,
       );
       await dialog.getByTestId('mcp-server-scope-device').click();
-      await dialog.getByTestId('mcp-server-auth-handler').selectOption(choice);
+      await chooseSettingsOption(
+        dialog.getByTestId('mcp-server-auth-handler'),
+        { value: choice },
+      );
       await dialog.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(dialog).toHaveCount(0);
       const entry = JSON.parse(
@@ -1145,9 +1149,10 @@ for (const choice of ['', 'provider', 'canopy']) {
       expect(entry.authHandler).not.toBe('account');
       expect(entry.accountConnectionId).toBeUndefined();
       await row.getByTestId('mcp-server-edit-button').click();
-      await expect(window.getByTestId('mcp-server-auth-handler')).toHaveValue(
-        choice,
-      );
+      // The shared Select exposes the chosen value on its trigger.
+      await expect(
+        window.getByTestId('mcp-server-auth-handler'),
+      ).toHaveAttribute('data-value', choice);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
@@ -1304,6 +1309,8 @@ for (const scenario of [
         { label: 'US', url: 'https://us.example.test/mcp' },
         { label: 'Europe', url: 'https://eu.example.test/mcp' },
       ];
+      catalogEntry.setupInstructions =
+        'claude mcp add --transport http github "https://mcp.example.test"';
     }
     writeJson(path.join(userDataDir, 'mcp-servers', 'curated-catalog.json'), {
       version: 1,
@@ -1476,10 +1483,12 @@ for (const scenario of [
       ) {
         const setup = window.getByTestId('mcp-account-setup');
         await expect(setup).toBeVisible();
+        await expect(setup).not.toContainText(catalogEntry.setupInstructions);
         expect(cloud.calls.some((call) => call.method === 'POST')).toBe(false);
-        await setup
-          .getByTestId('mcp-curated-url-option')
-          .selectOption('https://eu.example.test/mcp');
+        await chooseSettingsOption(
+          setup.getByTestId('mcp-curated-url-option'),
+          { value: 'https://eu.example.test/mcp' },
+        );
         await setup
           .getByTestId('mcp-account-oauth-client-id')
           .fill('fresh-client');
@@ -1496,9 +1505,10 @@ for (const scenario of [
         const setup = window.getByTestId('mcp-account-setup');
         await expect(setup).toBeVisible();
         await expect(panel.getByRole('alert')).toHaveCount(0);
-        await setup
-          .getByTestId('mcp-curated-url-option')
-          .selectOption('https://eu.example.test/mcp');
+        await chooseSettingsOption(
+          setup.getByTestId('mcp-curated-url-option'),
+          { value: 'https://eu.example.test/mcp' },
+        );
         await setup
           .getByRole('button', { name: 'Connect', exact: true })
           .click();

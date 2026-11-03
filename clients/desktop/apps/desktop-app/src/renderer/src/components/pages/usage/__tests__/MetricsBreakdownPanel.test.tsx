@@ -12,6 +12,7 @@ import type {
   UsageMetricsViewRequest,
   UsageMetricsViewResponse,
 } from '@canopy/desktop-shared/types';
+import { querySettingsSelect } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import { MetricsBreakdownPanel } from '../MetricsBreakdownPanel';
 import { CHATS_TAB_SPEC } from '../tab-specs';
 
@@ -71,7 +72,8 @@ describe('MetricsBreakdownPanel', () => {
     act(() => root.render(<MetricsBreakdownPanel spec={CHATS_TAB_SPEC} />));
     await flush();
 
-    const groupBy = container.querySelector<HTMLSelectElement>(
+    const groupBy = querySettingsSelect(
+      container,
       '[data-testid="usage-breakdown-groupby-chats"]',
     );
     expect(groupBy?.value).toBe('workspace');
@@ -84,14 +86,11 @@ describe('MetricsBreakdownPanel', () => {
     act(() => root.render(<MetricsBreakdownPanel spec={CHATS_TAB_SPEC} />));
     await flush();
 
-    const groupBy = container.querySelector<HTMLSelectElement>(
+    const groupBy = querySettingsSelect(
+      container,
       '[data-testid="usage-breakdown-groupby-chats"]',
     );
-    act(() => {
-      if (!groupBy) return;
-      groupBy.value = 'provider';
-      groupBy.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    groupBy?.choose('provider');
     await flush();
 
     expect(loadMetricsView).toHaveBeenLastCalledWith(

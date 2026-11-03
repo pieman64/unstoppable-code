@@ -167,7 +167,6 @@ import type * as Port from '../workspace-record-decision-port';
 import type * as WorktreePort from '../worktree-record-decision-port';
 import type * as OwnershipPort from '../workspace-ownership-decision-port';
 import type * as CoworkPort from '../cowork-record-decision-port';
-import type * as SeedPort from '../workspace-index-seed-decision-port';
 import type * as CreationPort from '../workspace-creation-decision-port';
 import type * as BranchRenamePort from '../worktree-branch-rename-decision-port';
 import type * as RestorePort from '../archived-container-restore-decision-port';
@@ -184,7 +183,7 @@ import type {
   WorktreeListUpdateDecision,
 } from '../worktree-record-decisions';
 
-// The in-process implementation, across its ten modules, satisfies the
+// The in-process implementation, across its nine modules, satisfies the
 // port interface.
 const port: W5RecordDecisionPort = {
   ...jest.requireActual<typeof WorktreePort>(
@@ -195,9 +194,6 @@ const port: W5RecordDecisionPort = {
     '../workspace-ownership-decision-port',
   ),
   ...jest.requireActual<typeof CoworkPort>('../cowork-record-decision-port'),
-  ...jest.requireActual<typeof SeedPort>(
-    '../workspace-index-seed-decision-port',
-  ),
   ...jest.requireActual<typeof CreationPort>(
     '../workspace-creation-decision-port',
   ),

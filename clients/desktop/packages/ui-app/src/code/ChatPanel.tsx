@@ -98,6 +98,8 @@ function ChatTranscriptPlaceholder({
  *   `optimisticLocalId: undefined`.
  */
 export interface ChatPanelSendContext {
+  /** The host reports the existing dispatch identity before sending. */
+  readonly onSubmissionIdentity?: (userMessageId: string) => void;
   readonly planReviewApproval?: ChatPlanReviewApproval;
   /** localId of the optimistic transcript row this send inserted, if any. */
   readonly optimisticLocalId?: string;
@@ -117,6 +119,7 @@ export interface ChatPanelSendContext {
  * the {@link ChatPanelSendContext} after minting the optimistic identity.
  */
 export interface ChatComposerSendOptions {
+  readonly onSubmissionIdentity?: (userMessageId: string) => void;
   readonly planReviewApproval?: ChatPlanReviewApproval;
   readonly fileReferences?: readonly PortalChatFileReference[];
   readonly cloudAttachments?: readonly PortalChatCloudAttachmentRef[];
@@ -179,6 +182,8 @@ export interface ChatPanelProps {
    */
   readonly footerStatus?: ReactNode;
   readonly firstSendStartingEnabled?: boolean;
+  /** The chat's worktree setup, for the first turn's starting status. */
+  readonly worktreeSetup?: ChatTranscriptProps['worktreeSetup'];
   /** Host-owned action rendered beside the latest transcript turn. */
   readonly renderLatestTurnAction?: ChatTranscriptProps['renderLatestTurnAction'];
   /**
@@ -278,6 +283,7 @@ export interface ChatTranscriptHostControls {
   readonly renderLatestTurnAction: ChatTranscriptProps['renderLatestTurnAction'];
   readonly footerStatus: ChatTranscriptProps['footerStatus'];
   readonly firstSendStartingEnabled?: boolean;
+  readonly worktreeSetup: ChatTranscriptProps['worktreeSetup'];
   readonly chatId: ChatTranscriptProps['chatId'];
   /** Person-authored prompts in the queue the panel renders beside it. */
   readonly queuedPromptCount: ChatTranscriptProps['queuedPromptCount'];
@@ -319,6 +325,7 @@ export function ChatPanel({
   emptyState,
   footerStatus,
   firstSendStartingEnabled = true,
+  worktreeSetup,
   renderLatestTurnAction,
   composer,
   liveRunKeys,
@@ -734,6 +741,9 @@ export function ChatPanel({
           const fileReferences = options?.fileReferences;
           const sent = onSend(text, {
             optimisticLocalId,
+            ...(options?.onSubmissionIdentity
+              ? { onSubmissionIdentity: options.onSubmissionIdentity }
+              : {}),
             ...(options?.planReviewApproval
               ? { planReviewApproval: options.planReviewApproval }
               : {}),
@@ -987,7 +997,8 @@ export function ChatPanel({
       >
         {creditHeld && (
           <Notice intent="attention">
-            Your queued message is still saved. Add credits, then click Retry.
+            Your queued message is still saved. Add credits, then click Try
+            again.
           </Notice>
         )}
         {queueTarget && queueActionsEnabled && (
@@ -1098,6 +1109,7 @@ export function ChatPanel({
                   renderLatestTurnAction,
                   footerStatus,
                   firstSendStartingEnabled,
+                  worktreeSetup,
                   chatId,
                   queuedPromptCount,
                   queuedPromptIds,
@@ -1149,6 +1161,7 @@ export function ChatPanel({
                     footerSlot={queuedList}
                     footerStatus={footerStatus}
                     firstSendStartingEnabled={firstSendStartingEnabled}
+                    worktreeSetup={worktreeSetup}
                     deliveringMessages={deliveringMessages}
                     queuedPromptCount={queuedPromptCount}
                     queuedPromptIds={queuedPromptIds}

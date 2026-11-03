@@ -9,6 +9,20 @@ import {
   useArchivedContainerActions,
 } from '../useArchivedContainerActions';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
+import { useGitHubStore } from '@/stores/githubStore';
+
+const mockOfferRetained = jest.fn<
+  Promise<boolean>,
+  [string, string, () => void]
+>(() => Promise.resolve(false));
+jest.mock('../offerRetainedArchiveDiscard', () => ({
+  ARCHIVED_ITEM_DELETE_FAILED: "Couldn't permanently delete this item",
+  offerRetainedArchiveDiscard: (
+    workspaceId: string,
+    containerId: string,
+    retry: () => void,
+  ): Promise<boolean> => mockOfferRetained(workspaceId, containerId, retry),
+}));
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -62,6 +76,7 @@ describe('useArchivedContainerActions', () => {
   let probe: HookProbe;
 
   beforeEach(() => {
+    mockOfferRetained.mockClear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -114,6 +129,34 @@ describe('useArchivedContainerActions', () => {
       });
     },
   );
+
+  it.each([
+    ['offers the discard instead of the toast', true],
+    ['keeps the toast when nothing can be discarded', false],
+  ])('CAN-5338 a failed permanent deletion %s', async (_label, offered) => {
+    const operation = jest.fn().mockResolvedValue(false);
+    const addToast = jest.fn();
+    useArchivedContainersStore.setState({ deletePermanently: operation });
+    useGitHubStore.setState({ addToast });
+    mockOfferRetained.mockResolvedValueOnce(offered);
+    const actions = renderHook();
+    await act(async () => {
+      await actions.deletePermanently();
+    });
+    expect(mockOfferRetained).toHaveBeenCalledWith(
+      'workspace-1',
+      'archive-1',
+      expect.any(Function),
+    );
+    expect(addToast).toHaveBeenCalledTimes(offered ? 0 : 1);
+    // The dialog's Retry runs the permanent deletion again.
+    const retry = mockOfferRetained.mock.calls[0]?.[2];
+    await act(async () => {
+      retry?.();
+      await Promise.resolve();
+    });
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
 
   it('treats a same-state setArchived call as a no-op', async () => {
     const operation = jest.fn();

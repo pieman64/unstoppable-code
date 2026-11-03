@@ -10,7 +10,10 @@ import {
   resolveDetailPrimaryCta,
   type TryItCapability,
 } from '@canopy/protocol/try-it';
-import { DetailPrimaryCta } from '@canopy/ui-shared/components';
+import {
+  DetailPrimaryCta,
+  type DetailPrimaryCtaState,
+} from '@canopy/ui-shared/components';
 import { useTryItAccount } from '@/hooks/useCanopyCloudConnected';
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
@@ -61,25 +64,48 @@ export interface TryItPrimaryCtaProps {
 const DEFAULT_RUNTIME: TryItRuntime = { status: 'default' };
 
 /**
+ * One Try it launch, shared by every place a detail presents it (CAN-5306):
+ * the header's primary CTA, or a ⋯ menu item when another action is primary.
+ */
+export interface TryItLaunchController {
+  readonly state: DetailPrimaryCtaState;
+  /** A launch is in flight; another activation is ignored until it settles. */
+  readonly launching: boolean;
+  readonly onTry: () => void;
+  /** The primary CTA, with a signed-out viewer's install action beside it. */
+  readonly primary: JSX.Element;
+}
+
+interface TryItLaunchProps extends TryItPrimaryCtaProps {
+  children: (controller: TryItLaunchController) => ReactNode;
+}
+
+/**
+ * Resolves and runs Try it for a detail page, rendering its presentation
+ * through `children`. Keeping one mounted launch per detail keeps an
+ * in-flight launch's state when the detail moves Try it between slots.
+ */
+export function TryItLaunch(props: TryItLaunchProps): JSX.Element {
+  return props.harnessSupport ? (
+    <HarnessAwareTryItLaunch {...props} harnessSupport={props.harnessSupport} />
+  ) : (
+    <TryItLaunchView {...props} runtime={DEFAULT_RUNTIME} />
+  );
+}
+
+/**
  * Desktop host for the shared detail-page CTA (CAN-4359): resolves Try it /
  * Install from the live account and the host's installation state, and
  * stages the starter prompt, unsent, in the current worktree's chat
  * (CAN-5218); see `startTryItChat`.
  */
 export function TryItPrimaryCta(props: TryItPrimaryCtaProps): JSX.Element {
-  return props.harnessSupport ? (
-    <HarnessAwareTryItPrimaryCta
-      {...props}
-      harnessSupport={props.harnessSupport}
-    />
-  ) : (
-    <TryItPrimaryCtaView {...props} runtime={DEFAULT_RUNTIME} />
-  );
+  return <TryItLaunch {...props}>{(launch) => launch.primary}</TryItLaunch>;
 }
 
 /** Reads the same sign-in facts as `PluginHarnessStatus`. */
-function HarnessAwareTryItPrimaryCta(
-  props: TryItPrimaryCtaProps & { harnessSupport: TryItHarnessSupport },
+function HarnessAwareTryItLaunch(
+  props: TryItLaunchProps & { harnessSupport: TryItHarnessSupport },
 ): JSX.Element {
   const claude = useClaudeAuthStatus();
   const codex = useCodexAuthStatus();
@@ -97,10 +123,11 @@ function HarnessAwareTryItPrimaryCta(
       cursor,
     },
   });
-  return <TryItPrimaryCtaView {...props} runtime={runtime} />;
+  return <TryItLaunchView {...props} runtime={runtime} />;
 }
 
-function TryItPrimaryCtaView({
+function TryItLaunchView({
+  children,
   capability,
   prompt,
   installation,
@@ -113,9 +140,12 @@ function TryItPrimaryCtaView({
   installBusy = false,
   installDisabled = false,
   guestInstallAction,
-}: TryItPrimaryCtaProps & { runtime: TryItRuntime }): JSX.Element {
+}: TryItLaunchProps & { runtime: TryItRuntime }): JSX.Element {
   const account = useTryItAccount();
   const [launching, setLaunching] = useState(false);
+  // Guards a second activation from another presentation before the
+  // launching state re-renders either of them.
+  const launchingRef = useRef(false);
   const state = resolveDetailPrimaryCta({
     account: account.status,
     installation,
@@ -133,7 +163,8 @@ function TryItPrimaryCtaView({
   }, [accountId]);
 
   const onTry = useCallback((): void => {
-    if (accountId === null) return;
+    if (accountId === null || launchingRef.current) return;
+    launchingRef.current = true;
     setLaunching(true);
     void startTryItChat({
       accountId,
@@ -159,6 +190,7 @@ function TryItPrimaryCtaView({
         useGitHubStore.getState().addToast(TRY_IT_START_ERROR, 'error');
       })
       .finally((): void => {
+        launchingRef.current = false;
         setLaunching(false);
       });
   }, [accountId, capability, prompt, runtimeSelections, model, harnessSupport]);
@@ -175,15 +207,17 @@ function TryItPrimaryCtaView({
       installBusyLabel={installBusyLabel}
     />
   );
-  return account.status === 'guest' &&
+  const primary =
+    account.status === 'guest' &&
     installation === 'not-installed' &&
     state !== 'install' &&
     guestInstallAction ? (
-    <span className="inline-flex items-center gap-2">
-      {guestInstallAction}
-      {cta}
-    </span>
-  ) : (
-    cta
-  );
+      <span className="inline-flex items-center gap-2">
+        {guestInstallAction}
+        {cta}
+      </span>
+    ) : (
+      cta
+    );
+  return <>{children({ state, launching, onTry, primary })}</>;
 }

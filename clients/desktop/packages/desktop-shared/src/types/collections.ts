@@ -14,6 +14,9 @@
 
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import type {
+  ApplyCollectionUpdateRequest,
+  ApplyCollectionUpdateResult,
+  DuplicateLocalCollectionRequest,
   CollectionConfig,
   CollectionIndexEntry,
   CollectionShareScope,
@@ -35,6 +38,10 @@ import type {
 /** File envelope for `collections/index.json`. */
 export interface CollectionIndexFile {
   version: 2;
+  /** 2 once every entry was re-projected with sharedSource. */
+  entrySchema?: 2;
+  /** 1 once canonical member counts and opaque local revisions have been projected. */
+  memberCountsSchema?: 1;
   collections: CollectionIndexEntry[];
 }
 
@@ -153,6 +160,12 @@ export interface CollectionsAPI {
     collection: Partial<CollectionConfig> & { name: string },
   ): Promise<CollectionConfig>;
   deleteCollection(id: string): Promise<void>;
+  duplicateCollection(
+    request: DuplicateLocalCollectionRequest,
+  ): Promise<CollectionConfig>;
+  applySharedUpdate(
+    request: ApplyCollectionUpdateRequest,
+  ): Promise<ApplyCollectionUpdateResult>;
 
   // ---- Shared (Canopy Cloud) CRUD -----------------------------------------
   listShared(
@@ -208,8 +221,12 @@ export interface CollectionsAPI {
 // ---------------------------------------------------------------------------
 
 export type {
+  ApplyCollectionUpdateRequest,
+  ApplyCollectionUpdateResult,
+  DuplicateLocalCollectionRequest,
   CollectionConfig,
   CollectionIndexEntry,
+  CollectionIndexSharedSource,
   CollectionMcpRef,
   CollectionPluginRef,
   CollectionShareOwner,

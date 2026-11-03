@@ -174,28 +174,35 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function findLabel(
+/** The control a field label names, through its `for` attribute. */
+function findLabelledElement(
   scope: HTMLElement,
   labelText: string,
-): HTMLLabelElement | undefined {
-  return Array.from(scope.querySelectorAll('label')).find(
-    (entry) => entry.querySelector('span')?.textContent === labelText,
+): HTMLElement | null {
+  const label = Array.from(scope.querySelectorAll('label')).find(
+    (entry) => entry.textContent === labelText,
   );
+  return label?.htmlFor
+    ? scope.ownerDocument.getElementById(label.htmlFor)
+    : null;
 }
 
 function findLabelledControl<T extends HTMLElement>(
   scope: HTMLElement,
   labelText: string,
 ): T | null {
-  return findLabel(scope, labelText)?.querySelector<T>('input') ?? null;
+  const element = findLabelledElement(scope, labelText);
+  return element?.parentElement?.querySelector<T>('input') ?? null;
 }
 
 function findLabelledSelect(
   scope: HTMLElement,
   labelText: string,
 ): SettingsSelectProbe | null {
-  const label = findLabel(scope, labelText);
-  return label ? querySettingsSelect(label, 'button[role="combobox"]') : null;
+  const element = findLabelledElement(scope, labelText);
+  return element?.parentElement
+    ? querySettingsSelect(element.parentElement, 'button[role="combobox"]')
+    : null;
 }
 
 function getAddRuleFormContainer(

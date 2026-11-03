@@ -100,6 +100,7 @@ describe('persisted worktree reads through core.worktree.get', () => {
     // Only reads through the W5 repositories see these files.
     __setDesktopW5FileStoreForTests({
       read: (path) => Promise.resolve(files.get(path) ?? { state: 'absent' }),
+      remove: () => Promise.reject(new Error('Reads never remove')),
       replace: (path) => {
         replaced.push(path);
         return Promise.reject(new Error('Reads never write'));

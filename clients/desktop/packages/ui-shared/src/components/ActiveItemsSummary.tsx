@@ -4,7 +4,9 @@ import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import type { ActiveInstalledItemCounts } from '../lib/installed-item-status';
 import { Button } from './Button';
+import { InlineTextSkeleton } from './InlineTextSkeleton';
 import { SettingsRowsRow } from './settings/SettingsRows';
+import { StatusLabel } from './StatusLabel';
 
 /**
  * Settings summary of what loads into every new chat (CAN-4255). Counts come
@@ -62,13 +64,9 @@ export function ActiveItemsSummary({
 }: ActiveItemsSummaryProps): JSX.Element {
   let line: JSX.Element;
   if (state.kind === 'loading') {
-    line = <span className="fg-tertiary">Loading…</span>;
+    line = <InlineTextSkeleton className="w-32" />;
   } else if (state.kind === 'error') {
-    line = (
-      <span role="alert" className="fg-destructive">
-        {state.message}
-      </span>
-    );
+    line = <StatusLabel>{state.message}</StatusLabel>;
   } else {
     const text = activeItemsSummaryText(state.counts);
     const { plugins, skills, mcpServers, collections } = state.counts;

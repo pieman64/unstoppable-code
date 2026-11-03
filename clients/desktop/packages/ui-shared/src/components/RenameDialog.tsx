@@ -17,7 +17,8 @@ import {
 } from '../lib/shortcut-platform';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
-import { FieldError, TextInput } from './Field';
+import { DialogFormField } from './DialogFormField';
+import { TextInput } from './Field';
 
 export interface RenameDialogProps {
   readonly title: string;
@@ -85,17 +86,14 @@ export function RenameDialog({
   const inputRef = useRef<HTMLInputElement>(null);
   const generatedId = useId();
   const fieldId = inputId ?? `${generatedId}-input`;
-  const helperId = `${fieldId}-helper`;
   const errorId = `${fieldId}-error`;
   // An error is about the last submit, so it shows only until the person
   // edits the field again.
   const [submittedSinceEdit, setSubmittedSinceEdit] = useState(false);
   const visibleError =
     error !== null && error !== '' && submittedSinceEdit ? error : null;
-  const describedBy =
-    [helperText ? helperId : null, visibleError !== null ? errorId : null]
-      .filter((id): id is string => id !== null)
-      .join(' ') || undefined;
+  // `DialogFormField` adds its help text to the field's description.
+  const describedBy = visibleError !== null ? errorId : undefined;
 
   useEffect(() => {
     inputRef.current?.select();
@@ -131,47 +129,44 @@ export function RenameDialog({
       initialFocusRef={inputRef}
       restoreFocusRef={restoreFocusRef}
     >
-      <form className="flex flex-col px-5 pb-4" onSubmit={handleSubmit}>
-        <label
-          className="mt-3 mb-1.5 block text-xs fg-secondary"
-          htmlFor={fieldId}
-        >
-          {label}
-        </label>
-        <TextInput
-          ref={inputRef}
-          id={fieldId}
-          density="settings"
-          value={draft}
-          placeholder={placeholder}
-          maxLength={maxLength}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            // Editing makes the last submit's error stale.
-            setSubmittedSinceEdit(false);
-          }}
-          onKeyDown={handleKeyDown}
-          aria-describedby={describedBy}
-          aria-invalid={visibleError !== null ? true : undefined}
-          data-testid={inputTestId}
-          autoComplete="off"
-          spellCheck={false}
-        />
-        {visibleError !== null ? (
-          <div className="mt-1.5">
-            <FieldError
-              id={errorId}
-              data-testid={inputTestId ? `${inputTestId}-error` : undefined}
-            >
-              {visibleError}
-            </FieldError>
-          </div>
-        ) : null}
-        {helperText ? (
-          <p id={helperId} className="mt-1.5 text-xs text-pretty fg-tertiary">
-            {helperText}
-          </p>
-        ) : null}
+      <form className="flex flex-col" onSubmit={handleSubmit}>
+        <div className="mt-3">
+          <DialogFormField
+            label={label}
+            htmlFor={fieldId}
+            errorId={errorId}
+            error={
+              visibleError !== null ? (
+                <span
+                  data-testid={inputTestId ? `${inputTestId}-error` : undefined}
+                >
+                  {visibleError}
+                </span>
+              ) : null
+            }
+            description={helperText ?? null}
+          >
+            <TextInput
+              ref={inputRef}
+              id={fieldId}
+              density="settings"
+              value={draft}
+              placeholder={placeholder}
+              maxLength={maxLength}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                // Editing makes the last submit's error stale.
+                setSubmittedSinceEdit(false);
+              }}
+              onKeyDown={handleKeyDown}
+              aria-describedby={describedBy}
+              aria-invalid={visibleError !== null ? true : undefined}
+              data-testid={inputTestId}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </DialogFormField>
+        </div>
         <div className="mt-4.5 flex items-center justify-end gap-2">
           <Button
             variant="secondary"

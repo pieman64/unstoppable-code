@@ -1,4 +1,6 @@
 import { type JSX, useId, useState } from 'react';
+import { TextInput } from './Field';
+import { FormField } from './FormField';
 
 /**
  * Upper bound accepted by the account identity and invite APIs. Longer input
@@ -31,7 +33,7 @@ export interface EmailRecipientInputProps {
   /** Called on Enter when the value is a valid address. */
   onSubmit?: () => void;
   placeholder?: string;
-  /** Sentence between the label and the field describing what it is for. */
+  /** Sentence under the field describing what it is for. */
   description?: string;
   /** Helper sentence under the field. Replaced by the validation error. */
   helperText?: string;
@@ -65,76 +67,74 @@ export function EmailRecipientInput({
   dataTestId,
 }: EmailRecipientInputProps): JSX.Element {
   const inputId = useId();
-  const messageId = useId();
-  const descriptionId = useId();
   // Set on blur or a refused Enter, cleared by the next edit. A half-typed
   // address is not a mistake yet, so the error never interrupts typing.
   const [validationRevealed, setValidationRevealed] = useState(false);
   const showInvalid =
     validationRevealed && value.trim() !== '' && !isEmailRecipientValid(value);
-  const message = showInvalid ? invalidMessage : helperText;
   const hasDescription = description !== undefined && description !== '';
-  const describedBy =
-    [hasDescription ? descriptionId : null, message ? messageId : null]
-      .filter((id): id is string => id !== null)
-      .join(' ') || undefined;
+  const showHelper =
+    !showInvalid && helperText !== undefined && helperText !== '';
+  // Help text sits under the field (docs/design/forms.md): the description
+  // first, then the helper sentence, which the error replaces.
+  const help =
+    hasDescription || showHelper ? (
+      <>
+        {hasDescription ? (
+          <span
+            className="block"
+            data-testid={dataTestId ? `${dataTestId}-description` : undefined}
+          >
+            {description}
+          </span>
+        ) : null}
+        {showHelper ? <span className="block">{helperText}</span> : null}
+      </>
+    ) : undefined;
   return (
-    <div className="space-y-1.5 text-s">
-      <label htmlFor={inputId} className="block font-medium fg-primary">
-        {label}
-      </label>
-      {hasDescription && (
-        <p
-          id={descriptionId}
-          className="text-xs fg-secondary"
-          data-testid={dataTestId ? `${dataTestId}-description` : undefined}
-        >
-          {description}
-        </p>
+    <FormField
+      id={inputId}
+      label={label}
+      description={help}
+      error={
+        showInvalid ? (
+          <span data-testid={dataTestId ? `${dataTestId}-error` : undefined}>
+            {invalidMessage}
+          </span>
+        ) : undefined
+      }
+    >
+      {(control) => (
+        <TextInput
+          {...control}
+          type="email"
+          inputMode="email"
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          maxLength={EMAIL_RECIPIENT_MAX_LENGTH}
+          onChange={(event) => {
+            setValidationRevealed(false);
+            onChange(event.target.value);
+          }}
+          onBlur={() => setValidationRevealed(true)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return;
+            if (!isEmailRecipientValid(value)) {
+              setValidationRevealed(true);
+              if (onSubmit) event.preventDefault();
+              return;
+            }
+            if (!onSubmit) return;
+            event.preventDefault();
+            onSubmit();
+          }}
+          placeholder={placeholder}
+          disabled={disabled}
+          aria-invalid={showInvalid}
+          data-testid={dataTestId}
+        />
       )}
-      <input
-        id={inputId}
-        type="email"
-        inputMode="email"
-        autoComplete="off"
-        spellCheck={false}
-        value={value}
-        maxLength={EMAIL_RECIPIENT_MAX_LENGTH}
-        onChange={(event) => {
-          setValidationRevealed(false);
-          onChange(event.target.value);
-        }}
-        onBlur={() => setValidationRevealed(true)}
-        onKeyDown={(event) => {
-          if (event.key !== 'Enter') return;
-          if (!isEmailRecipientValid(value)) {
-            setValidationRevealed(true);
-            if (onSubmit) event.preventDefault();
-            return;
-          }
-          if (!onSubmit) return;
-          event.preventDefault();
-          onSubmit();
-        }}
-        placeholder={placeholder}
-        disabled={disabled}
-        aria-invalid={showInvalid}
-        aria-describedby={describedBy}
-        data-testid={dataTestId}
-        className="focus-ring w-full rounded-lg bg-base px-3 py-2 text-s fg-primary inset-ring-[length:var(--border-hairline)] inset-ring-line-base disabled:opacity-50"
-      />
-      {message && (
-        <p
-          id={messageId}
-          className={`text-xs ${showInvalid ? 'fg-destructive' : 'fg-secondary'}`}
-          role={showInvalid ? 'alert' : undefined}
-          data-testid={
-            showInvalid && dataTestId ? `${dataTestId}-error` : undefined
-          }
-        >
-          {message}
-        </p>
-      )}
-    </div>
+    </FormField>
   );
 }

@@ -3,6 +3,7 @@ import { useEffect, useMemo, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useGitHubStore, worktreeKey } from '@/stores/githubStore';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
+import { Notice } from '@canopy/ui-shared/components';
 import { SplitPlanReviewPanel } from '../activity/SplitPlanReviewPanel';
 import { SplitProgressChecklist } from '../activity/SplitProgressChecklist';
 import { SplitResultSummary } from '../activity/SplitResultSummary';
@@ -199,14 +200,16 @@ export function SplitWorkflowView({
       {activeStep === 'plan' && (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-5 py-6 text-center">
           {refusalWhileLocked ? (
-            <div
-              data-testid="split-workflow-refusal"
-              className="max-w-md rounded-md border border-line-attention/40 bg-warning-subtle px-4 py-3 text-xs fg-warning"
-            >
-              <p className="whitespace-pre-wrap break-words">
-                {splitRefusal?.message}
-              </p>
-              <p className="mt-2 fg-warning/70">Returning to the worktree…</p>
+            <div className="w-full max-w-md text-left">
+              <Notice
+                intent="attention"
+                data-testid="split-workflow-refusal"
+                detail="Returning to the worktree…"
+              >
+                <span className="whitespace-pre-wrap break-words">
+                  {splitRefusal?.message}
+                </span>
+              </Notice>
             </div>
           ) : (
             <>

@@ -1,8 +1,10 @@
 import { readWorkspaceManifest } from '../workspace/read-formats';
 import {
   isJsonObject,
+  w5UnreadableMessage,
   withUnknownFields,
   type W5FileStore,
+  type W5UnreadableUse,
 } from './file-store';
 import { withW5RepositoryLock } from './repository-locks';
 import { equalW5Contents } from './revision-diff';
@@ -32,6 +34,7 @@ export interface WorkspaceManifestRepository<
   Config extends W5WorkspaceManifestConfig = W5WorkspaceManifestConfig,
 > {
   read(workspaceId: string): Promise<WorkspaceManifestRead>;
+  remove(workspaceId: string): Promise<void>;
   /**
    * Runs `work` after every earlier queued task for this workspace settles,
    * so a read-modify-write inside it cannot interleave with another.
@@ -71,9 +74,13 @@ export interface WorkspaceManifestRepositoryDeps {
 export class WorkspaceConfigUnreadableError extends Error {
   // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
   declare readonly cause?: unknown;
-  constructor(cause?: unknown) {
+  constructor(cause?: unknown, use?: W5UnreadableUse) {
     super(
-      "This project's settings could not be read, so they were not changed. Try again.",
+      w5UnreadableMessage(
+        "This project's settings could not be read, so they were not changed. Try again.",
+        cause,
+        use,
+      ),
     );
     this.name = 'WorkspaceConfigUnreadableError';
     if (cause !== undefined)
@@ -124,6 +131,24 @@ export function createWorkspaceManifestRepository<
   }
 
   return {
+    async remove(workspaceId): Promise<void> {
+      await withW5RepositoryLock(
+        { kind: 'manifest', path: deps.filePath(workspaceId) },
+        async () => {
+          const path = deps.filePath(workspaceId);
+          const read = await deps.store.read(path);
+          if (read.state === 'unreadable')
+            throw new WorkspaceConfigUnreadableError(read.error);
+          if (read.state === 'absent') return;
+          await deps.store.remove(path, deps.storage, {
+            operation: 'w5.workspace_manifest.remove',
+            advance: [{ kind: 'workspace', workspaceId }],
+            previousRaw: read.raw,
+          });
+        },
+        { join: true },
+      );
+    },
     async read(workspaceId: string): Promise<WorkspaceManifestRead> {
       const read = await deps.store.read(deps.filePath(workspaceId));
       if (read.state === 'present') {

@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import type * as PathsModule from '../lib/paths';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
@@ -15,6 +16,7 @@ jest.mock('../lib/git', () => ({
 }));
 
 jest.mock('../lib/paths', () => ({
+  ...jest.requireActual<typeof PathsModule>('../lib/paths'),
   getWorkspaceWorktreeDir: jest.fn(
     (projectId: string, worktreeId: string) =>
       `/mock/workspaces/${projectId}/worktrees/${worktreeId}`,
@@ -136,6 +138,33 @@ function createDispatcher(): DesktopCanopyDispatcher {
   return dispatcher as unknown as DesktopCanopyDispatcher;
 }
 
+async function useStoredListing(
+  dispatcher: DesktopCanopyDispatcher,
+  existingRuntime?: DesktopCanopyDispatcher,
+): Promise<DesktopCanopyDispatcher> {
+  const { createDesktopRuntime } =
+    await import('../canopy-runtime/desktop-runtime');
+  const runtime = existingRuntime ?? createDesktopRuntime();
+  // Finish real filesystem reads before advancing fake observer timers.
+  const result = await runtime.queryWorktreeListForLegacyIpc(
+    {},
+    {
+      caller: {
+        principalId: 'local-desktop-user',
+        clientInstanceId: 'electron-main-branch-observer',
+        authorityId: 'local-desktop',
+        interfaceKind: 'desktop',
+        grants: ['core.worktree.read'],
+      },
+    },
+  );
+  expect(result.canonicalResult).not.toBeNull();
+  jest
+    .spyOn(dispatcher, 'queryWorktreeListForLegacyIpc')
+    .mockResolvedValue(result);
+  return runtime;
+}
+
 function singleRepo(
   id: string,
   worktrees: WorktreeData[] = [
@@ -222,6 +251,283 @@ afterEach(() => {
 });
 
 describe('main branch observer composition', () => {
+  it('keeps all 35 watches when the store cannot read the index, then retires them on proven absence', async () => {
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../lib/w5-commit-log-file-store');
+    listing = {
+      version: 1,
+      items: Array.from({ length: 35 }, (_, index) =>
+        singleRepo(`ws-${index}`),
+      ),
+    };
+    const dispatcher = createDispatcher();
+    startWorktreeBranchObserver({ dispatcher, getWindow });
+    startWorktreeBranchEnrollment();
+    await flush();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(openStreams()).toHaveLength(35);
+    let state: 'unreadable' | 'absent' = 'unreadable';
+    __setDesktopW5FileStoreForTests({
+      read: () => Promise.resolve({ state }),
+      replace: () => Promise.reject(new Error('Read must not write')),
+      remove: () => Promise.reject(new Error('Read must not write')),
+    });
+    const runtime = await useStoredListing(dispatcher);
+    try {
+      publishWorktreeLifecycleChange('projects-saved');
+      await jest.advanceTimersByTimeAsync(1_000);
+      await flush();
+      expect(openStreams()).toHaveLength(35);
+      state = 'absent';
+      await useStoredListing(dispatcher, runtime);
+      publishWorktreeLifecycleChange('projects-saved');
+      await jest.advanceTimersByTimeAsync(1_000);
+      await flush();
+      expect(openStreams()).toHaveLength(0);
+    } finally {
+      await runtime.shutdown();
+      __setDesktopW5FileStoreForTests(undefined);
+    }
+  });
+
+  it('keeps a watch when its worktree list is unreadable even though the index is readable', async () => {
+    const { readAllSidebarItemsSnapshot } =
+      await import('../lib/sidebar-items');
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../lib/w5-commit-log-file-store');
+    const dispatcher = createDispatcher();
+    startWorktreeBranchObserver({ dispatcher, getWindow });
+    startWorktreeBranchEnrollment();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(openStreams()).toHaveLength(1);
+    __setDesktopW5FileStoreForTests({
+      read: (filePath) =>
+        Promise.resolve(
+          filePath.endsWith('index.json')
+            ? {
+                state: 'present',
+                raw: JSON.stringify({
+                  version: 1,
+                  workspaces: [singleRepo('ws-1')],
+                }),
+              }
+            : filePath.endsWith('workspace.json')
+              ? {
+                  state: 'present',
+                  raw: JSON.stringify({
+                    version: 1,
+                    type: 'single-repo',
+                    repoPath: '/repos/ws-1',
+                    repos: [],
+                  }),
+                }
+              : { state: 'unreadable' },
+        ),
+      replace: () => Promise.reject(new Error('Read must not write')),
+      remove: () => Promise.reject(new Error('Read must not write')),
+    });
+    const runtime = await useStoredListing(dispatcher);
+    try {
+      const snapshot = await readAllSidebarItemsSnapshot({
+        persistRemovalCleanup: false,
+      });
+      expect(snapshot.indexAuthority).toBe('ok');
+      expect(snapshot.workspaceReads?.get('ws-1')?.worktrees).toBe(
+        'unreadable',
+      );
+      publishWorktreeLifecycleChange('projects-saved');
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(openStreams()).toHaveLength(1);
+    } finally {
+      await runtime.shutdown();
+      __setDesktopW5FileStoreForTests(undefined);
+    }
+  });
+
+  it.each([
+    { fault: 'malformed manifest', phase: 'startup' },
+    { fault: 'partial index', phase: 'startup' },
+    { fault: 'malformed manifest', phase: 'lifecycle sync' },
+    { fault: 'unreadable worktree list', phase: 'lifecycle sync' },
+    { fault: 'partial worktree list', phase: 'lifecycle sync' },
+    { fault: 'unprojected workspace', phase: 'lifecycle sync' },
+  ])(
+    'enrolls readable workspaces with a $fault during $phase',
+    async ({ fault, phase }) => {
+      const { readAllSidebarItemsSnapshot } =
+        await import('../lib/sidebar-items');
+      const { __setDesktopW5FileStoreForTests } =
+        await import('../lib/w5-commit-log-file-store');
+      const { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } =
+        await import('../lib/paths');
+      const dispatcher = createDispatcher();
+      if (phase === 'lifecycle sync') {
+        listing = {
+          version: 1,
+          items: [singleRepo('ws-broken'), singleRepo('ws-removed')],
+        };
+        startWorktreeBranchObserver({ dispatcher, getWindow });
+        startWorktreeBranchEnrollment();
+        await flush();
+        expect(openStreams()).toHaveLength(2);
+      }
+      const existingStreams = [...streams];
+      let recovered = false;
+      __setDesktopW5FileStoreForTests({
+        read: (filePath) => {
+          if (filePath.endsWith('index.json')) {
+            return Promise.resolve({
+              state: 'present',
+              raw: JSON.stringify({
+                version: 1,
+                workspaces: [
+                  singleRepo('ws-broken'),
+                  singleRepo('ws-healthy'),
+                  ...(!recovered && fault === 'partial index'
+                    ? [{ id: 'ws-invalid', type: 'invalid' }]
+                    : []),
+                ],
+              }),
+            });
+          }
+          if (filePath.endsWith('workspace.json')) {
+            return Promise.resolve({
+              state: 'present',
+              raw:
+                !recovered &&
+                fault === 'malformed manifest' &&
+                filePath === getWorkspaceConfigPath('ws-broken')
+                  ? '{"version":'
+                  : JSON.stringify({
+                      version: 1,
+                      type: 'single-repo',
+                      repoPath:
+                        !recovered &&
+                        fault === 'unprojected workspace' &&
+                        filePath === getWorkspaceConfigPath('ws-broken')
+                          ? 'relative/path'
+                          : '/repos/readable',
+                      repos: [],
+                    }),
+            });
+          }
+          if (filePath.endsWith('worktrees.json')) {
+            if (
+              recovered &&
+              filePath === getWorkspaceWorktreesFilePath('ws-broken')
+            ) {
+              return Promise.resolve(
+                fault === 'unreadable worktree list'
+                  ? { state: 'absent' }
+                  : {
+                      state: 'present',
+                      raw: JSON.stringify({ version: 1, worktrees: [] }),
+                    },
+              );
+            }
+            if (
+              fault === 'unreadable worktree list' &&
+              filePath === getWorkspaceWorktreesFilePath('ws-broken')
+            ) {
+              return Promise.resolve({ state: 'unreadable' });
+            }
+            return Promise.resolve({
+              state: 'present',
+              raw: JSON.stringify({
+                version: 1,
+                worktrees: [
+                  {
+                    id:
+                      fault === 'partial worktree list' &&
+                      filePath === getWorkspaceWorktreesFilePath('ws-broken')
+                        ? 'wt-new'
+                        : 'wt-1',
+                    branchName: 'main',
+                    createdAt: '2026-10-01T00:00:00Z',
+                  },
+                  ...(fault === 'partial worktree list' &&
+                  filePath === getWorkspaceWorktreesFilePath('ws-broken')
+                    ? [null]
+                    : []),
+                ],
+              }),
+            });
+          }
+          return Promise.resolve({ state: 'absent' });
+        },
+        replace: () => Promise.reject(new Error('Read must not write')),
+        remove: () => Promise.reject(new Error('Read must not write')),
+      });
+      const runtime = await useStoredListing(dispatcher);
+      try {
+        const snapshot = await readAllSidebarItemsSnapshot({
+          persistRemovalCleanup: false,
+        });
+        expect(snapshot.indexAuthority).toBe(
+          fault === 'partial index' ? 'partial' : 'ok',
+        );
+        expect(snapshot.authority).toBe(
+          fault === 'partial index' ||
+            fault === 'partial worktree list' ||
+            fault === 'unprojected workspace'
+            ? 'partial'
+            : 'unreadable',
+        );
+        if (fault === 'malformed manifest') {
+          expect(snapshot.workspaceReads.get('ws-broken')?.manifest).toBe(
+            'unreadable',
+          );
+          expect(snapshot.file.warnings).toEqual([
+            expect.objectContaining({ workspaceId: 'ws-broken' }),
+          ]);
+        }
+        if (phase === 'startup') {
+          startWorktreeBranchObserver({ dispatcher, getWindow });
+          startWorktreeBranchEnrollment();
+        } else {
+          publishWorktreeLifecycleChange('projects-saved');
+        }
+        await jest.advanceTimersByTimeAsync(1_000);
+        await flush();
+        const expectedWorkspaceIds =
+          fault === 'partial worktree list'
+            ? ['ws-broken', 'ws-broken', 'ws-healthy']
+            : phase === 'lifecycle sync' || fault === 'partial index'
+              ? ['ws-broken', 'ws-healthy']
+              : ['ws-healthy'];
+        expect(
+          openStreams()
+            .map((stream) => stream.params.fileRootId)
+            .sort(),
+        ).toEqual(expectedWorkspaceIds);
+        for (const stream of existingStreams) {
+          if (stream.params.fileRootId === 'ws-broken') {
+            expect(stream.close).not.toHaveBeenCalled();
+            expect(openStreams()).toContain(stream);
+          } else {
+            expect(stream.close).toHaveBeenCalledTimes(1);
+          }
+        }
+        const retainedStreams = openStreams().filter(
+          (stream) => stream.params.fileRootId === 'ws-broken',
+        );
+        recovered = true;
+        await useStoredListing(dispatcher, runtime);
+        publishWorktreeLifecycleChange('projects-saved');
+        await jest.advanceTimersByTimeAsync(1_000);
+        expect(openStreams().map((stream) => stream.params.fileRootId)).toEqual(
+          ['ws-healthy'],
+        );
+        for (const stream of retainedStreams) {
+          expect(stream.close).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        await runtime.shutdown();
+        __setDesktopW5FileStoreForTests(undefined);
+      }
+    },
+  );
+
   it('enrolls nothing until the first projects load, then reads membership itself', async () => {
     startWorktreeBranchObserver({ dispatcher: createDispatcher(), getWindow });
     publishWorktreeLifecycleChange('projects-saved');

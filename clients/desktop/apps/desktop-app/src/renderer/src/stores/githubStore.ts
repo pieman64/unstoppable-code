@@ -55,6 +55,10 @@ import type {
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types/github';
 import type { SplitPlanIssue } from '@canopy/desktop-shared/types/pr-split-plan';
+import {
+  hasMergedPr,
+  shouldShowWorktreeMergedState,
+} from '@/lib/worktreeMergedState';
 import type { NoticeIntent } from '@canopy/ui-shared/components';
 import { toastStackLifetimeMs } from '@canopy/ui-shared/lib';
 import { create, type StoreApi } from 'zustand';
@@ -820,15 +824,6 @@ type SkippedRepoReason =
   | PullSkippedRepo['reason']
   | MergeLocalBranchSkippedRepo['reason'];
 
-function hasMergedPr(status: WorktreePrStatus | null | undefined): boolean {
-  if (!status) return false;
-  const reposWithPrs = status.repos.filter((repo) => repo.status !== null);
-  return (
-    reposWithPrs.length > 0 &&
-    reposWithPrs.every((repo) => repo.status?.state === 'merged')
-  );
-}
-
 function collectNewlyMergedRepoIds(
   previous: WorktreePrStatus | null | undefined,
   next: WorktreePrStatus | null | undefined,
@@ -1009,12 +1004,7 @@ function shouldClearStalePrCreationProgress(
   );
 }
 
-export function shouldShowWorktreeMergedState(
-  worktreeStatus: 'active' | 'done' | undefined,
-  prStatus: WorktreePrStatus | null | undefined,
-): boolean {
-  return worktreeStatus === 'done' && hasMergedPr(prStatus);
-}
+export { shouldShowWorktreeMergedState };
 
 function formatRepoEntries<T>(
   entries: T[],

@@ -1,5 +1,5 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { CanopyLogo } from '@/components/CanopyLogo';
+import { BrandLogo } from '@/components/BrandLogo';
 import { WorkflowIcon } from '@/components/activity/WorkflowIcon';
 import { ShareSessionControl } from '@/components/shared/ShareSessionControl';
 import { ChatWatcherButton } from '@/components/watchers/ChatWatcherButton';
@@ -67,12 +67,15 @@ import {
   TurnFooterRow,
   TurnOutcomeControl,
   TurnWorkHeader,
+  STEP_GROUP_BODY_CLASS,
+  type TurnStartingSetup,
   ToolApprovalWaitProvider,
   NO_TOOL_APPROVAL_WAIT,
   isStartingTurnOutput,
   extractExitPlanModePlan,
   useChatDetail,
   useCleanChatLook,
+  useTurnCollapse,
   useIsPhone,
   type TurnSummaryChip,
 } from '@canopy/ui-shared/components';
@@ -134,6 +137,7 @@ import { StickyTurnSummary } from './StickyTurnSummary';
 import { CleanToolStepGroup, ToolStepGroup } from './ToolStepGroup';
 import { TurnDiffSummary } from './TurnDiffSummary';
 import { continuationPromptId } from './continuation-transcript-turns';
+import { hasForkableAssistantContent } from './incremental-turn-groups';
 import { TurnFeedbackSlot } from './TurnFeedbackHosts';
 import { TurnTimer } from './TurnTimer';
 import { readStickyUserHeight } from './sticky-user-height';
@@ -142,6 +146,7 @@ import {
   segmentCleanSteps,
   segmentToolSteps,
   stepPieceOf,
+  stepsBeforeLiveWindow,
   turnStepCounts,
 } from './tool-step-groups';
 import type { DisplayMessage, TurnGroup, TurnSummaryCounts } from './types';
@@ -474,11 +479,7 @@ function DesktopCollapsedTurnSummary({
   chip('askUser', <QuestionMarkIcon />, 'questions');
   chip('scriptOutput', <TerminalBorderedIcon />, 'script output');
   chip('watcher', <AppAdvisorWatcherIcon />, 'watcher');
-  chip(
-    'canopy',
-    <CanopyLogo width={14} height={14} aria-hidden="true" />,
-    'app',
-  );
+  chip('canopy', <BrandLogo width={14} height={14} aria-hidden />, 'app');
   chip('graph', <GraphIcon />, 'code graph');
   chip('appAdvisor', <AppAdvisorIcon />, ORCHESTRATOR_LABEL.toLowerCase());
   chip('pipelineEditor', <PipelineIcon />, 'workflow');
@@ -656,6 +657,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   group,
   pendingTimer = false,
   starting = false,
+  startingSetup,
   waitingForApproval = false,
   chatPendingQuestions,
   turnDiff,
@@ -710,6 +712,11 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
    * working header and timer.
    */
   starting?: boolean;
+  /**
+   * With `starting`: the chat's worktree is still being set up, so the status
+   * reads "Setting up this chat's copy of <project>" with its clock.
+   */
+  startingSetup?: TurnStartingSetup;
   /**
    * The owning chat has a pending tool approval. The list sets it only on
    * the latest turn, so historical turns keep a stable prop; it pauses this
@@ -859,6 +866,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   );
   const [showChoosingModel, setShowChoosingModel] = useState(false);
   const cleanChatLook = useCleanChatLook();
+  const chatDetail = useChatDetail();
   useEffect(() => {
     if (modelRoutingStartedAt === undefined) {
       setShowChoosingModel(false);
@@ -924,7 +932,11 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     !hideBranchActions &&
     selectedWorktreeProjectId !== undefined &&
     !isCoworkChatTarget(selectedWorktreeProjectId);
-  const [collapsed, setIsCollapsed] = useState(group.isComplete);
+  const [collapsed, setIsCollapsed] = useTurnCollapse(
+    group.isComplete,
+    cleanChatLook,
+    chatDetail,
+  );
   const isCollapsed = searchMessageId ? false : collapsed;
   const [progressiveMessageTick, setProgressiveMessageTick] = useState(0);
   const userMessageId = group.userMessage.id;
@@ -1035,7 +1047,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   };
   const [isRevertedCollapsed, setIsRevertedCollapsed] = useState(isReverted);
   const prevRevertedRef = useRef(isReverted);
-  const prevCompleteRef = useRef(group.isComplete);
 
   // When a turn newly transitions to reverted (a later marker covered it),
   // collapse it. Doesn't auto-expand if the turn becomes un-reverted, which
@@ -1047,19 +1058,10 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     prevRevertedRef.current = isReverted;
   }, [isReverted]);
 
-  useEffect(() => {
-    // Clean chat look: a turn that finishes on screen stays as it is, so
-    // nothing above the reply moves; it opens folded the next time.
-    if (!prevCompleteRef.current && group.isComplete && !cleanChatLook) {
-      setIsCollapsed(true);
-    }
-    prevCompleteRef.current = group.isComplete;
-  }, [group.isComplete, cleanChatLook]);
-
   // Opened as saved state, so the person can collapse the turn again.
   useLayoutEffect(() => {
     if (revealRequest) setIsCollapsed(false);
-  }, [revealRequest]);
+  }, [revealRequest, setIsCollapsed]);
 
   const { intermediateMessages, finalMessages, trailingToolMessages } =
     useMemo(() => {
@@ -1424,7 +1426,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // 3 commands"); `recent` (CAN-4274) also keeps the newest steps of the run
   // a turn is still adding to in view; `detailed` keeps every step its own
   // row.
-  const chatDetail = useChatDetail();
   const groupToolCalls = chatDetail === 'compact';
   const liveStepWindowEnabled = chatDetail === 'recent';
   // Clean chat look with grouping on: every step between two replies is one
@@ -1447,8 +1448,8 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     renderedVisibleMessages,
   ]);
   const cleanSegments = useMemo(
-    () => (cleanGrouping ? segmentCleanSteps(renderedVisibleMessages) : null),
-    [cleanGrouping, renderedVisibleMessages],
+    () => (cleanChatLook ? segmentCleanSteps(renderedVisibleMessages) : null),
+    [cleanChatLook, renderedVisibleMessages],
   );
   const liveStepSegment =
     liveStepWindowEnabled && !group.isComplete
@@ -1704,8 +1705,8 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
             : isStartingTurnOutput(block.type, block),
         ),
     );
-  // A wake's turn is headed by its boundary row, not a prompt: forking,
-  // sharing and feedback stay with the prompt's turn, which includes it.
+  // Running prompt actions retain their live-session rules; every completed
+  // reply, including a background wake, gets its own snapshot actions.
   const promptHead = group.userMessage.role === 'user';
   // One resolved end for the summary, header and footer, so none of them
   // says "Completed" for a turn the others call interrupted.
@@ -1723,21 +1724,27 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     completionStatus === undefined || completionStatus === 'complete'
       ? undefined
       : completionStatus;
-  // A prompt whose tools-loaded continuation still runs forks its session.
-  const forksActiveTurn = isActiveTimer || continuationActive;
+  const forksActiveTurn =
+    !group.isComplete && (isActiveTimer || continuationActive);
   const showForkAction =
     !readOnly &&
-    promptHead &&
     Boolean(chatId) &&
     (forksActiveTurn
-      ? sourceSdkSessionId !== undefined && !suppressActiveForkAction
-      : isLastForkableTurnGroup);
+      ? promptHead &&
+        sourceSdkSessionId !== undefined &&
+        !suppressActiveForkAction
+      : group.isComplete &&
+        (isLastForkableTurnGroup || hasForkableAssistantContent(group)));
   // Note: in raw `source.messages` the turn timer is appended right after
   // the user message (before any assistant content arrives) — only
   // `reorderMessagesForDisplay` floats it to the end for rendering. So we
   // identify the turn for fork/branch truncation by the user message id;
-  // the store cuts up to the next user message.
-  const forkAfterUserMessageId = group.userMessage.id;
+  // the store cuts up to the next reply boundary.
+  // Wake heads are display-only. Their persisted timer anchors the selected
+  // execution; the store stops before the next prompt or autonomous execution.
+  const forkAfterUserMessageId = promptHead
+    ? group.userMessage.id
+    : group.timerMessage.id;
 
   // Watcher (eye) button next to the active-turn fork action. Only shown for a
   // real worktree chat while its turn is active — a chat-completion watcher can
@@ -1789,8 +1796,8 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
         }}
       />
     ) : undefined;
-  // Share affordance sits with the fork/branch actions on the last forkable
-  // completed turn (its natural "share this finished session" home now that it
+  // Share affordance sits with the fork/branch actions on each substantive
+  // completed reply (its natural "share this finished session" home now that it
   // has moved out of the composer). Only rendered for a real, non-file chat tab
   // resolved from the store; enablement (busy/empty) is handled by the control.
   // Turn-level thumbs up/down (CAN-1521). The `chatId === undefined` check is
@@ -1802,7 +1809,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   // highest-signal thumbs-down there is.
   const feedbackControl =
     !readOnly &&
-    promptHead &&
     group.isComplete &&
     !isActiveTimer &&
     chatId !== undefined &&
@@ -1935,12 +1941,16 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     (((lastShownBlock.type === 'tool_use' || lastShownBlock.type === 'agent') &&
       lastShownBlock.result === undefined) ||
       lastShownBlock.type === 'thinking');
+  const lastCleanSegment = cleanSegments?.[cleanSegments.length - 1];
+  const liveLineInSteps =
+    (!cleanGrouping || liveStepWindowEnabled) &&
+    lastCleanSegment?.kind === 'steps';
   const cleanLiveLine =
     cleanChatLook &&
     !showStarting &&
     !group.isComplete &&
-    (cleanSegments
-      ? cleanSegments[cleanSegments.length - 1]?.kind !== 'steps'
+    (cleanGrouping && !liveStepWindowEnabled
+      ? cleanSegments?.[cleanSegments.length - 1]?.kind !== 'steps'
       : !stepShimmersOnScreen) ? (
       <CleanToolStepGroup
         live
@@ -2044,7 +2054,11 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           it is done the folded steps' header reads "Worked for 3m 24s". Both
           looks open a just-submitted first send with "Starting…" instead. */}
       {showStarting ? (
-        <TurnWorkHeader starting dataTestId="turn-starting-status" />
+        <TurnWorkHeader
+          starting
+          setup={startingSetup}
+          dataTestId="turn-starting-status"
+        />
       ) : cleanChatLook && !group.isComplete ? (
         stickyTurnSummary && !isReverted ? (
           // Pinned like the finished turn's header, in the same wrapper, so
@@ -2131,10 +2145,26 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           {cleanSegments.map((segment, index) =>
             segment.kind === 'message' ? (
               renderMessageItem(segment.message)
+            ) : !cleanGrouping ? (
+              <div
+                key={`clean-steps-${segment.key}`}
+                className={STEP_GROUP_BODY_CLASS}
+                data-testid="chat-tool-step-detailed"
+              >
+                {segment.messages.map(renderMessageItem)}
+                {segment === lastCleanSegment &&
+                  liveLineInSteps &&
+                  cleanLiveLine}
+              </div>
             ) : (
               <CleanToolStepGroup
                 key={`clean-steps-${segment.key}`}
                 segment={segment}
+                trailingActivity={
+                  liveStepWindowEnabled && segment === lastCleanSegment
+                    ? cleanLiveLine
+                    : undefined
+                }
                 live={!group.isComplete && index === cleanSegments.length - 1}
                 outcomeEvidence={outcomeEvidence}
                 deniedToolUseIds={cleanDeniedToolUseIds}
@@ -2162,6 +2192,15 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
                   !group.isComplete &&
                   index === cleanSegments.length - 1
                     ? liveStepWindow(segment.messages).map(renderMessageItem)
+                    : undefined
+                }
+                hiddenSteps={
+                  liveStepWindowEnabled &&
+                  !group.isComplete &&
+                  index === cleanSegments.length - 1
+                    ? stepsBeforeLiveWindow(segment.messages).map(
+                        renderMessageItem,
+                      )
                     : undefined
                 }
               >
@@ -2286,14 +2325,14 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           completedAt={timerBlock.completedAt ?? null}
           alwaysVisible={
             footerAlwaysVisible ||
-            // Clean chat look: the newest reply keeps its row in view, as
-            // ChatGPT does; older ones show it on hover or focus.
-            (cleanChatLook && isLastTurnGroup) ||
+            // Every completed reply keeps its actions visible, including
+            // background replies and historical fork points.
+            (cleanChatLook && (isLastTurnGroup || group.isComplete)) ||
             headerOutcome !== undefined
           }
           completionStatus={completionStatus}
           workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
-          liveLine={cleanLiveLine}
+          liveLine={liveLineInSteps ? null : cleanLiveLine}
           autoRoutedModel={autoRoutedModel}
           watcherButton={watcherButton}
           archiveToggleButton={archiveToggleButton}
@@ -2341,10 +2380,19 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
             the timer row's, both stay visible at rest.
           */}
           {(fallbackCopyAction !== undefined ||
+            forkHandler !== undefined ||
+            moreMenu !== undefined ||
             feedbackControl !== undefined) && (
             <TurnFooterRow variant="actions" data-testid="turn-feedback-row">
               {fallbackCopyAction}
-              {feedbackControl}
+              {forkHandler ? <ForkChatButton onClick={forkHandler} /> : null}
+              {moreMenu ?? (
+                <>
+                  {shareButton}
+                  {commentsButton}
+                  {feedbackControl}
+                </>
+              )}
             </TurnFooterRow>
           )}
         </>

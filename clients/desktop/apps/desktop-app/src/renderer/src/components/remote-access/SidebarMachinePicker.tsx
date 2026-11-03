@@ -1,10 +1,12 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import {
+  Dot,
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
+  type DotTone,
 } from '@canopy/ui-shared/components';
 import {
   CheckIcon,
@@ -19,7 +21,7 @@ import {
   COMPUTERS_LABEL,
   THIS_COMPUTER_LABEL,
   describeError,
-  remoteHostDotClassName,
+  remoteHostDotTone,
   remoteHostStatus,
   type RemoteHostStatus,
 } from './remote-access-copy';
@@ -33,19 +35,15 @@ export interface SidebarMachinePickerProps {
 }
 
 function StatusDot({
-  className,
+  tone,
   testId,
 }: {
-  readonly className: string;
+  readonly tone: DotTone;
   readonly testId: string;
 }): JSX.Element {
   return (
     <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-      <span
-        aria-hidden="true"
-        data-testid={testId}
-        className={`h-1.5 w-1.5 rounded-full ${className}`}
-      />
+      <Dot tone={tone} data-testid={testId} />
     </span>
   );
 }
@@ -253,7 +251,7 @@ export function SidebarMachinePicker({
   const currentStatus: RemoteHostStatus = remoteHostStatus(
     currentHost ?? { online: false, connection: 'error' },
   );
-  const currentDot = remoteHostDotClassName(currentStatus.tone);
+  const currentDot = remoteHostDotTone(currentStatus.tone);
   const triggerLabel = `Computer: ${currentLabel}, ${currentStatus.label}`;
 
   const close = (): void => {
@@ -287,7 +285,7 @@ export function SidebarMachinePicker({
           </span>
           {currentDot ? (
             <StatusDot
-              className={currentDot}
+              tone={currentDot}
               testId="sidebar-machine-picker-status"
             />
           ) : null}

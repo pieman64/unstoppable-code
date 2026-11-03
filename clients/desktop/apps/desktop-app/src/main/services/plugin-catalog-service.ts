@@ -19,6 +19,12 @@ import {
   MARKETPLACE_SHARE_BLOCKED_REASONS,
   type MarketplaceEntryShareResolution,
 } from '@canopy/protocol/sharing';
+import { ResourceContextUnavailableError } from '../lib/resource-context-error';
+import type { CollectionSaveGuard } from '../collections/collection-store';
+import {
+  resourceContextSnapshot,
+  assertResourceContextSnapshot,
+} from '../lib/resource-context';
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
 import {
   assertStoredSkillContext,
@@ -36,6 +42,8 @@ import type {
   PortalCatalogMarkdownContent,
   PortalCollectionsGetResult,
   PortalCollectionsListResult,
+  PortalCollectionsSavePayload,
+  PortalCollectionsSaveResult,
   PortalMarketplacePluginMcpServer,
   PortalMarketplacePluginSkill,
   PortalMarketplacePluginRow,
@@ -257,7 +265,13 @@ function isServerEntry(value: unknown): value is McpServerIndexEntry {
 
 /** Error with a stable portal failure code for `failServiceError` routing. */
 function codedError(
-  code: 'not_found' | 'invalid_payload' | 'invalid_target' | 'execution_failed',
+  code:
+    | 'not_found'
+    | 'invalid_payload'
+    | 'invalid_target'
+    | 'execution_failed'
+    | 'conflict'
+    | 'permission_denied',
   message: string,
 ): Error {
   return Object.assign(new Error(message), { code });
@@ -1691,11 +1705,15 @@ async function buildPortalCollectionsList(
       name: entry.name,
       description: entry.description,
       updatedAt: entry.updatedAt,
+      ...(entry.revision ? { revision: entry.revision } : {}),
       skillCount: entry.skillCount,
       pluginCount: entry.pluginCount,
       mcpServerCount: entry.mcpServerCount,
       ...(sharing.shareable.has(entry.id) ? { shareable: true } : {}),
       ...(sharing.existing.has(entry.id) ? { hasExistingShare: true } : {}),
+      ...(entry.sharedSource ? { sharedSource: entry.sharedSource } : {}),
+      ...(entry.hasSharedSource ? { hasSharedSource: true } : {}),
+      ...(entry.provenanceUnknown ? { provenanceUnknown: true } : {}),
     })),
     (rows, truncated) => ({
       collections: rows,
@@ -1777,20 +1795,177 @@ async function resolveCollectionSharingState(
  * Build the `portal.collections.get` result. `readCollectionConfig` validates
  * the id against its safe-id pattern before any path use.
  */
+type PortalCollectionDraft = PortalCollectionsSavePayload['collection'];
+
+function parseCollectionDraftMembers(
+  value: Record<string, unknown>,
+): Pick<PortalCollectionDraft, 'skills' | 'plugins' | 'mcpServers'> {
+  const { skills, plugins, mcpServers } = value;
+  const invalid = (): Error =>
+    codedError('invalid_payload', 'Collection save has an invalid member.');
+  if (
+    !Array.isArray(skills) ||
+    !Array.isArray(plugins) ||
+    !Array.isArray(mcpServers)
+  ) {
+    throw invalid();
+  }
+  return {
+    skills: skills.map((skill: unknown) => {
+      if (
+        !isRecord(skill) ||
+        typeof skill.sourceId !== 'string' ||
+        typeof skill.skillName !== 'string' ||
+        !skill.sourceId.trim() ||
+        skill.sourceId.length > 2048 ||
+        !skill.skillName.trim() ||
+        skill.skillName.length > 2048
+      )
+        throw invalid();
+      return { sourceId: skill.sourceId, skillName: skill.skillName };
+    }),
+    plugins: plugins.map((plugin: unknown) => {
+      if (
+        !isRecord(plugin) ||
+        typeof plugin.marketplaceId !== 'string' ||
+        typeof plugin.pluginName !== 'string' ||
+        !plugin.marketplaceId.trim() ||
+        plugin.marketplaceId.length > 2048 ||
+        !plugin.pluginName.trim() ||
+        plugin.pluginName.length > 2048
+      )
+        throw invalid();
+      return {
+        marketplaceId: plugin.marketplaceId,
+        pluginName: plugin.pluginName,
+      };
+    }),
+    mcpServers: mcpServers.map((ref: unknown) => {
+      if (
+        !isRecord(ref) ||
+        typeof ref.serverId !== 'string' ||
+        typeof ref.configId !== 'string' ||
+        !/^[a-f0-9-]+$/.test(ref.serverId) ||
+        !/^[a-f0-9-]+$/.test(ref.configId)
+      )
+        throw invalid();
+      return { serverId: ref.serverId, configId: ref.configId };
+    }),
+  };
+}
+
+/**
+ * `portal.collections.save`: create a collection, or replace an existing
+ * one's name, description and members. The browser can never set or clear
+ * share links or the creation date; an edit keeps the stored values, and an
+ * unknown id is refused rather than created under the caller's choice.
+ */
+export async function savePortalCollection(
+  input: unknown,
+  assertCurrent?: () => Promise<void>,
+): Promise<PortalCollectionsSaveResult> {
+  // Capture before lazy imports, reads or waiting for another writer.
+  const snapshot = await resourceContextSnapshot();
+  const assertOrigin = async (): Promise<void> => {
+    await assertCurrent?.();
+    await assertResourceContextSnapshot(snapshot);
+  };
+  if (!isRecord(input)) {
+    throw codedError('invalid_payload', 'Collection save needs a collection.');
+  }
+  // Reserve response space for server-owned metadata, UUIDs and timestamps.
+  if (resultByteLength(input) > PORTAL_CATALOG_RESULT_MAX_BYTES - 4096) {
+    throw codedError(
+      'invalid_payload',
+      'The collection is too large to save here.',
+    );
+  }
+  if (
+    input.id !== undefined &&
+    (typeof input.id !== 'string' ||
+      input.id.length > 128 ||
+      !/^[a-f0-9-]+$/.test(input.id))
+  ) {
+    throw codedError('invalid_payload', 'Invalid Collection id.');
+  }
+  const id = input.id;
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name)
+    throw codedError('invalid_payload', 'Collection name is required.');
+  if (typeof input.description !== 'string') {
+    throw codedError('invalid_payload', 'Collection description must be text.');
+  }
+  const members = parseCollectionDraftMembers(input);
+  const { readCollectionConfig, saveCollectionConfig } =
+    await import('../collections/collection-store');
+  try {
+    await assertOrigin();
+    if (id !== undefined && !(await readCollectionConfig(id))) {
+      throw codedError('not_found', `Collection "${id}" not found.`);
+    }
+    if (
+      id !== undefined &&
+      (typeof input.expectedRevision !== 'string' || !input.expectedRevision)
+    ) {
+      throw codedError(
+        'conflict',
+        'Reload the Collection before saving an edit.',
+      );
+    }
+    // Allowlist only editable fields. The writer preserves metadata under its
+    // lock, rather than replaying metadata from a stale preflight read.
+    const guard: CollectionSaveGuard = {
+      expectedRevision:
+        typeof input.expectedRevision === 'string'
+          ? input.expectedRevision
+          : undefined,
+      assertCurrent: assertOrigin,
+      validatePrepared: (collection) => {
+        if (resultByteLength({ collection }) > PORTAL_CATALOG_RESULT_MAX_BYTES)
+          throw codedError(
+            'invalid_payload',
+            'The collection is too large to save here.',
+          );
+      },
+    };
+    const collection = await saveCollectionConfig(
+      {
+        ...(id !== undefined ? { id } : {}),
+        name,
+        description: input.description,
+        ...members,
+      },
+      undefined,
+      guard,
+    );
+    return { collection };
+  } catch (error) {
+    if (error instanceof ResourceContextUnavailableError) {
+      throw codedError('permission_denied', error.message);
+    }
+    if (error instanceof Error && error.message.startsWith('Invalid '))
+      throw codedError('invalid_payload', error.message);
+    throw error;
+  }
+}
+
 export async function getPortalCollection(
   collectionId: string,
 ): Promise<PortalCollectionsGetResult> {
   requirePlainId(collectionId, 'Collection id');
-  const { readCollectionConfig } =
+  const { readLocalCollectionSnapshot } =
     await import('../collections/collection-store');
   let file;
   try {
-    file = await readCollectionConfig(collectionId);
+    file = await readLocalCollectionSnapshot(collectionId);
   } catch (error) {
-    throw codedError(
-      'invalid_payload',
-      error instanceof Error ? error.message : 'Invalid Collection id.',
-    );
+    if (error instanceof ResourceContextUnavailableError) {
+      throw codedError('permission_denied', error.message);
+    }
+    if (error instanceof Error && error.message.startsWith('Invalid ')) {
+      throw codedError('invalid_payload', error.message);
+    }
+    throw error;
   }
   if (!file || !file.collection) {
     throw codedError('not_found', `Collection "${collectionId}" not found.`);
@@ -1816,6 +1991,7 @@ export async function getPortalCollection(
       mcpServers: mcpServers.slice(0, cap),
       createdAt: collection.createdAt,
       updatedAt: collection.updatedAt,
+      revision: collection.revision,
       ...(collection.sharedSource
         ? { sharedSource: collection.sharedSource }
         : {}),

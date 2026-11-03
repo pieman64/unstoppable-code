@@ -5,6 +5,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 // The skill page heading is the skill's display title (CAN-4264).
 function skillTitle(name) {
@@ -93,9 +94,10 @@ async function openSkillPicker(window) {
     .filter({ hasText: 'Plugins' });
   await expect(dialog).toBeVisible();
   await dialog.getByPlaceholder('Search by name…').fill(SKILL_NAME);
-  await dialog
-    .getByRole('combobox', { name: 'Kind filter' })
-    .selectOption('skill');
+  await chooseSettingsOption(
+    dialog.getByRole('combobox', { name: 'Kind filter' }),
+    'skill',
+  );
   await expect(skillRow(dialog)).toBeVisible();
   return dialog;
 }
@@ -182,8 +184,11 @@ test('creating a custom skill exposes it in the list, chat picker, and slash men
     const nameInput = window.getByPlaceholder('my-skill-name');
 
     // Invalid names remain visible so the user can correct the unsupported
-    // characters instead of having their input silently rewritten.
+    // characters instead of having their input silently rewritten. The
+    // message shows once Save is pressed (docs/design/forms.md).
     await nameInput.fill('test_skill');
+    await expect(nameInput).toHaveValue('test_skill');
+    await window.getByTestId('skill-editor-save').click();
     await expect(
       window.getByText(
         'Skill name can only contain lowercase letters, numbers, and hyphens.',
@@ -339,7 +344,9 @@ test('editing a custom skill preserves untouched YAML metadata types and user-in
     // false renders as 'No', while a string-coerced 'false' would render
     // verbatim.
     await window.getByTestId('skill-editor-mode-preview').click();
-    await expect(window.getByText('User Invocable:')).toBeVisible();
+    await expect(
+      window.getByText('user-invocable', { exact: true }),
+    ).toBeVisible();
     await expect(window.getByText('No', { exact: true })).toBeVisible();
     await expect(window.getByText('false', { exact: true })).toHaveCount(0);
     await window.getByTestId('skill-editor-mode-edit').click();

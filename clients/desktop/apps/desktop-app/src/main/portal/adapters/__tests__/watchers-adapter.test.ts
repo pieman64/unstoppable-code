@@ -20,9 +20,11 @@ import type { PortalAdapterContext } from '../types';
 jest.mock('../../../app-advisor/watchers', () => ({
   getAppAdvisorWatcherService: (): {
     list: typeof mockList;
+    listCompleted: typeof mockCompleted;
     deleteWatcher: typeof mockDelete;
   } => ({
     list: mockList,
+    listCompleted: mockCompleted,
     deleteWatcher: mockDelete,
   }),
 }));
@@ -40,6 +42,7 @@ jest.mock('../../portal-event-bus', () => ({
   },
 }));
 const mockList = jest.fn<Promise<AppAdvisorWatcherSummary[]>, []>();
+const mockCompleted = jest.fn<Promise<AppAdvisorWatcherSummary[]>, []>();
 const mockDelete = jest.fn<
   Promise<boolean>,
   [string, { notifySubscriber: boolean }]
@@ -98,6 +101,7 @@ const command = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockActive = true;
+  mockCompleted.mockResolvedValue([]);
   clearPortalWatcherProjection();
   mockList.mockResolvedValue([watcher()]);
   mockDelete.mockResolvedValue(true);
@@ -200,6 +204,191 @@ describe('Portal watcher projection', () => {
       detail: 'depth 1',
     });
     expect(JSON.stringify(rows)).not.toContain('internal-id');
+  });
+
+  it('projects scoped GitHub progress and hydrates final observations through getAppAdvisorWatcherService().listCompleted', async () => {
+    const source = watcher({
+      trigger: 'github_workflow_runs_changed',
+      target: {
+        kind: 'github_workflow_runs',
+        items: [{ kind: 'workflow_run', repository: 'acme/api', runId: '101' }],
+        notifyOn: {
+          statuses: [],
+          conclusions: ['success'],
+          jobConclusions: [],
+        },
+        display: { repositories: ['acme/api'], sample: [] },
+      },
+      githubProgress: {
+        runs: [
+          {
+            repository: 'acme/api',
+            runId: '101',
+            runAttempt: 2,
+            workflowName: 'CI',
+            runNumber: 42,
+            htmlUrl: 'https://github.com/acme/api/actions/runs/101',
+            state: { kind: 'intermediate', status: 'in_progress' },
+            observedAt: '2026-11-01T12:00:00.000Z',
+            jobs: [
+              {
+                jobId: '5',
+                name: 'Build',
+                status: 'in_progress',
+                conclusion: null,
+                htmlUrl: 'https://github.com/acme/api/actions/runs/101/job/5',
+                observedAt: '2026-11-01T12:00:00.000Z',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const progress = source.githubProgress?.runs[0];
+    const job = progress?.jobs?.[0];
+    if (!progress || !job) throw new Error('Missing run fixture');
+    Object.assign(job, { observedAt: '2026-11-01T12:01:00.000Z' });
+    Object.assign(progress, {
+      retryState: 'private-retry',
+    });
+    Object.assign(job, {
+      runner: '/Users/private',
+    });
+    const [row] = projectPortalWatchers([source], [destination]);
+    expect(row.githubProgress).toMatchObject({
+      runs: [
+        {
+          runAttempt: 2,
+          workflowName: 'CI',
+          observedAt: job.observedAt,
+          jobs: [{ name: 'Build' }],
+        },
+      ],
+    });
+    expect(JSON.stringify(row)).not.toMatch(
+      /retryState|private-retry|runner|\/Users\//,
+    );
+    expect(
+      projectPortalWatchers([source], [{ ...destination, chatId: 'foreign' }]),
+    ).toEqual([]);
+    mockList.mockResolvedValue([source]);
+    await listPortalWatcherEntities([destination]);
+    const fired = {
+      ...source,
+      status: 'fired' as const,
+      githubProgress: {
+        runs: [
+          {
+            ...progress,
+            state: {
+              kind: 'terminal' as const,
+              conclusion: 'success' as const,
+            },
+          },
+        ],
+      },
+    };
+    emitPortalWatcherProjection([fired]);
+    expect(mockEmit.mock.lastCall?.[0].payload).toMatchObject({
+      entities: [
+        {
+          payload: {
+            status: 'fired',
+            githubProgress: { runs: [{ state: { conclusion: 'success' } }] },
+          },
+        },
+      ],
+    });
+    mockList.mockResolvedValue([]);
+    mockCompleted.mockResolvedValue([fired]);
+    expect(await listPortalWatcherEntities([destination])).toHaveLength(1);
+    mockCompleted.mockResolvedValue([
+      { ...source, status: 'delivery_failed', failureKind: 'source' },
+    ]);
+    expect(
+      (await listPortalWatcherEntities([destination]))[0]?.payload,
+    ).toMatchObject({
+      status: 'delivery_failed',
+      githubProgress: { runs: [{ runId: '101' }] },
+    });
+  });
+
+  it('projects queue position and terminal PR state without queue cursors or commits', async () => {
+    const source = watcher({
+      id: 'pr',
+      trigger: 'github_pull_requests_changed',
+      target: {
+        kind: 'github_pull_requests',
+        items: [{ kind: 'pull_request', repository: 'acme/api', number: 7 }],
+        display: { repositories: ['acme/api'], sample: [] },
+      },
+      githubPullRequestProgress: {
+        pullRequests: [
+          {
+            repository: 'acme/api',
+            number: 7,
+            title: 'Release',
+            url: 'https://github.com/acme/api/pull/7',
+            state: 'open',
+            baseRefName: 'main',
+            queue: { phase: 'queued', position: 3 },
+            observedAt: '2026-11-01T12:00:00Z',
+          },
+        ],
+      },
+    });
+    const progress = source.githubPullRequestProgress?.pullRequests[0];
+    if (!progress?.queue) throw new Error('Missing queued PR fixture');
+    Object.assign(progress, {
+      headSha: 'private-head',
+    });
+    Object.assign(progress.queue, {
+      entryId: 'private-queue',
+    });
+    const [row] = projectPortalWatchers([source], [destination]);
+    expect(row.githubPullRequestProgress?.pullRequests[0]).toMatchObject({
+      state: 'open',
+      queue: { position: 3 },
+    });
+    expect(JSON.stringify(row)).not.toMatch(
+      /headSha|entryId|phase|private-head|private-queue/,
+    );
+    mockList.mockResolvedValue([source]);
+    await listPortalWatcherEntities([destination]);
+    emitPortalWatcherProjection([
+      {
+        ...source,
+        status: 'firing',
+        githubPullRequestProgress: {
+          pullRequests: [
+            {
+              ...progress,
+              state: 'merged',
+              queue: null,
+              observedAt: '2026-11-01T12:05:00Z',
+            },
+          ],
+        },
+      },
+    ]);
+    expect(mockEmit.mock.lastCall?.[0].payload).toMatchObject({
+      entities: [
+        {
+          payload: {
+            status: 'active',
+            githubPullRequestProgress: {
+              pullRequests: [{ state: 'merged', queue: null }],
+            },
+          },
+        },
+      ],
+    });
+    const count = mockEmit.mock.calls.length;
+    emitPortalWatcherProjection([]);
+    expect(mockEmit).toHaveBeenCalledTimes(count + 1);
+    expect(mockEmit.mock.lastCall?.[0].payload).toMatchObject({
+      removed: [{ localId: 'pr' }],
+    });
   });
 
   it('uses the same display functions as desktop', () => {

@@ -306,7 +306,7 @@ describe('ChatPanel compact queue', () => {
     expect(
       rows[0].querySelector('[data-testid="queued-message-retry"]')
         ?.textContent,
-    ).toBe('Retry');
+    ).toBe('Try again');
     expect(
       rows[0].querySelector('[data-testid="queued-message-interrupt"]'),
     ).toBeNull();

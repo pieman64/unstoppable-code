@@ -11,11 +11,24 @@ export * from './MarketplaceDetailPageShell';
 export * from './PluginCatalogDetail';
 export * from './PluginDetailHost';
 export * from './SkillReadDetail';
-export * from './installed-share-provenance';
+export {
+  INSTALLED_SHARE_COPY_LABEL,
+  INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL,
+  VIEW_SHARED_SKILL_LABEL,
+  InstalledShareUpdateButton,
+  installedShareProvenance,
+  shareSourceHashChanged,
+  sharedSkillDisplayNames,
+  type InstalledShareSource,
+  type InstalledShareDisplayNames,
+  type InstalledShareProvenanceOptions,
+  type InstalledShareProvenance,
+} from './installed-share-provenance';
 export * from './SkillEditWithAIButton';
 export * from './CollectionReadDetail';
 export * from './MarketplaceUnshareAction';
 export * from './SharedByYouSection';
+export * from './sharedByYouCopyLinkMenuItem';
 export * from './CuratedMcpDetail';
 export * from './McpServerReadDetail';
 export * from './McpServerManagement';
@@ -34,7 +47,14 @@ export * from './SkillSuggestionsList';
 export { unifiedEntryIdForRef } from './unified-entry-id';
 export * from './useOpenCreatedCustomItem';
 export * from './customizeSections';
+export * from './collectionUpdateSummary';
+export * from './useCollectionUpdateSummaries';
 export * from './CustomizeTabSections';
+
+export {
+  CollectionEditorFields,
+  collectionNameValid,
+} from './CollectionEditorFields';
 export * from './customizeWorkflowActions';
 export * from './CustomizeWorkflowRowControls';
 export * from './CustomizeSearchRow';

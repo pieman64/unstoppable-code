@@ -163,7 +163,8 @@ describe('CloudSyncStatus', () => {
       expect(text).not.toContain('Synced');
       expect(text).toContain('Sign in to sync');
       expect(text).toContain('237 pending');
-      expect(el?.querySelector('.bg-success')).toBeNull();
+      expect(el?.querySelector('[data-dot-tone="success"]')).toBeNull();
+      expect(el?.querySelector('[data-dot-tone="danger"]')).not.toBeNull();
     });
 
     it('reports disconnected rather than waiting when never synced', () => {

@@ -996,6 +996,7 @@ function canSteerQueuedMessage(
     (entry.recoveryInFlight && entry.reorderInFlight !== true) ||
     entry.dispatchInFlight ||
     entry.creditHold !== undefined ||
+    entry.worktreeSetupHold !== undefined ||
     entry.backgroundWorkHold?.rowId === message.id ||
     message.ordinaryOnly === true ||
     message.editLocked ||
@@ -1066,6 +1067,10 @@ function queuedMessageView(
         }
       : {}),
     ...(message.editLocked === true ? { editLocked: true } : {}),
+    // Nothing behind a worktree setup hold may run before the turn it holds.
+    ...(entry.worktreeSetupHold !== undefined
+      ? { forceLocked: true as const }
+      : {}),
     ...(turnPhase === 'foreground' && isGeneratedInputRequest(message.request)
       ? { waitingReason: 'steer_unavailable' }
       : {}),
@@ -3807,6 +3812,9 @@ export class ChatQueueService {
       entry.turnActive = true;
       entry.activeTurnUserMessageId = turnUserMessageId;
       this.broadcastBestEffort(target, entry);
+    } else if (entry.queue.length > 0) {
+      // Rows already queued project locked behind the hold.
+      this.broadcastBestEffort(target, entry);
     }
   }
 
@@ -3837,6 +3845,9 @@ export class ChatQueueService {
     ) {
       entry.turnActive = false;
       delete entry.activeTurnUserMessageId;
+      this.broadcastBestEffort(target, entry);
+    } else if (entry.queue.length > 0) {
+      // Rows queued behind the hold project unlocked again.
       this.broadcastBestEffort(target, entry);
     }
     if (
@@ -4358,6 +4369,9 @@ export class ChatQueueService {
     if (!entry) return 'not_found';
     const message = entry.queue.find((candidate) => candidate.id === entryId);
     if (!message) return 'not_found';
+    // A row behind a worktree setup hold is locked from Run now
+    // (`forceLocked`): its worktree has no checkout until setup ends.
+    if (entry.worktreeSetupHold !== undefined) return 'busy';
     if (entry.creditHold) {
       await this.refreshCreditHold(entry);
       if (this.entries.get(chatQueueKey(target)) !== entry) return 'not_found';

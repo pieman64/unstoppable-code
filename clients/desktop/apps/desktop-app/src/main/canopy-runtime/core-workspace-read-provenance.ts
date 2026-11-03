@@ -37,6 +37,7 @@ export type CoreWorkspaceReadFilter =
   | 'unprojected'
   /** Projected from a default after an unreadable read. */
   | 'fallback'
+  | 'possibly-stale'
   | 'page';
 
 /** Projected fields derived from the source, account or host (decision B1). */
@@ -143,7 +144,12 @@ export function projectReadProvenance(
   resultFilters: readonly (CoreWorkspaceReadFilter | false | undefined)[],
   resources: readonly CoreWorkspaceResourceProjection[],
 ): CoreWorkspaceReadProvenance {
-  const filters = presentFilters(resultFilters);
+  const filters = presentFilters([
+    ...resultFilters,
+    view.status === 'uncaptured' &&
+      view.reason === 'daemon-unavailable' &&
+      'possibly-stale',
+  ]);
   const result: CoreWorkspaceReadProvenance['result'] = {
     completeness: filters.length ? 'partial' : 'complete',
     filters,

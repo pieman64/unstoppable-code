@@ -409,7 +409,7 @@ posix('registration failures maintenance cannot run beside', () => {
   });
 });
 
-posix('primary data folder registration', () => {
+posix('root registration', () => {
   it('is idempotent and kept for the rest of the process', async () => {
     await admission.registerDesktopW5Root(link, quick);
     await admission.registerDesktopW5Root(root, quick);

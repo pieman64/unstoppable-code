@@ -19,7 +19,7 @@ import {
   type W5CommitLogFileStoreBindings,
   type W5CommitLogHostPort,
 } from '../commit-log-file-store';
-import type { W5FileRead } from '../file-store';
+import { W5AuthorityUnreachableError, type W5FileRead } from '../file-store';
 import type { W5StorageTarget } from '../storage-target';
 
 const INDEX: W5StorageTarget = {
@@ -871,6 +871,192 @@ describe('preflight and staging', () => {
   });
 });
 
+describe('an unreachable authority (CAN-5542)', () => {
+  const lost = (): W5AuthorityUnreachableError =>
+    new W5AuthorityUnreachableError('refused', 'lost');
+
+  /** `bindings`' reads, failing unreachable while `down` holds. */
+  function lossyReads(
+    bindings: Harness['bindings'],
+    down: () => W5AuthorityUnreachableError | undefined,
+  ): Harness['bindings'] {
+    return {
+      ...bindings,
+      readFile: (filePath): Promise<W5FileRead> => {
+        const error = down();
+        return error
+          ? Promise.resolve({ state: 'unreadable', error })
+          : bindings.readFile(filePath);
+      },
+    };
+  }
+
+  it('rethrows a preflight read that could not reach the authority, never a fingerprint conflict', async () => {
+    const { files, bindings } = harness(new Map([[INDEX_PATH, 'read']]));
+    const host = fakeHost(files);
+    const unreachable = lost();
+    const store = createW5CommitLogFileStore({
+      ...lossyReads(bindings, () => unreachable),
+      getHost: () => host,
+    });
+    await expect(replaceIndex(store, 'next', 'read')).rejects.toBe(unreachable);
+    expect(host.commits).toEqual([]);
+    expect(files.get(INDEX_PATH)).toBe('read');
+  });
+
+  it('rethrows a fenced lock read that could not reach the authority', async () => {
+    const lockPath = '/w5/a/workspace.json';
+    const { files, bindings } = harness(new Map([[lockPath, 'dep']]));
+    const host = fakeHost(files);
+    const unreachable = lost();
+    const store = createW5CommitLogFileStore({
+      ...lossyReads(bindings, () => unreachable),
+      getHost: () => host,
+    });
+    const work = jest.fn(() => replaceIndex(store, 'next', null));
+    await expect(
+      store.withCommit(
+        {
+          operation: 'test.fence',
+          fenceLockedFiles: true,
+          locks: [{ kind: 'manifest', path: lockPath }],
+        },
+        work,
+      ),
+    ).rejects.toBe(unreachable);
+    expect(work).not.toHaveBeenCalled();
+    expect(host.commits).toEqual([]);
+  });
+
+  it('recovers again after a read the authority could not answer, and keeps recovery after any other unreadable read', async () => {
+    const { files, bindings } = harness();
+    const host = fakeHost(files);
+    let failure: W5FileRead | undefined;
+    const store = createW5CommitLogFileStore({
+      ...bindings,
+      readFile: (filePath): Promise<W5FileRead> =>
+        failure ? Promise.resolve(failure) : bindings.readFile(filePath),
+      getHost: () => host,
+    });
+    await store.read(INDEX_PATH);
+    expect(host.recoveries).toBe(1);
+    failure = { state: 'unreadable', error: new Error('EACCES') };
+    await store.read(INDEX_PATH);
+    expect(host.recoveries).toBe(1);
+    const unreachable = lost();
+    failure = { state: 'unreadable', error: unreachable };
+    await expect(store.read(INDEX_PATH)).resolves.toEqual(failure);
+    failure = undefined;
+    // A restarted daemon's recovery warnings are read again.
+    await store.read(INDEX_PATH);
+    expect(host.recoveries).toBe(2);
+  });
+
+  it.each([
+    [
+      'a receipt lookup',
+      (host: FakeHost): jest.SpyInstance => jest.spyOn(host, 'lookupReceipt'),
+      (
+        store: ReturnType<typeof createW5CommitLogFileStore>,
+      ): Promise<unknown> =>
+        store.lookupReceipt({
+          caller: 'c',
+          operation: 'o',
+          idempotencyKey: 'k',
+          fingerprint: 'f',
+        }),
+    ],
+    [
+      'a reservation',
+      (host: FakeHost): jest.SpyInstance => jest.spyOn(host, 'reserve'),
+      (
+        store: ReturnType<typeof createW5CommitLogFileStore>,
+      ): Promise<unknown> =>
+        store.reserve({ reservationId: 'r', operation: 'o' }),
+    ],
+    [
+      'a reservation release',
+      (host: FakeHost): jest.SpyInstance =>
+        jest.spyOn(host, 'releaseReservation'),
+      (
+        store: ReturnType<typeof createW5CommitLogFileStore>,
+      ): Promise<unknown> => store.releaseReservation('r'),
+    ],
+    [
+      'a revision read',
+      (host: FakeHost): jest.SpyInstance => jest.spyOn(host, 'revision'),
+      (
+        store: ReturnType<typeof createW5CommitLogFileStore>,
+      ): Promise<unknown> => store.readRevisions([{ kind: 'workspaces' }]),
+    ],
+  ])(
+    'recovers again after %s could not reach the authority, rethrowing it',
+    async (_label, spy, call) => {
+      const { files, bindings } = harness();
+      const host = fakeHost(files);
+      const store = createW5CommitLogFileStore({
+        ...bindings,
+        getHost: () => host,
+      });
+      await store.read(INDEX_PATH);
+      const unreachable = new W5AuthorityUnreachableError(
+        'outcome-unknown',
+        'lost',
+      );
+      spy(host).mockRejectedValueOnce(unreachable);
+      await expect(call(store)).rejects.toBe(unreachable);
+      expect(host.recoveries).toBe(1);
+      await call(store);
+      expect(host.recoveries).toBe(2);
+    },
+  );
+
+  it('forgets only the recovery a failed call rode, never a newer one', async () => {
+    const { files, bindings } = harness();
+    const host = fakeHost(files);
+    const store = createW5CommitLogFileStore({
+      ...bindings,
+      getHost: () => host,
+    });
+    await store.read(INDEX_PATH);
+    let failLate: (error: unknown) => void = () => undefined;
+    const late = new Promise<never>((_resolve, reject) => {
+      failLate = reject;
+    });
+    late.catch(() => undefined);
+    jest
+      .spyOn(host, 'releaseReservation')
+      .mockRejectedValueOnce(lost())
+      .mockReturnValueOnce(late);
+    const first = store.releaseReservation('a');
+    const second = store.releaseReservation('b');
+    await expect(first).rejects.toBeInstanceOf(W5AuthorityUnreachableError);
+    // A reconnected caller starts the next recovery before the late failure.
+    await store.read(INDEX_PATH);
+    expect(host.recoveries).toBe(2);
+    failLate(lost());
+    await expect(second).rejects.toBeInstanceOf(W5AuthorityUnreachableError);
+    await store.read(INDEX_PATH);
+    expect(host.recoveries).toBe(2);
+  });
+
+  it('keeps recovery after a keyed call fails with any other error', async () => {
+    const { files, bindings } = harness();
+    const host = fakeHost(files);
+    const store = createW5CommitLogFileStore({
+      ...bindings,
+      getHost: () => host,
+    });
+    const refusal = new W5CommitRefusedError('in-progress', 'busy', {});
+    jest.spyOn(host, 'reserve').mockRejectedValueOnce(refusal);
+    await expect(
+      store.reserve({ reservationId: 'r', operation: 'o' }),
+    ).rejects.toBe(refusal);
+    await store.reserve({ reservationId: 'r', operation: 'o' });
+    expect(host.recoveries).toBe(1);
+  });
+});
+
 it('loads its entrypoint without node:sqlite', () => {
   jest.isolateModules(() => {
     jest.doMock('node:sqlite', () => {
@@ -879,5 +1065,64 @@ it('loads its entrypoint without node:sqlite', () => {
     expect((): void => {
       jest.requireActual<object>('../commit-log-file-store');
     }).not.toThrow();
+  });
+});
+
+describe('record removal', () => {
+  it('stages absence, then recreates against the original preimage in one decision', async () => {
+    const { files, bindings } = harness(new Map([[INDEX_PATH, '{}']]));
+    const host = fakeHost(files);
+    const store = createW5CommitLogFileStore({
+      ...bindings,
+      getHost: () => host,
+    });
+    await store.withCommit({ operation: 'remove-recreate' }, async () => {
+      await store.remove(INDEX_PATH, INDEX, {
+        operation: 'remove',
+        advance: [{ kind: 'workspaces' }],
+        previousRaw: '{}',
+      });
+      expect(await store.read(INDEX_PATH)).toEqual({ state: 'absent' });
+      expect(files.get(INDEX_PATH)).toBe('{}');
+      await replaceIndex(store, '{"new":true}', null);
+    });
+    expect(host.commits).toHaveLength(1);
+    expect(host.commits[0]?.files).toEqual([
+      {
+        path: INDEX_PATH,
+        contents: '{"new":true}',
+        previousFingerprint: fingerprintW5File('{}'),
+      },
+    ]);
+  });
+
+  it('commits an unscoped removal and refuses an unreadable preflight without deciding', async () => {
+    const { files, bindings } = harness(new Map([[INDEX_PATH, '{}']]));
+    const host = fakeHost(files);
+    const store = createW5CommitLogFileStore({
+      ...bindings,
+      getHost: () => host,
+    });
+    await store.remove(INDEX_PATH, INDEX, {
+      operation: 'remove',
+      advance: [{ kind: 'workspaces' }],
+      previousRaw: '{}',
+    });
+    expect(await store.read(INDEX_PATH)).toEqual({ state: 'absent' });
+    expect(host.commits[0]?.files[0]?.contents).toBeNull();
+    bindings.readFile = (): Promise<W5FileRead> =>
+      Promise.resolve({ state: 'unreadable' });
+    const unreadable = createW5CommitLogFileStore({
+      ...bindings,
+      getHost: () => host,
+    });
+    await expect(
+      unreadable.remove(INDEX_PATH, INDEX, {
+        operation: 'remove',
+        advance: [],
+        previousRaw: null,
+      }),
+    ).rejects.toBeInstanceOf(W5FileWriteRefusedError);
+    expect(host.commits).toHaveLength(1);
   });
 });

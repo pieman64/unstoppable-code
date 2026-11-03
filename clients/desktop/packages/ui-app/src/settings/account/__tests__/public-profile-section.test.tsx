@@ -298,7 +298,7 @@ describe('PublicProfileSection', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       'That username is already taken.',
     );
   });

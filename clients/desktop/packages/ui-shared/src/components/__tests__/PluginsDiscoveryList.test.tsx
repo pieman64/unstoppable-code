@@ -15,7 +15,6 @@ import {
   type PluginsDiscoverySection,
 } from '../../lib/plugins-discovery-sections';
 import type { UnifiedPluginEntry } from '../../lib/unified-plugin-entry';
-import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   collectionShareBlockedState,
   type MarketplaceEntryShareStates,
@@ -76,7 +75,6 @@ describe('PluginsDiscoveryList', () => {
 
   interface RenderOptions {
     hrefForEntry?: (entry: UnifiedPluginEntry) => string | undefined;
-    showPipelineSources?: boolean;
     sections: PluginsDiscoverySection[];
     onSelectEntry?: (entry: UnifiedPluginEntry) => void;
     onAddEntry?: ((entry: UnifiedPluginEntry) => void) | null;
@@ -88,7 +86,6 @@ describe('PluginsDiscoveryList', () => {
 
   function renderList({
     hrefForEntry,
-    showPipelineSources,
     sections,
     onSelectEntry = (): void => {},
     // `null` renders the list without an add flow (`undefined` takes the
@@ -104,7 +101,6 @@ describe('PluginsDiscoveryList', () => {
       root.render(
         <PluginsDiscoveryList
           hrefForEntry={hrefForEntry}
-          showPipelineSources={showPipelineSources}
           sections={sections}
           selectedEntryId={null}
           onSelectEntry={onSelectEntry}
@@ -119,108 +115,204 @@ describe('PluginsDiscoveryList', () => {
     });
   }
 
-  it('blocks local agent prompt subtitles from replay without blocking card controls', () => {
-    const entry = makeEntry({
-      id: 'agent:local:private',
-      kind: 'agent',
-      origin: 'installed-standalone',
-      description: 'Private instructions for this agent.',
-      ref: { type: 'local-agent', agentId: 'private' },
+  it('CAN-4847 hides requirement navigation when the host cannot open it', () => {
+    const item = makeEntry({
+      requirements: [{ key: 'github', name: 'GitHub', entryId: 'github' }],
     });
-    const publicEntry = makeEntry();
-    renderList({
-      sections: [
-        { id: 'agents', title: 'Agents', entries: [entry] },
-        { id: 'curated', title: 'Plugins', entries: [publicEntry] },
-      ],
-    });
-    const subtitle = container.querySelector(
-      `[data-testid="plugins-card-subtitle-${entry.id}"]`,
-    );
-    expect(subtitle?.textContent).toBe(entry.description);
-    expect(subtitle?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
-    expect(
-      subtitle?.parentElement?.closest(`.${REPLAY_BLOCK_CLASS}`),
-    ).toBeNull();
-    expect(
+    renderList({ sections: [{ id: 'curated', title: '', entries: [item] }] });
+    act(() =>
       container
-        .querySelector(
-          `[data-testid="plugins-card-subtitle-${publicEntry.id}"]`,
+        .querySelector<HTMLElement>(
+          '[data-testid="plugins-entry-menu-curated:alpha"]',
         )
-        ?.classList.contains(REPLAY_BLOCK_CLASS),
-    ).toBe(false);
-  });
-
-  it('puts every row action in one trailing slot of the same width', () => {
-    // A Share icon and an Add button line up down the column rather than
-    // sitting at different x positions per row.
-    const owned = makeEntry({
-      id: 'agent:local:reviewer',
-      kind: 'agent',
-      name: 'Reviewer',
-      state: 'installed',
-      ref: { type: 'local-agent', agentId: 'reviewer' },
-    });
-    const available = makeEntry();
-    renderList({
-      sections: [
-        { id: 'agents', title: 'Agents', entries: [owned, available] },
-      ],
-      entryShareStates: new Map([
-        [owned.id, { status: 'shareable', onShare: (): void => {} }],
-      ]),
-      onShareEntry: (): void => {},
-    });
-    const ownedSlot = container.querySelector(
-      `[data-testid="plugins-card-actions-${owned.id}"]`,
-    );
-    const availableSlot = container.querySelector(
-      `[data-testid="plugins-card-actions-${available.id}"]`,
+        ?.click(),
     );
     expect(
-      ownedSlot?.querySelector(
-        `[data-testid="plugins-entry-share-${owned.id}"]`,
+      document.querySelector(
+        '[data-testid="plugins-entry-menu-curated:alpha-requirement-github"]',
       ),
-    ).not.toBeNull();
-    expect(
-      availableSlot?.querySelector(
-        `[data-testid="plugins-entry-add-${available.id}"]`,
-      ),
-    ).not.toBeNull();
-    expect(ownedSlot?.className).toBe(availableSlot?.className);
-    expect(ownedSlot?.classList.contains('min-w-16')).toBe(true);
-    expect(ownedSlot?.classList.contains('justify-center')).toBe(true);
+    ).toBeNull();
   });
 
-  it('shows the MCP restriction on a disabled collection Share action', () => {
-    const entry = makeEntry({
-      id: 'collection:abc',
+  it.each([
+    'skill',
+    'plugin',
+    'app',
+    'agent',
+    'pipeline',
+    'collection',
+  ] as const)(
+    'CAN-4847 renders %s discovery through the common compact row with one install slot',
+    (kind) => {
+      const item = makeEntry({
+        kind,
+        authorName: 'Publisher',
+        typeLabel: kind,
+      });
+      const onAddEntry = jest.fn();
+      renderList({
+        sections: [{ id: 'curated', title: 'Browse', entries: [item] }],
+        onAddEntry,
+      });
+      const row = container.querySelector(
+        `[data-testid="customize-discovery-row-${item.id}"]`,
+      );
+      expect(row?.tagName).toBe('LI');
+      expect(
+        row?.querySelector(`[data-testid="customize-row-subtitle-${item.id}"]`)
+          ?.textContent,
+      ).toBe('Publisher');
+      const add = row?.querySelector<HTMLButtonElement>(
+        `[data-testid="plugins-entry-add-${item.id}"]`,
+      );
+      expect(add?.textContent).toBe(kind === 'collection' ? 'Add' : 'Install');
+      expect(row?.querySelector('[aria-haspopup="listbox"]')).toBeNull();
+      act(() => add?.click());
+      expect(onAddEntry).toHaveBeenCalledWith(item);
+    },
+  );
+
+  it('CAN-4847 puts Share in the menu and preserves blocked reasons without starting another action', () => {
+    const item = makeEntry({
       kind: 'collection',
-      components: { skills: 0, mcpServers: 1, commands: 0, agents: 0 },
+      components: {
+        skills: 0,
+        plugins: 0,
+        mcpServers: 1,
+        commands: 0,
+        agents: 0,
+      },
       ref: { type: 'local-collection', collectionId: 'abc' },
     });
-    const onShare = jest.fn();
-    const state = collectionShareBlockedState(entry);
-    if (!state) throw new Error('Expected a blocked collection state');
+    const onShareEntry = jest.fn(),
+      onSelectEntry = jest.fn(),
+      onAddEntry = jest.fn();
+    const state = collectionShareBlockedState(item);
+    if (!state) throw new Error('Expected an MCP restriction');
     renderList({
-      sections: [{ id: 'collections', title: 'Collections', entries: [entry] }],
-      entryShareStates: new Map([[entry.id, state]]),
-      onShareEntry: onShare,
+      sections: [{ id: 'collections', title: '', entries: [item] }],
+      onShareEntry,
+      onSelectEntry,
+      onAddEntry,
+      entryShareStates: new Map([[item.id, state]]),
     });
-    const button = container.querySelector(
-      `[data-testid="plugins-entry-share-${entry.id}"]`,
+    expect(
+      container.querySelector(`[data-testid="plugins-entry-share-${item.id}"]`),
+    ).toBeNull();
+    press(
+      container.querySelector(`[data-testid="plugins-entry-menu-${item.id}"]`),
+      'Menu',
     );
-    expect(button).not.toBeNull();
-    // Focusable, so a keyboard user can reach the explanation.
-    expect(button?.hasAttribute('disabled')).toBe(false);
-    expect(button?.getAttribute('aria-disabled')).toBe('true');
-    expect(button?.getAttribute('aria-description')).toBe(
+    const share = document.querySelector(
+      `[data-testid="plugins-entry-menu-${item.id}-share"]`,
+    );
+    expect(share?.textContent).toBe('Share…');
+    expect(share?.getAttribute('aria-disabled')).toBe('true');
+    expect(share?.getAttribute('aria-description')).toBe(
       'Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.',
     );
-    act(() => {
-      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    press(share, 'Blocked Share');
+    expect(onShareEntry).not.toHaveBeenCalled();
+    expect(onSelectEntry).not.toHaveBeenCalled();
+    expect(onAddEntry).not.toHaveBeenCalled();
+  });
+
+  it('CAN-4847 invokes menu Share only for a shareable entry', () => {
+    const item = makeEntry();
+    const onShareEntry = jest.fn();
+    renderList({
+      sections: [{ id: 'curated', title: '', entries: [item] }],
+      onShareEntry,
+      entryShareStates: new Map([[item.id, { status: 'shareable' }]]),
     });
-    expect(onShare).not.toHaveBeenCalled();
+    press(
+      container.querySelector(`[data-testid="plugins-entry-menu-${item.id}"]`),
+      'Menu',
+    );
+    press(
+      document.querySelector(
+        `[data-testid="plugins-entry-menu-${item.id}-share"]`,
+      ),
+      'Share',
+    );
+    expect(onShareEntry).toHaveBeenCalledWith(item);
+    expect(menuSurface(item.id)).toBeNull();
+  });
+
+  it('CAN-4847 keeps required integration navigation in the menu', () => {
+    const onOpenEntryId = jest.fn();
+    const item = makeEntry({
+      requirements: [{ key: 'docs', name: 'Docs', entryId: 'mcp:docs' }],
+    });
+    renderList({
+      sections: [{ id: 'curated', title: '', entries: [item] }],
+      onOpenEntryId,
+    });
+    press(
+      container.querySelector(`[data-testid="plugins-entry-menu-${item.id}"]`),
+      'Menu',
+    );
+    const requirement = document.querySelector(
+      `[data-testid="plugins-entry-menu-${item.id}-requirement-docs"]`,
+    );
+    expect(requirement?.textContent).toBe('Open Docs');
+    press(requirement, 'Required integration');
+    expect(onOpenEntryId).toHaveBeenCalledWith('mcp:docs');
+  });
+
+  it('CAN-4847 keeps source, health and execution surface while omitting description prose', () => {
+    const item = makeEntry({
+      origin: 'marketplace',
+      sourceLabel: 'Anthropic',
+      description: 'Private descriptive prose',
+      version: '0.12.0',
+      surface: 'desktop',
+      connection: { status: 'connected' },
+    });
+    renderList({ sections: [{ id: 'curated', title: '', entries: [item] }] });
+    const row = container.querySelector(
+      `[data-testid="customize-discovery-row-${item.id}"]`,
+    );
+    expect(
+      row?.querySelector(`[data-testid="customize-row-subtitle-${item.id}"]`)
+        ?.textContent,
+    ).toBe('Anthropic·v0.12.0');
+    expect(row?.textContent).not.toContain('Private descriptive prose');
+    expect(
+      row?.querySelector(`[data-testid="plugins-surface-${item.id}"]`),
+    ).not.toBeNull();
+    expect(
+      row?.querySelector(`[data-testid="plugins-connection-status-${item.id}"]`)
+        ?.textContent,
+    ).toContain('Connected');
+  });
+
+  it('CAN-4847 nests category links under Browse as smaller h3 headings', () => {
+    const onExpand = jest.fn();
+    act(() =>
+      root.render(
+        <PluginsDiscoveryList
+          nested
+          sections={[
+            {
+              id: 'curated',
+              title: 'Utilities',
+              entries: [makeEntry()],
+              onExpand,
+            },
+          ]}
+          selectedEntryId={null}
+          onSelectEntry={() => {}}
+          emptyMessage="Empty"
+        />,
+      ),
+    );
+    expect(container.querySelector('h2')).toBeNull();
+    expect(container.querySelector('h3')?.textContent).toContain('Utilities');
+    const link = container.querySelector<HTMLButtonElement>('h3 button');
+    expect(link?.querySelector('svg')).not.toBeNull();
+    act(() => link?.click());
+    expect(onExpand).toHaveBeenCalledTimes(1);
   });
 
   function requireElement(node: Element | null, label: string): HTMLElement {
@@ -253,7 +345,7 @@ describe('PluginsDiscoveryList', () => {
 
   function menuSurface(entryId: string): Element | null {
     return document.querySelector(
-      `[data-testid="plugins-entry-menu-surface-${entryId}"]`,
+      `[data-testid="plugins-entry-menu-${entryId}-surface"]`,
     );
   }
 
@@ -356,51 +448,6 @@ describe('PluginsDiscoveryList', () => {
     expect(document.activeElement).toBe(first);
   });
 
-  it('shows the catalog source on metadata, outside the title (CAN-5050)', () => {
-    renderList({
-      sections: [
-        {
-          id: 'curated',
-          title: 'Curated',
-          entries: [
-            makeEntry({
-              origin: 'marketplace',
-              typeLabel: 'Plugin',
-              sourceLabel: 'Codex official',
-              ownershipLabel: 'OpenAI',
-              availabilityLabel: 'Available',
-            }),
-          ],
-        },
-      ],
-    });
-
-    const card = requireElement(
-      container.querySelector('[data-testid="plugins-entry-curated:alpha"]'),
-      'Alpha card',
-    );
-    expect(card.textContent).toContain('Alpha');
-    expect(card.textContent).toContain('An alpha plugin.');
-    const source = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-card-source-curated:alpha"]',
-      ),
-      'source label',
-    );
-    expect(source.textContent).toBe('Codex official');
-    expect(source.className).toContain('fg-tertiary');
-    expect(
-      source.closest('[data-testid="plugins-card-meta-curated:alpha"]'),
-    ).not.toBeNull();
-    expect(
-      source.closest('[data-testid="plugins-card-title-curated:alpha"]'),
-    ).toBeNull();
-    expect(card.textContent).not.toContain('OpenAI');
-    expect(card.textContent).not.toContain('Available');
-    expect(card.className).toContain('gap-4');
-    expect(card.className).not.toContain('gap-3');
-  });
-
   describe('CAN-3653 — plugin provenance on cards', () => {
     const catalogCard = makeEntry({
       id: 'mcp-catalog:slack',
@@ -445,133 +492,6 @@ describe('PluginsDiscoveryList', () => {
         container.querySelector('[data-testid^="plugins-card-source-"]'),
       ).toBeNull();
     });
-
-    it('replaces Add with Installed via <plugin> and opens the plugin', () => {
-      const onOpenEntryId = jest.fn<void, [string]>();
-      const onAddEntry = jest.fn<void, [UnifiedPluginEntry]>();
-      renderList({
-        sections: section([catalogCard]),
-        onOpenEntryId,
-        onAddEntry,
-      });
-      expect(
-        container.querySelector(
-          '[data-testid="plugins-entry-add-mcp-catalog:slack"]',
-        ),
-      ).toBeNull();
-      const via = requireElement(
-        container.querySelector<HTMLButtonElement>(
-          '[data-testid="plugins-entry-installed-via-mcp-catalog:slack"]',
-        ),
-        'Installed via',
-      );
-      expect(via.textContent).toBe('Installed via Slack');
-      expect(via.getAttribute('aria-label')).toBe(
-        'Installed via Slack. Open the Slack plugin',
-      );
-      act(() => {
-        via.click();
-      });
-      expect(onOpenEntryId).toHaveBeenCalledWith('mkt:openai-curated/slack');
-      expect(onAddEntry).not.toHaveBeenCalled();
-    });
-
-    it('disables Installed via without onOpenEntryId', () => {
-      renderList({ sections: section([catalogCard]) });
-      const via = container.querySelector<HTMLButtonElement>(
-        '[data-testid="plugins-entry-installed-via-mcp-catalog:slack"]',
-      );
-      expect(via?.disabled).toBe(true);
-    });
-
-    it('reads From the <plugin> plugin as text and offers Open the <plugin> plugin in the actions slot', () => {
-      const onOpenEntryId = jest.fn<void, [string]>();
-      renderList({
-        sections: section([bundledRow]),
-        onOpenEntryId,
-        hrefForEntry: (entry) => `/entries/${entry.id}`,
-      });
-      const from = requireElement(
-        container.querySelector(
-          '[data-testid="plugins-card-from-plugin-mcp-local:slack"]',
-        ),
-        'From the plugin',
-      );
-      expect(from.tagName).toBe('SPAN');
-      expect(from.textContent).toBe('From the Slack plugin');
-      const open = requireElement(
-        container.querySelector<HTMLButtonElement>(
-          '[data-testid="plugins-entry-open-plugin-mcp-local:slack"]',
-        ),
-        'Open the plugin',
-      );
-      expect(open.textContent).toBe('Open the Slack plugin');
-      act(() => {
-        open.click();
-      });
-      expect(onOpenEntryId).toHaveBeenCalledWith('mkt:openai-curated/slack');
-      expect(container.querySelector('a button')).toBeNull();
-    });
-  });
-
-  it('uses edited known-product subtitles and leaves other copy to CSS truncation', () => {
-    renderList({
-      sections: [
-        {
-          id: 'featured',
-          title: 'Featured',
-          entries: [
-            makeEntry({
-              id: 'mkt:openai-curated/github',
-              name: 'GitHub',
-              description:
-                'Inspect repositories, triage pull requests and issues, debug continuous integration, and publish release workflows.',
-              ref: {
-                type: 'marketplace-plugin',
-                marketplaceId: 'openai-curated',
-                pluginName: 'github',
-              },
-            }),
-            makeEntry({
-              id: 'curated:long-copy',
-              name: 'Long Copy',
-              description:
-                'Search company documents and prepare polished reports for busy operations teams.',
-              ref: { type: 'curated-plugin', key: 'long-copy' },
-            }),
-          ],
-        },
-      ],
-    });
-
-    const githubCopy = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-card-copy-mkt:openai-curated/github"]',
-      ),
-      'GitHub card copy',
-    );
-    const genericCopy = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-card-copy-curated:long-copy"]',
-      ),
-      'generic card copy',
-    );
-
-    expect(githubCopy.textContent).toContain(
-      'Triage PRs, issues, CI, and release workflows',
-    );
-    expect(githubCopy.textContent).not.toContain('Inspect repositories');
-    expect(genericCopy.textContent).toContain(
-      'Search company documents and prepare polished reports for busy operations teams.',
-    );
-    const subtitle = requireElement(
-      genericCopy.querySelector(
-        '[data-testid="plugins-card-subtitle-curated:long-copy"]',
-      ),
-      'generic subtitle',
-    );
-    expect(subtitle.classList.contains('block')).toBe(true);
-    expect(subtitle.classList.contains('truncate')).toBe(true);
   });
 
   it('omits the card subtitle when the description has no visible text', () => {
@@ -604,7 +524,7 @@ describe('PluginsDiscoveryList', () => {
     entryId: string,
   ): Element | null {
     return document.querySelector(
-      `[data-testid="plugins-menu-${action}-${entryId}"]`,
+      `[data-testid="plugins-entry-menu-${entryId}-${action}"]`,
     );
   }
 
@@ -751,83 +671,6 @@ describe('PluginsDiscoveryList', () => {
   // Card menu
   // -------------------------------------------------------------------------
 
-  it('says which skills an integration card includes (REG-3033)', () => {
-    renderList({
-      sections: [
-        {
-          id: 'suggested',
-          title: 'Suggested',
-          entries: [
-            makeEntry({
-              id: 'mcp-catalog:linear',
-              kind: 'app',
-              name: 'Linear',
-              ref: { type: 'curated-mcp', key: 'linear' },
-              integration: {
-                curatedKey: 'linear',
-                plugin: {
-                  key: 'linear',
-                  name: 'Linear',
-                  skills: 2,
-                  installed: false,
-                },
-                connections: [],
-              },
-            }),
-          ],
-        },
-      ],
-    });
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-includes-mcp-catalog:linear"]',
-      )?.textContent,
-    ).toBe('Includes Linear skills');
-  });
-
-  it('links each integration a multi-connection plugin needs to its card (REG-3033)', () => {
-    const onOpenEntryId = jest.fn<void, [string]>();
-    renderList({
-      onOpenEntryId,
-      sections: [
-        {
-          id: 'suggested',
-          title: 'Suggested',
-          entries: [
-            makeEntry({
-              id: 'curated:release-notes',
-              name: 'Release Notes',
-              ref: { type: 'curated-plugin', key: 'release-notes' },
-              requirements: [
-                {
-                  key: 'linear',
-                  name: 'Linear',
-                  entryId: 'mcp-catalog:linear',
-                },
-                { key: 'jira', name: 'Jira', entryId: 'mcp-catalog:jira' },
-              ],
-            }),
-          ],
-        },
-      ],
-    });
-    const chips = Array.from(
-      container.querySelectorAll(
-        '[data-testid^="plugins-requirement-curated:release-notes-"]',
-      ),
-    );
-    expect(chips.map((chip) => chip.textContent)).toEqual(['Linear', 'Jira']);
-    // The chips are controls of their own, never nested inside the card's
-    // primary control: nested interactive content is invalid HTML and reads
-    // as one control to assistive technology.
-    for (const chip of chips) {
-      expect(chip.tagName).toBe('BUTTON');
-      expect(chip.closest('[data-marketplace-entry="true"]')).toBeNull();
-    }
-    press(chips[1] ?? null, 'Jira requirement chip');
-    expect(onOpenEntryId).toHaveBeenCalledWith('mcp-catalog:jira');
-  });
-
   it('shows Add for available items and no single-action menu for installed items', () => {
     const selected: string[] = [];
     const added: string[] = [];
@@ -861,6 +704,13 @@ describe('PluginsDiscoveryList', () => {
       ),
       'Alpha Add button',
     );
+    expect(addButton.classList.contains('fg-primary')).toBe(true);
+    expect(addButton.classList.contains('h-7')).toBe(true);
+    expect(addButton.classList.contains('text-xs')).toBe(true);
+    expect(
+      addButton.classList.contains('pointer-coarse:before:-inset-y-2'),
+    ).toBe(true);
+    expect(addButton.hasAttribute('disabled')).toBe(false);
     press(addButton, 'Alpha Add button');
     expect(added).toEqual(['curated:alpha']);
     expect(selected).toEqual([]);
@@ -874,7 +724,7 @@ describe('PluginsDiscoveryList', () => {
       container.querySelector(
         '[data-testid="plugins-entry-menu-curated:installed"]',
       ),
-    ).toBeNull();
+    ).not.toBeNull();
     press(
       container.querySelector(
         '[data-testid="plugins-entry-curated:installed"]',
@@ -882,190 +732,6 @@ describe('PluginsDiscoveryList', () => {
       'Installed Tool card',
     );
     expect(selected).toEqual(['curated:installed']);
-  });
-
-  it('labels the add action Install on shared cards only (CAN-5223)', () => {
-    const added: string[] = [];
-    const sharedSkill = makeEntry({
-      id: 'skill:shared:s1',
-      kind: 'skill',
-      origin: 'shared',
-      name: 'Review Helper',
-      ref: { type: 'shared-skill', skillId: 's1' },
-    });
-    const sharedAgent = makeEntry({
-      id: 'agent:shared:a1',
-      kind: 'agent',
-      origin: 'shared',
-      name: 'Triage Agent',
-      ref: { type: 'shared-agent', agentId: 'a1' },
-    });
-    const installedShare = makeEntry({
-      id: 'skill:shared:s2',
-      kind: 'skill',
-      origin: 'shared',
-      name: 'Installed Helper',
-      state: 'installed',
-      ref: { type: 'shared-skill', skillId: 's2' },
-    });
-    renderList({
-      sections: [
-        {
-          id: 'search-results',
-          title: '',
-          entries: [sharedSkill, sharedAgent, makeEntry(), installedShare],
-        },
-      ],
-      entryShareStates: new Map([[sharedSkill.id, { status: 'shareable' }]]),
-      onShareEntry: () => {},
-      onAddEntry: (entry): void => {
-        added.push(entry.id);
-      },
-    });
-
-    const action = (id: string): HTMLElement | null =>
-      container.querySelector(`[data-testid="plugins-entry-add-${id}"]`);
-    for (const [entry, verb] of [
-      [sharedSkill, 'Install'],
-      [sharedAgent, 'Install'],
-      [makeEntry(), 'Add'],
-    ] as const) {
-      const button = requireElement(action(entry.id), `${entry.name} action`);
-      expect(button.textContent).toBe(verb);
-      expect(button.getAttribute('aria-label')).toBe(`${verb} ${entry.name}`);
-    }
-    press(action(sharedSkill.id), 'Review Helper action');
-    expect(added).toEqual(['skill:shared:s1']);
-    expect(action(installedShare.id)).toBeNull();
-    const share = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-entry-share-skill:shared:s1"]',
-      ),
-      'shared skill Share action',
-    );
-    expect(share.getAttribute('aria-label')).toBe('Share Review Helper');
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
-      );
-      share.focus();
-    });
-    expect(document.activeElement).toBe(share);
-    const tooltip = document.querySelector('[role="tooltip"]');
-    expect(tooltip?.textContent).toBe('Share');
-    expect(share.getAttribute('aria-describedby')).toBe(tooltip?.id);
-  });
-
-  it('shows an icon share action only for entries with a share state', () => {
-    const shared: string[] = [];
-    renderList({
-      sections: [
-        {
-          id: 'search-results',
-          title: '',
-          entries: [
-            makeEntry({ state: 'available' }),
-            makeEntry({ id: 'curated:other' }),
-          ],
-        },
-      ],
-      entryShareStates: new Map([['curated:alpha', { status: 'shareable' }]]),
-      onShareEntry: (entry): void => {
-        shared.push(entry.id);
-      },
-    });
-
-    const shareButton = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-entry-share-curated:alpha"]',
-      ),
-      'Alpha share button',
-    );
-    expect(shareButton.getAttribute('aria-label')).toBe('Share Alpha');
-    expect(shareButton.textContent).toBe('');
-    // The one share glyph, the share nodes, not the arrow-out-of-box upload.
-    expect(shareButton.innerHTML).toContain('data-glyph="share-2"');
-    expect(shareButton.innerHTML).not.toContain('data-glyph="upload"');
-    // Share and Add sit 8px apart (gap-2), up from 4.
-    const addButton = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-entry-add-curated:alpha"]',
-      ),
-      'Alpha add button',
-    );
-    expect(addButton.parentElement?.className ?? '').toContain('gap-2');
-    expect(addButton.parentElement?.className ?? '').not.toMatch(/\bgap-1\b/);
-    press(shareButton, 'Alpha share button');
-    expect(shared).toEqual(['curated:alpha']);
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-entry-share-curated:other"]',
-      ),
-    ).toBeNull();
-  });
-
-  it('shows a blocked Share with its reason without sharing, selecting or adding', () => {
-    const shared: string[] = [];
-    const selected: string[] = [];
-    const added: string[] = [];
-    const reason = 'MCP server connections cannot be shared.';
-    renderList({
-      sections: [
-        {
-          id: 'search-results',
-          title: '',
-          entries: [
-            makeEntry({ state: 'available' }),
-            makeEntry({ id: 'curated:installed', state: 'installed' }),
-          ],
-        },
-      ],
-      entryShareStates: new Map([
-        ['curated:alpha', { status: 'blocked', reason }],
-        ['curated:installed', { status: 'shareable' }],
-      ]),
-      onSelectEntry: (entry): void => {
-        selected.push(entry.id);
-      },
-      onAddEntry: (entry): void => {
-        added.push(entry.id);
-      },
-      onShareEntry: (entry): void => {
-        shared.push(entry.id);
-      },
-    });
-
-    const blocked = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-entry-share-curated:alpha"]',
-      ),
-      'Alpha share button',
-    );
-    expect(blocked.getAttribute('aria-disabled')).toBe('true');
-    expect(blocked.getAttribute('aria-description')).toBe(reason);
-    expect(blocked.hasAttribute('disabled')).toBe(false);
-    // Share sits immediately before Add in the one action group.
-    const actionGroup = requireElement(
-      container.querySelector('[data-testid="plugins-entry-add-curated:alpha"]')
-        ?.parentElement ?? null,
-      'Alpha action group',
-    );
-    expect(actionGroup.contains(blocked)).toBe(true);
-    press(blocked, 'Alpha share button');
-    expect(shared).toEqual([]);
-    expect(selected).toEqual([]);
-    expect(added).toEqual([]);
-
-    // Installation state does not hide Share.
-    const installed = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-entry-share-curated:installed"]',
-      ),
-      'Installed share button',
-    );
-    press(installed, 'Installed share button');
-    expect(shared).toEqual(['curated:installed']);
-    expect(selected).toEqual([]);
   });
 
   it('renders no Share on a host without a share callback', () => {
@@ -1095,7 +761,7 @@ describe('PluginsDiscoveryList', () => {
       container.querySelector(
         '[data-testid="plugins-entry-menu-curated:alpha"]',
       ),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it('offers Connect for a needs-auth entry when the host wires it', () => {
@@ -1122,12 +788,8 @@ describe('PluginsDiscoveryList', () => {
     );
     expect(menuItem('view', 'curated:alpha')).not.toBeNull();
     // Each row leads with its own icon, on the shared action-menu recipe.
-    expect(
-      menuItem('connect', 'curated:alpha')?.querySelector('svg'),
-    ).not.toBeNull();
-    expect(
-      menuItem('view', 'curated:alpha')?.querySelector('svg'),
-    ).not.toBeNull();
+    expect(menuItem('connect', 'curated:alpha')?.textContent).toBe('Connect');
+    expect(menuItem('view', 'curated:alpha')?.textContent).toBe('Open details');
     press(menuItem('connect', 'curated:alpha'), 'Alpha Connect item');
 
     expect(connected.map((entry) => entry.id)).toEqual(['curated:alpha']);
@@ -1143,7 +805,7 @@ describe('PluginsDiscoveryList', () => {
       container.querySelector(
         '[data-testid="plugins-entry-menu-curated:alpha"]',
       ),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       container.querySelector(
         '[data-testid="plugins-entry-add-curated:alpha"]',
@@ -1354,71 +1016,6 @@ describe('PluginsDiscoveryList', () => {
     ).toBe('No pipelines match these filters.');
     expect(container.textContent).not.toContain('Nothing here.');
   });
-  it('shows explicit pipeline source badges only when the host opts in', () => {
-    const sources = ['Curated', 'Shared', 'Local', 'Built-in', 'Project'];
-    const sections: PluginsDiscoverySection[] = [
-      {
-        id: 'pipelines',
-        title: 'Pipelines',
-        entries: sources.map((sourceLabel, index) =>
-          makeEntry({
-            id: `pipeline-${index}`,
-            name: `Workflow ${index}`,
-            kind: 'pipeline',
-            origin: sourceLabel === 'Curated' ? 'curated' : 'shared',
-            sourceLabel,
-          }),
-        ),
-      },
-    ];
-    renderList({ sections, showPipelineSources: true });
-    sources.forEach((label, index) => {
-      expect(
-        container.querySelector(
-          `[data-testid="plugins-pipeline-source-pipeline-${index}"]`,
-        )?.textContent,
-      ).toBe(label);
-    });
-    renderList({ sections });
-    expect(
-      container.querySelectorAll('[data-testid^="plugins-pipeline-source-"]'),
-    ).toHaveLength(0);
-  });
-  it('labels where an MCP entry runs on the title line, not as a pill', () => {
-    renderList({
-      sections: [
-        {
-          id: 'apps',
-          title: 'Apps',
-          entries: [
-            makeEntry({ id: 'cloud', surface: 'cloud', state: 'needs-auth' }),
-            makeEntry({ id: 'desktop', surface: 'desktop' }),
-            makeEntry({ id: 'plain' }),
-          ],
-        },
-      ],
-    });
-    const badge = (id: string): string | null | undefined =>
-      container.querySelector(`[data-testid="plugins-surface-${id}"]`)
-        ?.textContent;
-    expect(badge('cloud')).toBe('Cloud + desktop');
-    expect(badge('desktop')).toBe('Desktop only');
-    expect(badge('plain')).toBeUndefined();
-    expect(
-      container
-        .querySelector('[data-testid="plugins-surface-cloud"]')
-        ?.closest('[data-testid="plugins-card-title-cloud"]'),
-    ).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="plugins-card-meta-cloud"]')
-        ?.textContent,
-    ).toContain('Needs attention');
-    expect(
-      container
-        .querySelector('[data-testid="plugins-surface-desktop"]')
-        ?.querySelector('svg'),
-    ).not.toBeNull();
-  });
 
   it('hides connection health that was never checked (CAN-4840)', () => {
     renderList({
@@ -1435,90 +1032,6 @@ describe('PluginsDiscoveryList', () => {
     expect(
       container.querySelector(
         '[data-testid="plugins-connection-status-unchecked"]',
-      ),
-    ).toBeNull();
-  });
-
-  it("shows an MCP entry's connection status in place of the state badge (CAN-4265)", () => {
-    renderList({
-      sections: [
-        {
-          id: 'apps',
-          title: 'Apps',
-          entries: [
-            makeEntry({
-              id: 'mcp',
-              state: 'needs-auth',
-              connection: { status: 'auth_required' },
-            }),
-            makeEntry({
-              id: 'provider',
-              connection: { status: 'connected', provider: true },
-            }),
-            makeEntry({ id: 'plugin', state: 'needs-auth' }),
-          ],
-        },
-      ],
-    });
-    const status = (id: string): string | null | undefined =>
-      container.querySelector(`[data-testid="plugins-connection-status-${id}"]`)
-        ?.textContent;
-    expect(status('mcp')).toBe('Auth required');
-    expect(
-      container.querySelector('[data-testid="plugins-entry-mcp"]')?.textContent,
-    ).not.toContain('Needs attention');
-    expect(status('provider')).toBe('Connected');
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-connection-provider-provider"]',
-      )?.textContent,
-    ).toBe('Agent provider');
-    expect(status('plugin')).toBeUndefined();
-    expect(
-      container.querySelector('[data-testid="plugins-entry-plugin"]')
-        ?.textContent,
-    ).toContain('Needs attention');
-  });
-
-  it('badges only the installed entries whose source has changed', () => {
-    renderList({
-      sections: [
-        {
-          id: 'automations',
-          title: 'Automations',
-          entries: [
-            makeEntry({
-              id: 'automation:local:stale',
-              kind: 'automation',
-              state: 'installed',
-              updateAvailable: true,
-              ref: { type: 'automation', activityId: 'stale' },
-            }),
-            makeEntry({
-              id: 'automation:local:current',
-              kind: 'automation',
-              state: 'installed',
-              ref: { type: 'automation', activityId: 'current' },
-            }),
-          ],
-        },
-      ],
-    });
-
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-update-available-automation:local:stale"]',
-      )?.textContent,
-    ).toBe('Update available');
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-update-available-automation:local:current"]',
-      ),
-    ).toBeNull();
-    // An installed automation is opened, never added again.
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-entry-add-automation:local:stale"]',
       ),
     ).toBeNull();
   });
@@ -1547,192 +1060,8 @@ describe('PluginsDiscoveryList', () => {
 
   // CAN-3009: who an entry is shared with is routine metadata, so it is plain
   // text beside the name (`Team: Growth`, `Organization`), never a pill.
-  it('names the team or organization a shared entry is shared with as plain text', () => {
-    renderList({
-      sections: [
-        {
-          id: 'skills',
-          title: 'Shared skills',
-          entries: [
-            makeEntry({
-              id: 'skill:shared:one',
-              kind: 'skill',
-              origin: 'shared',
-              sharedWith: { audience: 'team', name: 'Growth' },
-            }),
-            makeEntry({
-              id: 'skill:shared:two',
-              kind: 'skill',
-              origin: 'shared',
-              sharedWith: { audience: 'organization', name: 'Acme' },
-            }),
-            makeEntry({ id: 'skill:shared:three', kind: 'skill' }),
-          ],
-        },
-      ],
-    });
-
-    const team = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-card-shared-with-skill:shared:one"]',
-      ),
-      'team label',
-    );
-    expect(team.textContent).toBe('Team: Growth');
-    expect(team.className).not.toMatch(/\b(bg-|ring-|rounded|border)/);
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-card-shared-with-skill:shared:two"]',
-      )?.textContent,
-    ).toBe('Organization');
-    expect(
-      container.querySelector(
-        '[data-testid="plugins-card-shared-with-skill:shared:three"]',
-      ),
-    ).toBeNull();
-  });
 
   // CAN-4261 QA: every Browse card reads name and type, then its
   // description, then one meta line for where it comes from and who it is
   // shared with.
-  it('keeps the title line to the name and type and moves source tags to a meta line', () => {
-    const entry = makeEntry({
-      id: 'pipeline:curated:review',
-      kind: 'pipeline',
-      origin: 'curated',
-      name: 'Review workflow',
-      typeLabel: 'Pipeline',
-      sourceLabel: 'Curated',
-      recommended: true,
-      sharedWith: { audience: 'team', name: 'E2E Team' },
-      ref: { type: 'curated-pipeline', key: 'review' },
-    });
-    renderList({
-      showPipelineSources: true,
-      sections: [
-        { id: 'workflows', title: '', entries: [entry], showEntryTypes: true },
-      ],
-    });
-
-    const title = requireElement(
-      container.querySelector(`[data-testid="plugins-card-title-${entry.id}"]`),
-      'title line',
-    );
-    expect(title.textContent).toBe('Review workflowPipeline');
-    expect(title.textContent).not.toContain('Recommended');
-    const meta = requireElement(
-      container.querySelector(`[data-testid="plugins-card-meta-${entry.id}"]`),
-      'meta line',
-    );
-    expect(meta.textContent).toContain('Curated');
-    expect(meta.textContent).toContain('E2E Team');
-    const curatedMark = requireElement(
-      container.querySelector(
-        `[data-testid="plugins-card-curated-mark-${entry.id}"]`,
-      ),
-      'curated mark',
-    );
-    expect(curatedMark.getAttribute('role')).toBe('img');
-    expect(curatedMark.getAttribute('aria-label')).toBe(
-      'Curated by Unstoppable Domains',
-    );
-    expect(curatedMark.querySelector('svg')).not.toBeNull();
-    expect(curatedMark.classList.contains('fg-primary')).toBe(true);
-    expect(curatedMark.innerHTML.match(/fill="currentColor"/g)).toHaveLength(2);
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        curatedMark.dispatchEvent(
-          new MouseEvent('mouseover', { bubbles: true }),
-        );
-      });
-      act(() => jest.advanceTimersByTime(1_000));
-      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
-        'Curated by Unstoppable Domains',
-      );
-    } finally {
-      jest.useRealTimers();
-    }
-    // The meta line follows the description.
-    const subtitle = requireElement(
-      container.querySelector(
-        `[data-testid="plugins-card-subtitle-${entry.id}"]`,
-      ),
-      'subtitle',
-    );
-    expect(
-      subtitle.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
-  it('marks a recommended entry with a star icon named Recommended, not a pill', () => {
-    const entry = makeEntry({ recommended: true });
-    renderList({ sections: [{ id: 'curated', title: '', entries: [entry] }] });
-
-    const star = requireElement(
-      container.querySelector(
-        `[data-testid="plugins-card-recommended-${entry.id}"]`,
-      ),
-      'recommended star',
-    );
-    expect(star.querySelector('svg')).not.toBeNull();
-    expect(star.getAttribute('aria-label')).toBe('Recommended');
-    expect(star.className).not.toMatch(/\b(bg-|rounded-full)/);
-    expect(star.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
-    expect(container.textContent).not.toContain('Recommended');
-  });
-
-  it('shows a team audience as a team icon and the team name', () => {
-    const entry = makeEntry({
-      id: 'skill:shared:one',
-      kind: 'skill',
-      origin: 'shared',
-      sharedWith: { audience: 'team', name: 'E2E Team' },
-    });
-    renderList({ sections: [{ id: 'skills', title: '', entries: [entry] }] });
-
-    const team = requireElement(
-      container.querySelector(
-        '[data-testid="plugins-card-shared-with-skill:shared:one"]',
-      ),
-      'team label',
-    );
-    expect(team.querySelector('svg')).not.toBeNull();
-    // Screen readers still hear the audience; sighted users see the icon.
-    expect(team.textContent).toBe('Team: E2E Team');
-    expect(team.querySelector('.sr-only')?.textContent).toBe('Team: ');
-  });
-
-  it('names an entry type only in a section that mixes kinds', () => {
-    const entries = [
-      makeEntry({ id: 'skill:one', kind: 'skill', typeLabel: 'Skill' }),
-      makeEntry({ id: 'agent:one', kind: 'agent', typeLabel: 'Agent' }),
-    ];
-    renderList({
-      sections: [
-        { id: 'search-results', title: '', entries, showEntryTypes: true },
-      ],
-    });
-    const skillType = requireElement(
-      container.querySelector('[data-testid="plugins-card-type-skill:one"]'),
-      'skill type',
-    );
-    expect(skillType.textContent).toBe('Skill');
-    expect(skillType.className).toContain('fg-tertiary');
-    expect(skillType.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
-    expect(skillType.querySelector('svg')).not.toBeNull();
-    const agentType = requireElement(
-      container.querySelector('[data-testid="plugins-card-type-agent:one"]'),
-      'agent type',
-    );
-    expect(agentType.textContent).toBe('Agent');
-    expect(agentType.className).toContain('fg-tertiary');
-    expect(agentType.className).not.toMatch(/\b(fg-accent|fg-kind-)/);
-    expect(agentType.querySelector('svg')).not.toBeNull();
-
-    renderList({ sections: [{ id: 'skills', title: 'Skills', entries }] });
-    expect(
-      container.querySelector('[data-testid^="plugins-card-type-"]'),
-    ).toBeNull();
-  });
 });

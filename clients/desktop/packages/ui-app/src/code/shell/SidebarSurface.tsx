@@ -56,6 +56,7 @@ import {
   isSpaceNotificationMuted,
   type PipelineStatusPopoverEntry,
   type TerminalPopoverRow,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   DropdownMenuItem,
@@ -65,8 +66,8 @@ import {
 } from '@canopy/ui-shared';
 import {
   ActionMenuRowStyle,
-  Button,
   RailIconButton,
+  SearchField,
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ICON_CLASSNAME,
   sidebarNavIconItemClassName,
@@ -78,7 +79,6 @@ import {
 import {
   ArchiveBoxIcon,
   ChevronDownMediumIcon,
-  CloseIcon,
   EditBigIcon,
   MoreHorizontalIcon,
   PinFilledIcon,
@@ -4365,11 +4365,8 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
           </div>
         ) : contentState === 'empty' &&
           (props.pendingProjects?.length ?? 0) === 0 ? (
-          <div
-            data-testid={testIds?.empty}
-            className="flex h-24 items-center justify-center rounded-md border border-dashed bg-fg-primary/5 text-s fg-secondary"
-          >
-            Nothing here yet.
+          <div className="px-2">
+            <EmptyStateRow testId={testIds?.empty} title="Nothing here yet." />
           </div>
         ) : (
           <div
@@ -4588,18 +4585,19 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
         )}
         {props.chatSearch && chatSearchVisible && (
           <div className="relative flex shrink-0 items-center gap-1.5 border-b px-2.5 py-1.5">
-            {!chatSearchDisclosed && (
-              <SearchIcon className="h-4 w-4 shrink-0 fg-secondary" />
-            )}
-            <input
-              type="search"
+            <SearchField
               id={chatSearchInputId}
+              className="min-w-0 flex-1"
+              clearLabel="Clear chat search"
+              clearTestId="portal-sidebar-chat-search-clear"
+              // Escape is handled below: clear first, then collapse.
+              clearOnEscape={false}
               ref={chatSearchInputRef}
               // Revealing a disclosure that the user cannot then type into is
               // a dead click; focus follows the reveal, never the row default.
               autoFocus={chatSearchDisclosed}
               value={chatSearchQuery}
-              onChange={(event) => setChatSearchQuery(event.target.value)}
+              onValueChange={setChatSearchQuery}
               onKeyDown={(event) => {
                 if (event.key !== 'Escape') return;
                 // Clear first, collapse second: Escape on a typed query means
@@ -4619,21 +4617,7 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
               placeholder="Search chats"
               aria-label="Search chats"
               data-testid="portal-sidebar-chat-search-input"
-              className={`w-full min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-secondary [&::-webkit-search-cancel-button]:hidden ${touch ? 'min-h-8' : ''}`}
             />
-            {chatSearchQuery.length > 0 && (
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                onClick={() => setChatSearchQuery('')}
-                aria-label="Clear chat search"
-                data-testid="portal-sidebar-chat-search-clear"
-                className="-my-1"
-              >
-                <CloseIcon className="h-4 w-4" />
-              </Button>
-            )}
           </div>
         )}
         <div className="relative min-h-0 flex-1">

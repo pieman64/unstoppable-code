@@ -145,9 +145,9 @@ describe('recovery copy', () => {
       'Chat state couldn’t be refreshed',
     );
     expect(CHAT_STATE_REFRESH_ERROR_HELPER).toBe(
-      'Your last loaded transcript is still shown. Retry to load the latest state.',
+      'Your last loaded transcript is still shown. Try again to load the latest state.',
     );
-    expect(CHAT_STATE_REFRESH_RETRY_LABEL).toBe('Retry');
+    expect(CHAT_STATE_REFRESH_RETRY_LABEL).toBe('Try again');
     expect(CHAT_STATE_CONFLICT_NOTICE).toBe('Your view has been refreshed.');
     expect(CHAT_STATE_COMMAND_FAILED_NOTICE).toBe('Try again.');
   });

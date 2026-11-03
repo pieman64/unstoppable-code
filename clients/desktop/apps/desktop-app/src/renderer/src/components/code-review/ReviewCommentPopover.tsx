@@ -5,7 +5,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { ReviewPopoverShell } from './reviewPopoverShell';
 import { ReviewAnnotationCard, ReviewThreadCard } from './reviewPopoverCards';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, TextArea } from '@canopy/ui-shared/components';
 
 export interface ReviewCommentPopoverProps {
   mode: 'compose' | 'thread' | 'annotation';
@@ -87,7 +87,8 @@ export function ReviewCommentPopover({
     >
       {mode === 'compose' && (
         <div className="flex flex-col gap-1.5 rounded-lg border bg-popover p-2">
-          <textarea
+          <TextArea
+            aria-label="Comment"
             value={draftBody}
             onChange={(event): void => setDraftBody(event.target.value)}
             onKeyDown={(event): void => {
@@ -104,7 +105,6 @@ export function ReviewCommentPopover({
             placeholder="Add a comment… (Enter to save, Shift+Enter for a new line)"
             rows={3}
             autoFocus
-            className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
           />
           <div className="flex items-center justify-end gap-1.5">
             <Button size="compact" onClick={onClose}>

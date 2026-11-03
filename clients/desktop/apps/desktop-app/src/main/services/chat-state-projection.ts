@@ -11,7 +11,8 @@ type ChatStateProjectionOptions =
   | number
   | {
       now?: number;
-      snapshot?: Pick<CanonicalChatState, 'runtimeByChatId'>;
+      snapshot?: Pick<CanonicalChatState, 'runtimeByChatId'> &
+        Partial<Pick<CanonicalChatState, 'tabsFile'>>;
     };
 
 /** Project private queue rows out of runtime state sent to outward consumers. */
@@ -50,10 +51,47 @@ export function projectChatStateChanges(
 
   return mutations.map((mutation): ChatStateChange => {
     switch (mutation.type) {
-      case 'tab.created':
-        return { type: 'tab.upserted', tab: mutation.tab };
-      case 'tab.metadata_patched':
-        return mutation;
+      case 'tab.created': {
+        const tab =
+          typeof options === 'number'
+            ? undefined
+            : options.snapshot?.tabsFile?.tabs.find(
+                (candidate) => candidate.id === mutation.tab.id,
+              );
+        return {
+          type: 'tab.upserted',
+          tab:
+            tab &&
+            tab.trackedPlanImplementation !==
+              mutation.tab.trackedPlanImplementation
+              ? {
+                  ...mutation.tab,
+                  trackedPlanImplementation: tab.trackedPlanImplementation,
+                }
+              : mutation.tab,
+        };
+      }
+      case 'tab.metadata_patched': {
+        const tab =
+          typeof options === 'number'
+            ? undefined
+            : options.snapshot?.tabsFile?.tabs.find(
+                (candidate) => candidate.id === mutation.tabId,
+              );
+        return tab &&
+          ('trackedPlanImplementation' in mutation.patch ||
+            'trackedPlanId' in mutation.patch ||
+            'turnEnds' in mutation.patch)
+          ? {
+              ...mutation,
+              patch: {
+                ...mutation.patch,
+                trackedPlanImplementation:
+                  tab.trackedPlanImplementation ?? null,
+              },
+            }
+          : mutation;
+      }
       case 'tab.removed':
         return mutation;
       case 'tab.order_changed':

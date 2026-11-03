@@ -53,6 +53,46 @@ describe('ErrorBanner', () => {
     expect(notice()?.querySelector('.ph-no-capture')).toBeNull();
   });
 
+  it('puts its test id on the announced notice', () => {
+    act(() => {
+      root.render(
+        <ErrorBanner error="Couldn't load workflows." testId="list-error" />,
+      );
+    });
+    const tagged = container.querySelector('[data-testid="list-error"]');
+    expect(tagged).toBe(notice());
+    expect(tagged?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't load workflows.",
+    );
+  });
+
+  it('announces its copy once, never its actions', () => {
+    act(() => {
+      root.render(
+        <ErrorBanner
+          error="Couldn't save the key. The server refused it."
+          details="403 Forbidden"
+          onRetry={jest.fn()}
+          retrying
+        />,
+      );
+    });
+    // Copy details turning into `Copied`, or the retry into
+    // `Trying again…`, must not be read out again as part of the alert.
+    const regions = Array.from(container.querySelectorAll('[aria-live]'));
+    const alerts = regions.filter(
+      (region) => region.getAttribute('role') === 'alert',
+    );
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]?.textContent).toBe(
+      "Couldn't save the key. The server refused it.",
+    );
+    for (const region of regions) {
+      expect(region.querySelector('button')).toBeNull();
+    }
+    expect(notice()?.querySelectorAll('button')).toHaveLength(2);
+  });
+
   it('renders nothing without an error', () => {
     render(null);
     expect(notice()).toBeNull();
@@ -83,9 +123,9 @@ describe('ErrorBanner', () => {
   );
 
   it('keeps an abbreviation before a lowercase word inside the title', () => {
-    render('Retry failed (e.g. timeouts). Try again.');
+    render('Upload failed (e.g. timeouts). Try again.');
     expect(notice()?.querySelector('span.fg-primary')?.textContent).toBe(
-      'Retry failed (e.g. timeouts).',
+      'Upload failed (e.g. timeouts).',
     );
     expect(notice()?.querySelector('span.fg-tertiary')?.textContent).toBe(
       'Try again.',
@@ -133,12 +173,12 @@ describe('ErrorBanner', () => {
         <ErrorBanner
           error="Couldn't load members"
           onRetry={jest.fn()}
-          retryLabel="Retry members"
+          retryLabel="Load members again"
         />,
       );
     });
     expect(notice()?.querySelector('button')?.textContent).toBe(
-      'Retry members',
+      'Load members again',
     );
   });
 

@@ -142,6 +142,33 @@ function query(testId: string): HTMLElement | null {
   return document.body.querySelector(`[data-testid="${testId}"]`);
 }
 
+/** Opens the workspace dropdown and chooses `value`. */
+function chooseWorkspace(value: string): void {
+  const trigger = query('shared-container-fork-workspace');
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error('missing workspace dropdown');
+  }
+  act(() => trigger.click());
+  const option = document.querySelector<HTMLElement>(
+    `[role="option"][data-value="${value}"]`,
+  );
+  if (!option) throw new Error(`missing workspace option ${value}`);
+  act(() => option.click());
+}
+
+/** The workspace values the dropdown offers, read by opening and closing it. */
+function workspaceOptions(): (string | null)[] {
+  const trigger = query('shared-container-fork-workspace');
+  if (!(trigger instanceof HTMLButtonElement)) return [];
+  act(() => trigger.click());
+  const values = Array.from(
+    document.querySelectorAll('[role="option"]'),
+    (option) => option.getAttribute('data-value'),
+  );
+  act(() => trigger.click());
+  return values;
+}
+
 function click(testId: string): void {
   const element = query(testId);
   if (element === null) throw new Error(`missing ${testId}`);
@@ -374,8 +401,7 @@ describe('SharedContainerForkModal', () => {
     await flush();
 
     expect(
-      query('shared-container-fork-destination-existing')?.closest('label')
-        ?.textContent,
+      query('shared-container-fork-destination-existing')?.textContent,
     ).toContain('No compatible workspaces in Acme.');
   });
 
@@ -617,13 +643,7 @@ describe('SharedContainerForkModal', () => {
     });
     await flush();
 
-    const select = query(
-      'shared-container-fork-workspace',
-    ) as HTMLSelectElement;
-    act(() => {
-      select.value = 'workspace-1';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseWorkspace('workspace-1');
 
     expect(query('shared-container-fork-workspace-context')?.textContent).toBe(
       'Projects in Acme',
@@ -649,13 +669,7 @@ describe('SharedContainerForkModal', () => {
     render();
     await flush();
     click('shared-container-fork-destination-existing');
-    const select = query(
-      'shared-container-fork-workspace',
-    ) as HTMLSelectElement;
-    act(() => {
-      select.value = 'workspace-1';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseWorkspace('workspace-1');
     click('shared-container-fork-continue');
     expect(query('shared-container-fork-disclosures')).not.toBeNull();
 
@@ -685,12 +699,7 @@ describe('SharedContainerForkModal', () => {
     });
     await flush();
 
-    const select = query('shared-container-fork-workspace');
-    expect(
-      Array.from(select?.querySelectorAll('option') ?? []).map((option) =>
-        option.getAttribute('value'),
-      ),
-    ).toEqual(['', 'cowork-1']);
+    expect(workspaceOptions()).toEqual(['cowork-1']);
   });
 
   it('starts existing destinations on an explicit placeholder', async () => {
@@ -700,8 +709,11 @@ describe('SharedContainerForkModal', () => {
     click('shared-container-fork-destination-existing');
 
     expect(
-      (query('shared-container-fork-workspace') as HTMLSelectElement).value,
-    ).toBe('');
+      query('shared-container-fork-workspace')?.hasAttribute('data-value'),
+    ).toBe(false);
+    expect(query('shared-container-fork-workspace')?.textContent).toBe(
+      'Choose a project',
+    );
     expect(
       query('shared-container-fork-continue')?.hasAttribute('disabled'),
     ).toBe(true);
@@ -730,13 +742,8 @@ describe('SharedContainerForkModal', () => {
     await flush();
     click('shared-container-fork-destination-existing');
 
-    expect(
-      Array.from(
-        query('shared-container-fork-workspace')?.querySelectorAll('option') ??
-          [],
-      ).map((option) => option.getAttribute('value')),
-      // Main rejects a linked Personal checkout as an organization destination.
-    ).toEqual(['', 'workspace-1']);
+    // Main rejects a linked Personal checkout as an organization destination.
+    expect(workspaceOptions()).toEqual(['workspace-1']);
   });
 
   it('filters direct forks to Personal workspaces', async () => {
@@ -748,12 +755,7 @@ describe('SharedContainerForkModal', () => {
     await flush();
     click('shared-container-fork-destination-existing');
 
-    expect(
-      Array.from(
-        query('shared-container-fork-workspace')?.querySelectorAll('option') ??
-          [],
-      ).map((option) => option.getAttribute('value')),
-    ).toEqual(['', 'personal']);
+    expect(workspaceOptions()).toEqual(['personal']);
   });
 
   it('returns to the destination step and shows main’s own refusal message', async () => {
@@ -1174,13 +1176,7 @@ describe('SharedContainerForkModal', () => {
       act(() => {
         radio?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       });
-      const select = query('shared-container-fork-workspace');
-      if (!(select instanceof HTMLSelectElement))
-        throw new Error('missing select');
-      act(() => {
-        select.value = 'workspace-1';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      chooseWorkspace('workspace-1');
 
       render({ revision: REVISION_2 });
       await flush();
@@ -1400,7 +1396,9 @@ describe('SharedContainerForkModal', () => {
       expect(error?.textContent).toBe(
         'Dana published a newer version of this share. Open it again, then make your copy.',
       );
-      expect(error?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
+      expect(
+        error?.querySelector(`.${POSTHOG_REPLAY_BLOCK_CLASS}`),
+      ).not.toBeNull();
       expect(query('shared-container-fork-disclosures')).not.toBeNull();
       expect(query('shared-container-fork-revision-update')).not.toBeNull();
       expect(fork).toHaveBeenCalledTimes(1);

@@ -46,6 +46,7 @@ import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
 import type { SharedContainerRunState } from './useSharedContainerRun';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface SharedContainerRunPanelProps {
   run: SharedContainerRunState;
@@ -221,7 +222,7 @@ export function SharedContainerRunPanel({
       maxWidth="lg"
       dataTestId="shared-container-run-panel"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5">
+      <div className="flex flex-col gap-4">
         <p className="text-s fg-secondary">
           {allowed ? (
             publisherMismatch ? (
@@ -388,15 +389,11 @@ export function SharedContainerRunPanel({
           </div>
         )}
 
-        {run.error !== null && (
-          <p
-            className="text-xs fg-destructive"
-            role="alert"
-            data-testid="shared-container-run-error"
-          >
-            {run.error}
-          </p>
-        )}
+        <ErrorBanner
+          className=""
+          error={run.error}
+          testId="shared-container-run-error"
+        />
 
         <div className="flex justify-end gap-2">
           {allowed && (

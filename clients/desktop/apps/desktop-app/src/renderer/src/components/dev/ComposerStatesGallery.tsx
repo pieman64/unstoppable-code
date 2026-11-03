@@ -36,6 +36,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
+import { ChoiceField } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
@@ -1162,17 +1163,14 @@ export function ComposerStatesGallery(): JSX.Element {
     <div className="min-h-screen bg-secondary fg-primary">
       <div className="flex items-center gap-4 border-b bg-base px-4 py-3">
         <span className="text-s">Composer states</span>
-        <label className="flex items-center gap-2 text-xs fg-secondary">
-          <span>Dark</span>
-          <input
-            type="checkbox"
-            checked={dark}
-            onChange={(event): void => {
-              setDark(event.target.checked);
-              applyTheme('default', event.target.checked ? 'dark' : 'light');
-            }}
-          />
-        </label>
+        <ChoiceField
+          label="Dark"
+          checked={dark}
+          onChange={(event): void => {
+            setDark(event.target.checked);
+            applyTheme('default', event.target.checked ? 'dark' : 'light');
+          }}
+        />
       </div>
       <div className="flex flex-col gap-8 p-6">
         {SECTIONS.map((section) => (

@@ -680,8 +680,8 @@ async function launchUnauthenticatedClaude(userDataDir) {
 
 /**
  * Make AI Credits eligible, so the composer's pre-flight "nothing can pay"
- * condition is false and the banner can only come from the refusal's runtime
- * signal rather than from the unauthenticated provider alone.
+ * condition is false and the only billing state left is the refusal's runtime
+ * signal rather than the unauthenticated provider alone.
  */
 async function makeAiCreditsEligible(window) {
   const saveResult = await window.evaluate(
@@ -700,13 +700,15 @@ async function expectClaudeNoBillingRecovery(window) {
   await expect(window.getByTestId('chat-ai-credits-stop-line')).toHaveCount(1);
   await expect(window.getByTestId('chat-canopy-proxy-error')).toHaveCount(0);
 
-  // The composer recovery banner, driven by the refusal's runtime signal (the
-  // pre-flight condition is false because AI Credits are eligible). Its CTA
-  // depends on the fresh coverage read, which the mock reports as covered, so
-  // only the banner itself is pinned here.
-  await expect(
-    window.getByTestId('chat-input-no-billing-source-banner'),
-  ).toBeVisible();
+  // The refusal's runtime signal raises the composer banner, but its coverage
+  // read, which the mock reports as covered, stands it down (CAN-5348): AI
+  // Credits are eligible, so the AI Credits card reports the balance and the
+  // stop line above is the whole recovery. Check again after the read has had
+  // time to settle, so a banner that stays up cannot pass on an early frame.
+  const banner = window.getByTestId('chat-input-no-billing-source-banner');
+  await expect(banner).toHaveCount(0);
+  await window.waitForTimeout(2_000);
+  await expect(banner).toHaveCount(0);
 
   const panel = window.getByTestId('panel-content-chat');
   await expect(panel).not.toContainText('API Error: 402');
@@ -815,7 +817,7 @@ test('shows the AI Credits recovery for a normalized Claude 402 refusal', async 
   }
 });
 
-test('reloads a persisted Claude AI Credits refusal as a stop line plus the composer banner', async () => {
+test('reloads a persisted Claude AI Credits refusal as a stop line once credits cover the chat', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-proxy-error-claude-reload-'),
   );

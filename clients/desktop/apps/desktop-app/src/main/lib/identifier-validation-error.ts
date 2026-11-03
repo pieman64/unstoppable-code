@@ -1,6 +1,1 @@
-export class IdentifierValidationError extends Error {
-  public constructor(message: string) {
-    super(message);
-    this.name = 'IdentifierValidationError';
-  }
-}
+export { IdentifierValidationError } from '@canopy/core-runtime/node/identifiers';

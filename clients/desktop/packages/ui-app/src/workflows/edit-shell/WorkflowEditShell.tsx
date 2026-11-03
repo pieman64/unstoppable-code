@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -16,6 +15,7 @@ import {
   LoadingSpinner,
   PageHeader,
   ShareActionButton,
+  TabBar,
   Tooltip,
   type ButtonVariant,
 } from '@canopy/ui-shared/components';
@@ -270,9 +270,6 @@ export function WorkflowEditShell({
   const panelId = `${baseId}-panel`;
   const rootRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
-  const tabRefs = useRef<
-    Partial<Record<WorkflowEditSection, HTMLButtonElement>>
-  >({});
   const visited = useVisitedSections(targetKey, section);
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteConfirmation | null>(null);
@@ -461,35 +458,6 @@ export function WorkflowEditShell({
   const off =
     plan.actions.toggle.visible && onToggleEnabled !== undefined && !enabled;
 
-  const selectAt = (index: number): void => {
-    const count = WORKFLOW_EDIT_SECTIONS.length;
-    const next = WORKFLOW_EDIT_SECTIONS[((index % count) + count) % count];
-    if (next === undefined) return;
-    tabRefs.current[next]?.focus();
-    onSectionChange(next);
-  };
-
-  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    const index = WORKFLOW_EDIT_SECTIONS.indexOf(section);
-    switch (event.key) {
-      case 'ArrowRight':
-        selectAt(index + 1);
-        break;
-      case 'ArrowLeft':
-        selectAt(index - 1);
-        break;
-      case 'Home':
-        selectAt(0);
-        break;
-      case 'End':
-        selectAt(WORKFLOW_EDIT_SECTIONS.length - 1);
-        break;
-      default:
-        return;
-    }
-    event.preventDefault();
-  };
-
   const saveStateLabel = WORKFLOW_EDIT_SAVE_STATE_LABELS[plan.saveState];
 
   return (
@@ -539,41 +507,19 @@ export function WorkflowEditShell({
           />
         }
         tabs={
-          <div className="canopy-tab-list flex items-start">
-            <div
-              role="tablist"
-              aria-label={`${name} sections`}
-              data-testid="workflow-edit-tabs"
-              className="flex min-w-0 gap-8"
-            >
-              {WORKFLOW_EDIT_SECTIONS.map((id) => {
-                const selected = id === section;
-                return (
-                  <button
-                    key={id}
-                    ref={(element): void => {
-                      if (element) tabRefs.current[id] = element;
-                      else delete tabRefs.current[id];
-                    }}
-                    type="button"
-                    role="tab"
-                    id={tabId(id)}
-                    data-testid={`workflow-edit-tab-${id}`}
-                    aria-selected={selected}
-                    aria-controls={panelId}
-                    tabIndex={selected ? 0 : -1}
-                    onClick={(): void => onSectionChange(id)}
-                    onKeyDown={onTabKeyDown}
-                    className={`canopy-tab-trigger focus-ring inline-flex items-center px-3 py-2 text-s transition-colors ${
-                      selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-                    }`}
-                  >
-                    {WORKFLOW_EDIT_SECTION_LABELS[id]}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <TabBar
+            items={WORKFLOW_EDIT_SECTIONS.map((id) => ({
+              id,
+              label: WORKFLOW_EDIT_SECTION_LABELS[id],
+              dataTestId: `workflow-edit-tab-${id}`,
+              tabId: tabId(id),
+            }))}
+            value={section}
+            onChange={(next): void => onSectionChange(next)}
+            label={`${name} sections`}
+            panelId={panelId}
+            dataTestId="workflow-edit-tabs"
+          />
         }
       />
       {notices ? (

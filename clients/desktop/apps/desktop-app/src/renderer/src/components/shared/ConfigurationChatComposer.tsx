@@ -964,6 +964,7 @@ function ComposerInstance({
           />
         ) : (
           <DialogModal
+            inset="flush"
             title="Plugins and skills"
             onClose={() => setPluginsOpen(false)}
             dataTestId={`${dataTestId}-plugins-modal`}

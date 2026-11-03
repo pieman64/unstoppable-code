@@ -215,12 +215,8 @@ describe('CanopyTab error messages', () => {
   it('warns where imported Code project chats open', async () => {
     await renderTab();
     const row = byTestId('settings-canopy-import-projects').textContent ?? '';
-    expect(row).toContain('Source folders stay where they are.');
     expect(row).toContain(
-      'Chats from a Code project open in a new worktree based on the default branch from your remote when available.',
-    );
-    expect(row).toContain(
-      'Uncommitted or unpushed changes stay in the original folder.',
+      'Chats from Code projects open in a new worktree, so commit and push your work before you import.',
     );
   });
 
@@ -233,8 +229,13 @@ describe('CanopyTab error messages', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    // Settings never show the raw reason; Copy details carries it.
     const error = byTestId('settings-data-dir-error');
-    expect(error.textContent).toContain('EACCES');
+    expect(error.textContent).toContain(
+      "Couldn't create the primary data folder.",
+    );
+    expect(error.textContent).not.toContain('EACCES');
+    expect(error.textContent).toContain('Copy details');
   });
 
   it('shows a failed shell integration message', async () => {

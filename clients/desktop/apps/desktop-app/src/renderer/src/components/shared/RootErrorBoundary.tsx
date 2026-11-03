@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
@@ -62,10 +63,11 @@ export class RootErrorBoundary extends Component<
                 blank.
               </p>
             </div>
-            <div className="rounded-lg border border-line-destructive/20 bg-destructive-subtle px-4 py-3">
-              <p className="text-s fg-destructive" data-selectable>
-                {error.message || error.name || 'Unknown renderer error'}
-              </p>
+            <div data-selectable>
+              <ErrorBanner
+                className=""
+                error={error.message || error.name || 'Unknown renderer error'}
+              />
             </div>
             <div className="flex items-center gap-3">
               <Button variant="primary" onClick={this.handleReload}>

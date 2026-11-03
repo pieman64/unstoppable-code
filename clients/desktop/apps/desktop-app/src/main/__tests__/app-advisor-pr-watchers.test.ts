@@ -126,7 +126,10 @@ import type {
   WatchGitHubItemsInput,
 } from '@canopy/desktop-shared/types/github-watchers';
 import type { PrMergeQueueHistory } from '@canopy/desktop-shared/types/github';
-import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
+import {
+  getAppAdvisorWatcherService,
+  type AppAdvisorWatcherSurfaces,
+} from '../app-advisor/watchers';
 import { getGitHubWorkflowRunObserver } from '../lib/github-workflow-run-observer';
 import { getGitHubPullRequestObserver } from '../lib/github-pull-request-observer';
 import { GitHubBrokerError } from '../lib/github-broker';
@@ -269,7 +272,9 @@ const ensureAppAdvisorWindow = jest.fn(() =>
   Promise.resolve({ open: true, focused: false }),
 );
 
-function configureService(): void {
+function configureService(
+  onChange?: AppAdvisorWatcherSurfaces['onChange'],
+): void {
   getAppAdvisorWatcherService().configure({
     getMainWindow: () => null,
     getAppAdvisorWindow: () => null,
@@ -277,6 +282,7 @@ function configureService(): void {
     sendAppAdvisorWindowCommand,
     sendChatWindowCommand: () => true,
     deliverWatcherMessage,
+    onChange,
   });
   getGitHubWorkflowRunObserver().stop();
   getGitHubPullRequestObserver().stop();
@@ -1169,6 +1175,11 @@ describe('GitHub pull request watchers', () => {
   });
 
   it("publishes each pull request's last snapshot on the summary, and keeps it once fired", async () => {
+    const onChange = jest.fn<
+      ReturnType<NonNullable<AppAdvisorWatcherSurfaces['onChange']>>,
+      Parameters<NonNullable<AppAdvisorWatcherSurfaces['onChange']>>
+    >();
+    configureService(onChange);
     const service = getAppAdvisorWatcherService();
     const result = await service.watchGitHubItems(prInput(12), destination());
     if (!result.ok || result.status !== 'created') throw new Error('setup');
@@ -1229,6 +1240,19 @@ describe('GitHub pull request watchers', () => {
         (watcher) => watcher.id === result.watcherId,
       ),
     );
+    expect(
+      onChange.mock.calls.some(
+        ([active, completedGitHub]) =>
+          !active.some((watcher) => watcher.id === result.watcherId) &&
+          completedGitHub?.some(
+            (watcher) =>
+              watcher.id === result.watcherId &&
+              watcher.githubPullRequestProgress?.pullRequests.some(
+                (pr) => pr.number === 12 && pr.state === 'merged',
+              ),
+          ),
+      ),
+    ).toBe(true);
     const fired = (await service.listCompleted()).find(
       (watcher) => watcher.id === result.watcherId,
     );

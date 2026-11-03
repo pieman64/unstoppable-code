@@ -173,7 +173,7 @@ describe('SharedAutomationEditAdapter', () => {
     expect(env.byTestId('shared-automation-duplicate')).not.toBeNull();
   });
 
-  it('offers Retry when the share does not load', async () => {
+  it('offers Try again when the share does not load', async () => {
     env.getSharedMock.mockRejectedValueOnce(new Error('Server unavailable.'));
     env.render();
     await openShared();
@@ -181,7 +181,7 @@ describe('SharedAutomationEditAdapter', () => {
     expect(env.byTestId('automation-source-error')).not.toBeNull();
     const retry = Array.from(
       env.byTestId('automation-source-error')?.querySelectorAll('button') ?? [],
-    ).find((candidate) => candidate.textContent === 'Retry');
+    ).find((candidate) => candidate.textContent === 'Try again');
     if (!retry) throw new Error('missing retry');
     await act(async () => {
       retry.click();

@@ -309,7 +309,7 @@ describe('UsageLimitResumeModal readiness', () => {
           checkbox('c1')?.getAttribute('aria-describedby') ?? '',
         )?.textContent,
       ).toBe('Claude · Usage limit · Ready now');
-      const label = document.querySelector(`label[for="${codex?.id ?? ''}"]`);
+      const label = codex?.closest('label');
       expect(label?.textContent).toBe('Chat codex-1');
       expect(query('usage-limit-resume-confirm')?.textContent).toBe(
         'Resume 2 chats',
@@ -388,6 +388,18 @@ describe('UsageLimitResumeModal readiness', () => {
       });
       expect(checkbox('c2')?.checked).toBe(true);
       expect(checkbox('codex-1')?.checked).toBe(false);
+      // The workspace name toggles its checkbox too: the row is one label.
+      const nameId = workspace
+        ?.closest('[role="group"]')
+        ?.getAttribute('aria-labelledby');
+      const name = nameId ? document.getElementById(nameId) : null;
+      if (!(name instanceof HTMLElement)) throw new Error('No workspace name');
+      const before = workspace?.checked;
+      await act(async () => {
+        name.click();
+        await flush();
+      });
+      expect(workspace?.checked).toBe(!before);
     },
   );
 
@@ -512,7 +524,7 @@ describe('UsageLimitResumeModal readiness', () => {
     await open('home');
     expect(refreshMock).not.toHaveBeenCalled();
     const retry = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
     expect(retry).toBeDefined();
     await act(async () => {

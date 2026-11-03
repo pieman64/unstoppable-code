@@ -32,21 +32,26 @@ describe('LoadingIndicator', () => {
   });
 });
 
+/** The label a reader sees: reserved labels hold room but add no text. */
+function visibleText(element: JSX.Element): string {
+  const container = document.createElement('div');
+  container.innerHTML = renderToStaticMarkup(element);
+  return container.textContent ?? '';
+}
+
 describe('BusyLabel', () => {
   it('swaps the label for the busy copy by default', () => {
-    expect(renderToStaticMarkup(<BusyLabel busy>Load more</BusyLabel>)).toBe(
-      'Loading…',
-    );
+    expect(visibleText(<BusyLabel busy>Load more</BusyLabel>)).toBe('Loading…');
     expect(
-      renderToStaticMarkup(
+      visibleText(
         <BusyLabel busy busyText="Loading…">
           Load more
         </BusyLabel>,
       ),
     ).toBe('Loading…');
-    expect(
-      renderToStaticMarkup(<BusyLabel busy={false}>Load more</BusyLabel>),
-    ).toBe('Load more');
+    expect(visibleText(<BusyLabel busy={false}>Load more</BusyLabel>)).toBe(
+      'Load more',
+    );
   });
 
   it('keeps the label hidden under a spinner under the spinner style', () => {

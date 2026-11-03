@@ -8,7 +8,6 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import type { PipelineRunArtifactReceiptV1 } from '@canopy/desktop-shared/types';
 import type {
@@ -613,36 +612,32 @@ export const PipelineRunArtifactCard = memo(function PipelineRunArtifactCard({
           renderWatcherButton={renderWatcherButton}
         />
       </div>
-      {reportExecution &&
-        createPortal(
-          <PipelineReportModal
-            executionId={reportExecution.id}
-            pipelineName={reportExecution.name}
-            onClose={(): void => setReportExecution(null)}
-            ownerDocument={portalDocument}
-          />,
-          portalDocument.body,
-        )}
-      {followUpExecution &&
-        createPortal(
-          <PlanReadyPipelineModal
-            projectId={followUpExecution.project_id}
-            worktreeId={followUpExecution.worktree_id}
-            executionScope={followUpExecution.scope}
-            executionTarget={followUpExecution.target}
-            onClose={(): void => {
-              if (!pipelineRunning) {
-                setFollowUpExecution(null);
-                setPipelineRunError(null);
-              }
-            }}
-            onRun={handlePipelineRun}
-            isRunning={pipelineRunning}
-            runError={pipelineRunError}
-            ownerDocument={portalDocument}
-          />,
-          portalDocument.body,
-        )}
+      {reportExecution && (
+        <PipelineReportModal
+          executionId={reportExecution.id}
+          pipelineName={reportExecution.name}
+          onClose={(): void => setReportExecution(null)}
+          ownerDocument={portalDocument}
+        />
+      )}
+      {followUpExecution && (
+        <PlanReadyPipelineModal
+          projectId={followUpExecution.project_id}
+          worktreeId={followUpExecution.worktree_id}
+          executionScope={followUpExecution.scope}
+          executionTarget={followUpExecution.target}
+          onClose={(): void => {
+            if (!pipelineRunning) {
+              setFollowUpExecution(null);
+              setPipelineRunError(null);
+            }
+          }}
+          onRun={handlePipelineRun}
+          isRunning={pipelineRunning}
+          runError={pipelineRunError}
+          ownerDocument={portalDocument}
+        />
+      )}
     </>
   );
 });

@@ -47,7 +47,7 @@ function describeCanopyCloudStatus(
       ? null
       : {
           message:
-            'Your credentials were not saved. Retry when secure storage is available.',
+            'Your credentials were not saved. Try again when secure storage is available.',
         };
   }
   return { message: `Invalid API key or unable to reach ${cloudName}.` };

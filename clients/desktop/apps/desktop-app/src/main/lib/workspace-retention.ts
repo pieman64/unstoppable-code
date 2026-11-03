@@ -14,7 +14,11 @@ import {
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
 import { withW5Commit } from './w5-commit-log-file-store';
-import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
+import {
+  createW5SingleDecisionOperation,
+  withW5DecisionOnlyRetry,
+  type W5WireDecisionCall,
+} from './w5-single-decision-operation';
 import {
   WORKSPACE_MANIFEST_STORAGE,
   WORKTREE_LIST_STORAGE,
@@ -82,10 +86,27 @@ const outcomeSchema = z.object({
   workspaceId: z.string(),
   activityBaselineRecorded: z.boolean(),
 });
-const runRetentionCommand =
-  createW5SingleDecisionOperation<WorkspaceRetentionSource>(
-    (error) => error instanceof WorkspaceRetentionRefusedError,
-  );
+const isRetentionRefusal = (error: unknown): boolean =>
+  error instanceof WorkspaceRetentionRefusedError;
+
+// Each attempt takes the retention lease and archive lock again.
+const runRetentionCommand = withW5DecisionOnlyRetry(
+  createW5SingleDecisionOperation<WorkspaceRetentionSource>(isRetentionRefusal),
+);
+
+/** The runner for one call: a wire call's receipts name its principal. */
+function retentionRunner(
+  wire: W5WireDecisionCall<never> | undefined,
+): typeof runRetentionCommand {
+  return wire
+    ? withW5DecisionOnlyRetry(
+        createW5SingleDecisionOperation<WorkspaceRetentionSource>(
+          isRetentionRefusal,
+          wire,
+        ),
+      )
+    : runRetentionCommand;
+}
 
 function isDayCount(value: unknown, minimum: number): boolean {
   return (
@@ -147,16 +168,18 @@ function autoArchiveEnabled(config: WorkspaceConfigFile): boolean {
  * that order. The activity baseline and settings share one decision with the
  * optional workspace revision, receipt and saved outcome (CAN-4613). A failed
  * stamp or either-file preflight conflict commits neither file. Compatibility
- * callers remain unkeyed; the operation stays in-process and unregistered.
+ * callers remain unkeyed; the renderer's channel projects the registered
+ * operation, and `wire` is its wire call (W7b-1b).
  */
 export async function updateWorkspaceRetention(
   request: WorkspaceRetentionUpdateRequest,
+  wire?: W5WireDecisionCall<WorkspaceRetentionUpdateOutcome>,
 ): Promise<WorkspaceRetentionUpdateOutcome> {
   const { workspaceId, source, idempotencyKey, expectedRevision } = request;
   const patch = { ...request.patch };
   validateId(workspaceId, 'workspaceId');
   validatePatch(patch);
-  return runRetentionCommand(
+  return retentionRunner(wire)(
     {
       operation: 'core.workspace.retention.update',
       source,

@@ -1,10 +1,11 @@
 'use client';
 
 import { useRef, type ChangeEvent, type JSX } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, CopyDetailsButton } from '@canopy/ui-shared/components';
 import { Camera, ImagePlus } from '@canopy/ui-shared/icons/AppIcons';
 import { ALLOWED_AVATAR_MIME_TYPES } from '@canopy/protocol/settings/account';
 import { OrganizationLogo } from './OrganizationLogo';
+import type { SettingsFailure } from '../errors';
 
 const LOGO_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
 
@@ -13,7 +14,7 @@ interface OrganizationLogoEditorProps {
   logoUrl: string | null;
   size?: number;
   busy: boolean;
-  error: string | null;
+  error: SettingsFailure | null;
   onPick: (file: File) => void;
   /**
    * Remove handler. When omitted, the "Remove logo" affordance is hidden — used
@@ -113,9 +114,17 @@ export function OrganizationLogoEditor({
         </Button>
       )}
       {error && (
-        <p className="max-w-48 text-center text-xs fg-destructive" role="alert">
-          {error}
-        </p>
+        <>
+          <p
+            className="max-w-48 text-center text-xs fg-destructive"
+            role="alert"
+          >
+            {error.copy}
+          </p>
+          {error.details !== undefined ? (
+            <CopyDetailsButton details={error.details} />
+          ) : null}
+        </>
       )}
     </div>
   );

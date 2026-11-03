@@ -22,7 +22,7 @@ export function VoiceErrorModal({
       maxWidth="md"
       dataTestId="voice-error-modal"
     >
-      <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-col gap-4">
         <ol className="flex flex-col gap-2 text-s fg-primary">
           {guidance.steps.map((step, index) => (
             <li key={index} className="flex gap-3">

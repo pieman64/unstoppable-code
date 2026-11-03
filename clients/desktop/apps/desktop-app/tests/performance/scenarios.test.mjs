@@ -28,6 +28,8 @@ import {
   applyCodeGraphFixtureEdit,
   bracketWork,
   buildCodeGraphFixtureSource,
+  buildFrameSmoothnessStreamText,
+  recordFrameWindow,
   assertNonBuildGraphWrite,
   claudeGraphOrientationTurns,
   claudeGraphOrientationViolations,
@@ -3731,4 +3733,42 @@ test('a duplicated search result is counted, so the run can reject it', () => {
     },
   ]);
   assert.deepEqual(outcomes, { orient: { allowed: 2, denied: 0, failed: 0 } });
+});
+
+test('the frame-smoothness reply streams Markdown blocks and ends on its marker', () => {
+  const text = buildFrameSmoothnessStreamText('Canopy-CFRAMETEST', 4_000);
+  assert.equal(text.length, 4_000);
+  assert.ok(text.endsWith('Canopy-CFRAMETEST complete.'));
+  for (const block of ['### ', '- [x] ', '| Surface |', '```ts', '](https://'])
+    assert.ok(text.includes(block), block);
+});
+
+test('a frame window brackets its operation in renderer marks and work samples', async () => {
+  const marks = [];
+  let sample = 0;
+  const tasks = [];
+  Object.defineProperties(tasks, {
+    frameWindows: { value: [] },
+    rendererMark: {
+      value: async (label) => {
+        marks.push(label);
+        return { atMs: marks.length };
+      },
+    },
+    workSample: { value: async () => ({ counters: { n: (sample += 1) } }) },
+  });
+  await assert.rejects(
+    recordFrameWindow(tasks, 'scroll', 'sidebar', async () => {
+      throw new Error('scroll failed');
+    }),
+    /scroll failed/,
+  );
+  assert.deepEqual(marks, [
+    'frames:start:scroll:sidebar',
+    'frames:end:scroll:sidebar',
+  ]);
+  assert.equal(tasks.frameWindows.length, 1);
+  assert.equal(tasks.frameWindows[0].area, 'scroll');
+  assert.equal(tasks.frameWindows[0].completed, false);
+  assert.deepEqual(tasks.frameWindows[0].start, { atMs: 1 });
 });

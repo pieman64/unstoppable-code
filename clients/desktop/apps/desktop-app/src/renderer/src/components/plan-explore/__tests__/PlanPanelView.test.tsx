@@ -16,6 +16,7 @@ import type * as SubmitWorkspaceCommentsModule from '@/components/chat/submitWor
 import type { PlanDocumentPanelProps } from '@/components/plan-explore/PlanDocumentPanel';
 import type { PlanVisualizerPanelProps } from '@/components/plan-explore/PlanVisualizerPanel';
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
+import { chooseSettingsOptionSync } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 jest.mock('@/components/chat/PlanReadyPipelineModal', () => ({
   PlanReadyPipelineModal: (): null => null,
@@ -287,13 +288,10 @@ function makeRevisedPlan(
 
 function selectRevision(value: string): void {
   const select = query('plan-panel-revision-select');
-  if (!(select instanceof HTMLSelectElement)) {
+  if (!(select instanceof HTMLButtonElement)) {
     throw new Error('Expected the revision select');
   }
-  act(() => {
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+  chooseSettingsOptionSync(select, value);
 }
 
 /** The lease requests sent so far. */
@@ -404,7 +402,11 @@ async function flush(): Promise<void> {
 }
 
 function query(testId: string): HTMLElement | null {
-  return host?.querySelector(`[data-testid="${testId}"]`) ?? null;
+  // Menus (the Execute menu) portal to the document body.
+  return (
+    host?.querySelector<HTMLElement>(`[data-testid="${testId}"]`) ??
+    document.body.querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+  );
 }
 
 function click(testId: string): void {
@@ -708,7 +710,8 @@ describe('PlanPanelHost', () => {
       await flush();
 
       expect(query('plan-panel-view')).not.toBeNull();
-      expect(query('plan-panel-tab-document')).not.toBeNull();
+      // Only the document view: one view draws no tab control.
+      expect(query('plan-panel-tab-document')).toBeNull();
       expect(query('plan-panel-tab-diagram')).toBeNull();
       expect(query('plan-panel-split')).toBeNull();
       expect(query('plan-panel-show-diagram')).toBeNull();
@@ -837,12 +840,21 @@ describe('PlanPanelHost', () => {
   });
 
   it('keeps the panel after Implement and reveals the plan’s worktree chat', async () => {
-    const sendMessage = jest.fn().mockResolvedValue(undefined);
+    const dispatchChatCommand = jest
+      .fn<Promise<'accepted'>, [unknown, unknown]>()
+      .mockResolvedValue('accepted');
+    updateMock.mockImplementation((request: { planId: string }) =>
+      Promise.resolve({
+        ...makePlan(),
+        id: request.planId,
+        reviewStatus: 'approved',
+      }),
+    );
     useChatStore.setState({
       worktreeChats: {
         [KEY]: { tabs: [makeChatTab()], activeTabId: 'chat-1' },
       },
-      sendMessage,
+      dispatchChatCommand,
       switchTab: jest.fn(),
       markTrackedPlanExecuted: jest.fn(),
     });
@@ -857,13 +869,20 @@ describe('PlanPanelHost', () => {
     click('plan-panel-execute-implement');
     await flush();
 
-    expect(sendMessage).toHaveBeenCalledWith(
-      expect.stringContaining('Implement this plan'),
-      undefined,
-      { projectId: PROJECT_ID, worktreeId: WORKTREE_ID, chatId: 'chat-1' },
-      undefined,
-      expect.any(Object),
-    );
+    const scope: unknown = dispatchChatCommand.mock.calls[0]?.[0];
+    const command: unknown = dispatchChatCommand.mock.calls[0]?.[1];
+    expect(scope).toEqual({ projectId: PROJECT_ID, worktreeId: WORKTREE_ID });
+    expect(command).toMatchObject({
+      type: 'chat.send_message',
+      chatId: 'chat-1',
+    });
+    expect(
+      typeof command === 'object' &&
+        command !== null &&
+        'text' in command &&
+        typeof command.text === 'string' &&
+        command.text.startsWith('Implement this plan'),
+    ).toBe(true);
     expect(usePanelLayoutStore.getState().layouts[KEY].activeGroupId).toBe(
       'group-chat',
     );

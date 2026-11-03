@@ -33,6 +33,7 @@ describe('resolvePlanDisplayStatus', () => {
       kind: 'pending',
       label: 'Pending',
       executeEmphasis: 'primary',
+      primaryAction: 'execute',
     });
   });
 
@@ -46,6 +47,7 @@ describe('resolvePlanDisplayStatus', () => {
       kind: 'dismissed',
       label: 'Dismissed',
       executeEmphasis: 'secondary',
+      primaryAction: 'execute',
     });
   });
 
@@ -54,6 +56,7 @@ describe('resolvePlanDisplayStatus', () => {
       kind: 'approved',
       label: 'Approved',
       executeEmphasis: 'secondary',
+      primaryAction: 'execute',
     });
   });
 
@@ -64,9 +67,10 @@ describe('resolvePlanDisplayStatus', () => {
     });
     expect(status).toMatchObject({
       kind: 'implementing',
-      label: 'Implementing',
+      label: 'Implementing in workflow',
       selected: { id: 'a' },
       executeEmphasis: 'secondary',
+      primaryAction: 'open',
     });
   });
 
@@ -215,6 +219,7 @@ describe('resolvePlanDisplayStatus', () => {
       kind: 'unknown',
       label: 'Archived',
       executeEmphasis: 'primary',
+      primaryAction: 'execute',
     });
     expect(resolvePlanDisplayStatus({ reviewStatus: undefined }).label).toBe(
       '',
@@ -236,6 +241,105 @@ describe('resolvePlanDisplayStatus', () => {
         evidence: [run('current', 'succeeded', T1, { revisionNumber: 2 })],
       }).kind,
     ).toBe('implemented');
+  });
+
+  it('names the chat venue and offers Open while a linked chat turn runs and after it finishes', () => {
+    const chat = (
+      id: string,
+      outcome: PlanExecutionEvidence['outcome'],
+      startedAt: string,
+    ): PlanExecutionEvidence => ({ kind: 'chat', id, outcome, startedAt });
+    expect(
+      resolvePlanDisplayStatus({
+        reviewStatus: 'approved',
+        evidence: [chat('chat-1:m1', 'active', T1)],
+      }),
+    ).toMatchObject({
+      kind: 'implementing',
+      label: 'Implementing in chat',
+      primaryAction: 'open',
+      selected: { kind: 'chat', id: 'chat-1:m1' },
+    });
+    expect(
+      resolvePlanDisplayStatus({
+        reviewStatus: 'approved',
+        evidence: [chat('chat-1:m1', 'succeeded', T1)],
+      }),
+    ).toMatchObject({
+      kind: 'implemented',
+      label: 'Finished in chat',
+      primaryAction: 'open',
+    });
+    expect(
+      resolvePlanDisplayStatus({
+        reviewStatus: 'approved',
+        evidence: [run('run', 'succeeded', T1)],
+      }),
+    ).toMatchObject({
+      label: 'Implemented in workflow',
+      primaryAction: 'open',
+    });
+    for (const outcome of ['failed', 'cancelled'] as const) {
+      expect(
+        resolvePlanDisplayStatus({
+          reviewStatus: 'approved',
+          evidence: [chat('chat-1:m1', outcome, T1)],
+        }),
+      ).toMatchObject({
+        kind: 'approved',
+        label: 'Approved',
+        primaryAction: 'execute',
+        latestUnsuccessful: { kind: 'chat', outcome },
+      });
+    }
+  });
+
+  it('prefers an active attempt across venues and keeps a retained success after a later failed chat retry', () => {
+    expect(
+      resolvePlanDisplayStatus({
+        reviewStatus: 'approved',
+        evidence: [
+          run('run', 'succeeded', T3),
+          { kind: 'chat', id: 'chat-1:m1', outcome: 'active', startedAt: T1 },
+        ],
+      }),
+    ).toMatchObject({
+      label: 'Implementing in chat',
+      selected: { kind: 'chat', id: 'chat-1:m1' },
+    });
+    expect(
+      resolvePlanDisplayStatus({
+        reviewStatus: 'approved',
+        evidence: [
+          {
+            kind: 'chat',
+            id: 'chat-1:m1',
+            outcome: 'succeeded',
+            startedAt: T1,
+          },
+          { kind: 'chat', id: 'chat-2:m2', outcome: 'failed', startedAt: T2 },
+        ],
+      }),
+    ).toMatchObject({
+      label: 'Finished in chat',
+      selected: { id: 'chat-1:m1' },
+      latestUnsuccessful: { id: 'chat-2:m2', outcome: 'failed' },
+    });
+  });
+
+  it('breaks equal start times across venues deterministically', () => {
+    const evidence: PlanExecutionEvidence[] = [
+      { kind: 'chat', id: 'a', outcome: 'succeeded', startedAt: T1 },
+      run('a', 'succeeded', T1),
+    ];
+    for (const ordered of [evidence, [...evidence].reverse()]) {
+      expect(
+        resolvePlanDisplayStatus({
+          reviewStatus: 'approved',
+          evidence: ordered,
+        }).selected?.kind,
+      ).toBe('pipeline');
+    }
   });
 
   it('resolves duplicate reports with equal start times independently of collection order', () => {

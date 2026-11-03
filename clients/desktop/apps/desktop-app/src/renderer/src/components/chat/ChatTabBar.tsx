@@ -1,4 +1,5 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -10,7 +11,6 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import {
   getOnlyQueuedHookPlaceholderQueueId,
@@ -61,15 +61,17 @@ import {
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  ActionMenuRowStyle,
   AgentStateGlyph,
   ChatTab as SharedChatTab,
   Dot,
+  FloatingMenu,
+  RichHoverTooltip,
   TitlebarIconButton,
 } from '@canopy/ui-shared/components';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ArchivedChatsControl } from './ArchivedChatsControl';
-import { AnchoredMenu } from '@/components/shared/AnchoredMenu';
 import { ShareSessionControl } from '@/components/shared/ShareSessionControl';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
 import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessionConfirmationModal';
@@ -129,6 +131,14 @@ function chatBackgroundTasks(
     liveTasks[liveBackgroundTaskKey(scope.projectId, scope.worktreeId, chatId)]
       ?.liveTasks ?? [],
   );
+}
+
+/** Hovering a pinned tab names it after this long. */
+const PINNED_TAB_HOVER_DELAY_MS = 180;
+
+/** The tab itself: the hover card's wrapper has no box (`contents`). */
+function tabInsideTrigger(trigger: HTMLElement): Element | null {
+  return trigger.querySelector('[role="tab"]');
 }
 
 export const ChatTabBar = memo(function ChatTabBar({
@@ -363,73 +373,9 @@ export const ChatTabBar = memo(function ChatTabBar({
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const sessionMenuButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Pinned-tab hover popover. The host owns popover positioning because the
-  // popover content (provider icon / spinner / file icon plus title) is
-  // assembled from the same source data used for the tab's leading slot.
-  const [pinnedHover, setPinnedHover] = useState<{
-    tabId: string;
-    anchor: DOMRect;
-  } | null>(null);
-  const pinnedHoverRefs = useRef(new Map<string, HTMLDivElement>());
-  const pinnedHoverOpenTimer = useRef<number | null>(null);
-  const pinnedHoverCloseTimer = useRef<number | null>(null);
-
-  const clearPinnedHoverOpenTimer = useCallback((): void => {
-    if (pinnedHoverOpenTimer.current !== null) {
-      window.clearTimeout(pinnedHoverOpenTimer.current);
-      pinnedHoverOpenTimer.current = null;
-    }
-  }, []);
-
-  const clearPinnedHoverCloseTimer = useCallback((): void => {
-    if (pinnedHoverCloseTimer.current !== null) {
-      window.clearTimeout(pinnedHoverCloseTimer.current);
-      pinnedHoverCloseTimer.current = null;
-    }
-  }, []);
-
-  const showPinnedHover = useCallback(
-    (tabId: string): void => {
-      clearPinnedHoverOpenTimer();
-      clearPinnedHoverCloseTimer();
-      pinnedHoverOpenTimer.current = window.setTimeout(() => {
-        const el = pinnedHoverRefs.current.get(tabId);
-        if (!el) return;
-        setPinnedHover({ tabId, anchor: el.getBoundingClientRect() });
-        pinnedHoverOpenTimer.current = null;
-      }, 180);
-    },
-    [clearPinnedHoverCloseTimer, clearPinnedHoverOpenTimer],
-  );
-
-  const schedulePinnedHoverClose = useCallback((): void => {
-    clearPinnedHoverOpenTimer();
-    clearPinnedHoverCloseTimer();
-    pinnedHoverCloseTimer.current = window.setTimeout(() => {
-      setPinnedHover(null);
-      pinnedHoverCloseTimer.current = null;
-    }, 80);
-  }, [clearPinnedHoverCloseTimer, clearPinnedHoverOpenTimer]);
-
-  useEffect((): (() => void) => {
-    return (): void => {
-      if (pinnedHoverOpenTimer.current !== null) {
-        window.clearTimeout(pinnedHoverOpenTimer.current);
-        pinnedHoverOpenTimer.current = null;
-      }
-      if (pinnedHoverCloseTimer.current !== null) {
-        window.clearTimeout(pinnedHoverCloseTimer.current);
-        pinnedHoverCloseTimer.current = null;
-      }
-    };
-  }, []);
-
   useEffect(() => {
     setContextMenu(null);
-    setPinnedHover(null);
-    clearPinnedHoverOpenTimer();
-    clearPinnedHoverCloseTimer();
-  }, [worktreeKey, clearPinnedHoverCloseTimer, clearPinnedHoverOpenTimer]);
+  }, [worktreeKey]);
 
   const handleTabDragStart = useCallback(
     (e: DragEvent<HTMLDivElement>, tabId: string): void => {
@@ -548,29 +494,6 @@ export const ChatTabBar = memo(function ChatTabBar({
       }
     };
   }, [pinnedTabs.length]);
-
-  // Dismiss the pinned-tab hover popover whenever either strip scrolls so
-  // the recorded anchor rect doesn't go stale and the popover doesn't
-  // visually detach from its pill.
-  useEffect(() => {
-    const targets: HTMLDivElement[] = [];
-    if (pinnedListRef.current) targets.push(pinnedListRef.current);
-    if (tabListRef.current) targets.push(tabListRef.current);
-    const handleScroll = (): void => {
-      setPinnedHover(null);
-      clearPinnedHoverCloseTimer();
-    };
-    for (const el of targets) {
-      el.addEventListener('scroll', handleScroll);
-    }
-    window.addEventListener('resize', handleScroll);
-    return (): void => {
-      for (const el of targets) {
-        el.removeEventListener('scroll', handleScroll);
-      }
-      window.removeEventListener('resize', handleScroll);
-    };
-  }, [clearPinnedHoverCloseTimer, pinnedTabs.length]);
 
   useLayoutEffect(() => {
     const activeTab = activeTabRef.current;
@@ -742,9 +665,8 @@ export const ChatTabBar = memo(function ChatTabBar({
         )}
       </>
     );
-    return (
+    const chatTab = (
       <SharedChatTab
-        key={tab.id}
         dataTestId={`chat-tab-${tab.id}`}
         label={tabLabel}
         maskLabel={!isFileTab}
@@ -770,8 +692,6 @@ export const ChatTabBar = memo(function ChatTabBar({
         onDragEnd={handleDragEnd}
         onContextMenu={(e): void => {
           e.preventDefault();
-          setPinnedHover(null);
-          clearPinnedHoverCloseTimer();
           setContextMenu({
             tabId: tab.id,
             x: e.clientX,
@@ -780,25 +700,82 @@ export const ChatTabBar = memo(function ChatTabBar({
             anchor: e.currentTarget,
           });
         }}
-        onPointerEnter={
-          isPinned ? (): void => showPinnedHover(tab.id) : undefined
-        }
-        onPointerLeave={
-          isPinned ? (): void => schedulePinnedHoverClose() : undefined
-        }
         onSelect={(): void => switchTab(tab.id)}
         onClose={(): void => closeTab(tab.id)}
         outerRef={(node): void => {
           if (isActive) {
             activeTabRef.current = node;
           }
-          if (node) {
-            pinnedHoverRefs.current.set(tab.id, node);
-          } else {
-            pinnedHoverRefs.current.delete(tab.id);
-          }
         }}
       />
+    );
+    if (!isPinned) return <Fragment key={tab.id}>{chatTab}</Fragment>;
+    // A pinned tab shows only its icon, so hovering it names the tab: the
+    // status glyph and the full title (a file tab's path).
+    const hoverLeading: ReactNode = isFileTab ? (
+      <FileTypeIcon
+        filename={tab.title}
+        size={20}
+        boxSize={16}
+        className="shrink-0"
+      />
+    ) : isWorking && !awaitingApproval && !awaitingToolApproval ? (
+      <ThinkingSpinner tone="accent" className="shrink-0" />
+    ) : backgroundTasks > 0 && !awaitingApproval && !awaitingToolApproval ? (
+      <AgentStateGlyph
+        state="background"
+        backgroundTasks={backgroundTasks}
+        unread={tab.unread === true}
+      />
+    ) : awaitingApproval ? (
+      <PlanModeIcon
+        width={14}
+        height={14}
+        className={`shrink-0 ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
+      />
+    ) : provider !== undefined ? (
+      <AgentProviderIcon
+        provider={provider}
+        width={14}
+        height={14}
+        className="shrink-0 fg-secondary"
+      />
+    ) : (
+      <ChatIcon width={14} height={14} className="shrink-0 fg-secondary" />
+    );
+    const hoverLabel = isFileTab
+      ? tab.filePath
+        ? formatFileReferencePath(tab.filePath, worktreeRootPath)
+        : tab.title
+      : chatTabStripLabel(tab);
+    return (
+      <RichHoverTooltip
+        key={tab.id}
+        content={
+          <span className="flex items-center gap-1.5 text-xs">
+            {hoverLeading}
+            <span
+              className={
+                isFileTab ? 'truncate' : `${POSTHOG_REPLAY_MASK_CLASS} truncate`
+              }
+            >
+              {hoverLabel}
+            </span>
+          </span>
+        }
+        // Hidden while the tab's context menu is open or the tab is dragged.
+        suppressed={contextMenu?.tabId === tab.id || isDragging}
+        openDelay={PINNED_TAB_HOVER_DELAY_MS}
+        handoffMotion="slide"
+        surfacePadding="relaxed"
+        surfaceClassName="min-w-40 max-w-80"
+        triggerDisplay="contents"
+        placement="below-start"
+        getPlacementAnchor={tabInsideTrigger}
+        deferUntilInteraction
+      >
+        {chatTab}
+      </RichHoverTooltip>
     );
   };
 
@@ -877,36 +854,38 @@ export const ChatTabBar = memo(function ChatTabBar({
                   />
                 )}
               </button>
-              <AnchoredMenu
+              <FloatingMenu
                 open={sessionMenuOpen}
-                onClose={() => setSessionMenuOpen(false)}
+                onOpenChange={setSessionMenuOpen}
                 anchorRef={sessionMenuButtonRef}
-                placement="below-start"
-                portal
-                testId="chat-tab-session-menu-popover"
+                placement="bottom-left"
+                interaction="menu"
+                data-testid="chat-tab-session-menu-popover"
                 className="w-44"
               >
-                <ShareSessionControl
-                  variant="menu-item"
-                  projectId={effectiveScope.projectId}
-                  worktreeId={effectiveScope.worktreeId}
-                  chatId={activeTab.id}
-                  title={activeTab.title}
-                  hasMessages={activeTab.hasMessages}
-                  busy={isChatTabBusy}
-                  sharedRun={activeTab.sharedRun}
-                  testId="chat-tab-session-menu-share"
-                  onAfterSelect={() => setSessionMenuOpen(false)}
-                  onOpenShare={(
-                    chatId,
-                    title,
-                    ownerDocument,
-                    existingShare,
-                  ): void => {
-                    share.open(chatId, title, ownerDocument, existingShare);
-                  }}
-                />
-              </AnchoredMenu>
+                <ActionMenuRowStyle>
+                  <ShareSessionControl
+                    variant="menu-item"
+                    projectId={effectiveScope.projectId}
+                    worktreeId={effectiveScope.worktreeId}
+                    chatId={activeTab.id}
+                    title={activeTab.title}
+                    hasMessages={activeTab.hasMessages}
+                    busy={isChatTabBusy}
+                    sharedRun={activeTab.sharedRun}
+                    testId="chat-tab-session-menu-share"
+                    onAfterSelect={() => setSessionMenuOpen(false)}
+                    onOpenShare={(
+                      chatId,
+                      title,
+                      ownerDocument,
+                      existingShare,
+                    ): void => {
+                      share.open(chatId, title, ownerDocument, existingShare);
+                    }}
+                  />
+                </ActionMenuRowStyle>
+              </FloatingMenu>
             </div>
           );
         })()}
@@ -1118,166 +1097,6 @@ export const ChatTabBar = memo(function ChatTabBar({
         />
       )}
       {chatTabRename.dialog}
-      {pinnedHover &&
-        ((): JSX.Element | null => {
-          const tab = tabs.find((t) => t.id === pinnedHover.tabId);
-          if (!tab || tab.pinned !== true) return null;
-          const isFileTab = tab.kind === 'file';
-          const awaitingApproval =
-            !isFileTab &&
-            (!!tab.pendingPlanExit ||
-              Object.values(pendingPlanExits).some(
-                (pe) => pe.chatId === tab.id,
-              ));
-          const awaitingToolApproval =
-            !isFileTab &&
-            Object.values(pendingApprovals).some(
-              (approval) => approval.chatId === tab.id,
-            );
-          const provider = isFileTab
-            ? undefined
-            : resolveChatTabProvider(tab, defaultWorktreeModel);
-          const isWorking = !isFileTab && tab.status === 'streaming';
-          const backgroundTasks = isFileTab
-            ? 0
-            : chatBackgroundTasks(
-                delegationState,
-                liveTaskByChat,
-                effectiveScope,
-                tab.id,
-              );
-          const popoverLeading: ReactNode = isFileTab ? (
-            <FileTypeIcon
-              filename={tab.title}
-              size={20}
-              boxSize={16}
-              className="shrink-0"
-            />
-          ) : isWorking && !awaitingApproval && !awaitingToolApproval ? (
-            <ThinkingSpinner tone="accent" className="shrink-0" />
-          ) : backgroundTasks > 0 &&
-            !awaitingApproval &&
-            !awaitingToolApproval ? (
-            <AgentStateGlyph
-              state="background"
-              backgroundTasks={backgroundTasks}
-              unread={tab.unread === true}
-            />
-          ) : awaitingApproval ? (
-            <PlanModeIcon
-              width={14}
-              height={14}
-              className={`shrink-0 ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
-            />
-          ) : provider !== undefined ? (
-            <AgentProviderIcon
-              provider={provider}
-              width={14}
-              height={14}
-              className="shrink-0 fg-secondary"
-            />
-          ) : (
-            <ChatIcon
-              width={14}
-              height={14}
-              className="shrink-0 fg-secondary"
-            />
-          );
-          const popoverLabel = isFileTab
-            ? tab.filePath
-              ? formatFileReferencePath(tab.filePath, worktreeRootPath)
-              : tab.title
-            : chatTabStripLabel(tab);
-          return (
-            <PinnedTabPopover
-              anchor={pinnedHover.anchor}
-              onPointerEnter={(): void => {
-                clearPinnedHoverCloseTimer();
-              }}
-              onPointerLeave={schedulePinnedHoverClose}
-            >
-              {popoverLeading}
-              <span
-                className={
-                  isFileTab
-                    ? 'truncate'
-                    : `${POSTHOG_REPLAY_MASK_CLASS} truncate`
-                }
-              >
-                {popoverLabel}
-              </span>
-            </PinnedTabPopover>
-          );
-        })()}
     </div>
   );
 });
-
-interface PinnedTabPopoverProps {
-  anchor: DOMRect;
-  onPointerEnter: () => void;
-  onPointerLeave: () => void;
-  children: ReactNode;
-}
-
-const PINNED_POPOVER_GAP = 6;
-const PINNED_POPOVER_PADDING = 8;
-const PINNED_POPOVER_MIN_WIDTH = 160;
-const PINNED_POPOVER_MAX_WIDTH = 320;
-
-function PinnedTabPopover({
-  anchor,
-  onPointerEnter,
-  onPointerLeave,
-  children,
-}: PinnedTabPopoverProps): JSX.Element {
-  const ref = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number }>({
-    top: anchor.bottom + PINNED_POPOVER_GAP,
-    left: anchor.left,
-  });
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const desiredLeft = anchor.left + anchor.width / 2 - rect.width / 2;
-    const clampedLeft = Math.max(
-      PINNED_POPOVER_PADDING,
-      Math.min(
-        desiredLeft,
-        window.innerWidth - rect.width - PINNED_POPOVER_PADDING,
-      ),
-    );
-    const fitsBelow =
-      anchor.bottom + PINNED_POPOVER_GAP + rect.height <=
-      window.innerHeight - PINNED_POPOVER_PADDING;
-    const top = fitsBelow
-      ? anchor.bottom + PINNED_POPOVER_GAP
-      : Math.max(
-          PINNED_POPOVER_PADDING,
-          anchor.top - PINNED_POPOVER_GAP - rect.height,
-        );
-    setPosition({ top, left: clampedLeft });
-  }, [anchor]);
-
-  return createPortal(
-    <div
-      ref={ref}
-      role="tooltip"
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
-      style={{
-        position: 'fixed',
-        top: position.top,
-        left: position.left,
-        minWidth: PINNED_POPOVER_MIN_WIDTH,
-        maxWidth: PINNED_POPOVER_MAX_WIDTH,
-      }}
-      className="z-tooltip flex items-center gap-1.5 rounded-md bg-popover px-2.5 py-1.5 text-xs shadow-tooltip fg-primary"
-    >
-      {children}
-    </div>,
-    document.body,
-  );
-}

@@ -23,6 +23,8 @@ import {
   portalLongRpcResultWaitMs,
   repositoryNameFromCloneUrl,
   PORTAL_SMALL_RPC_COMMAND_TYPES,
+  PORTAL_CAPABILITY_COLLECTION_MUTATIONS,
+  type PortalCollectionsSaveResult,
   PORTAL_ENTITY_TYPES,
   PORTAL_EVENT_TYPES,
   PORTAL_FEATURE_SCOPE_ENTITY_TYPES,
@@ -1753,6 +1755,41 @@ describe('portal protocol contract', () => {
     expect(getCollection.collectionId).toBe('abc-123');
   });
 
+  it('saves a collection through one small-RPC command behind its own capability', () => {
+    expect(PORTAL_COMMAND_TYPES).toContain('portal.collections.save');
+    expect(PORTAL_COMMAND_TYPES_SET.has('portal.collections.save')).toBe(true);
+    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.collections.save')).toBe(
+      true,
+    );
+    expect(PORTAL_LONG_RPC_COMMAND_TYPES.has('portal.collections.save')).toBe(
+      false,
+    );
+    expect(PORTAL_CAPABILITY_COLLECTION_MUTATIONS).toBe(
+      'collection_mutations_v1',
+    );
+    const save: PortalCommandPayloadMap['portal.collections.save'] = {
+      projectId: 'ws',
+      collection: {
+        id: 'abc-123',
+        name: 'Launch kit',
+        description: '',
+        skills: [{ sourceId: 'github:acme/skills', skillName: 'review' }],
+        plugins: [{ marketplaceId: 'mkt', pluginName: 'linter' }],
+        mcpServers: [],
+      },
+    };
+    const result: PortalCollectionsSaveResult = {
+      collection: {
+        ...save.collection,
+        id: 'abc-123',
+        createdAt: '2026-10-14T00:00:00.000Z',
+        updatedAt: '2026-10-14T00:00:00.000Z',
+      },
+    };
+    expect(save.collection.name).toBe('Launch kit');
+    expect(result.collection.id).toBe('abc-123');
+  });
+
   it('exposes the portal Plugins-section mutation command family', () => {
     const commands = [
       'portal.plugins.install_builtin',
@@ -2289,4 +2326,20 @@ describe('workspace clone handoff contracts', () => {
   ])('derives %s as %s while preserving supported bare inputs', (url, name) => {
     expect(repositoryNameFromCloneUrl(url)).toBe(name);
   });
+});
+
+// CAN-4847: updates have their own admission and long-running command contract.
+it('registers collection update as an operation-specific long RPC', () => {
+  expect(PORTAL_COMMAND_TYPES_SET.has('portal.collections.apply_update')).toBe(
+    true,
+  );
+  expect([...PORTAL_LONG_RPC_COMMAND_TYPES]).toContain(
+    'portal.collections.apply_update',
+  );
+  expect([...PORTAL_SMALL_RPC_COMMAND_TYPES]).not.toContain(
+    'portal.collections.apply_update',
+  );
+  expect(
+    Reflect.get(portalContract, 'PORTAL_CAPABILITY_COLLECTION_UPDATES'),
+  ).toBe('collection_updates_v1');
 });

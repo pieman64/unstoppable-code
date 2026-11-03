@@ -31,6 +31,7 @@ import {
 } from '../SettingsLayout';
 import { AccountProxyErrorMessage } from './AccountProxyErrorMessage';
 import { accountProxyProviderLabel } from './accountProxyCopy';
+import { StatusLabel } from '@canopy/ui-shared/components';
 
 export type AccountProxyMode = 'server' | 'local';
 
@@ -79,11 +80,7 @@ function ErrorText({
   readonly children: ReactNode;
   readonly testId: string;
 }): JSX.Element {
-  return (
-    <span className="fg-destructive" data-testid={testId}>
-      {children}
-    </span>
-  );
+  return <StatusLabel data-testid={testId}>{children}</StatusLabel>;
 }
 
 /** The download in progress, as the row's status line and progress bar. */

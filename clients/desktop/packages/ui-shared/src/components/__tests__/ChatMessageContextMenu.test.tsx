@@ -481,8 +481,13 @@ describe('useChatMessageContextMenu', () => {
     rightClick(byTestId('text-a'));
     act(() => {
       document.body.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      );
+      document.body.dispatchEvent(
         new MouseEvent('mousedown', { bubbles: true }),
       );
+      // A whole press: the menu swallows the click its dismissal completes.
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(queryMenus()).toHaveLength(0);
     rightClick(byTestId('text-a'));
@@ -585,6 +590,17 @@ describe('useChatMessageContextMenu', () => {
     const measure = jest
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
       .mockReturnValue(new DOMRect(0, 0, 300, 120));
+    // The shared menu measures its laid-out box, which jsdom does not lay out.
+    const sizes = [
+      jest
+        .spyOn(HTMLElement.prototype, 'offsetWidth', 'get')
+        .mockReturnValue(300),
+      jest
+        .spyOn(HTMLElement.prototype, 'offsetHeight', 'get')
+        .mockReturnValue(120),
+      jest.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(120),
+      jest.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(120),
+    ];
     try {
       render(<Row id="a" />);
       rightClick(byTestId('text-a'), {
@@ -596,6 +612,7 @@ describe('useChatMessageContextMenu', () => {
       expect(menu.style.top).toBe(`${window.innerHeight - 124}px`);
     } finally {
       measure.mockRestore();
+      for (const size of sizes) size.mockRestore();
     }
   });
 

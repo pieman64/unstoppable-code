@@ -48,6 +48,35 @@ function html(msg: PortalChatMessage): string {
 }
 
 describe('ChatMessageView', () => {
+  it('keeps refusal identity metadata out of the failed-message layout', () => {
+    const refusal = {
+      code: 'no_billing_source',
+      userMessageId: 'dispatch-1',
+    };
+    const metadata: PortalChatPart = {
+      kind: 'text',
+      data: {
+        text: '',
+        composerRefusal: refusal,
+        errorText: 'Billing refused',
+      },
+    };
+    const output = html(
+      message({
+        role: 'assistant',
+        text: 'Billing refused',
+        parts: [metadata],
+      }),
+    );
+    expect(output).toContain('Billing refused');
+    expect(output).not.toContain('data-testid="chat-message-parts"');
+    const visible: PortalChatPart = {
+      kind: 'text',
+      data: { text: 'Visible explanation', composerRefusal: refusal },
+    };
+    expect(normalizeChatMessageParts([metadata, visible])).toEqual([visible]);
+  });
+
   it('renders a formal assistant plan as Markdown without its transport envelope', () => {
     const text =
       '<proposed_plan># Parser validation\n\nAdd input checks.</proposed_plan>';

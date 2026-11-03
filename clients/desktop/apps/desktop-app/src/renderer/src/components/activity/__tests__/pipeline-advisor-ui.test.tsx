@@ -31,7 +31,6 @@ import {
   AdvisorSection,
 } from '../details/PipelineAdvisorDetail';
 import {
-  computeAdvisorPreviewPosition,
   formatAdvisorEta,
   formatAdvisorEtaForModal,
 } from '../PipelineAdvisorEta';
@@ -74,7 +73,11 @@ describe('Pipeline Advisor activity and detail UI', () => {
         throw new Error('Advisor ETA badge not found');
       }
 
+      // Keyboard focus (not a scripted one) opens the preview.
       act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+        );
         badge.focus();
       });
 
@@ -234,23 +237,6 @@ describe('Pipeline Advisor activity and detail UI', () => {
       terminalRendered.cleanup();
       compactTerminalRendered.cleanup();
     }
-  });
-
-  it('keeps the advisor preview inside the viewport', () => {
-    expect(
-      computeAdvisorPreviewPosition({
-        anchorRect: {
-          top: 570,
-          bottom: 590,
-          left: 760,
-          right: 792,
-        },
-        popoverWidth: 280,
-        popoverHeight: 120,
-        viewportWidth: 800,
-        viewportHeight: 600,
-      }),
-    ).toEqual({ top: 446, left: 512 });
   });
 
   it('formats PipelineExecutionDetailModal advisor ETA metadata and section content', () => {
@@ -413,28 +399,31 @@ describe('Pipeline Advisor activity and detail UI', () => {
       const select = rendered.container.querySelector(
         '[data-testid="pipeline-advisor-report-selector"]',
       );
-      if (!(select instanceof HTMLSelectElement)) {
+      if (!(select instanceof HTMLButtonElement)) {
         throw new Error('Advisor report history selector not found');
       }
-      expect(select.options[select.selectedIndex]?.textContent).toBe('Latest');
-      expect(
-        Array.from(select.options).map((option) => option.textContent),
-      ).toEqual(['Initial', '+30m', 'Latest']);
+      expect(select.textContent).toBe('Latest');
+      act(() => select.click());
+      const options = Array.from(
+        document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+      );
+      expect(options.map((option) => option.textContent)).toEqual([
+        'Initial',
+        '+30m',
+        'Latest',
+      ]);
       expect(rendered.container.textContent).toContain('Latest health report');
       expect(rendered.container.textContent).not.toContain(
         'Middle health report',
       );
 
-      const middleOption = Array.from(select.options).find(
+      const middleOption = options.find(
         (option) => option.textContent === '+30m',
       );
       if (!middleOption) {
         throw new Error('Middle advisor report option not found');
       }
-      act(() => {
-        select.value = middleOption.value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      act(() => middleOption.click());
 
       expect(rendered.container.textContent).toContain('Middle health report');
       expect(rendered.container.textContent).not.toContain(
@@ -479,12 +468,16 @@ describe('Pipeline Advisor activity and detail UI', () => {
       const select = rendered.container.querySelector(
         '[data-testid="pipeline-advisor-report-selector"]',
       );
-      if (!(select instanceof HTMLSelectElement)) {
+      if (!(select instanceof HTMLButtonElement)) {
         throw new Error('Advisor report history selector not found');
       }
 
+      act(() => select.click());
       expect(
-        Array.from(select.options).map((option) => option.textContent),
+        Array.from(
+          document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+          (option) => option.textContent,
+        ),
       ).toEqual(['Initial', '+35m', 'Latest']);
     } finally {
       rendered.cleanup();

@@ -169,17 +169,21 @@ test('dispatch working-directory picker includes the root and every child repo f
       const expectedRepoOptions = workspace.repos
         .map((repo) => repo.name)
         .sort();
-      await expect(workingDirectory.locator('option')).toHaveCount(
-        expectedRepoOptions.length + 1,
+      await expect(workingDirectory).toHaveText('Project root');
+      await workingDirectory.click();
+      const options = window.getByRole('listbox').getByRole('option');
+      await expect(options).toHaveCount(expectedRepoOptions.length + 1);
+      const actualOptions = (await options.allTextContents()).map((label) =>
+        label.trim(),
       );
-      const actualOptions = (
-        await workingDirectory.locator('option').allTextContents()
-      ).map((label) => label.trim());
       expect(actualOptions[0]).toBe('Project root');
       expect(actualOptions.slice(1).sort()).toEqual(expectedRepoOptions);
-      await expect(workingDirectory.locator('option:checked')).toHaveText(
+      await expect(window.getByRole('option', { selected: true })).toHaveText(
         'Project root',
       );
+      await window
+        .getByRole('option', { name: 'Project root', exact: true })
+        .click();
 
       await dialog.getByRole('button', { name: 'Close' }).click();
       await expect(dialog).toHaveCount(0);

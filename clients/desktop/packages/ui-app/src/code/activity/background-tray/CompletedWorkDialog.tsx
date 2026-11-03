@@ -105,6 +105,7 @@ export function CompletedWorkDialog({
     <>
       {shown && (
         <DialogModal
+          inset="flush"
           title="Completed work"
           maxWidth="md"
           headerAlignment="center"

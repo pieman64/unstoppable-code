@@ -41,6 +41,11 @@ function setup(unreadable = false): {
         raw === undefined ? { state: 'absent' } : { state: 'present', raw },
       );
     },
+    remove: (filePath, _storage, removal): Promise<void> => {
+      replacements.push(removal);
+      files.delete(filePath);
+      return Promise.resolve();
+    },
     replace: (filePath, contents, _storage, replacement) => {
       replacements.push(replacement);
       files.set(filePath, contents);
@@ -119,5 +124,27 @@ it('refuses to replace a manifest that could not be read', async () => {
     await expect(write()).rejects.toBeInstanceOf(
       WorkspaceConfigUnreadableError,
     );
+  expect(replacements).toEqual([]);
+});
+
+it('removes even a corrupt manifest, advances once and is absent-idempotent', async () => {
+  const { files, replacements, repository } = setup();
+  files.set(manifestPath('ws'), 'not json');
+  await repository.remove('ws');
+  await repository.remove('ws');
+  expect(files.has(manifestPath('ws'))).toBe(false);
+  expect(replacements).toEqual([
+    {
+      operation: 'w5.workspace_manifest.remove',
+      advance: [{ kind: 'workspace', workspaceId: 'ws' }],
+      previousRaw: 'not json',
+    },
+  ]);
+});
+it('refuses removal when the manifest cannot be read', async () => {
+  const { replacements, repository } = setup(true);
+  await expect(repository.remove('ws')).rejects.toBeInstanceOf(
+    WorkspaceConfigUnreadableError,
+  );
   expect(replacements).toEqual([]);
 });

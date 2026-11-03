@@ -31,8 +31,9 @@ import {
   portalAskUserQuestionRecordState,
   parseAskUserQuestionTexts,
   readToolCallResult,
+  resolveTurnStartingStatus,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
-import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   detectSentPrompt,
   hasLiveTurnTimer,
@@ -41,7 +42,11 @@ import {
   type SentPromptSummary,
 } from '@canopy/app-state';
 import { ChatMessageView, normalizeChatMessageParts } from './ChatMessageView';
-import { TurnGroupView, isTurnAwaitingFirstOutput } from './TurnGroupView';
+import {
+  TurnGroupView,
+  isFirstTurnHeldForSetup,
+  isTurnAwaitingFirstOutput,
+} from './TurnGroupView';
 import { useChatAgentActivityPlacement } from './agent-activity/chat-agent-activity-placement';
 import { useChatVisualHost } from './chat-visual-host';
 import {
@@ -126,6 +131,20 @@ export interface ChatTranscriptProps {
   /** Canonical user-message identities of those queued sends. */
   readonly queuedPromptMessageIds?: readonly string[];
   readonly onLoadOlder?: () => Promise<void>;
+  /**
+   * The chat's worktree, while the host knows it: a first turn starting
+   * while its Git setup is pending reads as that setup, with its clock.
+   */
+  readonly worktreeSetup?: ChatTranscriptWorktreeSetup;
+}
+
+/** What a transcript needs to show a starting turn's worktree setup. */
+export interface ChatTranscriptWorktreeSetup {
+  /** The worktree's setup phase; only `git-pending` reads as setup. */
+  readonly phase?: string;
+  /** ISO string on desktop and Portal rows, epoch ms on cloud worktrees. */
+  readonly createdAt?: string | number;
+  readonly projectName?: string;
 }
 
 const EMPTY_DELIVERING_MESSAGES: readonly PortalChatMessage[] = [];
@@ -270,6 +289,7 @@ export function ChatTranscript({
   queuedPromptMessageIds,
   onLoadOlder,
   resultsComplete = false,
+  worktreeSetup,
 }: ChatTranscriptProps): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -337,12 +357,23 @@ export function ChatTranscript({
   }, [client]);
   const pendingInThisChat =
     chatId !== undefined && pendingPresentations.has(chatId);
+  // A first turn held for its worktree's setup starts with no timer frame,
+  // so this view shows it starting even when another host sent it.
+  const heldForSetup = isFirstTurnHeldForSetup(
+    turnGroups,
+    messagesById,
+    worktreeSetup?.phase,
+  );
   const startingFirstTurn =
     firstSendStartingEnabled &&
     status !== 'error' &&
     turnGroups.length === 1 &&
-    isTurnAwaitingFirstOutput(turnGroups[0], messagesById, pendingInThisChat) &&
-    (status === 'streaming' || pendingInThisChat);
+    isTurnAwaitingFirstOutput(
+      turnGroups[0],
+      messagesById,
+      pendingInThisChat || heldForSetup,
+    ) &&
+    (status === 'streaming' || pendingInThisChat || heldForSetup);
   // A user acknowledgement can precede the timer's streaming event. Once
   // shown, retain this chat's presentation until output or a terminal state.
   useLayoutEffect(() => {
@@ -361,12 +392,31 @@ export function ChatTranscript({
     startingFirstTurn,
     status,
   ]);
+  // Resolved once for the first turn, whose starting status this transcript
+  // renders in its footer slot (the turn itself shows none).
+  const startingStatus = resolveTurnStartingStatus({
+    starting: startingFirstTurn,
+    worktreeSetupPhase: worktreeSetup?.phase,
+    worktreeCreatedAt: worktreeSetup?.createdAt,
+    fallbackStartedAtMs:
+      turnGroups.length > 0
+        ? messagesById[turnGroups[0].userMessageId]?.createdAtMs
+        : undefined,
+    projectName: worktreeSetup?.projectName,
+    // Only clamps a clock-skewed future origin, so the result stays stable
+    // across renders. A mount time would overstate a later origin.
+    nowMs: Date.now(),
+  });
   // Keep the same live-region slot when an optimistic host footer becomes
   // an acknowledged first turn. The turn suppresses its duplicate status.
   const transcriptStatus =
     footerStatus ??
-    (startingFirstTurn ? (
-      <TurnWorkHeader starting dataTestId="turn-starting-status" />
+    (startingStatus !== null ? (
+      <TurnWorkHeader
+        starting
+        {...(startingStatus.kind === 'setup' ? { setup: startingStatus } : {})}
+        dataTestId="turn-starting-status"
+      />
     ) : undefined);
   const hasFooter = footerSlot != null || transcriptStatus != null;
   // Each run renders once across the chat (CAN-4690): in its home turn,
@@ -428,7 +478,7 @@ export function ChatTranscript({
           summary=""
           live={{
             label: workingStatus ?? 'Thinking',
-            icon: <LightbulbIcon />,
+            icon: null,
           }}
         />
       </TurnFooterRow>
@@ -729,6 +779,13 @@ export function ChatTranscript({
       ref={scrollRef}
       style={{ overflowAnchor: 'none' }}
       tabIndex={0}
+      onClickCapture={(event) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest('[data-step-row][aria-expanded]')
+        )
+          leaveBottom();
+      }}
       onWheel={(event) => {
         if (event.deltaY < 0) leaveBottom();
       }}
@@ -869,8 +926,9 @@ export function ChatTranscript({
                   // `userMessageId` IS the renderer's per-turn `msg-{n}-{epochMs}`:
                   // the persisted-chat projection maps `messageId: message.id`, so no
                   // extra lookup is needed to reach the correlation key.
-                  // A wake's turn is headed by its boundary row, not a prompt.
-                  {...(renderTurnFeedback && turnGroup.wake === undefined
+                  // A host can rate every response independently, including
+                  // a background reply headed by a wake boundary.
+                  {...(renderTurnFeedback
                     ? {
                         feedbackSlot: renderTurnFeedback(
                           turnGroup.userMessageId,
@@ -915,12 +973,11 @@ export function ChatTranscript({
         {status === 'error' &&
           error &&
           !latestTurnShowsError(turnGroups, messagesById, error) && (
-            <div
-              className="px-1 py-1 text-xs fg-destructive"
-              data-testid="chat-transcript-error"
-            >
-              {error}
-            </div>
+            <ErrorBanner
+              className=""
+              error={error}
+              testId="chat-transcript-error"
+            />
           )}
 
         {footerSlot}

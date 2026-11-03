@@ -1,18 +1,20 @@
 // ---------------------------------------------------------------------------
-// Transcript GitHub previews — inline titles and hover cards for references.
+// Transcript GitHub previews — short-ID chips and hover cards for references.
 //
 // Seeds settled chats that mention GitHub issues, pull requests and a
 // repository in a worktree whose `origin` is github.com/acme/app, connects
 // GitHub through the real Settings PAT field (and Linear as the Linear spec
 // does) against the shared credential-keyed REST mock, and walks the flow with
 // Early access off: bare `#N` resolves in the origin repository, qualified
-// and URL references resolve their own, each identity makes one request, the
-// visible title ends after five whole words, hover/focus/Escape/Enter/click
-// behave, code is never decorated, and an inaccessible reference stays plain.
-// Then: a reload paints cached titles while every GitHub read is held, the
-// pending placeholder is reserved and static under reduced motion, a
-// credential change mid-read purges GitHub titles without a stale one while
-// Linear keeps its titles, and disconnecting removes every decoration.
+// and URL references resolve their own, each identity makes one request,
+// chips show only the short ID (a raw URL label shortens to it) while titles
+// live in the hover card, hover/focus/Escape/Enter/click behave, code is
+// never decorated, and an inaccessible reference stays plain. Then: a reload
+// paints cached references while every GitHub read is held, a pending chip
+// shows its ID with no title placeholder, a credential change mid-read purges
+// GitHub previews without a stale title while Linear keeps its own, and
+// disconnecting removes every decoration. A resolved generated reference is
+// the one that declares its canonical `data-link-url`.
 // A second test checks that a cowork transcript leaves bare `#N` plain.
 //
 // The mock's reference holds (`/__mock/github/reference-holds/:key`) keep a
@@ -41,7 +43,6 @@ import {
   seedCoworkWorkspace,
   seedWorktreeChat,
 } from './seeders/index.mjs';
-import { expectWordCut, readTruncation } from './wordBoundaryTruncation.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -64,7 +65,6 @@ const LINK_ITEMS = ['Copy link', 'Open in browser', 'Open in external browser'];
 const COPY_ITEMS = ['Copy selection'];
 
 const TITLE_1234 = 'Show pull request titles in every chat transcript today';
-const FIVE_WORDS_1234 = 'Show pull request titles in';
 const TITLE_OTHER_1234 = 'Fix the flaky retry loop in the HTTP client';
 const TITLE_7 = 'Hydrate GitHub references';
 const TITLE_55 = 'Preview cards for issues';
@@ -72,6 +72,7 @@ const TITLE_90 = 'Draft the repository card';
 const TITLE_3001_A = 'Stale title from the first credential';
 const TITLE_3001_B = 'Fresh title for the new credential';
 const LINEAR_TITLE = 'Keep Linear titles through GitHub changes';
+const LINEAR_URL = 'https://linear.app/acme/issue/CAN-42/keep-linear-titles';
 const REPO_DESCRIPTION = Array.from(
   { length: 6 },
   () =>
@@ -97,18 +98,21 @@ const MAIN_TEXT = [
 ].join('\n');
 const SCOPE_TEXT = 'Scope check: acme/app#3001 and CAN-42 are both linked.';
 
-// What each decorated reference reads as, in transcript order.
+// What each decorated reference reads as, in transcript order: short IDs
+// only (raw URL labels shorten, in the origin repository to `#N`), and the
+// author-written label as written.
 const MAIN_REFERENCES = [
-  `#1234: ${TITLE_1234}`,
-  `acme/app#1234: ${TITLE_1234}`,
-  `other/lib#1234: ${TITLE_OTHER_1234}`,
-  `#7: ${TITLE_7}`,
+  '#1234',
+  'acme/app#1234',
+  'other/lib#1234',
+  '#7',
   'my explanation',
-  `#55: ${TITLE_55}`,
-  `other/lib#90: ${TITLE_90}`,
-  `acme/app: ${REPO_DESCRIPTION_BOUNDED}`,
+  '#55',
+  'other/lib#90',
+  'acme/app',
   'ghost/missing#5',
 ];
+const BARE_URL = 'https://github.com/acme/app/issues/1234';
 
 function issue(owner, repo, number, title, extra = {}) {
   return {
@@ -172,7 +176,7 @@ const LINEAR_SCENARIO = {
         id: 'iss_can_42',
         identifier: 'CAN-42',
         title: LINEAR_TITLE,
-        url: 'https://linear.app/acme/issue/CAN-42/keep-linear-titles',
+        url: LINEAR_URL,
         state: { name: 'In Progress' },
       },
     ],
@@ -339,7 +343,7 @@ async function openChat(window, app, chatId) {
   return chat;
 }
 
-test('GitHub references show inline titles and preview cards, and follow the credential', async () => {
+test('GitHub references show short-ID chips and preview cards, and follow the credential', async () => {
   test.setTimeout(240_000);
   const root = mkdtempSync(path.join(os.tmpdir(), 'canopy-github-previews-'));
   const userDataDir = path.join(root, 'data');
@@ -404,29 +408,15 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await expect(
       chat.locator('code [data-testid="github-reference"]'),
     ).toHaveCount(0);
-    // The inaccessible reference keeps its own text and reserves nothing.
+    // Titles live only in the hover card: no inline title or placeholder.
     await expect(
-      references.nth(8).getByTestId('github-reference-title'),
+      chat.locator('[data-testid^="github-reference-title"]'),
     ).toHaveCount(0);
-    await expect(
-      chat.getByTestId('github-reference-title-placeholder'),
-    ).toHaveCount(0);
-    // A repository's description is bounded by main and whole in the DOM.
-    await expect(
-      references.nth(7).getByTestId('github-reference-title'),
-    ).toHaveText(REPO_DESCRIPTION_BOUNDED);
-
-    // About five whole words, then "…"; the full title stays in the DOM.
-    for (const index of [0, 1]) {
-      const title = references.nth(index).getByTestId('github-reference-title');
-      await expect
-        .poll(async () => (await readTruncation(title)).truncated)
-        .toBe('word');
-      const state = await readTruncation(title);
-      expectWordCut(state, TITLE_1234);
-      expect(TITLE_1234.slice(0, state.visibleLength)).toBe(FIVE_WORDS_1234);
-      expect(state.title).toBeNull();
-    }
+    await expect(chat).not.toContainText(TITLE_1234);
+    await expect(chat).not.toContainText(REPO_DESCRIPTION.slice(0, 40));
+    // Resolved generated references declare GitHub's canonical URL.
+    await expect(references.nth(0)).toHaveAttribute('data-link-url', BARE_URL);
+    await expect(references.nth(1)).toHaveAttribute('data-link-url', BARE_URL);
     expect(
       await copySelection(window, electronApp, () => {
         const target = document.querySelectorAll(
@@ -437,7 +427,7 @@ test('GitHub references show inline titles and preview cards, and follow the cre
         getSelection()?.removeAllRanges();
         getSelection()?.addRange(range);
       }),
-    ).toBe(`acme/app#1234: ${TITLE_1234}`);
+    ).toBe('acme/app#1234');
     await window.evaluate(() => getSelection()?.removeAllRanges());
 
     // Hover: full title, state, repository and author.
@@ -474,6 +464,8 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await references.nth(7).hover();
     await expect(card).toContainText('acme/app');
     await expect(card).toContainText('Repository · Public');
+    // Main bounds the repository description; the card carries it.
+    await expect(card).toContainText(REPO_DESCRIPTION_BOUNDED);
     await window.mouse.move(0, 0);
     await references.nth(8).hover();
     await expect(window.getByRole('tooltip')).toContainText(
@@ -513,7 +505,6 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await references.nth(2).blur();
     // A resolved generated reference carries the message menu's link section
     // (CAN-2632).
-    const BARE_URL = 'https://github.com/acme/app/issues/1234';
     await expect(references.nth(0)).toHaveText(MAIN_REFERENCES[0]);
     await expect(references.nth(8)).toHaveText('ghost/missing#5');
     await expect(references.nth(0)).toHaveAttribute('data-link-url', BARE_URL);
@@ -573,7 +564,7 @@ test('GitHub references show inline titles and preview cards, and follow the cre
       'githubIssue:ghost/missing/5': 1,
     });
 
-    // ── Warm reload: cached titles paint while every read is held ───────────
+    // ── Warm reload: cached previews paint while every read is held ─────────
     await expect
       .poll(async () => (await readSavedPreviews(window)).github)
       .toBe(6);
@@ -585,6 +576,8 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     chat = await openChat(window, app, CHAT_ID);
     references = chat.getByTestId('github-reference');
     await expect(references).toHaveText(MAIN_REFERENCES);
+    // Resolved from the cache, not a read: every read is held.
+    await expect(references.nth(0)).toHaveAttribute('data-link-url', BARE_URL);
     // The only read is the uncached inaccessible one, and it is still held.
     await expect.poll(() => heldReads(TOKEN_A)).toBe(1);
     expect(await referenceReads(TOKEN_A)).toEqual({
@@ -592,25 +585,15 @@ test('GitHub references show inline titles and preview cards, and follow the cre
       'githubIssue:ghost/missing/5': 2,
     });
 
-    // ── Pending: a reserved, text-free, static placeholder ──────────────────
-    const placeholder = references
-      .nth(8)
-      .getByTestId('github-reference-title-placeholder');
-    await expect(placeholder).toHaveCount(1);
-    await expect(placeholder).toHaveAttribute('aria-hidden', 'true');
-    await expect(placeholder).toHaveAttribute('data-active', 'true');
-    await expect(placeholder).toHaveText('');
-    expect(
-      await placeholder.evaluate((element) => element.offsetWidth),
-    ).toBeGreaterThan(0);
-    const shadeAnimation = () =>
-      placeholder.evaluate(
-        (element) => getComputedStyle(element, '::after').animationName,
-      );
-    expect(await shadeAnimation()).not.toBe('none');
-    await window.emulateMedia({ reducedMotion: 'reduce' });
-    expect(await shadeAnimation()).toBe('none');
-    await window.emulateMedia({ reducedMotion: null });
+    // ── Pending: the chip shows its ID and icon, with no title placeholder ──
+    const pending = references.nth(8);
+    await expect(pending).toHaveText('ghost/missing#5');
+    await expect(pending.locator('svg[aria-hidden="true"]')).toHaveCount(1);
+    await expect(
+      pending.locator('[data-testid^="github-reference-title"]'),
+    ).toHaveCount(0);
+    await expect(pending).not.toHaveAttribute('data-link-url', /.*/);
+    const pendingBox = await pending.boundingBox();
     expect(
       await copySelection(window, electronApp, () => {
         const paragraph = document
@@ -624,13 +607,15 @@ test('GitHub references show inline titles and preview cards, and follow the cre
         getSelection()?.addRange(range);
       }),
     ).toBe(
-      `Repository acme/app: ${REPO_DESCRIPTION_BOUNDED} hosts it. ghost/missing#5 is not shared with you.`,
+      'Repository acme/app hosts it. ghost/missing#5 is not shared with you.',
     );
     await window.evaluate(() => getSelection()?.removeAllRanges());
-    // Released, it answers 404 and the placeholder leaves no trace.
+    // Released, it answers 404: the chip keeps its text and its box.
     await setHold(TOKEN_A, false);
-    await expect(placeholder).toHaveCount(0);
-    await expect(references.nth(8)).toHaveText('ghost/missing#5');
+    await expect.poll(() => heldReads(TOKEN_A)).toBe(0);
+    await expect(pending).toHaveText('ghost/missing#5');
+    await expect(pending).not.toHaveAttribute('data-link-url', /.*/);
+    expect(await pending.boundingBox()).toEqual(pendingBox);
 
     // ── Credential change mid-read ──────────────────────────────────────────
     await setHold(TOKEN_A, true);
@@ -638,11 +623,10 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     const scopeReference = scopeChat.getByTestId('github-reference');
     const linearReference = scopeChat.getByTestId('linear-reference');
     await expect(linearReference).toHaveText(`CAN-42: ${LINEAR_TITLE}`);
+    await expect(linearReference).toHaveAttribute('data-link-url', LINEAR_URL);
     await expect(scopeReference).toHaveText('acme/app#3001');
-    await expect(
-      scopeReference.getByTestId('github-reference-title-placeholder'),
-    ).toHaveCount(1);
     await expect.poll(() => heldReads(TOKEN_A)).toBe(1);
+    await expect(scopeReference).not.toHaveAttribute('data-link-url', /.*/);
     const scopeA = (await readSavedPreviews(window)).githubScope;
     expect(scopeA).not.toBeNull();
     // Record any moment the first credential's title reaches the screen.
@@ -662,12 +646,11 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     }, TITLE_3001_A);
     await setHold(TOKEN_B, true);
     await setGitHubPat(window, app, TOKEN_B);
-    // GitHub titles and cache are gone for the new scope; Linear's stay.
+    // GitHub previews and cache are gone for the new scope; Linear's stay.
     await expect(scopeReference).toHaveText('acme/app#3001');
-    await expect(
-      scopeReference.getByTestId('github-reference-title-placeholder'),
-    ).toHaveCount(1);
+    await expect(scopeReference).not.toHaveAttribute('data-link-url', /.*/);
     await expect(linearReference).toHaveText(`CAN-42: ${LINEAR_TITLE}`);
+    await expect(linearReference).toHaveAttribute('data-link-url', LINEAR_URL);
     await expect
       .poll(async () => {
         const saved = await readSavedPreviews(window);
@@ -689,12 +672,20 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await setHold(TOKEN_A, false);
     await expect.poll(() => heldReads(TOKEN_A)).toBe(0);
     await expect.poll(() => heldReads(TOKEN_B)).toBe(1);
-    await expect(
-      scopeReference.getByTestId('github-reference-title-placeholder'),
-    ).toHaveAttribute('data-active', 'true');
+    await expect(scopeReference).not.toHaveAttribute('data-link-url', /.*/);
     await setHold(TOKEN_B, false);
-    await expect(scopeReference).toHaveText(`acme/app#3001: ${TITLE_3001_B}`);
+    await expect(scopeReference).toHaveAttribute(
+      'data-link-url',
+      'https://github.com/acme/app/issues/3001',
+    );
+    await expect(scopeReference).toHaveText('acme/app#3001');
+    // The card shows the new credential's title, never the stale one.
+    await scopeReference.hover();
+    await expect(card).toContainText(TITLE_3001_B);
+    await window.mouse.move(0, 0);
+    await expect(card).toHaveCount(0);
     await expect(linearReference).toHaveText(`CAN-42: ${LINEAR_TITLE}`);
+    await expect(linearReference).toHaveAttribute('data-link-url', LINEAR_URL);
     expect(
       await window.evaluate(() => Reflect.get(window, '__staleTitleSeen')),
     ).toBe(false);
@@ -711,7 +702,7 @@ test('GitHub references show inline titles and preview cards, and follow the cre
       })
       .toEqual({ github: 1, stale: false });
 
-    // ── Disconnect: plain text and ordinary links, no placeholders ──────────
+    // ── Disconnect: plain text and ordinary links ───────────────────────────
     await setGitHubPat(window, app, '');
     // Main resolves no GitHub credential at all now (no gh login fallback).
     await expect
@@ -722,11 +713,9 @@ test('GitHub references show inline titles and preview cards, and follow the cre
     await expect(scopeReference).toHaveCount(0);
     await expect(scopeChat).toContainText('Scope check: acme/app#3001 and');
     await expect(linearReference).toHaveText(`CAN-42: ${LINEAR_TITLE}`);
+    await expect(linearReference).toHaveAttribute('data-link-url', LINEAR_URL);
     chat = await openChat(window, app, CHAT_ID);
     await expect(chat.getByTestId('github-reference')).toHaveCount(0);
-    await expect(
-      window.getByTestId('github-reference-title-placeholder'),
-    ).toHaveCount(0);
     await expect(chat).toContainText('Bare #1234 is ours, acme/app#1234');
     await expect(chat.locator(`a[href="${PR_URL}"]`)).toHaveCount(1);
     await expect(chat.locator(`a[href="${PR_CANONICAL}"]`)).toHaveText(
@@ -814,7 +803,8 @@ test('a cowork transcript keeps bare numbers plain and hydrates qualified refere
     const chat = window.getByTestId('panel-content-chat');
     await expect(chat).toContainText('stays plain while', { timeout: 30_000 });
     const references = chat.getByTestId('github-reference');
-    await expect(references).toHaveText([`acme/app#1234: ${TITLE_1234}`]);
+    await expect(references).toHaveText(['acme/app#1234']);
+    await expect(references).toHaveAttribute('data-link-url', BARE_URL);
     await expect(chat).toContainText('In cowork #1234 stays plain');
     expect(await referenceReads(COWORK_TOKEN)).toEqual({
       'githubIssue:acme/app/1234': 1,

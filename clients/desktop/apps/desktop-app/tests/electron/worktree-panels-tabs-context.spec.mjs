@@ -295,7 +295,11 @@ test('tab context menu Full screen selects the clicked tab and maximizes its gro
     // Full screen, divider. The close actions are the menu's last group, as
     // removal rows are in every action menu.
     const itemOrder = await menu.evaluate((node) =>
-      Array.from(node.children).map((child) =>
+      Array.from(
+        node.querySelectorAll(
+          '[role="menuitem"], [role="menuitemradio"], [role="separator"]',
+        ),
+      ).map((child) =>
         child.getAttribute('role') === 'separator'
           ? '---'
           : child.getAttribute('data-testid'),

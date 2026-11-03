@@ -16,7 +16,11 @@ import {
   cleanupDemoWorkspaces,
   seedDemoWorkspaces,
 } from './demoWorkspaces.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 import { cursorRuntimeFixture } from './fixtures/cursor-runtime.mjs';
 import { expectCursorConnected } from './fixtures/cursor-tile.mjs';
@@ -297,6 +301,7 @@ for (const failure of ['corrupt', 'slow', 'navigate', 'quit']) {
         await driver.openSettingsSection('experiments');
       }
       if (failure === 'quit') {
+        await captureDaemonDryRunEvidence(launched.electronApp);
         const child = launched.electronApp.process();
         await launched.electronApp.evaluate(({ app }) => app.quit());
         await expect.poll(() => child.exitCode !== null).toBe(true);

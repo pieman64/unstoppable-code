@@ -15,6 +15,7 @@ const causeSchema = z.enum([
   'pending-checkout-quarantine',
   'source-gone',
   'interrupted-discard',
+  'archive-recovery-unverified',
 ]);
 
 const refusalSchema = z.enum([
@@ -41,6 +42,7 @@ const targetKindSchema = z.enum([
   'git-quarantine',
   'files-only-recovery',
   'recreated-checkout-path',
+  'retained-archive',
 ]);
 
 const displayPathSchema = z.string().max(4096);

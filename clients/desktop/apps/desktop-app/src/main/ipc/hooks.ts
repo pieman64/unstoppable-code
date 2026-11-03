@@ -37,6 +37,10 @@ import type { RunHookOptions } from '../lib/hook-runner';
 import { sendToWebContents } from '../lib/web-contents-send';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import type { DesktopIpcCallerResolver } from './file-tree';
+import {
+  projectedWorkspaceGuardedCommands,
+  type ProjectedWorkspaceGuardedCommands,
+} from '../canopy-runtime/workspace-guarded-dispatch';
 import { getHookSourceInfoThroughCore } from '../canopy-runtime/hook-source-dispatch';
 
 function createManualHookRunCallbacks(
@@ -78,31 +82,44 @@ function createManualHookRunCallbacks(
 export function registerHookHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
-    dispatcher: Pick<DesktopCanopyDispatcher, 'query'>;
+    dispatcher: Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
+  const guardedCommands = (
+    event: IpcMainInvokeEvent,
+  ): ProjectedWorkspaceGuardedCommands =>
+    projectedWorkspaceGuardedCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
   registerIpcHandler(
     IPC_CHANNELS.projectSaveHooks,
-    async (_event, request: SaveProjectHooksRequest): Promise<void> => {
+    async (event, request: SaveProjectHooksRequest): Promise<void> => {
       assertWritableScope(request.projectId);
-      await saveProjectHooksFromService(request);
+      await saveProjectHooksFromService(request, (update) =>
+        guardedCommands(event).updateHooks(update),
+      );
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveHooks,
-    async (_event, request: SaveWorkspaceHooksRequest): Promise<void> => {
+    async (event, request: SaveWorkspaceHooksRequest): Promise<void> => {
       assertWritableScope(request.workspaceId);
-      await saveWorkspaceHooksFromService(request);
+      await saveWorkspaceHooksFromService(request, (update) =>
+        guardedCommands(event).updateHooks(update),
+      );
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveRepoHooks,
-    async (_event, request: SaveWorkspaceRepoHooksRequest): Promise<void> => {
+    async (event, request: SaveWorkspaceRepoHooksRequest): Promise<void> => {
       assertWritableScope(request.workspaceId);
-      await saveWorkspaceRepoHooksFromService(request);
+      await saveWorkspaceRepoHooksFromService(request, (update) =>
+        guardedCommands(event).updateHooks(update),
+      );
     },
   );
 
@@ -139,8 +156,10 @@ export function registerHookHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetPausedHooks,
-    async (_event, request: SetWorktreePausedHooksRequest): Promise<void> => {
-      await setWorktreePausedHookKeys(request);
+    async (event, request: SetWorktreePausedHooksRequest): Promise<void> => {
+      await setWorktreePausedHookKeys(request, (change) =>
+        guardedCommands(event).setWorktreeHooksPaused(change),
+      );
     },
   );
 

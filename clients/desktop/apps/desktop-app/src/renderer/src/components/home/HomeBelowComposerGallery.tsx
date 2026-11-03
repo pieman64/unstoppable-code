@@ -1,5 +1,10 @@
 import { useCallback, type JSX } from 'react';
-import { Button, HomeSection, SuggestionRow } from '@canopy/ui-shared';
+import {
+  Button,
+  HomeSection,
+  SuggestionRow,
+  SuggestionRowTrailing,
+} from '@canopy/ui-shared';
 import {
   CloseMediumIcon,
   DocumentIcon,
@@ -72,16 +77,16 @@ export function HomeBelowComposerGallery(): JSX.Element {
             >
               Resume 2 interrupted chats
             </SuggestionRow>
-            <span className="absolute right-4 top-1/2 z-10 flex -translate-y-1/2">
+            <SuggestionRowTrailing>
               <Button
                 variant="ghost-overlay"
-                size="sm"
+                size="compact"
                 iconOnly
                 aria-label="Dismiss"
               >
                 <CloseMediumIcon width={14} height={14} />
               </Button>
-            </span>
+            </SuggestionRowTrailing>
           </li>
           <li data-testid="home-resume-details">
             <SuggestionRow icon={<HistoryIcon size={16} aria-hidden="true" />}>

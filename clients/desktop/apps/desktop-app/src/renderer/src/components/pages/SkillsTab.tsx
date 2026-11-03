@@ -19,7 +19,8 @@ import { parseGitHubRepo } from '../../lib/format';
 import { runCancellableModalLoad } from './entityEditModalUtils';
 import { readSkillContentForDisplay } from './skillContentUtils';
 import { parseSkillSource, serializeSkillSource } from '@/lib/skillFrontmatter';
-import { TryItPrimaryCta } from '../plugins/TryItPrimaryCta';
+import { TryItLaunch, TryItPrimaryCta } from '../plugins/TryItPrimaryCta';
+import { tryItMenuItem } from '../plugins/tryItMenuItem';
 import { sharedSkillDetailHeader } from '../plugins/sharedResourceDetailHeaders';
 import { buildTryItPrompt } from '@canopy/protocol/try-it';
 import {
@@ -28,9 +29,10 @@ import {
 } from '@/lib/sharedSkillImport';
 import { SKILLS_CHANGED_EVENT, notifySkillsChanged } from '@/lib/skillsChanged';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
-import { brandText } from '@/lib/brand';
+import { brand, brandText } from '@/lib/brand';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { resolveSharedSkillUrl } from '@/lib/share-links';
+import { postShareToast } from '@/lib/share-toast';
 import {
   isSkillEditorSaveEnabled,
   resolveSupportingFilePaths,
@@ -52,9 +54,17 @@ import type {
   SkillEditableFile,
 } from '@canopy/desktop-shared/types/skills';
 import {
+  ChoiceList,
+  ChoiceListRow,
+  DialogFormField,
+  FieldError,
+  FormField,
   SkillFilePreview,
   SkillFileTabBar,
   SkillFileTree,
+  Badge,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import {
   skillFileLabel,
@@ -71,6 +81,7 @@ import {
   MarkdownFrontmatterContent,
   SKILL_MAIN_FILE,
   SkillEditWithAIButton,
+  InstalledShareUpdateButton,
   SkillReadDetail,
   installedSkillDetailHeader,
   type InstalledShareProvenanceOptions,
@@ -82,10 +93,19 @@ import {
   MarketplaceUnshareAction,
   useMarketplaceUnshare,
   useResourceContext,
+  useSharedByYouCopyLinkMenuItem,
   type UseMarketplaceUnshareOptions,
 } from '@canopy/ui-app/capability';
-import { sharedByYouAudienceCount } from '@canopy/ui-app/sharing';
+import {
+  sharedByYouAudienceCount,
+  sharedByYouScopedLink,
+  type SharedByYouCopyLinkPort,
+} from '@canopy/ui-app/sharing';
 import { marketplaceUnshareMenuLabel } from '@canopy/ui-shared/lib/marketplace-unshare';
+import {
+  PUBLISH_PUBLIC_LINK_LABEL,
+  PUBLISHING_PUBLIC_LINK_LABEL,
+} from '@canopy/ui-shared/lib/shared-by-you';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
@@ -99,6 +119,12 @@ import {
   type DetailPageActionsProps,
 } from '@canopy/ui-shared/components';
 import { ErrorBanner, LoadingPlaceholder } from '../shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   TrashIcon as AppCatalogTrashIcon,
@@ -307,19 +333,19 @@ export function AddSkillsModal({
       titleId="add-skills-modal-title"
       headerBorder={false}
     >
-      <div className="px-5 pb-5 space-y-4">
+      <div className="space-y-4">
         {/* Error */}
         <ErrorBanner error={error} />
 
         {/* Source input step */}
         {modalStep.step === 'source' && (
           <>
-            <label className="block text-s">
-              <span className="mb-1.5 block fg-secondary">
-                GitHub repository
-              </span>
-              <input
-                type="text"
+            <DialogFormField
+              label="GitHub repository"
+              htmlFor="add-skills-source-input"
+            >
+              <TextInput
+                id="add-skills-source-input"
                 value={sourceInput}
                 onChange={(e) => setSourceInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -331,10 +357,9 @@ export function AddSkillsModal({
                     handleFindSkills();
                 }}
                 placeholder="owner/repo or https://github.com/owner/repo"
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
                 autoFocus
               />
-            </label>
+            </DialogFormField>
             <Button
               variant="primary"
               size="compact"
@@ -358,26 +383,26 @@ export function AddSkillsModal({
         {modalStep.step === 'select' && (
           <>
             {modalStep.response.hasMarketplace && (
-              <div className="rounded-lg bg-warning-subtle border border-line-attention px-4 py-3">
-                <p className="text-s fg-warning">
-                  This repository contains a plugin marketplace. It is
-                  recommended to install as a marketplace instead of installing
-                  skills directly.
-                </p>
-                {onAddMarketplace && (
-                  <Button
-                    variant="primary"
-                    size="compact"
-                    onClick={() => {
-                      onAddMarketplace(modalStep.source);
-                      onClose();
-                    }}
-                    className="mt-2"
-                  >
-                    Add marketplace
-                  </Button>
-                )}
-              </div>
+              <Notice
+                intent="attention"
+                title="This repository contains a plugin marketplace."
+                actions={
+                  onAddMarketplace ? (
+                    <NoticeButton
+                      variant="primary"
+                      onClick={() => {
+                        onAddMarketplace(modalStep.source);
+                        onClose();
+                      }}
+                    >
+                      Add marketplace
+                    </NoticeButton>
+                  ) : undefined
+                }
+              >
+                Install it as a marketplace instead of installing skills
+                directly.
+              </Notice>
             )}
 
             <div className="flex items-center justify-between">
@@ -399,35 +424,33 @@ export function AddSkillsModal({
               </button>
             </div>
 
-            <div className="max-h-64 overflow-y-auto rounded-lg border divide-y">
-              {modalStep.response.skills.map((skill) => {
-                const risk: SkillRiskInfo | undefined =
-                  modalStep.response.riskInfo[skill.name];
-                return (
-                  <label
-                    key={skill.name}
-                    className="flex items-start gap-3 px-3 py-2.5 hover:bg-secondary/30 cursor-pointer transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedNames.has(skill.name)}
-                      onChange={() => toggleSkill(skill.name)}
-                      className="mt-0.5 rounded"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <span className="text-s font-medium fg-primary truncate block">
+            {/* A long list scrolls inside the box instead of the dialog. */}
+            <div className="flex max-h-64 min-h-0 flex-col">
+              <ChoiceList aria-label="Skills">
+                {modalStep.response.skills.map((skill) => {
+                  const risk: SkillRiskInfo | undefined =
+                    modalStep.response.riskInfo[skill.name];
+                  return (
+                    <ChoiceListRow
+                      key={skill.name}
+                      selected={selectedNames.has(skill.name)}
+                      onClick={() => toggleSkill(skill.name)}
+                      trailing={
+                        risk ? <RiskBadge level={risk.level} /> : undefined
+                      }
+                    >
+                      <span className="block truncate font-medium">
                         {skill.name}
                       </span>
                       {skill.description && (
-                        <p className="text-xs fg-secondary mt-0.5 line-clamp-2">
+                        <span className="mt-0.5 line-clamp-2 block text-xs fg-secondary">
                           {skill.description}
-                        </p>
+                        </span>
                       )}
-                    </div>
-                    {risk && <RiskBadge level={risk.level} />}
-                  </label>
-                );
-              })}
+                    </ChoiceListRow>
+                  );
+                })}
+              </ChoiceList>
             </div>
 
             <div className="flex items-center gap-2">
@@ -486,6 +509,7 @@ export function SkillDetailModal({
   removePending,
   updateAction,
   loadErrorPrefix,
+  contentRevision = 0,
   installedSkill,
   shareProvenance,
   displayName,
@@ -527,6 +551,8 @@ export function SkillDetailModal({
   updateAction?: SkillUpdateAction;
   /** Explains a committed mutation when its subsequent content read fails. */
   loadErrorPrefix?: string;
+  /** Reload the content and file viewer while retaining an in-flight Try it. */
+  contentRevision?: number;
   /** Renders a back chip that restores the previous detail (CAN-2382). */
   /** The list's display name for the page header title. */
   displayName?: string;
@@ -568,6 +594,7 @@ export function SkillDetailModal({
     }
 
     let cancelled = false;
+    setContent(null);
     setLoading(true);
     setError('');
 
@@ -597,7 +624,7 @@ export function SkillDetailModal({
     return (): void => {
       cancelled = true;
     };
-  }, [selectedSkillName, selectedSkillSourceId]);
+  }, [contentRevision, selectedSkillName, selectedSkillSourceId]);
 
   useCurrentUiStateReporter(
     'plugins.skillDetail',
@@ -624,86 +651,110 @@ export function SkillDetailModal({
 
   const isMultiFile = files.length > 1;
   const skillDescription = content?.frontmatter.description;
+  // A shared copy whose source changed offers its reviewed Update as the
+  // primary action, and Try it moves first into ⋯ (CAN-5306).
+  const onShareUpdate = shareProvenance?.updateAvailable
+    ? shareProvenance.onUpdate
+    : undefined;
+  const headerTitle = displayName?.trim() || skill.name;
   const detailContent = (
-    <SkillReadDetail
-      skill={skill}
-      // An installed skill is always ready: Try it opens a chat with it
-      // selected. The prompt waits for the content, which holds its example.
-      primaryAction={
-        <TryItPrimaryCta
-          capability={{
-            kind: 'skill',
-            sourceId: skill.sourceId,
-            catalogId: skill.name,
-            name: skill.name,
-          }}
-          prompt={buildTryItPrompt({
-            kind: 'skill',
-            name: skill.name,
-            description:
-              typeof skillDescription === 'string' ? skillDescription : null,
-            frontmatter: content?.frontmatter ?? null,
-          })}
-          installation={content === null ? 'loading' : 'installed'}
-          runtimeSelections={{
-            skillRefs: [{ sourceId: skill.sourceId, skillName: skill.name }],
-            pluginRefs: [],
-          }}
-          onInstall={(): void => {}}
-        />
-      }
-      content={content}
-      files={files}
-      filesTruncated={filesTruncated}
-      loading={loading}
-      error={error && loadErrorPrefix ? `${loadErrorPrefix} ${error}` : error}
-      initialFilePath={skill.filePath}
-      onEdit={onEdit}
-      editWithAI={editWithAI}
-      shareAction={shareAction}
-      onRemove={onRemove}
-      removeKind={removeKind}
-      removePending={removePending}
-      updateAction={updateAction}
-      // A page shows the skill under its header (CAN-4264); a dialog keeps
-      // its title bar and puts the notice above the content.
-      header={
-        presentation === 'page'
-          ? installedSkillDetailHeader(
-              skill.name,
-              content,
-              installedSkill,
-              'skill-detail-modal-title',
-              displayName,
-              shareProvenance,
-            )
-          : undefined
-      }
-      notice={presentation === 'page' ? notice : undefined}
-      leadingContent={
-        onNavigateBack || (notice && presentation !== 'page') ? (
-          <>
-            {onNavigateBack && (
-              <DetailBackChip onNavigateBack={onNavigateBack} />
-            )}
-            {presentation !== 'page' && notice}
-          </>
-        ) : undefined
-      }
-      relatedContent={relatedContent}
-      onViewStateChange={setViewState}
-      readFile={async (path) => {
-        const result = await window.skills.readFile(
-          skill.sourceId,
-          skill.name,
-          path,
-        );
-        if (!result.success || !result.data) {
-          throw new Error(result.error || 'Failed to load file.');
-        }
-        return result.data;
+    // An installed skill is always ready: Try it opens a chat with it
+    // selected. The prompt waits for the content, which holds its example.
+    <TryItLaunch
+      capability={{
+        kind: 'skill',
+        sourceId: skill.sourceId,
+        catalogId: skill.name,
+        name: skill.name,
       }}
-    />
+      prompt={buildTryItPrompt({
+        kind: 'skill',
+        name: skill.name,
+        description:
+          typeof skillDescription === 'string' ? skillDescription : null,
+        frontmatter: content?.frontmatter ?? null,
+      })}
+      installation={content === null ? 'loading' : 'installed'}
+      runtimeSelections={{
+        skillRefs: [{ sourceId: skill.sourceId, skillName: skill.name }],
+        pluginRefs: [],
+      }}
+      onInstall={(): void => {}}
+    >
+      {(tryIt): JSX.Element => (
+        <SkillReadDetail
+          key={contentRevision}
+          skill={skill}
+          inset={presentation === 'page' ? 'page' : 'dialog'}
+          primaryAction={
+            onShareUpdate ? (
+              <InstalledShareUpdateButton
+                name={headerTitle}
+                onUpdate={onShareUpdate}
+              />
+            ) : (
+              tryIt.primary
+            )
+          }
+          {...(onShareUpdate
+            ? { leadingMenuItems: [tryItMenuItem(tryIt)] }
+            : {})}
+          content={content}
+          files={files}
+          filesTruncated={filesTruncated}
+          loading={loading}
+          error={
+            error && loadErrorPrefix ? `${loadErrorPrefix} ${error}` : error
+          }
+          initialFilePath={skill.filePath}
+          onEdit={onEdit}
+          editWithAI={editWithAI}
+          shareAction={shareAction}
+          onRemove={onRemove}
+          removeKind={removeKind}
+          removePending={removePending}
+          updateAction={updateAction}
+          // A page shows the skill under its header (CAN-4264); a dialog keeps
+          // its title bar and puts the notice above the content.
+          header={
+            presentation === 'page'
+              ? installedSkillDetailHeader(
+                  skill.name,
+                  content,
+                  installedSkill,
+                  'skill-detail-modal-title',
+                  displayName,
+                  shareProvenance,
+                )
+              : undefined
+          }
+          notice={presentation === 'page' ? notice : undefined}
+          leadingContent={
+            onNavigateBack || (notice && presentation !== 'page') ? (
+              <>
+                {onNavigateBack && (
+                  <DetailBackChip onNavigateBack={onNavigateBack} />
+                )}
+                {presentation !== 'page' && notice}
+              </>
+            ) : undefined
+          }
+          relatedContent={relatedContent}
+          onViewStateChange={setViewState}
+          readFile={async (path) => {
+            const result = await window.skills.readFile(
+              skill.sourceId,
+              skill.name,
+              path,
+            );
+            if (!result.success || !result.data) {
+              throw new Error(result.error || 'Failed to load file.');
+            }
+            return result.data;
+          }}
+        />
+      )}
+    </TryItLaunch>
   );
 
   if (presentation === 'page') {
@@ -721,6 +772,7 @@ export function SkillDetailModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={() => onClose()}
       title={skill.name}
       titleId="skill-detail-modal-title"
@@ -843,6 +895,22 @@ interface UseSkillEditorStateResult {
   activeFileId: string | null;
   showFileTree: boolean;
   filesError: string;
+  /**
+   * The field errors shown under their fields: set when the person tries to
+   * save, and each one cleared as soon as its field is edited.
+   */
+  shownErrors: SkillEditorShownErrors;
+  /**
+   * The field to focus after a failed save, once the form shows it. `seq`
+   * changes on every request so a repeated press refocuses the same field.
+   */
+  focusRequest: SkillEditorFocusRequest | null;
+  /**
+   * Shows every current field error; true when nothing blocks the save. When
+   * something does, it brings the first blocking field into view (leaving a
+   * file tab or Preview, opening Advanced) and asks for it to be focused.
+   */
+  revealErrors: () => boolean;
   setName: (next: string) => void;
   setDescription: (next: string) => void;
   setBody: (next: string) => void;
@@ -862,10 +930,39 @@ interface UseSkillEditorStateResult {
   reset: (values: SkillEditorInitialValues) => void;
 }
 
+type SkillEditorField = 'name' | 'description' | 'body' | 'metadata' | 'files';
+
+type SkillEditorShownErrors = Partial<Record<SkillEditorField, string>>;
+
+interface SkillEditorFocusRequest {
+  field: SkillEditorField;
+  seq: number;
+}
+
+/** Where each field's first control sits in SkillEditorBody. */
+const SKILL_EDITOR_FIELD_FOCUS_SELECTORS: Record<SkillEditorField, string> = {
+  name: '[data-testid="skill-editor-name-field"] input',
+  description: '[data-testid="skill-editor-description-input"]',
+  body: '[data-testid="skill-editor-body-field"] textarea',
+  metadata: 'input[aria-label="Metadata key"]',
+  files: '[data-testid="skill-file-path-input"]',
+};
+
+const SKILL_EDITOR_FIELDS: readonly SkillEditorField[] = [
+  'name',
+  'description',
+  'body',
+  'metadata',
+  'files',
+];
+
 function useSkillEditorState(): UseSkillEditorStateResult {
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [body, setBody] = useState('');
+  const [name, setNameValue] = useState('');
+  const [description, setDescriptionValue] = useState('');
+  const [body, setBodyValue] = useState('');
+  const [shownErrors, setShownErrors] = useState<SkillEditorShownErrors>({});
+  const [focusRequest, setFocusRequest] =
+    useState<SkillEditorFocusRequest | null>(null);
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -874,10 +971,35 @@ function useSkillEditorState(): UseSkillEditorStateResult {
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [showFileTree, setShowFileTree] = useState(false);
 
+  const hideError = (field: SkillEditorField): void => {
+    setShownErrors((prev) => {
+      if (prev[field] === undefined) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const setName = (next: string): void => {
+    setNameValue(next);
+    hideError('name');
+  };
+
+  const setDescription = (next: string): void => {
+    setDescriptionValue(next);
+    hideError('description');
+  };
+
+  const setBody = (next: string): void => {
+    setBodyValue(next);
+    hideError('body');
+  };
+
   const reset = (values: SkillEditorInitialValues): void => {
-    setName(values.name);
-    setDescription(values.description);
-    setBody(values.body);
+    setNameValue(values.name);
+    setDescriptionValue(values.description);
+    setBodyValue(values.body);
+    setShownErrors({});
     const rows = values.extras
       .filter(({ key, value }) => key && value)
       .map(({ key, value, original }) =>
@@ -905,12 +1027,14 @@ function useSkillEditorState(): UseSkillEditorStateResult {
       suffix += 1;
     }
     const row = createEditorFileRow(candidate, '');
+    hideError('files');
     setFiles((prev) => [...prev, row]);
     setOpenFileIds((prev) => [...prev, row.id]);
     setActiveFileId(row.id);
   };
 
   const updateFilePath = (id: string, next: string): void => {
+    hideError('files');
     setFiles((prev) =>
       prev.map((f) => (f.id === id ? { ...f, path: next } : f)),
     );
@@ -923,6 +1047,7 @@ function useSkillEditorState(): UseSkillEditorStateResult {
   };
 
   const removeFile = (id: string): void => {
+    hideError('files');
     setFiles((prev) => prev.filter((f) => f.id !== id));
     setOpenFileIds((prev) => prev.filter((openId) => openId !== id));
     setActiveFileId((prev) => (prev === id ? null : prev));
@@ -943,6 +1068,7 @@ function useSkillEditorState(): UseSkillEditorStateResult {
   };
 
   const addMetadataRow = (): void => {
+    hideError('metadata');
     setMetadataRows((prev) => [...prev, createMetadataRow('', '')]);
   };
 
@@ -951,12 +1077,14 @@ function useSkillEditorState(): UseSkillEditorStateResult {
     field: 'key' | 'value',
     next: string,
   ): void => {
+    hideError('metadata');
     setMetadataRows((prev) =>
       prev.map((row) => (row.id === id ? { ...row, [field]: next } : row)),
     );
   };
 
   const removeMetadataRow = (id: string): void => {
+    hideError('metadata');
     setMetadataRows((prev) => prev.filter((row) => row.id !== id));
   };
 
@@ -1062,6 +1190,34 @@ function useSkillEditorState(): UseSkillEditorStateResult {
     !metadataKeyError &&
     !filesError;
 
+  const revealErrors = (): boolean => {
+    const current: Record<SkillEditorField, string> = {
+      name: nameError,
+      description: trimmedDescription ? '' : 'Enter a description.',
+      body: body.trim() ? '' : 'Enter the skill content.',
+      metadata: metadataKeyError,
+      files: filesError,
+    };
+    const next: SkillEditorShownErrors = {};
+    for (const field of SKILL_EDITOR_FIELDS) {
+      if (current[field]) next[field] = current[field];
+    }
+    setShownErrors(next);
+    const first = SKILL_EDITOR_FIELDS.find((field) => next[field]);
+    if (!first) return true;
+    // The name, description, content and metadata messages render in the
+    // edit form, which a supporting file tab or Preview replaces, and the
+    // metadata one only while Advanced is open: bring the form back so the
+    // message Save just revealed is on screen.
+    if (next.name || next.description || next.body || next.metadata) {
+      setActiveFileId(null);
+      setShowPreview(false);
+    }
+    if (next.metadata) setShowAdvanced(true);
+    setFocusRequest((prev) => ({ field: first, seq: (prev?.seq ?? 0) + 1 }));
+    return false;
+  };
+
   return {
     name,
     description,
@@ -1083,6 +1239,9 @@ function useSkillEditorState(): UseSkillEditorStateResult {
     activeFileId,
     showFileTree,
     filesError,
+    shownErrors,
+    focusRequest,
+    revealErrors,
     setName,
     setDescription,
     setBody,
@@ -1114,6 +1273,8 @@ interface SkillEditorBodyProps {
    * Off for the shared-skill editor, which is single-file by contract.
    */
   enableFiles?: boolean;
+  /** In a flush dialog the fields sit on its 24px inset, not the page's 20px. */
+  dialog?: boolean;
   /**
    * Escape typed in a text field stays in the field instead of reaching the
    * host page's Escape (Back), so it cannot discard the edits being typed.
@@ -1127,8 +1288,19 @@ function SkillEditorBody({
   headerHint,
   enableFiles = false,
   textEntryEscapeBoundary = false,
+  dialog = false,
 }: SkillEditorBodyProps): JSX.Element {
   const escapeBoundary = textEntryEscapeBoundary ? 'true' : undefined;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { focusRequest } = state;
+  useEffect(() => {
+    if (!focusRequest) return;
+    rootRef.current
+      ?.querySelector<HTMLElement>(
+        SKILL_EDITOR_FIELD_FOCUS_SELECTORS[focusRequest.field],
+      )
+      ?.focus();
+  }, [focusRequest]);
   const activeFile = enableFiles
     ? (state.files.find((f) => f.id === state.activeFileId) ?? null)
     : null;
@@ -1136,22 +1308,25 @@ function SkillEditorBody({
   const filePane = activeFile ? (
     <div className="space-y-3">
       <div className="flex items-end gap-2">
-        <label className="block flex-1 text-s">
-          <span className="mb-1.5 block fg-secondary">File path</span>
-          <input
-            data-canopy-escape-boundary={escapeBoundary}
-            type="text"
-            value={activeFile.path}
-            onChange={(e) =>
-              state.updateFilePath(activeFile.id, e.target.value)
-            }
-            placeholder="references/notes.md"
-            spellCheck={false}
-            disabled={!activeFile.editable}
-            data-testid="skill-file-path-input"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono disabled:opacity-60"
-          />
-        </label>
+        <div className="min-w-0 flex-1">
+          <FormField label="File path">
+            {(control) => (
+              <TextInput
+                {...control}
+                data-canopy-escape-boundary={escapeBoundary}
+                mono
+                value={activeFile.path}
+                onChange={(e) =>
+                  state.updateFilePath(activeFile.id, e.target.value)
+                }
+                placeholder="references/notes.md"
+                spellCheck={false}
+                disabled={!activeFile.editable}
+                data-testid="skill-file-path-input"
+              />
+            )}
+          </FormField>
+        </div>
         <Tooltip label="Delete file">
           <Button
             variant="ghost-destructive"
@@ -1162,7 +1337,7 @@ function SkillEditorBody({
             data-testid="skill-file-delete"
             className="mb-0.5"
           >
-            <AppCatalogTrashIcon width="14" height="14" />
+            <AppCatalogTrashIcon size="sm" />
           </Button>
         </Tooltip>
       </div>
@@ -1181,8 +1356,9 @@ function SkillEditorBody({
             }}
           />
         ) : (
-          <textarea
+          <TextArea
             data-canopy-escape-boundary={escapeBoundary}
+            mono
             value={activeFile.content}
             onChange={(e) =>
               state.updateFileContent(activeFile.id, e.target.value)
@@ -1190,8 +1366,8 @@ function SkillEditorBody({
             rows={18}
             placeholder="File contents…"
             spellCheck={false}
+            aria-label={`Contents of ${activeFile.path.trim() || 'the file'}`}
             data-testid="skill-file-content-input"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono resize-y"
           />
         )
       ) : (
@@ -1212,50 +1388,44 @@ function SkillEditorBody({
     />
   ) : (
     <div className="space-y-4">
-      <label className="block text-s">
-        <span className="mb-1.5 block fg-secondary">
-          Name <span className="fg-destructive">*</span>
-        </span>
-        <input
-          data-canopy-escape-boundary={escapeBoundary}
-          type="text"
-          value={state.name}
-          onChange={(e) => state.setName(e.target.value)}
-          placeholder="my-skill-name"
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono"
-          spellCheck={false}
-          autoFocus={nameAutoFocus}
-          aria-invalid={state.name.length > 0 && !!state.nameError}
-          aria-describedby="skill-name-help"
-        />
-        <span
-          id="skill-name-help"
-          className={`mt-1 block text-xs ${
-            state.name.length > 0 && state.nameError
-              ? 'fg-destructive'
-              : 'fg-secondary'
-          }`}
-        >
-          {state.name.length > 0 && state.nameError
-            ? state.nameError
-            : 'Lowercase letters, numbers, and hyphens only.'}
-        </span>
-      </label>
+      <FormField
+        label="Name"
+        id="skill-name-input"
+        description="Lowercase letters, numbers, and hyphens only."
+        error={state.shownErrors.name}
+        dataTestId="skill-editor-name-field"
+      >
+        {(control) => (
+          <TextInput
+            {...control}
+            data-canopy-escape-boundary={escapeBoundary}
+            mono
+            value={state.name}
+            onChange={(e) => state.setName(e.target.value)}
+            placeholder="my-skill-name"
+            spellCheck={false}
+            autoFocus={nameAutoFocus}
+          />
+        )}
+      </FormField>
 
-      <label className="block text-s">
-        <span className="mb-1.5 block fg-secondary">
-          Description <span className="fg-destructive">*</span>
-        </span>
-        <textarea
-          data-canopy-escape-boundary={escapeBoundary}
-          value={state.description}
-          onChange={(e) => state.setDescription(e.target.value)}
-          data-testid="skill-editor-description-input"
-          placeholder="One-line summary of when this skill should be used."
-          rows={2}
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s resize-y"
-        />
-      </label>
+      <FormField
+        label="Description"
+        error={state.shownErrors.description}
+        dataTestId="skill-editor-description-field"
+      >
+        {(control) => (
+          <TextArea
+            {...control}
+            data-canopy-escape-boundary={escapeBoundary}
+            value={state.description}
+            onChange={(e) => state.setDescription(e.target.value)}
+            data-testid="skill-editor-description-input"
+            placeholder="One-line summary of when this skill should be used."
+            rows={2}
+          />
+        )}
+      </FormField>
 
       <div>
         <Button
@@ -1289,27 +1459,36 @@ function SkillEditorBody({
             )}
             {state.metadataRows.map((row) => (
               <div key={row.id} className="flex items-center gap-2">
-                <input
-                  data-canopy-escape-boundary={escapeBoundary}
-                  type="text"
-                  value={row.key}
-                  onChange={(e) =>
-                    state.updateMetadataRow(row.id, 'key', e.target.value)
-                  }
-                  placeholder="key"
-                  spellCheck={false}
-                  className="focus-ring w-1/3 rounded border bg-base px-2 py-1 text-xs font-mono"
-                />
-                <input
-                  data-canopy-escape-boundary={escapeBoundary}
-                  type="text"
-                  value={row.value}
-                  onChange={(e) =>
-                    state.updateMetadataRow(row.id, 'value', e.target.value)
-                  }
-                  placeholder="value"
-                  className="focus-ring flex-1 rounded border bg-base px-2 py-1 text-xs"
-                />
+                <div className="w-1/3 shrink-0">
+                  <TextInput
+                    data-canopy-escape-boundary={escapeBoundary}
+                    mono
+                    value={row.key}
+                    onChange={(e) =>
+                      state.updateMetadataRow(row.id, 'key', e.target.value)
+                    }
+                    placeholder="key"
+                    spellCheck={false}
+                    aria-label="Metadata key"
+                    aria-invalid={state.shownErrors.metadata ? true : undefined}
+                    aria-describedby={
+                      state.shownErrors.metadata
+                        ? 'skill-metadata-error'
+                        : undefined
+                    }
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <TextInput
+                    data-canopy-escape-boundary={escapeBoundary}
+                    value={row.value}
+                    onChange={(e) =>
+                      state.updateMetadataRow(row.id, 'value', e.target.value)
+                    }
+                    placeholder="value"
+                    aria-label="Metadata value"
+                  />
+                </div>
                 <Tooltip label="Remove field">
                   <Button
                     variant="ghost-destructive"
@@ -1323,8 +1502,10 @@ function SkillEditorBody({
                 </Tooltip>
               </div>
             ))}
-            {state.metadataKeyError && (
-              <p className="text-xs fg-destructive">{state.metadataKeyError}</p>
+            {state.shownErrors.metadata && (
+              <FieldError id="skill-metadata-error">
+                {state.shownErrors.metadata}
+              </FieldError>
             )}
             <Button
               variant="ghost"
@@ -1338,20 +1519,24 @@ function SkillEditorBody({
         )}
       </div>
 
-      <label className="block text-s">
-        <span className="mb-1.5 block fg-secondary">
-          Skill content <span className="fg-destructive">*</span>
-        </span>
-        <textarea
-          data-canopy-escape-boundary={escapeBoundary}
-          value={state.body}
-          onChange={(e) => state.setBody(e.target.value)}
-          placeholder={`# My Skill\n\nDescribe how the skill should be used, including examples and constraints.`}
-          rows={18}
-          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s font-mono resize-y"
-          spellCheck={false}
-        />
-      </label>
+      <FormField
+        label="Skill content"
+        error={state.shownErrors.body}
+        dataTestId="skill-editor-body-field"
+      >
+        {(control) => (
+          <TextArea
+            {...control}
+            data-canopy-escape-boundary={escapeBoundary}
+            mono
+            value={state.body}
+            onChange={(e) => state.setBody(e.target.value)}
+            placeholder={`# My Skill\n\nDescribe how the skill should be used, including examples and constraints.`}
+            rows={18}
+            spellCheck={false}
+          />
+        )}
+      </FormField>
     </div>
   );
 
@@ -1361,7 +1546,7 @@ function SkillEditorBody({
   ];
 
   return (
-    <div className="px-5">
+    <div className={dialog ? 'px-6' : 'px-5'} ref={rootRef}>
       <div className="flex items-center justify-between pb-3">
         <p className="text-xs fg-secondary">{headerHint}</p>
         <SegmentedControl<'edit' | 'preview'>
@@ -1413,8 +1598,12 @@ function SkillEditorBody({
               </Tooltip>
             }
           />
-          {state.filesError && (
-            <p className="pb-2 text-xs fg-destructive">{state.filesError}</p>
+          {state.shownErrors.files && (
+            <div className="pb-2">
+              <FieldError id="skill-files-error">
+                {state.shownErrors.files}
+              </FieldError>
+            </div>
           )}
         </>
       )}
@@ -1709,6 +1898,7 @@ export function CustomSkillEditor({
 
   const save = async (): Promise<UnsavedChangesSaveResult> => {
     if (!canSave) {
+      if (!editor.hasContent) editor.revealErrors();
       // Said in place, since the prompt that asked has closed.
       const message = editor.hasContent
         ? 'This skill is still loading. Try again in a moment.'
@@ -1754,8 +1944,13 @@ export function CustomSkillEditor({
     }
   };
   const handleSave = async (): Promise<void> => {
+    // A field that blocks the save says so under itself, not in a banner.
+    if (!editor.revealErrors()) return;
     await save();
   };
+  // Save stays pressable while a field is invalid, so pressing it can say
+  // which field needs attention.
+  const saveDisabled = saving || loading || !supportingFilesReady;
 
   const title = isEdit ? `Edit skill: ${editingName}` : 'Create skill';
   const saveLabel = saving
@@ -1764,20 +1959,21 @@ export function CustomSkillEditor({
       ? 'Save changes'
       : 'Create skill';
   const fields = loading ? (
-    <LoadingPlaceholder label="Loading skill…" />
+    <DelayedLoadingPlaceholder slowNote="Still loading skill…">
+      <CenteredLoadingSpinner className="my-12" />
+    </DelayedLoadingPlaceholder>
   ) : (
     <SkillEditorBody
       state={editor}
       nameAutoFocus={!isEdit}
       enableFiles
       textEntryEscapeBoundary={presentation === 'page'}
+      dialog={presentation === 'modal'}
       headerHint={
         <>
           Custom skills are saved locally and shown as{' '}
           <span className="inline-flex items-center gap-1.5 align-middle">
-            <span className="text-3xs bg-accent-subtle fg-accent px-1.5 py-0.5 rounded font-medium">
-              custom
-            </span>
+            <Badge>custom</Badge>
             <span className="fg-primary font-medium">{brandText.appName}</span>
           </span>{' '}
           in the skills list.
@@ -1835,7 +2031,7 @@ export function CustomSkillEditor({
               variant="primary"
               size="compact"
               onClick={() => void handleSave()}
-              disabled={!canSave}
+              disabled={saveDisabled}
               data-testid="skill-editor-save"
             >
               {saveLabel}
@@ -1850,6 +2046,7 @@ export function CustomSkillEditor({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       titleId="create-skill-modal-title"
@@ -1858,13 +2055,13 @@ export function CustomSkillEditor({
     >
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto pb-3">
-          <div className="px-5">
+          <div className="px-6">
             <ErrorBanner error={error} />
           </div>
           {fields}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
           <Button
             size="compact"
             onClick={onClose}
@@ -1877,7 +2074,7 @@ export function CustomSkillEditor({
             variant="primary"
             size="compact"
             onClick={() => void handleSave()}
-            disabled={!canSave}
+            disabled={saveDisabled}
             data-testid="skill-editor-save"
           >
             {saveLabel}
@@ -1919,6 +2116,12 @@ export function CreateSkillModal({
 // ---------------------------------------------------------------------------
 // SharedSkillDetailModal
 // ---------------------------------------------------------------------------
+
+/** The ⋯ menu's member-link copy writes and notifies like Shared by you. */
+const SHARED_SKILL_COPY_LINK_PORT: SharedByYouCopyLinkPort = {
+  write: copyTextToClipboard,
+  notify: postShareToast,
+};
 
 export function SharedSkillDetailModal({
   mode,
@@ -2199,10 +2402,33 @@ export function SharedSkillDetailModal({
     }
   };
 
+  const handleSharedByYouPublicLinkRemoved = async (): Promise<void> => {
+    if (!detail) return;
+    // Removal already succeeded. Keep its access facts even if the re-read
+    // fails, so both Copy link controls describe the remaining audience.
+    const nextDetail = { ...detail, publicShare: null };
+    setDetail(nextDetail);
+    onUpdated(nextDetail);
+    await refreshDetail();
+  };
+
   // Fall back to the server-minted relative path when the cloud base URL
   // cannot be resolved, so the link stays visible and copyable.
   const publicShareLink =
     publicShareUrl ?? detail?.publicShare?.sharePath ?? null;
+
+  // The owner's member link (CAN-5452), from the loaded detail only: a load
+  // for another skill clears `detail`, so a stale link is never offered.
+  const copyScopedLinkItem = useSharedByYouCopyLinkMenuItem(
+    !isEdit && !loading && detail?.id === summary.id
+      ? sharedByYouScopedLink(detail, personalOrganizationId, {
+          scheme: brand.internalName,
+          kind: 'skill',
+          shareId: detail.id,
+        })
+      : null,
+    SHARED_SKILL_COPY_LINK_PORT,
+  );
 
   const handlePublishPublicShare = async (): Promise<void> => {
     if (!detail || publicShareBusy) return;
@@ -2246,7 +2472,9 @@ export function SharedSkillDetailModal({
   };
 
   const handleSave = async (): Promise<void> => {
-    if (!isEdit || !detail || saving || !editor.hasContent) return;
+    if (!isEdit || !detail || saving) return;
+    // A field that blocks the save says so under itself.
+    if (!editor.revealErrors()) return;
     setSaving(true);
     setError('');
     try {
@@ -2469,14 +2697,14 @@ export function SharedSkillDetailModal({
   const detailContent = (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto pb-3">
-        <div className="px-5">
+        <div className={page ? 'px-5' : 'px-6'}>
           <ErrorBanner error={error} />
         </div>
         {!page &&
           !loading &&
           detail &&
           (summary.canUpdate || detail.publicShare) && (
-            <div className="mx-5 mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-secondary px-3 py-2 text-xs">
+            <div className="mx-6 mb-3 flex flex-wrap items-center gap-2 rounded-lg border bg-secondary px-3 py-2 text-xs">
               <span className="font-medium fg-primary">Public link</span>
               {!detail.publicShare ? (
                 summary.canUpdate && (
@@ -2486,7 +2714,9 @@ export function SharedSkillDetailModal({
                     disabled={publicShareBusy}
                     onClick={() => void handlePublishPublicShare()}
                   >
-                    {publicShareBusy ? 'Publishing…' : 'Publish public link'}
+                    {publicShareBusy
+                      ? PUBLISHING_PUBLIC_LINK_LABEL
+                      : PUBLISH_PUBLIC_LINK_LABEL}
                   </Button>
                 )
               ) : (
@@ -2539,7 +2769,11 @@ export function SharedSkillDetailModal({
         {!loading && detail?.savedFrom && (
           <p
             data-testid="shared-skill-detail-saved-from"
-            className="mx-5 mb-3 text-xs fg-secondary"
+            className={
+              page
+                ? 'px-5 pb-3 text-xs fg-secondary'
+                : 'px-6 pb-3 text-xs fg-secondary'
+            }
           >
             {detail.savedFrom.name
               ? `Saved from ${detail.savedFrom.name}`
@@ -2550,16 +2784,20 @@ export function SharedSkillDetailModal({
           </p>
         )}
         {loading ? (
-          <LoadingPlaceholder label="Loading shared skill…" />
+          <DelayedLoadingPlaceholder slowNote="Still loading shared skill…">
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         ) : isEdit ? (
           <SkillEditorBody
             state={editor}
             nameAutoFocus={false}
             headerHint={`Edits are saved to ${brandText.appName} Cloud.`}
+            dialog={!page}
           />
         ) : (
           <SkillReadDetail
             skill={{ sourceId: 'cloud-shared', name: summary.name }}
+            inset={page ? 'page' : 'dialog'}
             {...(page
               ? {
                   // The page header shows the name and description; the
@@ -2584,14 +2822,18 @@ export function SharedSkillDetailModal({
           />
         )}
         {renderSharedByYou && !loading && detail && !isEdit && (
-          <div className="px-5 pt-6 empty:hidden">
-            {renderSharedByYou(detail, refreshDetail)}
+          <div
+            className={
+              page ? 'px-5 pt-6 empty:hidden' : 'px-6 pt-6 empty:hidden'
+            }
+          >
+            {renderSharedByYou(detail, handleSharedByYouPublicLinkRemoved)}
           </div>
         )}
       </div>
       {/* View mode has no footer: a Close would duplicate the X. */}
       {presentation === 'modal' && isEdit && (
-        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
           <Button size="compact" onClick={onClose} disabled={saving}>
             Cancel
           </Button>
@@ -2599,7 +2841,7 @@ export function SharedSkillDetailModal({
             variant="primary"
             size="compact"
             onClick={() => void handleSave()}
-            disabled={loading || saving || !editor.hasContent}
+            disabled={loading || saving}
           >
             {saving ? 'Saving…' : 'Save changes'}
           </Button>
@@ -2625,16 +2867,20 @@ export function SharedSkillDetailModal({
       moreItems.push({
         id: 'uninstall-installed',
         label: 'Uninstall',
-        icon: <AppCatalogTrashIcon width={14} height={14} aria-hidden />,
+        icon: <AppCatalogTrashIcon size="sm" aria-hidden />,
         testId: 'shared-skill-detail-uninstall',
         destructive: true,
         onSelect: () => setConfirmingUninstall(true),
       });
+    // Copy link leads the link actions; it never publishes or changes access.
+    if (copyScopedLinkItem) moreItems.push(copyScopedLinkItem);
     if (!isEdit && !loading && detail) {
       if (!detail.publicShare && summary.canUpdate)
         moreItems.push({
           id: 'publish-public-link',
-          label: publicShareBusy ? 'Publishing…' : 'Publish public link',
+          label: publicShareBusy
+            ? PUBLISHING_PUBLIC_LINK_LABEL
+            : PUBLISH_PUBLIC_LINK_LABEL,
           icon: <GlobeIcon width={14} height={14} aria-hidden />,
           testId: 'shared-skill-publish-public-link',
           disabled: publicShareBusy,
@@ -2747,6 +2993,7 @@ export function SharedSkillDetailModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={saving ? (): void => {} : onClose}
       title={isEdit ? `Edit shared skill: ${summary.name}` : summary.name}
       titleId="shared-skill-detail-modal-title"

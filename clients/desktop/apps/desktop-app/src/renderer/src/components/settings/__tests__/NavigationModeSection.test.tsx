@@ -157,8 +157,8 @@ describe('NavigationModeSection (CAN-1817)', () => {
       expect(
         container
           .querySelector('[data-testid="settings-navigation-mode-error"]')
-          ?.classList.contains('fg-destructive'),
-      ).toBe(true);
+          ?.querySelector('[role="alert"]'),
+      ).toBeTruthy();
     } finally {
       cleanup();
     }

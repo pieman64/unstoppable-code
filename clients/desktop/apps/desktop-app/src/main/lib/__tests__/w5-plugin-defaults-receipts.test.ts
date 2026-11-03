@@ -119,6 +119,14 @@ import * as pluginDefaultsCache from '../../plugins/project-plugin-defaults-cach
 import { getProjectPluginDefaultsRevision } from '../../plugins/plugin-defaults-revision';
 import { getWorkspaceConfigPath } from '../paths';
 import {
+  commitsLandingOnEveryPass,
+  settlesWithin,
+  stalledManifestCommit,
+} from './fixtures/plugin-defaults-reconcile-bound';
+import {
+  __pluginDefaultsHandOffsForTests,
+  __setInlinePluginDefaultsReconcileBoundForTests,
+  reconcileManifestPluginDefaults,
   updateWorkspacePlugins,
   WorkspacePluginsRefusedError,
   type WorkspacePluginsChange,
@@ -2984,6 +2992,553 @@ describe('unkeyed changes whose response is lost reconcile once the outcome is k
       normalizePluginSelections(NEW_DEFAULTS),
     );
     expect(reads).not.toHaveBeenCalled();
+  });
+});
+
+describe('keyed reconciles wait within a bound, then hand off to the background (CAN-4409 D1)', () => {
+  const BOUND = { passes: 3, deadlineMs: 250 };
+  const OLD = normalizePluginSelections(OLD_DEFAULTS);
+  const NEW = normalizePluginSelections(NEW_DEFAULTS);
+  const OTHER = selections({
+    pluginRefs: [{ marketplaceId: 'm', pluginName: 'other' }],
+  });
+
+  beforeEach(() => {
+    __setInlinePluginDefaultsReconcileBoundForTests(BOUND);
+  });
+  afterEach(async () => {
+    __setInlinePluginDefaultsReconcileBoundForTests(undefined);
+    await settleDetachedWork();
+  });
+
+  /** A lost keyed decision, then a read that cached the old layer. */
+  async function staleAfterLostResponse(): Promise<number> {
+    await seedDefaults();
+    loseNextResponse();
+    await expect(
+      setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }),
+    ).rejects.toThrow('response lost');
+    cacheStaleDefaults(OLD_DEFAULTS);
+    expect(await cachedDefaults()).toEqual(OLD);
+    return sessionRevision();
+  }
+
+  it('a replay behind a commit that never settles returns within the bound; chat reads serve the manifest and the revision advances once', async () => {
+    await seedDefaults();
+    loseNextResponse();
+    await expect(
+      setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }),
+    ).rejects.toThrow('response lost');
+    const stalled = await stalledManifestCommit('a');
+    cacheStaleDefaults(OLD_DEFAULTS);
+    expect(await cachedDefaults()).toEqual(OLD);
+    const stale = sessionRevision();
+
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).resolves.toMatchObject({ written: true });
+    expect(sessionRevision()).toBe(stale);
+    // Marked unsettled: the next chat read skips the stale cached layer.
+    expect(await cachedDefaults()).toEqual(NEW);
+
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+    for (let replay = 0; replay < 2; replay += 1) {
+      await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+      await settleDetachedWork();
+      expect(await cachedDefaults()).toEqual(NEW);
+      expect(sessionRevision()).toBe(stale + 1);
+    }
+    // Settled: reads are cached again.
+    const reads = jest.spyOn(manifestRepository, 'read');
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it('a replay while commits keep landing stops at the pass bound, and the background advances the revision once', async () => {
+    const stale = await staleAfterLostResponse();
+    const commits = commitsLandingOnEveryPass();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).resolves.toMatchObject({ written: true });
+    expect(commits.passes()).toBe(BOUND.passes);
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(sessionRevision()).toBe(stale + 1);
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+    expect(sessionRevision()).toBe(stale + 1);
+  });
+
+  it('a keyed failure behind a commit that never settles releases its key within the bound: a same-key retry replays instead of finding it in progress', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('response lost');
+    const commits = jest.spyOn(host, 'commit').mockClear();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).resolves.toMatchObject({ written: true });
+    expect(commits).not.toHaveBeenCalled();
+    expect(sessionRevision()).toBe(initial);
+    expect(await cachedDefaults()).toEqual(NEW);
+
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+  });
+
+  it('a keyed failure and repeated replays behind a commit that never settles keep one hand-off, and one background read decides them all', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('response lost');
+    // Each replay carries the failure's owed refresh.
+    for (let replay = 0; replay < 3; replay += 1)
+      await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    const retained = __pluginDefaultsHandOffsForTests('a');
+
+    const loads = jest.spyOn(
+      workspacePersistence,
+      'readWorkspaceConfigDetailed',
+    );
+    await stalled.release();
+    await settleDetachedWork();
+    expect(retained).toBe(1);
+    expect(loads).toHaveBeenCalledTimes(1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+    expect(sessionRevision()).toBe(initial + 1);
+    // Settled: reads are cached again.
+    const reads = jest.spyOn(manifestRepository, 'read');
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it('keyed failures of two keys handed off together share one read, which settles the owed refresh of each', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    for (const idempotencyKey of ['one', 'two']) {
+      loseNextResponse();
+      await expect(
+        settlesWithin(setDefaults(OLD_DEFAULTS, { idempotencyKey })),
+      ).rejects.toThrow('response lost');
+    }
+    const retained = __pluginDefaultsHandOffsForTests('a');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(retained).toBe(1);
+    // The layer is unchanged, so the read advanced nothing.
+    expect(sessionRevision()).toBe(initial);
+
+    // A refresh still owed would advance for a replay finding the manifest
+    // removed after a racing read served another layer.
+    cacheStaleDefaults(OTHER);
+    rmSync(manifestPath());
+    for (const idempotencyKey of ['one', 'two']) {
+      await setDefaults(OLD_DEFAULTS, { idempotencyKey });
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(initial);
+    }
+  });
+
+  /** Clears earlier calls, so it counts only the reads that follow. */
+  function countLoads(): jest.SpyInstance {
+    return jest
+      .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+      .mockClear();
+  }
+
+  it('replays of two keys owing reordered but equivalent selections at one revision share one hand-off and one read', async () => {
+    const FORWARD = selections({
+      pluginRefs: [
+        { marketplaceId: 'm', pluginName: 'a' },
+        { marketplaceId: 'm', pluginName: 'b' },
+      ],
+    });
+    const REORDERED = selections({
+      pluginRefs: [
+        { marketplaceId: 'm', pluginName: 'b' },
+        { marketplaceId: 'm', pluginName: 'a' },
+      ],
+      mcpServerRefs: [],
+    });
+    const keys: Array<[string, ChatTabPluginSelections]> = [
+      ['one', FORWARD],
+      ['two', REORDERED],
+    ];
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    // Failed reads decide nothing, so each key's refresh stays owed.
+    for (const [idempotencyKey, value] of keys) {
+      loseNextResponse();
+      jest
+        .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+        .mockRejectedValueOnce(new Error('read failed'));
+      await expect(setDefaults(value, { idempotencyKey })).rejects.toThrow(
+        'response lost',
+      );
+    }
+    expect(sessionRevision()).toBe(initial);
+    const stalled = await stalledManifestCommit('a');
+    for (const [idempotencyKey, value] of keys)
+      await settlesWithin(setDefaults(value, { idempotencyKey }));
+    const retained = __pluginDefaultsHandOffsForTests('a');
+
+    const loads = countLoads();
+    await stalled.release();
+    await settleDetachedWork();
+    expect(retained).toBe(1);
+    expect(loads).toHaveBeenCalledTimes(1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+    expect(sessionRevision()).toBe(initial + 1);
+  });
+
+  it('a hand-off left undecided by an unreadable manifest is settled by the later inline read that decides, with no read of its own', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('response lost');
+    const readable = readFileSync(manifestPath(), 'utf8');
+    writeFileSync(manifestPath(), '{ not json');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(1);
+    expect(sessionRevision()).toBe(initial);
+    writeFileSync(manifestPath(), readable);
+
+    const loads = countLoads();
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+    await settleDetachedWork();
+    expect(loads).toHaveBeenCalledTimes(1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+    expect(sessionRevision()).toBe(initial + 1);
+    // Settled: reads are cached again.
+    const reads = jest.spyOn(manifestRepository, 'read').mockClear();
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it('an inline replay that decides while a plain hand-off is owed reads plain: a manifest removed without a refresh advances once', async () => {
+    await seedDefaults();
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' });
+    expect(await cachedDefaults()).toEqual(NEW);
+    const applied = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    // A W5e event's plain reconcile hands off; its background read can't decide.
+    await expect(
+      settlesWithin(reconcileManifestPluginDefaults('a', false)),
+    ).resolves.toBe(false);
+    writeFileSync(manifestPath(), '{ not json');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(1);
+    rmSync(manifestPath());
+
+    // A replay with nothing owed would leave the removal to its remover.
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' });
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(applied + 1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+  });
+
+  it('an inline replay of another key that decides carries an owed replay hand-off’s rule: a manifest removed with that refresh owed advances once', async () => {
+    await seedDefaults();
+    await setDefaults(OLD_DEFAULTS, { idempotencyKey: 'one' });
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    loseNextResponse();
+    jest
+      .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+      .mockRejectedValueOnce(new Error('read failed'));
+    await expect(
+      setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }),
+    ).rejects.toThrow('response lost');
+    // Its replay hands off; the background read can't decide.
+    const stalled = await stalledManifestCommit('a');
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    writeFileSync(manifestPath(), '{ not json');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(1);
+    expect(sessionRevision()).toBe(initial);
+    rmSync(manifestPath());
+
+    await setDefaults(OLD_DEFAULTS, { idempotencyKey: 'one' });
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+  });
+
+  it('a plain hand-off joining while a replay-only run waits is decided by a plain read: a manifest removed without a refresh advances once', async () => {
+    await seedDefaults();
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' });
+    expect(await cachedDefaults()).toEqual(NEW);
+    const applied = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    // Nothing owed: its background run reads as a replay, and waits.
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' }));
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'two' })),
+    ).rejects.toThrow('response lost');
+    rmSync(manifestPath());
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(applied + 1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+  });
+
+  it('an inline read that decides leaves a plain hand-off that joined during its read owed: a manifest removed without a refresh still advances once', async () => {
+    await seedDefaults();
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' });
+    expect(await cachedDefaults()).toEqual(NEW);
+    const applied = sessionRevision();
+    rmSync(manifestPath());
+    // A replay with nothing owed decides inline: its read finds the removal.
+    __setInlinePluginDefaultsReconcileBoundForTests({
+      passes: 3,
+      deadlineMs: 15_000,
+    });
+    const held = holdReconcileRead();
+    const replay = setDefaults(NEW_DEFAULTS, { idempotencyKey: 'one' });
+    await held.reached;
+    // A plain reconcile (a W5e event) waits behind that read and hands off.
+    // Its background run takes the queue only once the replay has settled.
+    const serialize = manifestRepository.serialize.bind(manifestRepository);
+    const backgroundQueued = barrier();
+    jest
+      .spyOn(manifestRepository, 'serialize')
+      .mockImplementationOnce((workspaceId, work) =>
+        serialize(workspaceId, work),
+      )
+      .mockImplementationOnce(async (workspaceId, work) => {
+        await backgroundQueued.promise;
+        return serialize(workspaceId, work);
+      });
+    __setInlinePluginDefaultsReconcileBoundForTests(BOUND);
+    await expect(
+      settlesWithin(reconcileManifestPluginDefaults('a', false)),
+    ).resolves.toBe(false);
+    held.release();
+    await expect(settlesWithin(replay)).resolves.toMatchObject({
+      written: true,
+    });
+    expect(sessionRevision()).toBe(applied);
+    backgroundQueued.open();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(applied + 1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+  });
+
+  it('replays of one key handed off across an advance share one hand-off and one read', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('response lost');
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    // Another writer's refresh advances the revision past the owed one.
+    projectPluginDefaultsWritten({
+      configPath: getWorkspaceConfigPath('a'),
+      workspaceId: 'a',
+      layerChanged: true,
+    });
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    const retained = __pluginDefaultsHandOffsForTests('a');
+
+    const loads = countLoads();
+    await stalled.release();
+    await settleDetachedWork();
+    expect(retained).toBe(1);
+    expect(loads).toHaveBeenCalledTimes(1);
+    expect(__pluginDefaultsHandOffsForTests('a')).toBe(0);
+    // The advance already recreated every session that read before it.
+    expect(sessionRevision()).toBe(initial + 1);
+  });
+
+  it('a replay handed off while the manifest is removed and its refresh is owed still advances once', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    loseNextResponse();
+    jest
+      .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+      .mockRejectedValueOnce(new Error('read failed'));
+    await expect(
+      setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }),
+    ).rejects.toThrow('response lost');
+    // The failed read decided nothing, so the refresh is still owed.
+    expect(sessionRevision()).toBe(initial);
+    const stalled = await stalledManifestCommit('a');
+    rmSync(manifestPath());
+
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).resolves.toMatchObject({ written: true });
+    expect(sessionRevision()).toBe(initial);
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+    for (let replay = 0; replay < 2; replay += 1) {
+      await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+      await settleDetachedWork();
+      expect(sessionRevision()).toBe(initial + 1);
+    }
+  });
+
+  it('a replay handed off while the manifest is removed with nothing owed leaves the removal to its remover, chat reads included', async () => {
+    await seedDefaults();
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+    expect(await cachedDefaults()).toEqual(NEW);
+    const applied = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    rmSync(manifestPath());
+
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).resolves.toMatchObject({ written: true });
+    // A chat read while marked finds the removed manifest's empty layer.
+    expect(await cachedDefaults()).toEqual(
+      normalizePluginSelections(undefined),
+    );
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(applied);
+  });
+
+  it('a keyed change made from a manifest commit’s post-commit work does not wait on that commit; the background advances once after it', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    let failure: unknown;
+    let replay: unknown;
+    await settlesWithin(
+      withW5Commit(
+        {
+          operation: 'test.manifest',
+          locks: [{ kind: 'manifest', path: manifestPath() }],
+        },
+        async () => {
+          await updateWorkspaceConfig('a', (config): void => {
+            config.recommendedPluginOptOutKeys = ['outer'];
+          });
+          await afterW5Commit(async () => {
+            loseNextResponse();
+            failure = await setDefaults(NEW_DEFAULTS, {
+              idempotencyKey: 'key',
+            }).catch((error: unknown) => error);
+            replay = await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+          });
+        },
+      ),
+    );
+    expect(failure).toMatchObject({ message: 'response lost' });
+    expect(replay).toMatchObject({ written: true });
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(sessionRevision()).toBe(initial + 1);
+  });
+
+  it('a keyed decision whose own post-commit refresh fails reconciles inline, without waiting on itself', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const reconciles = jest.spyOn(
+      pluginDefaultsCache,
+      'reconcileProjectPluginDefaults',
+    );
+    jest
+      .spyOn(pluginDefaultsCache, 'projectPluginDefaultsWritten')
+      .mockImplementationOnce((): void => {
+        throw new Error('refresh failed');
+      });
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('refresh failed');
+    expect(reconciles).toHaveBeenCalledTimes(1);
+    await expect(reconciles.mock.results[0]?.value).resolves.toBe('compared');
+    expect(sessionRevision()).toBe(initial + 1);
+    expect(await cachedDefaults()).toEqual(NEW);
+  });
+
+  it('two replays handed off behind one stalled commit advance the revision once, and the layer settles', async () => {
+    const stale = await staleAfterLostResponse();
+    const stalled = await stalledManifestCommit('a');
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    expect(sessionRevision()).toBe(stale);
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(stale + 1);
+    const reads = jest.spyOn(manifestRepository, 'read');
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(await cachedDefaults()).toEqual(NEW);
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  it('a keyed failure and its replay, both handed off while the manifest is removed, advance the revision once', async () => {
+    await seedDefaults();
+    expect(await cachedDefaults()).toEqual(OLD);
+    const initial = sessionRevision();
+    const stalled = await stalledManifestCommit('a');
+    loseNextResponse();
+    await expect(
+      settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' })),
+    ).rejects.toThrow('response lost');
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    rmSync(manifestPath());
+    await stalled.release();
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+    await setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' });
+    await settleDetachedWork();
+    expect(sessionRevision()).toBe(initial + 1);
+  });
+
+  it('with an unkeyed failure pending too, the layer stays unsettled after the hand-off decides, until the next change', async () => {
+    const stale = await staleAfterLostResponse();
+    const stalled = await stalledManifestCommit('a');
+    await settlesWithin(setDefaults(NEW_DEFAULTS, { idempotencyKey: 'key' }));
+    loseNextResponse();
+    await expect(setDefaults(OTHER)).rejects.toThrow('response lost');
+    await stalled.release();
+    await settleDetachedWork();
+    expect(await cachedDefaults()).toEqual(normalizePluginSelections(OTHER));
+    expect(sessionRevision()).toBe(stale + 1);
+    // The unkeyed outcome is still unknown, so reads skip the cache.
+    const reads = jest.spyOn(manifestRepository, 'read');
+    await cachedDefaults();
+    expect(reads).toHaveBeenCalled();
+    await setDefaults(OTHER);
+    await settleDetachedWork();
+    reads.mockClear();
+    await cachedDefaults();
+    await cachedDefaults();
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(sessionRevision()).toBe(stale + 1);
   });
 });
 

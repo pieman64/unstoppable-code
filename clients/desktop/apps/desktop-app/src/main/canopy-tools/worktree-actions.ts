@@ -6,10 +6,7 @@ import type {
 } from '@canopy/desktop-shared/types/browser';
 import type { BrowserPostDispatchUnknown } from '@canopy/desktop-shared/types';
 import { openShareDialog } from './sharing-runtime';
-import {
-  filterStoredPipelineContexts,
-  filterProjectPipelineContexts,
-} from '../pipelines/pipeline-install-context';
+import { filterProjectPipelineContexts } from '../pipelines/pipeline-install-context';
 import { BrowserProfileError } from '@canopy/desktop-shared/browser-profile-error';
 import {
   browserReadTargetFailure,
@@ -26,7 +23,6 @@ import { randomUUID } from 'node:crypto';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
-import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   BROWSER_ACTION_ROW_LIMIT,
   truncateBrowserConsoleEntry,
@@ -86,6 +82,7 @@ import {
   type ExecutionState,
   type ExecutionSummary,
   type PipelineData,
+  type PipelineInfo,
   type PipelineExecutionInitiator,
   type PipelineInputDef,
   type PipelinePreferenceLocator,
@@ -96,13 +93,14 @@ import {
   DEFAULT_PIPELINE_SCOPES,
   executionContextSatisfies,
 } from '@canopy/desktop-shared/pipelines/scope';
-import * as pipelineStore from '../pipelines/pipeline-service';
-import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
-import { listSharedPipelines } from '../pipelines/canopy-server-client';
 import {
-  assertCanopyCloudCapability,
-  CanopyCloudClientError,
-} from '../canopy-cloud/client';
+  listDesktopPipelines,
+  PIPELINE_DEFINITION_AGENT_CALLER,
+  pipelineWriteErrorMessage,
+  readDesktopPipeline,
+} from '../canopy-runtime/pipeline-definition-dispatch';
+import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
+import { CanopyCloudClientError } from '../canopy-cloud/client';
 import {
   discoverProjectPipelines,
   loadProjectPipelineFromDisk,
@@ -872,6 +870,21 @@ async function loadPipelineForAction(
   }
 }
 
+/** Why an optional source listed nothing, unless it is just not signed in. */
+function sourceWarning(
+  source: 'curated' | 'shared',
+  cause: unknown,
+): string | undefined {
+  if (
+    cause instanceof CanopyCloudClientError &&
+    EXPECTED_SHARED_PIPELINE_UNAVAILABLE_CODES.has(cause.code)
+  )
+    return undefined;
+  return cause instanceof Error
+    ? cause.message
+    : `Unavailable workflow source: ${source}`;
+}
+
 async function loadPipelineRows(
   runtime: WorktreeActionRuntime,
   sharedQuery?: string,
@@ -879,90 +892,68 @@ async function loadPipelineRows(
   rows: PipelineListRow[];
   warnings: string[];
 }> {
-  const storedResult = pipelineStore.listPipelines();
-  const contextInfos = await filterStoredPipelineContexts(
-    storedResult.success && storedResult.data ? storedResult.data : [],
-  );
-  // Hidden like the Orchestrator automations that own them (CAN-4551).
-  const hiddenOwned = await agentHiddenOwnedPipelineIds(
-    contextInfos.map((info) => info.id),
-    runtime,
-  );
-  const storedInfos = contextInfos.filter((info) => !hiddenOwned.has(info.id));
+  const warnings: string[] = [];
+  // Core lists the stored, catalog and shared definitions; project files are
+  // found from this runtime's directory, as core reads project definitions
+  // by worktree scope. The query also narrows the shared read.
+  let listed: PipelineInfo[] = [];
+  try {
+    const listing = await listDesktopPipelines(
+      {
+        sources: ['bundled', 'user', 'curated', 'shared'],
+        ...(sharedQuery?.trim() ? { query: sharedQuery } : {}),
+      },
+      PIPELINE_DEFINITION_AGENT_CALLER,
+    );
+    // Hidden like the Orchestrator automations that own them (CAN-4551).
+    const hiddenOwned = await agentHiddenOwnedPipelineIds(
+      listing.rows
+        .filter((info) => info.source === 'user')
+        .map((info) => info.id),
+      runtime,
+    );
+    listed = listing.rows.filter((info) => !hiddenOwned.has(info.id));
+    for (const source of listing.unavailableSources) {
+      if (source !== 'curated' && source !== 'shared') continue;
+      const warning = sourceWarning(source, listing.sourceFailures[source]);
+      if (warning !== undefined) warnings.push(warning);
+    }
+  } catch (cause) {
+    warnings.push(
+      pipelineWriteErrorMessage(cause) || 'The workflows could not be listed.',
+    );
+  }
   const projectInfos = await filterProjectPipelineContexts(
     await discoverProjectPipelines(runtime.cwd).catch(() => []),
     runtime.cwd,
     runtime.projectId,
   );
-  const sharedWarnings: string[] = [];
-  let sharedRows: PipelineListRow[] = [];
-  try {
-    await assertCanopyCloudCapability('pipelines-crud-v1');
-    const shared = await listSharedPipelines({ limit: 100, q: sharedQuery });
-    sharedRows = shared.data.map((pipeline) => ({
-      id: `shared:${CANOPY_CLOUD_SERVER_ID}:${pipeline.id}`,
-      name: pipeline.name,
-      description: pipeline.description,
-      source: 'shared',
-      readonly: !pipeline.canUpdate,
-      scopes: pipeline.scopes ?? ['directory'],
-      filename: '',
-      filePath: '',
-      runModes: (pipeline.triggerTypes ?? []).map((mode) => ({
-        mode,
-        // Shared list summaries do not carry the raw trigger definitions.
-        // Call pipeline.get to resolve input details for a selected pipeline.
-        inputCount: null,
-      })),
-    }));
-  } catch (cause) {
-    if (
-      !(
-        cause instanceof CanopyCloudClientError &&
-        EXPECTED_SHARED_PIPELINE_UNAVAILABLE_CODES.has(cause.code)
-      )
-    ) {
-      sharedWarnings.push(
-        cause instanceof Error ? cause.message : String(cause),
-      );
-    }
-  }
-  let curatedRows: PipelineListRow[] = [];
-  try {
-    const { listManagedCuratedPipelines } =
-      await import('../pipelines/curated-pipeline-catalog');
-    curatedRows = (await listManagedCuratedPipelines()).map((info) => ({
-      id: info.id,
-      name: info.name,
-      description: info.description,
-      source: info.source,
-      readonly: true,
-      scopes: info.scopes ?? [...DEFAULT_PIPELINE_SCOPES],
-      filename: info.filename,
-      filePath: '',
-      runModes: (info.triggerTypes ?? []).map((mode) => ({
-        mode,
-        inputCount: null,
-      })),
-    }));
-  } catch (cause) {
-    if (
-      !(
-        cause instanceof CanopyCloudClientError &&
-        EXPECTED_SHARED_PIPELINE_UNAVAILABLE_CODES.has(cause.code)
-      )
-    ) {
-      sharedWarnings.push(
-        cause instanceof Error ? cause.message : String(cause),
-      );
-    }
-  }
+  const catalogRow = (info: PipelineInfo): PipelineListRow => ({
+    id: info.id,
+    name: info.name,
+    description: info.description,
+    source: info.source,
+    readonly: info.readonly,
+    scopes: info.scopes ?? [...DEFAULT_PIPELINE_SCOPES],
+    filename: info.filename,
+    filePath: '',
+    // Catalog and share listings carry no trigger definitions; call
+    // pipeline.get to resolve input details for a selected pipeline.
+    runModes: (info.triggerTypes ?? []).map((mode) => ({
+      mode,
+      inputCount: null,
+    })),
+  });
   const hydrated = await Promise.all([
-    ...storedInfos.map((info) =>
-      Promise.resolve(pipelineStore.getPipeline(info.id)).then((result) =>
-        result.success && result.data ? result.data : null,
+    ...listed
+      .filter((info) => info.source === 'bundled' || info.source === 'user')
+      .map((info) =>
+        readDesktopPipeline(
+          info.id,
+          {},
+          PIPELINE_DEFINITION_AGENT_CALLER,
+        ).catch((): null => null),
       ),
-    ),
     ...projectInfos.map(async (info) =>
       info.filePath
         ? {
@@ -977,13 +968,10 @@ async function loadPipelineRows(
       ...hydrated.flatMap((pipeline) =>
         pipeline ? [pipelineListRow(pipeline)] : [],
       ),
-      ...sharedRows,
-      ...curatedRows,
+      ...listed.filter((info) => info.source === 'shared').map(catalogRow),
+      ...listed.filter((info) => info.source === 'curated').map(catalogRow),
     ],
-    warnings: [
-      ...(storedResult.success ? [] : [storedResult.error ?? '']),
-      ...sharedWarnings,
-    ],
+    warnings,
   };
 }
 

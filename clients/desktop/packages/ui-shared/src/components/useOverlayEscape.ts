@@ -116,12 +116,49 @@ export function subscribeOverlayStack(
   };
 }
 
+// Showing tooltips that take Escape, counted per document. A tip listens on
+// the window, after these document listeners, so a focused control's own
+// Escape (React's listener on web sits on the document) runs first; while a
+// tip shows, an overlay leaves the press to it.
+const showingEscapeTooltips = new WeakMap<Document, number>();
+
+/**
+ * Marks a tooltip that closes on Escape as showing in `ownerDocument` until
+ * the returned function runs. Meanwhile overlays leave Escape to the tip, so
+ * one press closes the tip and keeps the dialog beneath it open.
+ */
+export function registerShowingEscapeTooltip(
+  ownerDocument: Document,
+): () => void {
+  showingEscapeTooltips.set(
+    ownerDocument,
+    (showingEscapeTooltips.get(ownerDocument) ?? 0) + 1,
+  );
+  let registered = true;
+  return (): void => {
+    if (!registered) return;
+    registered = false;
+    showingEscapeTooltips.set(
+      ownerDocument,
+      Math.max(0, (showingEscapeTooltips.get(ownerDocument) ?? 0) - 1),
+    );
+  };
+}
+
+function hasShowingEscapeTooltip(ownerDocument: Document): boolean {
+  return (showingEscapeTooltips.get(ownerDocument) ?? 0) > 0;
+}
+
 /** Whether this document currently has an overlay that owns Escape. */
 export function hasEscapeEnabledOverlay(ownerDocument: Document): boolean {
   return getOverlayStack(ownerDocument).length > 0;
 }
 
-function escapeStartedInBoundary(
+/**
+ * Whether an Escape press started inside a widget that handles Escape itself
+ * (a menu, listbox, tree, grid, expanded combobox, or a marked boundary).
+ */
+export function escapeStartedInBoundary(
   target: EventTarget | null,
   ownerDocument: Document,
 ): boolean {
@@ -181,7 +218,8 @@ export function useOverlayEscape(
         event.key !== 'Escape' ||
         event.defaultPrevented ||
         !isTopmostEscapeEnabledOverlay(eventDocument, overlayId) ||
-        escapeStartedInBoundary(event.target, eventDocument)
+        escapeStartedInBoundary(event.target, eventDocument) ||
+        hasShowingEscapeTooltip(eventDocument)
       ) {
         return;
       }

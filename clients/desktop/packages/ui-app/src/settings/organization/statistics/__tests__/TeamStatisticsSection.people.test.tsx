@@ -748,7 +748,7 @@ describe('TeamStatisticsSection Overview tab', () => {
     expect(
       container
         .querySelector('[data-testid="usage-metric-tab-overview"]')
-        ?.getAttribute('aria-pressed'),
+        ?.getAttribute('aria-selected'),
     ).toBe('true');
     expect(
       container.querySelector('[data-testid="cost-dim-toggle"]'),

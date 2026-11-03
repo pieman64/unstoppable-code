@@ -16,7 +16,7 @@ import { assertVisibleReplyCopy } from './fixtures/chat-message-copy.mjs';
 /**
  * Clean chat (the only chat look): the transcript reads like the Codex app.
  * A running turn opens with "Working for …", a failed command says
- * "Couldn't run …" without color or code chips, and a finished turn folds its
+ * its description and Failed without color or code chips, and a finished turn folds its
  * steps under "Worked for …", with the steps in words on hover, and its reply
  * row offers Copy and a "•••" menu with Good / Bad response.
  *
@@ -46,6 +46,272 @@ function result(id, content, isError = false) {
     },
   };
 }
+
+test('Detailed chat collapses steps when a running turn finishes', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-detailed-collapse-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: CHAT_ID,
+    tabs: [{ id: CHAT_ID, title: 'Detailed collapse' }],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${CHAT_ID}"]`,
+    );
+    const turn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      turnUserMessageId: TURN_ID,
+    };
+    await injectChatEvent(electronApp, {
+      ...turn,
+      data: {
+        type: 'claude_terminal_transcript_sync',
+        importedEventCount: 1,
+        messages: [
+          {
+            id: TURN_ID,
+            role: 'user',
+            timestamp: TURN_STARTED_AT,
+            blocks: [{ type: 'text', text: 'Check the project' }],
+          },
+        ],
+      },
+    });
+    await publishTurnLifecycle(electronApp, {
+      ...turn,
+      phase: 'start',
+      atMs: TURN_STARTED_AT,
+    });
+    const inject = turnEventInjector(electronApp, turn);
+    await inject(
+      assistant('detailed-read', [
+        {
+          type: 'tool_use',
+          id: 'read-detail',
+          name: 'Read',
+          input: { file_path: '/repo/src/manifest.json' },
+        },
+      ]),
+    );
+    await inject(result('read-detail', 'ok'));
+    const step = panel.locator('[data-tool-use-id="read-detail"]');
+    await expect(step).toBeVisible();
+    await inject(
+      assistant('detailed-answer', [
+        { type: 'text', text: 'The project is ready.' },
+      ]),
+    );
+    await inject({ type: 'result', is_error: false, result: 'Done.' });
+    await expect(panel.getByText('The project is ready.')).toBeVisible();
+    await expect(panel.getByTestId('turn-timer-relative')).toHaveCSS(
+      'font-variant-numeric',
+      'proportional-nums',
+    );
+    const toggle = panel
+      .getByTestId('turn-work-header')
+      .getByRole('button', { name: /^Agent steps/ });
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(step).toBeHidden();
+    await toggle.click();
+    await expect(step).toBeVisible();
+    await toggle.click();
+    await expect(step).toBeHidden();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test('Tool descriptions stay stable while shell calls finish', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-detailed-collapse-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    activeTabId: CHAT_ID,
+    tabs: [{ id: CHAT_ID, title: 'Detailed collapse' }],
+  });
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await app.openMainPage();
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${CHAT_ID}"]`,
+    );
+    const turn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      turnUserMessageId: TURN_ID,
+    };
+    await injectChatEvent(electronApp, {
+      ...turn,
+      data: {
+        type: 'claude_terminal_transcript_sync',
+        importedEventCount: 1,
+        messages: [
+          {
+            id: TURN_ID,
+            role: 'user',
+            timestamp: TURN_STARTED_AT,
+            blocks: [{ type: 'text', text: 'Check the project' }],
+          },
+        ],
+      },
+    });
+    await publishTurnLifecycle(electronApp, {
+      ...turn,
+      phase: 'start',
+      atMs: TURN_STARTED_AT,
+    });
+    const inject = turnEventInjector(electronApp, turn);
+    await inject(
+      assistant('size-intro', [
+        { type: 'text', text: 'I’ll check the project setup.' },
+      ]),
+    );
+    await inject(
+      assistant(
+        'spacing-reads',
+        ['a', 'b'].map((id) => ({
+          type: 'tool_use',
+          id: `spacing-${id}`,
+          name: 'Read',
+          input: { file_path: `/repo/${id}.ts` },
+        })),
+      ),
+    );
+    await inject(result('spacing-a', 'export const a = 1;'));
+    await inject(result('spacing-b', 'export const b = 2;'));
+    await inject(
+      assistant('stable-command', [
+        {
+          type: 'tool_use',
+          id: 'stable-command',
+          name: 'Bash',
+          input: {
+            command: 'pnpm test --filter ui-shared',
+            description: 'Run the icon tests',
+          },
+        },
+      ]),
+    );
+    const step = panel.locator('[data-tool-use-id="stable-command"]');
+    await expect(step).toHaveAttribute('data-tool-status', 'pending');
+    const label = step.locator('[data-step-row]');
+    await expect(label).toHaveText('Run the icon tests');
+    await expect(label.locator('.canopy-text-shimmer-strong')).toHaveCount(1);
+    const rowStyle = async (row) =>
+      row.evaluate((node) => {
+        const style = getComputedStyle(node);
+        const icon = node.querySelector('svg');
+        return {
+          font: style.fontFamily,
+          size: style.fontSize,
+          lineHeight: style.lineHeight,
+          gap: style.gap,
+          padding: style.padding,
+          icon: icon?.outerHTML,
+          stroke: icon ? getComputedStyle(icon).strokeWidth : null,
+        };
+      });
+    await expect(label).toHaveCSS(
+      'font-size',
+      await panel
+        .getByText('I’ll check the project setup.', { exact: true })
+        .evaluate((node) => getComputedStyle(node).fontSize),
+    );
+    const detailedStyle = await rowStyle(label);
+    for (const detail of ['recent', 'compact', 'detailed']) {
+      await window.evaluate(
+        (chatDetail) => window.api.savePreferences({ chatDetail }),
+        detail,
+      );
+      const live = panel
+        .locator('[data-step-row]')
+        .filter({ hasText: /^Run the icon tests$/ });
+      await expect(live).toBeVisible();
+      await expect.poll(() => rowStyle(live)).toEqual(detailedStyle);
+      if (detail === 'compact') await live.click();
+      const stepRows = panel.locator('[data-tool-use-id] [data-step-row]');
+      await expect(stepRows).toHaveCount(3);
+      await expect
+        .poll(() =>
+          stepRows.evaluateAll((rows) => {
+            const boxes = rows.map((row) => row.getBoundingClientRect());
+            return boxes
+              .slice(1)
+              .map((box, index) => box.top - boxes[index].bottom);
+          }),
+        )
+        .toEqual([4, 4]);
+    }
+    await inject(result('stable-command', 'All tests passed'));
+    await expect(step).toHaveAttribute('data-tool-status', 'success');
+    const thinking = panel
+      .locator('[data-step-row]')
+      .filter({ hasText: /^Thinking$/ });
+    await expect(thinking).toBeVisible();
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'recent' }),
+    );
+    await expect(thinking).toBeVisible();
+    await expect(thinking).toHaveCount(1);
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+
+    await expect(thinking.locator('svg')).toHaveCount(0);
+    await expect(thinking).toHaveCSS('padding-left', '0px');
+    await expect(thinking).toHaveCSS(
+      'font-size',
+      await label.evaluate((node) => getComputedStyle(node).fontSize),
+    );
+    await expect(thinking).toHaveCSS(
+      'font-family',
+      await label.evaluate((node) => getComputedStyle(node).fontFamily),
+    );
+
+    await expect(label).toHaveText('Run the icon tests');
+    await expect(label.locator('.canopy-text-shimmer-strong')).toHaveCount(0);
+    await step.getByRole('button').first().click();
+    await expect(step.locator('pre').first()).toHaveText(
+      'pnpm test --filter ui-shared',
+    );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
 
 test('Clean chat reads steps in words and folds a finished turn', async () => {
   test.setTimeout(180_000);
@@ -117,7 +383,7 @@ test('Clean chat reads steps in words and folds a finished turn', async () => {
       'Working for',
     );
 
-    // A failed command says so in its verb, and carries no code chip.
+    // A failed command keeps its description and adds a separate status.
     await inject(
       assistant('clean-bash', [
         {
@@ -129,15 +395,16 @@ test('Clean chat reads steps in words and folds a finished turn', async () => {
       ]),
     );
     await inject(result('bash-1', 'FAIL AppIcons.test.tsx', true));
-    // The step folds into the turn's work line; opening it shows the step.
-    await panel
-      .getByTestId('chat-tool-step-group')
-      .first()
-      .getByRole('button')
-      .first()
-      .click();
+    await expect(
+      panel.locator('[data-step-row]').filter({ hasText: /^Thinking$/ }),
+    ).toBeVisible();
+    // One call stays visible; compaction requires at least two calls.
+    await expect(panel.getByTestId('chat-tool-step-live')).toBeVisible();
     const failedRow = panel.locator('[data-tool-status="error"]').first();
-    await expect(failedRow).toContainText('Couldn’t run pnpm test icons');
+    await expect(failedRow).toContainText('Run the tests');
+    await expect(failedRow.getByTestId('tool-call-failed')).toHaveText(
+      'Failed',
+    );
     await expect(failedRow.locator('.font-mono')).toHaveCount(0);
     await expect(failedRow.locator('.fg-destructive')).toHaveCount(0);
 

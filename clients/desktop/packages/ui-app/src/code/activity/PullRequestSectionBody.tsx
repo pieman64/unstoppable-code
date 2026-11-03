@@ -12,6 +12,7 @@ import {
   type CheckStatusBadgeStatus,
   type ProgressChecklistStep,
   type ReviewStatusBadgeStatus,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   PR_ORDERED_PHASES,
@@ -654,8 +655,8 @@ export function PullRequestSectionBody({
             )
             .map((error, i) => (
               <div key={`error-${i}`} className="mt-1 max-h-32 overflow-auto">
-                <p className="whitespace-pre-wrap break-words text-2xs fg-destructive">
-                  {error}
+                <p className="whitespace-pre-wrap break-words">
+                  <StatusLabel size="2xs">{error}</StatusLabel>
                 </p>
               </div>
             ))}

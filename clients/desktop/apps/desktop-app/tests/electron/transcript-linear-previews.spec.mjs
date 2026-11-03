@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Transcript Linear previews — inline titles and hover cards for references.
+// Transcript Linear previews — title chips and hover cards for references.
 //
 // Seeds a settled chat that mentions Linear issues, connects Linear through
 // the app's real settings path against the shared GraphQL mock, and walks the
@@ -203,6 +203,24 @@ test('Linear references show team-gated inline titles and preview cards', async 
     for (const reference of await references.all()) {
       await expect(reference.locator('svg[aria-hidden="true"]')).toHaveCount(1);
     }
+
+    // Clickable chips are an accent-tinted pill with accent ink; inline code
+    // names something without opening it, so it is a neutral box in body ink.
+    const paint = (locator) =>
+      locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { background: style.backgroundColor, color: style.color };
+      });
+    const chipPaint = await paint(references.first());
+    const codePaint = await paint(chat.locator('code', { hasText: 'CAN-43' }));
+    const prosePaint = await paint(
+      chat.getByText('FOO-9 is not a team.', { exact: false }).first(),
+    );
+    expect(chipPaint.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(codePaint.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(codePaint.background).not.toBe(chipPaint.background);
+    expect(codePaint.color).toBe(prosePaint.color);
+    expect(chipPaint.color).not.toBe(prosePaint.color);
 
     // The title is clipped visually but whole in the DOM.
     const title = references.nth(1).getByTestId('linear-reference-title');

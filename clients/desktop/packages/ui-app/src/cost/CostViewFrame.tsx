@@ -3,7 +3,8 @@
 import type { JSX, ReactNode } from 'react';
 import type { CostViewProblem } from '@canopy/app-state/cost';
 import {
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
@@ -66,7 +67,9 @@ export function CostViewFrame<Value>({
   }
   return (
     <div data-testid={`${testId}-loading`}>
-      <LoadingPlaceholder label="Loading cost…" />
+      <DelayedLoadingPlaceholder slowNote="Still loading cost…">
+        <CenteredLoadingSpinner className="my-12" />
+      </DelayedLoadingPlaceholder>
     </div>
   );
 }

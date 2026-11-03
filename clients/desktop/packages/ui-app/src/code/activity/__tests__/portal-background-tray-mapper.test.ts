@@ -396,3 +396,193 @@ describe('portalBackgroundTrayRuns', () => {
     ).toEqual([]);
   });
 });
+
+describe('Portal watched GitHub tray rows', () => {
+  const base = {
+    id: 'watcher',
+    projectId: 'proj',
+    worktreeId: 'wt',
+    chatId: 'chat-1',
+    trigger: 'github_workflow_runs_changed',
+    targetKind: 'github_workflow_runs',
+    status: 'active' as const,
+    createdAt: '2026-11-01T12:00:00Z',
+    display: {
+      title: 'CI',
+      subtitle: '',
+      watching: '',
+      watchingSubtitle: '',
+      status: 'Active',
+      details: [],
+    },
+  };
+  const run = {
+    repository: 'acme/api',
+    runId: '101',
+    runAttempt: 2,
+    workflowName: 'CI',
+    runNumber: 42,
+    htmlUrl: 'https://github.com/acme/api/actions/runs/101',
+    state: { kind: 'intermediate' as const, status: 'in_progress' as const },
+    observedAt: '2026-11-01T12:00:00Z',
+    jobs: [
+      {
+        jobId: '5',
+        name: 'Build',
+        status: 'in_progress',
+        conclusion: null,
+        htmlUrl: 'https://github.com/acme/api/actions/runs/101/job/5',
+      },
+    ],
+  };
+  const scope = { projectId: 'proj', worktreeId: 'wt', chatId: 'chat-1' };
+
+  it.each(['delivery_failed', 'fired'] as const)(
+    'does not show unfinished GitHub observations from a %s watcher as live work',
+    (status) => {
+      const watcher = {
+        ...base,
+        status,
+        githubProgress: { runs: [run] },
+        githubPullRequestProgress: {
+          pullRequests: [
+            {
+              repository: 'acme/api',
+              number: 7,
+              url: 'https://github.com/acme/api/pull/7',
+              state: 'open' as const,
+              baseRefName: 'main',
+              queue: null,
+              observedAt: run.observedAt,
+            },
+          ],
+        },
+      };
+      expect(portalBackgroundTrayRuns([], null, [watcher], scope).runs).toEqual(
+        [],
+      );
+      const stillFollowed = portalBackgroundTrayRuns(
+        [],
+        null,
+        [watcher, { ...watcher, id: 'following', status: 'active' }],
+        scope,
+      );
+      expect(stillFollowed.runs.map((row) => row.status)).toEqual([
+        'running',
+        'running',
+      ]);
+      const completed = portalBackgroundTrayRuns(
+        [],
+        null,
+        [
+          {
+            ...watcher,
+            githubProgress: {
+              runs: [
+                { ...run, state: { kind: 'terminal', conclusion: 'success' } },
+              ],
+            },
+            githubPullRequestProgress: {
+              pullRequests: watcher.githubPullRequestProgress.pullRequests.map(
+                (pr) => ({ ...pr, state: 'merged' }),
+              ),
+            },
+          },
+        ],
+        scope,
+      );
+      expect(completed.runs.map((row) => row.status)).toEqual([
+        'succeeded',
+        'succeeded',
+      ]);
+    },
+  );
+
+  it('lists watched runs and PRs without a pipeline host or receipts, scoped to the chat', () => {
+    const result = portalBackgroundTrayRuns(
+      [],
+      null,
+      [
+        { ...base, githubProgress: { runs: [run] } },
+        {
+          ...base,
+          id: 'foreign',
+          chatId: 'other',
+          githubProgress: { runs: [{ ...run, runId: '999' }] },
+        },
+        {
+          ...base,
+          id: 'pr',
+          trigger: 'github_pull_requests_changed',
+          targetKind: 'github_pull_requests',
+          githubPullRequestProgress: {
+            pullRequests: [
+              {
+                repository: 'acme/api',
+                number: 7,
+                title: 'Ship it',
+                url: 'https://github.com/acme/api/pull/7',
+                state: 'open',
+                baseRefName: 'main',
+                queue: { position: 3 },
+                observedAt: run.observedAt,
+              },
+            ],
+          },
+        },
+      ],
+      scope,
+    );
+    expect(result.runs).toMatchObject([
+      {
+        kind: 'github',
+        name: 'CI #42 · attempt 2',
+        status: 'running',
+        dag: { tiers: [['5']] },
+      },
+      {
+        kind: 'github-pr',
+        name: '#7 Ship it',
+        statusLabel: 'In merge queue',
+        note: 'into main · position 3 in the merge queue',
+      },
+    ]);
+    expect(Object.values(result.githubUrls)).toEqual([
+      run.htmlUrl,
+      'https://github.com/acme/api/pull/7',
+    ]);
+    expect(result.executionIds).toEqual({});
+  });
+
+  it('deduplicates snapshots by newest observation and pins each run attempt separately', () => {
+    const result = portalBackgroundTrayRuns(
+      [],
+      null,
+      [
+        {
+          ...base,
+          id: 'final',
+          status: 'fired',
+          githubProgress: {
+            runs: [
+              {
+                ...run,
+                state: { kind: 'terminal', conclusion: 'success' },
+                observedAt: '2026-11-01T12:05:00Z',
+              },
+            ],
+          },
+        },
+        { ...base, githubProgress: { runs: [run, { ...run, runAttempt: 1 }] } },
+      ],
+      scope,
+    );
+    expect(
+      result.runs.find((row) => row.id.endsWith('/attempt/2'))?.status,
+    ).toBe('succeeded');
+    expect(
+      result.runs.find((row) => row.id.endsWith('/attempt/1'))?.status,
+    ).toBe('running');
+    expect(new Set(result.runs.map((row) => row.id)).size).toBe(2);
+  });
+});

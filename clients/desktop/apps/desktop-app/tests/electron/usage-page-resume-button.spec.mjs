@@ -17,7 +17,11 @@ import {
   waitingUsageScenario,
   WAITING_EXECUTION,
 } from './fixtures/usage-waiting-sessions.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import {
   createFixture,
   conversationRequests,
@@ -230,6 +234,7 @@ test.describe('usage page interrupted-sessions notice', () => {
         );
         expect(firstTurn).toBeTruthy();
         if (stopMode === 'crash') {
+          await captureDaemonDryRunEvidence(electronApp);
           const pid = await electronApp.evaluate(() => process.pid);
           process.kill(pid, 'SIGKILL');
           await closeCanopy(electronApp, userDataDir, {

@@ -1,3 +1,25 @@
+import type * as CollectionMutationsModule from '../../../collections/collection-mutations';
+import type { ApplyCollectionUpdateResult } from '@canopy/protocol/collections';
+import { ResourceContextUnavailableError } from '../../../lib/resource-context-error';
+jest.mock('../../../collections/collection-mutations', () => ({
+  ...jest.requireActual<typeof CollectionMutationsModule>(
+    '../../../collections/collection-mutations',
+  ),
+  applyCollectionUpdate: jest.fn(),
+}));
+import {
+  applyCollectionUpdate,
+  CollectionUpdateError,
+} from '../../../collections/collection-mutations';
+import { handlePortalCollectionsApplyUpdate } from '../plugin-catalog-adapter';
+jest.mock('../../../lib/resource-context', () => ({
+  resourceContextEnabled: jest.fn(() => false),
+  resourceContextSnapshot: jest.fn(() => Promise.resolve('snapshot')),
+  assertResourceContextSnapshot: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../../../services/background-execution-context', () => ({
+  resolveBackgroundWorkspaceContext: jest.fn(() => Promise.resolve('personal')),
+}));
 /**
  * Adapter tests for the read-only portal Plugins-section browse commands
  * (design: docs/planning/2026-08-27-portal-plugins-section/design.md, PR 3).
@@ -21,6 +43,7 @@ import {
   handlePortalMcpDeleteServer,
   handlePortalMcpListServers,
   handlePortalMcpSetConfigEnabled,
+  handlePortalCollectionsSave,
   handlePortalPluginsGetPluginDetail,
   handlePortalPluginsInstallBuiltin,
   handlePortalPluginsInstallExternal,
@@ -46,6 +69,7 @@ import {
   readPortalPluginComponent,
   readPortalSkill,
   removePortalMarketplace,
+  savePortalCollection,
   setPortalMcpConfigEnabled,
   testPortalMcpConnection,
   deletePortalMcpServer,
@@ -77,6 +101,7 @@ jest.mock('../../../services/plugin-catalog-service', () => ({
   removePortalMarketplace: jest.fn(),
   sharePortalPlugin: jest.fn(),
   getPortalExistingSkillShare: jest.fn(),
+  savePortalCollection: jest.fn(),
   setPortalMcpConfigEnabled: jest.fn(),
   testPortalMcpConnection: jest.fn(),
   deletePortalMcpServer: jest.fn(),
@@ -103,6 +128,7 @@ const mockedUpdateMarketplace = jest.mocked(updatePortalMarketplace);
 const mockedRemoveMarketplace = jest.mocked(removePortalMarketplace);
 const mockedStartRefresh = jest.mocked(startPortalMarketplacesRefresh);
 const mockedSetMcpConfigEnabled = jest.mocked(setPortalMcpConfigEnabled);
+const mockedSaveCollection = jest.mocked(savePortalCollection);
 
 /** Drain the detached off-loop completion chain (import + service + settle). */
 async function flushOffLoop(): Promise<void> {
@@ -893,6 +919,108 @@ describe('plugin-catalog portal mutation adapters (phase B)', () => {
   });
 });
 
+describe('Portal collection save adapter', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('rejects a save without a collection object or name', async () => {
+    for (const payload of [
+      { projectId: 'ws-1' },
+      { projectId: 'ws-1', collection: 'Launch kit' },
+      { projectId: 'ws-1', collection: { description: '' } },
+      { collection: { name: 'Launch kit' } },
+    ]) {
+      const events: PortalEventEnvelope[] = [];
+      await handlePortalCollectionsSave(
+        command('portal.collections.save', payload),
+        adapterContext(events),
+      );
+      expect(failureCode(events)).toBe('invalid_payload');
+    }
+    expect(mockedSaveCollection).not.toHaveBeenCalled();
+  });
+
+  it('completes collections.save inline with the saved collection', async () => {
+    const events: PortalEventEnvelope[] = [];
+    const draft = {
+      name: 'Launch kit',
+      description: '',
+      skills: [],
+      plugins: [],
+      mcpServers: [],
+    };
+    const result = {
+      collection: {
+        ...draft,
+        id: 'abc',
+        createdAt: '2026-10-14T00:00:00.000Z',
+        updatedAt: '2026-10-14T00:00:00.000Z',
+      },
+    };
+    mockedSaveCollection.mockResolvedValue(result);
+
+    await handlePortalCollectionsSave(
+      command('portal.collections.save', {
+        projectId: 'ws-1',
+        collection: draft,
+      }),
+      adapterContext(events),
+    );
+
+    expect(mockedSaveCollection).toHaveBeenCalledWith(
+      draft,
+      expect.any(Function),
+    );
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'portal.command.completed',
+        payload: { result },
+      }),
+    ]);
+  });
+
+  it('refuses revoked sessions and mismatched project targets before persistence', async () => {
+    const events: PortalEventEnvelope[] = [];
+    await handlePortalCollectionsSave(
+      command('portal.collections.save', {
+        projectId: 'ws-1',
+        collection: { name: 'Collection' },
+      }),
+      { ...adapterContext(events), canMutateResources: () => false },
+    );
+    expect(failureCode(events)).toBe('permission_denied');
+    expect(mockedSaveCollection).not.toHaveBeenCalled();
+    const targetEvents: PortalEventEnvelope[] = [];
+    const request = command('portal.collections.save', {
+      projectId: 'ws-1',
+      collection: { name: 'Collection' },
+    });
+    await handlePortalCollectionsSave(
+      { ...request, target: { workspaceLocalId: 'different' } },
+      adapterContext(targetEvents),
+    );
+    expect(failureCode(targetEvents)).toBe('invalid_payload');
+  });
+
+  it('passes not_found through from the save service', async () => {
+    const events: PortalEventEnvelope[] = [];
+    mockedSaveCollection.mockRejectedValue(
+      Object.assign(new Error('Collection "abc" not found.'), {
+        code: 'not_found',
+      }),
+    );
+
+    await handlePortalCollectionsSave(
+      command('portal.collections.save', {
+        projectId: 'ws-1',
+        collection: { id: 'abc', name: 'Launch kit' },
+      }),
+      adapterContext(events),
+    );
+
+    expect(failureCode(events)).toBe('not_found');
+  });
+});
+
 describe('Portal MCP management adapters', () => {
   beforeEach(() => jest.clearAllMocks());
   it('dispatches connection tests off the serial command loop', async () => {
@@ -955,5 +1083,174 @@ describe('Portal MCP management adapters', () => {
     );
     expect(events[0]?.type).toBe('portal.command.failed');
     expect(mockNotifyDesktopInventoryChanged).not.toHaveBeenCalled();
+  });
+});
+
+describe('Portal collection update adapter', () => {
+  beforeEach(() => jest.clearAllMocks());
+  it('completes off-loop with the existing service and original-session guard', async () => {
+    const events: PortalEventEnvelope[] = [];
+    const update: ApplyCollectionUpdateResult = {
+      collection: {
+        id: 'abc',
+        revision: 'r2',
+        name: 'Local',
+        description: '',
+        skills: [],
+        plugins: [],
+        mcpServers: [],
+        createdAt: '2026-10-01',
+        updatedAt: '2026-10-26',
+      },
+      preservedLegacyMcpRefs: true,
+    };
+    let finish: (value: ApplyCollectionUpdateResult) => void = () => {};
+    jest.mocked(applyCollectionUpdate).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let current = true;
+    handlePortalCollectionsApplyUpdate(
+      command('portal.collections.apply_update', {
+        projectId: 'ws-1',
+        collectionId: 'abc',
+        expectedRevision: 'r1',
+      }),
+      {
+        ...adapterContext(events),
+        sessionId: 'session',
+        canMutateResources: () => current,
+      },
+    );
+    expect(events).toEqual([]);
+    await flushOffLoop();
+    expect(applyCollectionUpdate).toHaveBeenCalledWith(
+      { collectionId: 'abc', expectedRevision: 'r1' },
+      undefined,
+      expect.objectContaining({
+        key: JSON.stringify(['session', 'ws-1']),
+      }),
+    );
+    const guard = jest.mocked(applyCollectionUpdate).mock.calls[0][2];
+    current = false;
+    await expect(guard?.assertCurrent()).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    finish(update);
+    await flushOffLoop();
+    expect(events).toEqual([
+      expect.objectContaining({
+        payload: { result: { success: true, update } },
+      }),
+    ]);
+  });
+  it('refuses mismatched projects or missing revisions before delegation', () => {
+    for (const payload of [
+      { projectId: 'ws-1', collectionId: 'abc' },
+      { projectId: 'ws-1', collectionId: '../abc', expectedRevision: 'r1' },
+    ]) {
+      const events: PortalEventEnvelope[] = [];
+      handlePortalCollectionsApplyUpdate(
+        command('portal.collections.apply_update', payload),
+        adapterContext(events),
+      );
+      expect(failureCode(events)).toBe('invalid_payload');
+    }
+    const events: PortalEventEnvelope[] = [];
+    handlePortalCollectionsApplyUpdate(
+      {
+        ...command('portal.collections.apply_update', {
+          projectId: 'ws-1',
+          collectionId: 'abc',
+          expectedRevision: 'r1',
+        }),
+        target: { workspaceLocalId: 'ws-2' },
+      },
+      adapterContext(events),
+    );
+    expect(failureCode(events)).toBe('invalid_payload');
+    expect(applyCollectionUpdate).not.toHaveBeenCalled();
+  });
+  it('preserves structured partial effects without leaking provider paths', async () => {
+    jest
+      .mocked(applyCollectionUpdate)
+      .mockRejectedValueOnce(
+        new CollectionUpdateError('conflict', '/private/provider/path', [
+          'review',
+        ]),
+      );
+    const events: PortalEventEnvelope[] = [];
+    handlePortalCollectionsApplyUpdate(
+      command('portal.collections.apply_update', {
+        projectId: 'ws-1',
+        collectionId: 'abc',
+        expectedRevision: 'r1',
+      }),
+      adapterContext(events),
+    );
+    await flushOffLoop();
+    expect(events).toEqual([
+      expect.objectContaining({
+        payload: {
+          result: {
+            success: false,
+            code: 'conflict',
+            message:
+              'The collection changed. Refresh it before updating again.',
+            partialResourceEffects: ['review'],
+          },
+        },
+      }),
+    ]);
+  });
+  it('preserves resource-context denial before imports as permission_denied', async () => {
+    jest
+      .mocked(applyCollectionUpdate)
+      .mockRejectedValueOnce(
+        new ResourceContextUnavailableError('access-removed'),
+      );
+    const events: PortalEventEnvelope[] = [];
+    handlePortalCollectionsApplyUpdate(
+      command('portal.collections.apply_update', {
+        projectId: 'ws-1',
+        collectionId: 'abc',
+        expectedRevision: 'r1',
+      }),
+      adapterContext(events),
+    );
+    await flushOffLoop();
+    expect(events[0]).toMatchObject({
+      payload: {
+        result: {
+          success: false,
+          code: 'permission_denied',
+          partialResourceEffects: [],
+        },
+      },
+    });
+  });
+  it('does not delegate after original-session revocation', async () => {
+    const events: PortalEventEnvelope[] = [];
+    handlePortalCollectionsApplyUpdate(
+      command('portal.collections.apply_update', {
+        projectId: 'ws-1',
+        collectionId: 'abc',
+        expectedRevision: 'r1',
+      }),
+      { ...adapterContext(events), canMutateResources: () => false },
+    );
+    await flushOffLoop();
+    expect(applyCollectionUpdate).not.toHaveBeenCalled();
+    expect(events[0]).toMatchObject({
+      payload: {
+        result: {
+          success: false,
+          code: 'permission_denied',
+          partialResourceEffects: [],
+        },
+      },
+    });
   });
 });

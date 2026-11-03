@@ -1,4 +1,12 @@
 import type { CreateSharedPipelineRequest } from '../pipelines/canopy-server-client';
+import { withSharedProjectDiscovery } from '../pipelines/shared-project-discovery';
+import {
+  isPipelineDefinitionNotFound,
+  listDesktopPipelines,
+  PIPELINE_DEFINITION_PORTAL_CALLER,
+  pipelineSourceFailure,
+  readDesktopPipeline,
+} from '../canopy-runtime/pipeline-definition-dispatch';
 import {
   assertStoredPipelineContext,
   filterPersonalStoredPipelines,
@@ -679,6 +687,42 @@ async function resolvePipelineListTarget(
 }
 
 /**
+ * The live list's local definitions, which core lists for the worktree:
+ * bundled, user and the checkout's project ones, a project definition
+ * shadowing a stored one with its id. A stored row keeps its file path, as
+ * {@link listStoredPipelineInfos} does, since it can be shared; one whose
+ * file is gone is dropped. A store or checkout that cannot be read is left
+ * out rather than failing the snapshot.
+ */
+async function listPortalPipelineInfos(scope: {
+  workspaceId: string;
+  worktreeId: string;
+}): Promise<PipelineInfo[]> {
+  const list = (
+    sources: ('bundled' | 'user' | 'project')[],
+  ): Promise<PipelineInfo[]> =>
+    listDesktopPipelines(
+      { sources, scope },
+      PIPELINE_DEFINITION_PORTAL_CALLER,
+    ).then((listing) => listing.rows);
+  // An unreadable store still lists the checkout's own definitions.
+  const rows = await list(['bundled', 'user', 'project']).catch(() =>
+    list(['project']).catch((): PipelineInfo[] => []),
+  );
+  const stored: PipelineInfo[] = [];
+  for (const info of rows) {
+    if (info.source !== 'bundled' && info.source !== 'user') continue;
+    const resolved = getStoredPipelinePath(info.id);
+    if (resolved.success && resolved.data)
+      stored.push({ ...info, filePath: resolved.data });
+  }
+  return mergePortalPipelineInfos(
+    stored,
+    rows.filter((info) => info.source === 'project'),
+  );
+}
+
+/**
  * Bundled presets and the user's own stored pipelines, which live outside any
  * worktree checkout (CAN-3019).
  *
@@ -1115,18 +1159,24 @@ export async function listPipelines(
   }
   const target = await resolvePipelineListTarget(request);
   if (!target) return [];
-  const pipelines = mergePortalPipelineInfos(
-    await listStoredPipelineInfos({
-      strict: false,
-      projectId: target.workspaceLocalId,
+  const scope = {
+    workspaceId: target.workspaceLocalId,
+    worktreeId: target.worktreeLocalId,
+  };
+  // One checkout discovery serves the listing and every row's read.
+  const summaries = await withSharedProjectDiscovery(async () =>
+    summarizePipelines(target, await listPortalPipelineInfos(scope), {
+      loadDefinition: (pipeline) =>
+        readDesktopPipeline(
+          pipeline.id,
+          scope,
+          PIPELINE_DEFINITION_PORTAL_CALLER,
+        ).then(
+          (data) => data.content,
+          (): null => null,
+        ),
     }),
-    await filterProjectPipelineContexts(
-      await discoverProjectPipelines(target.cwd).catch(() => []),
-      target.cwd,
-      target.workspaceLocalId,
-    ),
   );
-  const summaries = await summarizePipelines(target, pipelines);
   return [
     ...summaries.filter((summary) => summary !== null),
     // Appended last so a prefix-cut for the result budget drops shared rows
@@ -1264,8 +1314,16 @@ async function summarizePipelines(
      * projected at all and yields `null`.
      */
     definitionBudget?: { remainingBytes: number };
+    /** Reads a listed definition; the file on disk by default. */
+    loadDefinition?: (pipeline: PipelineInfo) => Promise<Pipeline | null>;
   } = {},
 ): Promise<(PortalPipelineSummary | null)[]> {
+  const load =
+    options.loadDefinition ??
+    ((pipeline: PipelineInfo): Promise<Pipeline | null> =>
+      pipeline.filePath
+        ? loadProjectPipelineFromDisk(pipeline.filePath).catch(() => null)
+        : Promise.resolve(null));
   const owned = await ownedByAutomations();
   return Promise.all(
     pipelines.map(async (pipeline) => {
@@ -1274,9 +1332,7 @@ async function summarizePipelines(
         (pipeline.triggerTypes?.includes('dispatch') ||
           pipeline.triggerTypes?.includes('task_ready') ||
           pipeline.triggerTypes?.includes('plan_ready'))
-          ? await loadProjectPipelineFromDisk(pipeline.filePath).catch(
-              () => null,
-            )
+          ? await load(pipeline)
           : null;
       if (definition && options.definitionBudget) {
         const budget = options.definitionBudget;
@@ -1408,13 +1464,17 @@ export async function getPipeline(
   // come from.
   const sharedRef = parseCanopyCloudPipelineId(request.pipelineId);
   if (sharedRef) {
-    const detail = await getSharedPipeline(sharedRef.remoteId).catch(
-      () => null,
+    const pipeline = await readDesktopPipeline(
+      request.pipelineId,
+      { workspaceId: request.projectId },
+      PIPELINE_DEFINITION_PORTAL_CALLER,
+    ).then(
+      (data) => data.content,
+      (): null => null,
     );
-    if (!detail) {
+    if (!pipeline) {
       throw new PortalServiceError('not_found', 'Workflow not found.');
     }
-    const pipeline = parsePipelineText(detail.rawPipeline);
     // Same `plan_ready` scoping `runPipeline` enforces. This path exists only
     // to hydrate a plan-picker row, and only `plan_ready` shares are ever
     // listed — so without it a bare `portal.pipeline.get` would read back the
@@ -1441,8 +1501,20 @@ export async function getPipeline(
   if (!target) {
     throw new PortalServiceError('not_found', 'Workflow not found.');
   }
-  const cwd = await resolvePipelineCwd(request.projectId, target.worktreeId);
-  const { pipeline } = await resolveLocalPipeline(cwd, request.pipelineId);
+  let pipeline: Pipeline;
+  try {
+    pipeline = (
+      await readDesktopPipeline(
+        request.pipelineId,
+        { workspaceId: request.projectId, worktreeId: target.worktreeId },
+        PIPELINE_DEFINITION_PORTAL_CALLER,
+      )
+    ).content;
+  } catch (error) {
+    if (isPipelineDefinitionNotFound(error))
+      throw new PortalServiceError('not_found', 'Workflow not found.');
+    throw pipelineSourceFailure(error);
+  }
   return {
     definition: toPipelineDefinitionViewModelWithoutCanonicalYaml(pipeline),
     // Dispatch inputs ride `get` rather than every list row so the worktree

@@ -22,6 +22,7 @@ import type { PersonalOrganizationUpgradePort } from '@canopy/app-state/personal
 import { orgsWithoutActivePlanClause } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import {
   Button,
+  ErrorBanner,
   Notice,
   NoticeButton,
   OrgTeamPicker,
@@ -286,13 +287,16 @@ export function existingShareLoadFailure(
   return {
     status: 'blocked',
     body: (
-      <p className="text-s fg-destructive" role="alert">
-        {refusal === null
-          ? `The existing ${resourceNoun} share could not be loaded.`
-          : shareFailureMessage(resourceNoun, refusal)}
-      </p>
+      <ErrorBanner
+        className=""
+        error={
+          refusal === null
+            ? `The existing ${resourceNoun} share could not be loaded.`
+            : shareFailureMessage(resourceNoun, refusal)
+        }
+      />
     ),
-    action: { label: 'Retry', retry: true },
+    action: { label: 'Try again', retry: true },
   };
 }
 
@@ -935,9 +939,10 @@ export function ShareResourceDialog({
         setPreflightState({
           status: 'blocked',
           body: (
-            <p className="text-s fg-destructive" role="alert">
-              {shareFailureMessage(resourceNoun, describeError(error))}
-            </p>
+            <ErrorBanner
+              className=""
+              error={shareFailureMessage(resourceNoun, describeError(error))}
+            />
           ),
         });
       });
@@ -1964,13 +1969,11 @@ export function ShareResourceDialog({
     ? 'Create a team'
     : copy.organizationSetupAction;
   const organizationSetupError = (
-    <p
-      className="mt-2 text-xs fg-destructive"
-      role="alert"
-      data-testid={`${p}-set-up-organization-error`}
-    >
-      {copy.organizationSetupFailed}
-    </p>
+    <ErrorBanner
+      className=""
+      error={copy.organizationSetupFailed}
+      testId={`${p}-set-up-organization-error`}
+    />
   );
   const organizationSetup = (
     <div className="mt-2 space-y-2" data-testid={`${p}-organization-setup`}>

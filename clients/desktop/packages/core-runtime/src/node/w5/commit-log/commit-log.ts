@@ -315,16 +315,27 @@ export class W5CommitLog {
       revisionRows.return?.();
     }
     const evidence: W5FileLogEvidence[] = [];
-    const query = this.db.prepare(`SELECT c.commit_id, c.state,
-      CASE WHEN f.previous_fingerprint IS NULL THEN NULL ELSE hex(substr(CAST(f.previous_fingerprint AS BLOB), 1, 65)) END AS previous_fingerprint,
-      CASE WHEN f.new_fingerprint IS NULL THEN NULL ELSE hex(substr(CAST(f.new_fingerprint AS BLOB), 1, 65)) END AS new_fingerprint
-      FROM w5_commit_files f JOIN w5_commits c USING (commit_id)
-      WHERE f.path = ? AND (c.state != 'applied' OR c.commit_id = (
-        SELECT latest.commit_id FROM w5_commit_files latest
-        JOIN w5_commits decision USING (commit_id)
-        WHERE latest.path = f.path AND decision.state = 'applied'
-        ORDER BY latest.commit_id DESC LIMIT 1
-      )) ORDER BY c.commit_id`);
+    // The path's unapplied rows and its latest applied one. CROSS JOIN fixes
+    // the loop order and INDEXED BY the ranges (`state != 'applied'` exactly),
+    // so neither side walks the path's history: the first reads only
+    // unresolved commits, the second stops at the newest applied row.
+    const query = this.db.prepare(`SELECT commit_id, state,
+      CASE WHEN previous IS NULL THEN NULL ELSE hex(substr(CAST(previous AS BLOB), 1, 65)) END AS previous_fingerprint,
+      CASE WHEN image IS NULL THEN NULL ELSE hex(substr(CAST(image AS BLOB), 1, 65)) END AS new_fingerprint
+      FROM (
+        SELECT c.commit_id, c.state, f.previous_fingerprint AS previous, f.new_fingerprint AS image
+        FROM w5_commits c INDEXED BY w5_commits_by_state CROSS JOIN w5_commit_files f
+          ON f.commit_id = c.commit_id AND f.path = ?1
+        WHERE c.state < 'applied' OR c.state > 'applied'
+        UNION ALL
+        SELECT * FROM (
+          SELECT f.commit_id, c.state, f.previous_fingerprint, f.new_fingerprint
+          FROM w5_commit_files f INDEXED BY w5_commit_files_by_path
+          CROSS JOIN w5_commits c ON c.commit_id = f.commit_id
+          WHERE f.path = ?1 AND c.state = 'applied'
+          ORDER BY f.commit_id DESC LIMIT 1
+        )
+      ) ORDER BY commit_id`);
     for (const { file, path } of files) {
       const rows = query.iterate(path);
       try {
@@ -374,11 +385,12 @@ export class W5CommitLog {
         rows.return?.();
       }
     }
+    // `state != 'applied'` as two index ranges, so only unresolved rows are read.
     const commits = this.db
       .prepare(
-        `SELECT COUNT(*) AS retained,
-          (SELECT COUNT(*) FROM w5_commits WHERE state != 'applied') AS unresolved
-         FROM w5_commits`,
+        `SELECT retained, (SELECT COUNT(*) FROM w5_commits INDEXED BY w5_commits_by_state
+           WHERE state < 'applied' OR state > 'applied') AS unresolved
+         FROM w5_commit_totals`,
       )
       .get();
     return {
@@ -405,29 +417,23 @@ export class W5CommitLog {
     };
   }
 
-  /** One aggregate row per path, so long-lived history never meets the row limit. */
+  /**
+   * One summary row per path, kept by the schema's triggers, so neither the
+   * row limit nor the cost grows with history. A path without one has none.
+   */
   private chainEvidence(
     files: readonly { file: W5CaptureFile; path: string }[],
   ): W5FileChainEvidence[] {
-    const malformed = (column: string): string =>
-      `(${column} IS NOT NULL AND (length(CAST(${column} AS BLOB)) != 64 OR ltrim(${column}, '0123456789abcdef') != ''))`;
-    const query = this.db.prepare(`SELECT COUNT(*) AS decisions,
-      COALESCE(MAX(position = 1 AND previous IS NULL), 0) AS starts_absent,
-      COALESCE(SUM(CASE
-        WHEN ${malformed('previous')} OR ${malformed('image')} THEN 1
-        WHEN position = 1 THEN 0
-        ELSE previous IS NOT before END), 0) AS discontinuities
-      FROM (SELECT previous_fingerprint AS previous, new_fingerprint AS image,
-        LAG(new_fingerprint) OVER (ORDER BY commit_id) AS before,
-        ROW_NUMBER() OVER (ORDER BY commit_id) AS position
-        FROM w5_commit_files WHERE path = ?)`);
+    const query = this.db.prepare(
+      `SELECT decisions, starts_absent, discontinuities FROM w5_file_chains WHERE path = ?`,
+    );
     return files.map(({ file, path }) => {
       const row = query.get(path);
       return {
         file,
-        decisions: asInteger(row?.decisions),
-        startsAbsent: asInteger(row?.starts_absent) === 1,
-        discontinuities: asInteger(row?.discontinuities),
+        decisions: row ? asInteger(row.decisions) : 0,
+        startsAbsent: row ? asInteger(row.starts_absent) === 1 : false,
+        discontinuities: row ? asInteger(row.discontinuities) : 0,
       };
     });
   }

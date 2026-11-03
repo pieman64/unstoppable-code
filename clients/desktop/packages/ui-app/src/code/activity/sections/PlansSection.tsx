@@ -12,45 +12,16 @@ import {
   planCopyStateFromMarkdown,
   PlanProvenance,
   hasPlanProvenance,
-  markdownOptions,
-  type MarkdownOverrides,
   type PlanActionButtonRowItem,
 } from '@canopy/ui-shared/components';
 import { ChatIcon, DocumentIcon, PipelineIcon } from '@canopy/ui-shared/icons';
 import { resolvePlanDisplayStatus } from '@canopy/ui-shared/lib';
 import { PlansEmptyMessage } from '../plans/PlansEmptyMessage';
-
-export const PLAN_MARKDOWN_COMPONENTS: MarkdownOverrides = {
-  a({ children }): JSX.Element {
-    return <span>{children}</span>;
-  },
-};
-const INLINE_PLAN_MARKDOWN_COMPONENTS: MarkdownOverrides = {
-  p({ children }): JSX.Element {
-    return <>{children}</>;
-  },
-  a({ children }): JSX.Element {
-    return <span>{children}</span>;
-  },
-};
-const PLAN_MARKDOWN_OPTIONS = markdownOptions(PLAN_MARKDOWN_COMPONENTS);
-const INLINE_PLAN_MARKDOWN_OPTIONS = markdownOptions(
-  INLINE_PLAN_MARKDOWN_COMPONENTS,
-);
-
-export function stripPlanTitleLine(content: string | undefined): string {
-  if (!content) return '';
-  const lines = content.split('\n');
-  const index = lines.findIndex((line) => line.trim().length > 0);
-  if (index < 0) return content;
-  // Only drop a markdown heading title; plans that open with plain prose keep
-  // their first line in the preview.
-  if (!/^#{1,6}\s/.test(lines[index].trim())) return content;
-  return lines
-    .slice(index + 1)
-    .join('\n')
-    .trimStart();
-}
+import {
+  INLINE_PLAN_MARKDOWN_OPTIONS,
+  PLAN_MARKDOWN_OPTIONS,
+  stripPlanTitleLine,
+} from '../plans/plan-markdown';
 
 export interface PlansSectionProps {
   readonly plans: readonly PortalPlan[];

@@ -108,6 +108,10 @@ import {
   releaseSplitLock,
 } from '../services/split-lock-service';
 import {
+  beginWorktreeGitSetup,
+  settleWorktreeGitSetup,
+} from './worktree-git-setup';
+import {
   settleAll,
   settleEach,
   trackDetachedWork,
@@ -584,6 +588,40 @@ function buildSplitRecoveryReservations(
     });
   }
   return Array.from(recovery.values());
+}
+
+/**
+ * Split destinations are `git-pending` rows like deferred creates, so a send
+ * into one waits on the same Git setup record. Ready and failed lifecycle
+ * events settle it.
+ */
+function withSplitDestinationGitSetup(
+  hooks: SplitTemporaryWorkspaceExecutionHooks | undefined,
+): SplitTemporaryWorkspaceExecutionHooks {
+  return {
+    ...hooks,
+    onSplitWorktreeReady: (event): void => {
+      settleWorktreeGitSetup(event.projectId, event.worktreeId, 'ready');
+      hooks?.onSplitWorktreeReady?.(event);
+    },
+    onSplitWorktreeFailed: (event): void => {
+      settleWorktreeGitSetup(event.projectId, event.worktreeId, 'failed');
+      hooks?.onSplitWorktreeFailed?.(event);
+    },
+  };
+}
+
+/** Settles destinations no lifecycle event reached, such as rolled-back ones. */
+function cancelUnsettledSplitDestinationGitSetups(
+  reservations: readonly SplitDestinationReservation[],
+): void {
+  for (const reserved of reservations) {
+    settleWorktreeGitSetup(
+      reserved.workspaceId,
+      reserved.worktreeId,
+      'cancelled',
+    );
+  }
 }
 
 async function rollbackFastPhaseReservations(
@@ -1064,7 +1102,8 @@ function buildNavigationTarget(
  *    `success: false`.
  * 2. Ready — after every checkout move and pipeline-execution migration has
  *    settled, flip all kept destination rows ready and fire
- *    `onSplitWorktreeReady` (renderer flushes queued chats).
+ *    `onSplitWorktreeReady` (which settles the destination's Git setup, so
+ *    main releases sends it held).
  * 3. Finalize — hard-delete `delete` removals, archive `archive` removals in
  *    their destination workspace (a failed archive degrades to a kept split
  *    worktree rather than losing the checkout).
@@ -1107,6 +1146,7 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
   let backgroundStarted = false;
   const destinationClaims: DestinationWorktreeClaim[] = [];
   const destinationWorkspaceLeaseReleases: Array<() => void> = [];
+  const reservedRecords: SplitDestinationReservation[] = [];
   try {
     acquireSplitLock(request.workspaceId, request.worktreeId);
     lockAcquired = true;
@@ -1177,7 +1217,6 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
 
     const warnings: string[] = [];
     const createdWorkspaceIds: string[] = [];
-    const reservedRecords: SplitDestinationReservation[] = [];
     // Fast phase: plan, create missing destination workspaces, and reserve
     // split destination rows. A failure here aborts before any checkout has
     // moved, with created workspaces and reserved rows rolled back.
@@ -1292,6 +1331,10 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
               worktreeId: destinationWorktreeId,
               createdAt: reservation.createdAt,
             });
+            beginWorktreeGitSetup(
+              destinationWorkspace.id,
+              destinationWorktreeId,
+            );
           },
         );
       }
@@ -1434,6 +1477,7 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
     });
     trackDetachedWork(() =>
       backgroundPhase.finally(() => {
+        cancelUnsettledSplitDestinationGitSetups(reservedRecords);
         releaseDestinationWorktreeClaims(destinationClaims);
         for (const release of destinationWorkspaceLeaseReleases.reverse()) {
           release();
@@ -1449,6 +1493,7 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
     return response;
   } finally {
     if (!backgroundStarted) {
+      cancelUnsettledSplitDestinationGitSetups(reservedRecords);
       releaseDestinationWorktreeClaims(destinationClaims);
       for (const release of destinationWorkspaceLeaseReleases.reverse()) {
         release();
@@ -1521,7 +1566,7 @@ export function splitTemporaryWorkspaceWorktree(
       return admitW5Composition(attempt, () =>
         splitTemporaryWorkspaceWorktreeAdmitted(
           request,
-          hooks,
+          withSplitDestinationGitSetup(hooks),
           commit,
           attempt,
           complete,

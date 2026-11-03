@@ -4,12 +4,13 @@ import {
   formatCostShare,
   type CostSegment,
 } from './cost-format';
+import { ValueRow, ValueRows } from '../settings/ValueRows';
 
 export interface CostLegendProps {
   readonly segments: readonly CostSegment[];
   /** Adds each part's share of the total (sum of segments). */
   readonly showShare?: boolean;
-  /** `inline`: one wrapping line of parts (the panel and Activity summary). `list`: one row per part, label left, amount and share right-aligned (the popover and breakdown). */
+  /** `inline`: one wrapping line of parts, a chart legend (the panel and Activity summary). `list`: one value row per part, label left, amount and share right-aligned (the popover and breakdown; design call 1C). */
   readonly layout?: 'inline' | 'list';
   readonly testId?: string;
 }
@@ -25,53 +26,41 @@ export function CostLegend({
     (sum, segment) => sum + segment.value,
     0,
   );
-  const inline = layout === 'inline';
 
+  if (layout === 'list') {
+    return (
+      <ValueRows dataTestId={testId}>
+        {visibleSegments.map((segment) => (
+          <ValueRow
+            key={segment.key}
+            swatch={segment.color}
+            label={segment.label}
+            value={formatCostAmount(segment.value)}
+            share={
+              showShare ? formatCostShare(segment.value, total) : undefined
+            }
+          />
+        ))}
+      </ValueRows>
+    );
+  }
+
+  // A chart legend: one wrapping line under the bar it explains.
   return (
-    <dl
-      data-testid={testId}
-      className={
-        inline
-          ? 'flex flex-wrap gap-x-3 gap-y-1 text-xs'
-          : 'flex flex-col gap-1 text-xs'
-      }
-    >
+    <dl data-testid={testId} className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
       {visibleSegments.map((segment) => (
-        <div
-          key={segment.key}
-          className={
-            inline ? 'flex items-center gap-1.5' : 'flex items-center gap-2'
-          }
-        >
+        <div key={segment.key} className="flex items-center gap-1.5">
           <span
             aria-hidden="true"
             className="size-2 shrink-0 rounded-xs"
             style={{ backgroundColor: segment.color }}
           />
-          <dt
-            className={
-              inline ? 'fg-secondary' : 'min-w-0 flex-1 truncate fg-primary'
-            }
-          >
-            {segment.label}
-          </dt>
-          <dd
-            className={
-              inline
-                ? 'tabular-nums fg-primary'
-                : 'text-right tabular-nums fg-secondary'
-            }
-          >
+          <dt className="fg-secondary">{segment.label}</dt>
+          <dd className="tabular-nums fg-primary">
             {formatCostAmount(segment.value)}
           </dd>
           {showShare ? (
-            <dd
-              className={
-                inline
-                  ? 'tabular-nums fg-tertiary'
-                  : 'w-12 text-right tabular-nums fg-primary'
-              }
-            >
+            <dd className="tabular-nums fg-tertiary">
               {formatCostShare(segment.value, total)}
             </dd>
           ) : null}

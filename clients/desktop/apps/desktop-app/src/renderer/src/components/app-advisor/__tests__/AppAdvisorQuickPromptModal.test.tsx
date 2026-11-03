@@ -38,7 +38,8 @@ describe('AppAdvisorQuickPromptModal session-replay privacy', () => {
       root.render(<AppAdvisorQuickPromptModal onClose={jest.fn()} />);
     });
 
-    const card = container.querySelector(
+    // DialogModal portals the card into the document body.
+    const card = document.querySelector(
       '[data-testid="app-advisor-quick-prompt"]',
     );
     expect(card?.getAttribute('role')).toBe('dialog');
@@ -52,5 +53,31 @@ describe('AppAdvisorQuickPromptModal session-replay privacy', () => {
       card?.querySelector('[data-testid="app-advisor-quick-prompt-header"]')
         ?.textContent,
     ).toBe('Orchestrator');
+  });
+
+  it('closes once on Escape and on a backdrop press', () => {
+    const onClose = jest.fn();
+    act(() => {
+      root.render(<AppAdvisorQuickPromptModal onClose={onClose} />);
+    });
+
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    const backdrop = document.querySelector(
+      '[data-testid="app-advisor-quick-prompt"]',
+    )?.parentElement;
+    act(() => {
+      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });

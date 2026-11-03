@@ -40,6 +40,7 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   FloatingMenu,
+  FloatingMenuPointAnchor,
   RailIconButton,
   SidebarFadePresence,
   SidebarPinnedBadge,
@@ -92,7 +93,6 @@ import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSid
 import { openNewCoworkTaskFromSidebar } from '@/lib/openNewCoworkTaskFromSidebar';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useGitHubStore } from '@/stores/githubStore';
-import { AnchoredMenu } from '../shared/AnchoredMenu';
 import { InviteTeammateModal } from '@/components/shared/InviteTeammateModal';
 import { useSharedContainerEntryPointVisible } from '@/hooks/useSharedContainerEntryPointVisible';
 import { subscribeToSharedContainerInviteRequests } from '@/lib/sharedContainerInviteEvents';
@@ -103,7 +103,11 @@ import {
 import { withSelectionGroupItems } from '@canopy/ui-app';
 import {
   ArchivedContainersNavLink,
+  DEFAULT_MENU_ROW_STYLE,
+  DropdownMenuRowStyleProvider,
+  QUIET_MENU_ROW_STYLE,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
+  useContextMenuPlacement,
 } from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import {
@@ -375,6 +379,66 @@ function SidebarWorkEntryUnreadPreview({
 }
 
 /**
+ * A Work Entry's menu surface: the shared `FloatingMenu` under the ••• button
+ * or, for a right-click, at the pointer. Opening leaves focus on the trigger,
+ * as every desktop row menu does; the arrow keys move into the rows.
+ */
+function SidebarWorkEntryMenuSurface({
+  menu,
+  children,
+}: {
+  menu: WorkEntryRowMenuRenderProps;
+  children: ReactNode;
+}): JSX.Element {
+  const pointAnchorRef = useRef<HTMLSpanElement>(null);
+  // Early access: quieter rows (small text, tertiary icons).
+  const contextMenuPlacement = useContextMenuPlacement();
+  const point = menu.anchorPoint;
+  return (
+    <>
+      {menu.open && point !== null ? (
+        <FloatingMenuPointAnchor
+          ref={pointAnchorRef}
+          x={point.x}
+          y={point.y}
+          ownerDocument={menu.anchorRef.current?.ownerDocument ?? document}
+        />
+      ) : null}
+      <FloatingMenu
+        open={menu.open}
+        onOpenChange={(open): void => {
+          if (!open) menu.close();
+        }}
+        anchorRef={point !== null ? pointAnchorRef : menu.anchorRef}
+        {...(point !== null
+          ? { anchorPoint: point, closeOnWindowChange: true }
+          : {})}
+        returnFocusRef={menu.anchorRef}
+        placement="bottom-left"
+        interaction="menu"
+        focusOnOpen={false}
+        motion="none"
+        // Sized to the widest label instead of a fixed w-40, which wrapped
+        // longer actions such as "Invite a teammate" onto a second line
+        // inside the fixed-height rows. w-40 stays as the floor.
+        className="sidebar-instant-interactions w-45"
+        data-testid={menu.popoverTestId}
+      >
+        <DropdownMenuRowStyleProvider
+          value={
+            contextMenuPlacement === 'cursor'
+              ? QUIET_MENU_ROW_STYLE
+              : DEFAULT_MENU_ROW_STYLE
+          }
+        >
+          {children}
+        </DropdownMenuRowStyleProvider>
+      </FloatingMenu>
+    </>
+  );
+}
+
+/**
  * The Work Entry menu rows plus this entry's notification choices
  * (CAN-3615). Mounted only while the menu is open, so the store subscription
  * and the refresh on open cost nothing for closed rows.
@@ -427,8 +491,8 @@ function SidebarWorkEntryMenuItems({
  * One Work Entry row, rendered by the shared `WorkEntryRow` (CAN-3053). This
  * host owns everything the shared row cannot: the store-derived status, the
  * sortable binding, the menu commands and the rename, removal and invite
- * dialogs. The menu surface stays desktop's `AnchoredMenu`, which leaves
- * focus on the ••• trigger like every other desktop row menu.
+ * dialogs. The menu surface (`SidebarWorkEntryMenuSurface`) leaves focus on
+ * the ••• trigger like every other desktop row menu.
  */
 function SidebarWorkEntryRowContent({
   workspaceId,
@@ -706,19 +770,7 @@ function SidebarWorkEntryRowContent({
         action.onSelect?.();
       };
       return (
-        <AnchoredMenu
-          open={menu.open}
-          onClose={menu.close}
-          anchorRef={menu.anchorRef}
-          anchorPoint={menu.anchorPoint}
-          placement="below-start"
-          portal
-          testId={menu.popoverTestId}
-          // Sized to the widest label instead of a fixed w-40, which wrapped
-          // longer actions such as "Invite a teammate" onto a second line
-          // inside the fixed-height rows. w-40 stays as the floor.
-          className="sidebar-instant-interactions w-45"
-        >
+        <SidebarWorkEntryMenuSurface menu={menu}>
           {selectionMenu?.replacesMenu === true ? (
             <ActionMenuRowStyle>
               <WorktreeActionMenuItems
@@ -781,7 +833,7 @@ function SidebarWorkEntryRowContent({
               }
             />
           )}
-        </AnchoredMenu>
+        </SidebarWorkEntryMenuSurface>
       );
     },
     [
@@ -910,7 +962,6 @@ function SidebarWorkEntryRowContent({
           retentionDays={effectiveRetentionDays}
           rowTestId={rowTestId}
           pinnedSurface={pinnedSurface}
-          entryId={entry.id}
           busy={removalRequested || deleting}
           blockedReason={removalDisabledReason ?? removalCheckReason}
           // The re-check disables the action but keeps Cancel live, so the
@@ -2149,83 +2200,80 @@ function SidebarCoworkWorkspaceRowImpl({
         </SidebarFadePresence>
       )}
 
-      {contextMenu &&
-        workspaceRootRef.current?.ownerDocument.body &&
-        createPortal(
-          <>
-            <span
-              ref={contextMenuAnchorRef}
-              aria-hidden="true"
-              data-testid="workspace-session-context-menu-anchor"
-              className="pointer-events-none fixed h-0 w-0"
-              style={{ left: contextMenu.x, top: contextMenu.y }}
-            />
-            <FloatingMenu
-              open
-              onOpenChange={(open): void => {
-                if (!open) setContextMenu(null);
-              }}
-              anchorRef={contextMenuAnchorRef}
-              returnFocusRef={contextMenuReturnFocusRef}
-              placement="bottom-left"
-              className="w-45"
-              aria-label="Project actions"
-              data-testid="workspace-session-context-menu"
-              onContextMenu={(event): void => event.preventDefault()}
-            >
-              <ActionMenuRowStyle>
-                <ActionMenuItems
-                  items={coworkProjectMenuItems({
-                    pinned: item.pinned === true,
-                    onTogglePin: (pinned): void => {
-                      void setWorkspacePinned(item.id, pinned);
-                    },
-                    onOpenSettings: (): void => {
-                      openWorkspaceSettingsModal({ workspaceId: item.id });
-                    },
-                    onShareTemplate: (): void => {
-                      openWorkspaceSettingsModal({
-                        workspaceId: item.id,
-                        initialTab: 'share',
-                      });
-                    },
-                    onImportSession: (): void => {
-                      useCloudConnectGateStore
-                        .getState()
-                        .requestConnect({}, () => {
-                          openImportSessionModal(item.id);
-                        });
-                    },
-                    onMoveToOrganization: onMoveToOrganizationRequested
-                      ? (): void => onMoveToOrganizationRequested(item.id)
-                      : undefined,
-                  })}
-                  onSelect={(action): void => {
-                    if (action.disabled || !action.onSelect) return;
-                    setContextMenu(null);
-                    // Hand focus back to the row, as a FloatingMenu pick does.
-                    contextMenuReturnFocusRef.current?.focus({
-                      preventScroll: true,
+      {contextMenu && workspaceRootRef.current?.ownerDocument.body && (
+        <>
+          <FloatingMenuPointAnchor
+            ref={contextMenuAnchorRef}
+            x={contextMenu.x}
+            y={contextMenu.y}
+            ownerDocument={workspaceRootRef.current.ownerDocument}
+            data-testid="workspace-session-context-menu-anchor"
+          />
+          <FloatingMenu
+            open
+            onOpenChange={(open): void => {
+              if (!open) setContextMenu(null);
+            }}
+            anchorRef={contextMenuAnchorRef}
+            returnFocusRef={contextMenuReturnFocusRef}
+            placement="bottom-left"
+            className="w-45"
+            aria-label="Project actions"
+            data-testid="workspace-session-context-menu"
+            onContextMenu={(event): void => event.preventDefault()}
+          >
+            <ActionMenuRowStyle>
+              <ActionMenuItems
+                items={coworkProjectMenuItems({
+                  pinned: item.pinned === true,
+                  onTogglePin: (pinned): void => {
+                    void setWorkspacePinned(item.id, pinned);
+                  },
+                  onOpenSettings: (): void => {
+                    openWorkspaceSettingsModal({ workspaceId: item.id });
+                  },
+                  onShareTemplate: (): void => {
+                    openWorkspaceSettingsModal({
+                      workspaceId: item.id,
+                      initialTab: 'share',
                     });
-                    action.onSelect();
-                  }}
-                />
-                {/* Sorting is a pick of one mode, not a command: it stays a
+                  },
+                  onImportSession: (): void => {
+                    useCloudConnectGateStore
+                      .getState()
+                      .requestConnect({}, () => {
+                        openImportSessionModal(item.id);
+                      });
+                  },
+                  onMoveToOrganization: onMoveToOrganizationRequested
+                    ? (): void => onMoveToOrganizationRequested(item.id)
+                    : undefined,
+                })}
+                onSelect={(action): void => {
+                  if (action.disabled || !action.onSelect) return;
+                  setContextMenu(null);
+                  // Hand focus back to the row, as a FloatingMenu pick does.
+                  contextMenuReturnFocusRef.current?.focus({
+                    preventScroll: true,
+                  });
+                  action.onSelect();
+                }}
+              />
+              {/* Sorting is a pick of one mode, not a command: it stays a
                     labelled group of checked choices below the actions. */}
-                <SidebarSortMenuItems
-                  mode={entrySortMode}
-                  testIdPrefix="workspace-item-sort"
-                  label="Sort tasks by"
-                  onSelect={(mode): void => {
-                    setContextMenu(null);
-                    void setWorkspaceItemSortMode(item.id, mode);
-                  }}
-                />
-              </ActionMenuRowStyle>
-            </FloatingMenu>
-          </>,
-          workspaceRootRef.current.ownerDocument.body,
-        )}
+              <SidebarSortMenuItems
+                mode={entrySortMode}
+                testIdPrefix="workspace-item-sort"
+                label="Sort tasks by"
+                onSelect={(mode): void => {
+                  setContextMenu(null);
+                  void setWorkspaceItemSortMode(item.id, mode);
+                }}
+              />
+            </ActionMenuRowStyle>
+          </FloatingMenu>
+        </>
+      )}
       {!hideWorkspaceHeader &&
         stickySlotHost &&
         createPortal(renderWorkspaceHeader('sticky-slot'), stickySlotHost)}

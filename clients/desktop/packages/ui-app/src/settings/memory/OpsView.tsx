@@ -12,11 +12,15 @@ import {
   ErrorBanner,
   SettingsTableSkeleton,
   SettingsSelect,
+  EmptyStateRow,
+  ValueRow,
+  ValueRows,
 } from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
 import { fetchMemoryJobs } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
+import type { SettingsFailure } from '../errors';
 
 interface OpsViewProps {
   orgId: string;
@@ -65,7 +69,7 @@ export function OpsView({
     null,
   );
   const [jobsLoading, setJobsLoading] = useState(false);
-  const [jobsError, setJobsError] = useState<string | null>(null);
+  const [jobsError, setJobsError] = useState<SettingsFailure | null>(null);
   const requestSeq = useRef(0);
   const selectStatus = (next: ExplorerIngestJobStatus | 'ALL'): void => {
     setStatus(next);
@@ -87,7 +91,7 @@ export function OpsView({
       })
       .catch((caught: unknown) => {
         if (requestSeq.current !== seq) return;
-        setJobsError(errorCopy.loadCopy(caught));
+        setJobsError(errorCopy.loadFailure(caught));
       })
       .finally(() => {
         if (requestSeq.current === seq) setJobsLoading(false);
@@ -150,7 +154,8 @@ export function OpsView({
                       <td className="px-4 py-3" colSpan={5}>
                         <ErrorBanner
                           className=""
-                          error={jobsError}
+                          error={jobsError?.copy}
+                          details={jobsError?.details}
                           onRetry={() => selectStatus(status)}
                         />
                       </td>
@@ -201,7 +206,7 @@ export function OpsView({
           </h2>
           <div className="mt-4 space-y-4 border-l pl-4">
             {searchEntries.length === 0 ? (
-              <p className="text-s fg-secondary">No search activity yet.</p>
+              <EmptyStateRow title="No search activity yet." />
             ) : (
               searchEntries.map((entry) => (
                 <article key={entry.id} className="relative">
@@ -271,19 +276,19 @@ export function OpsView({
         <h2 className="text-base font-semibold fg-primary">
           Effective configuration
         </h2>
-        <dl className="mt-4 space-y-3 text-xs">
-          {Object.entries(config).map(([key, value]) => (
-            <div
-              key={key}
-              className="flex items-start justify-between gap-4 border-b pb-2 last:border-0"
-            >
-              <dt className="fg-secondary">{key}</dt>
-              <dd className="max-w-13/20 break-all text-right font-mono fg-primary">
-                {value === null ? 'not set' : String(value)}
-              </dd>
-            </div>
-          ))}
-        </dl>
+        <div className="mt-2">
+          <ValueRows>
+            {Object.entries(config).map(([key, value]) => (
+              <ValueRow
+                key={key}
+                label={key}
+                value={value === null ? 'not set' : String(value)}
+                numeric={false}
+                mono
+              />
+            ))}
+          </ValueRows>
+        </div>
       </aside>
     </div>
   );

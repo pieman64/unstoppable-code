@@ -119,7 +119,6 @@ async function testDaemon(directory, brand) {
       __CANOPY_DAEMON_BUILD_VERSION__: JSON.stringify('0.0.0-can-5496'),
       __CANOPY_DAEMON_BUILD_BRAND_ID__: JSON.stringify(brand.id),
       __CANOPY_DAEMON_BUILD_COWORK_DIR_NAME__: JSON.stringify(brand.cowork),
-      __CANOPY_DAEMON_BUILD_W5_HOST__: 'false',
     },
   });
   // The daemon's own PATH has no node, so no `#!/usr/bin/env node`.

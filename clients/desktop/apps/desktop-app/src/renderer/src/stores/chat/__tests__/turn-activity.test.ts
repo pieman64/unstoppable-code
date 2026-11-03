@@ -88,7 +88,7 @@ describe('localTurnActivity', () => {
     }
   });
 
-  it('does not treat a queued or setup-queued provisional echo as dispatching', () => {
+  it('does not treat a queued provisional echo as dispatching', () => {
     expect(
       localTurnActivity(
         tab({
@@ -96,28 +96,6 @@ describe('localTurnActivity', () => {
             userMessageId: 'user-1',
             submittedAt: 1_000,
             phase: 'queued',
-          },
-        }),
-        2_000,
-      ),
-    ).toBe('idle');
-    expect(
-      localTurnActivity(
-        tab({
-          queuedForSetup: true,
-          pendingUserMessages: [
-            {
-              id: 'user-1',
-              role: 'user',
-              blocks: [{ type: 'text', text: 'first prompt' }],
-              timestamp: 1_000,
-            },
-          ],
-          provisionalFirstSend: {
-            userMessageId: 'user-1',
-            submittedAt: 1_000,
-            phase: 'preparing',
-            queuedForSetup: true,
           },
         }),
         2_000,
@@ -195,24 +173,6 @@ describe('localTurnActivity', () => {
   it('does not read an idle terminal-backed tab as recoverable', () => {
     expect(
       localTurnActivity(tab({ interfaceMode: 'claude-code' }), 2_000),
-    ).toBe('idle');
-  });
-
-  it('does not count a setup-queued provisional pending turn as in flight', () => {
-    expect(
-      localTurnActivity(
-        tab({
-          queuedForSetup: true,
-          pendingTurn,
-          provisionalFirstSend: {
-            userMessageId: 'user-1',
-            submittedAt: 1_000,
-            phase: 'preparing',
-            queuedForSetup: true,
-          },
-        }),
-        2_000,
-      ),
     ).toBe('idle');
   });
 

@@ -128,8 +128,11 @@ function render(
   });
 }
 
+// The picker is a DialogModal, which portals to the document body.
 function options(): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'));
+  return Array.from(
+    document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+  );
 }
 
 beforeEach(() => {
@@ -171,7 +174,9 @@ describe('ImportPlanModal session-replay privacy', () => {
   it('records the card, including the worktree path in the error', () => {
     render();
 
-    const card = container.querySelector('[data-testid="import-plan-modal"]');
+    const card = document.body.querySelector(
+      '[data-testid="import-plan-modal"]',
+    );
     expect(card?.getAttribute('role')).toBe('dialog');
     expect(card?.textContent).toContain('Unable to index /private/repo');
     expect(card?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
@@ -187,13 +192,13 @@ describe('ImportPlanModal session-replay privacy', () => {
       await Promise.resolve();
     });
 
-    const title = container.querySelector(
+    const title = document.body.querySelector(
       '[data-testid="import-plan-preview-title"]',
     );
     expect(title?.textContent).toBe('Rollout plan');
     expect(title?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
     expect(
-      container
+      document.body
         .querySelector('[data-testid="import-plan-input"]')
         ?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS),
     ).toBe(false);
@@ -242,8 +247,9 @@ describe('ImportPlanModal rows', () => {
     // Source files are not importable plans.
     expect(rows.join()).not.toContain('index.ts');
     expect(
-      container.querySelector('[data-testid="import-plan-dismissed-section"]')
-        ?.textContent,
+      document.body.querySelector(
+        '[data-testid="import-plan-dismissed-section"]',
+      )?.textContent,
     ).toContain('1 hidden');
   });
 
@@ -277,7 +283,7 @@ describe('ImportPlanModal rows', () => {
     });
     render();
 
-    const input = container.querySelector<HTMLInputElement>(
+    const input = document.body.querySelector<HTMLInputElement>(
       '[data-testid="import-plan-input"]',
     );
     if (!input) throw new Error('missing search input');
@@ -301,7 +307,8 @@ describe('ImportPlanModal rows', () => {
     typeQuery('zzz-nothing');
     expect(options()).toHaveLength(0);
     expect(
-      container.querySelector('[data-testid="import-plan-empty"]')?.textContent,
+      document.body.querySelector('[data-testid="import-plan-empty"]')
+        ?.textContent,
     ).toBe('No matches.');
   });
 
@@ -351,10 +358,12 @@ describe('ImportPlanModal rows', () => {
     render({ onOpenTracked });
 
     expect(
-      container.querySelectorAll('[data-testid="import-plan-tracked-badge"]'),
+      document.body.querySelectorAll(
+        '[data-testid="import-plan-tracked-badge"]',
+      ),
     ).toHaveLength(2);
     act(() => {
-      container
+      document.body
         .querySelector<HTMLButtonElement>('[data-testid="import-plan-primary"]')
         ?.click();
     });
@@ -394,7 +403,9 @@ describe('ImportPlanModal rows', () => {
 
     expect(loadTrackedPlans).toHaveBeenCalledWith(PROJECT_ID, WORKTREE_ID);
     expect(
-      container.querySelectorAll('[data-testid="import-plan-tracked-badge"]'),
+      document.body.querySelectorAll(
+        '[data-testid="import-plan-tracked-badge"]',
+      ),
     ).toHaveLength(1);
   });
 
@@ -438,7 +449,7 @@ describe('ImportPlanModal rows', () => {
       render({ onOpenTracked });
 
       await act(async () => {
-        container
+        document.body
           .querySelector<HTMLButtonElement>(
             '[data-testid="import-plan-primary"]',
           )
@@ -491,7 +502,9 @@ describe('ImportPlanModal rows', () => {
     render();
 
     expect(
-      container.querySelectorAll('[data-testid="import-plan-tracked-badge"]'),
+      document.body.querySelectorAll(
+        '[data-testid="import-plan-tracked-badge"]',
+      ),
     ).toHaveLength(1);
   });
 
@@ -549,7 +562,7 @@ describe('ImportPlanModal rows', () => {
     render({ onImported, originChatId: 'chat-1' });
 
     await act(async () => {
-      container
+      document.body
         .querySelector<HTMLButtonElement>('[data-testid="import-plan-primary"]')
         ?.click();
       await Promise.resolve();
@@ -582,7 +595,7 @@ describe('ImportPlanModal rows', () => {
     render({ originChatId: 'chat-1' });
 
     await act(async () => {
-      container
+      document.body
         .querySelector<HTMLButtonElement>('[data-testid="import-plan-primary"]')
         ?.click();
       await Promise.resolve();

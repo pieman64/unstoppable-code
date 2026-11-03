@@ -35,6 +35,24 @@ import {
   type AddMarketplaceSeam,
 } from '../PortalPluginsPicker';
 
+/** Opens the unified table's Kind filter and chooses an option by value. */
+function chooseKindFilter(value: string): void {
+  const trigger = document.querySelector(
+    '[role="combobox"][aria-label="Kind filter"]',
+  );
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error('Kind filter missing');
+  }
+  act(() => trigger.click());
+  const option = document.querySelector(
+    `[role="listbox"] [role="option"][data-value="${value}"]`,
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`Kind option ${value} missing`);
+  }
+  act(() => option.click());
+}
+
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
 const catalog: PortalPluginCatalog = {
@@ -549,7 +567,7 @@ describe('PortalPluginsPicker', () => {
       await Promise.resolve();
     });
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-      'Could not save',
+      "Couldn't save",
     );
     expect(
       control('chat-plugins-deferred-tools-toggle').getAttribute(
@@ -1256,18 +1274,9 @@ describe('PortalPluginsPicker', () => {
         document.querySelector('[data-row-key="skill:cloud-custom/writing-0"]'),
       ).not.toBeNull();
 
-      const kind = document.querySelector('[aria-label="Kind filter"]');
-      if (!(kind instanceof HTMLSelectElement))
-        throw new Error('Kind filter missing');
-      act(() => {
-        kind.value = 'skill';
-        kind.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      chooseKindFilter('skill');
       expect(table?.getAttribute('data-row-count')).toBe('1');
-      act(() => {
-        kind.value = 'all';
-        kind.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      chooseKindFilter('all');
 
       const view = Array.from(document.querySelectorAll('button')).find(
         (button) => button.textContent === 'View',
@@ -1751,19 +1760,9 @@ describe('PortalPluginsPicker', () => {
     expect(table?.getAttribute('data-row-count')).toBe('1');
 
     inputValue(search, '');
-    const kind = document.querySelector('[aria-label="Kind filter"]');
-    if (!(kind instanceof HTMLSelectElement)) {
-      throw new Error('kind filter not found');
-    }
-    act(() => {
-      kind.value = 'plugin';
-      kind.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseKindFilter('plugin');
     expect(table?.getAttribute('data-row-count')).toBe('1');
-    act(() => {
-      kind.value = 'all';
-      kind.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseKindFilter('all');
     const sourceButton = Array.from(document.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('All sources'),
     );
@@ -1773,7 +1772,9 @@ describe('PortalPluginsPicker', () => {
     click(sourceButton);
     const sourceCheckbox = Array.from(
       document.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
-    ).find((input) => input.parentElement?.textContent?.includes('My skills'));
+    ).find((input) =>
+      input.closest('label')?.textContent?.includes('My skills'),
+    );
     if (!(sourceCheckbox instanceof HTMLInputElement)) {
       throw new Error('source option not found');
     }

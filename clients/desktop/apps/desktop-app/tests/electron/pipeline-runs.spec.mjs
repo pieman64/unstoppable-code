@@ -777,8 +777,8 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
     )?.worktreePath;
     expect(demoWorktreePath).toBeTruthy();
 
-    // PAUSED-STRUCTURED run (request-input). One required string field so
-    // `pause-input-resume` is disabled until a value is entered.
+    // PAUSED-STRUCTURED run (request-input). One required string field, so
+    // `pause-input-resume` reports the missing value until one is entered.
     seedPipelineExecution({
       userDataDir,
       workspaceId: WORKSPACE_ID,
@@ -1030,13 +1030,19 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
       const reviewerField = window.getByTestId('pause-field-reviewer');
       await expect(reviewerField).toBeVisible();
 
-      // Resume is disabled while the required field is empty, then enables once a
-      // value is entered. Clicking it must leave the persisted paused state and
-      // immediately remove the pause UI from the still-open run panel.
+      // Resume with the required field empty shows its error under the
+      // field and keeps the run paused; editing the field clears the error.
+      // A valid resume must leave the persisted paused state and immediately
+      // remove the pause UI from the still-open run panel.
       const resumeButton = window.getByTestId('pause-input-resume');
       await expect(resumeButton).toBeVisible();
-      await expect(resumeButton).toBeDisabled();
+      await expect(reviewerField).not.toHaveAttribute('aria-invalid', 'true');
+      await resumeButton.click();
+      await expect(pausePanel).toBeVisible();
+      await expect(reviewerField).toHaveAttribute('aria-invalid', 'true');
+      await expect(pausePanel.getByText('reviewer is required')).toBeVisible();
       await reviewerField.fill('Ada Lovelace');
+      await expect(pausePanel.getByText('reviewer is required')).toHaveCount(0);
       const decisionField = pausePanel.getByTestId('pause-field-decision');
       await expect(decisionField).toHaveText('No selection');
       await decisionField.click();
@@ -1320,13 +1326,13 @@ test.describe('pipeline runs + redesigned run detail panel (Spec 6)', () => {
       const matrixView = window.getByTestId('pipeline-matrix-view-build');
       await expect(matrixView).toContainText('1 variants');
       await expect(
-        matrixView.getByRole('button', { name: 'Retry all variants' }),
+        matrixView.getByRole('button', { name: 'Try all variants again' }),
       ).toBeEnabled();
       await expect(
-        matrixView.getByRole('button', { name: 'Retry failed variants' }),
+        matrixView.getByRole('button', { name: 'Try failed variants again' }),
       ).toBeEnabled();
       await expect(
-        matrixView.getByRole('button', { name: 'Retry variant' }),
+        matrixView.getByRole('button', { name: 'Try variant again' }),
       ).toBeEnabled();
 
       const toggle = nav.getByTestId('pipeline-details-nav-job-toggle-build');

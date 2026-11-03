@@ -6,7 +6,6 @@ import type {
 } from '@canopy/protocol/portal';
 import { PlayCircleIcon, RetryIcon, SteerIcon } from '../../icons';
 import { StopIcon, TrashIcon } from '../../icons/AppIcons';
-import { BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS } from '../bubble-badge';
 import { ActionTooltip } from '../ActionTooltip';
 import { Button } from '../Button';
 import { MessageEditBadge, type MessageEditHandler } from './MessageEditEntry';
@@ -27,7 +26,7 @@ export const QUEUED_MESSAGE_RETRY_BLOCKED_TOOLTIPS: Readonly<
   insufficient_credits: {
     title: 'Add credits first',
     description:
-      'Your queued message is saved. Retry sends it once your account has AI credits.',
+      'Your queued message is saved. Try again sends it once your account has AI credits.',
   },
 };
 
@@ -159,7 +158,10 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
     const showEdit = Boolean(onEdit) && !editLocked && !pending && !anyEditing;
     const isBadge = variant === 'badge';
     return (
-      <div className="absolute -right-2 -top-2 z-10 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:opacity-100">
+      // On touch each 28px Button's hit area reaches 8px past its sides, so
+      // `pointer-coarse:gap-4` (16px) lets neighbouring 44px targets meet
+      // without overlapping; a fine pointer keeps the 4px gap.
+      <div className="absolute -right-2 -top-2 z-10 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:gap-4 pointer-coarse:opacity-100">
         {cornerLeading}
         {showEdit && onEdit && isBadge ? (
           <MessageEditBadge
@@ -178,20 +180,28 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
             Edit
           </button>
         ) : null}
-        {onCancel ? (
+        {onCancel && isBadge ? (
+          <Button
+            variant="secondary"
+            size="compact"
+            iconOnly
+            data-testid="queued-message-cancel"
+            disabled={pending}
+            onClick={onCancel}
+            aria-label={cancelLabel}
+          >
+            <TrashIcon size="sm" />
+          </Button>
+        ) : onCancel ? (
           <button
             type="button"
             data-testid="queued-message-cancel"
             disabled={pending}
             onClick={onCancel}
-            className={
-              isBadge
-                ? BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS
-                : POPOVER_CANCEL_CLASS
-            }
+            className={POPOVER_CANCEL_CLASS}
             aria-label={cancelLabel}
           >
-            <TrashIcon width="14" height="14" />
+            <TrashIcon size="sm" />
           </button>
         ) : null}
       </div>
@@ -306,7 +316,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
               height={16}
               className="-my-1"
             />
-            Retry
+            Try again
           </Button>
         </ActionTooltip>
       ) : null}

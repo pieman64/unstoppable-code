@@ -186,6 +186,18 @@ describe('LegalConsentGate', () => {
     expect(isChecked()).toBe(false);
   });
 
+  it('sets the document names under the agreement text, outside its label', () => {
+    act(() => {
+      root.render(<LegalConsentGate onAccepted={jest.fn()} />);
+    });
+    const terms = byTestId('legal-consent-terms-link');
+    const label = byTestId('legal-consent-label')?.closest('label');
+    // In the text column under the phrase, not wrapped under the checkbox,
+    // and outside the clickable label (CAN-2621).
+    expect(terms?.closest('[data-choice-field-trailing]')).not.toBeNull();
+    expect(label?.contains(terms ?? null)).toBe(false);
+  });
+
   it('still checks the agreement box from its label text', () => {
     act(() => {
       root.render(<LegalConsentGate onAccepted={jest.fn()} />);

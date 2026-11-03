@@ -32,6 +32,49 @@ function state(tabs = [tab('chat-1')]): CanonicalChatState {
 }
 
 describe('chat state reducer', () => {
+  it('retains terminal implementation evidence after end eviction, ignores duplicate outcomes, and clears mismatched identity', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'implement-1',
+      startedAt: '2026-08-07T12:00:00.000Z',
+    };
+    let current = state([
+      {
+        ...tab('chat-1'),
+        trackedPlanId: link.planId,
+        trackedPlanImplementation: link,
+      },
+    ]);
+    const patch = (value: ChatTabMetadataPatch): void => {
+      current = reduceChatState(current, [
+        { type: 'tab.metadata_patched', tabId: 'chat-1', patch: value },
+      ]);
+    };
+    patch({
+      turnEnds: {
+        'implement-1': { outcome: 'completed', endedAt: 1786104000000 },
+      },
+    });
+    const settled = current.tabsFile.tabs[0]?.trackedPlanImplementation;
+    expect(settled).toMatchObject({
+      ...link,
+      outcome: 'completed',
+      endedAt: new Date(1786104000000).toISOString(),
+    });
+    patch({
+      turnEnds: {
+        'implement-1': { outcome: 'failed', endedAt: 1786104000010 },
+      },
+    });
+    patch({ turnEnds: null, trackedPlanImplementation: link });
+    expect(current.tabsFile.tabs[0]?.trackedPlanImplementation).toEqual(
+      settled,
+    );
+    patch({ trackedPlanId: 'another-plan' });
+    expect(current.tabsFile.tabs[0]?.trackedPlanImplementation).toBeUndefined();
+  });
+
   it('sets, replaces, omits, and deletes a custom title without changing other metadata', () => {
     let current = state([
       { ...tab('chat-1'), description: 'Generated name', pinned: true },

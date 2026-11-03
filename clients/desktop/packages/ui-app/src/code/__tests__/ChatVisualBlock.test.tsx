@@ -34,6 +34,9 @@ jest.mock('@canopy/ui-shared/components', () => ({
   Button: jest.requireActual<typeof UiSharedComponents>(
     '@canopy/ui-shared/components',
   ).Button,
+  ErrorBanner: jest.requireActual<typeof UiSharedComponents>(
+    '@canopy/ui-shared/components',
+  ).ErrorBanner,
   SegmentedControl: jest.requireActual<typeof UiSharedComponents>(
     '@canopy/ui-shared/components',
   ).SegmentedControl,

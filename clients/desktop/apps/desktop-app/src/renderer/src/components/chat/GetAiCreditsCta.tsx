@@ -11,7 +11,11 @@ import type {
   CanopyCloudAccountPublicState,
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
-import { useStableAiCreditsScope } from '@/lib/aiCreditsScope';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import {
+  useAiCreditsWalletKey,
+  useStableAiCreditsScope,
+} from '@/lib/aiCreditsScope';
 import { lapsedOrgNames as lapsedOrgNamesFrom } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import {
   AI_CREDITS_CHECK_AGAIN_LABEL,
@@ -41,6 +45,21 @@ import {
   useCloudConnectGateStore,
 } from '@/stores/cloudConnectGateStore';
 import { ACCOUNT_BUTTON_PRIMARY } from '@/lib/account-button-styles';
+import {
+  chatBannerKey,
+  type ChatBannerTarget,
+} from '@/stores/aiCreditsBannerStore';
+import {
+  beginAiCreditsHandoff,
+  claimAiCreditsHandoffOpening,
+  completeAiCreditsHandoff,
+  expireAiCreditsHandoffs,
+  isAiCreditsHandoffCurrent,
+  releaseAiCreditsHandoffOpening,
+  selectAiCreditsHandoff,
+  setAiCreditsHandoffFeedback,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
 
 /**
  * CAN-2349 §3 — the one "Get AI Credits" affordance.
@@ -184,6 +203,11 @@ export interface GetAiCreditsHandoffState {
   readonly onCheckAgain: () => boolean;
   /** A check or reopen is running; Check again waits for it to finish. */
   readonly checking: boolean;
+  /**
+   * The retained hand-off these controls act on (CAN-5534), or `null` for a
+   * CTA that keeps its hand-off locally. A host binds the controls to it.
+   */
+  readonly handoffId: string | null;
 }
 
 export interface GetAiCreditsCtaProps {
@@ -292,7 +316,23 @@ export interface GetAiCreditsCtaProps {
    * record's origin. Untracked when omitted.
    */
   readonly confirmArrival?: AiCreditsArrivalOrigin;
+  /**
+   * Keep the browser hand-off in `aiCreditsHandoffStore` for this chat's
+   * purchase scope instead of in this instance (CAN-5534). Switching chats,
+   * hiding the host or unmounting then keeps the waiting state, Check again
+   * and the arrival, and every opted-in CTA in the scope shows the return
+   * controls instead of a second purchase. Hosts without it keep the local
+   * lifecycle.
+   */
+  readonly persistHandoffFor?: ChatBannerTarget;
   readonly dataTestId?: string;
+}
+
+/** The retained hand-off an async operation started under. */
+interface HandoffSession {
+  readonly walletKey: string;
+  readonly id: string;
+  readonly accountGeneration: number;
 }
 
 /**
@@ -341,6 +381,7 @@ export function GetAiCreditsCta({
   onHandoffChange,
   onGetCreditsClick,
   confirmArrival,
+  persistHandoffFor,
   dataTestId = 'get-ai-credits-cta',
 }: GetAiCreditsCtaProps): JSX.Element {
   const { scope: stableAiCreditsScope, key: aiCreditsScopeKey } =
@@ -353,7 +394,7 @@ export function GetAiCreditsCta({
   const requestConnect = useCloudConnectGateStore((s) => s.requestConnect);
   const cloudGatePending = useCloudConnectGateStore((s) => s.pending);
   const [busy, setBusy] = useState(false);
-  const [handedOff, setHandedOff] = useState(false);
+  const [localHandedOff, setLocalHandedOff] = useState(false);
   const [handoffFailed, setHandoffFailed] = useState(false);
   /**
    * The post-connect coverage read did not resolve.
@@ -373,8 +414,36 @@ export function GetAiCreditsCta({
    * conclusive uncovered read or a failed forced read sets it; a covered read,
    * a new hand-off and a scope change clear it.
    */
-  const [checkFeedback, setCheckFeedback] =
+  const [localCheckFeedback, setLocalCheckFeedback] =
     useState<AiCreditsCheckFeedbackKind | null>(null);
+  // Store mode (CAN-5534): the hand-off and its last verdict come from the
+  // purchase scope's retained record instead of this instance. Both hooks run
+  // in either mode; a `null` key selects nothing.
+  const walletKey = useAiCreditsWalletKey(persistHandoffFor ?? null);
+  const storeMode = walletKey !== null;
+  const handoffRecord = useAiCreditsHandoffStore((s) =>
+    selectAiCreditsHandoff(s, walletKey),
+  );
+  const handedOff = storeMode ? handoffRecord !== null : localHandedOff;
+  const checkFeedback = storeMode
+    ? (handoffRecord?.feedback ?? null)
+    : localCheckFeedback;
+  const walletKeyRef = useRef(walletKey);
+  walletKeyRef.current = walletKey;
+  const handoffRecordRef = useRef(handoffRecord);
+  handoffRecordRef.current = handoffRecord;
+  const originChatKeyRef = useRef<string | null>(null);
+  originChatKeyRef.current = persistHandoffFor
+    ? chatBannerKey(persistHandoffFor)
+    : null;
+  /**
+   * The record this instance just created, for the scope it created it in,
+   * so it does not immediately re-read what its own open established.
+   */
+  const createdHandoffRef = useRef<{
+    readonly id: string;
+    readonly scopeKey: string;
+  } | null>(null);
   const [reopenPending, setReopenPending] = useState(false);
   const mountedRef = useRef(true);
   /**
@@ -448,9 +517,19 @@ export function GetAiCreditsCta({
    * browser opens; dropped on every path that is not a browser return.
    */
   const arrivalHandoffRef = useRef<AiCreditsArrivalHandoff | null>(null);
+  const openingLatchRef = useRef<{
+    readonly walletKey: string;
+    readonly token: object;
+    readonly accountGeneration: number;
+  } | null>(null);
   const clearArrivalHandoff = useCallback((): void => {
     arrivalHandoffRef.current?.cancel();
     arrivalHandoffRef.current = null;
+    const opening = openingLatchRef.current;
+    openingLatchRef.current = null;
+    if (opening !== null) {
+      releaseAiCreditsHandoffOpening(opening.walletKey, opening.token);
+    }
   }, []);
   const ensureArrivalHandoff = useCallback((): void => {
     const origin = confirmArrivalRef.current;
@@ -459,6 +538,7 @@ export function GetAiCreditsCta({
     arrivalHandoffRef.current = beginAiCreditsArrivalHandoff(
       scopeRef.current,
       origin,
+      walletKeyRef.current ?? undefined,
     );
   }, []);
   // NOTE: availability lives ONLY in `availabilityRef`, and every path that
@@ -484,6 +564,37 @@ export function GetAiCreditsCta({
     }
   }, []);
 
+  /** The retained hand-off pending now, in store mode. */
+  const currentHandoffSession = useCallback((): HandoffSession | null => {
+    const key = walletKeyRef.current;
+    const record = handoffRecordRef.current;
+    if (key === null || record === null) return null;
+    return {
+      walletKey: key,
+      id: record.id,
+      accountGeneration: record.accountGeneration,
+    };
+  }, []);
+  /** Write a Check again verdict where this instance keeps it. */
+  const writeCheckFeedback = useCallback(
+    (
+      session: HandoffSession | null,
+      feedback: AiCreditsCheckFeedbackKind | null,
+    ): void => {
+      if (session === null) {
+        setLocalCheckFeedback(feedback);
+        return;
+      }
+      setAiCreditsHandoffFeedback(
+        session.walletKey,
+        session.id,
+        session.accountGeneration,
+        feedback,
+      );
+    },
+    [],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return (): void => {
@@ -506,10 +617,10 @@ export function GetAiCreditsCta({
     operationRef.current = null;
     cancelMinimumBusyHold();
     setBusy(false);
-    setHandedOff(false);
+    setLocalHandedOff(false);
     setHandoffFailed(false);
     setReadFailed(false);
-    setCheckFeedback(null);
+    setLocalCheckFeedback(null);
     setReopenPending(false);
     awaitingCloudGateRef.current = false;
     sawCloudGateRef.current = false;
@@ -661,13 +772,20 @@ export function GetAiCreditsCta({
     useCallback(async (): Promise<CoverageCommitOutcome> => {
       const requestScopeKey = scopeKeyRef.current;
       const generation = lifecycleRef.current;
+      const accountGeneration =
+        walletKeyRef.current === null
+          ? null
+          : useAiCreditsHandoffStore.getState().accountGeneration;
       const native = await readAvailabilitySafely({
         scope: scopeRef.current,
       });
       if (
         !mountedRef.current ||
         lifecycleRef.current !== generation ||
-        scopeKeyRef.current !== requestScopeKey
+        scopeKeyRef.current !== requestScopeKey ||
+        (accountGeneration !== null &&
+          useAiCreditsHandoffStore.getState().accountGeneration !==
+            accountGeneration)
       ) {
         return 'gone';
       }
@@ -724,6 +842,22 @@ export function GetAiCreditsCta({
       // SAME shared probe would each fall through to `commitCovered` below.
       // It also keeps a check from racing a Reopen billing.
       if (operationRef.current !== null) return;
+      // Store mode reads for the retained record, which a sibling may have
+      // ended or which may have expired while the machine slept.
+      const storeBacked = walletKeyRef.current !== null;
+      if (storeBacked) expireAiCreditsHandoffs();
+      const session = storeBacked ? currentHandoffSession() : null;
+      if (storeBacked && session === null) return;
+      if (
+        session !== null &&
+        force &&
+        handoffRecordRef.current?.identityUnverified
+      ) {
+        // The root owns identity reconciliation and fences older responses.
+        // Its verified result activates a fresh coverage read below.
+        window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+        return;
+      }
       const operation = {};
       operationRef.current = operation;
       const generation = lifecycleRef.current;
@@ -732,17 +866,27 @@ export function GetAiCreditsCta({
         mountedRef.current &&
         lifecycleRef.current === generation &&
         scopeKeyRef.current === requestScopeKey &&
-        operationRef.current === operation;
+        operationRef.current === operation &&
+        (session === null ||
+          isAiCreditsHandoffCurrent(
+            session.walletKey,
+            session.id,
+            session.accountGeneration,
+          ));
       const startedAt = Date.now();
       setBusy(true);
-      if (force && !quiet) setCheckFeedback(null);
+      if (force && !quiet) writeCheckFeedback(session, null);
       try {
         let native: NativeAiCreditsAvailability | null = null;
         try {
+          // Sibling chats share a retained hand-off, so they share its read
+          // too rather than each probing for their own chat.
           native = await probeCreditsAvailability(
             force,
             scopeRef.current,
-            requestScopeKey,
+            session === null
+              ? requestScopeKey
+              : `handoff:${session.id}:${session.accountGeneration}`,
           );
         } catch {
           native = null;
@@ -754,13 +898,28 @@ export function GetAiCreditsCta({
           if (!force || quiet) return;
           await waitForMinimumBusy(startedAt);
           if (!isCurrent()) return;
-          setCheckFeedback('check-failed');
+          writeCheckFeedback(session, 'check-failed');
           return;
         }
         availabilityRef.current = native;
         if (resolveAiCreditsCoverage(native).canSpendCredits) {
-          setCheckFeedback(null);
-          setHandedOff(false);
+          if (session !== null) {
+            // Claimed once for the record: the arrival is recorded for the
+            // chat that started it, whichever chat found the credits, and
+            // before the announcement so its account recheck reconciles it.
+            const completed = completeAiCreditsHandoff(
+              session.walletKey,
+              session.id,
+              session.accountGeneration,
+            );
+            if (!completed) return;
+            handoffStartedRef.current = false;
+            announceAiCreditsChanged();
+            void commitCovered();
+            return;
+          }
+          setLocalCheckFeedback(null);
+          setLocalHandedOff(false);
           // The hand-off is over, so the one-shot latch must open again or a
           // later purchase from this same instance would spin forever.
           handoffStartedRef.current = false;
@@ -776,12 +935,12 @@ export function GetAiCreditsCta({
           void commitCovered();
           return;
         }
-        if (quiet) return;
+        if (quiet || (session !== null && !force)) return;
         if (force) {
           await waitForMinimumBusy(startedAt);
           if (!isCurrent()) return;
         }
-        setCheckFeedback('uncovered');
+        writeCheckFeedback(session, 'uncovered');
       } finally {
         // A stale completion must not release a newer operation's guard or
         // clear its busy state.
@@ -793,7 +952,12 @@ export function GetAiCreditsCta({
         }
       }
     },
-    [commitCovered, waitForMinimumBusy],
+    [
+      commitCovered,
+      currentHandoffSession,
+      waitForMinimumBusy,
+      writeCheckFeedback,
+    ],
   );
 
   /**
@@ -806,16 +970,27 @@ export function GetAiCreditsCta({
   const reopenBilling = useCallback((): void => {
     if (!mountedRef.current) return;
     if (operationRef.current !== null) return;
+    const storeBacked = walletKeyRef.current !== null;
+    const session = storeBacked ? currentHandoffSession() : null;
+    if (storeBacked && session === null) return;
     const operation = {};
     operationRef.current = operation;
     const generation = lifecycleRef.current;
     const requestScopeKey = scopeKeyRef.current;
     const scope = scopeRef.current;
+    const sessionCurrent = (): boolean =>
+      session === null ||
+      isAiCreditsHandoffCurrent(
+        session.walletKey,
+        session.id,
+        session.accountGeneration,
+      );
     const isCurrent = (): boolean =>
       mountedRef.current &&
       lifecycleRef.current === generation &&
       scopeKeyRef.current === requestScopeKey &&
-      operationRef.current === operation;
+      operationRef.current === operation &&
+      sessionCurrent();
     setReopenPending(true);
     void (async (): Promise<void> => {
       let result: BillingPageOpenResult | 'stale';
@@ -839,17 +1014,30 @@ export function GetAiCreditsCta({
         !mountedRef.current ||
         lifecycleRef.current !== generation ||
         scopeKeyRef.current !== requestScopeKey ||
+        !sessionCurrent() ||
         result === 'stale'
       )
         return;
       setReopenPending(false);
-      setCheckFeedback(null);
       restoreFocusAfterReopenRef.current = true;
+      if (session !== null) {
+        // A retained hand-off outlives a reopen that failed or opened
+        // Settings: the first browser checkout may still complete, so the
+        // scope never drops back to a fresh purchase here. A failure keeps
+        // the last verdict and releases the button for a retry.
+        if (result === 'web') writeCheckFeedback(session, null);
+        if (result === 'settings') {
+          restoreFocusAfterReopenRef.current = false;
+          onOpenedInAppRef.current?.();
+        }
+        return;
+      }
+      setLocalCheckFeedback(null);
       if (result === 'web') {
         // Still handed off: the focus/visibility listeners stay registered.
         return;
       }
-      setHandedOff(false);
+      setLocalHandedOff(false);
       handoffStartedRef.current = false;
       clearArrivalHandoff();
       if (result === 'settings') {
@@ -860,7 +1048,12 @@ export function GetAiCreditsCta({
       }
       setHandoffFailed(true);
     })();
-  }, [clearArrivalHandoff, resolveAvailabilityForHandoff]);
+  }, [
+    clearArrivalHandoff,
+    currentHandoffSession,
+    resolveAvailabilityForHandoff,
+    writeCheckFeedback,
+  ]);
 
   // Reopen billing disappears once it settles; keep keyboard focus on the CTA
   // instead of dropping it to the document.
@@ -900,8 +1093,12 @@ export function GetAiCreditsCta({
   // A compact host describes the whole hand-off, so Reopen billing is offered
   // while waiting too; only a failed check leaves it out. `checking` makes
   // each check re-render the host, which needs it to ask again afterwards.
+  const handoffId = handoffRecord?.id ?? null;
   const handoffState = useMemo((): GetAiCreditsHandoffState | null => {
     if (!handedOff) return null;
+    // Rebuilt for every scope, so a host reused across chats in one purchase
+    // scope receives controls bound to the chat it now shows.
+    void aiCreditsScopeKey;
     return {
       feedback: visibleCheckFeedback,
       ...(visibleCheckFeedback === 'check-failed'
@@ -911,8 +1108,11 @@ export function GetAiCreditsCta({
       reopenDisabled,
       onCheckAgain: checkAgain,
       checking: busy || reopenPending,
+      handoffId,
     };
   }, [
+    aiCreditsScopeKey,
+    handoffId,
     handedOff,
     visibleCheckFeedback,
     reopenBilling,
@@ -927,6 +1127,54 @@ export function GetAiCreditsCta({
   useEffect(() => {
     onHandoffChangeRef.current?.(handoffState);
   }, [handoffState]);
+
+  // Store mode (CAN-5534): arriving at a retained hand-off — a remount, a
+  // hidden banner shown again, or a switch to another chat in the scope —
+  // re-reads coverage at once, past the throttle, so credits bought while
+  // away are found without Check again. Quiet: only coverage is acted on.
+  // Keyed on the chat's scope too, because sibling chats share the record.
+  const handoffAccountGeneration = handoffRecord?.accountGeneration;
+  const handoffIdentityReady =
+    handoffRecord?.accountKey !== undefined &&
+    handoffRecord.identityUnverified === false;
+  useEffect(() => {
+    if (
+      storeMode &&
+      handoffId !== null &&
+      handoffRecordRef.current?.identityUnverified
+    ) {
+      window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+    }
+    // Retry on re-entry only. Identity updates themselves must not cause a
+    // retry loop while the account remains unreadable.
+  }, [storeMode, handoffId, aiCreditsScopeKey]);
+  useEffect(() => {
+    if (!storeMode) return;
+    // An older generation may still be awaiting a bridge read. Detach its
+    // local latch so verified identity can start a fresh session read.
+    operationRef.current = null;
+    cancelMinimumBusyHold();
+    setBusy(false);
+    setReopenPending(false);
+    coveredRef.current = false;
+    coveredCommitRef.current = null;
+  }, [storeMode, handoffId, handoffAccountGeneration, cancelMinimumBusyHold]);
+  useEffect(() => {
+    if (!storeMode || handoffId === null || !handoffIdentityReady) return;
+    const created = createdHandoffRef.current;
+    createdHandoffRef.current = null;
+    if (created?.id === handoffId && created.scopeKey === aiCreditsScopeKey) {
+      return;
+    }
+    void checkCoverage(true, true);
+  }, [
+    storeMode,
+    handoffId,
+    handoffAccountGeneration,
+    handoffIdentityReady,
+    aiCreditsScopeKey,
+    checkCoverage,
+  ]);
 
   // §5 post-purchase return. Registered ONLY while handed off to billing, so an
   // ordinary alt-tab away from the picker costs nothing.
@@ -964,23 +1212,57 @@ export function GetAiCreditsCta({
     // page nobody asked for.
     awaitingCloudGateRef.current = false;
     if (handoffStartedRef.current) return;
+    // Store mode: one initial open per purchase scope. A hand-off already
+    // pending there (a sibling's) is adopted rather than opened again.
+    const storeWalletKey = walletKeyRef.current;
+    const accountGeneration =
+      useAiCreditsHandoffStore.getState().accountGeneration;
+    let openingLatch: object | null = null;
+    if (storeWalletKey !== null) {
+      const opening = openingLatchRef.current;
+      if (
+        opening?.walletKey === storeWalletKey &&
+        opening.accountGeneration === accountGeneration
+      ) {
+        openingLatch = opening.token;
+      } else {
+        clearArrivalHandoff();
+        openingLatch = claimAiCreditsHandoffOpening(storeWalletKey);
+      }
+      if (openingLatch === null) {
+        clearArrivalHandoff();
+        setBusy(false);
+        return;
+      }
+    }
     handoffStartedRef.current = true;
     // A fresh hand-off is a fresh chance to commit. A previous host callback
     // can still be pending, so revoke its ownership of this latch as well.
     coveredRef.current = false;
     coveredCommitRef.current = null;
     setHandoffFailed(false);
-    setCheckFeedback(null);
+    setLocalCheckFeedback(null);
     // Reuses the click's hand-off; one made after a sign-in starts here.
     ensureArrivalHandoff();
     void (async (): Promise<void> => {
       const requestScopeKey = scopeKeyRef.current;
       const generation = lifecycleRef.current;
       const scope = scopeRef.current;
+      const releaseLatch = (): void => {
+        if (storeWalletKey !== null && openingLatch !== null) {
+          releaseAiCreditsHandoffOpening(storeWalletKey, openingLatch);
+          if (openingLatchRef.current?.token === openingLatch) {
+            openingLatchRef.current = null;
+          }
+        }
+      };
       const isCurrent = (): boolean =>
         mountedRef.current &&
         lifecycleRef.current === generation &&
-        scopeKeyRef.current === requestScopeKey;
+        scopeKeyRef.current === requestScopeKey &&
+        (storeWalletKey === null ||
+          useAiCreditsHandoffStore.getState().accountGeneration ===
+            accountGeneration);
       // Wait for a conclusive read first: `openBillingPage`'s unauthenticated
       // fallback needs `pricingUrl`, and without it a rejected authenticated
       // hand-off opens NOTHING.
@@ -990,24 +1272,66 @@ export function GetAiCreditsCta({
       // still leaves the user looking at a page they can no longer connect to
       // anything they did.
       if (!isCurrent()) {
+        releaseLatch();
+        if (mountedRef.current && lifecycleRef.current === generation) {
+          clearArrivalHandoff();
+          handoffStartedRef.current = false;
+          setBusy(false);
+        }
         return;
       }
       const arrivalHandoff = arrivalHandoffRef.current;
       arrivalHandoff?.markExternalOpen();
-      const result = await openBillingPage(
-        native,
-        scope,
-        billingOpenOptions(billingDestinationRef.current),
-      );
+      let result: BillingPageOpenResult;
+      try {
+        result = await openBillingPage(
+          native,
+          scope,
+          billingOpenOptions(billingDestinationRef.current),
+        );
+      } catch {
+        result = 'failed';
+      } finally {
+        releaseLatch();
+      }
+      // A late result never attaches to another chat or account: the scope
+      // change already cancelled the provisional arrival handle.
       if (!isCurrent()) {
+        arrivalHandoff?.cancel();
+        if (mountedRef.current && lifecycleRef.current === generation) {
+          handoffStartedRef.current = false;
+          setBusy(false);
+        }
         return;
       }
       setBusy(false);
       if (result === 'web') {
-        if (arrivalHandoffRef.current === arrivalHandoff) {
-          arrivalHandoff?.retain();
+        const owned = arrivalHandoffRef.current === arrivalHandoff;
+        if (owned) arrivalHandoff?.retain();
+        if (storeWalletKey === null) {
+          setLocalHandedOff(true);
+          return;
         }
-        setHandedOff(true);
+        // Ownership of the arrival handle moves to the store, which keeps
+        // it across chat switches and unmounts.
+        arrivalHandoffRef.current = null;
+        const record = beginAiCreditsHandoff({
+          walletKey: storeWalletKey,
+          originChatKey: originChatKeyRef.current,
+          originScopeKey: requestScopeKey,
+          origin: confirmArrivalRef.current ?? null,
+          accountGeneration,
+          arrival: owned ? arrivalHandoff : null,
+        });
+        // The record is the scope's latch from here; this instance's own
+        // one-shot latch opens again for after it ends.
+        handoffStartedRef.current = false;
+        if (record !== null) {
+          createdHandoffRef.current = {
+            id: record.id,
+            scopeKey: requestScopeKey,
+          };
+        }
         return;
       }
       // Not a browser hand-off: release the one-shot latch so the button works
@@ -1057,6 +1381,8 @@ export function GetAiCreditsCta({
         // outcome worse than doing nothing: it is unattributable to any action
         // the user can still see.
         awaitingCloudGateRef.current = false;
+        clearArrivalHandoff();
+        setBusy(false);
         return;
       }
       if (outcome === 'unknown') {
@@ -1091,6 +1417,21 @@ export function GetAiCreditsCta({
   ]);
 
   const requestBillingHandoff = useCallback((): void => {
+    clearArrivalHandoff();
+    const storeWalletKey = walletKeyRef.current;
+    if (storeWalletKey !== null) {
+      const token = claimAiCreditsHandoffOpening(storeWalletKey);
+      if (token === null) {
+        setBusy(false);
+        return;
+      }
+      openingLatchRef.current = {
+        walletKey: storeWalletKey,
+        token,
+        accountGeneration:
+          useAiCreditsHandoffStore.getState().accountGeneration,
+      };
+    }
     awaitingCloudGateRef.current = true;
     sawCloudGateRef.current = false;
     // Open a fresh availability episode for this attempt.
@@ -1103,9 +1444,8 @@ export function GetAiCreditsCta({
     // requires a gate that actually opened), so nothing loses its shared answer
     // by starting a new episode here.
     invalidateSharedAiCreditsRead();
-    // A new click supersedes any earlier hand-off and reads its baseline now,
-    // in parallel with the coverage read, so it can settle before the open.
-    clearArrivalHandoff();
+    // Read the baseline alongside coverage, after claiming shared ownership:
+    // a sibling that loses the latch must not supersede the winning handle.
     ensureArrivalHandoff();
     const generation = lifecycleRef.current;
     const requestScopeKey = scopeKeyRef.current;

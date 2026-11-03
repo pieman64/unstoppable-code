@@ -494,7 +494,7 @@ export function deriveWorktreeMenuItems(
     items.push({
       key: 'create-branch',
       label: 'Branch from',
-      icon: <BranchIcon />,
+      icon: <BranchIcon size="md" />,
       onSelect: callbacks.onCreateBranchRequested,
       testId: callbacks.testIds?.createBranch,
     });
@@ -542,7 +542,7 @@ export function deriveWorktreeMenuItems(
     items.push({
       key: 'move-to-organization',
       label: 'Move to org…',
-      icon: <BuildingIcon />,
+      icon: <BuildingIcon size="xl" />,
       onSelect: callbacks.onMoveToOrganizationRequested,
       testId: callbacks.testIds?.moveToOrganization,
     });

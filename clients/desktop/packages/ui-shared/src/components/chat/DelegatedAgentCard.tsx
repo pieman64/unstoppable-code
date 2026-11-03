@@ -32,6 +32,8 @@ import {
   hasDelegatedAgentCapabilityEntries,
 } from './delegated-agent-copy';
 import { TaskStopButton } from './TaskStopButton';
+import { StatusLabel } from '../StatusLabel';
+import { Fact, FactList } from '../FactList';
 import { ThinkingSpinner } from '../ThinkingSpinner';
 
 /** Header status while the delegate's request waits in its parent's queue. */
@@ -102,8 +104,8 @@ function DelegatedAgentChanges({
     return (
       <div className="space-y-1">
         {state.kind === 'failed' && (
-          <p className="fg-destructive">
-            {DELEGATED_AGENT_CHANGES_FAILED_LABEL}
+          <p>
+            <StatusLabel>{DELEGATED_AGENT_CHANGES_FAILED_LABEL}</StatusLabel>
           </p>
         )}
         <button
@@ -310,81 +312,68 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
             {onOpenChat ? (
               <AgentCardOpenChatAction onOpenChat={onOpenChat} />
             ) : null}
-            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 fg-secondary">
-              <dt>Model</dt>
-              <dd>
+            <FactList
+              size="inherit"
+              columnGap="3"
+              rowGap="1"
+              labelTone="secondary"
+              valueTone="secondary"
+            >
+              <Fact label="Model">
                 {selected} {selectedId ? <span>({selectedId})</span> : null}
-              </dd>
+              </Fact>
               {!sameModel && (
-                <>
-                  <dt>Runtime model</dt>
-                  <dd>
-                    {runtime} {runtimeId ? <span>({runtimeId})</span> : null}
-                  </dd>
-                </>
+                <Fact label="Runtime model">
+                  {runtime} {runtimeId ? <span>({runtimeId})</span> : null}
+                </Fact>
               )}
-              <dt>Harness</dt>
-              <dd>
+              <Fact label="Harness">
                 {parentHarnessId} → {route?.harnessId ?? 'Preparing'}
-              </dd>
-              <dt>Execution</dt>
-              <dd>{executionMode}</dd>
+              </Fact>
+              <Fact label="Execution">{executionMode}</Fact>
               {snapshot.resultIndex !== undefined && (
-                <>
-                  <dt>Result</dt>
-                  <dd>{`Result ${snapshot.resultIndex}`}</dd>
-                </>
+                <Fact label="Result">{`Result ${snapshot.resultIndex}`}</Fact>
               )}
-              <dt>Workspace</dt>
-              <dd>
+              <Fact label="Workspace">
                 {snapshot.isolatedWorkspace
                   ? snapshot.workspaceDiscarded
                     ? 'Isolated · discarded'
                     : 'Isolated · retained'
                   : 'Shared with parent'}
-              </dd>
-              <dt>Permissions</dt>
-              <dd>
+              </Fact>
+              <Fact label="Permissions">
                 {snapshot.permissions?.writePaths.length
                   ? `Read/search and edits within: ${snapshot.permissions.writePaths.join(', ')}. Parent approvals apply.`
                   : 'Read and search'}
-              </dd>
+              </Fact>
               {hasDelegatedAgentCapabilityEntries(capabilities) ? (
                 <DelegatedAgentCapabilities summary={capabilities} />
               ) : null}
               {snapshot.control && (
-                <>
-                  <dt>Command</dt>
-                  <dd>
-                    {snapshot.control.operation.replace('_', ' ')} ·{' '}
-                    {snapshot.control.status}
-                    {snapshot.control.error
-                      ? `: ${snapshot.control.error}`
-                      : ''}
-                  </dd>
-                </>
+                <Fact label="Command">
+                  {snapshot.control.operation.replace('_', ' ')} ·{' '}
+                  {snapshot.control.status}
+                  {snapshot.control.error ? `: ${snapshot.control.error}` : ''}
+                </Fact>
               )}
               {!sameThinking && route?.requestedThinkingLevel && (
-                <>
-                  <dt>Requested thinking</dt>
-                  <dd>{route?.requestedThinkingLevel}</dd>
-                </>
+                <Fact label="Requested thinking">
+                  {route?.requestedThinkingLevel}
+                </Fact>
               )}
-              <dt>{sameThinking ? 'Thinking' : 'Effective thinking'}</dt>
-              <dd>{route?.effectiveThinkingLevel ?? 'Not reported'}</dd>
+              <Fact label={sameThinking ? 'Thinking' : 'Effective thinking'}>
+                {route?.effectiveThinkingLevel ?? 'Not reported'}
+              </Fact>
               {snapshot.usage && (
-                <>
-                  <dt>Usage</dt>
-                  <dd>
-                    {snapshot.usage.inputTokens ?? 0} input ·{' '}
-                    {snapshot.usage.outputTokens ?? 0} output
-                    {snapshot.usage.costUsd !== undefined
-                      ? ` · $${snapshot.usage.costUsd.toFixed(4)}`
-                      : ''}
-                  </dd>
-                </>
+                <Fact label="Usage">
+                  {snapshot.usage.inputTokens ?? 0} input ·{' '}
+                  {snapshot.usage.outputTokens ?? 0} output
+                  {snapshot.usage.costUsd !== undefined
+                    ? ` · $${snapshot.usage.costUsd.toFixed(4)}`
+                    : ''}
+                </Fact>
               )}
-            </dl>
+            </FactList>
             {snapshot.isolatedWorkspace &&
               !snapshot.workspaceDiscarded &&
               onLoadChanges && <DelegatedAgentChanges load={onLoadChanges} />}
@@ -401,7 +390,9 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
               </button>
             )}
             {snapshot.error && (
-              <p className="fg-destructive">{snapshot.error.message}</p>
+              <p>
+                <StatusLabel>{snapshot.error.message}</StatusLabel>
+              </p>
             )}
           </div>
         }

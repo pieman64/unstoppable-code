@@ -17,14 +17,36 @@ import type {
   WorkspaceReadinessIssue,
 } from '@canopy/desktop-shared/types';
 import { WorkspaceReadinessOverview } from '../WorkspaceReadinessOverview';
+import {
+  recordMockLaunch,
+  resetWorkspaceReadinessLaunches,
+} from '@/lib/__tests__/workspaceReadinessLaunchTestUtils';
+import { useWorkspaceReadinessLaunchStore } from '@/stores/workspaceReadinessLaunchStore';
+import { hydratedKeys } from '@/stores/chat/hydration';
+import { useChatStore } from '@/stores/chatStore';
 
+// Like the real launcher, a successful launch leaves a launch record.
 jest.mock('@/lib/workspaceReadinessLauncher', () => ({
-  launchWorkspaceReadinessFix: jest.fn(() =>
-    Promise.resolve({
-      ok: true as const,
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-    }),
+  launchWorkspaceReadinessFix: jest.fn(
+    (
+      workspaceId: string,
+      launchedIssue: WorkspaceReadinessIssue,
+      baseWorktreeId?: string,
+    ) => {
+      const { recordMockLaunch } = jest.requireActual<{
+        recordMockLaunch: (
+          workspaceId: string,
+          issue: WorkspaceReadinessIssue,
+          baseWorktreeId?: string,
+        ) => void;
+      }>('@/lib/__tests__/workspaceReadinessLaunchTestUtils');
+      recordMockLaunch(workspaceId, launchedIssue, baseWorktreeId);
+      return Promise.resolve({
+        ok: true as const,
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      });
+    },
   ),
   navigateToWorkspaceReadinessChat: jest.fn(() => Promise.resolve()),
 }));
@@ -82,6 +104,7 @@ describe('WorkspaceReadinessOverview', () => {
 
   beforeEach(() => {
     getWorkspaceReadiness.mockReset();
+    resetWorkspaceReadinessLaunches();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -186,7 +209,7 @@ describe('WorkspaceReadinessOverview', () => {
   });
 
   it('shows the all-ready state after every Code project succeeds', async () => {
-    getWorkspaceReadiness.mockResolvedValue({ issues: [] });
+    getWorkspaceReadiness.mockResolvedValue({ issues: [], complete: true });
 
     await renderAndFlush([codeWorkspace('app')]);
 
@@ -212,7 +235,7 @@ describe('WorkspaceReadinessOverview', () => {
     expect(container.textContent).toContain(issue.title);
     expect(container.textContent).toContain('Fix in new worktree');
     expect(container.textContent).toContain('Couldn’t check API.');
-    expect(container.textContent).toContain('Retry');
+    expect(container.textContent).toContain('Try again');
     expect(
       container.querySelector(
         'table[aria-label="Project readiness recommendations"]',
@@ -242,7 +265,7 @@ describe('WorkspaceReadinessOverview', () => {
       ),
     ).not.toBeNull();
     expect(
-      container.querySelector('[aria-label="Retry readiness check for API"]'),
+      container.querySelector('[aria-label="Try again for API"]'),
     ).not.toBeNull();
     expect(
       container.querySelector('[aria-label="1 recommendations"]'),
@@ -285,7 +308,7 @@ describe('WorkspaceReadinessOverview', () => {
 
     await renderAndFlush([codeWorkspace('app', 'Application')]);
     const retry = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Retry',
+      (button) => button.textContent === 'Try again',
     );
 
     await act(async () => {
@@ -322,13 +345,13 @@ describe('WorkspaceReadinessOverview', () => {
 
     await act(async () => {
       buttons.find((button) => button.textContent === 'Refresh')?.click();
-      buttons.find((button) => button.textContent === 'Retry')?.click();
+      buttons.find((button) => button.textContent === 'Try again')?.click();
       await Promise.resolve();
     });
     expect(getWorkspaceReadiness).toHaveBeenCalledTimes(2);
     expect(
       Array.from(container.querySelectorAll('button'))
-        .find((button) => button.textContent === 'Retry')
+        .find((button) => button.textContent === 'Try again')
         ?.hasAttribute('disabled'),
     ).toBe(true);
 
@@ -404,6 +427,105 @@ describe('WorkspaceReadinessOverview', () => {
     expect(container.textContent).toContain('View conversation');
     expect(mockLaunch).toHaveBeenCalledTimes(1);
   });
+
+  it('explains a missing conversation and opens its existing worktree only after hydration', async () => {
+    const originalChats = useChatStore.getState().worktreeChats;
+    recordMockLaunch('app', issue);
+    getWorkspaceReadiness.mockResolvedValue({ issues: [issue] });
+    useChatStore.setState({ worktreeChats: {} });
+    try {
+      await renderAndFlush([codeWorkspace('app', 'Application')]);
+      expect(container.textContent).toContain('View conversation');
+      expect(container.textContent).not.toContain('Conversation unavailable');
+      await act(async () => {
+        hydratedKeys.add('app/worktree-1');
+        useChatStore.setState({
+          worktreeChats: { 'app/worktree-1': { tabs: [], activeTabId: '' } },
+        });
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain('Conversation unavailable');
+      const open = container.querySelector<HTMLButtonElement>(
+        `button[aria-label="Open worktree for ${issue.title} in Application"]`,
+      );
+      expect(open).not.toBeNull();
+      await act(async () => {
+        open?.click();
+        await Promise.resolve();
+      });
+      expect(mockNavigateToChat).toHaveBeenCalledWith(
+        'app',
+        'worktree-1',
+        'chat-1',
+      );
+      expect(mockLaunch).not.toHaveBeenCalled();
+    } finally {
+      hydratedKeys.delete('app/worktree-1');
+      act(() => useChatStore.setState({ worktreeChats: originalChats }));
+    }
+  });
+
+  it('links a persisted launch on first mount', async () => {
+    recordMockLaunch('app', issue);
+    getWorkspaceReadiness.mockResolvedValue({ issues: [issue, secondIssue] });
+    await renderAndFlush([codeWorkspace('app', 'Application')]);
+
+    const view = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'View conversation',
+    );
+    expect(view?.getAttribute('aria-label')).toBe(
+      `View conversation for ${issue.title} in Application`,
+    );
+    // The other recommendation keeps its own fix action.
+    expect(
+      Array.from(container.querySelectorAll('button')).filter(
+        (button) => button.textContent === 'Fix in new worktree',
+      ),
+    ).toHaveLength(1);
+    await act(async () => {
+      view?.click();
+      await Promise.resolve();
+    });
+    expect(mockNavigateToChat).toHaveBeenCalledWith(
+      'app',
+      'worktree-1',
+      'chat-1',
+    );
+    expect(mockLaunch).not.toHaveBeenCalled();
+  });
+
+  it('clears only reference-checkout launches the audit no longer reports', async () => {
+    recordMockLaunch('app', issue);
+    recordMockLaunch('app', issue, 'some-worktree');
+    getWorkspaceReadiness.mockResolvedValue({ issues: [], complete: true });
+    await renderAndFlush([codeWorkspace('app', 'Application')]);
+
+    expect(
+      Object.values(useWorkspaceReadinessLaunchStore.getState().records),
+    ).toEqual([expect.objectContaining({ baseWorktreeId: 'some-worktree' })]);
+  });
+
+  it('keeps launches when the audit fails', async () => {
+    recordMockLaunch('app', issue);
+    getWorkspaceReadiness.mockRejectedValue(new Error('unavailable'));
+    await renderAndFlush([codeWorkspace('app', 'Application')]);
+
+    expect(
+      Object.keys(useWorkspaceReadinessLaunchStore.getState().records),
+    ).toHaveLength(1);
+  });
+
+  it.each([false, undefined])(
+    'retains launches when audit completeness is %s',
+    async (complete) => {
+      recordMockLaunch('app', issue);
+      getWorkspaceReadiness.mockResolvedValue({ issues: [], complete });
+      await renderAndFlush([codeWorkspace('app', 'Application')]);
+      expect(
+        Object.keys(useWorkspaceReadinessLaunchStore.getState().records),
+      ).toHaveLength(1);
+    },
+  );
 
   it('shows refresh progress without inserting a row above the results', async () => {
     getWorkspaceReadiness.mockResolvedValue({ issues: [issue] });

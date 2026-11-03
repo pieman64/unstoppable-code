@@ -43,7 +43,12 @@ export function bundledSkillStatusReason(pluginName: string): string {
 }
 
 /** Whether the viewer made this item, so it reads `Created by you`. */
-function createdByViewer(entry: UnifiedPluginEntry): boolean {
+export function createdByViewer(entry: UnifiedPluginEntry): boolean {
+  if (entry.kind === 'collection' && entry.ref.type === 'local-collection') {
+    if (entry.sharedSource || entry.collectionProvenanceUnknown)
+      return entry.ownedByViewer === true;
+    return entry.ownedByViewer !== false;
+  }
   if (entry.custom === true || entry.ownedByViewer === true) return true;
   return refCreatedByViewer(entry.ref, entry.origin);
 }
@@ -119,6 +124,11 @@ export function customizeRowEditedLine(
 export function customizeRowSourceLine(
   entry: UnifiedPluginEntry,
 ): string | undefined {
+  if (entry.kind === 'collection' && entry.ref.type === 'local-collection') {
+    if (createdByViewer(entry)) return 'Created by you';
+    const sharer = entry.sharedSource?.sharedBy?.trim();
+    return sharer ? `Shared by ${sharer}` : 'Shared with you';
+  }
   if (entry.bundledBy) return `From the ${entry.bundledBy.name} plugin`;
   if (entry.installedFrom) {
     // A copy installed from a share reads as the share, not as the viewer's.
@@ -209,6 +219,8 @@ export function pendingSignInLabel(count: number): string {
  * Uninstall for plugins and installed skills.
  */
 export function removalVerb(entry: UnifiedPluginEntry): RemovalVerb {
+  if (entry.kind === 'collection')
+    return createdByViewer(entry) ? 'Delete' : 'Remove';
   if (
     entry.custom === true ||
     entry.ref.type === 'local-collection' ||
@@ -218,7 +230,6 @@ export function removalVerb(entry: UnifiedPluginEntry): RemovalVerb {
   }
   switch (entry.kind) {
     case 'app':
-    case 'collection':
       return 'Remove';
     case 'plugin':
     case 'skill':

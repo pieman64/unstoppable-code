@@ -7,6 +7,7 @@ import { pipelineHookBindingsEnabled } from './workspace-source-record-policy';
 import {
   isWorkspaceWorktreeRecentlyRemoved,
   removeWorkspaceWorktrees,
+  removeWorkspaceRecords,
   updateWorkspaceConfig,
   updateWorkspaceWorktrees,
   WorkspaceConfigUnreadableError,
@@ -349,15 +350,17 @@ export async function applyWorkspaceManifestDecision(
 export async function applyWorkspaceIndexDecision(
   decision: WorkspaceIndexDecision,
 ): Promise<void> {
-  await getWorkspaceIndexRepository().update(({ entries, authority }) => {
-    const next = applyWorkspaceIndexDecisionTo(entries, authority, decision);
-    if (next === null)
-      throw new CompositionRecordRefusedError(
-        'index-unavailable',
-        new WorkspaceIndexUnreadableError().message,
-      );
-    return { result: undefined, entries: next };
-  });
+  await getWorkspaceIndexRepository().update(
+    ({ entries, authority, unserved }) => {
+      const next = applyWorkspaceIndexDecisionTo(entries, authority, decision);
+      if (next === null)
+        throw new CompositionRecordRefusedError(
+          'index-unavailable',
+          new WorkspaceIndexUnreadableError(unserved).message,
+        );
+      return { result: undefined, entries: next };
+    },
+  );
 }
 
 /**
@@ -375,5 +378,23 @@ export async function applyWorkspaceIndexRemoval(
     case 'composition.destination.cleanup':
     case 'workspace.delete.index':
       return removeWorkspaceIndexEntry(workspaceId);
+  }
+}
+
+/** Commits both record removals as one W5 decision. */
+export async function applyWorkspaceRecordsRemoval(
+  workspaceId: string,
+  decision: {
+    kind:
+      | 'workspace.delete.records'
+      | 'split.created-workspace.records'
+      | 'composition.destination.records';
+  },
+): Promise<void> {
+  switch (decision.kind) {
+    case 'workspace.delete.records':
+    case 'split.created-workspace.records':
+    case 'composition.destination.records':
+      await removeWorkspaceRecords(workspaceId);
   }
 }

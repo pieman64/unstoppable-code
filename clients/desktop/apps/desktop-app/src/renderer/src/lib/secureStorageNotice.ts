@@ -46,7 +46,7 @@ export function getSecureStorageNotice(
   return {
     state: 'failed',
     title: 'Couldn’t access secure storage.',
-    description: `${outcome} ${failure.retryable ? 'Retry when secure storage is available.' : 'Start or configure your system’s credential store, then reopen the app.'}`,
+    description: `${outcome} ${failure.retryable ? 'Try again when secure storage is available.' : 'Start or configure your system’s credential store, then reopen the app.'}`,
     retryable: failure.retryable,
   };
 }

@@ -109,6 +109,38 @@ export async function assertInstalledResourceContext(
   });
 }
 
+/**
+ * Local collection management reads retain already-installed content after a
+ * share is revoked. This authorizes only its original account/context lane;
+ * execution, republishing and new imports still require live authorization.
+ */
+export async function assertLocalCollectionManagementContext(
+  localId: string,
+): Promise<void> {
+  if (!resourceContextEnabled()) return;
+  const id = await accountId();
+  const binding = await createResourceInstallReceiptsStore(
+    id ?? 'signed-out',
+  ).findLocal('collections', localId);
+  if (!binding) {
+    await assertResourceContext({
+      owner: { type: 'user', id: 'local', name: null },
+    });
+    return;
+  }
+  const publicShare = binding.receipt.sourceKind === 'public-share';
+  if (!publicShare && (!id || binding.accountId !== id))
+    throw new Error('Resource unavailable (access-removed)');
+  const context = binding.receipt.ownerContext;
+  await assertResourceContext({
+    owner:
+      context.kind === 'organization'
+        ? { type: 'organization', id: context.organizationId, name: null }
+        : { type: 'user', id: id ?? 'local', name: null },
+    provenance: binding.receipt,
+  });
+}
+
 export async function recordResourceInstall(
   family: Family,
   detail: Detail,

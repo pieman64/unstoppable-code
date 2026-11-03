@@ -3217,6 +3217,37 @@ describe('ChatQueueService', () => {
       expect(ids(harness)).toEqual(['first', 'second']);
     });
 
+    it('locks Run now and steering on rows behind the hold, keeps edit and delete, and unlocks them on release', async () => {
+      const harness = createHarness();
+      harness.service.holdForWorktreeSetup(target(), 'held');
+      await harness.service.submit(request('queued', 'queued'), 'desktop');
+      await harness.service.submit(request('other', 'other'), 'desktop');
+      const rows = (): HostQueuedMessageView[] =>
+        harness.service.getWorktreeSnapshots('project-1', 'worktree-1')[0]
+          ?.queue ?? [];
+
+      expect(rows()).toEqual([
+        expect.objectContaining({ forceLocked: true }),
+        expect.objectContaining({ forceLocked: true }),
+      ]);
+      expect(rows().some((row) => row.canSteer === true)).toBe(false);
+
+      const [first, second] = rows();
+      if (!first || !second) throw new Error('Expected two queued rows');
+      await harness.service.edit({
+        ...target(),
+        entryId: first.id,
+        text: 'edited',
+      });
+      await harness.service.cancel(target(), second.id);
+      expect(rows().map((row) => row.text)).toEqual(['edited']);
+
+      harness.service.releaseWorktreeSetupHold(target());
+      expect(rows()).toEqual([
+        expect.not.objectContaining({ forceLocked: true }),
+      ]);
+    });
+
     it('keeps queued sends held when a Stop releases the turn gate', async () => {
       const harness = createHarness();
       harness.service.holdForWorktreeSetup(target(), 'held');

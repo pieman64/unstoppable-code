@@ -11,6 +11,8 @@ import type {
 } from '@canopy/protocol/agent-artifacts';
 import {
   capabilityTileModel,
+  Fact as ListFact,
+  FactList,
   type CapabilityTileReceipt,
 } from '@canopy/ui-shared/components';
 import {
@@ -163,17 +165,25 @@ function Badges({ children }: BadgesProps): JSX.Element {
 }
 
 function Facts({ children }: FactsProps): JSX.Element {
-  return <dl className="space-y-1 border-t pt-1.5">{children}</dl>;
+  return (
+    <FactList
+      labelWidth="3.5rem"
+      size="inherit"
+      columnGap="2"
+      rowGap="1"
+      labelTone="secondary"
+      divided
+    >
+      {children}
+    </FactList>
+  );
 }
 
 function Fact({ label, children }: FactProps): JSX.Element {
   return (
-    <div className="flex items-start gap-2">
-      <dt className="w-14 shrink-0 fg-secondary">{label}</dt>
-      <dd className="flex min-w-0 flex-1 flex-wrap items-center gap-1 break-words fg-primary">
-        {children}
-      </dd>
-    </div>
+    <ListFact label={label} fit="inline">
+      {children}
+    </ListFact>
   );
 }
 

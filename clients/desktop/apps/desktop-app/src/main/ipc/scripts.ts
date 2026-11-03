@@ -16,23 +16,35 @@ import {
   cancelWorktreeSetup,
   loadWorktreeScriptRuns,
   runScript,
-  saveProjectScriptsFromService,
-  saveWorkspaceRepoScriptsFromService,
-  saveWorkspaceScriptsFromService,
   stopScript,
 } from '../services/scripts-service';
-import { updateWorkspacePlanDetection } from '../lib/workspace-script-hook-settings';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { readScriptSourceInfo } from '../lib/script-source-info';
+import {
+  saveProjectScripts,
+  saveWorkspaceRepoScripts,
+  saveWorkspaceScripts,
+} from '../lib/script-definition-saves';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import {
+  projectedWorkspaceMetadataCommands,
+  type ProjectedWorkspaceMetadataCommands,
+} from '../canopy-runtime/workspace-metadata-dispatch';
 import type { DesktopIpcCallerResolver } from './file-tree';
 
 export function registerScriptHandlers(runtime: {
-  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>;
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
   resolveCaller: DesktopIpcCallerResolver;
 }): void {
+  const metadataCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedWorkspaceMetadataCommands =>
+    projectedWorkspaceMetadataCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
   registerIpcHandler(
     IPC_CHANNELS.scriptRun,
     async (event, request: ScriptRunRequest): Promise<ScriptRunResponse> =>
@@ -100,26 +112,32 @@ export function registerScriptHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.projectSaveScripts,
-    async (_event, request: SaveProjectScriptsRequest): Promise<void> => {
-      await saveProjectScriptsFromService(request);
-    },
+    async (event, request: SaveProjectScriptsRequest): Promise<void> =>
+      saveProjectScripts(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveScripts,
-    async (_event, request: SaveWorkspaceScriptsRequest): Promise<void> => {
-      await saveWorkspaceScriptsFromService(request);
-    },
+    async (event, request: SaveWorkspaceScriptsRequest): Promise<void> =>
+      saveWorkspaceScripts(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceSavePlanDetection,
     async (
-      _event,
+      event,
       request: SaveWorkspacePlanDetectionRequest,
     ): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
-      await updateWorkspacePlanDetection({
+      await metadataCommands(event).updatePlanDetection({
         workspaceId: request.workspaceId,
         planDetection: request.planDetection,
         source: 'desktop',
@@ -129,8 +147,11 @@ export function registerScriptHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveRepoScripts,
-    async (_event, request: SaveWorkspaceRepoScriptsRequest): Promise<void> => {
-      await saveWorkspaceRepoScriptsFromService(request);
-    },
+    async (event, request: SaveWorkspaceRepoScriptsRequest): Promise<void> =>
+      saveWorkspaceRepoScripts(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 }

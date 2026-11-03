@@ -111,7 +111,7 @@ describe('PendingProjectRow', () => {
         project={{ ...base, status: 'failed', onRetry, onDismiss }}
       />,
     );
-    const retry = button('Retry website');
+    const retry = button('Try again for website');
     const dismiss = button('Dismiss website');
     expect(retry?.getAttribute('data-testid')).toBe(
       'sidebar-pending-project-retry-job-1',
@@ -133,7 +133,7 @@ describe('PendingProjectRow', () => {
         project={{ ...base, status: 'failed', onRetry, retrying: true }}
       />,
     );
-    const retry = button('Retry website');
+    const retry = button('Try again for website');
     expect(retry?.disabled).toBe(true);
     click(retry);
     expect(onRetry).not.toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe('PendingProjectRow', () => {
 
   it('does not offer Retry on an active row', () => {
     render(<PendingProjectRow project={{ ...base, onRetry: jest.fn() }} />);
-    expect(button('Retry website')).toBeNull();
+    expect(button('Try again for website')).toBeNull();
   });
 
   it('offers Dismiss on an active row when the host allows it', () => {

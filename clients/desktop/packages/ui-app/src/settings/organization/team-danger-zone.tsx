@@ -10,6 +10,7 @@ import type { OrganizationDetail } from '@canopy/protocol/settings/organization'
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
 import { deleteOrganization } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 /** Failures of `organization.delete` that have their own copy. */
 const DELETE_ORGANIZATION_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -40,7 +41,7 @@ export function TeamDangerZone({
   const errorCopy = useSettingsErrorCopy('settings.organization.delete');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   if (detail.viewerRole !== 'OWNER') {
     return null;
@@ -54,7 +55,7 @@ export function TeamDangerZone({
       onDeleted();
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'delete the organization',
           known: DELETE_ORGANIZATION_KNOWN_ERRORS,
         }),
@@ -95,7 +96,7 @@ export function TeamDangerZone({
       </div>
       {error ? (
         <div className="pb-3">
-          <ErrorBanner error={error} />
+          <ErrorBanner error={error?.copy} details={error?.details} />
         </div>
       ) : null}
 
@@ -107,7 +108,7 @@ export function TeamDangerZone({
           maxWidth="md"
           dataTestId="team-delete-dialog"
         >
-          <div className="flex items-center justify-end gap-2 px-5 pb-5 pt-4">
+          <div className="flex items-center justify-end gap-2">
             <Button
               variant="secondary"
               size="compact"

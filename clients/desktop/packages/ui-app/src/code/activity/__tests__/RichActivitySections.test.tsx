@@ -10,7 +10,8 @@ import {
   buildDagInputs,
   toDagJobStatus,
 } from '../sections/PipelineRunsSection';
-import { PlansSection, stripPlanTitleLine } from '../sections/PlansSection';
+import { PlansSection } from '../sections/PlansSection';
+import { stripPlanTitleLine } from '../plans/plan-markdown';
 import {
   RepoGroupedItemListSection,
   groupByRepo,

@@ -23,6 +23,7 @@ import {
   ComposerSendButton,
   defaultChatPlaceholder,
 } from '@canopy/ui-shared';
+import { ChoiceField, SettingsSelect } from '@canopy/ui-shared/components';
 import {
   THINKING_LEVELS as CANONICAL_THINKING_LEVELS,
   type ThinkingLevel,
@@ -34,6 +35,7 @@ import type {
   SlashCommandData,
 } from '@canopy/desktop-shared/types';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
+import { LabSlider } from './LabSlider';
 import { getSlashCommandInsertText } from '@/hooks/useSlashCommands';
 import {
   buildComposerCommands,
@@ -196,10 +198,11 @@ function LabField({
   readonly children: JSX.Element;
 }): JSX.Element {
   return (
-    <label className="flex items-center gap-2 text-xs fg-secondary">
-      <span>{label}</span>
+    // The control carries its own accessible name; the caption is visual.
+    <div className="flex items-center gap-2 text-xs fg-secondary">
+      <span aria-hidden="true">{label}</span>
       {children}
-    </label>
+    </div>
   );
 }
 
@@ -618,51 +621,45 @@ export function ComposerStatusLabPage(): JSX.Element {
       <div className="flex flex-wrap items-center gap-4 border-b px-4 py-3">
         <span className="text-s">Chat composer lab</span>
         <LabField label="Version">
-          <select
+          <SettingsSelect
+            aria-label="Version"
             data-testid="lab-iteration"
-            value={iteration}
-            onChange={(event): void => {
+            width="fit"
+            value={String(iteration)}
+            options={LAB_ITERATIONS.map((option) => ({
+              value: String(option.id),
+              label: option.label,
+            }))}
+            onValueChange={(value): void => {
               const next =
-                LAB_ITERATIONS.find(
-                  (option) => option.id === Number(event.target.value),
-                )?.id ?? 1;
+                LAB_ITERATIONS.find((option) => option.id === Number(value))
+                  ?.id ?? 1;
               setIteration(next);
               const url = new URL(window.location.href);
               url.searchParams.set('iteration', String(next));
               window.history.replaceState(null, '', url);
             }}
-            className="rounded-md bg-tertiary px-2 py-1 text-xs fg-primary"
-          >
-            {LAB_ITERATIONS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </LabField>
-        <LabField label="Dark">
-          <input
-            type="checkbox"
-            checked={dark}
-            onChange={(event): void => {
-              setDark(event.target.checked);
-              applyTheme('default', event.target.checked ? 'dark' : 'light');
-            }}
           />
         </LabField>
-        <LabField label="Full-width chat">
-          <input
-            type="checkbox"
-            // The app's Settings option: the transcript and composer fill the
-            // panel instead of capping at the reading width.
-            onChange={(event): void =>
-              applyChatWidth(event.target.checked ? 'full' : 'default')
-            }
-          />
-        </LabField>
+        <ChoiceField
+          label="Dark"
+          checked={dark}
+          onChange={(event): void => {
+            setDark(event.target.checked);
+            applyTheme('default', event.target.checked ? 'dark' : 'light');
+          }}
+        />
+        <ChoiceField
+          label="Full-width chat"
+          // The app's Settings option: the transcript and composer fill the
+          // panel instead of capping at the reading width.
+          onChange={(event): void =>
+            applyChatWidth(event.target.checked ? 'full' : 'default')
+          }
+        />
         <LabField label={`Chat panel ${width}px`}>
-          <input
-            type="range"
+          <LabSlider
+            aria-label="Chat panel width"
             min={PANEL_MIN_WIDTH}
             max={PANEL_MAX_WIDTH}
             ref={widthSliderRef}
@@ -680,8 +677,8 @@ export function ComposerStatusLabPage(): JSX.Element {
           />
         </LabField>
         <LabField label={`Context ${contextPercent}%`}>
-          <input
-            type="range"
+          <LabSlider
+            aria-label="Context"
             min={0}
             max={100}
             value={contextPercent}
@@ -691,8 +688,8 @@ export function ComposerStatusLabPage(): JSX.Element {
           />
         </LabField>
         <LabField label={`5-hour ${fiveHourPercent}%`}>
-          <input
-            type="range"
+          <LabSlider
+            aria-label="5-hour limit"
             min={0}
             max={100}
             value={fiveHourPercent}
@@ -702,8 +699,8 @@ export function ComposerStatusLabPage(): JSX.Element {
           />
         </LabField>
         <LabField label={`Weekly ${weeklyPercent}%`}>
-          <input
-            type="range"
+          <LabSlider
+            aria-label="Weekly limit"
             min={0}
             max={100}
             value={weeklyPercent}
@@ -712,36 +709,26 @@ export function ComposerStatusLabPage(): JSX.Element {
             }
           />
         </LabField>
-        <LabField label="Fast mode (GPT models)">
-          <input
-            type="checkbox"
-            checked={fastOffered}
-            onChange={(event): void => setFastOffered(event.target.checked)}
-          />
-        </LabField>
-        <LabField label="Agent running">
-          <input
-            type="checkbox"
-            checked={streaming}
-            onChange={(event): void => setStreaming(event.target.checked)}
-          />
-        </LabField>
-        <LabField label="Voice options">
-          <input
-            type="checkbox"
-            checked={showVoiceOptions}
-            onChange={(event): void =>
-              setShowVoiceOptions(event.target.checked)
-            }
-          />
-        </LabField>
-        <LabField label="Plan limits">
-          <input
-            type="checkbox"
-            checked={showLimits}
-            onChange={(event): void => setShowLimits(event.target.checked)}
-          />
-        </LabField>
+        <ChoiceField
+          label="Fast mode (GPT models)"
+          checked={fastOffered}
+          onChange={(event): void => setFastOffered(event.target.checked)}
+        />
+        <ChoiceField
+          label="Agent running"
+          checked={streaming}
+          onChange={(event): void => setStreaming(event.target.checked)}
+        />
+        <ChoiceField
+          label="Voice options"
+          checked={showVoiceOptions}
+          onChange={(event): void => setShowVoiceOptions(event.target.checked)}
+        />
+        <ChoiceField
+          label="Plan limits"
+          checked={showLimits}
+          onChange={(event): void => setShowLimits(event.target.checked)}
+        />
       </div>
 
       {/* The chats screen: a chat panel with its transcript, and the small

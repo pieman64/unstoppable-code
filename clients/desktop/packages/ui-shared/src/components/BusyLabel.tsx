@@ -1,13 +1,15 @@
 import type { JSX, ReactNode } from 'react';
+import { ReservedLabel } from './LoadingButton';
 import { LoadingSpinner } from './LoadingSpinner';
 import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
 
 /**
  * A control's label while its work runs ("Load more" while the next page
  * loads). Under the `text` loading style the label is replaced by
- * `busyText`. Under `spinner` the label stays in place, invisible, so the
- * control keeps its width, and a spinner sits centered over it. The control
- * should also set `aria-busy` and usually `disabled`.
+ * `busyText`; both share one grid cell, like `LoadingButton`'s labels, so the
+ * control is as wide as the wider of them and never resizes. Under `spinner`
+ * the label stays in place, invisible, so the control keeps its width, and a
+ * spinner sits centered over it. The control should also set `aria-busy`.
  */
 export function BusyLabel({
   busy,
@@ -21,7 +23,22 @@ export function BusyLabel({
 }): JSX.Element {
   const style = useLoadingIndicatorStyle();
   if (style === 'text') {
-    return <>{busy ? busyText : children}</>;
+    return (
+      <span className="inline-grid">
+        <span
+          aria-hidden={busy ? true : undefined}
+          className={`col-start-1 row-start-1 text-center ${busy ? 'invisible' : ''}`}
+        >
+          {busy ? <ReservedLabel label={children} /> : children}
+        </span>
+        <span
+          aria-hidden={busy ? undefined : true}
+          className={`col-start-1 row-start-1 text-center ${busy ? '' : 'invisible'}`}
+        >
+          {busy ? busyText : <ReservedLabel label={busyText} />}
+        </span>
+      </span>
+    );
   }
   return (
     <span className="relative inline-flex items-center justify-center">

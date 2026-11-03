@@ -30,6 +30,7 @@ export function ArchivedChatsModal({
 }: ArchivedChatsModalProps): JSX.Element {
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Archived chats"
       subtitle={

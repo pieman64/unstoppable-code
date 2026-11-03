@@ -44,7 +44,7 @@ describe('usePublicProfileEditor errors', () => {
 
   function Harness(): JSX.Element {
     editor = usePublicProfileEditor();
-    return <p data-testid="error">{editor.error}</p>;
+    return <p data-testid="error">{editor.error?.copy}</p>;
   }
 
   function render(
@@ -85,7 +85,7 @@ describe('usePublicProfileEditor errors', () => {
     });
     await publish();
 
-    expect(editor?.error).toBe(FEATURED_LIMIT_ERROR);
+    expect(editor?.error?.copy).toBe(FEATURED_LIMIT_ERROR);
     expect(container.textContent).not.toContain(SENTINEL);
   });
 
@@ -95,7 +95,7 @@ describe('usePublicProfileEditor errors', () => {
     });
     await publish();
 
-    expect(editor?.error).toBe(
+    expect(editor?.error?.copy).toBe(
       'Move this skill to Private before adding it to your profile.',
     );
   });
@@ -104,7 +104,9 @@ describe('usePublicProfileEditor errors', () => {
     render({ 'account.profile.artifacts.publish': refusal(409) });
     await publish();
 
-    expect(editor?.error).toBe("Couldn't add this to your profile. Try again.");
+    expect(editor?.error?.copy).toBe(
+      "Couldn't add this to your profile. Try again.",
+    );
     expect(container.textContent).not.toContain(SENTINEL);
   });
 });

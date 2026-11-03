@@ -11,6 +11,7 @@ import {
 } from '@/stores/projectsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { pipelinePackageRequirementKindLabel } from '@canopy/ui-shared/lib/pipeline-package-display';
+import { Checkbox } from '@canopy/ui-shared/components';
 
 interface RecommendedPluginsPromptDialogProps {
   prompt: PendingRecommendedPluginPrompt;
@@ -248,7 +249,7 @@ export function RecommendedPluginsPromptDialog({
   const primaryLabel = applying
     ? 'Applying…'
     : hasErrors
-      ? 'Retry failed'
+      ? 'Try again'
       : noneChecked
         ? 'Skip recommendations'
         : 'Apply selected';
@@ -264,7 +265,7 @@ export function RecommendedPluginsPromptDialog({
       maxWidth="2xl"
       closeOnBackdrop={!applying}
     >
-      <div className="flex flex-col gap-4 p-5 pt-3 text-s fg-primary">
+      <div className="flex flex-col gap-4 text-s fg-primary">
         <p className="text-xs fg-secondary">
           This project&apos;s canopy.json recommends plugins or skills that are
           not installed or selected as project defaults. Keep items checked to
@@ -286,12 +287,11 @@ export function RecommendedPluginsPromptDialog({
                   key={item.key}
                   className="flex items-start gap-3 p-3 text-xs"
                 >
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={isChecked}
                     disabled={checkboxDisabled}
                     onChange={(): void => toggleChecked(item.key)}
-                    className="mt-1"
+                    className="mt-0.5"
                     aria-label={`Apply ${item.displayName}`}
                   />
                   <div className="min-w-0 flex-1">

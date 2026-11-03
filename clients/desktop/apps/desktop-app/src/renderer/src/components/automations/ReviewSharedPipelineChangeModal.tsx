@@ -1,5 +1,10 @@
 import { type JSX, useEffect, useState } from 'react';
-import { Button, LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { DialogModal } from '@/components/shared/DialogModal';
 import type {
   ResolvedAutomationSharedPipelinePin,
@@ -141,8 +146,9 @@ export function ReviewSharedPipelineChangeModal({
       maxWidth="2xl"
       dataTestId="shared-pipeline-review-modal"
       ownerDocument={ownerDocument}
+      inset="flush"
     >
-      <div className="space-y-4 px-5 py-4">
+      <div className="space-y-4 px-6 pb-4 pt-6">
         <div>
           <h3
             className="text-base font-semibold fg-primary"
@@ -156,17 +162,17 @@ export function ReviewSharedPipelineChangeModal({
         </div>
 
         {resolveState.status === 'loading' && (
-          <LoadingPlaceholder label="Loading workflow…" showSpinner />
+          <DelayedLoadingPlaceholder slowNote="Still loading workflow…">
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         )}
 
         {resolveState.status === 'error' && (
-          <p
-            className="text-s fg-destructive"
-            role="alert"
-            data-testid="shared-pipeline-review-load-error"
-          >
-            {resolveState.message}
-          </p>
+          <ErrorBanner
+            className=""
+            error={resolveState.message}
+            testId="shared-pipeline-review-load-error"
+          />
         )}
 
         {resolveState.status === 'ready' && (
@@ -177,28 +183,20 @@ export function ReviewSharedPipelineChangeModal({
           />
         )}
 
-        {error && (
-          <p
-            className="text-s fg-destructive"
-            role="alert"
-            data-testid="shared-pipeline-review-error"
-          >
-            {error}
-          </p>
-        )}
+        <ErrorBanner
+          className=""
+          error={error}
+          testId="shared-pipeline-review-error"
+        />
 
-        {approvedRunError && (
-          <p
-            className="text-s fg-destructive"
-            role="alert"
-            data-testid="shared-pipeline-review-approved-run-error"
-          >
-            {approvedRunError}
-          </p>
-        )}
+        <ErrorBanner
+          className=""
+          error={approvedRunError}
+          testId="shared-pipeline-review-approved-run-error"
+        />
       </div>
 
-      <div className="relative flex justify-end gap-2 px-5 py-3">
+      <div className="relative flex justify-end gap-2 px-6 pb-6 pt-4">
         <div
           aria-hidden="true"
           className="absolute inset-x-0 top-0 h-[var(--border-hairline)] bg-line-base"

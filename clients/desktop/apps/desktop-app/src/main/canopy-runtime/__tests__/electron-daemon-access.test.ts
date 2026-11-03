@@ -17,6 +17,9 @@ const mockCreateBinding = jest.fn();
 const mockObserve = jest.fn();
 const mockClose = jest.fn(() => Promise.resolve());
 const mockAttachDaemon = jest.fn();
+const mockCreateHost = jest.fn((): Promise<unknown> => new Promise(() => {}));
+const mockHealthObserve = jest.fn();
+const mockHealthStop = jest.fn();
 
 jest.mock('electron', (): object => ({ app: { getVersion: () => '0.0.0' } }));
 jest.mock('@canopy/core-client/node', (): object => ({
@@ -25,7 +28,13 @@ jest.mock('@canopy/core-client/node', (): object => ({
 }));
 jest.mock('../electron-daemon-host', (): object => ({
   ELECTRON_DAEMON_DEFINITIONS: {},
-  createElectronDaemonHost: (): Promise<never> => new Promise(() => {}),
+  createElectronDaemonHost: (): Promise<unknown> => mockCreateHost(),
+}));
+jest.mock('../electron-daemon-health', (): object => ({
+  getElectronDaemonHealth: (): object => ({
+    observe: mockHealthObserve,
+    stop: mockHealthStop,
+  }),
 }));
 jest.mock('../electron-daemon-connection', (): object => ({
   createElectronDaemonConnectionService: (
@@ -49,8 +58,10 @@ jest.mock('../workspace-commit-event-handlers', (): object => ({
 }));
 
 import {
+  disposeElectronDaemonCallerLifetimes,
   disposeElectronDaemonConnections,
   getElectronDaemonConnections,
+  getElectronDaemonFilesContext,
 } from '../electron-daemon-access';
 
 const flush = async (): Promise<void> => {
@@ -74,6 +85,29 @@ function onSession(): NonNullable<
   return observer;
 }
 
+// CAN-5541: reads resolve the host before the connection service, so its
+// failure reaches the background service health record from here.
+it('reports a host that cannot be prepared as unreachable and retries it on the next use', async () => {
+  const preparation = new Error('data root unavailable');
+  mockCreateHost.mockRejectedValueOnce(preparation);
+  await expect(getElectronDaemonFilesContext()).rejects.toBe(preparation);
+  await flush();
+  expect(mockHealthObserve.mock.calls).toEqual([
+    [{ kind: 'unreachable', reason: 'host_unavailable' }],
+  ]);
+  mockCreateHost.mockResolvedValueOnce({
+    authorityId: 'authority',
+    canonicalDataRoot: '/data',
+  });
+  await expect(getElectronDaemonFilesContext()).resolves.toEqual({
+    authorityId: 'authority',
+    canonicalDataRoot: '/data',
+  });
+  await flush();
+  expect(mockCreateHost).toHaveBeenCalledTimes(2);
+  expect(mockHealthObserve).toHaveBeenCalledTimes(1);
+});
+
 describe('the Electron daemon access W5e wiring', () => {
   // One module instance: these steps share its process-wide state.
   it('observes each session, owns its callers and stops at dispose', async () => {
@@ -96,6 +130,12 @@ describe('the Electron daemon access W5e wiring', () => {
     expect(mockBindingOptions?.isOwnOrigin('renderer-2')).toBe(true);
     expect(mockBindingOptions?.isOwnOrigin('cli-1')).toBe(false);
     expect(mockAttachDaemon).not.toHaveBeenCalled();
+
+    // A flip build's Files quit slot (CAN-5543): the notice stops before the
+    // W5 sessions do, and observation keeps running until the W5 slot.
+    disposeElectronDaemonCallerLifetimes();
+    expect(mockHealthStop).toHaveBeenCalledTimes(1);
+    expect(mockClose).not.toHaveBeenCalled();
 
     await disposeElectronDaemonConnections();
     expect(mockClose).toHaveBeenCalledTimes(1);

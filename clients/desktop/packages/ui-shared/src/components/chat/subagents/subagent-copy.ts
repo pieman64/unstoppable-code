@@ -795,7 +795,7 @@ export const SUBAGENT_COMPOSER_INTERRUPT_UNAVAILABLE_LABEL =
   "Interrupting this subagent isn't available here";
 
 /** Inline errors on a queued draft (Retry keeps it). */
-export const SUBAGENT_QUEUE_RETRY_LABEL = 'Retry';
+export const SUBAGENT_QUEUE_RETRY_LABEL = 'Try again';
 export const SUBAGENT_QUEUE_SEND_FAILED_LABEL = "Couldn't send the message.";
 export const SUBAGENT_SEND_FAILED_LABEL = "Couldn't send the message.";
 export const SUBAGENT_INTERRUPT_FAILED_LABEL =

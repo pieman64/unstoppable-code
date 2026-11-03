@@ -56,6 +56,7 @@ export function SharedContainerInvitationDialog({
     ) : undefined;
   return (
     <DialogModal
+      inset="flush"
       title={<span className={REPLAY_MASK_CLASS}>{title}</span>}
       {...(subtitle ? { subtitle } : {})}
       maxWidth="md"
@@ -66,7 +67,7 @@ export function SharedContainerInvitationDialog({
       closeButtonDisabled={busy}
       dataTestId={TEST_ID}
     >
-      <div className="space-y-4 px-5 py-4">
+      <div className="space-y-4 px-6 py-4">
         <p className="text-s fg-primary" data-testid={`${TEST_ID}-kind`}>
           {kind === 'code' ? 'Code project' : 'Cowork project'}
         </p>
@@ -77,7 +78,7 @@ export function SharedContainerInvitationDialog({
           }
         />
       </div>
-      <div className="flex items-center gap-2 border-t px-5 py-3">
+      <div className="flex items-center gap-2 border-t px-6 py-3">
         <Button
           variant="ghost"
           size="sm"

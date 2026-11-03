@@ -1,8 +1,14 @@
 import type {
   ExecutionSummary,
   JobResult,
+  PipelineAdvisorHealthStatus,
 } from '@canopy/desktop-shared/types/pipeline';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import {
+  runStatusGlyphState,
+  statusBadgeTone,
+  type BadgeTone,
+  type StatusGlyphState,
+} from '@canopy/ui-shared/lib';
 
 type PipelineExecutionStatus = ExecutionSummary['status'];
 
@@ -19,82 +25,63 @@ export function isPipelineExecutionActiveStatus(
   return status === 'pending' || status === 'running' || status === 'paused';
 }
 
-export function getPipelineExecutionStatusBadgeClassName(
-  status: PipelineExecutionStatus,
-): string {
-  switch (status) {
-    case 'running':
-      return `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
-    case 'success':
-      return `${OPERATIONAL_STATUS_COLORS.success.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.success.foreground}`;
-    case 'failure':
-      return `${OPERATIONAL_STATUS_COLORS.failed.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.failed.foreground}`;
-    case 'cancelled':
-    case 'paused':
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.paused.foreground}`;
-    default:
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`;
-  }
+/** A pipeline status pill: the shared Badge tone, quiet for work not started. */
+export interface PipelineStatusBadge {
+  readonly tone: BadgeTone;
+  readonly muted: boolean;
 }
 
-export function getPipelineExecutionMutedStatusBadgeClassName(
-  status: PipelineExecutionStatus,
-): string {
-  switch (status) {
-    case 'success':
-      return `${OPERATIONAL_STATUS_COLORS.success.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.success.foregroundQuiet}`;
-    case 'failure':
-      return `${OPERATIONAL_STATUS_COLORS.failed.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.failed.foregroundQuiet}`;
-    case 'cancelled':
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.paused.foregroundQuiet}`;
-    default:
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.paused.foregroundQuiet}`;
-  }
-}
-
-export function getPipelineJobStatusBadgeClassName(
-  status: JobResult['status'],
-): string {
+/**
+ * Execution or job status → the shared status-badge tone, the same mapping
+ * the shared run rows use (`statusBadgeTone`): running is info, success is
+ * success, failure is danger, paused and cancelled are neutral. Work that
+ * has not started (pending, queued) or never ran (skipped) is muted.
+ */
+export function pipelineStatusBadge(
+  status: PipelineExecutionStatus | JobResult['status'],
+): PipelineStatusBadge {
   switch (status) {
     case 'running':
     case 'restarting':
-      return `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
+      return { tone: statusBadgeTone('active'), muted: false };
     case 'success':
-      return `${OPERATIONAL_STATUS_COLORS.success.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.success.foreground}`;
+      return { tone: statusBadgeTone('success'), muted: false };
     case 'failure':
-      return `${OPERATIONAL_STATUS_COLORS.failed.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.failed.foreground}`;
+      return { tone: statusBadgeTone('failed'), muted: false };
     case 'cancelled':
     case 'paused':
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.paused.foreground}`;
-    case 'skipped':
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundQuiet} ${OPERATIONAL_STATUS_COLORS.paused.foregroundQuiet}`;
+      return { tone: statusBadgeTone('paused'), muted: false };
     default:
-      return `${OPERATIONAL_STATUS_COLORS.paused.backgroundSubtle} ${OPERATIONAL_STATUS_COLORS.paused.foregroundMuted}`;
+      return { tone: statusBadgeTone('paused'), muted: true };
   }
 }
 
 /**
- * Fill for a job or step status dot. A dot has no text for a tinted badge
- * background to sit behind, so it takes the solid status role, matching the
- * run card's job dots (`DagProgressBar`) the run was opened from; skipped
- * and cancelled work fades back.
+ * Execution, job or step status → its StatusGlyph state. Every status the
+ * pipeline types allow has a glyph; anything else reads as queued.
  */
-export function getPipelineJobStatusDotClassName(
-  status: JobResult['status'],
-): string {
+export function pipelineStatusGlyphState(
+  status: PipelineExecutionStatus | JobResult['status'],
+): StatusGlyphState {
+  return runStatusGlyphState(status) ?? 'queued';
+}
+
+/** Advisor health → the Badge tone shown in the report and the header. */
+export function advisorHealthBadgeTone(
+  status: PipelineAdvisorHealthStatus,
+): BadgeTone {
   switch (status) {
-    case 'running':
-    case 'restarting':
-      return OPERATIONAL_STATUS_COLORS.active.background;
-    case 'success':
-      return OPERATIONAL_STATUS_COLORS.success.background;
-    case 'failure':
-      return OPERATIONAL_STATUS_COLORS.failed.background;
-    case 'cancelled':
-      return `${OPERATIONAL_STATUS_COLORS.paused.background} opacity-60`;
-    case 'skipped':
-      return `${OPERATIONAL_STATUS_COLORS.paused.background} opacity-40`;
+    case 'healthy':
+    case 'complete':
+      return 'success';
+    case 'watch':
+      return 'info';
+    case 'degraded':
+      return 'warning';
+    case 'blocked':
+      return 'danger';
+    case 'unknown':
     default:
-      return OPERATIONAL_STATUS_COLORS.paused.background;
+      return 'neutral';
   }
 }

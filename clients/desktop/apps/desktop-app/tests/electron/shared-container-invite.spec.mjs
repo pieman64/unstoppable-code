@@ -1206,7 +1206,9 @@ test('refreshes the artifact budget when tracked changes cross the limit', async
     await expect(budget).toContainText('201 of 200 shareable items used.');
     await expect(budget).toContainText('Publishing refuses over the limit');
     await expect(budget).toContainText('Untick some files under Advanced');
-    await expect(budget).toHaveAttribute('role', 'alert');
+    await expect(budget.getByRole('alert')).toContainText(
+      '201 of 200 shareable items used.',
+    );
 
     // The boundary the progressive-disclosure rework has to hold: a refusal
     // that stops publishing is never collapsed. Close the expander again and
@@ -1467,20 +1469,28 @@ test('invites from a code worktree, persists opt-outs, and revokes both recipien
       )
       .toContain('fresh-share-note.txt');
 
-    // The member rows used to repeat the search input's chrome exactly, so a
-    // one-result picker read as a second text field. Class names cannot prove
-    // that is fixed, so this reads the computed paint: the input keeps an
-    // opaque fill, and the rows are unfilled until picked.
+    // TextInput rests transparent on its field edge (docs/design/forms.md).
+    // The member row stays unfilled and has a pick affordance of its own.
     const picker = window.getByTestId(
       'shared-container-invite-modal-member-picker',
     );
-    const inputFill = await picker
-      .locator('input[type="search"]')
-      .evaluate((element) => getComputedStyle(element).backgroundColor);
+    const search = picker.locator('input[type="search"]');
+    // Persistence precedes the preview refresh that re-enables this field.
+    await expect(search).toBeEnabled();
+    await search.blur();
+    const inputPaint = await search.evaluate((element) => {
+      const style = getComputedStyle(element.parentElement);
+      return {
+        fill: style.backgroundColor,
+        edge: style.boxShadow,
+      };
+    });
     const rowFill = await picker
       .getByRole('button', { name: 'Ada Lovelace' })
       .evaluate((element) => getComputedStyle(element).backgroundColor);
-    expect(inputFill).not.toBe(rowFill);
+    expect(inputPaint.fill).toMatch(/rgba\(.*,\s*0\)$/);
+    expect(inputPaint.edge).not.toBe('none');
+    expect(inputPaint.edge).toContain('inset');
     expect(rowFill).toMatch(/rgba\(.*,\s*0\)$/);
     // ...and each row carries its own pick affordance rather than relying on
     // the list's former box.
@@ -1982,7 +1992,7 @@ test('shows an actionable Git LFS publication refusal after a code-worktree invi
     const retry = window.getByTestId(
       'shared-container-invite-modal-publication-retry',
     );
-    await expect(retry).toHaveText('Retry');
+    await expect(retry).toHaveText('Try again');
     await retry.click();
     await expect(
       window.getByTestId(
@@ -3007,7 +3017,7 @@ test('wraps a deep untracked path without scrolling the invite dialog sideways',
     const label = window
       .locator('label')
       .filter({ has: checkbox })
-      .locator('span');
+      .getByText(DEEP_UNTRACKED_PATH, { exact: true });
     const body = window
       .getByTestId('shared-container-invite-modal-file-scope')
       .locator('xpath=ancestor::*[contains(@class,"overflow-y-auto")][1]');
@@ -3016,14 +3026,14 @@ test('wraps a deep untracked path without scrolling the invite dialog sideways',
     // than stopping at whichever fires first.
     const [overflow, bodyOverflow] = await Promise.all([
       label.evaluate((node) => {
-        // The span is a flex item, so it is blockified and its own
-        // getClientRects() is a single box however many lines it paints. A
-        // Range over the text node reports one rect per line box.
+        // ChoiceField's text block owns the available width. The path span
+        // is inline; a Range reports one rect per painted line.
+        const block = node.parentElement;
         const range = node.ownerDocument.createRange();
         range.selectNodeContents(node);
         return {
-          scrollWidth: node.scrollWidth,
-          clientWidth: node.clientWidth,
+          scrollWidth: block.scrollWidth,
+          clientWidth: block.clientWidth,
           lineCount: range.getClientRects().length,
         };
       }),
@@ -3038,6 +3048,7 @@ test('wraps a deep untracked path without scrolling the invite dialog sideways',
       bodyOverflow.clientWidth,
     );
     expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+    expect(overflow.clientWidth).toBeGreaterThan(0);
     // Wrapped, not clipped to one line.
     expect(overflow.lineCount).toBeGreaterThan(1);
 

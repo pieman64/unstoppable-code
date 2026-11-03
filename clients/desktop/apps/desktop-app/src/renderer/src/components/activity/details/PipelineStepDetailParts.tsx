@@ -183,9 +183,7 @@ export function ShellCommandContent({
               ]}
             />
           )}
-          <div className="rounded border bg-fg-primary/[0.04] px-1.5 py-0.5 font-mono text-2xs fg-primary/70">
-            {step.shell}
-          </div>
+          <div className="font-mono text-2xs fg-secondary">{step.shell}</div>
         </div>
       </div>
       {/* Commands can carry interpolated credentials. */}

@@ -224,15 +224,6 @@ describe('TeamModelPolicySection', () => {
     return container.querySelector(`[data-testid="${testId}"]`);
   }
 
-  /** The same lookup as {@link find}, narrowed to a real `<input>`. */
-  function findInput(testId: string): HTMLInputElement {
-    const el = find(testId);
-    if (!(el instanceof HTMLInputElement)) {
-      throw new Error(`Missing input: ${testId}`);
-    }
-    return el;
-  }
-
   /** Query the whole document: `ConfirmDialog` portals its surface out of `container`. */
   function findDoc(testId: string): HTMLElement | null {
     return document.querySelector(`[data-testid="${testId}"]`);
@@ -495,9 +486,10 @@ describe('TeamModelPolicySection', () => {
     expect(
       find('model-policy-relax-only-upgrade')?.getAttribute('href'),
     ).toEqual('/organization/org-123/settings?tab=billing');
-    const master = findInput('enforce-member-model-policy-checkbox');
-    expect(master.disabled).toBe(false);
-    expect(master.checked).toBe(true);
+    const master = find('enforce-member-model-policy-checkbox');
+    expect(master?.getAttribute('role')).toBe('switch');
+    expect(master?.hasAttribute('disabled')).toBe(false);
+    expect(master?.getAttribute('aria-checked')).toBe('true');
     // The list is real here, unlike the painted door.
     expect(find('model-policy-list')).not.toBeNull();
     expect(find('model-policy-upgrade-cta')).toBeNull();

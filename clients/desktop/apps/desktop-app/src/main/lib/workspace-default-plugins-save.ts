@@ -3,6 +3,8 @@ import { updateWorkspaceMetadata } from './workspace-metadata';
 import {
   updateWorkspacePlugins,
   type WorkspacePluginsSource,
+  type WorkspacePluginsUpdateOutcome,
+  type WorkspacePluginsUserChangeRequest,
 } from './workspace-plugin-defaults';
 
 /**
@@ -11,7 +13,9 @@ import {
  * different owners (CAN-3799 field ownership), so it issues two typed
  * commands: the default plugins through `core.workspace.plugins.update`,
  * then Always show through `core.workspace.update`. Each writes only this
- * workspace's manifest; a refused plugins change writes neither.
+ * workspace's manifest; a refused plugins change writes neither. The IPC
+ * handlers pass the projection of the registered plugins operation as
+ * `updatePlugins` (W7b-1c).
  */
 export async function saveDefaultPluginsAndVisibility(
   request: SaveDefaultPluginsRequest,
@@ -19,8 +23,11 @@ export async function saveDefaultPluginsAndVisibility(
     WorkspacePluginsSource,
     'workspace_settings' | 'project_settings'
   >,
+  updatePlugins: (
+    request: WorkspacePluginsUserChangeRequest,
+  ) => Promise<WorkspacePluginsUpdateOutcome> = updateWorkspacePlugins,
 ): Promise<void> {
-  await updateWorkspacePlugins({
+  await updatePlugins({
     workspaceId: request.projectId,
     change: {
       kind: 'setDefaults',

@@ -550,6 +550,18 @@ describe('customizeRowSourceLine — receipt attribution (CAN-5223)', () => {
   });
 });
 
+it('preserves added collection ownership before local/custom shortcuts', () => {
+  const added = makeEntry({
+    kind: 'collection',
+    custom: true,
+    ownedByViewer: false,
+    sharedSource: { remoteId: 's1', sharedBy: 'Priya Shah' },
+    ref: { type: 'local-collection', collectionId: 'c1' },
+  });
+  expect(customizeRowSourceLine(added)).toBe('Shared by Priya Shah');
+  expect(removalVerb(added)).toBe('Remove');
+});
+
 describe('CAN-4844 — custom and bundled skill copy', () => {
   it('names the edit date on a custom skill', () => {
     expect(

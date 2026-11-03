@@ -39,9 +39,13 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
 import {
   Button,
+  FormField,
   Notice,
   ProviderRowLabel,
   ProviderStatusDot,
+  ErrorBanner,
+  StatusLabel,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
@@ -318,9 +322,7 @@ function TerminalProviderAuthPanel({
       );
     } else {
       statusLine = (
-        <span className="fg-destructive">
-          {status.error || unauthenticatedText}
-        </span>
+        <StatusLabel>{status.error || unauthenticatedText}</StatusLabel>
       );
     }
     return (
@@ -397,8 +399,8 @@ function TerminalProviderAuthPanel({
       )}
 
       {status && !status.authenticated && (
-        <p className="text-s fg-destructive">
-          {status.error || unauthenticatedText}
+        <p className="text-s">
+          <StatusLabel>{status.error || unauthenticatedText}</StatusLabel>
         </p>
       )}
 
@@ -785,9 +787,9 @@ function GitHubAuthPanel({
       statusLine = signedInAsUsername ?? 'Signed in with the GitHub CLI';
     } else {
       statusLine = (
-        <span className="fg-destructive">
+        <StatusLabel>
           {ghStatus.error || 'GitHub CLI is not authenticated.'}
-        </span>
+        </StatusLabel>
       );
     }
     return (
@@ -920,8 +922,10 @@ function GitHubAuthPanel({
             ghStatus &&
             !ghStatus.authenticated &&
             !ghStatus.envOverride && (
-              <p className="text-s fg-destructive">
-                {ghStatus.error || 'GitHub CLI is not authenticated.'}
+              <p className="text-s">
+                <StatusLabel>
+                  {ghStatus.error || 'GitHub CLI is not authenticated.'}
+                </StatusLabel>
               </p>
             )}
 
@@ -934,39 +938,36 @@ function GitHubAuthPanel({
 
       {/* PAT view */}
       {ghMode === 'pat' && (
-        <div className="space-y-1.5 text-s">
-          <label htmlFor={patInputId} className="block fg-secondary">
-            Personal access token
-          </label>
-          <div className="relative">
-            <input
-              id={patInputId}
+        <FormField id={patInputId} label="Personal access token">
+          {(control) => (
+            <TextInput
+              {...control}
               type={patVisible ? 'text' : 'password'}
+              mono
               value={patValue}
               onChange={handlePatChange}
               disabled={!patLoaded}
               placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
               data-testid="auth-panel-github-pat-input"
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 pr-10 text-s font-mono disabled:opacity-50"
+              trailing={
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  data-settings-control="field"
+                  onClick={(): void => setPatVisible((prev) => !prev)}
+                  aria-label={patVisible ? 'Hide token' : 'Show token'}
+                >
+                  {patVisible ? (
+                    <EyeOffIcon size={16} aria-hidden />
+                  ) : (
+                    <EyeIcon size={16} aria-hidden />
+                  )}
+                </Button>
+              }
             />
-            <span className="absolute right-1 top-1/2 flex -translate-y-1/2">
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                data-settings-control="field"
-                onClick={(): void => setPatVisible((prev) => !prev)}
-                aria-label={patVisible ? 'Hide token' : 'Show token'}
-              >
-                {patVisible ? (
-                  <EyeOffIcon size={16} aria-hidden />
-                ) : (
-                  <EyeIcon size={16} aria-hidden />
-                )}
-              </Button>
-            </span>
-          </div>
-        </div>
+          )}
+        </FormField>
       )}
 
       {/* Permissions render in both modes and probe only the selected
@@ -1011,9 +1012,10 @@ function GitHubPermissionsSection({
   const details =
     permissions && permissions.tokenAvailable ? (
       <>
-        {permissions.error && (
-          <p className="text-xs fg-destructive">{permissions.error}</p>
-        )}
+        <ErrorBanner
+          className=""
+          error={githubPermissionsErrorCopy(permissions.error)}
+        />
         <ul
           className="flex flex-col gap-2"
           data-testid="settings-github-permissions-list"
@@ -1040,6 +1042,19 @@ function GitHubPermissionsSection({
       {details}
     </div>
   );
+}
+
+/**
+ * The permissions check's failure in our words: a token rejection is already
+ * copy of ours, while any other failure quotes the GitHub API's own text,
+ * which settings never show.
+ */
+function githubPermissionsErrorCopy(error: string | null): string | null {
+  if (!error) return null;
+  if (error.startsWith('Unable to verify GitHub permissions')) {
+    return "Couldn't check GitHub permissions. Try again later.";
+  }
+  return error;
 }
 
 function permissionDotClass(state: PermissionState, required: boolean): string {

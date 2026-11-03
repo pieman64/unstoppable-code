@@ -27,6 +27,9 @@ import {
  * at once. A preference file from before the setting moves the old switches
  * over once.
  *
+ * Under Detailed, a step whose target outgrows the row keeps its tool name
+ * whole while the target's badge ends in "…".
+ *
  * Determinism: no live agent and no network. Every provider event goes
  * through the E2E chat-event ingress, which commits through main exactly as a
  * real provider session does.
@@ -238,6 +241,98 @@ test('Chat detail lives in Appearance and changes an open chat at once', async (
       'aria-pressed',
       'true',
     );
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+    cleanup(userDataDir);
+  }
+});
+
+// A long target, wider than any chat column: the MCP tool list Tool search
+// asked for in CAN-5464.
+const LONG_TOOL_QUERY = `select:${Array.from(
+  { length: 6 },
+  (_, index) => `mcp__appproxy-internal-hub-production__tool_${String(index)}`,
+).join(',')}`;
+
+test('Detailed keeps the tool name whole while a long target ends in …', async () => {
+  test.setTimeout(180_000);
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-chat-detail-badge-'),
+  );
+  seedProfile(userDataDir);
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await window.evaluate(() =>
+      window.api.savePreferences({ chatDetail: 'detailed' }),
+    );
+    await app.selectWorktree(WORKTREE_ID);
+    const panel = window.locator(
+      `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${CHAT_ID}"]`,
+    );
+    await expect(panel).toBeVisible();
+
+    const turn = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      turnUserMessageId: TURN_ID,
+    };
+    const inject = turnEventInjector(electronApp, turn);
+    await injectChatEvent(electronApp, {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CHAT_ID,
+      data: {
+        type: 'claude_terminal_transcript_sync',
+        importedEventCount: 1,
+        messages: [
+          {
+            id: TURN_ID,
+            role: 'user',
+            timestamp: TURN_STARTED_AT,
+            blocks: [{ type: 'text', text: 'Find the hub tools.' }],
+          },
+        ],
+      },
+    });
+    await publishTurnLifecycle(electronApp, {
+      ...turn,
+      phase: 'start',
+      atMs: TURN_STARTED_AT,
+    });
+    await expect(panel.getByText('Find the hub tools.')).toBeVisible({
+      timeout: 30_000,
+    });
+    await inject(
+      assistant('search', [
+        {
+          type: 'tool_use',
+          id: 'search-1',
+          name: 'ToolSearch',
+          input: { query: LONG_TOOL_QUERY },
+        },
+      ]),
+    );
+    await inject(results('search-1'));
+
+    const row = panel.getByTestId('chat-tool-call');
+    await expect(row).toHaveCount(1);
+    const badge = row.locator('[data-step-badge]');
+    await expect(badge).toHaveText(LONG_TOOL_QUERY);
+    const words = row.locator('[data-step-row-words] span.truncate', {
+      hasText: 'Tool search',
+    });
+    await expect(words).toHaveCount(1);
+    // Whether a box's text is cut: its text is wider than its box.
+    const cut = (locator) =>
+      locator.evaluate((element) => element.scrollWidth > element.clientWidth);
+    // The target outgrows the row and ends in "…"; the tool name stays whole.
+    await expect.poll(() => cut(badge.locator('span'))).toBe(true);
+    expect(await cut(words)).toBe(false);
   } finally {
     await closeCanopy(electronApp, userDataDir);
     cleanup(userDataDir);

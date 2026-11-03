@@ -6,6 +6,7 @@ import {
   readdir,
   lstat,
   open,
+  realpath,
   rename,
   rm,
 } from 'node:fs/promises';
@@ -110,12 +111,22 @@ export function __createW5ExclusiveMaintenanceForTests(
   return capability;
 }
 
+/**
+ * The app's host over the data root's realpath: recovery copies refuse a
+ * symlinked ancestor, so a linked data root is canonicalized first (Q6(a)).
+ */
 export async function desktopW5BackupContext(): Promise<W5BackupContext> {
   const { getW5CommitLogHost } =
     await import('../w5-commit-log/commit-log-host');
-  const dataRoot = getDataDir();
-  if (resolve(getWorkspacesRootDir()) !== join(resolve(dataRoot), 'workspaces'))
+  const dataDir = getDataDir();
+  if (resolve(getWorkspacesRootDir()) !== join(resolve(dataDir), 'workspaces'))
     throw new W5BackupRefusedError('source-unreadable', 'W5 root projection');
+  let dataRoot: string;
+  try {
+    dataRoot = await realpath(dataDir);
+  } catch {
+    throw new W5BackupRefusedError('source-unreadable', 'data root');
+  }
   return { host: getW5CommitLogHost(), dataRoot };
 }
 

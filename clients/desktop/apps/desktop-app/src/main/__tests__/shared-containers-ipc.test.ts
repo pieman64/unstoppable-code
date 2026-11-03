@@ -550,6 +550,17 @@ import {
 } from '../shared-containers/listing-diagnostics';
 
 import { SharedContainerForkError } from '../shared-containers/fork/destination';
+import {
+  createWorkspaceMetadataTestDispatcher,
+  TEST_IPC_CALLER,
+} from './fixtures/workspace-metadata-dispatcher';
+
+// The fork channel projects its registered operation (W7b-4).
+const TEST_RUNTIME = {
+  dispatcher: createWorkspaceMetadataTestDispatcher(),
+  resolveCaller: (): typeof TEST_IPC_CALLER => TEST_IPC_CALLER,
+};
+
 describe('shared-container IPC handlers', () => {
   const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
     process,
@@ -603,7 +614,7 @@ describe('shared-container IPC handlers', () => {
     resetSharedContainerListingBlockedDedupe();
     resetSharedContainerListingUnavailableDedupe();
     trackedPlansWriteListener = undefined;
-    registerSharedContainerHandlers();
+    registerSharedContainerHandlers(TEST_RUNTIME);
   });
 
   it('resolves and claims capability links, recording claim as device consent', async () => {
@@ -790,7 +801,7 @@ describe('shared-container IPC handlers', () => {
     ];
     rehydratePublicationStateMock.mockResolvedValueOnce(restored);
 
-    registerSharedContainerHandlers();
+    registerSharedContainerHandlers(TEST_RUNTIME);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -800,7 +811,7 @@ describe('shared-container IPC handlers', () => {
   it('finishes or undoes interrupted fork capability installs at startup', async () => {
     recoverForkCapabilityInstallsMock.mockClear();
 
-    registerSharedContainerHandlers();
+    registerSharedContainerHandlers(TEST_RUNTIME);
 
     for (
       let attempt = 0;

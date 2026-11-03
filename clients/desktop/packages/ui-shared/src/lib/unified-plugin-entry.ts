@@ -136,6 +136,20 @@ export interface UnifiedEntryAlternative {
   readonly ref: UnifiedEntryRef;
 }
 
+/** The share a local collection was added from, as last seen by the viewer. */
+export interface UnifiedEntrySharedSource {
+  remoteId: string;
+  /** The share's content hash when this copy was added or last updated. */
+  installedContentHash?: string;
+  /** Absent when the share is no longer visible to the viewer. */
+  latestContentHash?: string;
+  /** Who shared it: the creator's name, else the owning team or organization. */
+  sharedBy?: string;
+  /** ISO date the share last changed. */
+  updatedAt?: string;
+  latestItemCounts?: { skills: number; plugins: number };
+}
+
 /**
  * What a Customize Workflows row shows and can do (CAN-4845). Built from host
  * data; a row without it falls back to the entry's description.
@@ -221,6 +235,8 @@ export interface UnifiedPluginEntry {
     mcpServers: number;
     commands: number;
     agents: number;
+    /** Set on collection entries; other kinds never count plugins. */
+    plugins?: number;
   };
   providerSupport: { claude: boolean; codex: boolean };
   state: UnifiedEntryState;
@@ -234,6 +250,12 @@ export interface UnifiedPluginEntry {
   latestVersion?: string;
   /** ISO date the share was created; set only on `origin: 'shared'` rows. */
   sharedSince?: string;
+  /** Set on a local collection added from a share; drives rows, menus and Updates. */
+  sharedSource?: UnifiedEntrySharedSource;
+  /** Conservative ownership when provenance exists but cannot be projected. */
+  collectionProvenanceUnknown?: boolean;
+  /** Local snapshot stamp for summary invalidation, including membership edits. */
+  collectionRevision?: string;
   /**
    * Set only on an `origin: 'shared'` entry whose current share summary has a
    * public link. Blueprint summaries report none, so blueprints never carry it.

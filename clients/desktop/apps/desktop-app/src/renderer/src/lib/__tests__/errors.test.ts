@@ -1,4 +1,4 @@
-import { extractIpcErrorMessage } from '../errors';
+import { detailsFor, extractIpcErrorMessage, failureDetails } from '../errors';
 
 describe('extractIpcErrorMessage', () => {
   it('returns the verbatim message for an Error instance', () => {
@@ -70,5 +70,24 @@ describe('extractIpcErrorMessage', () => {
   it('falls back when the wrapper is the only content', () => {
     const wrapped = new Error("Error invoking remote method 'x:y': ");
     expect(extractIpcErrorMessage(wrapped)).toBe('Unknown error');
+  });
+});
+
+describe('detailsFor', () => {
+  const failure = failureDetails(
+    'Couldn’t clone the repository.',
+    new Error("Error invoking remote method 'x:y': Error: auth failed"),
+  );
+
+  it('hands the raw reason to the error it belongs to', () => {
+    expect(detailsFor('Couldn’t clone the repository.', failure)).toBe(
+      'auth failed',
+    );
+  });
+
+  it('drops stale details once a different error shows', () => {
+    expect(detailsFor('Choose a repository', failure)).toBeUndefined();
+    expect(detailsFor('', failure)).toBeUndefined();
+    expect(detailsFor('Couldn’t clone the repository.', null)).toBeUndefined();
   });
 });

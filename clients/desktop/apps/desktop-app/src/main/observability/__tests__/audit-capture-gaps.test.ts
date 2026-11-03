@@ -154,6 +154,8 @@ import {
   ObservabilityService,
   type PipelineExecutionStateSyncInput,
 } from '../service';
+import { createDesktopObservabilityHost } from '../host';
+import { getClaudeSessionCostLedger } from '../claude-session-cost-ledger';
 import { billingBasisAtEntryStart } from '../capture-fields';
 import type { ProviderAccountIdentity } from '../../auth/provider-auth-state';
 import {
@@ -314,7 +316,7 @@ describe('audit capture gaps', () => {
   });
 
   function createService(): ObservabilityService {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     return service;
   }
@@ -1496,6 +1498,10 @@ describe('audit capture gaps', () => {
     expect(recentEntry(service).planEvents).toEqual({
       created: 1,
       approved: 1,
+      eventIds: [
+        'plan-created:proj/wt/chat:plan-1:1',
+        'plan-approved:proj/wt/chat:plan-1:1',
+      ],
     });
   });
 
@@ -1567,6 +1573,7 @@ describe('audit capture gaps', () => {
     expect(entries.find((entry) => entry.id === prior.id)?.planEvents).toEqual({
       created: 0,
       approved: 1,
+      eventIds: ['approved-late'],
     });
     expect(
       entries.find((entry) => entry.id !== prior.id)?.planEvents,
@@ -1589,7 +1596,10 @@ describe('audit capture gaps', () => {
             entry.id === prior.id,
         )
         .pop(),
-    ).toMatchObject({ id: prior.id, planEvents: { created: 0, approved: 1 } });
+    ).toMatchObject({
+      id: prior.id,
+      planEvents: { created: 0, approved: 1, eventIds: ['approved-late'] },
+    });
   });
 
   it('attaches a chat-scoped plan event without an explicit audit id to the latest completed turn', () => {
@@ -1616,10 +1626,499 @@ describe('audit capture gaps', () => {
     expect(entries.find((entry) => entry.id === latestId)?.planEvents).toEqual({
       created: 1,
       approved: 0,
+      eventIds: ['created-latest'],
     });
     expect(
       entries.find((entry) => entry.id === firstId)?.planEvents,
     ).toBeUndefined();
+  });
+
+  describe('plan event replay', () => {
+    const replayed: PlanUsageEvent = {
+      version: 1,
+      id: 'plan-created:proj/wt/chat:plan-1:1',
+      type: 'plan_created',
+      timestamp: new Date(NOW).toISOString(),
+      workspaceId: 'proj',
+      worktreeId: 'wt',
+      provider: 'claude',
+      chatId: 'chat',
+      planId: 'plan-1',
+    };
+
+    function completeTurns(service: ObservabilityService, count: number): void {
+      for (let turn = 1; turn <= count; turn += 1) {
+        jest.setSystemTime(NOW + turn * 1000);
+        startChat(service);
+        service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      }
+    }
+
+    function plansCreated(service: ObservabilityService): number {
+      return service
+        .loadSnapshot()
+        .recentEntries.reduce(
+          (total, entry) => total + (entry.planEvents?.created ?? 0),
+          0,
+        );
+    }
+
+    it('does not count a replay again after the counting turn leaves the recent entries', () => {
+      const service = createService();
+      startChat(service);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      service.recordUsageMetricEvent(replayed);
+      completeTurns(service, 200);
+      expect(plansCreated(service)).toBe(0);
+
+      service.recordUsageMetricEvent(replayed);
+
+      expect(plansCreated(service)).toBe(0);
+    });
+
+    it('does not count a replay during start-up again, from the stored audit lines', async () => {
+      const earlier = createService();
+      startChat(earlier);
+      earlier.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const counted: AgentAuditEntry = {
+        ...recentEntry(earlier),
+        planEvents: { created: 1, approved: 0, eventIds: [replayed.id] },
+      };
+      jest.setSystemTime(NOW + 1000);
+      startChat(earlier);
+      earlier.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const newer = recentEntry(earlier);
+
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/snapshot.json') {
+          return Promise.resolve(JSON.stringify({ recentEntries: [newer] }));
+        }
+        if (path === '/audit/2026-10-08.jsonl') {
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const restarted = createService();
+      const starting = restarted.start();
+      await scanning;
+
+      restarted.recordUsageMetricEvent(replayed);
+      releaseAuditDay(`${JSON.stringify(counted)}\n`);
+      await starting;
+
+      expect(restarted.loadSnapshot().recentEntries).toHaveLength(1);
+      expect(plansCreated(restarted)).toBe(0);
+    });
+
+    it('counts a plan event held during start-up on the turn that emitted it', async () => {
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/2026-10-08.jsonl') {
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const service = createService();
+      const starting = service.start();
+      await scanning;
+      startChat(service);
+      const emitting = recentEntry(service).id;
+      service.recordUsageMetricEvent(replayed);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      completeTurns(service, 1);
+
+      releaseAuditDay('');
+      await starting;
+
+      const entries = service.loadSnapshot().recentEntries;
+      expect(entries).toHaveLength(2);
+      for (const entry of entries) {
+        expect(entry.planEvents?.created ?? 0).toBe(
+          entry.id === emitting ? 1 : 0,
+        );
+      }
+    });
+
+    it('restores plan counts a stale snapshot is missing from the stored audit lines', async () => {
+      const earlier = createService();
+      startChat(earlier);
+      earlier.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const loaded = recentEntry(earlier);
+      const stored: AgentAuditEntry = {
+        ...loaded,
+        planEvents: { created: 1, approved: 0, eventIds: [replayed.id] },
+      };
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation(
+        (path): Promise<string> =>
+          Promise.resolve(
+            path === '/audit/snapshot.json'
+              ? JSON.stringify({ recentEntries: [loaded] })
+              : path === '/audit/2026-10-08.jsonl'
+                ? `${JSON.stringify(stored)}\n`
+                : '',
+          ),
+      );
+      const restarted = createService();
+      await restarted.start();
+
+      restarted.recordUsageMetricEvent(replayed);
+
+      expect(recentEntry(restarted).planEvents).toEqual(stored.planEvents);
+    });
+
+    it.each([
+      ['before', true],
+      ['after', false],
+    ])(
+      'counts held start-up plan events after their turn leaves the recent entries, transcript %s the count',
+      async (_order, transcriptFirst) => {
+        let releaseAuditDay: (contents: string) => void = () => undefined;
+        let auditDayRequested: () => void = () => undefined;
+        const scanning = new Promise<void>((resolve) => {
+          auditDayRequested = resolve;
+        });
+        mockReaddir.mockImplementation(
+          (path): Promise<string[]> =>
+            Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+        );
+        mockReadFile.mockImplementation((path): Promise<string> => {
+          if (path === '/audit/2026-10-08.jsonl') {
+            auditDayRequested();
+            return new Promise((resolve) => {
+              releaseAuditDay = resolve;
+            });
+          }
+          return Promise.resolve('');
+        });
+        const service = createService();
+        const starting = service.start();
+        await scanning;
+        startChat(service);
+        const emitting = recentEntry(service).id;
+        service.recordUsageMetricEvent(replayed);
+        service.completeChatTurn('proj', 'wt', 'chat', 'success');
+        service.recordUsageMetricEvent({
+          ...replayed,
+          id: 'plan-approved:proj/wt/chat:plan-1:1',
+          type: 'plan_approved',
+        });
+        if (transcriptFirst) await service.flush();
+        completeTurns(service, 200);
+
+        releaseAuditDay('');
+        await starting;
+        await service.flush();
+
+        const counted = mockAppendFile.mock.calls
+          .filter(([filename]) => filename.startsWith('/audit/'))
+          .flatMap(([, contents]) => contents.trim().split('\n'))
+          .map((line): unknown => JSON.parse(line))
+          .filter(
+            (line): line is AgentAuditEntry =>
+              typeof line === 'object' &&
+              line !== null &&
+              'id' in line &&
+              line.id === emitting,
+          )
+          .pop();
+        expect(counted).toMatchObject({
+          hasTranscript: true,
+          planEvents: { created: 1, approved: 1 },
+        });
+      },
+    );
+
+    it('stores a plan event held during start-up when disposed before the scan ends', async () => {
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/2026-10-08.jsonl') {
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
+      const starting = service.start();
+      await scanning;
+      startChat(service);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const emitting = recentEntry(service).id;
+      service.recordUsageMetricEvent(replayed);
+
+      const disposing = service.dispose();
+      // Long enough for shutdown to finish if it did not wait for the scan.
+      for (let tick = 0; tick < 20; tick += 1) {
+        await jest.advanceTimersByTimeAsync(100);
+      }
+      releaseAuditDay('');
+      await Promise.all([starting, disposing]);
+
+      const counted = mockAppendFile.mock.calls
+        .filter(([filename]) => filename.startsWith('/audit/'))
+        .flatMap(([, contents]) => contents.trim().split('\n'))
+        .map((line): unknown => JSON.parse(line))
+        .filter(
+          (line): line is AgentAuditEntry =>
+            typeof line === 'object' &&
+            line !== null &&
+            'id' in line &&
+            line.id === emitting &&
+            'planEvents' in line,
+        )
+        .pop();
+      expect(counted?.planEvents).toEqual({
+        created: 1,
+        approved: 0,
+        eventIds: [replayed.id],
+      });
+    });
+
+    it('does not count a replay that arrives before the stored state loads', async () => {
+      const earlier = createService();
+      startChat(earlier);
+      earlier.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const counted: AgentAuditEntry = {
+        ...recentEntry(earlier),
+        planEvents: { created: 1, approved: 0, eventIds: [replayed.id] },
+      };
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation(
+        (path): Promise<string> =>
+          Promise.resolve(
+            path === '/audit/2026-10-08.jsonl'
+              ? `${JSON.stringify(counted)}\n`
+              : '',
+          ),
+      );
+      let releaseLedger: () => void = () => undefined;
+      jest.spyOn(getClaudeSessionCostLedger(), 'load').mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseLedger = resolve;
+        }),
+      );
+      const restarted = createService();
+      const starting = restarted.start();
+      jest.setSystemTime(NOW + 1000);
+      startChat(restarted);
+
+      restarted.recordUsageMetricEvent(replayed);
+      releaseLedger();
+      await starting;
+      restarted.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      expect(recentEntry(restarted).planEvents).toBeUndefined();
+    });
+
+    it('keeps stored plan counts on a held target that left the recent entries', async () => {
+      const earlier = createService();
+      startChat(earlier);
+      earlier.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const loaded = recentEntry(earlier);
+      const stored: AgentAuditEntry = {
+        ...loaded,
+        planEvents: { created: 1, approved: 0, eventIds: ['first'] },
+      };
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/snapshot.json') {
+          return Promise.resolve(JSON.stringify({ recentEntries: [loaded] }));
+        }
+        if (path === '/audit/2026-10-08.jsonl') {
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const restarted = createService();
+      const starting = restarted.start();
+      await scanning;
+      restarted.recordUsageMetricEvent({ ...replayed, id: 'second' });
+      completeTurns(restarted, 200);
+
+      releaseAuditDay(`${JSON.stringify(stored)}\n`);
+      await starting;
+      await restarted.flush();
+
+      const latest = mockAppendFile.mock.calls
+        .filter(([filename]) => filename.startsWith('/audit/'))
+        .flatMap(([, contents]) => contents.trim().split('\n'))
+        .map((line): unknown => JSON.parse(line))
+        .filter(
+          (line): line is AgentAuditEntry =>
+            typeof line === 'object' &&
+            line !== null &&
+            'id' in line &&
+            line.id === loaded.id &&
+            'planEvents' in line,
+        )
+        .pop();
+      expect(latest?.planEvents).toEqual({
+        created: 2,
+        approved: 0,
+        eventIds: ['first', 'second'],
+      });
+    });
+
+    it('drops a held start-up plan event when its worktree is purged', async () => {
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      let scanPaused = false;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/2026-10-08.jsonl' && !scanPaused) {
+          scanPaused = true;
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const service = createService();
+      const starting = service.start();
+      await scanning;
+      startChat(service);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      const purged = recentEntry(service).id;
+      service.recordUsageMetricEvent(replayed);
+      await service.purgeWorktreeData('proj', 'wt');
+      const appendsBeforeRelease = mockAppendFile.mock.calls.length;
+
+      releaseAuditDay('');
+      await starting;
+      await service.flush();
+
+      expect(service.loadSnapshot().recentEntries).toEqual([]);
+      expect(
+        mockAppendFile.mock.calls
+          .slice(appendsBeforeRelease)
+          .some(([, contents]) => contents.includes(purged)),
+      ).toBe(false);
+    });
+
+    it('does not count a held plan event that matched no turn on a later turn', async () => {
+      let releaseLedger: () => void = () => undefined;
+      jest.spyOn(getClaudeSessionCostLedger(), 'load').mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseLedger = resolve;
+        }),
+      );
+      const service = createService();
+      const starting = service.start();
+      service.recordUsageMetricEvent(replayed);
+      jest.setSystemTime(NOW + 1000);
+      startChat(service);
+
+      releaseLedger();
+      await starting;
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+
+      expect(recentEntry(service).planEvents).toBeUndefined();
+    });
+
+    it('stores a held usage event only together with its plan count', async () => {
+      let releaseAuditDay: (contents: string) => void = () => undefined;
+      let auditDayRequested: () => void = () => undefined;
+      let scanPaused = false;
+      const scanning = new Promise<void>((resolve) => {
+        auditDayRequested = resolve;
+      });
+      mockReaddir.mockImplementation(
+        (path): Promise<string[]> =>
+          Promise.resolve(path === '/audit' ? ['2026-10-08.jsonl'] : []),
+      );
+      mockReadFile.mockImplementation((path): Promise<string> => {
+        if (path === '/audit/2026-10-08.jsonl' && !scanPaused) {
+          scanPaused = true;
+          auditDayRequested();
+          return new Promise((resolve) => {
+            releaseAuditDay = resolve;
+          });
+        }
+        return Promise.resolve('');
+      });
+      const usageWrites = (): string[] =>
+        mockAppendFile.mock.calls
+          .filter(([filename]) => filename.startsWith('/usage/'))
+          .map(([, contents]) => contents);
+      const service = createService();
+      const starting = service.start();
+      await scanning;
+      startChat(service);
+      service.completeChatTurn('proj', 'wt', 'chat', 'success');
+      service.recordUsageMetricEvent(replayed);
+
+      await service.flush();
+      expect(usageWrites().some((write) => write.includes(replayed.id))).toBe(
+        false,
+      );
+
+      releaseAuditDay('');
+      await starting;
+      await service.flush();
+      expect(usageWrites().some((write) => write.includes(replayed.id))).toBe(
+        true,
+      );
+      expect(recentEntry(service).planEvents?.eventIds).toEqual([replayed.id]);
+    });
   });
 
   it('flushes pending coalesced delegation progress only on disposal, not a general flush', async () => {

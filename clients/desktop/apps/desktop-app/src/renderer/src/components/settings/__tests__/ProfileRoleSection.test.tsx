@@ -96,14 +96,18 @@ function tile(role: string): Element | null {
   );
 }
 
-function option(role: string): HTMLInputElement {
+function option(role: string): HTMLButtonElement {
   const found = document.querySelector(
     `[data-testid="settings-profile-role-option-${role}"]`,
   );
-  if (!(found instanceof HTMLInputElement)) {
-    throw new Error(`Expected role checkbox: ${role}`);
+  if (!(found instanceof HTMLButtonElement)) {
+    throw new Error(`Expected role choice: ${role}`);
   }
   return found;
+}
+
+function isChosen(choice: HTMLButtonElement): boolean {
+  return choice.getAttribute('aria-checked') === 'true';
 }
 
 function click(target: HTMLElement): void {
@@ -214,8 +218,8 @@ describe('ProfileRoleSection', () => {
       expect(tile('sales')?.textContent).toBe('Sales');
       expect(tile('marketing-sales')).toBeNull();
       openEditor();
-      expect(option('marketing').checked).toBe(true);
-      expect(option('sales').checked).toBe(true);
+      expect(isChosen(option('marketing'))).toBe(true);
+      expect(isChosen(option('sales'))).toBe(true);
       expect(
         document.querySelector(
           '[data-testid="settings-profile-role-option-marketing-sales"]',
@@ -247,8 +251,8 @@ describe('ProfileRoleSection', () => {
       expect(tile('support')?.textContent).toBe('Support');
       expect(tile('operations-support')).toBeNull();
       openEditor();
-      expect(option('operations').checked).toBe(true);
-      expect(option('support').checked).toBe(true);
+      expect(isChosen(option('operations'))).toBe(true);
+      expect(isChosen(option('support'))).toBe(true);
       expect(
         document.querySelector(
           '[data-testid="settings-profile-role-option-operations-support"]',
@@ -293,9 +297,9 @@ describe('ProfileRoleSection', () => {
             Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
       openEditor();
-      expect(option('software-engineer').checked).toBe(true);
-      expect(option('designer').checked).toBe(true);
-      expect(option('founder').checked).toBe(false);
+      expect(isChosen(option('software-engineer'))).toBe(true);
+      expect(isChosen(option('designer'))).toBe(true);
+      expect(isChosen(option('founder'))).toBe(false);
       expect(
         document.querySelectorAll(
           '[data-testid^="settings-profile-role-option-"]',
@@ -328,7 +332,7 @@ describe('ProfileRoleSection', () => {
         button('[data-testid="settings-profile-role-edit"]'),
       ).not.toBeNull();
       openEditor();
-      expect(option('designer').checked).toBe(false);
+      expect(isChosen(option('designer'))).toBe(false);
       expect(
         button('[data-testid="settings-profile-role-save"]').disabled,
       ).toBe(false);
@@ -449,7 +453,7 @@ describe('ProfileRoleSection', () => {
       click(option('founder'));
       broadcastSynced({ profileRole: 'student', profileRoles: ['student'] });
       expect(tile('student')).not.toBeNull();
-      expect(option('founder').checked).toBe(true);
+      expect(isChosen(option('founder'))).toBe(true);
       click(button('[data-testid="settings-profile-role-cancel"]'));
       expect(tile('designer')).toBeNull();
       expect(tile('student')).not.toBeNull();

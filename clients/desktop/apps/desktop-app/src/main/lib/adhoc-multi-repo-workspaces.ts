@@ -10,6 +10,7 @@ import {
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
 import type { W5KeyedAttempt } from './w5-keyed-operation';
+import { w5LifecycleReceiptCaller, type W5WireCall } from './w5-wire-call';
 import {
   decodeW5CompositionOutcome,
   admitW5Composition,
@@ -873,7 +874,10 @@ export function combineWorktreeWithWorkspace(
 }
 
 export type WorkspacePromoteRequest = PromoteTemporaryWorkspaceRequest &
-  W5BoundaryOptions;
+  W5BoundaryOptions & {
+    /** A registered wire call's receipt scope and admission (W7b-4). */
+    wireCall?: W5WireCall;
+  };
 export function promoteTemporaryWorkspace(
   request: WorkspacePromoteRequest & { idempotencyKey: string },
 ): Promise<W5PromoteOutcome>;
@@ -890,8 +894,9 @@ export function promoteTemporaryWorkspace(
   return runW5BoundaryOperation<MultiRepoSidebarItem | W5PromoteOutcome>(
     {
       operation: 'core.workspace.composition.promote',
-      caller: 'desktop-host:composition-promote',
+      caller: w5LifecycleReceiptCaller('composition-promote', request.wireCall),
       idempotencyKey,
+      admit: request.wireCall?.admit,
       parameters: {
         workspaceId: request.workspaceId,
         name: request.name.trim(),

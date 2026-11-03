@@ -4,11 +4,17 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  mkdirSync,
+  writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import {
+  overridePickedFolder,
+  seedPickedParentFixture,
+} from './seeders/seedPickedParentFixture.mjs';
 import { readChatStorageTabs } from './readChatStorage.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { DEFAULT_MOCK_BASE_URL, registerScenario } from './seeders/index.mjs';
@@ -52,7 +58,7 @@ import { memoryRowSelector } from './memoryRows.mjs';
 const SCRATCH_SESSION_ID = '99999999-8888-4777-8666-555555555555';
 const SCRATCH_TITLE = 'Car wash transportation';
 const CODE_CHAT_DESTINATION_WARNING =
-  'Chats from a Code project open in a new worktree based on the default branch from your remote when available. Uncommitted or unpushed changes stay in the original folder.';
+  'Chats from Code projects open in a new worktree, so commit and push your work before you import.';
 
 function readImportedCoworkChats(userDataDir, workspaceId) {
   const workspaceRoot = path.join(userDataDir, 'workspaces', workspaceId);
@@ -66,6 +72,70 @@ function readImportedCoworkChats(userDataDir, workspaceId) {
 }
 
 test.describe('import projects from Claude and Codex', () => {
+  test('CAN-5487 Settings defaults repositories, preserves parent choice on rescan and enforces exclusivity', async () => {
+    const fixture = seedPickedParentFixture();
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'can5487-settings-'),
+    );
+    const claudeDir = path.join(userDataDir, 'provider-state', 'claude');
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(
+      path.join(claudeDir, '.claude.json'),
+      JSON.stringify({ projects: { [fixture.parent]: {} } }),
+    );
+    let launch;
+    let restoreDialog;
+    try {
+      launch = await launchCanopy({ userDataDir, env: fixture.env });
+      restoreDialog = await overridePickedFolder(
+        launch.electronApp,
+        fixture.parent,
+      );
+      const window = await launch.electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openSettings();
+      await app.openSettingsSection('canopy');
+      await window.getByTestId('settings-canopy-import-projects-open').click();
+      const modal = window.getByTestId('import-projects-modal');
+      const box = (id) =>
+        modal.getByTestId(`import-projects-row-checkbox-${id}`);
+      // Provider discovery initially selects the plain folder. Picking it
+      // must replace that automatic selection with its repository defaults.
+      await expect(box(fixture.parentId)).toBeChecked();
+      await modal.getByTestId('import-projects-pick-folder').click();
+      await expect(box(fixture.parentId)).not.toBeChecked();
+      await expect(box(fixture.parentId)).toBeEnabled();
+      await expect(
+        modal.getByTestId(`import-projects-row-${fixture.parentId}`),
+      ).toContainText('Contains 3 code repositories');
+      for (const { id } of fixture.repositories)
+        await expect(box(id)).toBeChecked();
+      await box(fixture.parentId).check();
+      for (const { id } of fixture.repositories)
+        await expect(box(id)).not.toBeChecked();
+      await modal.getByTestId('import-projects-rescan').click();
+      await expect(modal.getByTestId('import-projects-choose')).toBeVisible();
+      await expect(box(fixture.parentId)).toBeChecked();
+      await box(fixture.repositories[0].id).check();
+      await expect(box(fixture.parentId)).not.toBeChecked();
+      await box(fixture.parentId).check();
+      await modal.getByTestId('import-projects-select-all').check();
+      await expect(box(fixture.parentId)).not.toBeChecked();
+      for (const { id } of fixture.repositories)
+        await expect(box(id)).toBeChecked();
+    } finally {
+      try {
+        if (restoreDialog) await restoreDialog();
+      } finally {
+        try {
+          if (launch) await closeCanopy(launch.electronApp, launch.userDataDir);
+        } finally {
+          fixture.cleanup();
+        }
+      }
+    }
+  });
   test('imports a git root, a plain folder, and a scratch Cowork session under recognizable names, then reports them as imported', async () => {
     const userDataDir = mkdtempSync(
       path.join(os.tmpdir(), 'canopy-import-e2e-'),
@@ -104,7 +174,7 @@ test.describe('import projects from Claude and Codex', () => {
       const chooseNote = modal.getByTestId('import-projects-choose-note');
       await expect(chooseNote).toContainText(CODE_CHAT_DESTINATION_WARNING);
       await expect(chooseNote).toContainText(
-        'Nothing from the project runs until you start it.',
+        'Your folders stay put and nothing changes until you say so.',
       );
 
       const gitId = externalProjectCandidateIdFor(gitApp);

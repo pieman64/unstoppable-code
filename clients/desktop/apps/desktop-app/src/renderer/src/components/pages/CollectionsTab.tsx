@@ -20,10 +20,17 @@ import {
   runCancellableModalLoad,
   runEntityEditOperation,
 } from './entityEditModalUtils';
-import { ErrorBanner, LoadingPlaceholder } from '../shared';
+import { ErrorBanner } from '../shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  Notice,
+} from '@canopy/ui-shared/components';
 import { UnifiedTable } from '../shared/UnifiedTable';
 import {
   CollectionReadDetail,
+  CollectionEditorFields,
+  collectionNameValid,
   MarketplaceDetailPageShell,
   type CollectionReadMemberRef,
   type CollectionReadResolvedMember,
@@ -54,9 +61,13 @@ import {
 } from '@/lib/sharedCollectionTableMerge';
 import { DESCRIPTION_MARKDOWN_HINT } from '@canopy/ui-shared';
 import {
+  ChoiceListRow,
   DetailActionBar,
   DetailPageActions,
+  FormField,
   ShareActionButton,
+  TextArea,
+  TextInput,
   type DetailPageActionsProps,
 } from '@canopy/ui-shared/components';
 import { DocumentPencilIcon as AppCatalogDocumentPencilIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -103,6 +114,7 @@ export function CollectionModal({
   onClose,
   onSaved,
   onCreated,
+  onUnknownCreate,
   presentation = 'modal',
   readOnly = false,
   onNavigateBack,
@@ -115,6 +127,7 @@ export function CollectionModal({
   onSaved: () => Promise<void>;
   /** Names the collection a create-mode save added. */
   onCreated?: (collectionId: string) => void;
+  onUnknownCreate?: () => void;
   presentation?: 'modal' | 'page';
   readOnly?: boolean;
   onNavigateBack?: () => void;
@@ -124,7 +137,6 @@ export function CollectionModal({
 }): JSX.Element | null {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const descriptionHintId = useId();
   const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
   const [selectedPlugins, setSelectedPlugins] = useState<Set<string>>(
     new Set(),
@@ -136,6 +148,15 @@ export function CollectionModal({
     useState<CollectionConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saveInFlight = useRef(false);
+  const editorGeneration = useRef(0);
+  useEffect(() => {
+    editorGeneration.current += 1;
+    return (): void => {
+      editorGeneration.current += 1;
+    };
+  }, [collectionId]);
+  const [saveCommitted, setSaveCommitted] = useState(false);
   const [error, setError] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pageEditorOpen, setPageEditorOpen] = useState(false);
@@ -168,6 +189,9 @@ export function CollectionModal({
 
   // Load collection config when editing
   useEffect(() => {
+    setSaveCommitted(false);
+    setSaving(false);
+    saveInFlight.current = false;
     if (!collectionId) {
       setName('');
       setDescription('');
@@ -223,7 +247,16 @@ export function CollectionModal({
   onSavedRef.current = onSaved;
 
   const handleSave = async (): Promise<void> => {
-    if (!name.trim()) return;
+    if (
+      !collectionNameValid(name) ||
+      saveInFlight.current ||
+      saveCommitted ||
+      loading ||
+      (collectionId !== null && !loadedCollection)
+    )
+      return;
+    saveInFlight.current = true;
+    const generation = editorGeneration.current;
     await runEntityEditOperation(
       async (): Promise<void> => {
         const skillRefs: CollectionSkillRef[] = Array.from(selectedSkills).map(
@@ -253,41 +286,86 @@ export function CollectionModal({
             };
           },
         );
-        const saved = await window.collections.saveCollection({
-          ...(loadedCollection ? { id: loadedCollection.id } : {}),
-          name: name.trim(),
-          description: description.trim(),
-          skills: skillRefs,
-          plugins: pluginRefs,
-          mcpServers: mcpRefs,
-          ...(loadedCollection?.createdAt
-            ? { createdAt: loadedCollection.createdAt }
-            : {}),
-        });
+        let saved: CollectionConfig;
+        try {
+          saved = await window.collections.saveCollection({
+            ...(loadedCollection
+              ? { id: loadedCollection.id, revision: loadedCollection.revision }
+              : {}),
+            name: name.trim(),
+            description: description.trim(),
+            skills: skillRefs,
+            plugins: pluginRefs,
+            mcpServers: mcpRefs,
+            ...(loadedCollection?.createdAt
+              ? { createdAt: loadedCollection.createdAt }
+              : {}),
+          });
+        } catch (error) {
+          if (!loadedCollection) {
+            onUnknownCreate?.();
+            if (generation === editorGeneration.current) setSaveCommitted(true);
+            throw new Error(
+              'The save outcome is unknown. Check the collection list on your desktop before creating another collection.',
+            );
+          }
+          throw error;
+        }
+        if (generation !== editorGeneration.current) return;
+        setSaveCommitted(true);
         if (!loadedCollection) onCreated?.(saved.id);
       },
       {
-        setSaving,
-        setError,
-        onSaved: onSavedRef.current,
-        onClose: onCloseRef.current,
+        setSaving: (value): void => {
+          if (generation === editorGeneration.current) setSaving(value);
+        },
+        setError: (value): void => {
+          if (generation === editorGeneration.current) setError(value);
+        },
+        onSaved: async () => {
+          if (generation !== editorGeneration.current) return;
+          try {
+            await onSavedRef.current();
+          } catch {
+            throw new Error(
+              'Collection saved, but the list could not refresh. Close this editor and refresh the list.',
+            );
+          }
+        },
+        onClose: (): void => {
+          if (generation === editorGeneration.current) onCloseRef.current();
+        },
       },
     );
+    if (generation === editorGeneration.current) saveInFlight.current = false;
   };
 
   const handleDelete = async (): Promise<void> => {
-    if (!loadedCollection) return;
+    if (!loadedCollection || saveInFlight.current) return;
+    saveInFlight.current = true;
+    const generation = editorGeneration.current;
     await runEntityEditOperation(
       async (): Promise<void> => {
         await window.collections.deleteCollection(loadedCollection.id);
       },
       {
-        setSaving,
-        setError,
-        onSaved: onSavedRef.current,
-        onClose: onDeleted ?? onCloseRef.current,
+        setSaving: (value): void => {
+          if (generation === editorGeneration.current) setSaving(value);
+        },
+        setError: (value): void => {
+          if (generation === editorGeneration.current) setError(value);
+        },
+        onSaved: async (): Promise<void> => {
+          if (generation === editorGeneration.current)
+            await onSavedRef.current();
+        },
+        onClose: (): void => {
+          if (generation === editorGeneration.current)
+            (onDeleted ?? onCloseRef.current)();
+        },
       },
     );
+    if (generation === editorGeneration.current) saveInFlight.current = false;
   };
 
   function handleToggle(key: string): void {
@@ -304,7 +382,12 @@ export function CollectionModal({
   }
 
   const isCreate = collectionId === null;
-  const canSave = name.trim().length > 0 && !saving;
+  const canSave =
+    collectionNameValid(name) &&
+    !saving &&
+    !saveCommitted &&
+    !loading &&
+    (isCreate || loadedCollection !== null);
   const footerProps = createEntityEditModalFooterProps(
     isCreate,
     saving,
@@ -385,7 +468,9 @@ export function CollectionModal({
           <div className="flex flex-col gap-4">
             <ErrorBanner error={error} />
             {loading ? (
-              <LoadingPlaceholder label="Loading collection…" />
+              <DelayedLoadingPlaceholder slowNote="Still loading collection…">
+                <CenteredLoadingSpinner className="my-12" />
+              </DelayedLoadingPlaceholder>
             ) : readCollection ? (
               <CollectionReadDetail
                 statusSection={
@@ -433,54 +518,26 @@ export function CollectionModal({
   return (
     <>
       <DialogModal
-        onClose={onClose}
+        inset="flush"
+        onClose={saving ? (): void => {} : onClose}
         title={isCreate ? 'New collection' : 'Edit collection'}
         titleId="collection-modal-title"
         maxWidth="4xl"
         headerBorder={false}
-        closeOnBackdrop
+        closeOnBackdrop={!saving}
       >
         <EntityEditModalContent
           loading={loading}
           error={error}
           footerProps={footerProps}
         >
-          {/* Name */}
-          <label className="block text-s">
-            <span className="mb-1.5 block fg-secondary">
-              Name <span className="fg-destructive">*</span>
-            </span>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="My collection"
-              className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-              autoFocus
-            />
-          </label>
-
-          {/* Description */}
-          <div>
-            <label className="block text-s">
-              <span className="mb-1.5 block fg-secondary">Description</span>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Optional description"
-                rows={2}
-                aria-describedby={descriptionHintId}
-                className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s resize-none"
-              />
-            </label>
-            <p
-              id={descriptionHintId}
-              className="mt-1 text-xs fg-tertiary"
-              data-testid="collection-description-hint"
-            >
-              {DESCRIPTION_MARKDOWN_HINT}
-            </p>
-          </div>
+          <CollectionEditorFields
+            name={name}
+            description={description}
+            onNameChange={setName}
+            onDescriptionChange={setDescription}
+            disabled={saving}
+          />
 
           {/* Unified skills & plugins table */}
           <UnifiedTable
@@ -538,6 +595,7 @@ function SharedCollectionDetailShell({
   }
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       titleId="shared-collection-detail-modal-title"
@@ -591,7 +649,7 @@ export function SharedCollectionDetailModal({
   ) => ReactNode;
 }): JSX.Element {
   const [detail, setDetail] = useState<SharedCollectionDetail | null>(null);
-  const descriptionHintId = useId();
+  const descriptionFieldId = useId();
   const [editable, setEditable] = useState<EditableSharedCollection | null>(
     null,
   );
@@ -872,46 +930,62 @@ export function SharedCollectionDetailModal({
         onNavigateBack={onNavigateBack}
       >
         <div className="flex flex-col flex-1 overflow-hidden">
-          <div className="flex-1 overflow-y-auto px-5 pb-3 flex flex-col gap-4">
+          <div
+            className={
+              presentation === 'page'
+                ? 'flex-1 overflow-y-auto px-5 pb-3 flex flex-col gap-4'
+                : 'flex-1 overflow-y-auto px-6 pb-3 flex flex-col gap-4'
+            }
+          >
             <ErrorBanner error={error} />
             {loading || !editable ? (
-              <LoadingPlaceholder label="Loading shared collection…" />
+              <DelayedLoadingPlaceholder slowNote="Still loading shared collection…">
+                <CenteredLoadingSpinner className="my-12" />
+              </DelayedLoadingPlaceholder>
             ) : (
               <>
                 {warnings.length > 0 && (
-                  <div className="rounded-lg border border-line-destructive/30 bg-destructive-subtle p-3 text-s fg-destructive">
+                  <Notice intent="destructive">
                     {warnings.map((warning) => (
-                      <p key={`${warning.index}-${warning.message}`}>
+                      <span
+                        key={`${warning.index}-${warning.message}`}
+                        className="block"
+                      >
                         {warning.message}
-                      </p>
+                      </span>
                     ))}
-                  </div>
+                  </Notice>
                 )}
 
                 {isEdit ? (
                   <>
-                    <label className="block text-s">
-                      <span className="mb-1.5 block fg-secondary">
-                        Name <span className="fg-destructive">*</span>
-                      </span>
-                      <input
-                        value={editable.name}
-                        onChange={(event) =>
-                          updateEditable((current) => ({
-                            ...current,
-                            name: event.target.value,
-                          }))
-                        }
-                        className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
-                      />
-                    </label>
+                    <FormField label="Name">
+                      {(control) => (
+                        <TextInput
+                          {...control}
+                          value={editable.name}
+                          onChange={(event) =>
+                            updateEditable((current) => ({
+                              ...current,
+                              name: event.target.value,
+                            }))
+                          }
+                        />
+                      )}
+                    </FormField>
 
-                    <div>
-                      <label className="block text-s">
-                        <span className="mb-1.5 block fg-secondary">
-                          Description
+                    <FormField
+                      label="Description (optional)"
+                      id={descriptionFieldId}
+                      description={
+                        <span data-testid="collection-description-hint">
+                          {DESCRIPTION_MARKDOWN_HINT}
                         </span>
-                        <textarea
+                      }
+                    >
+                      {(control) => (
+                        <TextArea
+                          {...control}
                           value={editable.description}
                           onChange={(event) =>
                             updateEditable((current) => ({
@@ -921,18 +995,9 @@ export function SharedCollectionDetailModal({
                           }
                           placeholder="Optional description"
                           rows={2}
-                          aria-describedby={descriptionHintId}
-                          className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s resize-none"
                         />
-                      </label>
-                      <p
-                        id={descriptionHintId}
-                        className="mt-1 text-xs fg-tertiary"
-                        data-testid="collection-description-hint"
-                      >
-                        {DESCRIPTION_MARKDOWN_HINT}
-                      </p>
-                    </div>
+                      )}
+                    </FormField>
 
                     <UnifiedTable
                       rows={tableRows}
@@ -971,7 +1036,11 @@ export function SharedCollectionDetailModal({
                       {editable.items.filter((item) => item.required).length}/
                       {editable.items.length})
                     </summary>
-                    <div className="divide-y border-t">
+                    <div
+                      role="group"
+                      aria-label="Required items"
+                      className="divide-y border-t"
+                    >
                       {editable.items.map((item, index) => {
                         const label =
                           item.kind === 'external_plugin'
@@ -986,21 +1055,20 @@ export function SharedCollectionDetailModal({
                                 ? 'Linked custom skill'
                                 : 'New custom skill';
                         return (
-                          <label
+                          <ChoiceListRow
                             key={`required-${item.kind}-${index}`}
-                            className="flex items-center gap-3 px-3 py-2 text-xs"
+                            selected={item.required === true}
+                            onClick={() =>
+                              setItemRequired(index, item.required !== true)
+                            }
                           >
-                            <input
-                              type="checkbox"
-                              checked={item.required === true}
-                              onChange={(event) =>
-                                setItemRequired(index, event.target.checked)
-                              }
-                              className="rounded"
-                            />
-                            <span className="fg-secondary">{kindLabel}:</span>
-                            <span className="fg-primary truncate">{label}</span>
-                          </label>
+                            <span className="flex min-w-0 gap-1">
+                              <span className="shrink-0 fg-secondary">
+                                {kindLabel}:
+                              </span>
+                              <span className="truncate">{label}</span>
+                            </span>
+                          </ChoiceListRow>
                         );
                       })}
                     </div>
@@ -1011,7 +1079,7 @@ export function SharedCollectionDetailModal({
           </div>
           {/* View mode has no footer: a Close would duplicate the X. */}
           {presentation === 'modal' && isEdit && (
-            <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+            <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
               <Button size="compact" onClick={onClose} disabled={saving}>
                 Cancel
               </Button>

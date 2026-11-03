@@ -9,10 +9,13 @@ export {
   settingsActionErrorCopy,
   settingsErrorDetail,
   settingsErrorFacts,
+  settingsFailure,
+  settingsFailureDetails,
   settingsLoadErrorCopy,
   type KnownSettingsError,
   type SettingsActionErrorOptions,
   type SettingsErrorFacts,
+  type SettingsFailure,
 } from './settings-error-copy';
 export {
   useSettingsErrorCopy,
@@ -20,5 +23,5 @@ export {
 } from './use-settings-error-copy';
 export {
   useSettingsAccessLostRefresh,
-  useSettingsLoadErrorCopy,
+  useSettingsLoadFailure,
 } from './use-settings-access-lost';

@@ -9,10 +9,16 @@ import { isE2eBuild } from './e2e-gate';
  * (`performance.timeOrigin`), and is recorded once.
  *
  * Production builds never record anything: `isE2eBuild()` is the build-time
- * `__CANOPY_E2E__` constant, and the only caller is inside an E2E-gated block.
+ * `__CANOPY_E2E__` constant. `mainReady` is marked inside an E2E-gated block;
+ * the W5 store marks (CAN-5532) are `w5StoreReady`, once the daemon-backed
+ * store arm recovered, and `w5FirstReadServed`, once either store served a
+ * W5 read.
  */
 
-export type E2eStartupMarkName = 'mainReady';
+export type E2eStartupMarkName =
+  | 'mainReady'
+  | 'w5StoreReady'
+  | 'w5FirstReadServed';
 
 export type E2eStartupMarks = Partial<Record<E2eStartupMarkName, number>>;
 

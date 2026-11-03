@@ -44,7 +44,7 @@ export function EmptyTrashDialog({
       headerBorder={false}
       dataTestId="archived-overview-empty-trash-dialog"
     >
-      <div className="space-y-4 px-5 pb-5">
+      <div className="space-y-4">
         <p className="text-s fg-secondary">
           This permanently deletes {count} deleted {itemWord} and cannot be
           undone.{' '}

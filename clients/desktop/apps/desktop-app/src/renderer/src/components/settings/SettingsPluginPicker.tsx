@@ -66,7 +66,7 @@ export function SettingsPluginPicker({
               onClick={() => setOpen(true)}
               aria-label="Plugins"
             >
-              <PluginsIcon width={14} height={14} aria-hidden="true" />
+              <PluginsIcon size="sm" aria-hidden="true" />
               Plugins
             </Button>
           </>
@@ -80,6 +80,7 @@ export function SettingsPluginPicker({
           collection editor opens in a dialog of its own outside this card. */}
       {open && (
         <DialogModal
+          inset="flush"
           title={label}
           maxWidth="2xl"
           onClose={handleClose}

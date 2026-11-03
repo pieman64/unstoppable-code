@@ -611,7 +611,7 @@ function BlockWindow({
                   void load(lastRequest.current.direction, true);
                 }}
               >
-                Retry
+                Try again
               </Button>
             </Notice>
           )}

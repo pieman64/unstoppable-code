@@ -136,6 +136,11 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // opens B OS settings on its screen
     launchAtLoginOpenSystemSettings: 'blocked',
     launchAtLoginStatusChanged: 'tunnel',
+    // This computer's own daemon health; a window showing another computer
+    // reads Files through the bridge, never a daemon (CAN-5541).
+    backgroundServiceStatus: 'blocked',
+    backgroundServiceRetry: 'blocked',
+    backgroundServiceStatusChanged: 'blocked',
     codexSpeedRead: 'tunnel',
     codexSpeedReadRoute: 'tunnel',
     codexSpeedSetActive: 'tunnel',
@@ -1393,6 +1398,8 @@ export const COLLECTIONS_REMOTE_DISPOSITIONS: RemoteDispositions<
   LOAD_INDEX: 'tunnel',
   LOAD_COLLECTION: 'tunnel',
   SAVE_COLLECTION: 'tunnel',
+  DUPLICATE_COLLECTION: 'tunnel',
+  APPLY_SHARED_UPDATE: 'tunnel',
   DELETE_COLLECTION: 'tunnel',
   SHARED_LIST: 'tunnel',
   SHARED_GET: 'tunnel',

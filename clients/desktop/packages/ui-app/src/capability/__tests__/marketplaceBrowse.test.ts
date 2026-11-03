@@ -134,7 +134,11 @@ describe('buildMarketplaceBrowseGroups', () => {
               status: null,
               removable: true,
               notices: [
-                { code: 'partial_removal', message: 'Retry.', retryable: true },
+                {
+                  code: 'partial_removal',
+                  message: 'Try again.',
+                  retryable: true,
+                },
               ],
             },
             configurations: [],

@@ -37,7 +37,7 @@ let editor: UseOrgLogoEditorResult | null = null;
 
 function Probe(): JSX.Element {
   editor = useOrgLogoEditor(ORG_ID);
-  return <span>{editor.error ?? ''}</span>;
+  return <span>{editor.error?.copy ?? ''}</span>;
 }
 
 function current(): UseOrgLogoEditorResult {
@@ -94,7 +94,7 @@ describe('useOrgLogoEditor', (): void => {
       );
     });
     expect(result).toBeNull();
-    expect(current().error).toBe(
+    expect(current().error?.copy).toBe(
       'Choose a PNG, JPEG, or GIF image up to 5 MB.',
     );
     expect(client.calls).toEqual([]);
@@ -133,7 +133,7 @@ describe('useOrgLogoEditor', (): void => {
     await act(async () => {
       await current().uploadLogo(png());
     });
-    expect(current().error).toBe(
+    expect(current().error?.copy).toBe(
       "This image can't be used as a logo. Choose a different image.",
     );
     expect(container.textContent).not.toContain('SENTINEL-SERVER-BODY');
@@ -152,7 +152,7 @@ describe('useOrgLogoEditor', (): void => {
     await act(async () => {
       await current().uploadLogo(png());
     });
-    expect(current().error).toBe("Couldn't upload the logo. Try again.");
+    expect(current().error?.copy).toBe("Couldn't upload the logo. Try again.");
   });
 
   it('removes the logo through organization.logo.clear', async (): Promise<void> => {
@@ -181,7 +181,7 @@ describe('useOrgLogoEditor', (): void => {
     await act(async () => {
       await current().removeLogo();
     });
-    expect(current().error).toBe(
+    expect(current().error?.copy).toBe(
       "Couldn't confirm that finished. Refresh to check before trying again.",
     );
   });

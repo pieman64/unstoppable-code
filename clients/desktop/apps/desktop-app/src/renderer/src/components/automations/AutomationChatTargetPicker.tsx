@@ -26,12 +26,14 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { getWorktreeBranchDisplayName } from '@/lib/worktreeDisplayName';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
+import { FormField } from '@canopy/ui-shared/components';
 import { SearchableSelect } from '../shared/SearchableSelect';
 import {
   openAutomationRunDestination,
   type AutomationRunDestination,
 } from './resolveAutomationRunDestination';
 import type { WorktreeSessionTarget } from './worktreeSessionPrompt';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 export const AUTOMATION_CHAT_TARGET_UNAVAILABLE_ERROR =
   'That chat is no longer available. Pick another destination.';
@@ -287,75 +289,79 @@ export function AutomationChatTargetPicker({
       className="flex flex-col gap-2"
       data-testid="automations-form-chat-target"
     >
-      <label className="flex flex-col gap-1 text-xs fg-secondary">
-        <span>{containerLabel}</span>
-        <SearchableSelect
-          value={selectedContainerId}
-          ownerDocument={ownerDocument}
-          options={(containers ?? []).map((option) => ({
-            id: option.id,
-            label: option.label,
-          }))}
-          selectedFallback={
-            selectedContainerId
-              ? {
-                  id: selectedContainerId,
-                  label: value?.worktreeName || selectedContainerId,
-                }
-              : undefined
-          }
-          onChange={handleContainerChange}
-          placeholder={
-            containers === null
-              ? 'Loading…'
-              : containers.length === 0
-                ? `No ${containerLabel.toLowerCase()}s available`
-                : `Select a ${containerLabel.toLowerCase()}`
-          }
-          searchPlaceholder={`Search ${containerLabel.toLowerCase()}s`}
-          emptyListMessage="No matches"
-          disabled={!project && !isAppAdvisor}
-          testId="automations-form-chat-target-worktree"
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-xs fg-secondary">
-        <span>{CHAT_UNIT_LABEL}</span>
-        <SearchableSelect
-          value={selectedChatId}
-          ownerDocument={ownerDocument}
-          options={(chats ?? []).map((option) => ({
-            id: option.id,
-            label: option.label,
-          }))}
-          selectedFallback={
-            selectedChatId
-              ? {
-                  id: selectedChatId,
-                  label: value?.chatTitle || selectedChatId,
-                }
-              : undefined
-          }
-          onChange={handleChatChange}
-          emptyOption={
-            selectedContainerId
-              ? {
-                  id: '',
-                  label: AUTOMATION_NEW_CHAT_TARGET_LABEL,
-                  subtitle: `Start a new ${CHAT_UNIT_LABEL.toLowerCase()} each run`,
-                }
-              : undefined
-          }
-          placeholder={
-            !selectedContainerId
-              ? `Select a ${containerLabel.toLowerCase()} first`
-              : AUTOMATION_NEW_CHAT_TARGET_LABEL
-          }
-          searchPlaceholder={`Search ${CHAT_UNIT_LABEL.toLowerCase()}s`}
-          emptyListMessage="No matches"
-          disabled={!selectedContainerId}
-          testId="automations-form-chat-target-chat"
-        />
-      </label>
+      <FormField label={containerLabel}>
+        {(control) => (
+          <SearchableSelect
+            id={control.id}
+            value={selectedContainerId}
+            ownerDocument={ownerDocument}
+            options={(containers ?? []).map((option) => ({
+              id: option.id,
+              label: option.label,
+            }))}
+            selectedFallback={
+              selectedContainerId
+                ? {
+                    id: selectedContainerId,
+                    label: value?.worktreeName || selectedContainerId,
+                  }
+                : undefined
+            }
+            onChange={handleContainerChange}
+            placeholder={
+              containers === null
+                ? 'Loading…'
+                : containers.length === 0
+                  ? `No ${containerLabel.toLowerCase()}s available`
+                  : `Select a ${containerLabel.toLowerCase()}`
+            }
+            searchPlaceholder={`Search ${containerLabel.toLowerCase()}s`}
+            emptyListMessage="No matches"
+            disabled={!project && !isAppAdvisor}
+            testId="automations-form-chat-target-worktree"
+          />
+        )}
+      </FormField>
+      <FormField label={CHAT_UNIT_LABEL}>
+        {(control) => (
+          <SearchableSelect
+            id={control.id}
+            value={selectedChatId}
+            ownerDocument={ownerDocument}
+            options={(chats ?? []).map((option) => ({
+              id: option.id,
+              label: option.label,
+            }))}
+            selectedFallback={
+              selectedChatId
+                ? {
+                    id: selectedChatId,
+                    label: value?.chatTitle || selectedChatId,
+                  }
+                : undefined
+            }
+            onChange={handleChatChange}
+            emptyOption={
+              selectedContainerId
+                ? {
+                    id: '',
+                    label: AUTOMATION_NEW_CHAT_TARGET_LABEL,
+                    subtitle: `Start a new ${CHAT_UNIT_LABEL.toLowerCase()} each run`,
+                  }
+                : undefined
+            }
+            placeholder={
+              !selectedContainerId
+                ? `Select a ${containerLabel.toLowerCase()} first`
+                : AUTOMATION_NEW_CHAT_TARGET_LABEL
+            }
+            searchPlaceholder={`Search ${CHAT_UNIT_LABEL.toLowerCase()}s`}
+            emptyListMessage="No matches"
+            disabled={!selectedContainerId}
+            testId="automations-form-chat-target-chat"
+          />
+        )}
+      </FormField>
       {complete && !isNewChat && !unavailable ? (
         <div>
           <button
@@ -389,9 +395,7 @@ export function AutomationChatTargetPicker({
           >
             Open {CHAT_UNIT_LABEL.toLowerCase()}
           </button>
-          {openChatError && (
-            <div className="mt-1 text-xs fg-destructive">{openChatError}</div>
-          )}
+          <ErrorBanner error={openChatError} className="mt-1" />
         </div>
       ) : null}
       {unavailable ? (

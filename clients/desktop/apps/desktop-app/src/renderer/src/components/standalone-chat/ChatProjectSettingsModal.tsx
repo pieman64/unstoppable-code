@@ -20,8 +20,12 @@ import {
 import { brandText } from '@/lib/brand';
 import { DialogModal } from '../shared';
 import {
+  FormField,
   PluginSelectionScopeHelp,
   SettingsTabBar,
+  ErrorBanner,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { PluginSelector } from '../shared/PluginSelector';
 import { ClaudeLogo } from '../ClaudeLogo';
@@ -162,6 +166,8 @@ export function ChatProjectSettingsModal({
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState('');
+  // The failure's own text: copied by Copy details, never shown.
+  const [errorDetails, setErrorDetails] = useState('');
   const startPageEnabled = useCanopyDesktopStartPageEnabled();
   const privateMemory = usePrivateMemoryDraft(project);
   const resetPrivateMemory = privateMemory.reset;
@@ -213,6 +219,7 @@ export function ChatProjectSettingsModal({
     setStartPageValid(true);
     setConfirmingDelete(false);
     setError('');
+    setErrorDetails('');
 
     const loadClaudeMd = async (): Promise<void> => {
       try {
@@ -230,9 +237,8 @@ export function ChatProjectSettingsModal({
         }
         setClaudeMd('');
         setLoadedClaudeMd('');
-        setError(
-          cause instanceof Error ? cause.message : 'Failed to load CLAUDE.md',
-        );
+        setError("Couldn't load CLAUDE.md. Try again.");
+        setErrorDetails(cause instanceof Error ? cause.message : '');
       } finally {
         if (!canceled) {
           setClaudeMdLoading(false);
@@ -297,6 +303,7 @@ export function ChatProjectSettingsModal({
     if (!startPageValid) return;
     setIsSaving(true);
     setError('');
+    setErrorDetails('');
     try {
       if (
         nameDirty ||
@@ -335,7 +342,8 @@ export function ChatProjectSettingsModal({
       if (!(await privateMemory.save())) return;
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to save');
+      setError("Couldn't save these settings. Try again.");
+      setErrorDetails(cause instanceof Error ? cause.message : '');
     } finally {
       setIsSaving(false);
     }
@@ -344,6 +352,7 @@ export function ChatProjectSettingsModal({
   async function handleDelete(): Promise<void> {
     setIsDeleting(true);
     setError('');
+    setErrorDetails('');
     try {
       const standaloneState = useStandaloneChatStore.getState();
       let worktreeIds = getSidebarProjectEntries(
@@ -374,7 +383,8 @@ export function ChatProjectSettingsModal({
       onClose();
     } catch (cause) {
       offerLifecycleJournalQuarantine(cause);
-      setError(cause instanceof Error ? cause.message : 'Failed to delete');
+      setError("Couldn't delete this project. Try again.");
+      setErrorDetails(cause instanceof Error ? cause.message : '');
     } finally {
       setIsDeleting(false);
       setConfirmingDelete(false);
@@ -413,6 +423,7 @@ export function ChatProjectSettingsModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={currentProject.name}
       titleId="chat-project-settings-title"
@@ -427,7 +438,7 @@ export function ChatProjectSettingsModal({
 
       <div
         data-testid="chat-project-settings-body"
-        className={`flex-1 p-5 ${
+        className={`flex-1 p-6 ${
           activeTab === 'plugins' ||
           activeTab === 'instructions' ||
           activeTab === 'environment'
@@ -437,61 +448,53 @@ export function ChatProjectSettingsModal({
       >
         {activeTab === 'general' && (
           <div className="space-y-4">
-            <div>
-              <label
-                htmlFor="chat-project-name"
-                className="mb-1.5 block text-xs font-medium fg-secondary"
-              >
-                Name
-              </label>
-              <input
-                id="chat-project-name"
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                className="w-full rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none read-only:cursor-not-allowed read-only:opacity-70"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="chat-project-description"
-                className="mb-1.5 block text-xs font-medium fg-secondary"
-              >
-                Description
-              </label>
-              <textarea
-                id="chat-project-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none"
-                rows={2}
-                placeholder="Optional project description"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="chat-project-color"
-                className="mb-1.5 block text-xs font-medium fg-secondary"
-              >
-                Color
-              </label>
-              <div className="flex items-center gap-2">
-                <div
-                  className="h-6 w-6 rounded-full border"
-                  style={{ backgroundColor: color || 'var(--bg-tertiary)' }}
-                />
-                <input
-                  id="chat-project-color"
+            <FormField id="chat-project-name" label="Name">
+              {(control) => (
+                <TextInput
+                  {...control}
+                  density="settings"
                   type="text"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                  className="w-32 rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none"
-                  placeholder="#hex"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
                 />
-              </div>
-            </div>
+              )}
+            </FormField>
+
+            <FormField id="chat-project-description" label="Description">
+              {(control) => (
+                <TextArea
+                  {...control}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={2}
+                  placeholder="Optional project description"
+                />
+              )}
+            </FormField>
+
+            <FormField id="chat-project-color" label="Color">
+              {(control) => (
+                <div className="w-40">
+                  <TextInput
+                    {...control}
+                    density="settings"
+                    type="text"
+                    leading={
+                      <span
+                        aria-hidden="true"
+                        className="size-3.5 rounded-full border"
+                        style={{
+                          backgroundColor: color || 'var(--bg-tertiary)',
+                        }}
+                      />
+                    }
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    placeholder="#hex"
+                  />
+                </div>
+              )}
+            </FormField>
 
             <div className="rounded-lg border bg-secondary/20 px-3 py-3">
               <div className="text-xs font-medium fg-secondary">Created</div>
@@ -539,11 +542,17 @@ export function ChatProjectSettingsModal({
                   {`Deleted chats and legacy archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
                 </p>
                 <div className="mt-3 flex items-center gap-3">
-                  <label className="flex items-center gap-2">
-                    <span className="text-s fg-primary">
-                      Keep deleted chats for
-                    </span>
-                    <input
+                  <span
+                    id="chat-project-settings-retention-days-label"
+                    className="text-s fg-primary"
+                  >
+                    Keep deleted chats for
+                  </span>
+                  <div className="w-28">
+                    <TextInput
+                      density="settings"
+                      trailing="days"
+                      aria-labelledby="chat-project-settings-retention-days-label"
                       type="number"
                       value={retentionDays}
                       onChange={(e) =>
@@ -561,10 +570,8 @@ export function ChatProjectSettingsModal({
                       min={1}
                       max={MAX_ARCHIVE_RETENTION_DAYS}
                       data-testid="chat-project-settings-retention-days"
-                      className="w-20 rounded-lg border bg-secondary/30 px-3 py-2 text-s fg-primary outline-none"
                     />
-                    <span className="text-s fg-secondary">days</span>
-                  </label>
+                  </div>
                 </div>
                 <AutoArchiveSettingsControl
                   enabled={autoArchiveEnabled}
@@ -605,13 +612,14 @@ export function ChatProjectSettingsModal({
             <p id="claude-md-description" className="mt-1 text-xs fg-secondary">
               Instructions for every chat in this project.
             </p>
-            <textarea
+            <TextArea
+              mono
               value={claudeMd}
               onChange={(event) => setClaudeMd(event.target.value)}
               disabled={claudeMdLoading}
               aria-labelledby="claude-md-label"
               aria-describedby="claude-md-description"
-              className="focus-ring mt-2 min-h-0 flex-1 w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs disabled:opacity-50"
+              className="mt-2 min-h-0 flex-1"
               placeholder="# Project instructions&#10;&#10;Add project-specific CLAUDE.md content here…"
             />
           </div>
@@ -694,7 +702,7 @@ export function ChatProjectSettingsModal({
         activeTab !== 'environment' &&
         activeTab !== 'share' &&
         isDirty && (
-          <div className="flex justify-end border-t px-5 py-3">
+          <div className="flex justify-end border-t px-6 py-3">
             <Button
               variant="primary"
               size="compact"
@@ -706,11 +714,11 @@ export function ChatProjectSettingsModal({
           </div>
         )}
 
-      {error && (
-        <div className="border-t px-5 py-3">
-          <p className="text-s fg-destructive">{error}</p>
-        </div>
-      )}
+      <ErrorBanner
+        error={error}
+        className="mx-6 mb-4"
+        {...(errorDetails ? { details: errorDetails } : {})}
+      />
     </DialogModal>
   );
 }

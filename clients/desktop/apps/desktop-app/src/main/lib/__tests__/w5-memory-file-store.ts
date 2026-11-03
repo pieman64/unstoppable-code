@@ -29,6 +29,12 @@ export function createMemoryFileStore(
         ? { state: 'absent' }
         : { state: 'present', raw };
     },
+    async remove(filePath) {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (failingWrites.has(filePath)) throw new Error('ENOSPC');
+      files.delete(filePath);
+      writes.push(filePath);
+    },
     async replace(filePath, contents, _storage, replacement) {
       await new Promise((resolve) => setImmediate(resolve));
       if (failingWrites.has(filePath)) {

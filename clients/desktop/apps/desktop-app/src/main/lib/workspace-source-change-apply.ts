@@ -53,6 +53,7 @@ import {
 } from './paths';
 import {
   readWorkspaceConfig,
+  readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
 } from './workspace-persistence';
 import {
@@ -65,7 +66,10 @@ import type {
   SourceChangeBindingsDecision,
   WorktreeListUpdateOutcome,
 } from './worktree-record-decisions';
-import { WorkspaceSourceChangesRefusedError } from './workspace-source-change-refusal';
+import {
+  WorkspaceSourceChangesRefusedError,
+  type WorkspaceSourceChangesRefusal,
+} from './workspace-source-change-refusal';
 import type { SourceChangesTransition } from './workspace-source-changes';
 import {
   commitW5BoundaryStep,
@@ -444,6 +448,149 @@ function findLocalRepoBinding(
   );
 }
 
+type RepoAddStep =
+  | { status: 'bound'; binding: WorkspaceRepoData }
+  | { status: 'repository-id-conflict' }
+  | { status: 'repository-not-local' };
+
+/**
+ * Saves one addition to `repos` (unless its repository is already there)
+ * and finds its checkout. The apply and its keyed admission both run this,
+ * so they refuse the same additions.
+ */
+function stageRepoAdd(
+  repos: CanopyJsonRepoEntry[],
+  config: WorkspaceConfigFile,
+  repoAdd: NormalizedWorkspaceApplySourceRepoAdd,
+  repoUrl: string,
+): RepoAddStep {
+  const existingById = repos.find((repo) => repo.id === repoAdd.repoId);
+  if (existingById && !remoteUrlsReferToSameRepo(existingById.url, repoUrl)) {
+    return { status: 'repository-id-conflict' };
+  }
+  if (
+    !existingById &&
+    !repos.some((repo) => remoteUrlsReferToSameRepo(repo.url, repoUrl))
+  ) {
+    const nextRepo: CanopyJsonRepoEntry = {
+      id: repoAdd.repoId,
+      name: repoAdd.repoName,
+      url: repoUrl,
+    };
+    const scripts = toManifestRepoScripts(repoAdd.scripts);
+    if (scripts) {
+      nextRepo.scripts = scripts;
+    }
+    const hooks = toManifestRepoHooks(repoAdd.hooks);
+    if (hooks) {
+      nextRepo.hooks = hooks;
+    }
+    repos.push(nextRepo);
+  }
+
+  const binding =
+    findLocalRepoBinding(config, repoAdd.repoId, repoUrl) ??
+    (repoAdd.repoPath
+      ? ({
+          id: repoAdd.repoId,
+          name: repoAdd.repoName,
+          repoPath: repoAdd.repoPath,
+          source: 'manifest',
+          manifestUrl: repoUrl,
+        } satisfies WorkspaceRepoData)
+      : undefined);
+  return binding
+    ? { status: 'bound', binding }
+    : { status: 'repository-not-local' };
+}
+
+function refuseRepoAdd(
+  reason: WorkspaceSourceChangesRefusal,
+  message: string,
+): never {
+  throw new WorkspaceSourceChangesRefusedError(reason, message);
+}
+
+/** The `canopy.json` an apply edits: its worktree's, or the source checkout a new one starts from. */
+async function readAdmissionTargetManifest(
+  request: WorkspaceApplySourceChangesRequest,
+  config: WorkspaceConfigFile,
+): Promise<CanopyJsonFile> {
+  if (request.target.mode === 'existing') {
+    return readExistingTargetManifest(
+      request.workspaceId,
+      request.target.worktreeId,
+    );
+  }
+  const empty: CanopyJsonFile = { version: 1, repos: [] };
+  if (!config.sourceRepoPath) {
+    return empty;
+  }
+  const referenceRepoPath = await resolveWorkspaceReferenceRepoPath(
+    config.sourceRepoPath,
+  );
+  // The new worktree starts from a commit, not this working copy, so an
+  // unreadable copy leaves the conflict check to the apply.
+  return (await readCanopyJson(referenceRepoPath).catch(() => null)) ?? empty;
+}
+
+/**
+ * `prepareRepoAdds`' refusals (`stageRepoAdd`) for additions without a
+ * `repoPath` (a wire change), in memory on the target's `canopy.json`, so a
+ * keyed caller refuses them before its reservation instead of failing inside
+ * the apply. Removals apply first, as in the apply. A new worktree's
+ * `canopy.json` is read from the source checkout, which a fetch of its
+ * default branch may still move.
+ */
+export async function checkRepoAddsWithoutPaths(
+  request: WorkspaceApplySourceChangesRequest,
+): Promise<void> {
+  const additions = request.repoAdds ?? [];
+  if (additions.length === 0) {
+    return;
+  }
+  for (const add of additions) {
+    if (add.repoPath !== undefined) {
+      throw new Error('Only additions without a repoPath are checked here');
+    }
+    if (!add.remoteUrl.trim()) {
+      refuseRepoAdd('invalid-request', `${add.repoName} needs a remote URL.`);
+    }
+  }
+  const detail = await readWorkspaceConfigDetailed(request.workspaceId);
+  if (detail.authority !== 'ok') {
+    refuseRepoAdd(
+      'configuration-unavailable',
+      "Couldn't read this project's settings. Try again.",
+    );
+  }
+  const { config } = detail;
+  const manifest = await readAdmissionTargetManifest(request, config);
+  const normalized = await normalizeWorkspaceApplySourceChangesRequest({
+    workspaceId: request.workspaceId,
+    config,
+    manifest,
+    request,
+  });
+  applyRepoRemovalsToManifest({ request: normalized, manifest });
+  const repos = ensureManifestRepos(manifest);
+  for (const add of normalized.repoAdds ?? []) {
+    const step = stageRepoAdd(repos, config, add, add.remoteUrl.trim());
+    if (step.status === 'repository-id-conflict') {
+      refuseRepoAdd(
+        'repository-id-conflict',
+        `${add.repoId} is already in this project's canopy.json with a different remote URL. Choose another repository ID.`,
+      );
+    }
+    if (step.status === 'repository-not-local') {
+      refuseRepoAdd(
+        'repository-not-local',
+        `${add.repoName} has no checkout on this device. Add it to this project here first.`,
+      );
+    }
+  }
+}
+
 async function applyClaudeMdChange(
   workspaceId: string,
   worktreeId: string,
@@ -546,52 +693,18 @@ async function prepareRepoAdds(params: {
       throw new Error(`Repo ${repoAdd.repoId} is missing a remote URL`);
     }
 
-    const existingById = repos.find((repo) => repo.id === repoAdd.repoId);
-    if (existingById) {
-      if (!remoteUrlsReferToSameRepo(existingById.url, repoUrl)) {
-        throw new Error(
-          `Repo ${repoAdd.repoId} already exists in canopy.json with a different URL`,
-        );
-      }
-    } else {
-      const existingByUrl = repos.find((repo) =>
-        remoteUrlsReferToSameRepo(repo.url, repoUrl),
+    const step = stageRepoAdd(repos, params.config, repoAdd, repoUrl);
+    if (step.status === 'repository-id-conflict') {
+      throw new Error(
+        `Repo ${repoAdd.repoId} already exists in canopy.json with a different URL`,
       );
-      if (!existingByUrl) {
-        const nextRepo: CanopyJsonRepoEntry = {
-          id: repoAdd.repoId,
-          name: repoAdd.repoName,
-          url: repoUrl,
-        };
-        const scripts = toManifestRepoScripts(repoAdd.scripts);
-        if (scripts) {
-          nextRepo.scripts = scripts;
-        }
-        const hooks = toManifestRepoHooks(repoAdd.hooks);
-        if (hooks) {
-          nextRepo.hooks = hooks;
-        }
-        repos.push(nextRepo);
-      }
     }
-
-    const binding =
-      findLocalRepoBinding(params.config, repoAdd.repoId, repoUrl) ??
-      (repoAdd.repoPath
-        ? ({
-            id: repoAdd.repoId,
-            name: repoAdd.repoName,
-            repoPath: repoAdd.repoPath,
-            source: 'manifest',
-            manifestUrl: repoUrl,
-          } satisfies WorkspaceRepoData)
-        : undefined);
-
-    if (!binding) {
+    if (step.status === 'repository-not-local') {
       throw new Error(
         `Repo ${repoAdd.repoId} has no local binding and no repoPath was supplied`,
       );
     }
+    const { binding } = step;
 
     const repoWorktreePath = getWorkspaceWorktreeRepoDir(
       params.workspaceId,

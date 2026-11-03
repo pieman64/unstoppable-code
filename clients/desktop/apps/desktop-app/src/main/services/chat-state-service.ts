@@ -1,3 +1,4 @@
+import { TrackedPlanImplementationInputSchema } from '@canopy/protocol/portal';
 import { supersedeToolInterruptions } from '@canopy/agent-transcript/settlement';
 import { readAutoResumeMetadata } from '@canopy/protocol/portal';
 import type {
@@ -524,6 +525,12 @@ export interface ChatStateServiceOptions {
   withPlanReviewRevision?: <T>(
     request: PlanReviewApprovalRecordRequest,
     commit: () => Promise<T>,
+  ) => Promise<{ accepted: false } | { accepted: true; result: T }>;
+  withPlanImplementationRevision?: <T>(
+    request: PlanReviewApprovalRecordRequest,
+    commit: (
+      source: NonNullable<PersistedChatTab['trackedPlanSource']>,
+    ) => Promise<T>,
   ) => Promise<{ accepted: false } | { accepted: true; result: T }>;
   approvePlanReview?: (
     request: PlanReviewApprovalRecordRequest,
@@ -1249,15 +1256,35 @@ type SendMessageCommand = Extract<
   { type: 'chat.send_message' }
 >;
 
-interface HeldSend {
-  readonly key: string;
-  readonly scope: ChatScopeKey;
+/** A Portal or agent send admitted as a `chat.send_message` command. */
+interface AdmittedHeldDispatch {
+  readonly kind: 'admitted';
   readonly envelope: ChatCommandEnvelope;
   readonly command: SendMessageCommand;
   readonly revision: number;
-  readonly timestamp: number;
   readonly startsNewTrackedChat: boolean;
   readonly admissionCheck: ChatSendAdmissionCheck | undefined;
+}
+
+/**
+ * A desktop send, whose request dispatches unchanged through the chat queue
+ * once setup is ready; its prompt is already committed. Unlike an admitted
+ * send it keeps the settings it was sent with (model route, approval mode,
+ * attachments, hidden context): the message already reads as sent.
+ */
+interface LocalHeldDispatch {
+  readonly kind: 'local';
+  readonly request: ChatSendMessageRequest;
+  /** Undoes the caller's admission, as its own catch does for a send. */
+  readonly onDispatchFailed: (() => Promise<void>) | undefined;
+}
+
+interface HeldSend {
+  readonly key: string;
+  readonly scope: ChatScopeKey;
+  readonly command: { readonly chatId: string; readonly userMessageId: string };
+  readonly timestamp: number;
+  readonly dispatch: AdmittedHeldDispatch | LocalHeldDispatch;
   readonly preparation: PendingChatTurnPreparation | undefined;
   state: 'held' | 'dispatching' | 'settled';
 }
@@ -1269,6 +1296,33 @@ interface SetupHold {
   owner: HeldSend | undefined;
   /** The prompt commit of the send becoming `owner`, which settling awaits. */
   installing?: Promise<boolean>;
+  /**
+   * Desktop sends admitted behind the held turn whose queue rows are still
+   * being written; settling awaits them, so it takes or releases every row.
+   * The chat queue is held meanwhile, so each submit only enqueues its row
+   * and never waits on this hold.
+   */
+  readonly submitting: Set<Promise<void>>;
+  /** How the setup ended, once settling has begun. */
+  outcome?: WorktreeGitSetupOutcome;
+}
+
+/**
+ * A desktop send that waited for a chat's worktree setup hold, which ended
+ * without the setup becoming ready. The held turn ended the same way.
+ */
+export class WorktreeSetupEndedError extends Error {
+  public readonly outcome: 'cancelled' | 'failed';
+
+  public constructor(outcome: 'cancelled' | 'failed') {
+    super(
+      outcome === 'failed'
+        ? WORKTREE_SETUP_FAILED
+        : 'Worktree setup was cancelled.',
+    );
+    this.name = 'WorktreeSetupEndedError';
+    this.outcome = outcome;
+  }
 }
 
 const UNFINISHED_RUNTIME_STATUSES: readonly string[] = [
@@ -1366,6 +1420,7 @@ function recordSnapshotTurnEnds(
         ? 'failed'
         : effect.outcome,
       record.endedAtMs ?? now,
+      tab.trackedPlanImplementation?.userMessageId,
     );
   }
   const running = snapshot.turn.current?.userMessageId;
@@ -1437,11 +1492,23 @@ function recordUnacceptedTurnEnd(
   tab: PersistedChatTab,
   userMessageId: string,
   outcome: 'cancelled' | 'failed',
+  endedAt: number,
 ): ChatCoreMutation {
   return {
     type: 'tab.metadata_patched',
     tabId: tab.id,
     patch: {
+      ...(tab.trackedPlanImplementation?.userMessageId === userMessageId
+        ? {
+            turnEnds: withTurnEnd(
+              tab.turnEnds,
+              userMessageId,
+              outcome,
+              endedAt,
+              tab.lastAcceptedUserMessageId,
+            ),
+          }
+        : {}),
       unacceptedTurnEnds: {
         ...tab.unacceptedTurnEnds,
         [userMessageId]: outcome,
@@ -1523,7 +1590,8 @@ function recordUnacceptedTurnEnds(
       end.userMessageId,
       end.outcome,
       occurredAt,
-      tab.lastAcceptedUserMessageId,
+      tab.trackedPlanImplementation?.userMessageId ??
+        tab.lastAcceptedUserMessageId,
     );
     timers.push(
       ...closeUnacceptedTurnTimer(
@@ -3125,6 +3193,9 @@ export class ChatStateService implements ChatStateCommandPort {
   private readonly withPlanReviewRevision: NonNullable<
     ChatStateServiceOptions['withPlanReviewRevision']
   >;
+  private readonly withPlanImplementationRevision: NonNullable<
+    ChatStateServiceOptions['withPlanImplementationRevision']
+  >;
   private readonly approvePlanReview: (
     request: PlanReviewApprovalRecordRequest,
   ) => Promise<boolean>;
@@ -3455,6 +3526,21 @@ export class ChatStateService implements ChatStateCommandPort {
         return withTrackedPlanRevision(
           { ...request, source: 'opencode', reviewStatus: 'approved' },
           commit,
+        );
+      });
+    this.withPlanImplementationRevision =
+      options.withPlanImplementationRevision ??
+      (async <T>(
+        request: PlanReviewApprovalRecordRequest,
+        commit: (
+          source: NonNullable<PersistedChatTab['trackedPlanSource']>,
+        ) => Promise<T>,
+      ): Promise<{ accepted: false } | { accepted: true; result: T }> => {
+        const { withTrackedPlanRevision } =
+          await import('../lib/plan-persistence');
+        return withTrackedPlanRevision(
+          { ...request, reviewStatus: 'approved' },
+          (plan): Promise<T> => commit(plan.source),
         );
       });
     this.approvePlanReview =
@@ -4449,6 +4535,103 @@ export class ChatStateService implements ChatStateCommandPort {
       ) &&
       runtime.activeTurn?.userMessageId === turnUserMessageId
     );
+  }
+
+  /** The chat authority settles only its exact admitted managed-terminal attempt. */
+  public async recordTerminalPlanImplementation(
+    target: ChatScopeKey & { chatId: string; userMessageId: string },
+    phase: 'started' | 'completed' | 'failed' | 'cancelled',
+    options?: { pendingOnly: true },
+  ): Promise<boolean> {
+    let matched = false;
+    const now = this.now();
+    await this.repository.transactWith(
+      target,
+      (current): ChatCoreMutation[] => {
+        const tab = current.tabsFile.tabs.find(
+          (entry) => entry.id === target.chatId,
+        );
+        const link = tab?.trackedPlanImplementation;
+        if (
+          !tab ||
+          !link ||
+          link.userMessageId !== target.userMessageId ||
+          link.outcome
+        )
+          return [];
+        const runtime = current.runtimeByChatId[tab.id];
+        if (
+          options?.pendingOnly &&
+          (runtime?.status !== 'starting' ||
+            runtime.activeTurn?.userMessageId !== target.userMessageId ||
+            (tab.providerType ??
+              (tab.model ? getProviderForModel(tab.model) : 'claude')) !==
+              'claude' ||
+            !isTerminalBackedInterfaceMode(tab.interfaceMode))
+        )
+          return [];
+        if (
+          phase === 'started' &&
+          runtime?.activeTurn &&
+          runtime.activeTurn.userMessageId !== target.userMessageId
+        )
+          return [];
+        matched = true;
+        if (
+          phase === 'started' &&
+          runtime?.status === 'streaming' &&
+          runtime.activeTurn?.userMessageId === target.userMessageId
+        )
+          return [];
+        const mutations: ChatCoreMutation[] =
+          phase === 'started'
+            ? []
+            : [
+                {
+                  type: 'tab.metadata_patched',
+                  tabId: tab.id,
+                  patch: {
+                    turnEnds: withTurnEnd(
+                      tab.turnEnds,
+                      target.userMessageId,
+                      phase,
+                      now,
+                      tab.lastAcceptedUserMessageId,
+                    ),
+                  },
+                },
+              ];
+        // A delayed end may settle its link but must not end a newer turn.
+        if (
+          !runtime?.activeTurn ||
+          runtime.activeTurn.userMessageId === target.userMessageId
+        ) {
+          mutations.push({
+            type: 'runtime.patched',
+            chatId: tab.id,
+            runtime: {
+              ...runtime,
+              status: phase === 'started' ? 'streaming' : phase,
+              queuedMessageIds: runtime?.queuedMessageIds ?? [],
+              activeTurn: {
+                userMessageId: target.userMessageId,
+                startedAt: Date.parse(link.startedAt),
+              },
+              lastActivityAt: now,
+            },
+          });
+        }
+        return mutations;
+      },
+      {
+        source: 'terminal',
+        ...(phase === 'started'
+          ? {}
+          : { mutationId: `plan-terminal:${target.userMessageId}:${phase}` }),
+        chatIds: [target.chatId],
+      },
+    );
+    return matched;
   }
 
   /**
@@ -6077,6 +6260,22 @@ export class ChatStateService implements ChatStateCommandPort {
         return this.sendMessage(scope, envelope, options);
       case 'chat.commit_terminal_initial_prompt':
         return this.commitTerminalInitialPrompt(scope, envelope);
+      case 'chat.reject_plan_implementation_delivery': {
+        const matched = await this.recordTerminalPlanImplementation(
+          {
+            ...scope,
+            chatId: envelope.command.chatId,
+            userMessageId: envelope.command.userMessageId,
+          },
+          'failed',
+          { pendingOnly: true },
+        );
+        return commandResult(
+          envelope,
+          await this.repository.getRevision(scope),
+          matched ? 'applied' : 'already_applied',
+        );
+      }
       case 'chat.edit_queued_message':
       case 'chat.move_queued_message':
       case 'chat.cancel_queued_message':
@@ -8170,7 +8369,9 @@ export class ChatStateService implements ChatStateCommandPort {
           tab.turnEnds?.[entryId] === undefined &&
           tab.unacceptedTurnEnds?.[entryId] === undefined
         ) {
-          mutations.push(recordUnacceptedTurnEnd(tab, entryId, 'cancelled'));
+          mutations.push(
+            recordUnacceptedTurnEnd(tab, entryId, 'cancelled', this.now()),
+          );
           endedTurn = true;
         }
         return mutations;
@@ -8292,7 +8493,12 @@ export class ChatStateService implements ChatStateCommandPort {
               live.unacceptedTurnEnds?.[acceptedInputId] === undefined
             ) {
               mutations.push(
-                recordUnacceptedTurnEnd(live, acceptedInputId, 'cancelled'),
+                recordUnacceptedTurnEnd(
+                  live,
+                  acceptedInputId,
+                  'cancelled',
+                  this.now(),
+                ),
               );
               endedTurn = true;
             }
@@ -8609,9 +8815,19 @@ export class ChatStateService implements ChatStateCommandPort {
         // A canonical `starting` outlives its dispatch once the turn it
         // started ends (35c4 binds dispatches at start). With no dispatch
         // still awaiting its start, settle it from canonical state.
+        const terminalImplementationPending =
+          persistedTabProvider(tab) === 'claude' &&
+          isTerminalBackedInterfaceMode(
+            getEffectiveClaudeChatInterfaceMode(tab?.interfaceMode),
+          ) &&
+          tab?.trackedPlanImplementation &&
+          !tab.trackedPlanImplementation.outcome &&
+          tab.trackedPlanImplementation.userMessageId ===
+            previous.activeTurn?.userMessageId;
         const settlesStaleStart =
           status === 'starting' &&
           !installsDispatchStarting &&
+          !terminalImplementationPending &&
           // A worktree setup holding this chat's turn owns its start.
           this.setupHolds.get(chatRuntimeHostKey(scope, scope.chatId))?.owner
             ?.state !== 'held' &&
@@ -8922,7 +9138,12 @@ export class ChatStateService implements ChatStateCommandPort {
               tab.unacceptedTurnEnds?.[userMessageId] === undefined
             ) {
               mutations.push(
-                recordUnacceptedTurnEnd(tab, userMessageId, 'failed'),
+                recordUnacceptedTurnEnd(
+                  tab,
+                  userMessageId,
+                  'failed',
+                  this.now(),
+                ),
               );
               settledAgentInputEnd = true;
             }
@@ -8991,6 +9212,7 @@ export class ChatStateService implements ChatStateCommandPort {
                     tab,
                     mutation.request.userMessageId,
                     'cancelled',
+                    this.now(),
                   ),
                 ]
               : []),
@@ -10007,6 +10229,7 @@ export class ChatStateService implements ChatStateCommandPort {
             for (const key of [
               'mcpActivation',
               'inputDelivery',
+              'trackedPlanImplementation',
               'lastAcceptedUserMessageId',
               'unacceptedTurnEnds',
               'turnEnds',
@@ -10673,6 +10896,21 @@ export class ChatStateService implements ChatStateCommandPort {
             outcome = 'not_found';
             return [];
           }
+          const link = command.patch.trackedPlanImplementation;
+          if (link !== undefined && link !== null) {
+            const prior = tab.trackedPlanImplementation;
+            if (
+              !TrackedPlanImplementationInputSchema.safeParse(link).success ||
+              !prior ||
+              prior.planId !== link.planId ||
+              prior.revisionNumber !== link.revisionNumber ||
+              prior.userMessageId !== link.userMessageId ||
+              prior.startedAt !== link.startedAt
+            ) {
+              outcome = 'rejected';
+              return [];
+            }
+          }
           if (
             command.expectedPendingPlanExitRequestId !== undefined &&
             (tab.pendingPlanExitRequestId !==
@@ -11322,6 +11560,23 @@ export class ChatStateService implements ChatStateCommandPort {
     options: ChatCommandExecutionOptions,
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
   ): Promise<ChatCommandResult> {
+    const implementation = command.trackedPlanImplementation;
+    if (
+      implementation !== undefined &&
+      (!TrackedPlanImplementationInputSchema.safeParse(implementation)
+        .success ||
+        implementation.userMessageId !== command.userMessageId ||
+        (command.planReviewApproval &&
+          (command.planReviewApproval.planId !== implementation.planId ||
+            command.planReviewApproval.revisionNumber !==
+              implementation.revisionNumber)))
+    )
+      return commandResult(
+        envelope,
+        await this.repository.getRevision(scope),
+        'rejected',
+        { reason: 'Invalid plan implementation identity.' },
+      );
     const trustedRequest: ChatSendMessageRequest = {
       projectId: scope.projectId,
       worktreeId: scope.worktreeId,
@@ -11413,7 +11668,7 @@ export class ChatStateService implements ChatStateCommandPort {
       await this.authorizeSend({
         ...scope,
         tab: tabWithSendModel(tabBeforeAuthorization, command),
-        ...(command.agentSenderProvenance
+        ...(command.agentSenderProvenance || implementation
           ? { allowTrustedTerminal: true }
           : {}),
       });
@@ -11490,6 +11745,8 @@ export class ChatStateService implements ChatStateCommandPort {
         }
       | undefined;
     let acceptedRequest: ChatSendMessageRequest | undefined;
+    let implementationSource: PersistedChatTab['trackedPlanSource'];
+    let previousPlanTracking: ChatTabMetadataPatch | undefined;
     const commitSend = (): Promise<ChatStateCommit> =>
       this.repository.transactWith(
         scope,
@@ -11548,6 +11805,22 @@ export class ChatStateService implements ChatStateCommandPort {
             };
             return [];
           }
+          const priorImplementation = tab.trackedPlanImplementation;
+          if (
+            implementation &&
+            priorImplementation?.userMessageId === command.userMessageId
+          ) {
+            precommitResult = {
+              outcome:
+                priorImplementation.planId === implementation.planId &&
+                priorImplementation.revisionNumber ===
+                  implementation.revisionNumber &&
+                priorImplementation.startedAt === implementation.startedAt
+                  ? 'already_applied'
+                  : 'rejected',
+            };
+            return [];
+          }
           if (
             (tab.messages.some(({ id }) => id === command.userMessageId) &&
               // Core precommits an agent's message before it is accepted.
@@ -11568,6 +11841,48 @@ export class ChatStateService implements ChatStateCommandPort {
                 }
               : { outcome: 'already_applied' };
             return [];
+          }
+          if (implementation) {
+            const runtime = current.runtimeByChatId[tab.id];
+            const busy =
+              [
+                'starting',
+                'streaming',
+                'awaiting_input',
+                'completing',
+                'queued',
+              ].includes(runtime?.status ?? 'idle') ||
+              (runtime?.queuedMessages?.length ?? 0) > 0;
+            const anotherAttempt = current.tabsFile.tabs.some((candidate) => {
+              const link = candidate.trackedPlanImplementation;
+              const live = current.runtimeByChatId[candidate.id];
+              return (
+                link?.planId === implementation.planId &&
+                link.revisionNumber === implementation.revisionNumber &&
+                !link.outcome &&
+                (live?.activeTurn?.userMessageId === link.userMessageId ||
+                  live?.queuedMessages?.some(
+                    ({ request }) =>
+                      request.userMessageId === link.userMessageId,
+                  ))
+              );
+            });
+            if (
+              busy ||
+              anotherAttempt ||
+              tab.providerType === 'cursor' ||
+              tab.executionHarness === 'cursor' ||
+              implementationSource === undefined ||
+              command.planMode === true ||
+              asyncAnswer
+            ) {
+              precommitResult = {
+                outcome: 'rejected',
+                reason:
+                  'The plan implementation target is unavailable or busy.',
+              };
+              return [];
+            }
           }
           if (options.canCommitSend?.() === false) {
             precommitResult = {
@@ -11718,6 +12033,26 @@ export class ChatStateService implements ChatStateCommandPort {
                 ]
               : []),
           ];
+          if (implementation)
+            previousPlanTracking = {
+              trackedPlanImplementation: tab.trackedPlanImplementation ?? null,
+              trackedPlanId: tab.trackedPlanId ?? null,
+              trackedPlanSource: tab.trackedPlanSource ?? null,
+              trackedPlanReviewStatus: tab.trackedPlanReviewStatus ?? null,
+              latestRevisionNumber: tab.latestRevisionNumber ?? null,
+            };
+          if (implementation)
+            acceptanceMutations.push({
+              type: 'tab.metadata_patched',
+              tabId: tab.id,
+              patch: {
+                trackedPlanId: implementation.planId,
+                trackedPlanSource: implementationSource,
+                latestRevisionNumber: implementation.revisionNumber,
+                trackedPlanReviewStatus: 'approved',
+                trackedPlanImplementation: implementation,
+              },
+            });
           // An unchanged title/settings send still needs a durable command
           // receipt. Without this fence an empty transaction is unapplied and
           // the send would disappear before real queue admission.
@@ -11810,6 +12145,26 @@ export class ChatStateService implements ChatStateCommandPort {
 
     // The plan lock is held only through canonical acceptance, never provider
     // dispatch. Plan edits cannot race the revision check and this commit.
+    const commitImplementation = (): Promise<
+      { accepted: false } | { accepted: true; result: ChatStateCommit }
+    > =>
+      implementation &&
+      tabBeforeAuthorization?.trackedPlanImplementation?.userMessageId !==
+        command.userMessageId
+        ? this.withPlanImplementationRevision(
+            {
+              ...scope,
+              chatId: command.chatId,
+              planId: implementation.planId,
+              revisionNumber: implementation.revisionNumber,
+              approvedAt: new Date(timestamp).toISOString(),
+            },
+            async (source) => {
+              implementationSource = source;
+              return commitSend();
+            },
+          )
+        : commitSend().then((result) => ({ accepted: true as const, result }));
     const guardedCommit = pendingPlanReviewApproval
       ? await this.withPlanReviewRevision(
           {
@@ -11819,9 +12174,12 @@ export class ChatStateService implements ChatStateCommandPort {
             revisionNumber: pendingPlanReviewApproval.revisionNumber,
             approvedAt: new Date(timestamp).toISOString(),
           },
-          commitSend,
+          async () => {
+            implementationSource = 'opencode';
+            return commitSend();
+          },
         )
-      : { accepted: true as const, result: await commitSend() };
+      : await commitImplementation();
     if (!guardedCommit.accepted) {
       return commandResult(
         envelope,
@@ -11882,6 +12240,7 @@ export class ChatStateService implements ChatStateCommandPort {
       // The held turn shows as starting, its prompt committed, until setup
       // ends; later sends queue behind it through admission. A setup that
       // already ended waits for this commit, so it still settles this turn.
+      // `installing` resolves only once the committed turn owns the hold.
       const installing =
         startsHeldTurn && setupHold.owner === undefined
           ? this.commitAdmittedPrompt(
@@ -11891,20 +12250,27 @@ export class ChatStateService implements ChatStateCommandPort {
               timestamp,
               undefined,
               { cancelledBeforeDispatch: false, startsTurn: true },
-            )
+            ).then((installed) => {
+              if (installed)
+                this.holdTurnForSetup(setupHold, {
+                  key: awaitingSetupKey(scope, command),
+                  scope,
+                  command,
+                  timestamp,
+                  dispatch: {
+                    kind: 'admitted',
+                    envelope,
+                    command,
+                    revision: commit.revision,
+                    startsNewTrackedChat,
+                    admissionCheck,
+                  },
+                });
+              return installed;
+            })
           : undefined;
       if (installing) setupHold.installing = installing;
       if (installing && (await installing)) {
-        this.holdTurnForSetup(setupHold, {
-          key: awaitingSetupKey(scope, command),
-          scope,
-          envelope,
-          command,
-          revision: commit.revision,
-          timestamp,
-          startsNewTrackedChat,
-          admissionCheck,
-        });
         await setupHold.acquired;
         return commandResult(envelope, commit.revision, 'applied', {
           entityId: command.chatId,
@@ -11917,9 +12283,178 @@ export class ChatStateService implements ChatStateCommandPort {
       envelope,
       command,
       commit.revision,
-      { request, timestamp, installedStartingRuntime: false },
+      {
+        request,
+        timestamp,
+        installedStartingRuntime: false,
+        previousPlanTracking,
+      },
       asyncAnswer,
     );
+  }
+
+  /**
+   * Holds a desktop send for its worktree's pending Git setup, as an admitted
+   * Portal or agent send is held. The chat's first send becomes the turn the
+   * setup holds: its prompt (`userMessage`) commits now with a `starting`
+   * runtime, and its request dispatches unchanged once setup is ready
+   * (`'held'`). A send while the chat is already held waits for the hold and
+   * then goes to the chat queue through `submit`, which the hold awaits
+   * before it ends, so the row stays queued behind the held turn
+   * (`'queued-behind-hold'`); one whose hold ended without the setup becoming
+   * ready throws `WorktreeSetupEndedError` instead of dispatching. With no
+   * pending setup the send is submitted as usual (`'dispatch-now'`). A held
+   * send can fail after this returns, by its dispatch failing or its setup
+   * ending, so `onHeldDispatchFailed` then does what the caller's own
+   * failure handling would.
+   */
+  public async holdLocalSendForWorktreeSetup(
+    request: ChatSendMessageRequest,
+    userMessage: (timestamp: number) => PersistedChatMessage,
+    submit: () => Promise<void>,
+    onHeldDispatchFailed?: () => Promise<void>,
+  ): Promise<'dispatch-now' | 'held' | 'queued-behind-hold'> {
+    const { chatId, userMessageId } = request;
+    const dispatchNow = async (): Promise<'dispatch-now'> => {
+      await submit();
+      return 'dispatch-now';
+    };
+    // An agent send that waits for its target's setup keeps its queue path.
+    if (request.agentSendSetup) return dispatchNow();
+    const scope = {
+      projectId: request.projectId,
+      worktreeId: request.worktreeId,
+    };
+    const key = chatRuntimeHostKey(scope, chatId);
+    const existing = this.setupHolds.get(key);
+    if (existing) {
+      // This row may land before the first send's turn owns the hold. That
+      // is safe: settling awaits `installing` before it reads the owner, and
+      // the release dispatches an owner first. If installing fails, the first
+      // send fails to its caller and this row stays queued behind the hold,
+      // released or ended with the setup like any other.
+      await existing.acquired;
+      return this.submitBehindSetupHold(existing, submit);
+    }
+    const hold = this.beginSetupHold(scope, chatId);
+    if (!hold) return dispatchNow();
+    await hold.acquired;
+    if (hold.owner !== undefined)
+      return this.submitBehindSetupHold(hold, submit);
+    const timestamp = this.now();
+    // A setup that already ended waits for this commit, so it still settles
+    // this turn. `installing` resolves only once the committed turn owns the
+    // hold, so settling never sees a committed turn without its owner.
+    const installing = this.ensureChatForTrustedSend(request)
+      .then(() =>
+        this.commitHeldLocalPrompt(
+          scope,
+          request,
+          userMessage(timestamp),
+          timestamp,
+        ),
+      )
+      .then((installed) => {
+        if (installed)
+          this.holdTurnForSetup(hold, {
+            key: awaitingSetupKey(scope, { chatId, userMessageId }),
+            scope,
+            command: { chatId, userMessageId },
+            timestamp,
+            dispatch: {
+              kind: 'local',
+              request,
+              onDispatchFailed: onHeldDispatchFailed,
+            },
+          });
+        return installed;
+      });
+    hold.installing = installing;
+    // Another send installed its turn first; this one queues behind it.
+    if (!(await installing)) return this.submitBehindSetupHold(hold, submit);
+    await hold.acquired;
+    return 'held';
+  }
+
+  /**
+   * Queues a desktop send behind a chat's held turn. Its row is written while
+   * the hold waits for it, so a setup that fails meanwhile still takes the
+   * row and ends it with the held turn; a hold that already ended that way
+   * refuses the send instead.
+   */
+  private async submitBehindSetupHold(
+    hold: SetupHold,
+    submit: () => Promise<void>,
+  ): Promise<'queued-behind-hold'> {
+    if (hold.outcome !== undefined && hold.outcome !== 'ready')
+      throw new WorktreeSetupEndedError(hold.outcome);
+    const submitting = submit();
+    hold.submitting.add(submitting);
+    try {
+      await submitting;
+    } finally {
+      hold.submitting.delete(submitting);
+    }
+    return 'queued-behind-hold';
+  }
+
+  /**
+   * Commits a held desktop send's prompt with its turn's `starting` runtime,
+   * as `commitAdmittedPrompt` does for a held admitted send. The prompt
+   * commit at dispatch then finds the message and keeps one copy. Returns
+   * whether it installed that runtime.
+   */
+  private async commitHeldLocalPrompt(
+    scope: ChatScopeKey,
+    request: ChatSendMessageRequest,
+    message: PersistedChatMessage,
+    timestamp: number,
+  ): Promise<boolean> {
+    let installed = false;
+    await this.repository.transactWith(
+      scope,
+      (current) => {
+        const tab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === request.chatId,
+        );
+        if (!tab || tab.kind === 'file' || tab.readOnly) {
+          throw new Error('Target chat no longer accepts this message');
+        }
+        const runtime = current.runtimeByChatId[tab.id];
+        if (
+          tab.messages.some(({ id }) => id === request.userMessageId) ||
+          (runtime !== undefined &&
+            ['starting', 'streaming', 'awaiting_input', 'completing'].includes(
+              runtime.status,
+            ))
+        )
+          return [];
+        installed = true;
+        return [
+          { type: 'message.upserted', chatId: tab.id, message },
+          {
+            type: 'runtime.patched',
+            chatId: tab.id,
+            runtime: {
+              ...runtime,
+              status: 'starting',
+              queuedMessageIds: runtime?.queuedMessageIds ?? [],
+              activeTurn: {
+                userMessageId: request.userMessageId,
+                startedAt: timestamp,
+              },
+              lastActivityAt: timestamp,
+            },
+          },
+        ];
+      },
+      {
+        source: 'renderer-command',
+        mutationId: `${request.chatId}:${request.userMessageId}:setup-held`,
+        chatIds: [request.chatId],
+      },
+    );
+    return installed;
   }
 
   /**
@@ -11947,6 +12482,7 @@ export class ChatStateService implements ChatStateCommandPort {
         );
       }),
       owner: undefined,
+      submitting: new Set(),
     };
     this.setupHolds.set(key, hold);
     void setup
@@ -12009,14 +12545,28 @@ export class ChatStateService implements ChatStateCommandPort {
     hold: SetupHold,
     outcome: WorktreeGitSetupOutcome,
   ): Promise<void> {
+    hold.outcome = outcome;
     await hold.acquired;
+    // `installing` resolves only after a committed turn owns the hold
+    // (`holdTurnForSetup`), which extends `acquired` with that turn's queue
+    // hold; it lands before the hold ends.
     await hold.installing?.catch(() => false);
+    await hold.acquired;
+    // Rows of sends admitted behind the held turn land before the hold
+    // takes or releases them.
+    await Promise.allSettled(hold.submitting);
     if (this.draining) return;
     const target = { ...hold.scope, chatId: hold.chatId };
     const key = chatRuntimeHostKey(hold.scope, hold.chatId);
     const owner = hold.owner;
     if (outcome !== 'ready') {
-      if (owner) await this.settleHeldSend(owner, outcome);
+      if (owner) {
+        // A held desktop send that setup ended never ran, so its admission
+        // is undone, as when its dispatch fails; one the user stopped stays.
+        const undoesAdmission = owner.state === 'held';
+        await this.settleHeldSend(owner, outcome);
+        if (undoesAdmission) await this.undoHeldLocalAdmission(owner);
+      }
       await this.untilSettled(hold, async () => {
         await this.worktreeSetupQueue.takeHeld(target, outcome);
         await this.worktreeSetupQueue.release(target);
@@ -12085,9 +12635,11 @@ export class ChatStateService implements ChatStateCommandPort {
       command.chatId,
       command.userMessageId,
     );
-    const admissionDefault = held.admissionCheck
-      ? await readAdmissionDefault(scope)
-      : undefined;
+    const { dispatch } = held;
+    const admissionDefault =
+      dispatch.kind === 'admitted' && dispatch.admissionCheck
+        ? await readAdmissionDefault(scope)
+        : undefined;
     const state = await this.repository.getState(scope, {
       chatIds: [command.chatId],
     });
@@ -12109,33 +12661,79 @@ export class ChatStateService implements ChatStateCommandPort {
       await this.settleHeldSend(held, 'cancelled');
       return;
     }
-    const admissionRefusal = held.admissionCheck?.(tab);
+    const key = chatRuntimeHostKey(hold.scope, hold.chatId);
+    if (dispatch.kind === 'local') {
+      held.state = 'dispatching';
+      if (this.setupHolds.get(key) === hold) this.setupHolds.delete(key);
+      // Through the chat queue's submit, as every desktop send: the queue
+      // releases the hold for exactly this send. Its prompt and starting
+      // runtime are already committed (`commitHeldLocalPrompt`), so the
+      // pre-dispatch commit an immediate submit runs is deliberately a
+      // no-op here, and the dispatch's own prompt commit keeps the one
+      // message.
+      try {
+        await this.dispatch(dispatch.request, 'desktop', () =>
+          Promise.resolve(),
+        );
+      } catch (error) {
+        // The send's caller already returned, so a dispatch no provider
+        // accepted ends its committed starting turn here, as failed, and
+        // undoes the caller's admission. The hold itself still settles.
+        logMainProcessWarn(
+          `[chat-state] A send held for worktree setup could not dispatch for ${scope.projectId}/${scope.worktreeId}/${command.chatId}:`,
+          error,
+        );
+        if (
+          !(await this.repository.hasMutation(
+            scope,
+            `${command.chatId}:${command.userMessageId}:accepted`,
+          ))
+        ) {
+          await this.endUnacceptedTurn(
+            scope,
+            command,
+            held.timestamp,
+            'failed',
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        await this.undoHeldLocalAdmission(held);
+      }
+      return;
+    }
+    const admissionRefusal = dispatch.admissionCheck?.(tab);
     if (admissionRefusal !== undefined) {
       await this.settleHeldSend(held, 'failed', admissionRefusal);
       return;
     }
+    const admittedCommand = dispatch.command;
     // A pipeline override's model commits again over a change made during
     // setup, as at acceptance: host routing and the session follow the chat.
-    const routedTab = command.turnOverride
-      ? await this.commitTurnOverrideModel(scope, command, tab)
+    const routedTab = admittedCommand.turnOverride
+      ? await this.commitTurnOverrideModel(scope, admittedCommand, tab)
       : tab;
     const request = {
-      ...admittedSendRequest(scope, command, routedTab, {
-        startsNewTrackedChat: held.startsNewTrackedChat,
+      ...admittedSendRequest(scope, admittedCommand, routedTab, {
+        startsNewTrackedChat: dispatch.startsNewTrackedChat,
       }),
-      ...(held.admissionCheck
+      ...(dispatch.admissionCheck
         ? { admittedApproval: admittedApprovalOf(tab, admissionDefault) }
         : {}),
     };
     held.state = 'dispatching';
-    const key = chatRuntimeHostKey(hold.scope, hold.chatId);
     if (this.setupHolds.get(key) === hold) this.setupHolds.delete(key);
-    await this.dispatchAdmitted(scope, held.envelope, command, held.revision, {
-      request,
-      timestamp: held.timestamp,
-      installedStartingRuntime: ownsRuntime,
-      acknowledged: true,
-    });
+    await this.dispatchAdmitted(
+      scope,
+      dispatch.envelope,
+      admittedCommand,
+      dispatch.revision,
+      {
+        request,
+        timestamp: held.timestamp,
+        installedStartingRuntime: ownsRuntime,
+        acknowledged: true,
+      },
+    );
   }
 
   /**
@@ -12205,6 +12803,18 @@ export class ChatStateService implements ChatStateCommandPort {
       (candidate) => candidate.id === command.chatId,
     );
     return committed && committed.kind !== 'file' ? committed : tab;
+  }
+
+  /** Runs a held desktop send's `onHeldDispatchFailed`, logging a failure. */
+  private async undoHeldLocalAdmission(held: HeldSend): Promise<void> {
+    if (held.dispatch.kind !== 'local') return;
+    const { scope, command } = held;
+    await held.dispatch.onDispatchFailed?.().catch((undoError: unknown) => {
+      logMainProcessWarn(
+        `[chat-state] Could not undo the admission of a held send for ${scope.projectId}/${scope.worktreeId}/${command.chatId}:`,
+        undoError,
+      );
+    });
   }
 
   private async settleHeldSend(
@@ -12511,6 +13121,7 @@ export class ChatStateService implements ChatStateCommandPort {
       timestamp: number;
       installedStartingRuntime: boolean;
       acknowledged?: boolean;
+      previousPlanTracking?: ChatTabMetadataPatch;
     },
     asyncAnswer?: { questionId: string; answers: McpQuestionAnswer[] },
   ): Promise<ChatCommandResult> {
@@ -12752,6 +13363,18 @@ export class ChatStateService implements ChatStateCommandPort {
               : // Deferred rows do not exist to remove. Still write the rejected
                 // command receipt rather than leaving acceptance recorded as applied.
                 [{ type: 'tab.metadata_patched', tabId: tab.id, patch: {} }];
+            // A refusal is not an accepted retry. Restore only while this
+            // registration still owns the slot; never roll back a newer turn.
+            if (
+              admitted.previousPlanTracking &&
+              tab.trackedPlanImplementation?.userMessageId ===
+                command.userMessageId
+            )
+              mutations.push({
+                type: 'tab.metadata_patched',
+                tabId: tab.id,
+                patch: admitted.previousPlanTracking,
+              });
             const runtime = current.runtimeByChatId[tab.id];
             const runtimeAfterAdmission = removeAdmittingRuntimeEntry(
               runtime,

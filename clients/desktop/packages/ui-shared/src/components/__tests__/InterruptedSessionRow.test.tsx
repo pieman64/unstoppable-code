@@ -3,7 +3,6 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { Checkbox } from '../Choice';
 import { InterruptedSessionRow } from '../InterruptedSessionRow';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
@@ -31,7 +30,13 @@ describe('InterruptedSessionRow', () => {
       root.render(
         <InterruptedSessionRow
           title="Fix sign-in"
-          titleFor="session-1"
+          selection={{
+            id: 'session-1',
+            describedBy: 'session-1-metadata',
+            checked: false,
+            disabled: true,
+            onChange: () => undefined,
+          }}
           replayMaskTitle
           metadataId="session-1-metadata"
           metadataTestId="session-1-metadata"
@@ -39,25 +44,18 @@ describe('InterruptedSessionRow', () => {
           secondaryMetadata="Chat"
           replayMaskSecondaryMetadata
           disabled
-          leading={
-            <Checkbox
-              id="session-1"
-              aria-describedby="session-1-metadata"
-              checked={false}
-              disabled
-              onChange={() => undefined}
-            />
-          }
           trailing={<button type="button">Resume at reset</button>}
         />,
       );
     });
     const input = container.querySelector<HTMLInputElement>('#session-1');
-    const label = container.querySelector('label[for="session-1"]');
+    // The title line is the checkbox's label: clicking it toggles.
+    const label = input?.closest('label');
     expect(label?.textContent).toBe('Fix sign-in');
-    expect(label?.className.split(' ')).toContain('ph-mask');
-    expect(label?.hasAttribute('title')).toBe(false);
-    expect(label?.className).toContain('fg-secondary');
+    const title = label?.querySelector('.ph-mask');
+    expect(title?.textContent).toBe('Fix sign-in');
+    expect(title?.hasAttribute('title')).toBe(false);
+    expect(title?.className).toContain('fg-secondary');
     const description = document.getElementById(
       input?.getAttribute('aria-describedby') ?? '',
     );

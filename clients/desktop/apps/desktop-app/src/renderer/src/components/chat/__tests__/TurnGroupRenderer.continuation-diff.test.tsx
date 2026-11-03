@@ -194,7 +194,7 @@ it("counts a continuation step its prompt's safety receipt denied as blocked", (
   view.done();
 });
 
-it('forks the active session from its prompt while its tools-loaded continuation runs', () => {
+it('forks the original reply snapshot while its tools-loaded continuation runs', () => {
   mockForkTab.mockClear();
   const view = render(
     <TurnGroupRenderer
@@ -211,8 +211,7 @@ it('forks the active session from its prompt while its tools-loaded continuation
     view.host.querySelector<HTMLButtonElement>('[data-testid="fork"]')?.click(),
   );
   expect(mockForkTab).toHaveBeenCalledWith('chat-1', undefined, {
-    includeActiveTurn: true,
-    sourceSdkSessionId: 'session-1',
+    forkAfterUserMessageId: 'u1',
   });
   view.done();
 });

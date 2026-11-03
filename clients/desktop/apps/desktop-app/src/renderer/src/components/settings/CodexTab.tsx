@@ -33,8 +33,9 @@ import {
 import {
   Button,
   ErrorState,
+  ChoiceList,
+  ChoiceListRow,
   Notice,
-  Radio,
   TextLinkButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
@@ -111,7 +112,7 @@ function CodexDefaultSpeed({
   };
   const refreshLabel = (
     <>
-      <RefreshIcon aria-hidden width={14} height={14} />
+      <RefreshIcon size="sm" aria-hidden />
       <span>{refreshing ? 'Checking' : 'Check again'}</span>
     </>
   );
@@ -141,39 +142,34 @@ function CodexDefaultSpeed({
           labelId={labelId}
           description="The speed new Codex chats request."
         >
-          <div
-            role="radiogroup"
-            aria-labelledby={labelId}
+          <ChoiceList
+            kind="radio"
+            aria-label="Default speed"
             data-testid="settings-codex-fast-mode-default"
-            className="flex flex-col gap-3"
           >
             {CODEX_SPEED_CHOICES.map((choice) => {
               const state = states[choice];
               return (
-                <label
+                <ChoiceListRow
                   key={choice}
-                  className={`flex items-center gap-2.5 text-s fg-primary ${
-                    state.selectable ? 'cursor-pointer' : 'cursor-not-allowed'
-                  }`}
+                  kind="radio"
+                  name="settings-codex-default-speed"
+                  value={choice}
+                  selected={speed === choice}
+                  disabled={!state.selectable}
+                  onClick={(): void => onChange(choice)}
+                  data-testid={`settings-codex-speed-default-${choice}`}
+                  trailing={
+                    !state.selectable && state.shortReason
+                      ? state.shortReason
+                      : undefined
+                  }
                 >
-                  <Radio
-                    name="settings-codex-default-speed"
-                    value={choice}
-                    checked={speed === choice}
-                    disabled={!state.selectable}
-                    onChange={(): void => onChange(choice)}
-                    data-testid={`settings-codex-speed-default-${choice}`}
-                  />
-                  <span>{CODEX_SPEED_LABELS[choice]}</span>
-                  {!state.selectable && state.shortReason && (
-                    <span className="text-xs fg-tertiary">
-                      {state.shortReason}
-                    </span>
-                  )}
-                </label>
+                  {CODEX_SPEED_LABELS[choice]}
+                </ChoiceListRow>
               );
             })}
-          </div>
+          </ChoiceList>
         </SettingsRow>
         <SettingsRow
           label="Speed availability"

@@ -123,6 +123,12 @@ export interface CanopyDaemonControlPlaneOptions {
    * declared label, a caller descriptor, or a payload claim.
    */
   readonly leaseBoundOperations?: readonly string[];
+  /**
+   * Lease-bound keyed operations whose receipts never name the lease: a
+   * fenced call answers `same_idempotency_key` instead of `never`, since a
+   * decided call replays on a new lease (DM-5 #4).
+   */
+  readonly sameKeyFencedOperations?: readonly string[];
   readonly clock?: CanopyDaemonClock;
 }
 
@@ -145,6 +151,7 @@ type CanopyControlServingOptions = Pick<
   | 'connection'
   | 'maxActiveRequests'
   | 'leaseBoundOperations'
+  | 'sameKeyFencedOperations'
   | 'clock'
 >;
 
@@ -279,23 +286,15 @@ const LEASE_REQUIRED: CanopyErrorPayload = {
   message: 'This operation requires a live client lease on this connection.',
   retry: { kind: 'never' },
 };
+// Each fenced call's retry is its operation's (`sameKeyFencedOperations`).
 const LEASE_FENCED: Readonly<
-  Record<CanopyLeaseEnd | 'moved', CanopyErrorPayload>
+  Record<CanopyLeaseEnd | 'moved', Omit<CanopyErrorPayload, 'retry'>>
 > = {
-  released: {
-    kind: 'cancelled',
-    message: 'The client lease was released.',
-    retry: { kind: 'never' },
-  },
-  evicted: {
-    kind: 'not_found',
-    message: 'The client lease expired.',
-    retry: { kind: 'never' },
-  },
+  released: { kind: 'cancelled', message: 'The client lease was released.' },
+  evicted: { kind: 'not_found', message: 'The client lease expired.' },
   moved: {
     kind: 'failed_precondition',
     message: 'The client lease moved to another connection.',
-    retry: { kind: 'never' },
   },
 };
 
@@ -309,6 +308,7 @@ const LEASE_FENCED: Readonly<
 function fenceLeasedCall(
   leases: CanopyLeaseRegistry,
   connectionId: string,
+  retry: CanopyErrorPayload['retry'],
 ): {
   readonly signal: AbortSignal;
   refusal(): CanopyOperationError | null;
@@ -334,7 +334,9 @@ function fenceLeasedCall(
     refusal: (): CanopyOperationError | null => {
       // `holder` evicts an expired lease on access, which records the end first.
       if (leases.holder(leaseId) !== connectionId) end('moved');
-      return ended ? new CanopyOperationError(LEASE_FENCED[ended]) : null;
+      return ended
+        ? new CanopyOperationError({ ...LEASE_FENCED[ended], retry })
+        : null;
     },
     dispose: (): void => {
       offEnd();
@@ -370,6 +372,9 @@ function serveControlConnection(
       : without(request.params, '_meta');
   const leaseBound: ReadonlySet<string> = new Set(
     options.leaseBoundOperations ?? [],
+  );
+  const sameKeyFenced: ReadonlySet<string> = new Set(
+    options.sameKeyFencedOperations ?? [],
   );
   const channelKinds = options.channels?.kinds ?? {};
   const mayOpenChannel = (
@@ -648,7 +653,13 @@ function serveControlConnection(
     const { [CANOPY_HOST_EXECUTION_MEMBER]: execution, ...params } =
       paramsFor(request);
     const fence = leaseBound.has(method)
-      ? fenceLeasedCall(leases, connection.connectionId)
+      ? fenceLeasedCall(
+          leases,
+          connection.connectionId,
+          sameKeyFenced.has(method)
+            ? { kind: 'same_idempotency_key' }
+            : { kind: 'never' },
+        )
       : null;
     try {
       const call = {
@@ -886,6 +897,7 @@ export function serveCanopyControlStream(
     connection: options.connection,
     maxActiveRequests: options.maxActiveRequests,
     leaseBoundOperations: options.leaseBoundOperations,
+    sameKeyFencedOperations: options.sameKeyFencedOperations,
     clock: options.clock,
   });
   const release = options.obligations.hold('control stream');

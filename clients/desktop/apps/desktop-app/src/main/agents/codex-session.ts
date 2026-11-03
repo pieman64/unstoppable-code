@@ -1808,7 +1808,7 @@ export class CodexProvider implements AgentProvider {
       const sideAdmissions: Promise<void>[] = [];
       // Every notice derived from this event names the thread it came from, so
       // a sub-agent's failure is never read as the root turn's (CAN-4629).
-      const emitDerivedNotice = scopeDerivedNotices(onEvent, data);
+      const emitDerivedNotice = scopeDerivedNotices(onEvent, eventData);
       // Account-limit notices can precede a successful turn. Only the
       // settled root result can create an automatic quota continuation.
       const proxyInterruption =

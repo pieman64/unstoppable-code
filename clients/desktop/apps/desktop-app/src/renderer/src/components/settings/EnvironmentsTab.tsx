@@ -25,6 +25,7 @@ import {
   Badge,
   Button,
   ConfirmDialog,
+  EmptyStateRow,
   ErrorState,
   Notice,
   SearchField,
@@ -594,7 +595,7 @@ export function EnvironmentsTab(): JSX.Element {
           }
         >
           <div
-            className="flex flex-col gap-4 px-5 pt-5"
+            className="flex flex-col gap-4"
             data-testid="environments-global-runtimes"
           >
             {ENVIRONMENT_RUNTIMES.map((runtime) => (
@@ -800,19 +801,15 @@ export function EnvironmentsTab(): JSX.Element {
         />
         <SettingsGroup dataTestId="environments-list">
           {data.environments.length === 0 ? (
-            <p
-              className="text-s fg-secondary"
-              data-testid="environments-list-empty"
-            >
-              No environments yet.
-            </p>
+            <EmptyStateRow
+              testId="environments-list-empty"
+              title="No environments yet"
+            />
           ) : filteredEnvironments.length === 0 ? (
-            <p
-              className="text-s fg-secondary"
-              data-testid="environments-list-no-matches"
-            >
-              No environments match your search.
-            </p>
+            <EmptyStateRow
+              testId="environments-list-no-matches"
+              title="No environments match your search."
+            />
           ) : (
             filteredEnvironments.map((environment) => (
               <EnvironmentListRow

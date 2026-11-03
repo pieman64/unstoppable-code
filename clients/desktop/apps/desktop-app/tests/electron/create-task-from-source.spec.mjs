@@ -253,9 +253,12 @@ test.describe('Create-from dropdown', () => {
 
       // The demo repo has no GitHub origin remote, so the open-PR list fetch
       // fails offline. The failure must surface as the error state rather than
-      // hang or crash.
+      // hang or crash. Without a GitHub token or gh login, the Connect GitHub
+      // row replaces the raw error once the connection probe settles.
       await expect(
-        window.getByTestId('home-branch-picker-pr-error'),
+        window
+          .getByTestId('home-branch-picker-pr-error')
+          .or(window.getByTestId('home-branch-picker-pr-connect')),
       ).toBeVisible({ timeout: 15_000 });
 
       // With no remote on the seeded repo, the cross-repo auto-switch scan

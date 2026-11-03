@@ -208,7 +208,7 @@ export function SettingsScopePicker({
                         maxInitials={1}
                       />
                     ) : (
-                      <BuildingIcon />
+                      <BuildingIcon size="xl" />
                     )}
                   </DropdownMenuItemIcon>
                   <span className={`min-w-0 flex-1 truncate ${maskClassName}`}>
@@ -237,7 +237,7 @@ export function SettingsScopePicker({
           onClick={() => go(ORGANIZATIONS_PATH)}
         >
           <DropdownMenuItemIcon>
-            <BuildingIcon />
+            <BuildingIcon size="xl" />
           </DropdownMenuItemIcon>
           <span className="min-w-0 flex-1 truncate">All organizations</span>
           {onListPage ? (
@@ -249,7 +249,7 @@ export function SettingsScopePicker({
           onClick={() => go(CREATE_ORGANIZATION_PATH)}
         >
           <DropdownMenuItemIcon>
-            <Plus />
+            <Plus size="xl" />
           </DropdownMenuItemIcon>
           Create an organization
         </DropdownMenuItem>

@@ -1,3 +1,4 @@
+import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
 import type { AppAdvisorWatcherSurfaces } from '../app-advisor/watchers';
 import { emitPortalWatcherProjection } from '../portal/adapters/watchers-adapter';
 
@@ -73,6 +74,29 @@ describe('app advisor watcher IPC handlers', () => {
     expect(() => surfaces?.onChange?.([])).not.toThrow();
     expect(emitPortalWatcherProjection).toHaveBeenCalledWith([]);
   });
+  it('forwards completed GitHub observations to Portal without adding them to the desktop active list', () => {
+    const completed: AppAdvisorWatcherSummary = {
+      id: 'github',
+      trigger: 'github_workflow_runs_changed',
+      status: 'fired',
+      label: 'CI',
+      destination: {
+        projectId: 'project',
+        worktreeId: 'branch',
+        chatId: 'chat',
+      },
+      createdAt: '2026-11-01T12:00:00Z',
+      target: {
+        kind: 'github_workflow_runs',
+        items: [],
+        notifyOn: { statuses: [], conclusions: [], jobConclusions: [] },
+        display: { repositories: [], sample: [] },
+      },
+    };
+    mockConfigure.mock.calls[0]?.[0].onChange?.([], [completed]);
+    expect(emitPortalWatcherProjection).toHaveBeenCalledWith([completed]);
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     registerAppAdvisorWatcherHandlers({

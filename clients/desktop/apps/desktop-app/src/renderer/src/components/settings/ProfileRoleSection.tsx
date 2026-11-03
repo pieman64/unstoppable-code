@@ -12,9 +12,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   Button,
-  Checkbox,
+  ChoiceList,
+  ChoiceListRow,
+  DialogFormField,
   DialogModal,
   TextInput,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { expandLegacyProfileRoles } from '@canopy/protocol/plugin-catalog';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -204,6 +207,7 @@ export function ProfileRoleSection(): JSX.Element {
     >
       {editing ? (
         <DialogModal
+          inset="flush"
           onClose={closeEditor}
           title="What kind of work do you do?"
           subtitle="Select all that apply."
@@ -237,50 +241,47 @@ export function ProfileRoleSection(): JSX.Element {
             </>
           }
         >
-          {/* Shared checkboxes in two columns: the roles fit the dialog
-              without scrolling, and selection is the neutral mark. */}
-          <div
-            role="group"
-            aria-label="Roles"
-            className="grid grid-cols-2 gap-x-4 gap-y-3 p-5"
-            data-testid="settings-profile-role-options"
-          >
-            {ROLE_OPTIONS.map((option) => (
-              <label
-                key={option.id}
-                className="flex cursor-pointer items-center gap-2.5 text-s fg-primary"
-              >
-                <Checkbox
-                  checked={draftRoles.includes(option.id)}
-                  onChange={(): void => toggleRole(option.id)}
+          {/* The shared choice list: selection is the neutral mark. */}
+          <div className="p-6">
+            <ChoiceList
+              aria-label="Roles"
+              data-testid="settings-profile-role-options"
+            >
+              {ROLE_OPTIONS.map((option) => (
+                <ChoiceListRow
+                  key={option.id}
+                  selected={draftRoles.includes(option.id)}
+                  onClick={(): void => toggleRole(option.id)}
                   disabled={saving}
                   data-testid={`settings-profile-role-option-${option.id}`}
-                />
-                {option.label}
-              </label>
-            ))}
+                >
+                  {option.label}
+                </ChoiceListRow>
+              ))}
+            </ChoiceList>
           </div>
-          <div className="px-5 pb-5">
-            <label
+          <div className="px-6 pb-6">
+            <DialogFormField
+              label="Tell us more about what you do (optional)"
               htmlFor="settings-profile-role-detail-input"
-              className="mb-1 block text-s fg-secondary"
             >
-              Tell us more about what you do (optional)
-            </label>
-            <TextInput
-              id="settings-profile-role-detail-input"
-              value={draftDetail}
-              onChange={(event): void => setDraftDetail(event.target.value)}
-              maxLength={ROLE_DETAIL_MAX_LENGTH}
-              data-testid="settings-profile-role-detail-input"
-              placeholder="Role, responsibilities, or goals"
-              disabled={saving}
-            />
+              <TextInput
+                id="settings-profile-role-detail-input"
+                density="settings"
+                value={draftDetail}
+                onChange={(event): void => setDraftDetail(event.target.value)}
+                maxLength={ROLE_DETAIL_MAX_LENGTH}
+                data-testid="settings-profile-role-detail-input"
+                placeholder="Role, responsibilities, or goals"
+                disabled={saving}
+              />
+            </DialogFormField>
           </div>
           {saveError ? (
-            <p role="alert" className="px-5 pb-5 text-s fg-destructive">
-              Could not save your roles. Please try again.
-            </p>
+            <ErrorBanner
+              className="mx-6 mb-6"
+              error="Could not save your roles. Please try again."
+            />
           ) : null}
         </DialogModal>
       ) : null}

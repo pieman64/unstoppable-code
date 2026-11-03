@@ -36,8 +36,10 @@ export const BUBBLE_INFO_SURFACE_CLASS = `rounded-xl bg-info-subtle px-3 py-1.5 
 
 /**
  * Shared chrome for the badges pinned to a chat bubble's corners — the
- * leading voice indicator on a user message and the hover-revealed
- * copy/revert/edit/clear actions on user and queued bubbles alike.
+ * leading voice indicator on a user message and the remaining raw-button
+ * badges. The copy/revert/edit/clear actions on user, queued and delivery
+ * bubbles are the 28px secondary icon `Button`, which carries the same round
+ * quaternary surface, elevation and hairline ring.
  *
  * Kept in one place so the passive indicator and the interactive actions
  * cannot drift apart in shape, surface, or elevation. Size is applied
@@ -55,12 +57,6 @@ export const BUBBLE_INDICATOR_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-5 w-5`;
 
 /** Interactive corner action, sized for the standard 14px glyph. */
 export const BUBBLE_ACTION_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition-colors hover:fg-primary`;
-
-/**
- * Destructive variant of {@link BUBBLE_ACTION_BADGE_CLASS} for clear/cancel
- * actions on queued bubbles.
- */
-export const BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS = `${BUBBLE_BADGE_CHROME} h-7 w-7 transition-colors hover:fg-destructive`;
 
 /** Glyph size for the passive leading indicator. */
 export const BUBBLE_INDICATOR_GLYPH_PX = 10;

@@ -7,14 +7,12 @@ import {
   QUEUED_MESSAGE_BUSY_TOOLTIP,
   QUEUED_MESSAGE_EDITING_TOOLTIP,
   QUEUED_MESSAGE_SENDING_TOOLTIP,
-  QUEUED_MESSAGE_SETUP_TOOLTIP,
   QueuedMessageReason,
   QueuedMessageRow,
   splitSubagentReference,
   SUBAGENT_REFERENCE_PREFIX,
   type QueuedMessageAttachment,
   type QueuedMessageReorderProps,
-  type QueuedMessageSetupWait,
 } from '@canopy/ui-shared/components';
 import { ArrowUpIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type { QueuedMessageForceKind } from '@canopy/ui-shared/lib';
@@ -83,11 +81,6 @@ interface QueuedMessageCompactRowProps {
   readonly settingsHeld?: readonly SettingsHeldChange[];
   readonly onEdit?: (index: number, message: QueuedChatMessage) => void;
   readonly canForce?: boolean;
-  readonly queuedForSetup?: boolean;
-  /** The setup wait the row shows as its status while `queuedForSetup`. */
-  readonly setupWait?: QueuedMessageSetupWait;
-  /** Fixed setup-clock reading for fixtures and captures; never ticks. */
-  readonly clockNowMs?: number;
   /** Another queued message is open in the editor. */
   readonly anyEditing?: boolean;
   readonly reorder?: QueuedMessageReorderProps;
@@ -114,9 +107,6 @@ export const QueuedMessageCompactRow = memo(function QueuedMessageCompactRow({
   settingsHeld,
   onEdit,
   canForce = false,
-  queuedForSetup = false,
-  setupWait,
-  clockNowMs,
   anyEditing = false,
   reorder,
   surface = 'tray',
@@ -139,30 +129,23 @@ export const QueuedMessageCompactRow = memo(function QueuedMessageCompactRow({
     Boolean(onEdit) &&
     message.queuedHookQueueId === undefined &&
     !anyEditing;
-  // The same reason unit as the bubble, shortened to one line: its spinner
-  // and clock stay while the words truncate.
   const reason =
     message.reason ??
-    (queuedForSetup && setupWait !== undefined ? (
-      <QueuedMessageReason
-        setup={setupWait}
-        layout="inline"
-        nowMs={clockNowMs}
-      />
-    ) : message.waitingReason !== undefined ? (
+    (message.waitingReason !== undefined ? (
       <QueuedMessageReason
         waitingReason={message.waitingReason}
         layout="inline"
       />
     ) : undefined);
   // Steer and Send now stay on the row whenever the chat offers them; when
-  // they can't run now they wait, disabled, and say why.
+  // they can't run now they wait, disabled, and say why. A row the host
+  // locks (behind a turn its worktree's setup holds) waits for that step.
   const waitReason = sending
     ? QUEUED_MESSAGE_SENDING_TOOLTIP
     : anyEditing
       ? QUEUED_MESSAGE_EDITING_TOOLTIP
-      : queuedForSetup
-        ? QUEUED_MESSAGE_SETUP_TOOLTIP
+      : message.forceLocked === true
+        ? QUEUED_MESSAGE_BUSY_TOOLTIP
         : undefined;
   const steerReady = Boolean(onSteer) && waitReason === undefined;
   const capabilityChange =
@@ -210,7 +193,7 @@ export const QueuedMessageCompactRow = memo(function QueuedMessageCompactRow({
       forceKind={forceKind}
       interruptUnavailableReason={
         onForce && !interruptReady
-          ? (waitReason ?? QUEUED_MESSAGE_SETUP_TOOLTIP)
+          ? (waitReason ?? QUEUED_MESSAGE_BUSY_TOOLTIP)
           : undefined
       }
       sendBlockedReason={

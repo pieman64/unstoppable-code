@@ -250,6 +250,14 @@ const DEFAULT_STEP = {
 
 const MODEL_FALLBACK = 'canopy-mock-model';
 
+// Wire fixture for noBillingSourceResponse. llm.test.mjs checks these values
+// against @canopy/protocol so the plain-Node mock stays in sync with the host.
+const NO_BILLING_SOURCE_ERROR = {
+  canopy_proxy: 'CANOPY_AI_CREDITS_PROXY',
+  code: 'no_billing_source',
+  message: 'AI Credits are unavailable for this request.',
+};
+
 // User-message text the app injects when a deferred-tools reload resumes an
 // interrupted turn. The resume step cursor must be anchored to this message:
 // the number of assistant turns recorded *before* it is nondeterministic,
@@ -1080,6 +1088,12 @@ export function classifyResponsesStepError(step) {
   if (error.kind === 'disconnect' || error.kind === 'midstream') {
     return null;
   }
+  if (error === 'no_billing_source' || error.type === 'no_billing_source') {
+    return {
+      code: NO_BILLING_SOURCE_ERROR.code,
+      message: NO_BILLING_SOURCE_ERROR.message,
+    };
+  }
   if (typeof error.code === 'string' && error.code.length > 0) {
     return { code: error.code, message: error.message ?? 'Mock error.' };
   }
@@ -1816,6 +1830,21 @@ function maybeRenderError(response, step) {
     jsonResponse(response, 429, {
       type: 'error',
       error: { type: 'rate_limit_error', message: 'Rate limited.' },
+    });
+    return true;
+  }
+  if (error === 'no_billing_source' || error.type === 'no_billing_source') {
+    const correlationId = randomUUID();
+    response.setHeader('x-canopy-request-id', correlationId);
+    // Same field order as the hosted body: marker and code first, so the
+    // host's truncation fallbacks see what they would in production.
+    jsonResponse(response, 402, {
+      error: {
+        canopy_proxy: NO_BILLING_SOURCE_ERROR.canopy_proxy,
+        code: NO_BILLING_SOURCE_ERROR.code,
+        correlation_id: correlationId,
+        message: NO_BILLING_SOURCE_ERROR.message,
+      },
     });
     return true;
   }

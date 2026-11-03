@@ -653,10 +653,14 @@ test('opt-in scenarios stay out of the default suite and parse when requested', 
     'code-graph-small-edit',
     'claude-graph-orientation',
     'linear-reference-transcripts',
+    'frame-smoothness',
     'cost-index-first-build',
     'skill-suggestions-backfill',
     'code-review-registry-cleanup',
     'code-review-registry-cleanup-trace',
+    'w5-store-startup',
+    'w5-store-reload',
+    'w5-store-writes',
   ]);
   for (const scenario of OPT_IN_SCENARIO_NAMES) {
     assert.ok(SCENARIO_NAMES.includes(scenario), scenario);

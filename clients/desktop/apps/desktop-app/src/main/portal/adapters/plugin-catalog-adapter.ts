@@ -1,3 +1,5 @@
+import { ResourceContextUnavailableError } from '../../lib/resource-context-error';
+import { createPortalCollectionWriteGuard } from '../../services/portal-collection-authorization';
 /**
  * Portal adapters for the Plugins-section commands
  * (design: docs/planning/2026-08-27-portal-plugins-section/design.md).
@@ -15,6 +17,14 @@
  * completes inline. All results reuse the same reduced projections as the
  * read commands.
  */
+import {
+  PORTAL_CATALOG_RESULT_MAX_BYTES,
+  type PortalCollectionsApplyUpdateResult,
+} from '@canopy/protocol/portal';
+import {
+  applyCollectionUpdate,
+  CollectionUpdateError,
+} from '../../collections/collection-mutations';
 import type { PortalShareScope } from '@canopy/protocol/portal';
 import type {
   PortalCommandEnvelope,
@@ -922,6 +932,157 @@ export async function handlePortalMcpSetConfigEnabled(
   } catch (error) {
     failServiceError(command, context, error);
   }
+}
+
+/** Untrusted payload; `requireProjectPayload` and the service validate it. */
+export async function handlePortalCollectionsSave(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): Promise<void> {
+  const payload = requireProjectPayload(
+    command,
+    context,
+    'Collection save request',
+  );
+  if (!payload) {
+    return;
+  }
+  if (
+    typeof payload.projectId !== 'string' ||
+    !payload.projectId.trim() ||
+    (command.target?.workspaceLocalId !== undefined &&
+      command.target.workspaceLocalId !== payload.projectId)
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Collection save requires a matching project.',
+    );
+    return;
+  }
+  const collection = payload.collection;
+  if (!isRecord(collection) || typeof collection.name !== 'string') {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Collection save request requires a collection with a name.',
+    );
+    return;
+  }
+  // Small-RPC: a fast local fs write, completed inline on the loop. The
+  // service validates members and keeps stored share links; the store
+  // announces the inventory change.
+  try {
+    const assertCurrent = await createPortalCollectionWriteGuard(
+      payload.projectId,
+      context.canMutateResources,
+    );
+    await assertCurrent();
+    const { savePortalCollection } =
+      await import('../../services/plugin-catalog-service');
+    context.complete(
+      command,
+      await savePortalCollection(collection, assertCurrent),
+    );
+  } catch (error) {
+    failServiceError(command, context, error);
+  }
+}
+
+/** Imports run off the serial loop; the original session guards every effect. */
+export function handlePortalCollectionsApplyUpdate(
+  command: PortalCommandEnvelope<unknown>,
+  context: PortalAdapterContext,
+): void {
+  const payload = requireProjectPayload(
+    command,
+    context,
+    'Collection update request',
+  );
+  if (!payload) return;
+  const projectId = requireStringField(payload, 'projectId');
+  const collectionId = requireStringField(payload, 'collectionId');
+  const expectedRevision = requireStringField(payload, 'expectedRevision');
+  if (
+    !projectId ||
+    !collectionId ||
+    !expectedRevision ||
+    !/^[a-f0-9-]+$/.test(collectionId) ||
+    expectedRevision.length > 256 ||
+    (command.target?.workspaceLocalId !== undefined &&
+      command.target.workspaceLocalId !== projectId)
+  ) {
+    context.fail(
+      command,
+      'invalid_payload',
+      'Collection update requires a matching project, collection and revision.',
+    );
+    return;
+  }
+  completeOffLoop(
+    command,
+    context,
+    async (): Promise<PortalCollectionsApplyUpdateResult> => {
+      try {
+        const assertCurrent = await createPortalCollectionWriteGuard(
+          projectId,
+          context.canMutateResources,
+        );
+        await assertCurrent();
+        const update = await applyCollectionUpdate(
+          { collectionId, expectedRevision },
+          undefined,
+          {
+            key: JSON.stringify([context.sessionId, projectId]),
+            assertCurrent,
+            validatePrepared: (collection): void => {
+              if (
+                Buffer.byteLength(JSON.stringify({ collection }), 'utf8') >
+                PORTAL_CATALOG_RESULT_MAX_BYTES - 8192
+              )
+                throw new CollectionUpdateError(
+                  'invalid_payload',
+                  'This collection is too large to update here.',
+                );
+            },
+          },
+        );
+        return { success: true, update };
+      } catch (error) {
+        // Provider/filesystem errors can contain host paths. Keep the wire message
+        // controlled while preserving typed refusals and already-attempted effects.
+        const code =
+          error instanceof ResourceContextUnavailableError
+            ? 'permission_denied'
+            : error instanceof Error &&
+                'code' in error &&
+                (error.code === 'invalid_payload' ||
+                  error.code === 'permission_denied' ||
+                  error.code === 'not_found' ||
+                  error.code === 'conflict')
+              ? error.code
+              : 'execution_failed';
+        const messages = {
+          invalid_payload: 'This collection cannot be updated here.',
+          permission_denied:
+            'The session or collection is no longer authorized. Reconnect and refresh.',
+          not_found: 'The collection is no longer available. Refresh the list.',
+          conflict: 'The collection changed. Refresh it before updating again.',
+          execution_failed:
+            'The collection could not be updated. Refresh the inventory before trying again.',
+        };
+        return {
+          success: false,
+          code,
+          message: messages[code],
+          partialResourceEffects:
+            error instanceof CollectionUpdateError
+              ? error.partialResourceEffects
+              : [],
+        };
+      }
+    },
+  );
 }
 
 /** Both operations use the authenticated Portal command path, never renderer IPC. */

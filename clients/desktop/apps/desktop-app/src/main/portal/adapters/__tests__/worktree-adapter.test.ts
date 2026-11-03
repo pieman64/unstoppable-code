@@ -26,7 +26,6 @@ import {
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
-  updateWorkspaceWorktree,
   updateWorkspaceWorktrees,
 } from '../../../lib/workspace-persistence';
 import { setDelegationActivity } from '../../../agents/delegation/activity';
@@ -113,7 +112,6 @@ const mockedArchiveSingle = jest.mocked(archiveSingleRepoWorktree);
 const mockedArchiveMulti = jest.mocked(archiveMultiRepoWorktree);
 const mockedReadConfig = jest.mocked(readWorkspaceConfig);
 const mockedReadWorktrees = jest.mocked(readWorkspaceWorktrees);
-const mockedUpdateWorktree = jest.mocked(updateWorkspaceWorktree);
 const mockedUpdateWorktrees = jest.mocked(updateWorkspaceWorktrees);
 const mockedTelemetry = jest.mocked(recordWorktreeCrudTelemetry);
 const mockedAssertNotSplitLocked = jest.mocked(assertNotSplitLocked);
@@ -1087,131 +1085,12 @@ describe('worktree portal adapter — archive', () => {
   });
 });
 
+// Persisted update and reorder outcomes are golden-tested over real storage
+// in worktree-adapter-golden.test.ts; these cover payload admission.
 describe('worktree portal adapter — update and reorder', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedReadConfig.mockResolvedValue(config('single-repo'));
-  });
-
-  it('trims a custom label and persists hidden state through the shared updater', async () => {
-    mockedUpdateWorktree.mockImplementation(
-      (workspaceId, worktreeId, updater) => {
-        expect({ workspaceId, worktreeId }).toEqual({
-          workspaceId: 'ws-1',
-          worktreeId: 'wt-1',
-        });
-        expect(
-          updater({
-            id: 'wt-1',
-            branchName: 'main',
-            createdAt: '2026-07-10T00:00:00.000Z',
-          }),
-        ).toEqual(expect.objectContaining({ label: 'My label', hidden: true }));
-        return Promise.resolve(true);
-      },
-    );
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeUpdate(
-      updateCommand({
-        workspaceId: 'ws-1',
-        worktreeId: 'wt-1',
-        label: '  My label  ',
-        hidden: true,
-      }),
-      adapterContext(events),
-    );
-
-    expect(mockedUpdateWorktree).toHaveBeenCalledTimes(1);
-    expect(mockedSendToWindow.mock.calls[0]?.slice(0, 2)).toEqual([
-      null,
-      IPC_CHANNELS.workspaceWorktreesUpdated,
-    ]);
-    expect(mockedSendToWindow.mock.calls[0]?.[2]).toEqual({
-      workspaceId: 'ws-1',
-      worktree: {
-        id: 'wt-1',
-        branchName: 'main',
-        createdAt: '2026-07-10T00:00:00.000Z',
-        label: 'My label',
-        hidden: true,
-      },
-    });
-    expect(events.map((event) => event.type)).toEqual([
-      'portal.command.completed',
-    ]);
-  });
-
-  it('clears a null label without changing an omitted hidden field', async () => {
-    mockedUpdateWorktree.mockImplementation(
-      (_workspaceId, _worktreeId, updater) => {
-        expect(
-          updater({
-            id: 'wt-1',
-            branchName: 'main',
-            createdAt: '2026-07-10T00:00:00.000Z',
-            label: 'Old label',
-            hidden: true,
-          }),
-        ).toEqual({
-          id: 'wt-1',
-          branchName: 'main',
-          createdAt: '2026-07-10T00:00:00.000Z',
-          hidden: true,
-        });
-        return Promise.resolve(true);
-      },
-    );
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeUpdate(
-      updateCommand({
-        workspaceId: 'ws-1',
-        worktreeId: 'wt-1',
-        label: null,
-      }),
-      adapterContext(events),
-    );
-
-    expect(events.map((event) => event.type)).toEqual([
-      'portal.command.completed',
-    ]);
-  });
-
-  it('unhides a worktree without changing an omitted label field', async () => {
-    mockedUpdateWorktree.mockImplementation(
-      (_workspaceId, _worktreeId, updater) => {
-        expect(
-          updater({
-            id: 'wt-1',
-            branchName: 'main',
-            createdAt: '2026-07-10T00:00:00.000Z',
-            label: 'Keep me',
-            hidden: true,
-          }),
-        ).toEqual({
-          id: 'wt-1',
-          branchName: 'main',
-          createdAt: '2026-07-10T00:00:00.000Z',
-          label: 'Keep me',
-        });
-        return Promise.resolve(true);
-      },
-    );
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeUpdate(
-      updateCommand({
-        workspaceId: 'ws-1',
-        worktreeId: 'wt-1',
-        hidden: false,
-      }),
-      adapterContext(events),
-    );
-
-    expect(events.map((event) => event.type)).toEqual([
-      'portal.command.completed',
-    ]);
   });
 
   it.each([
@@ -1232,125 +1111,11 @@ describe('worktree portal adapter — update and reorder', () => {
       adapterContext(events),
     );
 
-    expect(mockedUpdateWorktree).not.toHaveBeenCalled();
+    expect(mockedUpdateWorktrees).not.toHaveBeenCalled();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       type: 'portal.command.failed',
       payload: { error: { code: 'invalid_payload' } },
-    });
-  });
-
-  it('fails with not_found when the worktree update target is missing', async () => {
-    mockedUpdateWorktree.mockResolvedValue(false);
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeUpdate(
-      updateCommand({
-        workspaceId: 'ws-1',
-        worktreeId: 'missing',
-        hidden: true,
-      }),
-      adapterContext(events),
-    );
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: 'portal.command.failed',
-      payload: { error: { code: 'not_found' } },
-    });
-  });
-
-  it('reorders visible worktrees while preserving the hidden row slot', async () => {
-    const workspace = {
-      type: 'single-repo' as const,
-      id: 'ws-1',
-      name: 'Workspace',
-      repoPath: '/data/repos/repo',
-      color: '#fff',
-      collapsed: false,
-      order: 0,
-      worktrees: [
-        { id: 'wt-a', branchName: 'a', createdAt: '2026-07-10T00:00:00.000Z' },
-        {
-          id: 'wt-hidden',
-          branchName: 'hidden',
-          createdAt: '2026-07-10T00:00:00.000Z',
-          hidden: true,
-        },
-        { id: 'wt-b', branchName: 'b', createdAt: '2026-07-10T00:00:00.000Z' },
-        { id: 'wt-c', branchName: 'c', createdAt: '2026-07-10T00:00:00.000Z' },
-      ],
-    };
-    let written = workspace.worktrees;
-    mockedUpdateWorktrees.mockImplementation(async (_workspaceId, updater) => {
-      written = await updater(workspace.worktrees);
-      return written;
-    });
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeReorder(
-      reorderCommand({
-        workspaceId: 'ws-1',
-        activeWorktreeId: 'wt-c',
-        overWorktreeId: 'wt-a',
-      }),
-      adapterContext(events),
-    );
-
-    expect(written.map((worktree) => worktree.id)).toEqual([
-      'wt-c',
-      'wt-hidden',
-      'wt-a',
-      'wt-b',
-    ]);
-    expect(mockedSendToWindow).toHaveBeenCalledWith(
-      null,
-      IPC_CHANNELS.workspaceWorktreesUpdated,
-      { workspaceId: 'ws-1', worktrees: written },
-    );
-    expect(events.map((event) => event.type)).toEqual([
-      'portal.command.completed',
-    ]);
-  });
-
-  it('rejects a reorder when either visible worktree is missing', async () => {
-    const workspace = {
-      type: 'single-repo' as const,
-      id: 'ws-1',
-      name: 'Workspace',
-      repoPath: '/data/repos/repo',
-      color: '#fff',
-      collapsed: false,
-      order: 0,
-      worktrees: [
-        { id: 'wt-a', branchName: 'a', createdAt: '2026-07-10T00:00:00.000Z' },
-        {
-          id: 'wt-hidden',
-          branchName: 'hidden',
-          createdAt: '2026-07-10T00:00:00.000Z',
-          hidden: true,
-        },
-      ],
-    };
-    mockedUpdateWorktrees.mockImplementation(async (_workspaceId, updater) =>
-      updater(workspace.worktrees),
-    );
-    const events: PortalEventEnvelope[] = [];
-
-    await handlePortalWorktreeReorder(
-      reorderCommand({
-        workspaceId: 'ws-1',
-        activeWorktreeId: 'wt-hidden',
-        overWorktreeId: 'wt-a',
-      }),
-      adapterContext(events),
-    );
-
-    expect(mockedUpdateWorktrees).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      type: 'portal.command.failed',
-      payload: { error: { code: 'not_found' } },
     });
   });
 

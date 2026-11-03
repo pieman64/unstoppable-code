@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Badge } from './Badge';
 import {
   dataSharingFeatureCaption,
   getDataSharingFeatures,
@@ -56,27 +57,17 @@ export function DataSharingFeaturePills({
       data-sharing={sharing ? 'true' : 'false'}
     >
       <span className="text-3xs font-medium fg-secondary">{caption}</span>
-      {/*
-        A bare `span` rather than `StatusBadge`: these pills carry the ACCENT
-        palette (muted in the off state), not the operational
-        status palette, so every one of `StatusBadge`'s variants would be
-        overridden by the `className` it needs anyway — leaving `variant` and
-        `muted` as props that look like they drive the styling and do not.
-      */}
+      {/* Feature names are neutral; they quiet down while sharing is off. */}
       {features.map((entry) => (
-        <span
+        <Badge
           key={entry.id}
+          muted={!sharing}
           data-testid={
             dataTestId ? `${dataTestId}-pill-${entry.id}` : undefined
           }
-          className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-3xs font-medium ${
-            sharing
-              ? 'bg-accent-subtle fg-accent'
-              : 'bg-secondary/60 fg-secondary'
-          }`}
         >
           {entry.label}
-        </span>
+        </Badge>
       ))}
     </div>
   );

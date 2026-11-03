@@ -104,6 +104,7 @@ import {
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
 import { CHAT_VISUALS_PANEL_TITLE } from '@canopy/ui-app/panel-layout-store';
 import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import { CenteredLoadingSpinner } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
 import { getWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
@@ -542,7 +543,11 @@ function PanelChangeDiagramContent(props: PanelContentProps): JSX.Element {
     <PanelContentFrame kind="change-diagram" panelId={props.panelId}>
       {scope ? (
         <Suspense
-          fallback={<LoadingPlaceholder label="Loading change diagram…" />}
+          fallback={
+            <DelayedLoadingPlaceholder slowNote="Still loading change diagram…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
         >
           <ChangeDiagramPanel {...scope} active={props.isVisible} />
         </Suspense>
@@ -586,7 +591,13 @@ const PanelPipelineExecutionContent = memo(
         {scope ? (
           executionId.length > 0 ? (
             shown ? (
-              <Suspense fallback={<LoadingPlaceholder label="Loading run…" />}>
+              <Suspense
+                fallback={
+                  <DelayedLoadingPlaceholder slowNote="Still loading run…">
+                    <CenteredLoadingSpinner className="my-12" />
+                  </DelayedLoadingPlaceholder>
+                }
+              >
                 <PipelineExecutionPanel
                   panelId={props.panelId}
                   executionId={executionId}
@@ -669,7 +680,13 @@ function PlanPanelBoundContent({
   };
   return (
     <PanelContentFrame kind={kind} panelId={props.panelId}>
-      <Suspense fallback={<LoadingPlaceholder label="Loading plan…" />}>
+      <Suspense
+        fallback={
+          <DelayedLoadingPlaceholder slowNote="Still loading plan…">
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
+        }
+      >
         {kind === 'plan' ? (
           <PlanPanelHost {...hostProps} />
         ) : (
@@ -704,7 +721,13 @@ const PanelChatVisualsContent = memo(function PanelChatVisualsContent(
       ) : chatId === undefined || chatId.length === 0 ? (
         <PanelMissingBindingState label="This panel is missing its chat" />
       ) : (
-        <Suspense fallback={<LoadingPlaceholder label="Loading visuals…" />}>
+        <Suspense
+          fallback={
+            <DelayedLoadingPlaceholder slowNote="Still loading visuals…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
+        >
           <DesktopChatVisualsPanel
             projectId={scope.projectId}
             worktreeId={scope.worktreeId}
@@ -780,7 +803,11 @@ const PanelSubagentsContent = memo(function PanelSubagentsContent(
       {scope ? (
         shown ? (
           <Suspense
-            fallback={<LoadingPlaceholder label="Loading subagents…" />}
+            fallback={
+              <DelayedLoadingPlaceholder slowNote="Still loading subagents…">
+                <CenteredLoadingSpinner className="my-12" />
+              </DelayedLoadingPlaceholder>
+            }
           >
             <DesktopSubagentsPanelHost
               scope={scope}
@@ -833,7 +860,11 @@ const PanelSubagentChatContent = memo(function PanelSubagentChatContent(
     <PanelContentFrame kind="subagent-chat" panelId={props.panelId}>
       {shown ? (
         <Suspense
-          fallback={<LoadingPlaceholder label="Loading subagent chat…" />}
+          fallback={
+            <DelayedLoadingPlaceholder slowNote="Still loading subagent chat…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
         >
           <DesktopSubagentChatPanelHost
             scope={scope}
@@ -1391,7 +1422,13 @@ const PanelCostContent = memo(function PanelCostContent(
   return (
     <PanelContentFrame kind="cost" panelId={props.panelId}>
       {selectedWorktree ? (
-        <Suspense fallback={<LoadingPlaceholder label="Loading cost…" />}>
+        <Suspense
+          fallback={
+            <DelayedLoadingPlaceholder slowNote="Still loading cost…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
+        >
           <CostPanelHost
             key={`${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`}
             projectId={selectedWorktree.projectId}
@@ -1419,7 +1456,11 @@ const PanelSessionBreakdownContent = memo(function PanelSessionBreakdownContent(
     <PanelContentFrame kind="session-breakdown" panelId={props.panelId}>
       {selectedWorktree && isSessionBreakdownPanelInstance(instance) ? (
         <Suspense
-          fallback={<LoadingPlaceholder label="Loading session breakdown…" />}
+          fallback={
+            <DelayedLoadingPlaceholder slowNote="Still loading session breakdown…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
         >
           <SessionBreakdownPanelHost
             key={`${selectedWorktree.projectId}/${selectedWorktree.worktreeId}/${instance.chatId}`}
@@ -1577,7 +1618,7 @@ export const DESKTOP_PANEL_DEFINITIONS: Readonly<
     // Default title only; instance-bound tabs display the variant label
     // ("Automations" / "Automations (Upcoming)" / …).
     title: 'Automations',
-    icon: <AutomationsIcon />,
+    icon: <AutomationsIcon size="xl" />,
     canPopOut: true,
     isWindowBound: false,
     singleton: SINGLETON_PANEL_KINDS.has('automations'),

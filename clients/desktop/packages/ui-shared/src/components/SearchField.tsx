@@ -28,18 +28,20 @@ import { Tooltip } from './Tooltip';
 export type SearchFieldSize = 'sm' | 'md' | 'lg';
 
 /**
- * The capsule's height, insets and type. The trailing inset is the gap
- * between the capsule and a nested button above and below it (2px at 28px,
- * 4px at 32px, 8px at 44px), so each button's circle is concentric with the
- * end cap: inner radius = capsule radius − inset. Coarse pointers get a
- * taller capsule with the inset grown to match.
+ * The field's height, insets and type. A search field is a field, so it is
+ * a rounded rectangle, not a capsule (design decisions, 2026-10-30): 10px
+ * `rounded-row` corners at 28px and at 32px (12px scaled to 32px is about
+ * 10.7px; the nearest token is 10px).
+ * The trailing inset is the gap between the field and a nested round button
+ * above and below it (2px at 28px, 4px at 32px, 8px at 44px). Coarse
+ * pointers get a taller field with the inset grown to match.
  */
 const FIELD_SIZE_CLASS: Record<SearchFieldSize, string> = {
-  sm: `h-7 gap-2 rounded-full pl-2.5 pr-0.5 text-xs pointer-coarse:h-9 pointer-coarse:pr-1.5 ${FIELD_EDGE_CLASS} ${FIELD_FOCUS_WITHIN_CLASS}`,
+  sm: `h-7 gap-2 rounded-row pl-2.5 pr-0.5 text-xs pointer-coarse:h-9 pointer-coarse:pr-1.5 ${FIELD_EDGE_CLASS} ${FIELD_FOCUS_WITHIN_CLASS}`,
   // A page search row's field: the shared inset hairline at rest; focus
   // swaps it for the shared field focus edge. Its text matches the 28px
   // dropdowns beside it.
-  md: `h-8 gap-2 rounded-full pl-3 pr-1 text-xs pointer-coarse:h-10 pointer-coarse:pr-2 ring-[length:var(--border-hairline)] ring-inset ring-line-base transition-shadow has-[input:focus]:ring-0 ${FIELD_FOCUS_WITHIN_CLASS}`,
+  md: `h-8 gap-2 rounded-row pl-3 pr-1 text-xs pointer-coarse:h-10 pointer-coarse:pr-2 ring-[length:var(--border-hairline)] ring-inset ring-line-base transition-shadow has-[input:focus]:ring-0 ${FIELD_FOCUS_WITHIN_CLASS}`,
   // The header of a surface that is itself the focus (a palette): no edge
   // and no focus ring of its own; the host draws the hairline under it.
   lg: 'h-11 gap-2.5 pl-4 pr-2 text-s',
@@ -48,11 +50,11 @@ const FIELD_SIZE_CLASS: Record<SearchFieldSize, string> = {
 /**
  * The fill. A page search row's field (`md`) rests on the subtle fill inside
  * a hairline, so it reads as the page's one search rather than another form
- * field, and takes the secondary fill while its input has focus.
+ * field. Like every field, it keeps its fill while its input has focus.
  */
 const FIELD_FILL_CLASS: Record<SearchFieldSize, string> = {
   sm: 'bg-transparent',
-  md: 'bg-subtle has-[input:focus]:bg-secondary',
+  md: 'bg-subtle',
   lg: 'bg-transparent',
 };
 
@@ -65,7 +67,7 @@ const CLEAR_ICON_SIZE: Record<SearchFieldSize, number> = {
   lg: 14,
 };
 
-/** Nested buttons: 24px in the 28px and 32px capsules, 28px in the header. */
+/** Nested buttons: 24px in the 28px and 32px fields, 28px in the header. */
 const BUTTON_SIZE_CLASS: Record<SearchFieldSize, string> = {
   sm: 'h-6 min-w-6',
   md: 'h-6 min-w-6',
@@ -115,12 +117,17 @@ export interface SearchFieldProps extends Omit<
   readonly clearOnEscape?: boolean;
   /** Escape on an empty field: the host backs out (a category, a page). */
   readonly onEscapeEmpty?: () => void;
-  /** `data-testid` of the capsule around the input. */
+  /** `data-testid` of the box around the input. */
   readonly fieldTestId?: string;
   /** Placement only (width, margins, flex); the field owns its shape. */
   readonly className?: string;
   /** Classes for the input itself, such as the session replay block class. */
   readonly inputClassName?: string;
+  /**
+   * `search` (default) is a searchbox. `text` keeps the textbox role, for a
+   * find bar that hosts and UI automation already address as a textbox.
+   */
+  readonly inputType?: 'search' | 'text';
 }
 
 /**
@@ -149,6 +156,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
       fieldTestId,
       className = '',
       inputClassName = '',
+      inputType = 'search',
       onKeyDown,
       disabled,
       ...inputProps
@@ -170,11 +178,14 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
 
     const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
       onKeyDown?.(event);
+      // An Escape that dismisses an input-method candidate belongs to the
+      // input method. Safari reports it with keyCode 229.
       if (
         !clearOnEscape ||
         event.defaultPrevented ||
         event.key !== 'Escape' ||
-        event.nativeEvent.isComposing
+        event.nativeEvent.isComposing ||
+        event.keyCode === 229
       ) {
         return;
       }
@@ -201,7 +212,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           data-testid={fieldTestId}
           className={`flex min-w-0 cursor-text items-center fg-primary ${FIELD_SIZE_CLASS[size]} ${disabled ? 'cursor-not-allowed bg-disabled fg-disabled' : FIELD_FILL_CLASS[size]} ${className}`}
           onMouseDown={(event): void => {
-            // A press on the capsule's padding or glyph focuses the input,
+            // A press on the field's padding or glyph focuses the input,
             // as a press on a field's edge does.
             if (event.target === event.currentTarget) {
               event.preventDefault();
@@ -218,7 +229,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           <input
             {...inputProps}
             ref={setInput}
-            type="search"
+            type={inputType}
             value={value}
             disabled={disabled}
             autoComplete="off"
@@ -310,7 +321,7 @@ const BUTTON_TONE_CLASS = {
 
 /**
  * A round button nested in a `SearchField`'s end cap: Clear, Filter, Sort.
- * Its circle sits concentric with the capsule, and its name shows as a
+ * A button, so it stays round inside the field's end, and its name shows as a
  * tooltip (held back while its menu is open).
  */
 export const SearchFieldButton = forwardRef<

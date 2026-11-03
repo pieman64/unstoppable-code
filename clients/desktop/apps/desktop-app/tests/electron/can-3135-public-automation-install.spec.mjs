@@ -2,6 +2,10 @@ import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import {
+  chooseSettingsOption,
+  settingsOptionValues,
+} from './helpers/settingsSelect.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
@@ -183,9 +187,14 @@ test('installs an automation from a public link and refuses a stale pin', async 
     const scopedWizard = window.getByTestId('install-shared-automation-modal');
     await expect(scopedWizard).toContainText('Nightly review pipeline');
     await expect(scopedLanding).toHaveCount(0);
-    await scopedWizard
-      .getByTestId('install-automation-workspace')
-      .selectOption({ index: 1 });
+    await chooseSettingsOption(
+      scopedWizard.getByTestId('install-automation-workspace'),
+      (
+        await settingsOptionValues(
+          scopedWizard.getByTestId('install-automation-workspace'),
+        )
+      )[0],
+    );
     await scopedWizard.getByTestId('install-automation-submit').click();
     // CAN-3651: completion closes the wizard and the landing on its own and
     // reveals the exact new copy on Workflows › Library.
@@ -268,9 +277,14 @@ test('installs an automation from a public link and refuses a stale pin', async 
       }),
     ]);
 
-    await wizard
-      .getByTestId('install-automation-workspace')
-      .selectOption({ index: 1 });
+    await chooseSettingsOption(
+      wizard.getByTestId('install-automation-workspace'),
+      (
+        await settingsOptionValues(
+          wizard.getByTestId('install-automation-workspace'),
+        )
+      )[0],
+    );
     await wizard.getByTestId('install-automation-submit').click();
     await expect(wizard).toHaveCount(0);
     await expect(window.getByTestId('deep-link-share-landing')).toHaveCount(0);
@@ -632,9 +646,14 @@ test('share completion follows a replacement of the list refresh already in flig
       `canopy://share/automations/${SCOPED_AUTOMATION_ID}?audience=TEAM&expectedAutomationContentHash=${detail.contentHash}`,
     );
     const wizard = window.getByTestId('install-shared-automation-modal');
-    await wizard
-      .getByTestId('install-automation-workspace')
-      .selectOption({ index: 1 });
+    await chooseSettingsOption(
+      wizard.getByTestId('install-automation-workspace'),
+      (
+        await settingsOptionValues(
+          wizard.getByTestId('install-automation-workspace'),
+        )
+      )[0],
+    );
     await expect(wizard.getByTestId('install-automation-submit')).toBeEnabled();
 
     // Delay the existing production list handler, preserving its real payload.

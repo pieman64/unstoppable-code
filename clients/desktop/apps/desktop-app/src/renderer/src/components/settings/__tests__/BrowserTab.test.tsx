@@ -638,12 +638,12 @@ describe('browser profile final-review transitions', () => {
           return Promise.resolve();
         });
         expect(
-          container.querySelector(
+          document.body.querySelector(
             '[data-testid="browser-profile-delete-preview"]',
           ),
         ).toBeNull();
         expect(
-          container.querySelector(
+          document.body.querySelector(
             '[data-testid="browser-profile-confirm-delete"]',
           ),
         ).toBeNull();
@@ -1087,22 +1087,22 @@ describe('browser profile review fixes', () => {
       };
       await press('browser-profile-row-p1');
       await press('browser-profile-delete');
-      const dialog = container.querySelector(
+      const dialog = document.body.querySelector(
         '[data-testid="browser-profile-delete-preview"]',
       );
       expect(dialog).not.toBeNull();
-      // The trigger is unmounted by now, so focus has to have been moved.
-      expect(document.activeElement).toBe(dialog);
-
-      const cancel = Array.from(dialog?.querySelectorAll('button') ?? []).find(
-        (button) => button.textContent === 'Cancel',
+      // A destructive confirmation starts on Cancel, so Enter cannot delete.
+      const cancel = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="browser-profile-cancel-delete"]',
       );
+      expect(document.activeElement).toBe(cancel);
+
       await act(() => {
         cancel?.click();
         return Promise.resolve();
       });
       expect(
-        container.querySelector(
+        document.body.querySelector(
           '[data-testid="browser-profile-delete-preview"]',
         ),
       ).toBeNull();
@@ -1206,7 +1206,7 @@ describe('browser profile delete prompt focus ownership', () => {
     const { container, press, cleanup } = await open();
     try {
       expect(
-        container.querySelector(
+        document.body.querySelector(
           '[data-testid="browser-profile-delete-preview"]',
         ),
       ).not.toBeNull();
@@ -1217,7 +1217,7 @@ describe('browser profile delete prompt focus ownership', () => {
       // dismissed it. Focus must stay on the row they clicked — never jump to
       // a different profile's destructive control.
       expect(
-        container.querySelector(
+        document.body.querySelector(
           '[data-testid="browser-profile-delete-preview"]',
         ),
       ).toBeNull();
@@ -1235,11 +1235,9 @@ describe('browser profile delete prompt focus ownership', () => {
   it('still returns focus to the trigger when the user cancels', async () => {
     const { container, cleanup } = await open();
     try {
-      const cancel = Array.from(
-        container
-          .querySelector('[data-testid="browser-profile-delete-preview"]')
-          ?.querySelectorAll('button') ?? [],
-      ).find((button) => button.textContent === 'Cancel');
+      const cancel = document.body.querySelector<HTMLButtonElement>(
+        '[data-testid="browser-profile-cancel-delete"]',
+      );
       await act(() => {
         cancel?.click();
         return Promise.resolve();

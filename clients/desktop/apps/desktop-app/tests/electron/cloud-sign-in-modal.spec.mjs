@@ -128,7 +128,7 @@ for (const scenario of [
         ),
       ).toBe(false);
       const retry = modal.getByTestId('secure-storage-retry');
-      await expect(retry).toHaveText('Retry');
+      await expect(retry).toHaveText('Try again');
 
       await restore();
       await retry.click();

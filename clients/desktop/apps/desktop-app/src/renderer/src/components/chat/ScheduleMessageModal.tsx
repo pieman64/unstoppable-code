@@ -1,6 +1,10 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
-import { Button, useOverlayEscape } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogModal,
+  FormField,
+  TextInput,
+} from '@canopy/ui-shared/components';
 
 interface ScheduleMessageModalProps {
   /** When editing an existing schedule, the current ISO runAt to seed fields. */
@@ -9,7 +13,7 @@ interface ScheduleMessageModalProps {
   /** Receives the chosen one-time send time as an ISO 8601 string. */
   onSave: (runAtIso: string) => void;
   /**
-   * Document to portal into. Defaults to the ambient `document`. The composer
+   * Document the dialog opens in. Defaults to the ambient `document`. The composer
    * passes the document that owns it so the modal opens in the correct window
    * when the chat has been popped out to an aux panel window.
    */
@@ -52,11 +56,19 @@ export function ScheduleMessageModal({
 
   const [date, setDate] = useState(defaults.date);
   const [time, setTime] = useState(defaults.time);
-  const [error, setError] = useState<string | null>(null);
+  // The validation message and the field it is about: an empty date is the
+  // date's problem; any other past or missing time shows under Time.
+  const [error, setError] = useState<{
+    readonly field: 'date' | 'time';
+    readonly message: string;
+  } | null>(null);
 
   const handleSave = useCallback((): void => {
     if (!date || !time) {
-      setError('Choose a future time.');
+      setError({
+        field: date ? 'time' : 'date',
+        message: 'Choose a future time.',
+      });
       return;
     }
     const candidate = new Date(`${date}T${time}:00`);
@@ -64,76 +76,25 @@ export function ScheduleMessageModal({
       Number.isNaN(candidate.getTime()) ||
       candidate.getTime() <= Date.now()
     ) {
-      setError('Choose a future time.');
+      setError({ field: 'time', message: 'Choose a future time.' });
       return;
     }
     onSave(candidate.toISOString());
   }, [date, time, onSave]);
 
-  // The modal is mounted only while open. Registering as an overlay lets it
-  // take Escape ahead of the composer's cancel-turn shortcut.
-  useOverlayEscape(true, onCancel, ownerDocument);
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Schedule message"
-      data-testid="schedule-message-modal"
-      className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      onClick={onCancel}
-    >
-      <section
-        className="electron-no-drag flex w-full max-w-sm flex-col overflow-hidden rounded-lg bg-card shadow-xl"
-        onClick={(event): void => event.stopPropagation()}
-      >
-        <header className="flex items-center justify-between border-b px-4 py-3">
-          <h2 className="text-s font-semibold fg-primary">Schedule message</h2>
+  // DialogModal registers as an overlay while mounted, so it takes Escape
+  // ahead of the composer's cancel-turn shortcut.
+  return (
+    <DialogModal
+      onClose={onCancel}
+      title="Schedule message"
+      maxWidth="sm"
+      dataTestId="schedule-message-modal"
+      ownerDocument={ownerDocument}
+      footer={
+        <>
           <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={onCancel}
-            aria-label="Close"
-          >
-            ×
-          </Button>
-        </header>
-        <div className="flex flex-col gap-3 px-4 py-3 text-s">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium fg-secondary">Date</span>
-            <input
-              type="date"
-              value={date}
-              onChange={(event): void => {
-                setDate(event.target.value);
-                setError(null);
-              }}
-              data-testid="schedule-message-date"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium fg-secondary">Time</span>
-            <input
-              type="time"
-              value={time}
-              onChange={(event): void => {
-                setTime(event.target.value);
-                setError(null);
-              }}
-              data-testid="schedule-message-time"
-              className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
-            />
-          </label>
-          {error && (
-            <div role="alert" className="text-xs fg-destructive">
-              {error}
-            </div>
-          )}
-        </div>
-        <footer className="flex items-center justify-end gap-2 border-t px-4 py-3">
-          <Button
+            variant="secondary"
             size="compact"
             onClick={onCancel}
             data-testid="schedule-message-cancel"
@@ -148,9 +109,43 @@ export function ScheduleMessageModal({
           >
             Set schedule
           </Button>
-        </footer>
-      </section>
-    </div>,
-    (ownerDocument ?? document).body,
+        </>
+      }
+    >
+      <FormField
+        label="Date"
+        error={error?.field === 'date' ? error.message : undefined}
+      >
+        {(control) => (
+          <TextInput
+            {...control}
+            type="date"
+            value={date}
+            onChange={(event): void => {
+              setDate(event.target.value);
+              setError(null);
+            }}
+            data-testid="schedule-message-date"
+          />
+        )}
+      </FormField>
+      <FormField
+        label="Time"
+        error={error?.field === 'time' ? error.message : undefined}
+      >
+        {(control) => (
+          <TextInput
+            {...control}
+            type="time"
+            value={time}
+            onChange={(event): void => {
+              setTime(event.target.value);
+              setError(null);
+            }}
+            data-testid="schedule-message-time"
+          />
+        )}
+      </FormField>
+    </DialogModal>
   );
 }

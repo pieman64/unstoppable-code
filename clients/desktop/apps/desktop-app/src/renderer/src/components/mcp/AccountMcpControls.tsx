@@ -22,6 +22,7 @@ import {
   accountMcpRowKey,
   type AccountMcpActions,
 } from '../../hooks/useAccountMcpActions';
+import { FormField, TextInput } from '@canopy/ui-shared/components';
 
 interface McpTierBadgeProps {
   row: McpServerIndexEntry;
@@ -227,7 +228,7 @@ export function AccountMcpCredentialDialog({
   };
   return (
     <DialogModal title={`Connect ${displayName}`} onClose={onClose}>
-      <div className="space-y-4 p-6" data-testid="mcp-account-credential-setup">
+      <div className="space-y-4" data-testid="mcp-account-credential-setup">
         {setup ? (
           <McpClientSetupDetails
             serverName={displayName}
@@ -240,32 +241,37 @@ export function AccountMcpCredentialDialog({
         ) : (
           <p className="text-s fg-secondary">{intro ?? copy.intro}</p>
         )}
-        <label className="block space-y-2 text-s">
-          {copy.label}
-          <input
-            type={kind === 'bearer' ? 'password' : 'text'}
-            autoComplete="off"
-            data-testid={copy.testId}
-            className="focus-ring block w-full rounded-md border bg-base px-3 py-2 fg-primary"
-            value={value}
-            onChange={(event): void => setValue(event.target.value)}
-          />
-        </label>
-        {collectsSecret && (
-          <label className="block space-y-2 text-s">
-            OAuth client secret
-            <input
-              type="password"
+        <FormField label={copy.label}>
+          {(control) => (
+            <TextInput
+              {...control}
+              type={kind === 'bearer' ? 'password' : 'text'}
               autoComplete="off"
-              data-testid="mcp-account-oauth-client-secret"
-              className="focus-ring block w-full rounded-md border bg-base px-3 py-2 fg-primary"
-              value={secret}
-              onChange={(event): void => setSecret(event.target.value)}
+              data-testid={copy.testId}
+              value={value}
+              onChange={(event): void => setValue(event.target.value)}
             />
-            {!secretRequired && (
-              <span className="block text-xs fg-secondary">Optional.</span>
+          )}
+        </FormField>
+        {collectsSecret && (
+          <FormField
+            label={
+              secretRequired
+                ? 'OAuth client secret'
+                : 'OAuth client secret (optional)'
+            }
+          >
+            {(control) => (
+              <TextInput
+                {...control}
+                type="password"
+                autoComplete="off"
+                data-testid="mcp-account-oauth-client-secret"
+                value={secret}
+                onChange={(event): void => setSecret(event.target.value)}
+              />
             )}
-          </label>
+          </FormField>
         )}
         {error && <Notice intent="destructive">{error}</Notice>}
         <div className="flex justify-end gap-2">
@@ -318,7 +324,7 @@ export function AccountMcpDetails({
         />
       }
     >
-      <div className="p-6" data-testid="mcp-account-details">
+      <div className="" data-testid="mcp-account-details">
         <InstalledEntryStatusSection
           entry={{
             state: 'installed',

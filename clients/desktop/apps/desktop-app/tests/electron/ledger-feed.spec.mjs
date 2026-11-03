@@ -1137,6 +1137,57 @@ test('Ledger Feed: fresh results start at the top of the list', async ({}, testI
   }
 });
 
+test('Ledger Feed: the heading and the Feed share one 640px column', async ({}, testInfo) => {
+  test.setTimeout(180_000);
+
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-ledger-feed-column-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const { electronApp, window } = await seedPanelWorktree({
+    userDataDir,
+    seedDemoWorkspaces: false,
+    env: LEDGER_ON,
+  });
+
+  try {
+    await addLedgerEntry(electronApp, {
+      scope: { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+      author: { kind: 'user' },
+      params: { type: 'TASK', title: 'Line up the Feed', content: 'One edge.' },
+    });
+    await window.setViewportSize({ width: 1400, height: 900 });
+    await window.getByTestId('sidebar-nav-feed').click();
+    const page = window.getByTestId('page-feed');
+    const feed = feedRoot(window);
+    await expect(feed.getByTestId('ledger-entry-row').first()).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const heading = await page.getByTestId('page-header').boundingBox();
+    const list = await feed.boundingBox();
+    expect(heading).not.toBeNull();
+    expect(list).not.toBeNull();
+    if (heading === null || list === null) return;
+    // Title, tabs, search row and list share one left and right edge, 640px
+    // apart, centered in the wide window.
+    expect(Math.abs(heading.x - list.x)).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(heading.x + heading.width - (list.x + list.width)),
+    ).toBeLessThanOrEqual(1);
+    expect(Math.round(list.width)).toBe(640);
+  } catch (error) {
+    await window
+      .screenshot({
+        path: testInfo.outputPath('ledger-feed-column-failure.png'),
+      })
+      .catch(() => undefined);
+    throw error;
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('Ledger Feed: a correction of a correction, replies opened and changed in place', async ({}, testInfo) => {
   test.setTimeout(180_000);
 

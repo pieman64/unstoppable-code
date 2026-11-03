@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentAuditEntry } from '@canopy/desktop-shared/types';
 import type { CostScopeRef } from '@canopy/protocol/cost-view';
-import { normalizeAuditEntry } from '../../observability/audit-entry-parser';
+import { normalizeAuditEntry } from '@canopy/core-runtime/observability';
 import { BillingEvidencePass } from '../billing-evidence';
 import {
   notifyAuditEntryEnqueued,

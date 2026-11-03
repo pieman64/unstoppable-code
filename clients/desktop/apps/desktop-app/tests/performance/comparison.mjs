@@ -12,8 +12,12 @@ import {
   sampleIsComparable,
   workMetricScope,
 } from './results.mjs';
+import { refreshRateMismatch } from './monitor.mjs';
+import { percentile } from './statistics.mjs';
 import {
   VERDICT_DEFAULTS,
+  hodgesLehmannShift,
+  rankSumTest,
   geometricMeanHeadline,
   judgeScenarioMetrics,
   scenarioRerunGuidance,
@@ -212,6 +216,8 @@ function compatibleBaseline(baseline, current, { repeated = false } = {}) {
   ) {
     mismatches.push('environment');
   }
+  if (refreshRateMismatches(baseline, current).length > 0)
+    mismatches.push('refreshRate');
   if (
     !repeated &&
     [...(baseline.scenarios ?? []), ...(current.scenarios ?? [])].some(
@@ -241,6 +247,34 @@ function compatibleBaseline(baseline, current, { repeated = false } = {}) {
           mismatches.push('studyWindowEvidence');
       }
     }
+  }
+  return mismatches;
+}
+
+/**
+ * Scenarios whose runs rendered at different refresh rates. Input-to-frame
+ * and frame-interval timings follow the refresh rate (a 60 Hz run waits up to
+ * twice as long for its next frame), so a pair at different rates measures
+ * the environment, not the change. Every sample of a scenario, on both sides,
+ * must match that scenario's first baseline sample.
+ */
+export function refreshRateMismatches(baseline, current) {
+  const reference = new Map();
+  for (const scenario of baseline.scenarios ?? []) {
+    if (!reference.has(scenario.name))
+      reference.set(scenario.name, scenario.frameBudgets?.refresh ?? null);
+  }
+  const mismatches = [];
+  for (const scenario of [
+    ...(baseline.scenarios ?? []),
+    ...(current.scenarios ?? []),
+  ]) {
+    if (!reference.has(scenario.name)) continue;
+    const reason = refreshRateMismatch(
+      reference.get(scenario.name),
+      scenario.frameBudgets?.refresh ?? null,
+    );
+    if (reason) mismatches.push({ scenario: scenario.name, reason });
   }
   return mismatches;
 }
@@ -601,4 +635,141 @@ export function compareRepeatedPerformanceResults(
     }
   }
   return result;
+}
+
+const FRAME_AREA_MEASURES = Object.freeze({
+  frameWorkP95Ms: (area) => area.frameWorkMs?.p95,
+  frameWorkP99Ms: (area) => area.frameWorkMs?.p99,
+  overBudgetPercent: (area) =>
+    area.frames > 0 ? (area.framesOverWorkBudget / area.frames) * 100 : null,
+  droppedFramePercent: (area) => area.droppedFramePercent,
+  longTasks: (area) => area.longTasks,
+  inputToNextFrameP95Ms: (area) => area.inputToNextFrameMs?.p95,
+});
+
+/**
+ * Advisory 120 Hz comparison of two runs' focus areas and frame windows,
+ * per scenario: each measure's per-sample values on both sides, their
+ * medians, the Hodges-Lehmann shift and a rank-sum p-value. Frame budgets
+ * stay out of the flat metrics and the verdicts, so this never gates; it
+ * gives a change its matched frame numbers. Refuses runs that rendered at
+ * different refresh rates.
+ */
+export function compareFrameAreas(baseline, candidate) {
+  const refreshMismatches = refreshRateMismatches(baseline, candidate);
+  if (refreshMismatches.length > 0)
+    return { compatible: false, refreshMismatches, scenarios: {} };
+  const collect = (result) => {
+    const byScenario = new Map();
+    for (const scenario of result.scenarios ?? []) {
+      const budgets = scenario.frameBudgets;
+      if (!budgets?.areas) continue;
+      const entry = byScenario.get(scenario.name) ?? {
+        areas: new Map(),
+        windows: new Map(),
+      };
+      for (const [name, area] of Object.entries(budgets.areas)) {
+        const list = entry.areas.get(name) ?? [];
+        list.push(area);
+        entry.areas.set(name, list);
+      }
+      for (const window of budgets.windows ?? []) {
+        const key = `${window.area}/${window.label}`;
+        const list = entry.windows.get(key) ?? [];
+        list.push(window);
+        entry.windows.set(key, list);
+      }
+      byScenario.set(scenario.name, entry);
+    }
+    return byScenario;
+  };
+  const left = collect(baseline);
+  const right = collect(candidate);
+  const compareValues = (baselineValues, candidateValues) => {
+    const finite = (values) => values.filter(Number.isFinite);
+    const b = finite(baselineValues);
+    const c = finite(candidateValues);
+    const median = (values) =>
+      values.length > 0 ? percentile(values, 0.5) : null;
+    const test = rankSumTest(b, c);
+    return {
+      baseline: b,
+      candidate: c,
+      baselineMedian: median(b),
+      candidateMedian: median(c),
+      shift: hodgesLehmannShift(b, c, 0.9).estimate,
+      pValue: test?.pValue ?? null,
+    };
+  };
+  const scenarios = {};
+  for (const [name, baselineEntry] of left) {
+    const candidateEntry = right.get(name);
+    if (!candidateEntry) continue;
+    const areas = {};
+    for (const [area, baselineAreas] of baselineEntry.areas) {
+      const candidateAreas = candidateEntry.areas.get(area) ?? [];
+      areas[area] = Object.fromEntries(
+        Object.entries(FRAME_AREA_MEASURES).map(([measure, read]) => [
+          measure,
+          compareValues(baselineAreas.map(read), candidateAreas.map(read)),
+        ]),
+      );
+      areas[area].holds120Hz = {
+        baseline: baselineAreas.filter((a) => a.holds120Hz).length,
+        candidate: candidateAreas.filter((a) => a.holds120Hz).length,
+        samples: [baselineAreas.length, candidateAreas.length],
+      };
+    }
+    const windows = {};
+    for (const [key, baselineWindows] of baselineEntry.windows) {
+      const candidateWindows = candidateEntry.windows.get(key) ?? [];
+      windows[key] = {
+        frameWorkP95Ms: compareValues(
+          baselineWindows.map((w) => w.frameWorkMs?.p95),
+          candidateWindows.map((w) => w.frameWorkMs?.p95),
+        ),
+        framesOverWorkBudget: compareValues(
+          baselineWindows.map((w) => w.framesOverWorkBudget),
+          candidateWindows.map((w) => w.framesOverWorkBudget),
+        ),
+      };
+    }
+    scenarios[name] = { areas, windows };
+  }
+  return { compatible: true, refreshMismatches: [], scenarios };
+}
+
+/** Console lines for `compareFrameAreas`. */
+export function formatFrameAreaComparisonLines(comparison) {
+  if (!comparison.compatible)
+    return [
+      'Frame areas: incompatible refresh rates',
+      ...comparison.refreshMismatches.map(
+        ({ scenario, reason }) => `  ${scenario}: ${reason}`,
+      ),
+    ];
+  const value = (number, unit = '') =>
+    Number.isFinite(number) ? `${number.toFixed(2)}${unit}` : 'n/a';
+  const lines = [];
+  for (const [scenario, { areas }] of Object.entries(comparison.scenarios)) {
+    const names = Object.keys(areas);
+    if (names.length === 0) continue;
+    lines.push(
+      `120 Hz frame areas (${scenario}), median baseline -> candidate:`,
+    );
+    for (const area of names) {
+      const measures = areas[area];
+      lines.push(
+        `  ${area}: frame work p95 ${value(measures.frameWorkP95Ms.baselineMedian, 'ms')} -> ${value(measures.frameWorkP95Ms.candidateMedian, 'ms')}, ` +
+          `p99 ${value(measures.frameWorkP99Ms.baselineMedian, 'ms')} -> ${value(measures.frameWorkP99Ms.candidateMedian, 'ms')}, ` +
+          `over 8.33ms ${value(measures.overBudgetPercent.baselineMedian, '%')} -> ${value(measures.overBudgetPercent.candidateMedian, '%')}, ` +
+          `dropped ${value(measures.droppedFramePercent.baselineMedian, '%')} -> ${value(measures.droppedFramePercent.candidateMedian, '%')}, ` +
+          `long tasks ${value(measures.longTasks.baselineMedian)} -> ${value(measures.longTasks.candidateMedian)}` +
+          (Number.isFinite(measures.frameWorkP95Ms.pValue)
+            ? ` (p95 p=${measures.frameWorkP95Ms.pValue.toFixed(3)})`
+            : ''),
+      );
+    }
+  }
+  return lines;
 }

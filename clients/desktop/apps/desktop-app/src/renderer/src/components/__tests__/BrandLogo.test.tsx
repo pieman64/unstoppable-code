@@ -1,5 +1,5 @@
 /**
- * BrandLogo / CanopyLogo desktop renderer tests.
+ * BrandLogo desktop renderer tests.
  *
  * The desktop brand SVG content is the `assets.logoSvg` value exposed by
  * `@canopy/brand/current` (resolved by jest's `moduleNameMapper` to the
@@ -11,12 +11,10 @@
  *   2. The default-brand snapshot pins the rendered output so any future
  *      change to either the component shape or the brand-runtime SVG is
  *      caught (byte-for-byte assertion against the current brand cache).
- *   3. `CanopyLogo` remains a backwards-compatible re-export of `BrandLogo`.
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { BRAND } from '@canopy/brand/current';
 import { BrandLogo } from '@/components/BrandLogo';
-import { CanopyLogo } from '@/components/CanopyLogo';
 
 describe('BrandLogo (desktop renderer)', () => {
   it('renders the brand SVG artwork inside the wrapper', () => {
@@ -64,23 +62,5 @@ describe('BrandLogo (desktop renderer)', () => {
 
   it('default-brand snapshot pins the rendered output', () => {
     expect(renderToStaticMarkup(<BrandLogo />)).toMatchSnapshot();
-  });
-});
-
-describe('CanopyLogo (backwards-compatible re-export)', () => {
-  it('forwards SVGProps subset to BrandLogo and renders identical markup', () => {
-    const fromBrand = renderToStaticMarkup(
-      <BrandLogo className="h-4 w-4" size={14} />,
-    );
-    const fromCanopy = renderToStaticMarkup(
-      <CanopyLogo className="h-4 w-4" width={14} height={14} />,
-    );
-    expect(fromCanopy).toBe(fromBrand);
-  });
-
-  it('honors aria-hidden="true" passed as the SVG-style string attribute', () => {
-    const html = renderToStaticMarkup(<CanopyLogo aria-hidden="true" />);
-    expect(html).toContain('aria-hidden="true"');
-    expect(html).not.toContain('role="img"');
   });
 });

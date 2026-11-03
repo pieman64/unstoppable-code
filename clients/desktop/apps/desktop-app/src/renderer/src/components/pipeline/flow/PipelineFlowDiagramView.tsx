@@ -154,7 +154,7 @@ function PipelineJobNodeView({
           {data.label}
         </span>
         {data.matrix !== undefined && (
-          <span className="shrink-0 rounded bg-fg-primary/[0.08] px-1 py-px font-mono text-3xs fg-secondary">
+          <span className="shrink-0 font-mono text-3xs fg-secondary">
             matrix
           </span>
         )}

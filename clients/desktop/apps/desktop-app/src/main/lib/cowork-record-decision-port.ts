@@ -112,7 +112,7 @@ export async function applyCoworkIndexDecision(
     case 'cowork.migration':
       return getWorkspaceIndexRepository().update<CoworkMigrationOutcome>(
         async (snapshot) => {
-          admitCoworkIndex(snapshot.authority);
+          admitCoworkIndex(snapshot.authority, snapshot.unserved);
           const allocated = allocateCoworkMigrationTo(
             snapshot.entries,
             decision,
@@ -123,7 +123,7 @@ export async function applyCoworkIndexDecision(
           // Refuse unreadable state before publication; the initial write still follows the index.
           const manifest = await readWorkspaceConfigDetailed(allocated.id);
           if (manifest.authority === 'unreadable')
-            throw new WorkspaceConfigUnreadableError();
+            throw new WorkspaceConfigUnreadableError(manifest.unserved);
           return {
             result: { id: allocated.id, created: true },
             entries: allocated.entries,
@@ -150,7 +150,7 @@ export function applyCoworkProvisionDecision(
   decision: CoworkProvisionDecision,
 ): Promise<CoworkProvisionOutcome> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const entry = admitCoworkProvisionEntry(snapshot.entries, decision);
     const pass = await updateWorkspaceConfig(
       decision.workspaceId,
@@ -217,7 +217,7 @@ export function applyCoworkCreationAllocation(
   admit: (workspaceId: string) => void,
 ): Promise<CoworkSidebarItem> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const taken = coworkCreationTaken(snapshot.entries, decision);
     const base = slugify(decision.name) || 'workspace';
     let id = uniqueId(base, taken);
@@ -249,7 +249,7 @@ export function applyCoworkCreationDecision(
   beforeScaffold: () => void,
 ): Promise<void> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const entries = applyCoworkCreationIndexTo(snapshot.entries, decision);
     if (decision.item.owner)
       await applyCoworkCreationManifestDecision(decision.item.id, {
@@ -288,7 +288,7 @@ export function applyCoworkStageDecision(
   decision: CoworkStageDecision,
 ): Promise<boolean> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const indexed = admitCoworkStageEntry(snapshot.entries, decision);
     const created = await updateWorkspaceConfig(
       decision.item.id,
@@ -318,7 +318,7 @@ export function applyCoworkPublishDecision(
   precheck?: () => Promise<void>,
 ): Promise<CoworkPublishOutcome> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     await precheck?.();
     const entry = admitCoworkPublishEntry(snapshot.entries, decision);
     const outcome = await updateWorkspaceConfig(
@@ -348,7 +348,7 @@ export function applyCoworkMetadataDecision(
   decision: CoworkMetadataDecision,
 ): Promise<void> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
-    admitCoworkIndex(snapshot.authority);
+    admitCoworkIndex(snapshot.authority, snapshot.unserved);
     const entry = admitCoworkMetadataEntry(snapshot.entries, decision);
     await updateWorkspaceConfig(
       decision.workspaceId,

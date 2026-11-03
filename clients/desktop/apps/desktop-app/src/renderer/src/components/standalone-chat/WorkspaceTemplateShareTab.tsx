@@ -10,6 +10,7 @@ import {
   CopyLinkButton,
   ShareActionButton,
   ShareAudienceLabel,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   createShareLinkResolver,
@@ -80,14 +81,9 @@ export function WorkspaceTemplateShareTab({
           document: next.document,
         });
         if (!canceled) setShare(existing);
-      } catch (cause) {
-        if (!canceled) {
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Could not load sharing details.',
-          );
-        }
+      } catch {
+        // The share service's own error text is never shown here.
+        if (!canceled) setError("Couldn't load sharing details. Try again.");
       } finally {
         if (!canceled) setLoading(false);
       }
@@ -177,11 +173,7 @@ export function WorkspaceTemplateShareTab({
       ) : null}
 
       {omitted ? <p className="text-xs fg-secondary">{omitted}</p> : null}
-      {error ? (
-        <p className="text-xs fg-destructive" role="alert">
-          {error}
-        </p>
-      ) : null}
+      <ErrorBanner error={error} className="" />
 
       {dialogOpen && built ? (
         <ShareProjectTemplateModal

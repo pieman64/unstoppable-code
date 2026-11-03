@@ -22,6 +22,7 @@ import {
 import {
   EXECUTION_HOST_SHELL_USAGE_EXIT_CODE,
   executionHostHeapLimits,
+  executionHostHeapSampleDelayMs,
   executionHostShellArgs,
   parseExecutionHostShellArgs,
 } from '../execution-host/shell';
@@ -164,6 +165,31 @@ describe('execution host shell arguments', () => {
     }
   });
 
+  it('samples the heap sooner as it nears the stop', () => {
+    const MiB = 1024 * 1024;
+    const { stopBytes } = executionHostHeapLimits(BUDGET);
+    const delay = (
+      usedBytes: number,
+      growthBytesPerMs = 0,
+      stop = stopBytes,
+    ): number =>
+      executionHostHeapSampleDelayMs({
+        usedBytes,
+        growthBytesPerMs,
+        stopBytes: stop,
+        intervalMs: 100,
+      });
+    // Far from the stop the interval caps the wait; close to it, the floor.
+    expect(delay(0, 0, 1024 * MiB)).toBe(100);
+    expect(delay(stopBytes - MiB)).toBe(10);
+    // Slow or shrinking growth still plans for about 1 GiB/s: twice before
+    // a 64 MiB gap closes at that rate.
+    expect(delay(stopBytes - 64 * MiB, -MiB)).toBe(32);
+    // Faster observed growth samples sooner.
+    expect(delay(stopBytes - 64 * MiB, 4 * MiB)).toBe(10);
+    expect(delay(stopBytes - 64 * MiB, 2 * MiB)).toBe(16);
+  });
+
   it('refuses a budget on a port without a shell, and an unbudgeted host without Node', () => {
     const unbudgeted = createOwnedProcessHostPort({
       services,
@@ -232,6 +258,40 @@ describe('execution host shell arguments', () => {
     const output = diagnostics.join('');
     expect(output).toContain('heap limit of 64 MiB');
     expect(output).not.toContain('<--- Last few GCs --->');
+    expect(code).toBe(EXECUTION_HOST_LIMIT_EXIT_CODES.heap);
+  });
+
+  it('samples a fast allocator before it can reach V8 cap between ticks', async () => {
+    // A tick longer than the time the entry needs to fill the whole cap: a
+    // sampler that waits a fixed tick leaves the stop to V8's backstop, whose
+    // isolate teardown can abort the process with its writers open.
+    const slowTicks = createOwnedProcessHostPort({
+      services,
+      shell: { executable: process.execPath, args: [path.join(dir, SHELL)] },
+      cwd: dir,
+      environment: () => ({
+        ...process.env,
+        EXECUTION_HOST_SHELL_TEST_SAMPLE_INTERVAL_MS: '10000',
+      }),
+      diagnostics: (stream, bytes) =>
+        diagnostics.push(`${stream}:${Buffer.from(bytes).toString('utf8')}`),
+    });
+    const host = slowTicks.launch({
+      entry: ENTRY,
+      serviceName: 'test-host',
+      budget: BUDGET,
+    });
+    const seen = record(host);
+    host.postMessage({ type: 'exhaust', memory: 'heap' });
+    const code = await seen.exit;
+    const output = diagnostics.join('');
+    expect(output).toContain('heap limit of 64 MiB');
+    expect(output).not.toContain('<--- Last few GCs --->');
+    // The sampled stop saw the heap past it; V8's backstop leaves no sample.
+    const peakMb = Number(/peaked at (\d+) MiB of heap/.exec(output)?.[1]);
+    expect(peakMb * 1024 * 1024).toBeGreaterThan(
+      executionHostHeapLimits(BUDGET).stopBytes,
+    );
     expect(code).toBe(EXECUTION_HOST_LIMIT_EXIT_CODES.heap);
   });
 

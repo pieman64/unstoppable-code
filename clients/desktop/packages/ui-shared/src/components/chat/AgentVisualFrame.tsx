@@ -703,7 +703,7 @@ export function AgentVisualFrame(
                 setRetry((value): number => value + 1);
               }}
             >
-              Retry
+              Try again
             </Button>
           </div>
         ) : null}

@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import type { TelemetrySyncStatus } from '@canopy/desktop-shared/types';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import { Dot, StatusGlyph } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -58,10 +58,7 @@ export function CloudSyncStatus({
       data-testid="settings-cloud-sync-status-paused"
       className="inline-flex items-center gap-1.5 fg-secondary"
     >
-      <span
-        aria-hidden="true"
-        className={`inline-block h-2.5 w-2.5 rounded-full ${OPERATIONAL_STATUS_COLORS.paused.background}`}
-      />
+      <StatusGlyph state="paused" size={12} />
       <span>Sync paused{pendingSuffix(pendingCount)}</span>
     </span>
   );
@@ -82,7 +79,7 @@ export function CloudSyncStatus({
     // above, so the two rows can no longer disagree about the same account.
     content = (
       <span className="inline-flex items-center gap-1.5 fg-destructive">
-        <span className="inline-block h-2.5 w-2.5 rounded-full bg-destructive" />
+        <Dot tone="danger" />
         <span>Sign in to sync{pendingSuffix(pendingCount)}</span>
       </span>
     );
@@ -90,7 +87,7 @@ export function CloudSyncStatus({
     const when = lastErrorAt ? ` ${formatRelativeTime(lastErrorAt)}` : '';
     content = (
       <span className="inline-flex items-center gap-1.5 fg-destructive">
-        <span className="inline-block h-2.5 w-2.5 rounded-full bg-destructive" />
+        <Dot tone="danger" />
         <span>
           Sync failed{when}
           {pendingSuffix(pendingCount)}
@@ -102,7 +99,7 @@ export function CloudSyncStatus({
   } else if (lastSyncedAt) {
     content = (
       <span className="inline-flex items-center gap-1.5 fg-secondary">
-        <span className="inline-block h-2.5 w-2.5 rounded-full bg-success" />
+        <Dot tone="success" />
         <span>
           Synced {formatRelativeTime(lastSyncedAt)}
           {pendingSuffix(pendingCount)}

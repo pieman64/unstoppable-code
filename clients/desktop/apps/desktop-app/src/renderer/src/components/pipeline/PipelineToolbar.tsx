@@ -5,7 +5,8 @@ import {
   RedoIcon as AppCatalogRedoIcon,
   ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { type JSX, type ReactNode, useState } from 'react';
+import { type JSX, type ReactNode } from 'react';
+import { InlineTextInput } from '@canopy/ui-shared/components';
 import type { ActivePanel, MainView } from '../../hooks/usePipelineEditor';
 import { Tooltip } from '@canopy/ui-shared';
 import {
@@ -206,8 +207,6 @@ export function PipelineToolbar({
   onShare,
   headerAction,
 }: PipelineToolbarProps): JSX.Element {
-  const [editingName, setEditingName] = useState(false);
-
   return (
     <div className="flex items-center gap-3 px-4 py-3 border-b bg-card shrink-0">
       {/* Back button */}
@@ -227,22 +226,15 @@ export function PipelineToolbar({
         <span className="text-s font-medium fg-primary px-1 py-0.5">
           {name || 'Untitled workflow'}
         </span>
-      ) : editingName ? (
-        <input
-          autoFocus
-          value={name}
-          onChange={(e) => onNameChange(e.target.value)}
-          onBlur={() => setEditingName(false)}
-          onKeyDown={(e) => e.key === 'Enter' && setEditingName(false)}
-          className="text-s font-medium fg-primary bg-transparent border-b border-line-accent outline-none px-1 py-0.5"
-        />
       ) : (
-        <button
-          onClick={() => setEditingName(true)}
-          className="text-s font-medium fg-primary hover:fg-accent transition-colors px-1 py-0.5"
-        >
-          {name || 'Untitled workflow'}
-        </button>
+        <div className="w-64 min-w-0 shrink">
+          <InlineTextInput
+            aria-label="Workflow name"
+            value={name}
+            onCommit={onNameChange}
+            placeholder="Untitled workflow"
+          />
+        </div>
       )}
 
       <div className="flex-1" />

@@ -7,6 +7,9 @@ import {
 import type {
   PortalBackgroundProcessEntity,
   PortalChatMessage,
+  PortalWatcherEntity,
+  PortalGitHubRunProgress,
+  PortalGitHubPullRequestProgress,
 } from '@canopy/protocol/portal';
 import { SUBAGENT_UNTITLED_LABEL } from '@canopy/ui-shared/components';
 import {
@@ -18,6 +21,8 @@ import {
 } from './background-tray/AgentRow';
 import {
   pipelineBackgroundTrayRun,
+  githubBackgroundTrayRun,
+  githubPullRequestBackgroundTrayRun,
   type BackgroundTrayRun,
 } from './background-tray/RunRow';
 import type { PipelineRunReceiptHost } from '../agent-activity/pipeline-run-receipt-host';
@@ -241,20 +246,76 @@ export function portalBackgroundTrayAgents(
  * transcript lists, by dedupe key, with the state the run host reports. The
  * panel lists the live ones and the finished ones it saw live until
  * dismissed; a run the host does not know stays in its record. GitHub runs
- * stay on the desktop (D1b). `executionIds` maps each row back to its run,
+ * arrive through sanitized watcher entities. `executionIds` maps each pipeline row back to its run,
  * for Stop.
  */
 export function portalBackgroundTrayRuns(
   messages: readonly PortalChatMessage[],
   host: Pick<PipelineRunReceiptHost, 'summaries' | 'statesById'> | null,
+  watchers: readonly PortalWatcherEntity[] = [],
+  subscriber?: {
+    readonly projectId: string;
+    readonly worktreeId: string;
+    readonly chatId: string;
+  },
 ): {
   runs: BackgroundTrayRun[];
   executionIds: Record<string, string>;
+  githubUrls: Record<string, string>;
 } {
   const runs: BackgroundTrayRun[] = [];
   const executionIds: Record<string, string> = {};
+  const githubUrls: Record<string, string> = {};
+  const watchedRuns = new Map<string, PortalGitHubRunProgress>();
+  const watchedPrs = new Map<string, PortalGitHubPullRequestProgress>();
+  const followedRuns = new Set<string>();
+  const followedPrs = new Set<string>();
+  for (const watcher of watchers) {
+    if (
+      !subscriber ||
+      watcher.projectId !== subscriber.projectId ||
+      watcher.worktreeId !== subscriber.worktreeId ||
+      watcher.chatId !== subscriber.chatId
+    )
+      continue;
+    for (const run of watcher.githubProgress?.runs ?? []) {
+      const key = `github:${run.repository}/${run.runId}/attempt/${run.runAttempt}`;
+      if (watcher.status === 'active') followedRuns.add(key);
+      const previous = watchedRuns.get(key);
+      if (!previous || previous.observedAt.localeCompare(run.observedAt) < 0)
+        watchedRuns.set(key, run);
+    }
+    for (const pr of watcher.githubPullRequestProgress?.pullRequests ?? []) {
+      const key = `github-pr:${pr.repository}#${pr.number}`;
+      if (watcher.status === 'active') followedPrs.add(key);
+      const previous = watchedPrs.get(key);
+      if (!previous || previous.observedAt.localeCompare(pr.observedAt) < 0)
+        watchedPrs.set(key, pr);
+    }
+  }
+  for (const [key, run] of Array.from(watchedRuns).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const row = githubBackgroundTrayRun(key, run);
+    // Match desktop: an unfinished observation is live only while followed.
+    if (row.status === 'running' && !followedRuns.has(key)) continue;
+    runs.push(
+      run.tiers && row.dag
+        ? { ...row, dag: { ...row.dag, tiers: run.tiers } }
+        : row,
+    );
+    githubUrls[key] = run.htmlUrl;
+  }
+  for (const [key, pr] of Array.from(watchedPrs).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const row = githubPullRequestBackgroundTrayRun(key, pr);
+    if (row.status === 'running' && !followedPrs.has(key)) continue;
+    runs.push(row);
+    githubUrls[key] = pr.url;
+  }
   if (host === null || host.summaries.length === 0)
-    return { runs, executionIds };
+    return { runs, executionIds, githubUrls };
   const latest = new Map<string, PipelineRunArtifactReceiptV1>();
   for (const receipt of collectTurnAgentArtifacts(messages)) {
     if (receipt.kind === 'pipeline_run') latest.set(receipt.dedupeKey, receipt);
@@ -274,5 +335,5 @@ export function portalBackgroundTrayRuns(
     );
     executionIds[receipt.dedupeKey] = receipt.executionId;
   }
-  return { runs, executionIds };
+  return { runs, executionIds, githubUrls };
 }

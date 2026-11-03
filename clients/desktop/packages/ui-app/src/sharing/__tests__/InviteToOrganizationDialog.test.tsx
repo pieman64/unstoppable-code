@@ -692,7 +692,7 @@ describe('InviteToOrganizationDialog', () => {
       }
       await act(async () => {
         Array.from(document.querySelectorAll('button'))
-          .find((button) => button.textContent === 'Retry invite')
+          .find((button) => button.textContent === 'Try the invite again')
           ?.click();
         await Promise.resolve();
       });

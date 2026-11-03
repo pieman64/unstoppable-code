@@ -43,7 +43,7 @@ const ipcCaller: CanopyCallerDescriptor = {
   grants: ['core.workspace.read'],
 };
 const runtime = {
-  dispatcher: { query: jest.fn() },
+  dispatcher: { query: jest.fn(), instruction: jest.fn() },
   resolveCaller: jest.fn(() => ipcCaller),
 };
 const mockedSetWorktreePausedHookKeys = jest.mocked(setWorktreePausedHookKeys);
@@ -135,7 +135,11 @@ describe('hooks IPC', () => {
 
     await handler({}, request);
 
-    expect(mockedSetWorktreePausedHookKeys).toHaveBeenCalledWith(request);
+    // With the projection of the registered core.worktree.hooks.setPaused.
+    expect(mockedSetWorktreePausedHookKeys).toHaveBeenCalledWith(
+      request,
+      expect.any(Function),
+    );
   });
 
   it('serves hook:source-info through core.initiatedWork.source.get with the sender caller', async () => {

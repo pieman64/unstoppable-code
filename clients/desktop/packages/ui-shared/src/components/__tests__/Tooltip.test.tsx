@@ -10,6 +10,7 @@ import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { resetInputModality } from '../../lib/input-modality';
 import { Tooltip } from '../Tooltip';
+import { useOverlayEscape } from '../useOverlayEscape';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -34,6 +35,34 @@ function findTrigger(container: HTMLElement): HTMLButtonElement {
     throw new Error('Trigger button not found');
   }
   return trigger;
+}
+
+/** Stands in for a dialog or sheet: closes on Escape through the shared stack. */
+function EscapeOverlay({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: JSX.Element;
+}): JSX.Element {
+  useOverlayEscape(true, onClose);
+  return children;
+}
+
+function pressEscape(
+  target: EventTarget,
+  init: KeyboardEventInit = {},
+): KeyboardEvent {
+  const event = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+  return event;
 }
 
 function findPortalTooltip(): HTMLElement | null {
@@ -894,6 +923,192 @@ describe('Tooltip (portal)', () => {
       expect(tip?.className).toContain('whitespace-nowrap');
       expect(tip?.className).not.toContain('max-w-36');
       expect(tip?.className).not.toContain('whitespace-normal');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('closes a hover-opened tip on Escape and keeps the dialog beneath it open', () => {
+    const onClose = jest.fn();
+    const { container, root } = render(
+      <EscapeOverlay onClose={onClose}>
+        <Tooltip label="Hover tip">
+          <button type="button">trigger</button>
+        </Tooltip>
+      </EscapeOverlay>,
+    );
+
+    try {
+      const trigger = findTrigger(container);
+      act(() => {
+        trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(findPortalTooltip()).not.toBeNull();
+
+      // Focus is not on the trigger: the pointer opened the tip.
+      expect(pressEscape(document.body).defaultPrevented).toBe(true);
+      expect(findPortalTooltip()).toBeNull();
+      expect(onClose).not.toHaveBeenCalled();
+
+      // The resting pointer does not bring it back.
+      act(() => {
+        trigger.dispatchEvent(new MouseEvent('mousemove', { bubbles: true }));
+      });
+      expect(findPortalTooltip()).toBeNull();
+
+      // With no tip open, Escape belongs to the dialog again.
+      pressEscape(document.body);
+      expect(onClose).toHaveBeenCalledTimes(1);
+
+      // Leaving and coming back shows the tip again.
+      act(() => {
+        trigger.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+        trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(findPortalTooltip()).not.toBeNull();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('lets the focused control take Escape first where React listens on the document', () => {
+    // On web, Next.js hydrates the React root on `document`, so a focused
+    // control's onKeyDown (SearchField clearing, InlineTextInput cancelling)
+    // runs from a document listener. A tip under the resting pointer must not
+    // take the press before it.
+    const onControlEscape = jest.fn((event: KeyboardEvent) => {
+      if (event.key === 'Escape') event.preventDefault();
+    });
+    document.addEventListener('keydown', onControlEscape);
+    const { container, root } = render(
+      <Tooltip label="Hover tip">
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+
+    try {
+      act(() => {
+        findTrigger(container).dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+      });
+      expect(findPortalTooltip()).not.toBeNull();
+
+      pressEscape(document.body);
+      expect(onControlEscape).toHaveBeenCalledTimes(1);
+      // The control handled it, so the tip leaves this press alone.
+      expect(findPortalTooltip()).not.toBeNull();
+
+      // An unhandled press still closes the tip.
+      document.removeEventListener('keydown', onControlEscape);
+      expect(pressEscape(document.body).defaultPrevented).toBe(true);
+      expect(findPortalTooltip()).toBeNull();
+    } finally {
+      document.removeEventListener('keydown', onControlEscape);
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('leaves Escape to a menu that has focus, which closes with its tips', () => {
+    const onMenuEscape = jest.fn();
+    document.addEventListener('keydown', onMenuEscape);
+    const { container, root } = render(
+      <div role="menu">
+        <button type="button" role="menuitem">
+          Focused row
+        </button>
+        <Tooltip label="Row tip">
+          <button type="button">trigger</button>
+        </Tooltip>
+      </div>,
+    );
+
+    try {
+      const row = container.querySelector<HTMLElement>('[role="menuitem"]');
+      act(() => row?.focus());
+      act(() => {
+        container
+          .querySelectorAll('button')[1]
+          ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(findPortalTooltip()).not.toBeNull();
+
+      expect(pressEscape(row ?? document.body).defaultPrevented).toBe(false);
+      expect(onMenuEscape).toHaveBeenCalledTimes(1);
+    } finally {
+      document.removeEventListener('keydown', onMenuEscape);
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('leaves Escape alone during IME composition', () => {
+    const { container, root } = render(
+      <Tooltip label="Hover tip">
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+
+    try {
+      act(() => {
+        findTrigger(container).dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+      });
+      expect(
+        pressEscape(document.body, { isComposing: true }).defaultPrevented,
+      ).toBe(false);
+      expect(
+        pressEscape(document.body, { keyCode: 229 }).defaultPrevented,
+      ).toBe(false);
+      expect(findPortalTooltip()).not.toBeNull();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it('does not reappear after being disabled and re-enabled', () => {
+    const { container, root } = render(
+      <Tooltip label="Environments">
+        <button type="button">trigger</button>
+      </Tooltip>,
+    );
+
+    try {
+      act(() => {
+        findTrigger(container).dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+      });
+      expect(findPortalTooltip()).not.toBeNull();
+
+      act(() => {
+        root.render(
+          <Tooltip label="Environments" disabled>
+            <button type="button">trigger</button>
+          </Tooltip>,
+        );
+      });
+      expect(findPortalTooltip()).toBeNull();
+
+      act(() => {
+        root.render(
+          <Tooltip label="Environments">
+            <button type="button">trigger</button>
+          </Tooltip>,
+        );
+      });
+      // Nothing hovered the new wrapper, so no tip and no stale position.
+      expect(findPortalTooltip()).toBeNull();
     } finally {
       act(() => {
         root.unmount();

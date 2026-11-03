@@ -27,13 +27,13 @@ import {
   ArchivedStateIcon,
   EmptyTrashDialog as SharedEmptyTrashDialog,
   HeaderActionButton,
+  SearchField,
 } from '@canopy/ui-shared/components';
 import { formatCostAmount } from '@canopy/ui-shared/components/cost';
 import { formatByteSize, matchesArchivedQuery } from '@canopy/ui-shared/lib';
 import {
   BackIcon,
   GitPullRequestIcon,
-  SearchIcon,
   TrashPermanentlyIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -472,20 +472,13 @@ export function ArchivedContainersOverviewPage({
 
       {/* Search */}
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-        <SearchIcon
-          width={13}
-          height={13}
-          aria-hidden="true"
-          className="shrink-0 fg-secondary"
-        />
-        <input
-          type="search"
+        <SearchField
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onValueChange={setQuery}
           placeholder="Search archived and deleted"
           aria-label="Search archived and deleted"
           data-testid="archived-overview-search"
-          className="w-full min-w-0 bg-transparent text-s fg-primary outline-none placeholder:fg-tertiary"
+          className="min-w-0 flex-1"
         />
         <ArchivedStateFilterDropdown
           hiddenStates={hiddenStates}
@@ -755,7 +748,7 @@ function ArchivedOverviewRow({
               aria-label={pullRequestIndicator.tooltip}
               className="flex shrink-0 items-center fg-secondary"
             >
-              <GitPullRequestIcon width={11} height={11} />
+              <GitPullRequestIcon size="xs" />
             </span>
           )}
           {changesBadge !== null && (

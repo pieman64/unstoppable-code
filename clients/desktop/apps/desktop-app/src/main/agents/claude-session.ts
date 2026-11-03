@@ -2167,7 +2167,7 @@ export class ClaudeCodeProvider implements AgentProvider {
       };
       // Every notice derived from this event names the agent it came from, so
       // a sub-agent's failure is never read as the root turn's (CAN-4629).
-      const emitDerivedNotice = scopeDerivedNotices(onEvent, data);
+      const emitDerivedNotice = scopeDerivedNotices(onEvent, eventData);
       const proxyInterruption =
         isRecord(data) &&
         data.type === 'result' &&

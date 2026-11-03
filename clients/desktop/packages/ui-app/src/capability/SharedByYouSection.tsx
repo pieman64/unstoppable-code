@@ -1,13 +1,17 @@
 import {
   useCallback,
+  useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type JSX,
+  type ReactNode,
   type Ref,
 } from 'react';
 import { Button } from '@canopy/ui-shared/components/Button';
 import { ComponentSection } from '@canopy/ui-shared/components/ComponentSection';
+import { CopyLinkButton } from '@canopy/ui-shared/components/CopyLinkButton';
 import { ShareAudienceLabel } from '@canopy/ui-shared/components/ShareAudienceLabel';
 import { MARKETPLACE_UNSHARE_LABEL } from '@canopy/ui-shared/lib/marketplace-unshare';
 import type { MarketplaceUnshareKind } from '@canopy/ui-shared/lib/marketplace-unshare';
@@ -15,12 +19,20 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   SHARED_BY_YOU_REMOVE_LINK_ERROR,
   SHARED_BY_YOU_TITLE,
+  sharedByYouCopyLinkAriaLabel,
   sharedByYouRemoveLinkAriaLabel,
   sharedByYouSinceLabel,
   sharedByYouUnshareAriaLabel,
 } from '@canopy/ui-shared/lib/shared-by-you';
 import { RemovePublicLinkConfirmDialog } from '../sharing/RemovePublicLinkConfirmDialog';
-import type { SharedByYouAudience } from '../sharing/sharedByYouAudiences';
+import type {
+  SharedByYouAccountCopyLink,
+  SharedByYouAudience,
+} from '../sharing/sharedByYouAudiences';
+import {
+  notifyScopedLinkCopied,
+  scopedLinkWriter,
+} from '../sharing/sharedByYouScopedLink';
 import { useMarketplaceUnshare } from './MarketplaceUnshareAction';
 
 type AccountAudience = Extract<SharedByYouAudience, { id: 'account' }>;
@@ -108,6 +120,7 @@ function RowUnshare({
   disabled = false,
   onClick,
   buttonRef,
+  leading,
 }: {
   id: SharedByYouAudience['id'];
   ariaLabel: string;
@@ -115,10 +128,13 @@ function RowUnshare({
   disabled?: boolean;
   onClick: () => void;
   buttonRef?: Ref<HTMLButtonElement>;
+  /** A row action shown before Unshare, such as Copy link. */
+  leading?: ReactNode;
 }): JSX.Element {
   const reasonId = useId();
   return (
     <div className="ml-auto flex shrink-0 items-center gap-3">
+      {leading}
       {!action.available && (
         <span
           id={reasonId}
@@ -145,6 +161,47 @@ function RowUnshare({
 }
 
 const NOTHING_TO_RUN = (): Promise<void> => Promise.resolve();
+
+/**
+ * The account row's Copy link (CAN-5452): the member link through the
+ * shared control, so `Copied` and the notice show only after the write
+ * succeeds. A failed write warns through the host instead.
+ */
+function RowCopyLink({
+  name,
+  audienceName,
+  copyLink,
+}: {
+  name: string;
+  audienceName: string;
+  copyLink: SharedByYouAccountCopyLink;
+}): JSX.Element {
+  const { link, port } = copyLink;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
+  const write = useMemo(
+    () => scopedLinkWriter(port, () => mounted.current),
+    [port],
+  );
+  const onCopy = useCallback(
+    (): void => notifyScopedLinkCopied(port, link),
+    [link, port],
+  );
+  return (
+    <CopyLinkButton
+      url={link.url}
+      dataTestId="shared-by-you-copy-link-account"
+      ariaLabel={sharedByYouCopyLinkAriaLabel(name, audienceName)}
+      write={write}
+      onCopy={onCopy}
+    />
+  );
+}
 
 function SharedByYouAccountRow({
   kind,
@@ -183,6 +240,16 @@ function SharedByYouAccountRow({
         disabled={unshare.disabled}
         onClick={unshare.open}
         buttonRef={triggerRef}
+        leading={
+          audience.copyLink ? (
+            <RowCopyLink
+              key={`${audience.copyLink.link.url}:${audience.copyLink.link.audienceName}:${String(audience.copyLink.link.hasPublicLink)}:${String(audience.copyLink.link.personal)}`}
+              name={name}
+              audienceName={displayName}
+              copyLink={audience.copyLink}
+            />
+          ) : undefined
+        }
       />
       {unshare.dialog}
     </li>

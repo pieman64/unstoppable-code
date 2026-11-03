@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { SettingsSaveState } from '@canopy/ui-shared/components';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import { SettingsGroup, SettingsRow, SettingsSection } from '../SettingsLayout';
 import { ProjectSettingsScopeGroup } from '../../worktree/project-settings/ProjectSettingsScope';
 import type { ProjectStartPage } from '@canopy/protocol/start-page';
@@ -25,6 +25,10 @@ import type {
   AddToWorktreeFeedback,
   AddToWorktreeTarget,
 } from '../../worktree/worktree-settings-controls-state';
+
+// Settings never show an exception's text; main logs the details.
+const START_PAGE_LOAD_ERROR = "Couldn't load the start page. Try again.";
+const START_PAGE_SAVE_ERROR = "Couldn't save the start page. Try again.";
 
 /** `undefined` (use the team setting) and `null` (new chat) stay distinct. */
 function serializeStartPageValue(value: StartPageSettingValue): string {
@@ -153,13 +157,8 @@ export function CodeStartPageSettings({
           setStartPageValid(true);
         }
       })
-      .catch((cause) => {
-        if (!canceled)
-          setError(
-            cause instanceof Error
-              ? cause.message
-              : 'Could not load the start page.',
-          );
+      .catch(() => {
+        if (!canceled) setError(START_PAGE_LOAD_ERROR);
       });
     return (): void => {
       canceled = true;
@@ -214,14 +213,10 @@ export function CodeStartPageSettings({
       } else {
         useGitHubStore.getState().addToast('Start page saved', 'success');
       }
-    } catch (cause) {
+    } catch {
       lastWriteFailedRef.current = true;
       onSaveStateChangeRef.current?.('error');
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Failed to save the start page.',
-      );
+      setError(START_PAGE_SAVE_ERROR);
     } finally {
       setSaving(false);
     }
@@ -319,13 +314,9 @@ export function CodeStartPageSettings({
       } else {
         useGitHubStore.getState().addToast('Start page saved', 'success');
       }
-    } catch (cause) {
+    } catch {
       onSaveStateChangeRef.current?.('error');
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : 'Failed to save the start page.',
-      );
+      setError(START_PAGE_SAVE_ERROR);
     } finally {
       setSaving(false);
       setAddFeedback({ phase: 'idle' });
@@ -443,7 +434,7 @@ export function CodeStartPageSettings({
               allowUseTeamSetting={mode === 'local'}
             />
           </SettingsGroup>
-          {error && <p className="text-xs fg-destructive">{error}</p>}
+          <ErrorBanner error={error} className="" />
         </SettingsSection>
       </div>
     );
@@ -468,7 +459,7 @@ export function CodeStartPageSettings({
           allowUseTeamSetting={mode === 'local'}
         />
       </SettingsGroup>
-      {error && <p className="text-xs fg-destructive">{error}</p>}
+      <ErrorBanner error={error} className="" />
       <div
         className={`flex items-center ${mode === 'source' ? 'justify-between' : 'justify-end'}`}
       >

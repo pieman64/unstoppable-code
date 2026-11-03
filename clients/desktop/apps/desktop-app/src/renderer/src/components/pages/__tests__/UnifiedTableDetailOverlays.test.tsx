@@ -99,7 +99,8 @@ describe('UnifiedTableDetailOverlays session-replay privacy', () => {
       );
     });
 
-    const card = container.querySelector('[role="dialog"]');
+    // The shared dialog portals to the body.
+    const card = document.body.querySelector('[role="dialog"]');
     expect(card?.textContent).toContain('Private SKILL.md body');
     expect(card?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(false);
     const title = card?.querySelector('#skill-detail-overlay-title');
@@ -111,7 +112,7 @@ describe('UnifiedTableDetailOverlays session-replay privacy', () => {
     ).toBe(true);
     expect(
       card
-        ?.querySelector('button[aria-label="Back"]')
+        ?.querySelector('button[aria-label="Close"]')
         ?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`),
     ).toBeNull();
   });

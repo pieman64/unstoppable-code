@@ -75,6 +75,7 @@ import {
   WorktreeActionMenuItems,
   type WorkEntryRowMenuContext,
   type WorktreeMenuItem,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import type { CoworkWorkEntryMeta } from '@canopy/desktop-shared/types';
@@ -729,8 +730,8 @@ export const AppAdvisorNav = memo(function AppAdvisorNav({
           blocks.length === 0 &&
           legacyArchivedChats.length === 0 &&
           archivedEntries.length === 0 ? (
-            <div className="px-2 py-2 text-xs fg-secondary">
-              No work entries yet
+            <div className="px-2">
+              <EmptyStateRow title="No work entries yet" />
             </div>
           ) : (
             <>
@@ -885,7 +886,6 @@ export const AppAdvisorNav = memo(function AppAdvisorNav({
           entryTitle={removingEntry?.title ?? ''}
           retentionDays={effectiveRetentionDays}
           rowTestId={`${NAV_ROW_TEST_ID_PREFIX}-${confirmingRemoval.entryId}`}
-          entryId={confirmingRemoval.entryId}
           busy={removingEntryIds.has(confirmingRemoval.entryId)}
           onCancel={(): void => setConfirmingRemoval(null)}
           onConfirm={(): void => {

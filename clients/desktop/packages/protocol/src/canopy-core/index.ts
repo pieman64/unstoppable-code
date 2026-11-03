@@ -1,4 +1,5 @@
 export * from './common';
+export type { CoreScriptCommandShell } from './script-values';
 export * from './chat-turn-lifecycle';
 export * from './definitions';
 export * from './errors';
@@ -10,3 +11,4 @@ export * from './worker/index';
 export * from './wire';
 export * from './runtime-descriptor';
 export * from './mcp-availability';
+export * from './chat-plan-review';

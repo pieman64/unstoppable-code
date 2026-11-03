@@ -944,9 +944,9 @@ const REVIEWED_CURRENT_STUDY_OVERLAYS = Object.freeze({
   // PR #4824 composes those responses with merge queue PR status fixtures;
   // CAN-3979 adds transcript reference preview responses; CAN-4529 adds
   // pull request search responses; CAN-4938 adds opt-in Copilot refresh
-  // rotation controls.
+  // rotation controls; PR #7217 answers the shared status query by number.
   'apps/desktop-app/tests/electron/mock-server/routes/github.mjs':
-    'c1775b3cb6846f406dee6f7d8bf3ab0a6a13b01c1951cbfcbf93ee7a220faa1a',
+    '2e9cb83c87fceca7123465572cc7f02476998e36079a2063317afee8b95e7f49',
   // Project template checklist coverage (CAN-3032) seeds built-in marketplace
   // plugins in the plugins cache, and the additionalPlugins docs describe
   // `details` and `facets` rows for member previews.
@@ -1032,10 +1032,19 @@ const REVIEWED_CODE_REVIEW_REGISTRY_HELPERS = Object.freeze({
   'apps/desktop-app/tests/performance/code-review-registry-scenario.mjs':
     '43278aae640f28f4fd8b8dadc452444fb8427307138ab98650224e4820972255',
 });
+// CAN-5532 adds the opt-in W5 store arm workloads, absent from the frozen
+// study baseline.
+const REVIEWED_W5_STORE_HELPERS = Object.freeze({
+  'apps/desktop-app/tests/performance/w5-store-arms.mjs':
+    '7b93d96005b2f16ae556d51819b4e15027aabee43967d3bb0360257787c693bd',
+  'apps/desktop-app/tests/performance/w5-store-scenario.mjs':
+    '1e4cc446b6f7528b6c797109f0984b702ef0f818b3ffe874949ac582bd07e1bb',
+});
 const REVIEWED_ADDED_HARNESS_HELPERS = Object.freeze([
   ...Object.keys(REVIEWED_GATEWAY_CATALOG_HELPERS),
   ...Object.keys(REVIEWED_SIDEBAR_REORDER_HELPERS),
   ...Object.keys(REVIEWED_CODE_REVIEW_REGISTRY_HELPERS),
+  ...Object.keys(REVIEWED_W5_STORE_HELPERS),
   // CAN-3753: matched local smoke policy; closed studies retain strict gating.
   'apps/desktop-app/tests/performance/host-measurement.mjs',
   'apps/desktop-app/tests/performance/smoke-acceptance.mjs',
@@ -1142,6 +1151,12 @@ export function matchedHarnessSource(file, before, after) {
         digest(after),
         REVIEWED_CODE_REVIEW_REGISTRY_HELPERS[file],
         'Unreviewed Code Review registry helper bytes',
+      );
+    if (Object.hasOwn(REVIEWED_W5_STORE_HELPERS, file))
+      assert.equal(
+        digest(after),
+        REVIEWED_W5_STORE_HELPERS[file],
+        'Unreviewed W5 store helper bytes',
       );
     if (Object.hasOwn(REVIEWED_COST_HARNESS_HELPERS, file))
       assert.equal(

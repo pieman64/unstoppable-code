@@ -111,6 +111,7 @@ export {
 export {
   ChatTranscript,
   type ChatTranscriptProps,
+  type ChatTranscriptWorktreeSetup,
 } from './code/ChatTranscript';
 export { ChatComposer, type ChatComposerProps } from './code/ChatComposer';
 export {
@@ -182,7 +183,11 @@ export {
   type FileLinkLineLocation,
   type TranscriptFileLinkInteraction,
 } from './code/TranscriptFileLinks';
-export { TurnGroupView, type TurnGroupViewProps } from './code/TurnGroupView';
+export {
+  TurnGroupView,
+  isFirstTurnHeldForSetup,
+  type TurnGroupViewProps,
+} from './code/TurnGroupView';
 export {
   usePinnedPlanCopy,
   type PinnedPlanTarget,

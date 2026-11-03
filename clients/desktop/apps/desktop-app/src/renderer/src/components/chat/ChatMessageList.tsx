@@ -112,6 +112,7 @@ import {
 } from '@/stores/chatBackgroundWorkStore';
 import { getWorktreeCacheKey, useFileListStore } from '@/stores/fileListStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
@@ -121,11 +122,11 @@ import {
   OverlayScrollArea,
   QUEUED_MESSAGE_EDITING_TOOLTIP,
   QUEUED_MESSAGE_SENDING_TOOLTIP,
-  QUEUED_MESSAGE_SETUP_TOOLTIP,
   ScrollToBottomButton,
   isCapabilityTileReceipt,
+  resolveTurnStartingStatus,
   useCompactQueue,
-  type QueuedMessageSetupWait,
+  type TurnStartingSetup,
 } from '@canopy/ui-shared/components';
 import {
   PANEL_CONTENT_ADOPTED_EVENT,
@@ -540,6 +541,69 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
   );
 });
 
+/**
+ * The setup a starting turn waits on, while the chat's worktree is still in
+ * its Git setup: main holds the turn until the worktree exists, and the turn's
+ * status names the setup with a clock from the worktree's creation, or from
+ * the message for a split destination.
+ */
+function useStartingTurnSetup(
+  target: { projectId: string; worktreeId: string } | null | undefined,
+  messageTimestamp: number | undefined,
+  starting: boolean,
+): TurnStartingSetup | undefined {
+  const projectId = target?.projectId;
+  const worktreeId = target?.worktreeId;
+  const { setupPhase, createdAt, projectName } = useProjectsStore(
+    useShallow(
+      (
+        state,
+      ): {
+        setupPhase?: string;
+        createdAt?: string;
+        projectName?: string;
+      } => {
+        if (!starting || !projectId || !worktreeId) return {};
+        const project = state.projects.find(
+          (candidate) => candidate.id === projectId,
+        );
+        const worktree =
+          project && project.type !== 'cowork'
+            ? project.worktrees.find((candidate) => candidate.id === worktreeId)
+            : undefined;
+        return {
+          setupPhase: worktree?.setupPhase,
+          // A split destination keeps its source worktree's creation time,
+          // which predates its setup; its clock runs from the message, so a
+          // send that comes after the split began reads from 0:00.
+          createdAt: worktree?.splitRecoveryRequired
+            ? undefined
+            : worktree?.createdAt,
+          projectName: project?.name,
+        };
+      },
+    ),
+  );
+  return useMemo(() => {
+    const status = resolveTurnStartingStatus({
+      starting,
+      worktreeSetupPhase: setupPhase,
+      worktreeCreatedAt: createdAt,
+      fallbackStartedAtMs: messageTimestamp,
+      projectName,
+      // Only clamps a clock-skewed future origin, as in `ChatTranscript`;
+      // a mount time would overstate a later origin.
+      nowMs: Date.now(),
+    });
+    return status?.kind === 'setup'
+      ? {
+          ...(status.projectName ? { projectName: status.projectName } : {}),
+          startedAtMs: status.startedAtMs,
+        }
+      : undefined;
+  }, [createdAt, messageTimestamp, projectName, setupPhase, starting]);
+}
+
 export function ChatMessageList({
   pagingControls,
   transcriptTurns,
@@ -564,8 +628,6 @@ export function ChatMessageList({
   editingQueuedMessageIndex,
   pendingQueuedMessageEditId,
   onResetToPoint,
-  queuedForSetup = false,
-  setupWait,
   targetOverride: targetOverrideProp,
   archivedContainerId,
   standaloneHistory,
@@ -620,14 +682,6 @@ export function ChatMessageList({
    * gated on the turn having a captured snapshot in `turnDiffs`.
    */
   onResetToPoint?: (userMessageId: string) => Promise<void>;
-  /**
-   * When true, the queued messages are waiting for two-phase worktree
-   * creation to finish (`setupPhase === 'git-pending'`) — used to swap the
-   * generic "Queued" label for the more specific "queued — worktree setting up".
-   */
-  queuedForSetup?: boolean;
-  /** The setup wait the queued messages show while `queuedForSetup`. */
-  setupWait?: QueuedMessageSetupWait;
   archivedContainerId?: string;
   standaloneHistory?: boolean;
   targetOverride?: {
@@ -942,6 +996,19 @@ export function ChatMessageList({
   );
   const selectedWorktree = useChatStore((s) => s.selectedWorktree);
   const worktreeTarget = targetOverride ?? selectedWorktree;
+  const startingTurnSentAt = useMemo(
+    () =>
+      startingTurnUserMessageId
+        ? messages.find((message) => message.id === startingTurnUserMessageId)
+            ?.timestamp
+        : undefined,
+    [messages, startingTurnUserMessageId],
+  );
+  const startingSetup = useStartingTurnSetup(
+    worktreeTarget,
+    startingTurnSentAt,
+    startingTurnUserMessageId !== undefined,
+  );
   const receivingProjectId = worktreeTarget?.projectId;
   const receivingContext = useMemo<AgentSentReceivingContext | undefined>(
     () =>
@@ -2844,6 +2911,11 @@ export function ChatMessageList({
           group={item}
           pendingTimer={item.timerMessage.id === pendingTurnTimerId}
           starting={item.userMessage.id === startingTurnUserMessageId}
+          startingSetup={
+            item.userMessage.id === startingTurnUserMessageId
+              ? startingSetup
+              : undefined
+          }
           waitingForApproval={
             waitingForApproval && index === lastTurnGroupIndex
           }
@@ -3092,7 +3164,6 @@ export function ChatMessageList({
 
   const queueSteeringSupported =
     !sourceIsClaudeTerminal &&
-    !queuedForSetup &&
     Boolean(worktreeTarget && steeringCapabilities?.steer);
   const compactRows = compactQueue
     ? queuedMessages.flatMap((message, index) =>
@@ -3112,7 +3183,6 @@ export function ChatMessageList({
   const compactMoveUnavailableReason = (id: string): string | undefined => {
     const message = compactRowById.get(id)?.message;
     if (!message) return undefined;
-    if (queuedForSetup) return QUEUED_MESSAGE_SETUP_TOOLTIP;
     if (message.pendingSend === true || !message.hostQueueEntryId)
       return QUEUED_MESSAGE_SENDING_TOOLTIP;
     if (compactQueueEditing) return QUEUED_MESSAGE_EDITING_TOOLTIP;
@@ -3161,9 +3231,7 @@ export function ChatMessageList({
           // A submission awaiting host admission keeps its disabled control
           // behind a streaming turn. It is not a forceable local queue row.
           const waitingForHost =
-            message.pendingSend === true &&
-            localTurn === 'streaming' &&
-            queuedForSetup !== true;
+            message.pendingSend === true && localTurn === 'streaming';
           return (
             <QueuedMessageCompactRow
               surface={inDrawer ? 'drawer' : 'tray'}
@@ -3180,7 +3248,7 @@ export function ChatMessageList({
                 (forceKind !== undefined &&
                   (message.hostQueueEntryId !== undefined ||
                     message.queuedHookQueueId !== undefined ||
-                    (index === 0 && queuedForSetup !== true)))
+                    index === 0))
                   ? onForceQueuedMessage
                   : undefined
               }
@@ -3205,9 +3273,7 @@ export function ChatMessageList({
               onEdit={onEditQueuedMessage}
               steeringSupported={queueSteeringSupported}
               // Host queues support any row; local eligibility is applied above.
-              canForce={queuedForSetup !== true}
-              queuedForSetup={queuedForSetup}
-              setupWait={queuedForSetup ? setupWait : undefined}
+              canForce
               anyEditing={anyQueuedEditOpen}
             />
           );
@@ -3240,7 +3306,16 @@ export function ChatMessageList({
           // (ActivityCardChatLayout).
           className="absolute left-0 right-[var(--chat-scrollbar-inset,0px)] top-0 -bottom-2"
           viewportClassName="overflow-x-hidden pl-4 pr-[calc(1rem-var(--chat-scrollbar-inset,0px))] pt-2 pb-2"
-          viewportProps={{ 'data-testid': 'chat-message-list-scroll' }}
+          viewportProps={{
+            'data-testid': 'chat-message-list-scroll',
+            onClickCapture: (event) => {
+              if (
+                event.target instanceof Element &&
+                event.target.closest('[data-step-row][aria-expanded]')
+              )
+                isNearBottomRef.current = false;
+            },
+          }}
           viewportRef={setScrollRef}
           // The transcript's height always changes with its DOM, so the
           // content ResizeObserver already catches every growth; a subtree
@@ -3395,7 +3470,6 @@ export function ChatMessageList({
                   }
                   onSteer={
                     !sourceIsClaudeTerminal &&
-                    !queuedForSetup &&
                     worktreeTarget &&
                     message.hostQueueEntryId &&
                     message.canSteer === true &&
@@ -3416,11 +3490,9 @@ export function ChatMessageList({
                   onEdit={onEditQueuedMessage}
                   steeringSupported={
                     !sourceIsClaudeTerminal &&
-                    !queuedForSetup &&
                     Boolean(worktreeTarget && steeringCapabilities?.steer)
                   }
-                  canForce={i === 0 && queuedForSetup !== true}
-                  setupWait={queuedForSetup ? setupWait : undefined}
+                  canForce={i === 0}
                   anyEditing={anyQueuedEditOpen}
                 />
               );

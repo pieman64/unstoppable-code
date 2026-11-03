@@ -115,7 +115,7 @@ describe('WatcherFollowUpButton', () => {
 
     act(() => {
       document.body.dispatchEvent(
-        new MouseEvent('mousedown', { bubbles: true }),
+        new MouseEvent('pointerdown', { bubbles: true }),
       );
     });
     expect(

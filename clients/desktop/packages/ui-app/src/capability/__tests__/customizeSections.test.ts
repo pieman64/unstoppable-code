@@ -7,6 +7,7 @@ import { installedEntryStatusStates } from '@canopy/ui-shared/lib';
 import {
   buildCustomizeTabModel,
   CUSTOMIZE_INSTALLED_PREVIEW_LIMIT,
+  INSTALLED_FOOTNOTES,
   WORKFLOW_INSTALLED_FOOTNOTE,
   customizeTabHasInstalledStatuses,
   extendInstalledStatusSnapshot,
@@ -176,7 +177,7 @@ it.each([
   ['plugin', 'Installed', 'Browse plugins'],
   ['app', 'Installed', 'Browse MCP servers'],
   ['skill', 'Installed', 'Browse skills'],
-  ['collection', 'Added', 'Browse collections'],
+  ['collection', 'Added', 'Shared with you'],
   ['agent', 'Your agents', 'Shared with you'],
   ['blueprint', null, 'Browse project templates'],
 ] as const)(
@@ -653,6 +654,110 @@ describe('CAN-3653 — plugin-bundled MCP rows', () => {
     expect(
       model([bundled], { tab: 'app' }).sections.map((section) => section.id),
     ).toEqual(model([], { tab: 'app' }).sections.map((section) => section.id));
+  });
+});
+
+describe('collections tab policy', () => {
+  function localCollection(
+    id: string,
+    overrides: Partial<UnifiedPluginEntry> = {},
+  ): UnifiedPluginEntry {
+    return entry(`collection:local:${id}`, {
+      kind: 'collection',
+      origin: 'installed-standalone',
+      state: 'installed',
+      ref: { type: 'local-collection', collectionId: id },
+      ...overrides,
+    });
+  }
+
+  it('offers collection updates only when supportedUpdateKinds includes collection', () => {
+    const added = localCollection('a', { updateAvailable: true });
+    const sharedRef = entry('collection:shared:s1', {
+      kind: 'collection',
+      origin: 'shared',
+      state: 'installed',
+      updateAvailable: true,
+      ref: { type: 'shared-collection', collectionId: 's1' },
+    });
+    const skill = entry('skill-update', {
+      state: 'installed',
+      updateAvailable: true,
+    });
+    const rows = [added, sharedRef, skill];
+
+    const without = model(rows, {
+      tab: 'all',
+      supportedUpdateKinds: ['skill'],
+    });
+    expect(
+      ids(without.sections.find((s) => s.id === 'updates')?.entries ?? []),
+    ).toEqual(['skill-update']);
+
+    const withCollections = model(rows, {
+      tab: 'all',
+      supportedUpdateKinds: ['skill', 'collection'],
+    });
+    expect(
+      ids(
+        withCollections.sections.find((s) => s.id === 'updates')?.entries ?? [],
+      ),
+    ).toEqual(['collection:local:a', 'skill-update']);
+    expect(ids(withCollections.batchableUpdates)).toEqual(['skill-update']);
+    expect(withCollections.showUpdateAll).toBe(false);
+
+    const collectionsOnly = model([added], {
+      tab: 'collection',
+      supportedUpdateKinds: ['collection'],
+    });
+    expect(collectionsOnly.batchableUpdates).toEqual([]);
+    expect(collectionsOnly.showUpdateAll).toBe(false);
+  });
+
+  it('attaches the collections footnote to the installed section only on the collection tab', () => {
+    const collections = model([localCollection('a')], { tab: 'collection' });
+    expect(
+      collections.sections.find((s) => s.id === 'installed')?.footnote,
+    ).toBe(
+      'Adding a collection adds everything in it. Removing it keeps what you already use.',
+    );
+    expect(INSTALLED_FOOTNOTES.collection).toBeDefined();
+
+    const skills = model([entry('s', { state: 'installed' })], {
+      tab: 'skill',
+    });
+    expect(
+      skills.sections.find((s) => s.id === 'installed')?.footnote,
+    ).toBeUndefined();
+    expect(
+      collections.sections.find((s) => s.id === 'browse')?.footnote,
+    ).toBeUndefined();
+  });
+
+  it('keeps a shared collection in Browse labelled Installed when its local copy is in Added', () => {
+    const added = localCollection('a');
+    const shared = entry('collection:shared:s1', {
+      kind: 'collection',
+      origin: 'shared',
+      state: 'installed',
+      availabilityLabel: 'Installed',
+      installedEntryId: 'collection:local:a',
+      ref: { type: 'shared-collection', collectionId: 's1' },
+    });
+
+    const result = model([shared, added], { tab: 'collection' });
+
+    expect(
+      ids(result.sections.find((s) => s.id === 'installed')?.entries ?? []),
+    ).toEqual(['collection:local:a']);
+    const browse = result.sections.find((s) => s.id === 'browse');
+    expect(browse?.title).toBe('Shared with you');
+    expect(browse?.entries).toEqual([
+      expect.objectContaining({
+        id: 'collection:shared:s1',
+        availabilityLabel: 'Installed',
+      }),
+    ]);
   });
 });
 
@@ -1144,7 +1249,7 @@ describe('CAN-5272 status filter across sections and Browse de-duplication', () 
           status: null,
           removable: true,
           notices: [
-            { code: 'partial_removal', message: 'Retry.', retryable: true },
+            { code: 'partial_removal', message: 'Try again.', retryable: true },
           ],
         },
         configurations: [],

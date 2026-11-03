@@ -27,6 +27,9 @@ import {
   SegmentedControl,
   SettingsListSkeleton,
   StatusPill,
+  FormField,
+  TextArea,
+  TextInput,
   type ActionMenuItem,
 } from '@canopy/ui-shared/components';
 import { TeamPageHeaderActions } from './team-page-header-slot';
@@ -66,7 +69,11 @@ import {
   useSettingsClient,
   useSettingsPrivacy,
 } from '../host';
-import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import {
+  useSettingsErrorCopy,
+  useSettingsLoadFailure,
+  type SettingsFailure,
+} from '../errors';
 import { GITHUB_PICKER_KNOWN_ERRORS } from '../github/github-organization-error-copy';
 import {
   TeamProjectsGrantsEditor,
@@ -124,8 +131,11 @@ interface TeamProjectsSectionProps {
 
 const STALE_MESSAGE =
   'This project changed in another tab. Reload and try again.';
-const FIELD_CLASS =
-  'w-full rounded-md border bg-card px-3 py-2 text-s fg-primary';
+
+/** The stale notice followed by why the re-read failed, keeping its details. */
+function staleFailure(failure: SettingsFailure): SettingsFailure {
+  return { ...failure, copy: `${STALE_MESSAGE} ${failure.copy}` };
+}
 const VERIFICATION_LABELS: Record<OrgProjectRepositoryVerification, string> = {
   VERIFIED: 'Verified',
   STALE: 'Stale',
@@ -168,8 +178,8 @@ interface ManagedProject {
   deleting: OrgProjectSummary | null;
   busy: boolean;
   stale: boolean;
-  error: string | null;
-  setError: (error: string | null) => void;
+  error: SettingsFailure | null;
+  setError: (error: SettingsFailure | null) => void;
   /** Applies a fresh definition to the host list and the open editor. */
   replace: (fresh: OrgProjectDetail) => void;
   open: (project: OrgProjectDetail, section: ProjectSection) => void;
@@ -204,7 +214,7 @@ function useManagedProject(
   const [deleting, setDeleting] = useState<OrgProjectSummary | null>(null);
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -241,7 +251,7 @@ function useManagedProject(
       if (!alive.current) return;
       setDeleting(null);
       if (err instanceof TeamApiError && err.status === 409) {
-        setError(STALE_MESSAGE);
+        setError({ copy: STALE_MESSAGE });
         setStale(true);
         try {
           const fresh = await getOrganizationProject(
@@ -253,11 +263,17 @@ function useManagedProject(
         } catch (refreshError) {
           if (alive.current)
             setError(
-              `${STALE_MESSAGE} ${errorCopy.actionCopy(refreshError, { action: 'reload this project' })}`,
+              staleFailure(
+                errorCopy.actionFailure(refreshError, {
+                  action: 'reload this project',
+                }),
+              ),
             );
         }
       } else {
-        setError(errorCopy.actionCopy(err, { action: 'update this project' }));
+        setError(
+          errorCopy.actionFailure(err, { action: 'update this project' }),
+        );
       }
     } finally {
       if (alive.current) setBusy(false);
@@ -280,7 +296,9 @@ function useManagedProject(
       return fresh;
     } catch (err) {
       if (alive.current)
-        setError(errorCopy.actionCopy(err, { action: 'reload this project' }));
+        setError(
+          errorCopy.actionFailure(err, { action: 'reload this project' }),
+        );
       return null;
     } finally {
       if (alive.current) setBusy(false);
@@ -613,7 +631,7 @@ function ProjectList({
 }: TeamProjectsSectionProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(PROJECTS_ERROR_SCOPE);
-  const loadErrorCopy = useSettingsLoadErrorCopy(PROJECTS_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(PROJECTS_ERROR_SCOPE);
   const brand = useSettingsBrand();
   const { blockClassName } = useSettingsPrivacy();
   const localSetup = useOrganizationSettingsSlots().orgProjectLocalSetup;
@@ -625,7 +643,7 @@ function ProjectList({
   // Whether a full list has loaded, so only a failed first load offers Retry.
   const [loaded, setLoaded] = useState(false);
   const [paging, setPaging] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [accessLost, setAccessLost] = useState(false);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<ProjectFilter>('all');
@@ -765,7 +783,7 @@ function ProjectList({
       setMemberCursor(page.nextCursor);
     } catch (err) {
       if (alive.current && version === listVersion.current)
-        setError(errorCopy.loadCopy(err));
+        setError(errorCopy.loadFailure(err));
     } finally {
       if (alive.current) setPaging(false);
     }
@@ -791,7 +809,7 @@ function ProjectList({
         setRefreshError(
           requestFailure(
             err,
-            errorCopy.actionCopy(err, {
+            errorCopy.actionFailure(err, {
               action: 'refresh from GitHub',
               known: GITHUB_PICKER_KNOWN_ERRORS,
             }),
@@ -845,7 +863,9 @@ function ProjectList({
         removeRow(project.id);
       } else {
         setRows((current): ProjectRows => withSummary(current, project));
-        setError(errorCopy.actionCopy(err, { action: 'update this project' }));
+        setError(
+          errorCopy.actionFailure(err, { action: 'update this project' }),
+        );
       }
       return false;
     } finally {
@@ -881,7 +901,7 @@ function ProjectList({
       if (!alive.current) return;
       if (err instanceof TeamApiError && err.status === 404)
         removeRow(row.summary.id);
-      else setError(errorCopy.loadCopy(err));
+      else setError(errorCopy.loadFailure(err));
     } finally {
       if (alive.current) setOpening(null);
     }
@@ -926,10 +946,11 @@ function ProjectList({
       setLocalErrors(
         (current): Record<string, string> => ({
           ...current,
-          [project.id]: errorCopy.actionCopy(err, {
+          // A row line: our sentence only, like the row's other statuses.
+          [project.id]: errorCopy.actionFailure(err, {
             action:
               kind === 'setUp' ? 'set up this project' : 'open this project',
-          }),
+          }).copy,
         }),
       );
     } finally {
@@ -1086,7 +1107,8 @@ function ProjectList({
   return (
     <div ref={containerRef} tabIndex={-1} className="flex flex-col gap-6">
       <ErrorBanner
-        error={error ?? (managed.selected ? null : managed.error)}
+        error={(error ?? (managed.selected ? null : managed.error))?.copy}
+        details={(error ?? (managed.selected ? null : managed.error))?.details}
         // Only a failed first load offers Retry; "Load more" retries a later
         // page, and actions are not retried.
         onRetry={!loaded && error !== null ? retryLoad : undefined}
@@ -1600,7 +1622,7 @@ interface ProjectEditorProps {
   growthDisabled: boolean;
   busy: boolean;
   stale: boolean;
-  error: string | null;
+  error: SettingsFailure | null;
   onReload: () => Promise<OrgProjectDetail | null>;
   onSave: (operation: ProjectMutation) => Promise<void>;
   onClose: () => void;
@@ -1684,8 +1706,8 @@ function ProjectEditor({
         trapFocus
         initialFocusRef={initialSection === 'grants' ? grantsRef : nameRef}
       >
-        <div className="flex flex-col gap-6 p-5">
-          <ErrorBanner error={error} />
+        <div className="flex flex-col gap-6">
+          <ErrorBanner error={error?.copy} details={error?.details} />
           {stale && (
             <LoadingButton
               variant="secondary"
@@ -1736,30 +1758,33 @@ function ProjectEditor({
             }}
           >
             <h3 className="text-s fg-primary">Definition</h3>
-            <label className="text-s fg-secondary">
-              Name
-              <input
-                ref={nameRef}
-                aria-label="Name"
-                className={FIELD_CLASS}
-                value={name}
-                maxLength={ORG_PROJECT_LIMITS.nameLength}
-                required
-                disabled={busy}
-                onChange={(event): void => setName(event.target.value)}
-              />
-            </label>
-            <label className="text-s fg-secondary">
-              Description
-              <textarea
-                aria-label="Description"
-                className={FIELD_CLASS}
-                value={description}
-                maxLength={ORG_PROJECT_LIMITS.descriptionLength}
-                disabled={busy}
-                onChange={(event): void => setDescription(event.target.value)}
-              />
-            </label>
+            <FormField label="Name">
+              {(control) => (
+                <TextInput
+                  {...control}
+                  ref={nameRef}
+                  aria-label="Name"
+                  density="settings"
+                  value={name}
+                  maxLength={ORG_PROJECT_LIMITS.nameLength}
+                  required
+                  disabled={busy}
+                  onChange={(event): void => setName(event.target.value)}
+                />
+              )}
+            </FormField>
+            <FormField label="Description">
+              {(control) => (
+                <TextArea
+                  {...control}
+                  aria-label="Description"
+                  value={description}
+                  maxLength={ORG_PROJECT_LIMITS.descriptionLength}
+                  disabled={busy}
+                  onChange={(event): void => setDescription(event.target.value)}
+                />
+              )}
+            </FormField>
             <PrivateMemoryCard
               checked={privateMemory}
               onChange={setPrivateMemory}

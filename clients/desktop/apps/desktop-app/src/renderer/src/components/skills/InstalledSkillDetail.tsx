@@ -111,16 +111,37 @@ export function InstalledSkillDetail({
 
   // Reload the shown skill after any successful update of it: one started
   // here, from the list behind this page, or before leaving and reopening
-  // it. Switching skills is not an update.
+  // it. A reviewed replacement of a shared copy (CAN-5306) shows as its
+  // receipt's hash advancing. Switching skills, a first receipt, or a
+  // removed one is not an update, and signals landing together reload once.
   const appliedRevision = useSkillUpdateAppliedRevision(displayedKey);
-  const seenRevision = useRef({ key: displayedKey, revision: appliedRevision });
+  const receiptHash =
+    installedSkill?.installedFromShare?.contentHash?.toLowerCase();
+  const seenRevision = useRef({
+    key: displayedKey,
+    revision: appliedRevision,
+    receiptHash,
+  });
   useEffect(() => {
     const seen = seenRevision.current;
-    seenRevision.current = { key: displayedKey, revision: appliedRevision };
-    if (seen.key !== displayedKey || appliedRevision <= seen.revision) return;
+    const sameSkill = seen.key === displayedKey;
+    seenRevision.current = {
+      key: displayedKey,
+      revision: appliedRevision,
+      // A record briefly missing during an inventory refresh keeps the last
+      // known receipt, so its return is compared with what was shown.
+      receiptHash: receiptHash ?? (sameSkill ? seen.receiptHash : undefined),
+    };
+    if (!sameSkill) return;
+    const revisionAdvanced = appliedRevision > seen.revision;
+    const replaced =
+      seen.receiptHash !== undefined &&
+      receiptHash !== undefined &&
+      receiptHash !== seen.receiptHash;
+    if (!revisionAdvanced && !replaced) return;
     setUpdatedSkillKey(displayedKey);
     setContentVersion((version) => version + 1);
-  }, [appliedRevision, displayedKey]);
+  }, [appliedRevision, displayedKey, receiptHash]);
 
   // An update error belongs to the skill it was raised on.
   const { clearUpdateError } = actions;
@@ -211,7 +232,7 @@ export function InstalledSkillDetail({
     <>
       <SkillDetailModal
         {...(displayName ? { displayName } : {})}
-        key={contentVersion}
+        contentRevision={contentVersion}
         skill={skill}
         presentation={presentation}
         onClose={onClose}

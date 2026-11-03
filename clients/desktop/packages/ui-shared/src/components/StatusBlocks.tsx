@@ -1,7 +1,8 @@
 import type { CSSProperties, JSX, ReactNode } from 'react';
 
-import { WarningIcon } from '../icons/AppIcons';
+import { WarningIcon, type AppIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { CopyDetailsButton } from './CopyDetailsButton';
 import { LoadingButton } from './LoadingButton';
 import { LoadingSpinner } from './LoadingSpinner';
 import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
@@ -36,9 +37,22 @@ export function ErrorBanner({
   onRetry,
   retryLabel = TRY_AGAIN_LABEL,
   retrying = false,
+  testId,
+  details,
 }: {
   className?: string;
   error: string | null | undefined;
+  /**
+   * The raw failure reason (a server's text). Never rendered: it adds a
+   * `Copy details` action that copies it for support. Settings pass the
+   * server reason here and our own sentence as `error`.
+   */
+  details?: string;
+  /**
+   * `data-testid` on the notice. The alert role sits on its copy inside it,
+   * so pressing an action (`Copied`, `Trying again…`) is not announced again.
+   */
+  testId?: string;
   /**
    * Block the error text in session replay, for errors that quote command
    * output; the banner itself stays recorded.
@@ -61,7 +75,7 @@ export function ErrorBanner({
   retrying?: boolean;
 }): JSX.Element | null {
   if (!error) return null;
-  const actions = onRetry ? (
+  const retry = onRetry ? (
     <NoticeButton
       onClick={onRetry}
       busy={retrying}
@@ -71,7 +85,15 @@ export function ErrorBanner({
     >
       {retryLabel}
     </NoticeButton>
-  ) : undefined;
+  ) : null;
+  const copyDetails = details ? <CopyDetailsButton details={details} /> : null;
+  const actions =
+    retry || copyDetails ? (
+      <>
+        {copyDetails}
+        {retry}
+      </>
+    ) : undefined;
   // Errors that can quote command output put the block class on the title
   // and message.
   const textClass = blockMessageFromReplay ? REPLAY_BLOCK_CLASS : '';
@@ -93,7 +115,13 @@ export function ErrorBanner({
   const message = split?.[2] ?? '';
   if (!title || !message) {
     return (
-      <Notice intent="destructive" className={className} actions={actions}>
+      <Notice
+        intent="destructive"
+        liveRegionScope="content"
+        className={className}
+        actions={actions}
+        data-testid={testId}
+      >
         <span className={textClass}>{trimmed}</span>
       </Notice>
     );
@@ -101,9 +129,11 @@ export function ErrorBanner({
   return (
     <Notice
       intent="destructive"
+      liveRegionScope="content"
       title={<span className={textClass}>{title}</span>}
       className={className}
       actions={actions}
+      data-testid={testId}
     >
       <span className={textClass}>{message}</span>
     </Notice>
@@ -141,9 +171,15 @@ export function ErrorState({
   space = 'page',
   testId,
   retryTestId,
+  details,
 }: {
   /** One sentence: `Couldn't load workflows.` */
   message: ReactNode;
+  /**
+   * The raw failure reason (a server's text). Never rendered: it adds a
+   * `Copy details` action beside `Try again` that copies it for support.
+   */
+  details?: string;
   /** Shows `Try again`. Omit when trying again can't fix it. */
   onRetry?: () => void;
   retrying?: boolean;
@@ -172,17 +208,22 @@ export function ErrorState({
           </span>
         }
         action={
-          onRetry ? (
-            <LoadingButton
-              variant="secondary"
-              size="sm"
-              loading={retrying}
-              loadingLabel={TRYING_AGAIN_LABEL}
-              onClick={onRetry}
-              data-testid={retryTestId}
-            >
-              {TRY_AGAIN_LABEL}
-            </LoadingButton>
+          onRetry || details ? (
+            <div className="flex items-center justify-center gap-2">
+              {details ? <CopyDetailsButton details={details} /> : null}
+              {onRetry ? (
+                <LoadingButton
+                  variant="secondary"
+                  size="sm"
+                  loading={retrying}
+                  loadingLabel={TRYING_AGAIN_LABEL}
+                  onClick={onRetry}
+                  data-testid={retryTestId}
+                >
+                  {TRY_AGAIN_LABEL}
+                </LoadingButton>
+              ) : null}
+            </div>
           ) : undefined
         }
       />
@@ -259,9 +300,40 @@ export function LoadingPlaceholder({
   );
 }
 
+/**
+ * Empty-state and hero art sizes. They are not icon sizes: only `EmptyState`
+ * draws art this large (docs/design/icons.md#sizes).
+ */
+export type EmptyStateArtSize = 32 | 40;
+
+/**
+ * An empty list inside a card, popover or nav list: one quiet line at the
+ * row's height, sitting at the host's row inset, with no frame, glyph or
+ * heading. A page or panel body that is empty uses {@link EmptyState}.
+ */
+export function EmptyStateRow({
+  title,
+  testId,
+}: {
+  /** One short sentence: `No teams yet`. A node, to block a value from replay. */
+  title: ReactNode;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <p
+      data-testid={testId}
+      className="flex min-h-10 items-center py-3 text-s text-pretty fg-tertiary"
+    >
+      {title}
+    </p>
+  );
+}
+
 export function EmptyState({
   testId,
   icon,
+  art: Art,
+  artSize = 32,
   title,
   subtitle,
   action,
@@ -284,6 +356,13 @@ export function EmptyState({
    * Optional by design: every existing caller renders exactly as before.
    */
   icon?: ReactNode;
+  /**
+   * Art drawn above the title at `artSize`, in place of `icon`. Empty-state
+   * art is sized here, never at the call site.
+   */
+  art?: AppIcon;
+  /** 32px (default) or 40px for a page-level hero. */
+  artSize?: EmptyStateArtSize;
   /** A node, so a caller can block one value in it from session replay. */
   title: ReactNode;
   /** How to fill the empty state. Omit when the title already says enough. */
@@ -303,11 +382,11 @@ export function EmptyState({
       data-testid={testId}
       className={`flex flex-col items-center justify-center text-center ${inset === 'none' ? '' : 'py-16'}`}
     >
-      {icon && (
+      {(icon || Art) && (
         <div
           className={`${spacing === 'relaxed' ? 'mb-3' : 'mb-2'} flex items-center justify-center ${tone === 'quiet' ? 'fg-quaternary' : ''}`}
         >
-          {icon}
+          {Art ? <Art size={artSize} exactSize aria-hidden /> : icon}
         </div>
       )}
       <h3

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { Button, LoadingSpinner, Notice } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingSpinner,
+  Notice,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import {
   ArrowUp,
   CheckIcon,
@@ -99,7 +104,7 @@ export function RemotePathPicker({
       scrollableBody={false}
       dataTestId="remote-path-picker"
     >
-      <div className="flex min-h-0 flex-col gap-3 px-5 pb-5 pt-4">
+      <div className="flex min-h-0 flex-col gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button
             iconOnly
@@ -114,8 +119,10 @@ export function RemotePathPicker({
           >
             <ArrowUp size={16} aria-hidden="true" />
           </Button>
-          <input
+          <TextInput
             type="text"
+            density="compact"
+            mono
             aria-label="Folder path"
             spellCheck={false}
             value={pathDraft}
@@ -127,7 +134,7 @@ export function RemotePathPicker({
                 load(typed);
               }
             }}
-            className="focus-ring min-w-0 flex-1 rounded-md bg-transparent px-2 py-1 font-mono text-xs fg-primary"
+            className="min-w-0 flex-1"
             data-testid="remote-path-picker-path"
           />
           {loading ? (

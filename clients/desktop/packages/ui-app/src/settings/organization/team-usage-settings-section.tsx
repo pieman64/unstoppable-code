@@ -16,6 +16,9 @@ import {
   SettingsFormSkeleton,
   Tooltip,
   SettingsSelect,
+  FormField,
+  SettingsRowsRow,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
@@ -56,6 +59,7 @@ import {
   updateEnforcedSync,
   updateUsageStatsMinRole,
 } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 const USAGE_SETTINGS_ERROR_SCOPE = 'settings.organization.usage-settings';
 
@@ -147,7 +151,7 @@ function UsageStatsCard({
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(USAGE_SETTINGS_ERROR_SCOPE);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const handleChange = async (nextRole: OrganizationRole): Promise<void> => {
     if (nextRole === detail.usageStatsMinRole) {
@@ -167,7 +171,7 @@ function UsageStatsCard({
       });
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, { action: 'update usage visibility' }),
+        errorCopy.actionFailure(err, { action: 'update usage visibility' }),
       );
     } finally {
       setSaving(false);
@@ -187,28 +191,39 @@ function UsageStatsCard({
         </p>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
 
-        <label className="mt-3 flex flex-col gap-1 text-s font-medium fg-primary">
-          Who can view usage stats
-          <div className="relative inline-flex max-w-xs">
-            <SettingsSelect
-              value={detail.usageStatsMinRole}
-              disabled={saving}
-              data-testid="usage-min-role-select"
-              onValueChange={(next) => {
-                if (isRole(next)) {
-                  void handleChange(next);
-                }
-              }}
-              width="fill"
-              options={ORGANIZATION_ROLES.map((role) => ({
-                value: role,
-                label: ROLE_LABELS[role],
-              }))}
-            />
-          </div>
-        </label>
+        <div className="mt-3">
+          <FormField
+            label="Who can view usage stats"
+            dataTestId="usage-min-role-field"
+          >
+            {(control) => (
+              <div className="relative inline-flex max-w-xs">
+                <SettingsSelect
+                  {...control}
+                  value={detail.usageStatsMinRole}
+                  disabled={saving}
+                  data-testid="usage-min-role-select"
+                  onValueChange={(next) => {
+                    if (isRole(next)) {
+                      void handleChange(next);
+                    }
+                  }}
+                  width="fill"
+                  options={ORGANIZATION_ROLES.map((role) => ({
+                    value: role,
+                    label: ROLE_LABELS[role],
+                  }))}
+                />
+              </div>
+            )}
+          </FormField>
+        </div>
       </div>
     </section>
   );
@@ -232,7 +247,7 @@ function EnforcedSettingsCard({
   const [savingKey, setSavingKey] = useState<DataSharingScopeKey | null>(null);
   const [savingMaster, setSavingMaster] = useState(false);
   const [savingExternalSharing, setSavingExternalSharing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(
     null,
   );
@@ -254,7 +269,9 @@ function EnforcedSettingsCard({
    * condition, and both save paths clear `error` on entry — so sharing one slot
    * means the first toggle silently erases a warning nothing has resolved.
    */
-  const [coverageError, setCoverageError] = useState<string | null>(null);
+  const [coverageError, setCoverageError] = useState<SettingsFailure | null>(
+    null,
+  );
 
   /**
    * Still fail OPEN for editability: the PATCH route rejects a change to an
@@ -321,7 +338,7 @@ function EnforcedSettingsCard({
         // Leaves `coverage` null — unknown, not "covered". Failing closed would
         // just move the same wrong claim to a different tier, so the honest
         // state is that we don't know, said out loud.
-        if (!cancelled) setCoverageError(errorCopy.loadCopy(err));
+        if (!cancelled) setCoverageError(errorCopy.loadFailure(err));
       }
     })();
     return (): void => {
@@ -337,7 +354,10 @@ function EnforcedSettingsCard({
 
   const reportError = (err: unknown, action: string): void => {
     setError(
-      errorCopy.actionCopy(err, { action, known: [ORGANIZATION_LAPSED_ERROR] }),
+      errorCopy.actionFailure(err, {
+        action,
+        known: [ORGANIZATION_LAPSED_ERROR],
+      }),
     );
   };
 
@@ -493,41 +513,42 @@ function EnforcedSettingsCard({
         </p>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
         {/*
          * Its own banner, not the save-error slot: a save clears `error` and
          * must not take an unresolved plan-read failure with it.
          */}
         <ErrorBanner
           className="mt-3"
-          error={coverageError}
+          error={coverageError?.copy}
+          details={coverageError?.details}
           onRetry={retryCoverage}
         />
 
-        <label className="mt-4 flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            checked={enforcing}
-            /*
-             * Also held until coverage resolves, so the confirm dialog can
-             * never be opened in the one state where it cannot say which
-             * scopes turning this on would force on.
-             */
-            disabled={saving || !coverageResolved}
-            data-testid="enforce-member-data-sharing-checkbox"
-            onChange={(event) => handleMasterChange(event.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded"
+        <div className="mt-4">
+          <SettingsRowsRow
+            label="Enforce member data sharing policy"
+            description="Members use this organization's settings instead of their own."
+            control={
+              <ToggleSwitch
+                label="Enforce member data sharing policy"
+                checked={enforcing}
+                /*
+                 * Also held until coverage resolves, so the confirm dialog
+                 * can never be opened in the one state where it cannot say
+                 * which scopes turning this on would force on.
+                 */
+                disabled={saving || !coverageResolved}
+                dataTestId="enforce-member-data-sharing-checkbox"
+                onChange={handleMasterChange}
+              />
+            }
           />
-          <span className="min-w-0">
-            <span className="block text-s font-medium fg-primary">
-              Enforce member data sharing policy
-            </span>
-            <span className="block text-xs fg-secondary">
-              Members use this organization&apos;s settings instead of their
-              own.
-            </span>
-          </span>
-        </label>
+        </div>
 
         {enforcing && !coverageResolved ? (
           <div className="mt-4" data-testid="enforced-sync-coverage-pending">
@@ -556,26 +577,23 @@ function EnforcedSettingsCard({
           </div>
         ) : null}
 
-        <label className="mt-4 flex cursor-pointer items-start gap-3">
-          <input
-            type="checkbox"
-            checked={allowExternalSharing}
-            // Independent of plan coverage, so only an in-flight save holds it.
-            disabled={saving}
-            data-testid="allow-external-container-sharing-checkbox"
-            onChange={(event) => void saveExternalSharing(event.target.checked)}
-            className="mt-0.5 h-4 w-4 rounded"
+        <div className="mt-4">
+          <SettingsRowsRow
+            label="Allow sharing outside the organization"
+            description="Members can share worktrees and Cowork work by email with people outside this organization."
+            control={
+              <ToggleSwitch
+                label="Allow sharing outside the organization"
+                checked={allowExternalSharing}
+                // Independent of plan coverage, so only an in-flight save
+                // holds it.
+                disabled={saving}
+                dataTestId="allow-external-container-sharing-checkbox"
+                onChange={(next) => void saveExternalSharing(next)}
+              />
+            }
           />
-          <span className="min-w-0">
-            <span className="block text-s font-medium fg-primary">
-              Allow sharing outside the organization
-            </span>
-            <span className="block text-xs fg-secondary">
-              Members can share worktrees and Cowork work by email with people
-              outside this organization.
-            </span>
-          </span>
-        </label>
+        </div>
       </div>
 
       {pendingConfirm === 'enable-enforcement' ? (

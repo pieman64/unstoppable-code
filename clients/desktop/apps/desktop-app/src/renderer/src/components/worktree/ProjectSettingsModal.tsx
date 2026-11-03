@@ -1,4 +1,5 @@
 import { resolveHookComposerContext } from '@/lib/configurationComposerTargets';
+import { detailsFor, failureDetails, type FailureDetails } from '@/lib/errors';
 import {
   offerLifecycleJournalQuarantine,
   offerProjectDeletionDiscard,
@@ -6,10 +7,13 @@ import {
 import {
   Button,
   ConfirmDialog,
+  ErrorBanner,
+  FieldError,
   PluginSelectionScopeHelp,
   SettingsSaveStatus,
   ToggleSwitch,
   type SettingsSaveState,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   useCallback,
@@ -518,8 +522,12 @@ export function ProjectSettingsModal({
   const [devServerPatternsInvalidRows, setDevServerPatternsInvalidRows] =
     useState<Record<string, string[]>>({});
   const [error, setError] = useState('');
+  const [errorFailure, setErrorFailure] = useState<FailureDetails | null>(null);
   // Why removing or converting failed, shown under the Manage rows.
   const [manageError, setManageError] = useState('');
+  const [manageFailure, setManageFailure] = useState<FailureDetails | null>(
+    null,
+  );
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   // A discard confirmation outlives this modal; its retry runs only here.
@@ -1231,7 +1239,10 @@ export function ProjectSettingsModal({
       }
       await loadProjects();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Failed to save');
+      setError('Couldn’t save your changes. Try again.');
+      setErrorFailure(
+        failureDetails('Couldn’t save your changes. Try again.', cause),
+      );
     } finally {
       setIsSavingLocal(false);
     }
@@ -1253,7 +1264,7 @@ export function ProjectSettingsModal({
       ? 'Your Start page choice isn’t saved. Press Save local on the Start page to keep it.'
       : null) ??
     (environmentUnsaved
-      ? 'Your Environment choice isn’t saved: secure storage needs a Retry on the Environment page.'
+      ? 'Your Environment choice isn’t saved: open the Environment page and choose Try again.'
       : null);
   // Set when a close found such a change; the page then says why it stayed.
   const [closeHeld, setCloseHeld] = useState(false);
@@ -1453,8 +1464,9 @@ export function ProjectSettingsModal({
     } catch (cause) {
       await loadProjects();
       setAddToWorktreeFeedback({ phase: 'idle' });
-      setError(
-        cause instanceof Error ? cause.message : 'Failed to apply to worktree',
+      setError('Couldn’t add this to the worktree. Try again.');
+      setErrorFailure(
+        failureDetails('Couldn’t add this to the worktree. Try again.', cause),
       );
     } finally {
       unsubscribeApplied();
@@ -1559,7 +1571,10 @@ export function ProjectSettingsModal({
       offerLifecycleJournalQuarantine(cause);
       const message =
         cause instanceof Error ? cause.message : 'Failed to delete project';
-      setManageError(message);
+      setManageError('Couldn’t delete the project. Try again.');
+      setManageFailure(
+        failureDetails('Couldn’t delete the project. Try again.', cause),
+      );
       // Any failure, the archive loop's included: CAN-5035 arrives as a plain
       // error. The description decides whether there is anything to discard.
       offerDeletionDiscard(message);
@@ -1610,8 +1625,9 @@ export function ProjectSettingsModal({
       await loadProjects();
       onClose();
     } catch (cause) {
-      setManageError(
-        cause instanceof Error ? cause.message : 'Failed to convert project',
+      setManageError('Couldn’t convert the project. Try again.');
+      setManageFailure(
+        failureDetails('Couldn’t convert the project. Try again.', cause),
       );
     } finally {
       setIsConverting(false);
@@ -1951,7 +1967,16 @@ export function ProjectSettingsModal({
                       mono
                       value={linkUrl}
                       aria-label="Remote URL"
-                      onChange={(event) => setLinkUrl(event.target.value)}
+                      aria-invalid={linkError ? true : undefined}
+                      aria-describedby={
+                        linkError
+                          ? 'project-settings-link-remote-error'
+                          : undefined
+                      }
+                      onChange={(event) => {
+                        setLinkUrl(event.target.value);
+                        setLinkError('');
+                      }}
                       placeholder="git@github.com:org/repo.git"
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') {
@@ -1974,7 +1999,9 @@ export function ProjectSettingsModal({
                 }
               >
                 {linkError && (
-                  <p className="text-xs fg-destructive">{linkError}</p>
+                  <FieldError id="project-settings-link-remote-error">
+                    {linkError}
+                  </FieldError>
                 )}
               </SettingsSubRow>
             ) : null}
@@ -2183,13 +2210,12 @@ export function ProjectSettingsModal({
           />
         </SettingsGroup>
         {manageError ? (
-          <p
-            role="alert"
-            className="text-s text-pretty fg-destructive"
-            data-testid="project-settings-manage-error"
-          >
-            {manageError}
-          </p>
+          <ErrorBanner
+            error={manageError}
+            details={detailsFor(manageError, manageFailure)}
+            className=""
+            testId="project-settings-manage-error"
+          />
         ) : null}
       </SettingsSection>
     </>
@@ -2511,9 +2537,7 @@ export function ProjectSettingsModal({
                 <LoadingSpinner tone="secondary" />
               </div>
             ) : recommendedPlugins.length === 0 ? (
-              <div className="flex min-h-10 items-center text-s fg-secondary">
-                No recommended plugins yet.
-              </div>
+              <EmptyStateRow title="No recommended plugins yet." />
             ) : (
               recommendedPlugins.map(({ key, ref }) => {
                 const display = buildShareablePluginDisplay(ref);
@@ -2722,13 +2746,12 @@ export function ProjectSettingsModal({
         dataTestId={`project-settings-page-${activePage}`}
       >
         {pageError ? (
-          <p
-            role="alert"
-            className="text-s text-pretty fg-destructive"
-            data-testid="project-settings-error"
-          >
-            {pageError}
-          </p>
+          <ErrorBanner
+            error={pageError}
+            details={detailsFor(pageError, errorFailure)}
+            className=""
+            testId="project-settings-error"
+          />
         ) : null}
         {isOwnSaveSection(activePage) ? null : pageBody[activePage]()}
         {OWN_SAVE_SECTIONS.map((section) =>
@@ -2783,7 +2806,7 @@ export function ProjectSettingsModal({
           maxWidth="md"
           dataTestId="project-settings-convert-dialog"
         >
-          <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+          <div className="flex flex-col gap-4">
             <p className="text-s text-pretty fg-secondary">
               This updates project tracking, keeps <code>repos/</code> out of
               git, and creates a multi-repo <code>canopy.json</code>. If agent

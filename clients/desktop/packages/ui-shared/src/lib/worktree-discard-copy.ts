@@ -30,6 +30,7 @@ const TARGET_LABELS: Record<WorktreeDiscardTargetKind, string> = {
   'git-quarantine': 'Quarantined checkout',
   'files-only-recovery': 'Recovery copy',
   'recreated-checkout-path': "Folder at the worktree's location",
+  'retained-archive': 'Archived worktree',
 };
 
 const DELETED_DATA_LABELS: Record<WorktreeDiscardDeletedData, string> = {
@@ -47,6 +48,19 @@ function joinList(items: readonly string[]): string {
 
 function isQuarantine(kind: WorktreeDiscardTargetKind): boolean {
   return kind === 'git-quarantine' || kind === 'files-only-recovery';
+}
+
+function onlyCopyWarning(
+  description: WorktreeDiscardDescription,
+): string | null {
+  const kinds = description.targets.map((target) => target.kind);
+  if (description.causes.includes('archive-recovery-unverified'))
+    return "The archive's saved copy couldn't be verified. The checkout may hold the only copy of edits made after it was archived.";
+  if (kinds.some(isQuarantine))
+    return 'A quarantined or recovery copy may hold the only copy of edits that were never saved anywhere else.';
+  if (kinds.includes('retained-archive'))
+    return 'The archived worktree may hold the only copy of edits that were never saved anywhere else.';
+  return null;
 }
 
 export interface WorktreeDiscardPathRow {
@@ -88,7 +102,7 @@ export interface WorktreeDiscardCopy {
   /** What happens, and that it is permanent. */
   readonly lead: string;
   readonly targets: readonly WorktreeDiscardPathRow[];
-  /** Present when a quarantine is among the targets. */
+  /** Present when a quarantine or a retained archive is among the targets. */
   readonly onlyCopyWarning: string | null;
   readonly missingSources: readonly WorktreeDiscardPathRow[];
   readonly alsoDeleted: string | null;
@@ -121,9 +135,7 @@ export function worktreeDiscardCopy(
         ...(details.length > 0 ? { details } : {}),
       };
     }),
-    onlyCopyWarning: targets.some((target) => isQuarantine(target.kind))
-      ? 'A quarantined or recovery copy may hold the only copy of edits that were never saved anywhere else.'
-      : null,
+    onlyCopyWarning: onlyCopyWarning(description),
     missingSources: description.sources
       .filter(
         (source) =>
@@ -156,9 +168,9 @@ export function worktreeDiscardRefusalCopy(
     case 'retry-available':
       return retry === 'delete-project'
         ? 'Nothing needs discarding now. Delete the project again instead.'
-        : 'Nothing needs discarding now. Choose Retry to remove it normally.';
+        : 'Nothing needs discarding now. Try again to remove it normally.';
     case 'no-broken-removal':
-      return 'Nothing needs discarding now. Choose Retry to remove it normally.';
+      return 'Nothing needs discarding now. Try again to remove it normally.';
     case 'source-unverified':
       return "Couldn't confirm the source repository is gone. Reconnect it or check access, then retry.";
     case 'not-found':

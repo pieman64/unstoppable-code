@@ -240,6 +240,58 @@ describe('createW5BoundaryOperationRunner', () => {
     expect(events).toEqual(['keyed', 'lookup']);
   });
 
+  it('holds a keyed attempt from its reservation, after its lookup and admission, and an unkeyed boundary around execute', async () => {
+    const { events, run } = harness();
+    const hold = <R>(work: () => Promise<R>): Promise<R> => {
+      events.push('hold');
+      return work().finally(() => events.push('released'));
+    };
+    const admit = (): Promise<void> => {
+      events.push('admit');
+      return Promise.resolve();
+    };
+    const execute = (): Promise<typeof live> => {
+      events.push('execute');
+      return Promise.resolve(live);
+    };
+    await run(input({ hold, admit }), decode, execute);
+    expect(events).toEqual([
+      'keyed',
+      'lookup',
+      'admit',
+      'hold',
+      'reserve',
+      'execute',
+      'commit',
+      'released',
+    ]);
+    for (const unkeyed of [{}, { recheckAtOutcome: true }]) {
+      events.length = 0;
+      await run(
+        input({ ...unkeyed, idempotencyKey: undefined, hold }),
+        decode,
+        execute,
+      );
+      expect(events).toEqual(['hold', 'execute', 'released']);
+    }
+  });
+
+  it('replays a saved outcome without holding', async () => {
+    const { events, run } = harness({
+      status: 'replay',
+      commitId: 1,
+      outcome: { id: 'saved' },
+    });
+    const hold = <R>(work: () => Promise<R>): Promise<R> => {
+      events.push('hold');
+      return work();
+    };
+    await expect(
+      run(input({ hold }), decode, () => Promise.resolve(live)),
+    ).resolves.toEqual({ id: 'saved' });
+    expect(events).toEqual(['keyed', 'lookup']);
+  });
+
   it.each([
     ['host', new HostRefusal('invalid id')],
     ['boundary', new BoundaryRefusal('refused')],

@@ -7,7 +7,12 @@ import {
   w5ExpectedRevision,
   type W5BoundaryOptions,
 } from './w5-boundary-operation';
-import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
+import {
+  createW5SingleDecisionOperation,
+  wireW5Decode,
+  withW5DecisionOnlyRetry,
+  type W5WireDecisionCall,
+} from './w5-single-decision-operation';
 import {
   WORKSPACE_ROOT_REPO_ID,
   type WorktreeData,
@@ -59,15 +64,22 @@ export interface WorktreeMetadata {
   trackedRepoBaseBranches: Record<string, string>;
 }
 
+/**
+ * The closed request of the in-process `core.worktree.update` boundary: any
+ * other key, top-level or in `patch`, is refused `invalid-patch` before its
+ * idempotency key is looked up (CAN-5526). `expectedCreatedAt` and
+ * `worktreeOrder` are host-only compatibility fields that the wire operation
+ * does not carry; revisit them at W9 or when the renderer moves to `core.*`.
+ */
 export interface WorktreeUpdateRequest extends W5BoundaryOptions {
   workspaceId: string;
   worktreeId: string;
-  /** Compatibility saves may edit only the incarnation they were shown. */
+  /** `projects_save` may edit only the incarnation it was shown. */
   expectedCreatedAt?: string;
   patch: WorktreeMetadataPatch;
   /**
-   * A full manual order applied in the same write, for a grouping change
-   * that also moves the row. Ids that are not in the list are ignored.
+   * Branch grouping's full manual order, applied in the same write as its
+   * override, last writer wins. Ids that are not in the list are ignored.
    */
   worktreeOrder?: readonly string[];
 }
@@ -97,6 +109,29 @@ export const worktreeMoveRequestSchema = z.strictObject({
 
 export type WorktreeMoveRequest = z.infer<typeof worktreeMoveRequestSchema>;
 
+// `satisfies` keeps both key sets equal to their interfaces.
+const worktreeUpdateRequestSchema = z.strictObject({
+  workspaceId: z.string(),
+  worktreeId: z.string(),
+  expectedCreatedAt: z.string().optional(),
+  // Closed and checked field by field in `admitPatch`.
+  patch: z.unknown(),
+  worktreeOrder: z.array(z.string()).optional(),
+  expectedRevision: z.number().optional(),
+  idempotencyKey: z.string().optional(),
+} satisfies Record<keyof WorktreeUpdateRequest, z.ZodType>);
+
+const WORKTREE_METADATA_PATCH_FIELDS: ReadonlySet<string> = new Set(
+  Object.keys({
+    label: true,
+    hidden: true,
+    pinned: true,
+    branchGroupingOverride: true,
+    trackedBaseBranch: true,
+    trackedRepoBaseBranches: true,
+  } satisfies Record<keyof WorktreeMetadataPatch, true>),
+);
+
 export type WorktreeUpdateRefusal =
   | 'read-only-scope'
   | 'invalid-patch'
@@ -116,11 +151,31 @@ export class WorktreeUpdateRefusedError extends Error {
   }
 }
 
-/** Both boundaries' receipts name `desktop-host:worktree-metadata`. */
-const runWorktreeMetadataCommand =
-  createW5SingleDecisionOperation<'worktree-metadata'>(
-    (error) => error instanceof WorktreeUpdateRefusedError,
-  );
+const isWorktreeUpdateRefusal = (error: unknown): boolean =>
+  error instanceof WorktreeUpdateRefusedError;
+
+/**
+ * Both boundaries' in-process receipts name `desktop-host:worktree-metadata`;
+ * a wire call's name its principal (`worktreeMetadataRunner`). A refused
+ * attempt wrote no sidecar (P14), so each call is a decision-only unit.
+ */
+const runWorktreeMetadataCommand = withW5DecisionOnlyRetry(
+  createW5SingleDecisionOperation<'worktree-metadata'>(isWorktreeUpdateRefusal),
+);
+
+/** The runner for one call: a wire call's receipts name its principal. */
+function worktreeMetadataRunner(
+  wire: W5WireDecisionCall<never> | undefined,
+): typeof runWorktreeMetadataCommand {
+  return wire
+    ? withW5DecisionOnlyRetry(
+        createW5SingleDecisionOperation<'worktree-metadata'>(
+          isWorktreeUpdateRefusal,
+          wire,
+        ),
+      )
+    : runWorktreeMetadataCommand;
+}
 
 function refuse(reason: WorktreeUpdateRefusal, message: string): never {
   throw new WorktreeUpdateRefusedError(reason, message);
@@ -140,6 +195,13 @@ function requireBaseBranch(value: unknown): string | null {
   return trimmed;
 }
 
+function refuseUnknownPatchFields(entries: Record<string, unknown>): void {
+  if (
+    Object.keys(entries).some((key) => !WORKTREE_METADATA_PATCH_FIELDS.has(key))
+  )
+    refuse('invalid-patch', 'Unknown worktree patch field');
+}
+
 /**
  * Checks a patch from an untrusted caller and returns its normalized form.
  * Renderer data reaches the boundary unchecked, so every field is read as
@@ -147,6 +209,7 @@ function requireBaseBranch(value: unknown): string | null {
  */
 function admitPatch(patch: WorktreeMetadataPatch): WorktreeMetadataPatch {
   const entries: Record<string, unknown> = { ...patch };
+  refuseUnknownPatchFields(entries);
   const admitted: WorktreeMetadataPatch = {};
   if ('label' in entries) {
     const label = entries.label;
@@ -309,25 +372,29 @@ export function projectWorktreeMetadata(
  * The typed in-process worktree update boundary (CAN-3810). The renderer's
  * label, hidden, pinned and branch-grouping changes go through it, so the
  * patch semantics of `core.worktree.update` live in one place. Admission
- * (ids, the read-only shared-container scope, the patch) runs before the
- * worktree list is read; the patch is applied under the per-workspace list
- * lock in one commit, with optional revisions. A keyed update's receipt and
- * outcome join that commit, so a same-key retry replays it (CAN-3805,
- * CAN-4393).
+ * (ids, the read-only shared-container scope, the closed request and patch)
+ * runs before the worktree list is read; the patch is applied under the
+ * per-workspace list lock in one commit, with optional revisions. A keyed
+ * update's receipt and outcome join that commit, so a same-key retry replays
+ * it (CAN-3805, CAN-4393). `wire` is the registered operation's wire call
+ * (W7b-1b); compatibility callers omit it.
  */
 export async function updateWorktree(
   request: WorktreeUpdateRequest,
+  wire?: W5WireDecisionCall<WorktreeUpdateOutcome>,
 ): Promise<WorktreeUpdateOutcome> {
   const { workspaceId, worktreeId } = request;
   admitScope(workspaceId);
   validateId(worktreeId, 'worktreeId');
+  if (!worktreeUpdateRequestSchema.safeParse(request).success)
+    refuse('invalid-patch', 'Invalid worktree update request');
   request.worktreeOrder?.forEach((id, index) =>
     validateId(id, `worktreeOrder[${index}]`),
   );
   const admittedPatch = admitPatch(request.patch);
 
   const { expectedRevision, idempotencyKey, ...parameters } = request;
-  return runWorktreeMetadataCommand(
+  return worktreeMetadataRunner(wire)(
     {
       operation: 'core.worktree.update',
       source: 'worktree-metadata',
@@ -335,7 +402,7 @@ export async function updateWorktree(
       parameters: () => ({ ...parameters, patch: admittedPatch }),
     },
     () => Promise.resolve(admittedPatch),
-    decodeW5WorktreeUpdateOutcome,
+    wireW5Decode(decodeW5WorktreeUpdateOutcome, wire),
     (patch, options, save) => {
       async function stageWorktreeUpdate(): Promise<WorktreeUpdateOutcome> {
         await checkW5ExpectedRevision(
@@ -406,9 +473,11 @@ export async function updateWorktree(
  * keeping hidden rows in their slots. Refuses when either row is unknown or
  * hidden; a move onto itself writes nothing. A keyed move's receipt joins the
  * list commit, so a same-key retry never moves the row again (CAN-4393).
+ * `wire` is the registered operation's wire call (W7b-1b).
  */
 export async function moveWorktree(
   request: WorktreeMoveRequest,
+  wire?: W5WireDecisionCall<void>,
 ): Promise<void> {
   const { workspaceId, activeWorktreeId, overWorktreeId } = request;
   admitScope(workspaceId);
@@ -419,7 +488,7 @@ export async function moveWorktree(
     refuse('invalid-patch', 'Invalid worktree reorder request');
 
   const { expectedRevision, idempotencyKey, ...parameters } = admitted.data;
-  return runWorktreeMetadataCommand(
+  return worktreeMetadataRunner(wire)(
     {
       operation: 'core.worktree.reorder',
       source: 'worktree-metadata',

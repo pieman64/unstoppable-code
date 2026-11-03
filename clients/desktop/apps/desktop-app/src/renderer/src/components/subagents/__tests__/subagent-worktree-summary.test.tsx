@@ -87,7 +87,7 @@ function Probe({
         : ''}
       {result.state?.status === 'error' && result.state.onRetry ? (
         <button type="button" onClick={result.state.onRetry}>
-          Retry
+          Try again
         </button>
       ) : null}
     </div>

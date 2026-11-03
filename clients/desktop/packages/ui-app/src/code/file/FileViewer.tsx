@@ -25,11 +25,14 @@ import {
 import {
   Button,
   ConfirmDialog,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  ErrorState,
   Notice,
   NoticeButton,
   SegmentedControl,
   type MermaidSaveDestination,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -384,11 +387,15 @@ function FileStatusActions({
         <span
           role={session.status === 'error' ? 'alert' : undefined}
           className={`min-w-0 truncate ${
-            session.status === 'error' ? 'fg-destructive' : 'fg-secondary'
+            session.status === 'error' ? '' : 'fg-secondary'
           }`}
           title={statusText}
         >
-          {statusText}
+          {session.status === 'error' ? (
+            <StatusLabel>{statusText}</StatusLabel>
+          ) : (
+            statusText
+          )}
         </span>
       )}
       {editable && session.dirty && (
@@ -1109,7 +1116,9 @@ function FileImagePreview({
       className={`${REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 items-center justify-center overflow-auto bg-fg-primary/[0.02] p-4`}
     >
       {state.status === 'loading' ? (
-        <LoadingPlaceholder />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       ) : state.status === 'unavailable' ? (
         <span className="text-s fg-secondary">Image unavailable</span>
       ) : (
@@ -1318,7 +1327,9 @@ function FileDocumentPreview({
           />
         ) : state.status !== 'ready' ? (
           <div className="flex min-h-0 flex-1 items-center justify-center">
-            <LoadingPlaceholder />
+            <DelayedLoadingPlaceholder>
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           </div>
         ) : (
           renderRichDocument({
@@ -1933,7 +1944,9 @@ function FileViewerBody({
   if (!session || (session.status === 'loading' && session.preview === null)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <LoadingPlaceholder />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
@@ -1945,7 +1958,9 @@ function FileViewerBody({
       if (deferMissing) {
         return (
           <div className="flex min-h-0 flex-1 items-center justify-center">
-            <LoadingPlaceholder />
+            <DelayedLoadingPlaceholder>
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           </div>
         );
       }
@@ -1994,11 +2009,12 @@ function FileViewerBody({
       );
     }
     return (
-      <div
-        className="flex min-h-0 flex-1 items-center justify-center px-6 text-s fg-destructive"
-        data-testid="file-error"
-      >
-        {session.error ?? 'Failed to read file.'}
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <ErrorState
+          space="panel"
+          testId="file-error"
+          message={session.error ?? "Couldn't read the file."}
+        />
       </div>
     );
   }
@@ -2007,7 +2023,9 @@ function FileViewerBody({
   if (!preview) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <LoadingPlaceholder />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }

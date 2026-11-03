@@ -71,7 +71,7 @@ export function SummarySectionBody({
           maxWidth="lg"
         >
           <div
-            className="space-y-5 overflow-y-auto p-5"
+            className="space-y-5 overflow-y-auto"
             data-testid="summary-detail-modal"
           >
             <div className="flex items-start justify-between gap-4">

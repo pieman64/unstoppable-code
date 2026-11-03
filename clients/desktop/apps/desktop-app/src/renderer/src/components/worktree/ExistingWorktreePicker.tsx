@@ -3,11 +3,10 @@ import type {
   ExistingWorktreeJoinCandidate,
   ExistingWorktreeJoinWorkspaceGroup,
 } from '@canopy/desktop-shared/types';
-import { Tooltip } from '@canopy/ui-shared';
+import { SearchField, Tooltip } from '@canopy/ui-shared';
 import { ChevronDownIcon, ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { useBranchDisplayStore } from '@/stores/branchDisplayStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { SearchIcon } from '../shared/SearchIcon';
 import { WorkspaceBadgeIcon } from '../shared/WorkspaceBadgeIcon';
 import { describeWorkspaceSubtitle } from '../shared/workspaceEntry';
 import { DiffBadge } from './DiffBadge';
@@ -162,18 +161,13 @@ export function ExistingWorktreePicker({
 
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center gap-2 rounded-md border bg-base px-2 py-1.5">
-        <SearchIcon />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(event) => onSearchQueryChange(event.target.value)}
-          placeholder="Search worktrees"
-          className="min-w-0 flex-1 bg-transparent text-s fg-primary outline-none placeholder:fg-secondary"
-          data-testid="existing-worktree-picker-search"
-          aria-label="Search worktrees"
-        />
-      </div>
+      <SearchField
+        value={searchQuery}
+        onValueChange={onSearchQueryChange}
+        placeholder="Search worktrees"
+        data-testid="existing-worktree-picker-search"
+        aria-label="Search worktrees"
+      />
       <ul
         className="max-h-[32vh] space-y-1 overflow-y-auto rounded-lg border bg-base p-1"
         data-testid="existing-worktree-picker-list"

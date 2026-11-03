@@ -9,6 +9,7 @@ import {
   Notice,
   SearchField,
   SettingsListSkeleton,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import type { OrgProjectDetail } from '@canopy/protocol/org-projects';
 import type {
@@ -127,7 +128,7 @@ export function TeamProjectsRepositories({
           setListError(
             requestFailure(
               error,
-              errorCopy.loadCopy(error, GITHUB_PICKER_KNOWN_ERRORS),
+              errorCopy.loadFailure(error, GITHUB_PICKER_KNOWN_ERRORS),
             ),
           );
       } finally {
@@ -172,7 +173,7 @@ export function TeamProjectsRepositories({
         setListError(
           requestFailure(
             error,
-            errorCopy.loadCopy(error, GITHUB_PICKER_KNOWN_ERRORS),
+            errorCopy.loadFailure(error, GITHUB_PICKER_KNOWN_ERRORS),
           ),
         );
     } finally {
@@ -226,7 +227,7 @@ export function TeamProjectsRepositories({
         setHideError(
           requestFailure(
             error,
-            errorCopy.actionCopy(error, {
+            errorCopy.actionFailure(error, {
               action: 'update this repository',
               known: GITHUB_PICKER_KNOWN_ERRORS,
             }),
@@ -251,7 +252,7 @@ export function TeamProjectsRepositories({
       initialFocusRef={searchRef}
       onClose={onClose}
     >
-      <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-col gap-4">
         <p className="max-w-2xl text-s fg-secondary">
           Refresh adds a project for each repository that doesn&apos;t have one.
           Hiding a repository skips it and archives the project added for it.
@@ -325,19 +326,18 @@ export function TeamProjectsRepositories({
                       </span>
                     )}
                   </span>
-                  <label className="flex shrink-0 items-center gap-2 fg-secondary">
-                    <input
-                      type="checkbox"
-                      data-testid={`team-projects-repository-hide-${repository.id}`}
-                      aria-label={`Hide ${repository.fullName}`}
+                  <span className="flex shrink-0 items-center gap-2 fg-secondary">
+                    <span aria-hidden="true">Hide</span>
+                    <ToggleSwitch
+                      dataTestId={`team-projects-repository-hide-${repository.id}`}
+                      label={`Hide ${repository.fullName}`}
                       checked={pending.get(repository.id) ?? repository.hidden}
                       disabled={disabled || pending.has(repository.id)}
                       onChange={(): void => {
                         void setHidden(repository, !repository.hidden);
                       }}
                     />
-                    Hide
-                  </label>
+                  </span>
                 </li>
               );
             })}

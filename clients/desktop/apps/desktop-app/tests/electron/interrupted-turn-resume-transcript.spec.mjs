@@ -7,7 +7,11 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { launchCanopy, closeCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { seedWorktreeChat } from './seeders/seedWorktreeChat.mjs';
 import {
@@ -232,6 +236,7 @@ test('a live tool-free turn preserves recorded cancellation after a graceful qui
     expect(userMessageId).toBeTruthy();
     // Wait for the normal app.quit lifecycle itself, without the harness's
     // forced-close fallback, before cleaning up the already exited launch.
+    await captureDaemonDryRunEvidence(launched.electronApp);
     const appProcess = launched.electronApp.process();
     const exited = launched.electronApp.waitForEvent('close', {
       timeout: 30_000,
@@ -420,6 +425,8 @@ test('Home resume preserves the interrupted transcript through a second relaunch
     // Freeze only the renderer's wall clock after dispatch has completed. The
     // persisted reply still comes from the real main-owned provider lifecycle.
     await window.clock.setFixedTime(new Date(resume.timestamp + 300_000));
+    // The seeded turn is two to three calendar days back from the frozen
+    // clock, which the completion stamp names by weekday.
     const historicalStamp = await window.evaluate(
       (at) =>
         `${new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(at)}, ${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(at)}`,

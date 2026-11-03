@@ -1,4 +1,5 @@
 import { type JSX, useEffect, useMemo, useState } from 'react';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import { FeedbackDialog, type FeedbackDialogReportType } from '@canopy/ui-app';
 import { Button } from '@canopy/ui-shared';
 import {
@@ -9,6 +10,7 @@ import {
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { brandText } from '@/lib/brand';
+import { ChoiceField } from '@canopy/ui-shared/components';
 
 interface FeedbackModalProps {
   onClose: () => void;
@@ -288,53 +290,45 @@ export function FeedbackModal({
             </span>
           )}
           {contextRows.length > 0 && (
-            <dl className="space-y-1" data-testid="feedback-modal-context">
+            <FactList
+              labelWidth="5rem"
+              columnGap="2"
+              rowGap="1"
+              labelTone="secondary"
+              dataTestId="feedback-modal-context"
+            >
               {contextRows.map((row) => (
-                <div key={row.label} className="flex gap-2 text-xs">
-                  <dt className="w-20 shrink-0 fg-secondary">{row.label}</dt>
-                  <dd className="min-w-0 flex-1 truncate fg-primary">
-                    {row.value}
-                  </dd>
-                </div>
+                <Fact key={row.label} label={row.label} fit="truncate">
+                  {row.value}
+                </Fact>
               ))}
-            </dl>
+            </FactList>
           )}
           <div className={contextRows.length > 0 ? 'border-t pt-3' : ''}>
-            {/* The helper line sits outside the `<label>` and is linked by
-                `aria-describedby`: nested inside it, the accessible name
-                becomes the whole sentence instead of the two words a screen
-                reader needs to announce the control. `htmlFor` rather than
-                wrapping, so both lines stay in one flex column; the explicit
-                `h-4 w-4 shrink-0` matches the house pattern in
-                `settings/PerformanceTab.tsx`. */}
-            <div className="flex items-start gap-2">
-              <input
-                id="feedback-modal-diagnostics-input"
-                type="checkbox"
-                data-testid="feedback-modal-include-diagnostics"
-                checked={includeDiagnostics}
-                aria-describedby="feedback-modal-diagnostics-description"
-                onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
-                  setIncludeDiagnostics(e.target.checked);
-                }}
-                className="mt-0.5 h-4 w-4 shrink-0"
-              />
-              <div className="min-w-0 space-y-0.5">
-                <label
-                  htmlFor="feedback-modal-diagnostics-input"
-                  className="block text-s fg-primary"
-                >
+            {/* The whole row is the label, so clicking the text toggles it.
+                `aria-labelledby` keeps the accessible name to the two words a
+                screen reader needs; the helper line is the description. */}
+            <ChoiceField
+              id="feedback-modal-diagnostics-input"
+              data-testid="feedback-modal-include-diagnostics"
+              checked={includeDiagnostics}
+              aria-labelledby="feedback-modal-diagnostics-label"
+              aria-describedby="feedback-modal-diagnostics-description"
+              onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
+                setIncludeDiagnostics(e.target.checked);
+              }}
+              label={
+                <span id="feedback-modal-diagnostics-label">
                   Include diagnostics
-                </label>
-                <p
-                  id="feedback-modal-diagnostics-description"
-                  className="text-xs fg-secondary"
-                >
+                </span>
+              }
+              description={
+                <span id="feedback-modal-diagnostics-description">
                   Logs and app state, shared only with the {brandText.appName}{' '}
                   team
-                </p>
-              </div>
-            </div>
+                </span>
+              }
+            />
           </div>
         </div>
       }

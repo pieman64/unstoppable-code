@@ -4,7 +4,6 @@ import {
   useRef,
   useState,
   type JSX,
-  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -32,6 +31,7 @@ import {
   PencilIcon as AppCatalogPencilIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { InlineTextInput } from '@canopy/ui-shared/components';
 
 interface TerminalListProps {
   projectId: string;
@@ -467,8 +467,9 @@ interface InlineRenameProps {
 }
 
 // Inline edit input for a row label. Enter commits (empty → clears the custom
-// name), Escape cancels, blur commits. Mounted via a render swap, so this
-// component owns its draft value and auto-focuses / selects on mount.
+// name), Escape cancels, and leaving the field commits a change or cancels an
+// unchanged one. Mounted via a render swap, so it auto-focuses and selects on
+// mount.
 function InlineRename({
   className,
   icon,
@@ -477,10 +478,9 @@ function InlineRename({
   onCommit,
   onCancel,
 }: InlineRenameProps): JSX.Element {
-  const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Guards the commit path so blur-after-commit is a no-op.
-  const committedRef = useRef(false);
+  // Guards the exit so the blur after a commit or Escape is a no-op.
+  const settledRef = useRef(false);
 
   useEffect(() => {
     const input = inputRef.current;
@@ -489,47 +489,36 @@ function InlineRename({
     input.select();
   }, []);
 
-  const commit = useCallback((): void => {
-    if (committedRef.current) return;
-    committedRef.current = true;
-    const trimmed = value.trim();
-    onCommit(trimmed.length === 0 ? null : trimmed);
-  }, [value, onCommit]);
+  const commit = useCallback(
+    (next: string): void => {
+      if (settledRef.current) return;
+      settledRef.current = true;
+      const trimmed = next.trim();
+      onCommit(trimmed.length === 0 ? null : trimmed);
+    },
+    [onCommit],
+  );
 
   const cancel = useCallback((): void => {
-    if (committedRef.current) return;
-    committedRef.current = true;
+    if (settledRef.current) return;
+    settledRef.current = true;
     onCancel();
   }, [onCancel]);
-
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent<HTMLInputElement>): void => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        commit();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        cancel();
-      }
-    },
-    [commit, cancel],
-  );
 
   return (
     <div
       className={`flex min-w-0 flex-1 items-center gap-1.5 font-mono ${className}`}
     >
       {icon}
-      <input
+      <InlineTextInput
         ref={inputRef}
-        type="text"
         aria-label={ariaLabel}
-        value={value}
+        value={initialValue}
         maxLength={TERMINAL_CUSTOM_NAME_MAX_LENGTH}
-        onChange={(e): void => setValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onBlur={commit}
-        className="min-w-0 flex-1 rounded border bg-base/60 px-1 py-0 fg-primary outline-none focus:border-line-accent"
+        onCommit={commit}
+        onCancel={cancel}
+        onBlur={cancel}
+        className="min-w-0 flex-1"
       />
     </div>
   );

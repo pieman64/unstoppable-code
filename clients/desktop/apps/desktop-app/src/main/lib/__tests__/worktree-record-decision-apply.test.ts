@@ -482,13 +482,19 @@ describe('worktree record decision apply', () => {
 
 describe('worktree record decision apply imports', () => {
   const libDir = path.join(__dirname, '..');
+  const sharedDir = path.resolve(
+    libDir,
+    '../../../../../packages/desktop-shared/src/node',
+  );
   const ALLOWED = new Set([
     '@canopy/desktop-shared/types',
+    '@canopy/desktop-shared/node/worktree-record-decision-apply',
+    '@canopy/desktop-shared/node/worktree-record-decisions',
     './worktree-record-decisions',
   ]);
 
-  function importsOf(file: string): string[] {
-    const source = readFileSync(path.join(libDir, file), 'utf8');
+  function importsOf(file: string, directory = libDir): string[] {
+    const source = readFileSync(path.join(directory, file), 'utf8');
     return ts
       .preProcessFile(source, true, true)
       .importedFiles.map((entry) => entry.fileName);
@@ -505,6 +511,18 @@ describe('worktree record decision apply imports', () => {
     expect(
       importsOf('worktree-record-decisions.ts').filter(
         (specifier) => !ALLOWED.has(specifier),
+      ),
+    ).toEqual([]);
+    expect(
+      importsOf('worktree-record-decision-apply.ts', sharedDir).filter(
+        (specifier) =>
+          specifier !== '../types' &&
+          specifier !== './worktree-record-decisions',
+      ),
+    ).toEqual([]);
+    expect(
+      importsOf('worktree-record-decisions.ts', sharedDir).filter(
+        (specifier) => specifier !== '../types',
       ),
     ).toEqual([]);
   });
@@ -532,6 +550,8 @@ describe('worktree record decision apply imports', () => {
       'packages/desktop-shared/src/scripts.ts',
       'packages/desktop-shared/src/thinking.ts',
       'packages/desktop-shared/src/types/approvals.ts',
+      'packages/desktop-shared/src/node/worktree-record-decision-apply.ts',
+      'packages/desktop-shared/src/node/worktree-record-decisions.ts',
       'packages/plugin-interop/src/github-repo.ts',
       'packages/protocol/src/agents/index.ts',
       'packages/protocol/src/automations/index.ts',
@@ -576,6 +596,8 @@ describe('worktree record decision apply imports', () => {
       }
     }
     visit(path.join(root, 'packages/desktop-shared/src/hooks.ts'));
+    visit(path.join(sharedDir, 'worktree-record-decision-apply.ts'));
+    visit(path.join(sharedDir, 'worktree-record-decisions.ts'));
     expect(visited.size).toBeGreaterThan(1);
   });
 

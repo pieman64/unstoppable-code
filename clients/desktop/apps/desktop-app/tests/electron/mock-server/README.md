@@ -423,6 +423,42 @@ A top-level scenario `strict: true` replaces the benign unmatched fallback with
 benign. Marker/prompt scenario selection takes priority; a request's Bearer or
 API-key credential can select a scenario when no marker/prompt scenario matches.
 
+### Hosted no-billing refusal (CAN-5348)
+
+Register a marker-scoped scenario with
+`{ llm: { steps: [{ error: 'no_billing_source' }] } }` to refuse the first
+provider request. `{ error: { type: 'no_billing_source' } }` is equivalent.
+HTTP requests receive `402` JSON instead of a provider stream, including the
+hosted `canopy_proxy` marker, `no_billing_source` code, canonical refusal message,
+and a correlation id matching `x-canopy-request-id`. The response fixture is
+checked against `@canopy/protocol` by the LLM route tests. Responses WebSocket
+requests use the existing `response.failed` transport with the same error code
+and message; they do not produce an HTTP 402.
+
+To refuse after agent activity, register a two-step conversation:
+
+```json
+{
+  "llm": {
+    "steps": [
+      {
+        "text": "Checking the workspace.",
+        "toolCalls": [{ "name": "Bash", "input": { "command": "pwd" } }],
+        "stopReason": "tool_use"
+      },
+      { "error": "no_billing_source" }
+    ]
+  }
+}
+```
+
+The existing history cursor selects the refusal when the provider sends the tool
+result. For a successful resend, replace that marker's LLM scenario with the
+desired reply after independently updating the cloud eligibility fixture. The
+refusal never changes the credit balance or auto-retries a turn. These server
+tests cover both Anthropic and OpenAI HTTP proxy routes; composer restoration
+and the decision to skip restoration after activity require separate UI tests.
+
 Additional JSON control-plane routes:
 
 - `POST /__mock/barrier` with `{ key, name }` returns `{ ok: true, key, name }` and releases

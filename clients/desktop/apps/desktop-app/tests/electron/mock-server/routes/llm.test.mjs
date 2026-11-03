@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { tsImport } from 'tsx/esm/api';
 import {
   DEFERRED_TOOLS_RESUME_MARKER,
   PROMPT_SCENARIO_KEY_PREFIX,
@@ -114,6 +115,21 @@ async function postSse(base, path, body) {
 }
 
 const MARKER = '[Canopy-CTEST]';
+
+const {
+  AI_CREDITS_CORRELATION_HEADER,
+  AI_CREDITS_NO_BILLING_SOURCE_MESSAGE,
+  AI_CREDITS_PROXY_ERROR_MARKER,
+  parseCanopyProxyError,
+} = await tsImport(
+  fileURLToPath(
+    new URL(
+      '../../../../../../packages/protocol/src/llm-gateway/index.ts',
+      import.meta.url,
+    ),
+  ),
+  import.meta.url,
+);
 
 // Inline conversation: step 0 streams a tool call, step 1 streams final text.
 const SCRIPT = {
@@ -507,6 +523,139 @@ test('a proxied OpenAI responses turn is served and tagged llmProxy:openai', asy
     server.close();
   }
 });
+
+// CAN-5348: the hosted refusal must exercise the real proxy-error parser,
+// including when an earlier request in the same turn already ran a tool.
+for (const provider of ['anthropic', 'openai']) {
+  test(`${provider} hosted no-billing scenario refuses before work and after a tool, then permits recovery`, async () => {
+    resetAll();
+    const path =
+      provider === 'anthropic'
+        ? '/api/v1/llm-proxy/anthropic/v1/messages'
+        : '/api/v1/llm-proxy/openai/responses/responses';
+    const user = { role: 'user', content: `${MARKER} restore this prompt` };
+    const body = (history, stream) => ({
+      model: `${provider}-mock`,
+      stream,
+      ...(provider === 'anthropic'
+        ? { messages: history }
+        : { input: history }),
+    });
+    const { server, base } = await startServer();
+    const post = (history, stream) =>
+      fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body(history, stream)),
+      });
+    const assertRefusal = async (response) => {
+      assert.equal(response.status, 402);
+      assert.match(response.headers.get('content-type'), /application\/json/);
+      const payload = await response.json();
+      // Hosted `proxyFailureBody` order; truncation fallbacks rely on it.
+      assert.deepEqual(Object.keys(payload.error), [
+        'canopy_proxy',
+        'code',
+        'correlation_id',
+        'message',
+      ]);
+      assert.equal(payload.error.canopy_proxy, AI_CREDITS_PROXY_ERROR_MARKER);
+      assert.equal(payload.error.code, 'no_billing_source');
+      assert.equal(payload.error.message, AI_CREDITS_NO_BILLING_SOURCE_MESSAGE);
+      assert.equal(typeof payload.error.correlation_id, 'string');
+      assert.ok(payload.error.correlation_id.length > 0);
+      assert.equal(
+        response.headers.get(AI_CREDITS_CORRELATION_HEADER),
+        payload.error.correlation_id,
+      );
+      assert.deepEqual(parseCanopyProxyError(JSON.stringify(payload)), {
+        code: 'no_billing_source',
+        message: AI_CREDITS_NO_BILLING_SOURCE_MESSAGE,
+        correlationId: payload.error.correlation_id,
+      });
+    };
+    try {
+      // Both JSON and streaming requests fail before emitting provider frames.
+      registerScenario('CTEST', {
+        llm: { steps: [{ error: 'no_billing_source' }] },
+      });
+      for (const stream of [false, true]) {
+        await assertRefusal(await post([user], stream));
+      }
+
+      // An explicit object directive also works after actual tool output.
+      registerScenario('CTEST', {
+        llm: {
+          steps: [SCRIPT.steps[0], { error: { type: 'no_billing_source' } }],
+        },
+      });
+      const first = await post([user], false);
+      assert.equal(first.status, 200);
+      const firstPayload = await first.json();
+      let history;
+      if (provider === 'anthropic') {
+        const tool = firstPayload.content.find(
+          (block) => block.type === 'tool_use',
+        );
+        assert.equal(tool.name, SCRIPT.steps[0].toolCalls[0].name);
+        history = [
+          user,
+          { role: 'assistant', content: firstPayload.content },
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: tool.id, content: 'Blue' },
+            ],
+          },
+        ];
+      } else {
+        const tool = firstPayload.output.find(
+          (item) => item.type === 'function_call',
+        );
+        assert.equal(tool.name, SCRIPT.steps[0].toolCalls[0].name);
+        history = [
+          user,
+          ...firstPayload.output,
+          {
+            type: 'function_call_output',
+            call_id: tool.call_id,
+            output: 'Blue',
+          },
+        ];
+      }
+      await assertRefusal(await post(history, true));
+      assert.equal(
+        getScenarioActivity('Canopy-CTEST')[`llmProxy:${provider}`],
+        4,
+      );
+
+      // A test can refresh eligibility independently and replace the refusal
+      // with a successful reply for a normal resend using the same prompt.
+      registerScenario('CTEST', {
+        llm: { steps: [{ text: 'Recovered reply.', stopReason: 'end_turn' }] },
+      });
+      const recovered = await postSse(base, path, body([user], true));
+      assert.equal(recovered.status, 200);
+      assert.ok(
+        recovered.events.some((event) =>
+          provider === 'anthropic'
+            ? event.delta?.text === 'Recovered reply.'
+            : event.type === 'response.output_text.done' &&
+              event.text === 'Recovered reply.',
+        ),
+      );
+      assert.ok(
+        recovered.events.some((event) =>
+          provider === 'anthropic'
+            ? event.type === 'message_stop'
+            : event.type === 'response.completed',
+        ),
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
 
 test('OpenAI responses rejects minimal reasoning effort for GPT-5.6 Luna', async () => {
   const { server, base } = await startServer();

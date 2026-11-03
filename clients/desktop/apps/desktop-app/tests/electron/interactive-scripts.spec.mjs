@@ -168,6 +168,16 @@ async function dispatchAsAgent(route, action) {
   return JSON.parse(text);
 }
 
+async function openSidePanel(window) {
+  const sidePanelToggle = window.getByTestId(
+    'workspace-layout-side-panel-toggle',
+  );
+  await expect(sidePanelToggle).toBeVisible();
+  if ((await sidePanelToggle.getAttribute('aria-pressed')) !== 'true') {
+    await sidePanelToggle.click();
+  }
+}
+
 async function scriptsSection(window) {
   const title = window.getByRole('heading', { name: 'Scripts', exact: true });
   await expect(title).toBeVisible({ timeout: 45_000 });
@@ -181,9 +191,7 @@ test('script source info preserves fine-pointer reveal and activates on a coarse
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-electron-source-info-pointer-'),
   );
-  // Scripts lives in the advanced Activity rail. Minimal starts with an
-  // empty Side Panel, so merely opening that panel does not mount Scripts.
-  seedInteractiveScript(userDataDir, { layoutMode: 'advanced' });
+  seedInteractiveScript(userDataDir);
   const { electronApp } = await launchCanopy({ userDataDir });
   let cdp;
 
@@ -193,6 +201,7 @@ test('script source info preserves fine-pointer reveal and activates on a coarse
     await app.waitForShell({ timeout: 30_000 });
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
+    await openSidePanel(window);
     const section = await scriptsSection(window);
     const row = section
       .getByTestId('activity-scripts-entry')
@@ -269,13 +278,7 @@ test('interactive script settings, activity affordance, and terminal execution',
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
-    const sidePanelToggle = window.getByTestId(
-      'workspace-layout-side-panel-toggle',
-    );
-    await expect(sidePanelToggle).toBeVisible();
-    if ((await sidePanelToggle.getAttribute('aria-pressed')) !== 'true') {
-      await sidePanelToggle.click();
-    }
+    await openSidePanel(window);
     const section = await scriptsSection(window);
     const row = section
       .getByText('Wizard', { exact: true })
@@ -430,13 +433,7 @@ test('an agent lists and runs configured scripts and Scripts shows each run', as
     await app.openMainPage();
     await app.selectWorktree(WORKTREE_ID);
 
-    const sidePanelToggle = window.getByTestId(
-      'workspace-layout-side-panel-toggle',
-    );
-    await expect(sidePanelToggle).toBeVisible();
-    if ((await sidePanelToggle.getAttribute('aria-pressed')) !== 'true') {
-      await sidePanelToggle.click();
-    }
+    await openSidePanel(window);
     const section = await scriptsSection(window);
     await expect(
       section.getByText('Agent Check', { exact: true }),

@@ -3,7 +3,10 @@
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { ChatLookProvider } from '@canopy/ui-shared/components';
+import {
+  ChatLookProvider,
+  ChatToolStepGroup,
+} from '@canopy/ui-shared/components';
 import type { DisplayBlock } from '../types';
 import { CleanToolStepGroup, ToolStepGroup } from '../ToolStepGroup';
 import { segmentCleanSteps } from '../tool-step-groups';
@@ -259,13 +262,66 @@ describe('ToolStepGroup', () => {
 });
 
 describe('CleanToolStepGroup live line', () => {
+  it.each([true, false])(
+    'shows single-call Thinking only after the call settles (%s)',
+    (done) => {
+      const [segment] = segmentCleanSteps([
+        {
+          id: 'single',
+          role: 'assistant',
+          timestamp: 1,
+          blocks: [toolUse('1', 'Read', { file_path: '/repo/a.ts' }, done)],
+        },
+      ]);
+      if (segment?.kind !== 'steps') throw new Error('expected a run');
+      render(
+        <ChatLookProvider value="clean">
+          <CleanToolStepGroup segment={segment} live>
+            <span>Read a.ts</span>
+          </CleanToolStepGroup>
+        </ChatLookProvider>,
+      );
+      expect(container.textContent?.includes('Thinking')).toBe(done);
+      expect(container.textContent?.match(/Read a\.ts/g)).toHaveLength(1);
+    },
+  );
+
+  it('keeps recent rows mounted while only the hidden prefix opens and closes', () => {
+    render(
+      <ChatLookProvider value="clean">
+        <ChatToolStepGroup
+          summary="Read 2 files"
+          collapsedStepCount={2}
+          hiddenSteps={<div data-testid="hidden-calls" />}
+          liveSteps={<button data-testid="recent-call">Run tests</button>}
+        >
+          <div data-testid="all-calls" />
+        </ChatToolStepGroup>
+      </ChatLookProvider>,
+    );
+    const recent = container.querySelector('[data-testid="recent-call"]');
+    const toggle = rowButton();
+    act(() => toggle.click());
+    expect(
+      container.querySelector('[data-testid="hidden-calls"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-testid="all-calls"]')).toBeNull();
+    expect(container.querySelector('[data-testid="recent-call"]')).toBe(recent);
+    act(() => toggle.click());
+    expect(container.querySelector('[data-testid="hidden-calls"]')).toBeNull();
+    expect(container.querySelector('[data-testid="recent-call"]')).toBe(recent);
+  });
+
   it('keeps what the running step names out of session replay', () => {
     const [segment] = segmentCleanSteps([
       {
         id: 'm1',
         role: 'assistant',
         timestamp: 1,
-        blocks: [toolUse('9', 'Read', { file_path: '/repo/secret.ts' }, false)],
+        blocks: [
+          toolUse('8', 'Read', { file_path: '/repo/setup.ts' }, true),
+          toolUse('9', 'Read', { file_path: '/repo/secret.ts' }, false),
+        ],
       },
     ]);
     if (segment?.kind !== 'steps') throw new Error('expected a run');

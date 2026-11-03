@@ -777,7 +777,9 @@ describe('LedgerPanel list and search', () => {
     fake.holdEntryRead = waiting.promise;
 
     click('ledger-entry-details-toggle');
-    expect(container.textContent).toContain('Loading entry…');
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     waiting.resolve();
     fake.holdEntryRead = null;
     await flush();

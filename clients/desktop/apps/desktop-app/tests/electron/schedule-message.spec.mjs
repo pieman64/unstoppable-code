@@ -35,9 +35,10 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //         `schedule-message-cancel`.
 //       * Save validation (`handleSave`): if date/time are missing OR the chosen
 //         `${date}T${time}:00` parses to NaN or `<= Date.now()`, it sets the
-//         modal's internal error and renders the modal's OWN `role="alert"`
-//         ("Choose a future time.") WITHOUT calling `onSave`. So a past time
-//         keeps the modal open, shows the modal's alert, and stages nothing.
+//         modal's internal error and renders it as the shared FieldError
+//         under the field it is about ("Choose a future time."), with that
+//         field marked aria-invalid, WITHOUT calling `onSave`. So a past time
+//         keeps the modal open, shows the field error, and stages nothing.
 //
 // TWO-PHASE SEEDING: a real git worktree (`demo-ts-pnpm-vite` / `demo-main`,
 // plain `ts-pnpm-vite` fixture) plus a seeded Claude chat tab so the chat panel
@@ -336,14 +337,15 @@ test.describe('schedule message to send later (832)', () => {
 
       await window.getByTestId('schedule-message-save').click();
 
-      // Past-time validation is owned by the modal: it stays open and renders
-      // its own `role="alert"` ("Choose a future time."). `onSave` is never
-      // called, so nothing is staged, and no chip appears (a failed chip is a
-      // different surface: automation create failure at real send time).
+      // Past-time validation is owned by the modal: it stays open and shows
+      // "Choose a future time." as the field error under the field it is
+      // about, which is marked invalid (docs/design/forms.md). `onSave` is
+      // never called, so nothing is staged, and no chip appears (a failed
+      // chip is a different surface: automation create failure at real send
+      // time).
       await expect(modal).toBeVisible();
-      const modalAlert = modal.getByRole('alert');
-      await expect(modalAlert).toBeVisible();
-      await expect(modalAlert).toContainText('Choose a future time.');
+      await expect(modal.getByText('Choose a future time.')).toBeVisible();
+      await expect(modal.locator('input[aria-invalid="true"]')).toHaveCount(1);
       await expect(
         window.getByTestId('chat-input-scheduled-send-chip'),
       ).toHaveCount(0);

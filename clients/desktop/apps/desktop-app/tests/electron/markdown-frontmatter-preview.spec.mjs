@@ -81,13 +81,20 @@ test('markdown file preview renders YAML frontmatter', async () => {
       chatPanel.getByRole('button', { name: 'Formatted', exact: true }),
     ).toHaveAttribute('aria-pressed', 'true');
 
-    await expect(chatPanel.getByText('Title:', { exact: true })).toBeVisible();
+    // Each frontmatter fact is labelled with its literal key.
+    await expect(
+      chatPanel.locator('dt').getByText('title', { exact: true }),
+    ).toBeVisible();
     await expect(
       chatPanel.getByText('Frontmatter Preview', { exact: true }),
     ).toBeVisible();
-    await expect(chatPanel.getByText('Draft:', { exact: true })).toBeVisible();
+    await expect(
+      chatPanel.locator('dt').getByText('draft', { exact: true }),
+    ).toBeVisible();
     await expect(chatPanel.getByText('No', { exact: true })).toBeVisible();
-    await expect(chatPanel.getByText('Tags:', { exact: true })).toBeVisible();
+    await expect(
+      chatPanel.locator('dt').getByText('tags', { exact: true }),
+    ).toBeVisible();
     await expect(chatPanel.getByText('["alpha","beta"]')).toBeVisible();
     await expect(
       chatPanel.getByRole('heading', { name: 'Body Heading' }),

@@ -4,7 +4,6 @@ import {
   MCP_MANAGEMENT_REASONS,
   resolveMcpConnectionBadge,
 } from '@canopy/ui-shared/lib/mcp-card-display';
-import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AccountMcpConnection,
@@ -38,6 +37,7 @@ import {
   promoteCustomMcpServer,
   requireCapturedMcpAccount,
 } from './mcpManagementOperations';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 /** Host lifecycle stays here; both hosts render the same feature sections. */
 export function DesktopMcpManagementSections({
@@ -406,14 +406,7 @@ export function DesktopMcpManagementSections({
         onPendingChange={setManaging}
         onConfirmationChange={captureDeleteAccount}
       />
-      {refreshError && (
-        <p
-          role="alert"
-          className={`text-xs fg-destructive ${REPLAY_BLOCK_CLASS}`}
-        >
-          {refreshError}
-        </p>
-      )}
+      <ErrorBanner error={refreshError} className="" blockMessageFromReplay />
       {promotion && server && (
         <McpPromoteDialog
           serverId={server.definition.id}

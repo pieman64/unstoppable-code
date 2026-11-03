@@ -15,6 +15,7 @@ import {
   parseInterleavedArgs,
   readLaunchArtifact,
   runnerArgsFor,
+  sideBuildRoots,
 } from './compare.mjs';
 import { compareRepeatedPerformanceResults } from './comparison.mjs';
 
@@ -324,6 +325,86 @@ test('the interleaved driver names each build by checkout and shares one workloa
     parseInterleavedArgs([...driverArgs, '--warmup', '0']).warmup,
     0,
   );
+});
+
+test('W5 store arms launch one build with a store arm per side', () => {
+  const plan = parseInterleavedArgs([
+    ...driverArgs,
+    '--w5-store-arms',
+    'in-process,daemon-record-port',
+  ]);
+  assert.deepEqual(plan.w5StoreArms, {
+    baseline: 'in-process',
+    candidate: 'daemon-record-port',
+  });
+  assert.deepEqual(runnerArgsFor(plan, ['loaded-ui'], 'baseline').slice(-2), [
+    '--w5-store',
+    'in-process',
+  ]);
+  assert.deepEqual(runnerArgsFor(plan, ['loaded-ui'], 'candidate').slice(-2), [
+    '--w5-store',
+    'daemon-record-port',
+  ]);
+  // Without a side (validation, configuration), no arm is added.
+  assert.equal(
+    runnerArgsFor(plan, ['loaded-ui']).includes('--w5-store'),
+    false,
+  );
+  // The arm is a treatment, never workload configuration.
+  assert.equal(
+    JSON.stringify(plan.config).includes('daemon-record-port'),
+    false,
+  );
+  assert.deepEqual(
+    sideBuildRoots(plan, {
+      baseline: '/checkouts/base',
+      candidate: '/checkouts/head',
+    }),
+    { baseline: '/checkouts/head', candidate: '/checkouts/head' },
+  );
+  const plain = parseInterleavedArgs(driverArgs);
+  assert.equal(plain.w5StoreArms, null);
+  assert.deepEqual(sideBuildRoots(plain, { baseline: '/a', candidate: '/b' }), {
+    baseline: '/a',
+    candidate: '/b',
+  });
+});
+
+test('W5 store arms refuse unknown arms, release-like launches and a second --w5-store', () => {
+  for (const [args, message] of [
+    [['--w5-store-arms', 'in-process'], /<baseline>,<candidate>/],
+    [
+      ['--w5-store-arms', 'in-process,daemon'],
+      /in-process or daemon-record-port/,
+    ],
+    [
+      ['--w5-store-arms', 'in-process,daemon-record-port', '--release-like'],
+      /cannot be used with --release-like/,
+    ],
+    [
+      [
+        '--w5-store-arms',
+        'in-process,daemon-record-port',
+        '--w5-store',
+        'in-process',
+      ],
+      /do not pass --w5-store as well/,
+    ],
+  ])
+    assert.throws(
+      () => parseInterleavedArgs([...driverArgs, ...args]),
+      message,
+    );
+  // A single forwarded arm runs both sides on it, as any runner option does.
+  const single = parseInterleavedArgs([
+    ...driverArgs,
+    '--w5-store',
+    'daemon-record-port',
+  ]);
+  assert.deepEqual(runnerArgsFor(single, ['loaded-ui'], 'baseline').slice(-2), [
+    '--w5-store',
+    'daemon-record-port',
+  ]);
 });
 
 test('the interleaved driver refuses options that would mix or taint the sides', () => {

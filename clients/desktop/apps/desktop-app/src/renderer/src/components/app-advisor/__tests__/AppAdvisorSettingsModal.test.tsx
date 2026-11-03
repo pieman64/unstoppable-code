@@ -352,9 +352,10 @@ describe('AppAdvisorSettingsModal', () => {
     await render();
     click(byTestId('app-advisor-settings-tab-advanced'));
 
-    const autoArchiveToggle = inputByTestId(
+    const autoArchiveToggle = byTestId(
       'app-advisor-settings-auto-archive-toggle',
     );
+    expect(autoArchiveToggle.getAttribute('role')).toBe('switch');
     expect(document.body.textContent).toContain('Auto delete');
     expect(document.body.textContent).not.toContain('Auto Archive');
     expect(
@@ -362,7 +363,7 @@ describe('AppAdvisorSettingsModal', () => {
         '[data-testid="app-advisor-settings-retention-card"]',
       ),
     ).not.toBeNull();
-    expect(autoArchiveToggle.checked).toBe(false);
+    expect(autoArchiveToggle.getAttribute('aria-checked')).toBe('false');
     expect(
       document.querySelector(
         '[data-testid="app-advisor-settings-auto-archive-days"]',

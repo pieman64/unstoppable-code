@@ -3,10 +3,14 @@ import type {
   ChatTabPluginSelections,
   WorkspaceReadinessIssue,
 } from '@canopy/desktop-shared/types';
+import { reconcileWorkspaceReadinessLaunches } from '@/hooks/useWorkspaceReadinessLaunchReconciliation';
 import { brand } from '@/lib/brand';
+import { workspaceReadinessIssueKey } from '@/lib/workspaceReadinessIssueKey';
+import { workspaceReadinessLaunchKey } from '@/lib/workspaceReadinessLaunches';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useWorkspaceReadinessLaunchStore } from '@/stores/workspaceReadinessLaunchStore';
 
 export type WorkspaceReadinessLaunchResult =
   | { ok: true; worktreeId: string; chatId: string }
@@ -45,8 +49,12 @@ export async function navigateToWorkspaceReadinessChat(
   useNavigationStore.getState().navigate('main');
   chatStore.selectWorktree(workspaceId, worktreeId);
   const tabsLoaded = await chatStore.ensureSelectedWorktreeTabsLoaded();
-  if (tabsLoaded) {
-    chatStore.switchTab(chatId, { projectId: workspaceId, worktreeId });
+  const hydratedChat =
+    useChatStore.getState().worktreeChats[`${workspaceId}/${worktreeId}`];
+  if (tabsLoaded && hydratedChat?.tabs.some((tab) => tab.id === chatId)) {
+    useChatStore
+      .getState()
+      .switchTab(chatId, { projectId: workspaceId, worktreeId });
   }
 }
 
@@ -77,14 +85,13 @@ function withConfigSkill(
   };
 }
 
-function launchKey(
-  workspaceId: string,
-  issue: WorkspaceReadinessIssue,
-  baseWorktreeId?: string,
-): string {
-  return `${workspaceId}:${baseWorktreeId ?? 'reference'}:${issue.repoId ?? 'workspace'}:${issue.code}`;
-}
-
+/**
+ * Launches a readiness fix, or reopens the one already launched for the same
+ * workspace, audit target and issue. Every entry point (Home, the Overview,
+ * workspace settings and `workspace.start_readiness_fix`) goes through here,
+ * so a retained launch record is reused instead of creating another worktree
+ * and send.
+ */
 export async function launchWorkspaceReadinessFix(
   workspaceId: string,
   issue: WorkspaceReadinessIssue,
@@ -94,11 +101,12 @@ export async function launchWorkspaceReadinessFix(
   const fixPrompt = issue.fixPrompt;
   if (fixPrompt === null) return { ok: false, message: issue.message };
 
-  const key = launchKey(workspaceId, issue, baseWorktreeId);
-  if (activeLaunches.has(key)) {
-    return { ok: false, message: 'This recommendation is already starting.' };
-  }
-
+  const issueKey = workspaceReadinessIssueKey(issue);
+  const key = workspaceReadinessLaunchKey(
+    workspaceId,
+    baseWorktreeId,
+    issueKey,
+  );
   const initialWorkspace = useProjectsStore
     .getState()
     .projects.find((project) => project.id === workspaceId);
@@ -109,6 +117,28 @@ export async function launchWorkspaceReadinessFix(
     };
   }
 
+  // Only authoritative evidence retires a record; an incomplete inventory
+  // keeps it, and the launch reopens that destination.
+  reconcileWorkspaceReadinessLaunches();
+  const retained = useWorkspaceReadinessLaunchStore.getState().records[key];
+  if (retained) {
+    if (options?.navigateToChat !== false) {
+      await navigateToWorkspaceReadinessChat(
+        workspaceId,
+        retained.worktreeId,
+        retained.chatId,
+      );
+    }
+    return {
+      ok: true,
+      worktreeId: retained.worktreeId,
+      chatId: retained.chatId,
+    };
+  }
+
+  if (activeLaunches.has(key)) {
+    return { ok: false, message: 'This recommendation is already starting.' };
+  }
   activeLaunches.add(key);
   try {
     const projectsStore = useProjectsStore.getState();
@@ -162,9 +192,6 @@ export async function launchWorkspaceReadinessFix(
       };
     }
 
-    const worktree = workspace.worktrees.find(
-      (entry) => entry.id === created.id,
-    );
     const target = { projectId: workspaceId, worktreeId: created.id };
     const chatStore = useChatStore.getState();
     await chatStore.loadAllWorktreeTabs([target]);
@@ -192,17 +219,35 @@ export async function launchWorkspaceReadinessFix(
       };
     }
 
-    if (options?.navigateToChat !== false) {
-      useNavigationStore.getState().navigate('main');
+    // Record the destination before navigating or sending: the caller may
+    // unmount once navigation starts, and a failed send must still leave the
+    // chat reachable instead of offering another launch.
+    const launches = useWorkspaceReadinessLaunchStore.getState();
+    launches.setSendPending(key, true);
+    launches.recordLaunch({
+      workspaceId,
+      issueKey,
+      issueCode: issue.code,
+      ...(baseWorktreeId === undefined ? {} : { baseWorktreeId }),
+      worktreeId: created.id,
+      chatId,
+      launchedAt: new Date().toISOString(),
+    });
+    try {
+      if (options?.navigateToChat !== false) {
+        useNavigationStore.getState().navigate('main');
+      }
+      await useChatStore
+        .getState()
+        .sendMessage(fixPrompt, undefined, { ...target, chatId }, undefined, {
+          throwOnDispatchFailure: true,
+        });
+    } catch (cause) {
+      useWorkspaceReadinessLaunchStore.getState().setSendFailed(key, true);
+      throw cause;
+    } finally {
+      useWorkspaceReadinessLaunchStore.getState().setSendPending(key, false);
     }
-    await useChatStore
-      .getState()
-      .sendMessage(fixPrompt, undefined, { ...target, chatId }, undefined, {
-        ...((worktree?.setupPhase ?? created.setupPhase) === 'git-pending'
-          ? { queueForSetup: true }
-          : {}),
-        throwOnDispatchFailure: true,
-      });
     return { ok: true, worktreeId: created.id, chatId };
   } catch (cause) {
     return {

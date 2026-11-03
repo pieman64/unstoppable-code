@@ -1,3 +1,8 @@
+import {
+  isW5ProjectionOnlyView,
+  readW5FallbackFile,
+  withoutW5Projection,
+} from './w5-fallback-read';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { relative, resolve, sep } from 'node:path';
 import type {
@@ -34,13 +39,17 @@ export type W5ReadViewUncapturedReason =
   | 'direct-store'
   /** A mutation scope keeps its staged reads. */
   | 'mutation-scope'
+  /** The flip launch's daemon handoff failed: reads fall back to the files. */
+  | 'handoff-degraded'
   /**
    * The data root did not resolve, as while an ancestor is swapped or the
    * root is removed; every W5 read fails closed.
    */
   | 'root-unavailable'
   /** The capture itself failed; every W5 read fails closed. */
-  | 'capture-failed';
+  | 'capture-failed'
+  /** Projection-only disk read while the W5 authority is unreachable. */
+  | 'daemon-unavailable';
 
 /** Whether a query uncaptured for `reason` fails its W5 reads closed instead of reading live. */
 export function failsW5ReadsClosed(
@@ -66,6 +75,8 @@ export type W5ReadViewOutcome =
   | {
       readonly status: 'uncaptured';
       readonly reason: W5ReadViewUncapturedReason;
+      /** Query adapters must propagate authority loss, never project absence. */
+      readonly error?: Error;
     };
 
 /** An open query read view refuses every W5 write and commit scope. */
@@ -95,21 +106,26 @@ function currentView(): ActiveReadView | undefined {
 }
 
 /** The captured read, or undefined to read through the store. */
-export function readFromW5ReadView(path: string): W5FileRead | undefined {
-  return currentView()?.read?.(path);
+export function readFromW5ReadView(
+  path: string,
+): W5FileRead | Promise<W5FileRead> | undefined {
+  return readW5FallbackFile(path) ?? currentView()?.read?.(path);
 }
 
 export function assertOutsideW5ReadView(): void {
-  if (currentView()) throw new W5ReadViewWriteRefusedError();
+  if (currentView() || isW5ProjectionOnlyView())
+    throw new W5ReadViewWriteRefusedError();
 }
 
 /**
  * Inside an open view, queues a write a read decided on to run, in order and
- * outside the view, once it closes, and returns true. Outside one, false.
+ * outside the view, once it closes, and returns true. Projection-only views
+ * drop the write instead. Outside a view, false.
  */
 export function deferUntilW5ReadViewCloses(
   write: () => Promise<unknown>,
 ): boolean {
+  if (isW5ProjectionOnlyView()) return true;
   const view = currentView();
   view?.deferred.push(write);
   return view !== undefined;
@@ -197,13 +213,21 @@ export function runInW5CapturedView<T>(
 export function runInW5UncapturedView<T>(
   reason: W5ReadViewUncapturedReason,
   work: (view: W5ReadViewOutcome) => Promise<T>,
+  error?: Error,
 ): Promise<T> {
   const view: ActiveReadView = {
     closed: false,
     deferred: [],
-    ...(failsW5ReadsClosed(reason) ? { read: notCaptured } : {}),
+    ...(failsW5ReadsClosed(reason)
+      ? {
+          read: (): W5FileRead =>
+            error ? { state: 'unreadable', error } : notCaptured(),
+        }
+      : {}),
   };
-  return runInView(view, () => work({ status: 'uncaptured', reason }));
+  return runInView(view, () =>
+    work({ status: 'uncaptured', reason, ...(error ? { error } : {}) }),
+  );
 }
 
 async function runInView<T>(
@@ -211,7 +235,7 @@ async function runInView<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   try {
-    return await context.run(view, work);
+    return await withoutW5Projection(() => context.run(view, work));
   } finally {
     view.closed = true;
     // Before the query returns, as the write it replaces did.

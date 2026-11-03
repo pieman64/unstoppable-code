@@ -5,7 +5,11 @@ import {
   getModelCatalogProviderLabel,
   InterruptedSessionRow,
 } from '@canopy/ui-shared';
-import { StatusGlyph } from '@canopy/ui-shared/components';
+import {
+  StatusGlyph,
+  ErrorBanner,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useShallow } from 'zustand/shallow';
@@ -252,6 +256,7 @@ export function ResumeQueueModal(): JSX.Element | null {
   );
   return (
     <DialogModal
+      inset="flush"
       title="Resume queue"
       onClose={() => {
         if (pendingRef.current !== 'navigation') close();
@@ -263,7 +268,7 @@ export function ResumeQueueModal(): JSX.Element | null {
     >
       <div className="flex flex-col">
         <div
-          className="space-y-2.5 px-5 pb-3.5 pt-3"
+          className="space-y-2.5 px-6 pb-3.5 pt-3"
           role="status"
           aria-live="polite"
         >
@@ -304,11 +309,7 @@ export function ResumeQueueModal(): JSX.Element | null {
               running.
             </p>
           )}
-          {visibleError && (
-            <p role="alert" className="text-s fg-destructive">
-              {visibleError}
-            </p>
-          )}
+          <ErrorBanner error={visibleError} className="" />
         </div>
         <ol
           className="mx-3 max-h-[45vh] overflow-y-auto rounded-xl bg-subtle px-3 [&>li+li]:border-t [&>li+li]:border-[var(--line-base)]"
@@ -345,11 +346,13 @@ export function ResumeQueueModal(): JSX.Element | null {
               }
               trailing={
                 <div className="flex shrink-0 items-center gap-2 self-center">
-                  <span
-                    className={`text-xs ${entry.status === 'failed' ? 'fg-destructive' : 'fg-tertiary'}`}
-                  >
-                    {labels[entry.status]}
-                  </span>
+                  {entry.status === 'failed' ? (
+                    <StatusLabel size="xs">{labels[entry.status]}</StatusLabel>
+                  ) : (
+                    <span className="text-xs fg-tertiary">
+                      {labels[entry.status]}
+                    </span>
+                  )}
                   <Button
                     variant="ghost-quiet"
                     size="compact"
@@ -367,7 +370,9 @@ export function ResumeQueueModal(): JSX.Element | null {
               }
             >
               {entry.error && (
-                <p className="mt-1 text-xs fg-destructive">{entry.error}</p>
+                <p className="mt-1 text-xs">
+                  <StatusLabel>{entry.error}</StatusLabel>
+                </p>
               )}
             </InterruptedSessionRow>
           ))}

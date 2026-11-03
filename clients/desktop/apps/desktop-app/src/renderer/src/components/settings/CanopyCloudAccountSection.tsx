@@ -9,7 +9,11 @@ import {
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { BrandLogo } from '@/components/BrandLogo';
-import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ProviderStatusDot,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { CanopyCloudApiKeyField } from '@/components/auth/CanopyCloudApiKeyField';
 import { CloudAccountRecoveryNotice } from '@/components/auth/CloudAccountRecoveryNotice';
 import {
@@ -147,7 +151,7 @@ export function CanopyCloudAccountSection({
     } else if (oauthConnected && accountInfo && !errorMessage) {
       oauthStatus = signedInAs;
     } else if (errorMessage) {
-      oauthStatus = <span className="fg-destructive">{errorMessage}</span>;
+      oauthStatus = <StatusLabel>{errorMessage}</StatusLabel>;
     } else {
       oauthStatus = `Sign in through your browser to connect your ${cloudName} account.`;
     }
@@ -161,7 +165,7 @@ export function CanopyCloudAccountSection({
     if (validating) {
       apiKeyStatus = <>Validating {cloudName} API key&hellip;</>;
     } else if (errorMessage) {
-      apiKeyStatus = <span className="fg-destructive">{errorMessage}</span>;
+      apiKeyStatus = <StatusLabel>{errorMessage}</StatusLabel>;
     } else if (apiKeyConnected && accountInfo) {
       apiKeyStatus = signedInAs;
     } else {

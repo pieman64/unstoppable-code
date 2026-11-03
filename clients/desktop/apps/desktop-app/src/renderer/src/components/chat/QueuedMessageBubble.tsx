@@ -12,8 +12,6 @@ import {
   QUEUED_MESSAGE_LABEL_CLASS,
   QueuedMessageActions,
   QueuedMessageReason,
-  QueuedMessageSetupQuote,
-  type QueuedMessageSetupWait,
 } from '@canopy/ui-shared';
 import { ScheduleIcon } from '@canopy/ui-shared/icons';
 import {
@@ -79,14 +77,6 @@ interface QueuedMessageBubbleProps {
    */
   turnPhase?: ChatTurnPhase;
   /**
-   * Present while the message is queued because the worktree's two-phase
-   * creation (`setupPhase === 'git-pending'`) is still running: the bubble
-   * explains the setup, its clock, and that the message sends by itself.
-   */
-  setupWait?: QueuedMessageSetupWait;
-  /** Fixed setup-clock reading for fixtures and captures; never ticks. */
-  clockNowMs?: number;
-  /**
    * True when a queued or scheduled message in this tab is being edited (in
    * the composer's place). Hides Edit, since only one editor can be open, and
    * a queued row's Interrupt so the user can't bypass the queue while an edit
@@ -114,8 +104,6 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   onEdit,
   canForce = false,
   turnPhase,
-  setupWait,
-  clockNowMs,
   anyEditing = false,
   scheduled,
 }: QueuedMessageBubbleProps): JSX.Element {
@@ -206,11 +194,6 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
     </div>
   );
 
-  // Free text wins over setup, and the scheduled variant shows neither; the
-  // setup reason and its quoted body render together or not at all.
-  const showSetupReason =
-    !isScheduled && !message.reason && setupWait !== undefined;
-
   const showEdit = isScheduled
     ? !anyEditing
     : !message.pendingSend &&
@@ -296,13 +279,11 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
               )}
               {/*
                 Prefer the per-message reason (hook-chat queue path), then the
-                setup wait, then the host's waiting reason. With none, no
-                reason row renders (the streaming-queue look).
+                host's waiting reason. With none, no reason row renders (the
+                streaming-queue look).
               */}
               {message.reason ? (
                 <QueuedMessageReason reason={message.reason} />
-              ) : showSetupReason ? (
-                <QueuedMessageReason setup={setupWait} nowMs={clockNowMs} />
               ) : message.waitingReason !== undefined ? (
                 <QueuedMessageReason waitingReason={message.waitingReason} />
               ) : null}
@@ -314,10 +295,6 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             <CollapsibleUserMessageContent>
               {messageParagraphs}
             </CollapsibleUserMessageContent>
-          ) : showSetupReason ? (
-            <QueuedMessageSetupQuote>
-              {messageParagraphs}
-            </QueuedMessageSetupQuote>
           ) : (
             messageParagraphs
           )}
@@ -338,6 +315,11 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
           steeringSupported={steeringSupported}
           steerBlockedByCapabilityChange={
             message.steerBlockedByCapabilityChange
+          }
+          // A row behind a turn its worktree's setup holds keeps Edit and
+          // Clear; Run now waits for that turn.
+          forceLocked={
+            !isScheduled && message.forceLocked === true ? true : undefined
           }
           settingsHeld={isScheduled ? undefined : settingsHeld}
           pending={!isScheduled && message.pendingSend === true}

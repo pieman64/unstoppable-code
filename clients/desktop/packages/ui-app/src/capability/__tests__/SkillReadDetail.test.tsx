@@ -114,6 +114,34 @@ describe('SkillReadDetail', () => {
     act(() => root.unmount());
   });
 
+  it('sits on the page inset by default and on the 24px inset in a dialog', () => {
+    const classesFor = (inset?: 'page' | 'dialog'): string[] => {
+      const { container, root } = mount(
+        <SkillReadDetail
+          skill={{ sourceId: 'plugin:test', name: 'inset' }}
+          inset={inset}
+          content={content}
+          files={[]}
+          loading={false}
+          error=""
+          readFile={emptyRead}
+        />,
+      );
+      const classes = (
+        container
+          .querySelector('[data-testid="skill-read-detail"]')
+          ?.getAttribute('class') ?? ''
+      ).split(' ');
+      act(() => root.unmount());
+      return classes;
+    };
+    expect(classesFor()).toEqual(expect.arrayContaining(['px-5', 'pb-5']));
+    expect(classesFor('dialog')).toEqual(
+      expect.arrayContaining(['px-6', 'pb-6']),
+    );
+    expect(classesFor('dialog')).not.toContain('px-5');
+  });
+
   it('renders main-only content without file chrome', () => {
     const { container, root } = mount(
       <SkillReadDetail
@@ -789,8 +817,13 @@ describe('SkillReadDetail', () => {
           readFile={emptyRead}
         />,
       );
-      expect(container.textContent).not.toContain('Name:');
-      expect(container.textContent).not.toContain('Description:');
+      // The frontmatter card labels each fact with its literal key.
+      const frontmatterKeys = Array.from(
+        container.querySelectorAll('dt'),
+        (term) => term.textContent,
+      );
+      expect(frontmatterKeys).not.toContain('name');
+      expect(frontmatterKeys).not.toContain('description');
       expect(container.textContent).not.toContain('Summarize the research');
       expect(container.textContent).toContain('Cite the sources.');
       expect(
@@ -834,8 +867,13 @@ describe('SkillReadDetail', () => {
 
     it('drops the name and description card the header already shows', () => {
       const { container, root } = renderWith(ready());
-      expect(container.textContent).not.toContain('Name:');
-      expect(container.textContent).not.toContain('Description:');
+      // The frontmatter card labels each fact with its literal key.
+      const frontmatterKeys = Array.from(
+        container.querySelectorAll('dt'),
+        (term) => term.textContent,
+      );
+      expect(frontmatterKeys).not.toContain('name');
+      expect(frontmatterKeys).not.toContain('description');
       expect(container.textContent).toContain('Main instructions');
       act(() => root.unmount());
     });

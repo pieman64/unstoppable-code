@@ -85,7 +85,11 @@ export function LoadingSpinner({
       ref={motionRef}
       className={`inline-grid grid-cols-3 gap-0.5 ${spinnerClassName(tone, quiet)} ${className}`}
       style={spinnerGapStyle(sizePx)}
-      {...(decorative ? { 'aria-hidden': true } : { 'aria-label': 'Loading' })}
+      // A name on a span with no role is ignored, so a standalone spinner is
+      // an image named "Loading", like the comet ring.
+      {...(decorative
+        ? { 'aria-hidden': true }
+        : { role: 'img', 'aria-label': 'Loading' })}
       data-testid={dataTestId}
     >
       {/* Row 0: positions 1, 2, 3 */}

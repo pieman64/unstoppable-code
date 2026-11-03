@@ -39,7 +39,13 @@ import type {
   PortalCodeViewerSelection,
   PortalFileTreeNode,
 } from '@canopy/protocol/portal';
-import { FileRootGroupRow, FileTreeRow } from '@canopy/ui-shared/components';
+import {
+  FileRootGroupRow,
+  FileTreeRow,
+  TextInput,
+  ErrorBanner,
+  Notice,
+} from '@canopy/ui-shared/components';
 import {
   isCoworkWorkspaceFileRoot,
   partitionFileRoots,
@@ -49,6 +55,8 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DownloadIcon } from '@canopy/ui-shared/icons';
 import { Button, Tooltip } from '@canopy/ui-shared/components';
 import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   FilesTreeRefreshButton,
   useIconStyle,
 } from '@canopy/ui-shared/components';
@@ -620,39 +628,41 @@ export function FilesTab({
       >
         <div className="flex items-center gap-2">
           {editor.isDir ? <FolderIcon /> : <FileIcon />}
-          <input
-            ref={editorInputRef}
-            aria-label={
-              editor.mode === 'rename' ? 'New name' : 'File or folder name'
-            }
-            data-testid="files-tree-inline-editor"
-            data-parent-path={editor.parentDir}
-            value={editor.value}
-            disabled={mutations?.busy}
-            className="focus-ring min-w-0 flex-1 rounded bg-base px-2 py-1 text-xs ring-1 ring-line-base"
-            onChange={(event): void => {
-              setEditor({ ...editor, value: event.target.value });
-              setEditorError(null);
-            }}
-            onKeyDown={(event): void => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                event.stopPropagation();
-                void submitEditor();
-              } else if (event.key === 'Escape' && !mutations?.busy) {
-                event.stopPropagation();
-                setEditor(null);
+          <div className="min-w-0 flex-1">
+            <TextInput
+              ref={editorInputRef}
+              density="compact"
+              aria-label={
+                editor.mode === 'rename' ? 'New name' : 'File or folder name'
               }
-            }}
-            onBlur={(): void => {
-              if (
-                !editor.value.trim() &&
-                editor.mode !== 'rename' &&
-                !mutations?.busy
-              )
-                setEditor(null);
-            }}
-          />
+              data-testid="files-tree-inline-editor"
+              data-parent-path={editor.parentDir}
+              value={editor.value}
+              disabled={mutations?.busy}
+              onChange={(event): void => {
+                setEditor({ ...editor, value: event.target.value });
+                setEditorError(null);
+              }}
+              onKeyDown={(event): void => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void submitEditor();
+                } else if (event.key === 'Escape' && !mutations?.busy) {
+                  event.stopPropagation();
+                  setEditor(null);
+                }
+              }}
+              onBlur={(): void => {
+                if (
+                  !editor.value.trim() &&
+                  editor.mode !== 'rename' &&
+                  !mutations?.busy
+                )
+                  setEditor(null);
+              }}
+            />
+          </div>
         </div>
         {editorError !== null && (
           <div role="alert" className="text-xs fg-destructive">
@@ -732,21 +742,23 @@ export function FilesTab({
       data-testid="files-tree-search"
       className="flex items-center gap-1 border-b px-2 py-1.5"
     >
-      <input
-        ref={searchInputRef}
-        data-testid="files-tree-search-input"
-        aria-label="Filter files"
-        placeholder="Filter files…"
-        value={searchQuery}
-        className="focus-ring min-w-0 flex-1 rounded border bg-base px-2 py-1 text-xs"
-        onChange={(event): void => setSearchQuery(event.target.value)}
-        onKeyDown={(event): void => {
-          if (event.key === 'Escape') {
-            event.stopPropagation();
-            closeSearch();
-          }
-        }}
-      />
+      <div className="min-w-0 flex-1">
+        <TextInput
+          ref={searchInputRef}
+          density="compact"
+          data-testid="files-tree-search-input"
+          aria-label="Filter files"
+          placeholder="Filter files…"
+          value={searchQuery}
+          onChange={(event): void => setSearchQuery(event.target.value)}
+          onKeyDown={(event): void => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              closeSearch();
+            }
+          }}
+        />
+      </div>
       <Button
         type="button"
         variant="ghost"
@@ -773,13 +785,11 @@ export function FilesTab({
   const searchBody = (
     <>
       {search?.error !== undefined ? (
-        <div
-          role="alert"
-          data-testid="files-tree-search-error"
-          className="px-3 py-2 text-xs fg-secondary"
-        >
-          {search.error}
-        </div>
+        <ErrorBanner
+          className="mx-2 my-2"
+          error={search.error}
+          testId="files-tree-search-error"
+        />
       ) : search?.loading || results === null ? (
         <div className="px-3 py-2 text-xs fg-secondary">Searching…</div>
       ) : (
@@ -932,12 +942,11 @@ export function FilesTab({
 
   const downloadErrorNode =
     downloadError === undefined ? null : (
-      <div
-        className="border-b px-3 py-1 text-2xs fg-destructive"
-        data-testid="activity-files-download-error"
-      >
-        {downloadError}
-      </div>
+      <ErrorBanner
+        className="mx-2 my-1"
+        error={downloadError}
+        testId="activity-files-download-error"
+      />
     );
 
   return (
@@ -998,10 +1007,14 @@ export function FilesTab({
               loading ? 'activity-files-loading' : 'activity-files-empty'
             }
           >
-            {loading
-              ? 'Loading…'
-              : (emptyState ??
-                (statusBar === undefined ? 'No files loaded.' : null))}
+            {loading ? (
+              <DelayedLoadingPlaceholder>
+                <CenteredLoadingSpinner />
+              </DelayedLoadingPlaceholder>
+            ) : (
+              (emptyState ??
+              (statusBar === undefined ? 'No files loaded.' : null))
+            )}
           </div>
         ) : (
           entries.map((entry) => {
@@ -1076,37 +1089,26 @@ export function FilesTab({
         )}
       </div>
       {actionError !== null && (
-        <div
-          role="alert"
+        <Notice
+          intent="destructive"
+          className="mx-2 my-2"
           data-testid="files-tree-action-error"
-          className="px-3 py-2 text-xs fg-destructive"
+          dismissLabel="Dismiss copy error"
+          onDismiss={(): void => setActionError(null)}
         >
           {actionError}
-          <button
-            type="button"
-            aria-label="Dismiss copy error"
-            className="focus-ring ml-2 rounded underline"
-            onClick={(): void => setActionError(null)}
-          >
-            Dismiss
-          </button>
-        </div>
+        </Notice>
       )}
       {mutations?.error && editor === null && (
-        <div
-          role="alert"
+        <Notice
+          intent="destructive"
+          className="mx-2 my-2"
           data-testid="files-tree-mutation-error"
-          className="px-3 py-2 text-xs fg-destructive"
+          dismissLabel="Dismiss file error"
+          onDismiss={mutations.onClearError}
         >
           {mutations.error}
-          <button
-            type="button"
-            aria-label="Dismiss file error"
-            onClick={mutations.onClearError}
-          >
-            Dismiss
-          </button>
-        </div>
+        </Notice>
       )}
       {menu !== null && (
         <FilesTabActionMenu

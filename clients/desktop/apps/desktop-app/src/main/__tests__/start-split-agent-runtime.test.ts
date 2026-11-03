@@ -153,7 +153,6 @@ type RendererSendRequest = {
     worktreeId: string;
     chatId: string;
     text: string;
-    queueForSetup: boolean;
   };
   hostSend?: 'start_branched_agent';
 };
@@ -704,8 +703,9 @@ it.each(['single-repo', 'multi-repo'])(
       worktreeId: 'child',
       chatId: result.chatId,
       text: 'Continue',
-      queueForSetup: true,
     });
+    // Main holds the send for the new worktree's setup; the renderer queue no
+    // longer does, so the action carries no setup flag.
     // The renderer only runs this send for the trusted host marker.
     expect(mockRendererSend.mock.calls[0]?.[0].hostSend).toBe(
       'start_branched_agent',
@@ -943,6 +943,44 @@ it('settles when deferred Git setup is cancelled before a Codex fork', async () 
   expect(mockForkCodex).not.toHaveBeenCalled();
   expect(mockTabs.get('child')).toBeUndefined();
   expect(mockRendererSend).not.toHaveBeenCalled();
+});
+
+it('fails rather than waiting when deferred Git setup stops for repair before a Codex fork', async () => {
+  source.providerType = 'codex';
+  source.executionHarness = 'codex';
+  let createOptions: CreateWorktreeServiceOptions | undefined;
+  mockCreateSingle.mockImplementationOnce((options) => {
+    createOptions = options;
+    return Promise.resolve({
+      id: 'child',
+      branch: 'temporary-new-branch',
+    });
+  });
+
+  const pending = startSplitAgent(
+    'start_branched_agent',
+    { followUpInstruction: 'Investigate' },
+    runtime,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const onNeedsRepair = createOptions?.onNeedsRepair;
+  if (!onNeedsRepair) {
+    throw new Error('Expected branched-agent repair callback.');
+  }
+  // A repair detour keeps the setup pending, so no settlement follows.
+  onNeedsRepair({
+    projectId: 'project',
+    worktreeId: 'child',
+    branchName: 'temporary-new-branch',
+    repairIssues: [],
+  });
+
+  await expect(pending).rejects.toThrow(
+    'The new worktree requires repair before starting a branched agent.',
+  );
+  expect(mockForkCodex).not.toHaveBeenCalled();
+  expect(mockTabs.get('child')).toBeUndefined();
 });
 
 it('fails before persisting or starting a chat when the branched provider fork fails', async () => {

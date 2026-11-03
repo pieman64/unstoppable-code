@@ -13,7 +13,9 @@ import {
   DiffFileTree,
   Button,
   DiffViewModeToggle,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  ErrorState,
   useIsMobile,
   type DiffFileTreeFile,
   type DiffFileTreeGroup,
@@ -137,18 +139,21 @@ export function DiffViewer({
   if (!session || (session.status === 'loading' && session.diff === null)) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <LoadingPlaceholder />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
 
   if (session.status === 'error' && session.diff === null) {
     return (
-      <div
-        className="flex min-h-0 flex-1 items-center justify-center px-6 text-s fg-destructive"
-        data-testid="diff-error"
-      >
-        {session.error ?? 'Failed to read diff.'}
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <ErrorState
+          space="panel"
+          testId="diff-error"
+          message={session.error ?? "Couldn't read the diff."}
+        />
       </div>
     );
   }

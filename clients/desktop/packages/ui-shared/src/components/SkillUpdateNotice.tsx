@@ -85,7 +85,7 @@ export function SkillUpdateNotice({
             disabled={action.pending !== 'none'}
             data-testid="skill-update-notice-retry"
           >
-            Retry
+            Try again
           </NoticeButton>
         }
       >

@@ -1793,11 +1793,42 @@ function buildSharedSkillEntries(
   });
 }
 
-function buildLocalCollectionEntries(
-  collections: CollectionIndexEntry[],
+/** Plugins and skills a shared collection lists, custom skills included. */
+function sharedCollectionItemCounts(collection: SharedCollectionSummary): {
+  skills: number;
+  plugins: number;
+} {
+  return {
+    skills: collection.itemCounts.skills + collection.itemCounts.customSkills,
+    plugins: collection.itemCounts.plugins,
+  };
+}
+
+/**
+ * Local and shared collections, with each local copy added from a share
+ * linked to that share: the local row learns who shared it and whether the
+ * share changed since, and the share's Browse card reads Installed. When
+ * several local copies name one share, all of them link and the card installs
+ * to the first by index order.
+ */
+function buildCollectionEntries(
+  localCollections: CollectionIndexEntry[],
+  sharedCollections: SharedCollectionSummary[],
+  viewerId: string | null | undefined,
 ): UnifiedPluginEntry[] {
-  return collections.map(
-    (collection): UnifiedPluginEntry => ({
+  const sharesById = new Map(
+    sharedCollections.map((share) => [share.id, share]),
+  );
+  const localEntryIdByShare = new Map<string, string>();
+  for (const collection of localCollections) {
+    const remoteId = collection.sharedSource?.remoteId;
+    if (remoteId && !localEntryIdByShare.has(remoteId)) {
+      localEntryIdByShare.set(remoteId, localCollectionEntryId(collection.id));
+    }
+  }
+
+  const local = localCollections.map((collection): UnifiedPluginEntry => {
+    const base: UnifiedPluginEntry = {
       id: localCollectionEntryId(collection.id),
       kind: 'collection',
       origin: 'installed-standalone',
@@ -1806,31 +1837,72 @@ function buildLocalCollectionEntries(
       categories: [],
       typeLabel: 'Collection',
       sourceLabel: 'Local',
+      collectionRevision: collection.revision ?? collection.updatedAt,
+      collectionProvenanceUnknown:
+        collection.hasSharedSource === true ||
+        collection.provenanceUnknown === true,
+      ownedByViewer:
+        !collection.sharedSource &&
+        !collection.hasSharedSource &&
+        !collection.provenanceUnknown,
       availabilityLabel: 'Installed',
       components: {
         skills: collection.skillCount,
         mcpServers: collection.mcpServerCount,
         commands: 0,
         agents: 0,
+        plugins: collection.pluginCount,
       },
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
       state: 'installed',
       recommended: false,
       ref: { type: 'local-collection', collectionId: collection.id },
-    }),
-  );
-}
+    };
+    const source = collection.sharedSource;
+    if (!source) return base;
+    base.ownedByViewer = undefined;
+    const installedContentHash = source.contentHash;
+    const share = sharesById.get(source.remoteId);
+    if (!share) {
+      return {
+        ...base,
+        sharedSource: {
+          remoteId: source.remoteId,
+          ...(installedContentHash ? { installedContentHash } : {}),
+        },
+      };
+    }
+    const sharedBy =
+      share.createdBy?.name?.trim() || ownerDisplayName(share.owner);
+    const updateAvailable =
+      !!installedContentHash &&
+      !!share.contentHash &&
+      installedContentHash !== share.contentHash;
+    return {
+      ...base,
+      authorName: sharedBy,
+      ownershipLabel: sharedOwnershipLabel(share.owner, share.shareScope),
+      ...sharedWithFromOwner(share.owner),
+      availabilityLabel: updateAvailable ? 'Update available' : 'Installed',
+      ...(updateAvailable ? { updateAvailable: true } : {}),
+      ...(viewerId != null
+        ? { ownedByViewer: share.createdBy?.id === viewerId }
+        : {}),
+      sharedSource: {
+        remoteId: source.remoteId,
+        ...(installedContentHash ? { installedContentHash } : {}),
+        latestContentHash: share.contentHash,
+        ...(sharedBy ? { sharedBy } : {}),
+        updatedAt: share.updatedAt,
+        latestItemCounts: sharedCollectionItemCounts(share),
+      },
+    };
+  });
 
-/** The unified entry id of a local collection, as its detail page opens it. */
-export function localCollectionEntryId(collectionId: string): string {
-  return `collection:local:${collectionId}`;
-}
-
-function buildSharedCollectionEntries(
-  collections: SharedCollectionSummary[],
-): UnifiedPluginEntry[] {
-  return collections.map(
-    (collection): UnifiedPluginEntry => ({
+  const shared = sharedCollections.map((collection): UnifiedPluginEntry => {
+    const installedEntryId = localEntryIdByShare.get(collection.id);
+    const counts = sharedCollectionItemCounts(collection);
+    return {
       id: `collection:shared:${collection.id}`,
       kind: 'collection',
       origin: 'shared',
@@ -1838,9 +1910,10 @@ function buildSharedCollectionEntries(
       description: collection.description,
       categories: [],
       authorName:
-        collection.owner.type === 'system'
+        collection.createdBy?.name ??
+        (collection.owner.type === 'system'
           ? undefined
-          : (collection.owner.name ?? undefined),
+          : (collection.owner.name ?? undefined)),
       typeLabel: 'Collection',
       sourceLabel: 'Shared',
       ownershipLabel: sharedOwnershipLabel(
@@ -1849,20 +1922,28 @@ function buildSharedCollectionEntries(
       ),
       ...sharedWithFromOwner(collection.owner),
       sharedSince: collection.createdAt,
-      availabilityLabel: 'Available',
+      availabilityLabel: installedEntryId ? 'Installed' : 'Available',
       components: {
-        skills:
-          collection.itemCounts.skills + collection.itemCounts.customSkills,
+        skills: counts.skills,
         mcpServers: 0,
         commands: 0,
         agents: 0,
+        plugins: counts.plugins,
       },
       providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'available',
+      state: installedEntryId ? 'installed' : 'available',
+      ...(installedEntryId ? { installedEntryId } : {}),
       recommended: false,
       ref: { type: 'shared-collection', collectionId: collection.id },
-    }),
-  );
+    };
+  });
+
+  return [...local, ...shared];
+}
+
+/** The unified entry id of a local collection, as its detail page opens it. */
+export function localCollectionEntryId(collectionId: string): string {
+  return `collection:local:${collectionId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2985,8 +3066,11 @@ export function buildUnifiedPluginEntries(
       },
       inputs.viewerId,
     ),
-    ...buildLocalCollectionEntries(inputs.localCollections ?? []),
-    ...buildSharedCollectionEntries(inputs.sharedCollections ?? []),
+    ...buildCollectionEntries(
+      inputs.localCollections ?? [],
+      inputs.sharedCollections ?? [],
+      inputs.viewerId,
+    ),
     ...buildLocalAgentEntries(inputs.localAgents ?? []),
     ...buildSharedAgentEntries(
       sharedAgentsWithoutLocalCopies(

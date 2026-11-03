@@ -27,6 +27,7 @@ import {
   type WorkerPlaneQueryName,
   type CanopyWorkspaceScope,
   COST_GRANTS,
+  PIPELINE_GRANTS,
   COST_INSTRUCTION_DEFINITIONS,
   COST_QUERY_DEFINITIONS,
   CostRefreshRequestSchema,
@@ -85,7 +86,10 @@ type _QueryNamesAreExact = Expect<
     | 'worker.git.remote.get'
     | 'worker.git.worktree.health.get'
     | 'worker.git.diff.get'
+    | 'worker.script.execution.get'
+    | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
+    | 'worker.pipeline.execution.get'
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
     | 'core.workspace.list'
@@ -147,7 +151,10 @@ type _WorkerNamesAreExact = Expect<
     | 'worker.git.remote.get'
     | 'worker.git.worktree.health.get'
     | 'worker.git.diff.get'
+    | 'worker.script.execution.get'
+    | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
+    | 'worker.pipeline.execution.get'
   >
 >;
 type _CoreNamesAreExact = Expect<
@@ -1365,6 +1372,9 @@ describe('universal Canopy query registry', () => {
       'worker.git.remote.get',
       'worker.git.worktree.health.get',
       'worker.git.diff.get',
+      'worker.script.execution.get',
+      'worker.script.execution.list',
+      'worker.pipeline.execution.get',
     ]);
     expect(CANOPY_QUERY_DEFINITIONS).toEqual({
       ...CORE_QUERY_DEFINITIONS,
@@ -2127,6 +2137,8 @@ describe('common request and error contracts', () => {
       'core.ledger.summary.publish',
       'core.operation.cancel',
       'core.pipeline.definition.delete',
+      'core.pipeline.definition.duplicate',
+      'core.pipeline.definition.setEnabled',
       'core.pipeline.definition.upsert',
       'core.pullRequest.create',
       'core.pullRequest.update',
@@ -2149,12 +2161,20 @@ describe('common request and error contracts', () => {
       // CAN-5517.
       'worker.git.fetch',
       'worker.git.pull',
+      'worker.pipeline.execution.cancel',
+      'worker.pipeline.execution.start',
+      'worker.pipeline.hostRequest.respond',
+      // CAN-4143.
+      'worker.script.execute',
+      'worker.script.execution.cancel',
     ]);
     expect(Object.keys(CANOPY_STREAM_DEFINITIONS)).toEqual([
       'core.chat.events',
       'core.operation.events',
       'core.execution.status.events',
       'worker.filesystem.watch',
+      'worker.pipeline.execution.events',
+      'worker.pipeline.hostRequests',
     ]);
     expect(defineCanopyCommand).toBe(defineCanopyInstruction);
     const instruction = defineCanopyInstruction({
@@ -2367,5 +2387,18 @@ describe('common request and error contracts', () => {
         ),
       }),
     ).toThrow('inherently idempotent');
+  });
+});
+
+describe('pipeline owner reads', () => {
+  // Interface grants are narrowed to the grants their operations require, so
+  // a required owner read grant would hand renderers an owner override.
+  it('are required by no operation', () => {
+    const required = [
+      ...Object.values(CANOPY_QUERY_DEFINITIONS),
+      ...Object.values(CANOPY_INSTRUCTION_DEFINITIONS),
+      ...Object.values(CANOPY_STREAM_DEFINITIONS),
+    ].flatMap((definition) => definition.requiredGrants);
+    expect(required).not.toContain(PIPELINE_GRANTS.ownerRead);
   });
 });

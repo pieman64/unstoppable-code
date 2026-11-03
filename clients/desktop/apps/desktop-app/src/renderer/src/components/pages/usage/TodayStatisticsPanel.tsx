@@ -6,8 +6,9 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { brandText } from '@/lib/brand';
 import { useObservabilityStore } from '@/stores/observabilityStore';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
 import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   Notice,
   SegmentedControl,
   type SegmentedControlOption,
@@ -356,7 +357,9 @@ export function TodayStatisticsPanel(): JSX.Element {
         <Notice intent="destructive">{error}</Notice>
       ) : data === null ? (
         <div className="rounded-lg border bg-card p-6">
-          <LoadingPlaceholder space="inline" label="Loading today…" />
+          <DelayedLoadingPlaceholder slowNote="Still loading today…">
+            <CenteredLoadingSpinner />
+          </DelayedLoadingPlaceholder>
         </div>
       ) : (
         <>

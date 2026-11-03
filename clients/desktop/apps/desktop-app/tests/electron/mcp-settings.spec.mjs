@@ -7,6 +7,7 @@ import {
   startAccountMcpCloud,
 } from './fixtures/accountMcpCloud.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
 // Doc 3 — G10: Settings → MCP tab (auth mode + proxy port).
@@ -216,9 +217,9 @@ for (const enabled of [false, true]) {
       // Choosing this device leaves the account default for an explicit proxy
       // choice; choosing the cloud account again returns it there.
       await dialog.getByTestId('mcp-server-scope-device').click();
-      await expect(dialog.getByTestId('mcp-server-auth-handler')).toHaveValue(
-        'canopy',
-      );
+      await expect(
+        dialog.getByTestId('mcp-server-auth-handler'),
+      ).toHaveAttribute('data-value', 'canopy');
       await expect(dialog.getByTestId('mcp-cloud-placement')).toHaveCount(0);
       await cloudScope.click();
       await expect(cloudScope).toHaveAttribute('aria-checked', 'true');
@@ -271,9 +272,9 @@ for (const enabled of [false, true]) {
       );
       await expect(edit.getByTestId('mcp-server-auth-handler')).toHaveCount(0);
       await edit.getByTestId('mcp-server-scope-device').click();
-      await edit
-        .getByTestId('mcp-server-auth-handler')
-        .selectOption('provider');
+      await chooseSettingsOption(edit.getByTestId('mcp-server-auth-handler'), {
+        value: 'provider',
+      });
       await expect(edit.getByTestId('mcp-device-placement')).toBeVisible();
       await edit.getByRole('button', { name: 'Save', exact: true }).click();
       await window.getByTestId('mcp-move-to-device-confirm').click();

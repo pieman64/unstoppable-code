@@ -507,10 +507,35 @@ export function installPanelTestApi(
             });
           });
         },
+        // Linked plan implementations send through the canonical command.
+        dispatchChatCommand: (target, command, options) => {
+          if (command.type !== 'chat.send_message') {
+            return originalDispatchChatCommand(target, command, options);
+          }
+          if (afterDispatch) {
+            const released = new Promise<void>((resolve) => {
+              heldChatSendReleases.push(resolve);
+            });
+            return originalDispatchChatCommand(target, command, options).then(
+              (disposition) => released.then(() => disposition),
+            );
+          }
+          return new Promise((resolve, reject) => {
+            heldChatSendReleases.push(() => {
+              originalDispatchChatCommand(target, command, options).then(
+                resolve,
+                reject,
+              );
+            });
+          });
+        },
       });
     },
     releaseHeldChatSends: (): void => {
-      useChatStore.setState({ sendMessage: originalSendMessage });
+      useChatStore.setState({
+        sendMessage: originalSendMessage,
+        dispatchChatCommand: originalDispatchChatCommand,
+      });
       const releases = heldChatSendReleases.splice(0);
       for (const release of releases) release();
     },

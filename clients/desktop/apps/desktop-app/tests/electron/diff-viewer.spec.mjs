@@ -254,7 +254,7 @@ test.describe('diff / changed-files viewer (G12)', () => {
         .getByRole('button', { name: 'Search files', exact: true })
         .click();
       await tree
-        .getByRole('textbox', { name: 'Search changed files' })
+        .getByRole('searchbox', { name: 'Search changed files' })
         .fill('README');
       const treeFile = tree
         .locator('[data-testid^="diff-file-tree-row-"]')

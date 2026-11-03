@@ -42,10 +42,7 @@ import {
 } from '../lib/sidebar-items';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import { listHooks } from '../services/hooks-service';
-import {
-  saveProjectScriptsFromService,
-  saveWorkspaceScriptsFromService,
-} from '../services/scripts-service';
+import { updateWorkspaceScripts } from '../lib/workspace-script-hook-settings';
 
 const mockedListHooks = jest.mocked(listHooks);
 
@@ -139,9 +136,11 @@ describe('W5 script and hook settings entry points (real fs)', () => {
   });
 
   it('saves project scripts without changing the workspace type', async () => {
-    await saveProjectScriptsFromService({
-      projectId: 'cowork-a',
-      scripts: { setup: 'npm ci' },
+    // The change a project save's upsert sends (CAN-5369).
+    await updateWorkspaceScripts({
+      workspaceId: 'cowork-a',
+      change: { kind: 'definition', name: 'setup', value: 'npm ci' },
+      source: 'desktop',
     });
 
     const written: unknown = JSON.parse(
@@ -155,9 +154,10 @@ describe('W5 script and hook settings entry points (real fs)', () => {
 
   it('never creates a manifest for a workspace that has none', async () => {
     await expect(
-      saveWorkspaceScriptsFromService({
+      updateWorkspaceScripts({
         workspaceId: 'missing',
-        scripts: { setup: 'npm ci' },
+        change: { kind: 'definition', name: 'setup', value: 'npm ci' },
+        source: 'desktop',
       }),
     ).rejects.toThrow(/settings could not be read/);
     expect(await exists(getWorkspaceDir('missing'))).toBe(false);

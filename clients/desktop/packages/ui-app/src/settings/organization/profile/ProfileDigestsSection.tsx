@@ -9,7 +9,7 @@ import {
 } from '@canopy/ui-shared/components';
 import type { DigestArchiveItem } from '@canopy/protocol/settings';
 import { DigestList } from '../../digests/digest-list';
-import { useSettingsErrorCopy } from '../../errors';
+import { useSettingsErrorCopy, type SettingsFailure } from '../../errors';
 import { fetchMemberProfileDigests } from './profile-api';
 import { MEMBER_PROFILE_ERROR_SCOPE } from './use-member-paged-resource';
 
@@ -56,7 +56,7 @@ export function ProfileDigestsSection({
   // profile shell keeps this component mounted across those prop changes.
   const [result, setResult] = useState<
     | { key: string; items: DigestArchiveItem[] }
-    | { key: string; items: null; error: string }
+    | { key: string; items: null; error: SettingsFailure }
     | null
   >(null);
   const key = `${orgId}:${userId}`;
@@ -71,7 +71,7 @@ export function ProfileDigestsSection({
         // The route answers 404 for every authorization failure, so a specific
         // message here would be a guess. The generic load copy covers it.
         if (active)
-          setResult({ key, items: null, error: errorCopy.loadCopy(err) });
+          setResult({ key, items: null, error: errorCopy.loadFailure(err) });
       }
     })();
     return (): void => {
@@ -87,7 +87,8 @@ export function ProfileDigestsSection({
     return (
       <div data-testid="profile-digests-error">
         <ErrorBanner
-          error={current.error}
+          error={current.error.copy}
+          details={current.error.details}
           onRetry={() => {
             // Back to the loading placeholder while the fetch runs again.
             setResult(null);

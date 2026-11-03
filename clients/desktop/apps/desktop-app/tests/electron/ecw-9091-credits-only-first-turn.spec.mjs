@@ -582,6 +582,17 @@ test.describe('ECW-9091 credits-only first turn', () => {
 
       // The proactive banner is still the user's way out after the failed send.
       await expect(banner).toBeVisible();
+
+      // CAN-5348: the refused prompt returns to the composer so the existing
+      // Send button can retry it once billing recovers. Nothing new is added
+      // to the recovery UI to do that.
+      await expect(composer).toHaveText(userMessage, { timeout: 30_000 });
+      await expect(
+        panel.getByRole('button', { name: 'Send message' }),
+      ).toBeEnabled();
+      await expect(
+        banner.getByRole('button', { name: /send again|resend|retry/i }),
+      ).toHaveCount(0);
     } finally {
       await closeCanopy(electronApp, userDataDir);
       await clearScenario(DEFAULT_MOCK_BASE_URL, authKey).catch(

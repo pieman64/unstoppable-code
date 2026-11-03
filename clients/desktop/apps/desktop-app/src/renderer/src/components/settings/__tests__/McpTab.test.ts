@@ -97,6 +97,18 @@ function getInput(container: HTMLElement, testId: string): HTMLInputElement {
   return element;
 }
 
+function getChoice(container: HTMLElement, testId: string): HTMLButtonElement {
+  const element = container.querySelector(`[data-testid="${testId}"]`);
+  if (!(element instanceof HTMLButtonElement)) {
+    throw new Error(`Expected ${testId} to be a choice row`);
+  }
+  return element;
+}
+
+function isChosen(choice: HTMLButtonElement): boolean {
+  return choice.getAttribute('aria-checked') === 'true';
+}
+
 describe('McpTab proxy port UI', () => {
   let originalApiDescriptor: PropertyDescriptor | undefined;
   let originalMcpServersDescriptor: PropertyDescriptor | undefined;
@@ -174,7 +186,7 @@ describe('McpTab proxy port UI', () => {
     }
   });
 
-  it('chooses the HTTP auth handler from a native radio group and saves it on apply', async () => {
+  it('chooses the HTTP auth handler from a radio choice list and saves it on apply', async () => {
     const { api } = installMockWindowApis({
       port: DEFAULT_MCP_PROXY_PORT,
       status: 'running',
@@ -190,13 +202,11 @@ describe('McpTab proxy port UI', () => {
         await Promise.resolve();
       });
 
-      const canopy = getInput(container, 'settings-mcp-auth-canopy');
-      const provider = getInput(container, 'settings-mcp-auth-provider');
-      expect(canopy.type).toBe('radio');
-      expect(provider.type).toBe('radio');
+      const canopy = getChoice(container, 'settings-mcp-auth-canopy');
+      const provider = getChoice(container, 'settings-mcp-auth-provider');
       expect(provider.name).toBe(canopy.name);
-      expect(canopy.checked).toBe(true);
-      expect(provider.checked).toBe(false);
+      expect(isChosen(canopy)).toBe(true);
+      expect(isChosen(provider)).toBe(false);
       expect(
         container.querySelector('[data-testid="settings-mcp-auth-account"]'),
       ).toBeNull();
@@ -209,8 +219,8 @@ describe('McpTab proxy port UI', () => {
         provider.click();
         await Promise.resolve();
       });
-      expect(provider.checked).toBe(true);
-      expect(canopy.checked).toBe(false);
+      expect(isChosen(provider)).toBe(true);
+      expect(isChosen(canopy)).toBe(false);
       expect(description?.textContent).toBe(MCP_HTTP_AUTH_PROVIDER_DESCRIPTION);
 
       const apply = container.querySelector(

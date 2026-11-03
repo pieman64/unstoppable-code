@@ -38,7 +38,11 @@ import {
   workflowEditTarget,
 } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import {
   DEFAULT_GROUP_IDS,
   seedPanelWorktree,
@@ -692,6 +696,7 @@ test('quitting with unsaved edits asks first, and Save saves before the app quit
     await app.waitForShell();
     await editPromptAutomationName(window, 'Saved on quit');
 
+    await captureDaemonDryRunEvidence(electronApp);
     const closed = electronApp.waitForEvent('close', { timeout: 60_000 });
     await electronApp.evaluate(({ app: electronAppModule }) => {
       electronAppModule.quit();

@@ -14,6 +14,7 @@ import {
   type CuratedMcpDetailRoutes,
   type McpDetailEntry,
 } from '@canopy/ui-app/capability';
+import { SearchField } from '@canopy/ui-shared/components';
 
 // ---------------------------------------------------------------------------
 // Curated logo (remote CDN <img> with icon fallback)
@@ -361,6 +362,7 @@ export function McpBrowseDialog({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       titleId="mcp-browse-dialog-title"
@@ -376,15 +378,13 @@ export function McpBrowseDialog({
           onAdd={onAdd}
         />
       ) : (
-        <div className="flex flex-1 min-h-0 flex-col gap-4 px-5 pb-5">
-          <input
-            type="search"
+        <div className="flex flex-1 min-h-0 flex-col gap-4 px-6 pb-6">
+          <SearchField
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onValueChange={setQuery}
             placeholder="Search servers"
             aria-label="Search servers"
             data-testid="mcp-browse-search"
-            className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-sm"
           />
           <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto">
             {filtered.length === 0 ? (

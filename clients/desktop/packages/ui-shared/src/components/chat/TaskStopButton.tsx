@@ -69,7 +69,7 @@ export function TaskStopButton({
         }
       >
         {appearance === 'drawer' ? (
-          <StopFilledIcon width={10} height={10} exactSize aria-hidden="true" />
+          <StopFilledIcon size="xs" aria-hidden="true" />
         ) : stopping ? (
           TASK_STOPPING_LABEL
         ) : (

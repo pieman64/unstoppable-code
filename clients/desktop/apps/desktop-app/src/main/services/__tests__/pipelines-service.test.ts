@@ -1,8 +1,30 @@
+import type * as PipelineStore from '@canopy/desktop-shared/pipelines/store';
+import type * as ReadDispatchFake from '../../__tests__/helpers/pipeline-read-dispatch-fake';
 import * as hostPaths from '../../lib/paths';
 const mockGetSharedPipelineSaveImpact = jest.fn<
   Promise<{ automations: Array<{ id: string; name: string; kind: string }> }>,
   [remoteId: string]
 >(() => Promise.resolve({ automations: [] }));
+jest.mock('../../canopy-runtime/pipeline-definition-dispatch', (): object =>
+  jest
+    .requireActual<
+      typeof ReadDispatchFake
+    >('../../__tests__/helpers/pipeline-read-dispatch-fake')
+    .createPipelineReadFake(() => {
+      const store = jest.requireMock<typeof PipelineStore>(
+        '@canopy/desktop-shared/pipelines/store',
+      );
+      return {
+        list: store.listStoredPipelines,
+        get: store.getStoredPipeline,
+      };
+    }),
+);
+// A shared read checks the account's pipeline capability first.
+jest.mock('../../canopy-cloud/client', () => ({
+  ...jest.requireActual<object>('../../canopy-cloud/client'),
+  assertCanopyCloudCapability: jest.fn(() => Promise.resolve()),
+}));
 jest.mock('../../pipelines/shared-pipeline-save-impact', () => ({
   getSharedPipelineSaveImpact: (remoteId: string): Promise<unknown> =>
     mockGetSharedPipelineSaveImpact(remoteId),

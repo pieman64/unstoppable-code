@@ -27,6 +27,7 @@ import {
   SettingsSelect,
   ToggleSwitch,
   type SettingsSelectOption,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { SettingsRow, SettingsSubRow } from './SettingsLayout';
 import type {
@@ -233,21 +234,12 @@ export function OsNotificationRows({
           testId="notifications-toggle-quiet-hours"
         >
           {quietHours.enabled && (
-            <SettingsSubRow
-              label="Hours"
-              description={
-                quietHours.startHour === quietHours.endHour
-                  ? 'Start and end are the same, so no quiet time applies. Pick different hours.'
-                  : 'Holds promotional notifications only. Agent and workflow alerts still come through.'
-              }
-              control={
-                <>
-                  <label
-                    htmlFor="quiet-hours-start"
-                    className="text-xs fg-secondary"
-                  >
-                    From
-                  </label>
+            <>
+              {/* Each caption labels its dropdown, so clicking it opens it. */}
+              <SettingsSubRow
+                label="From"
+                htmlFor="quiet-hours-start"
+                control={
                   <SettingsSelect
                     width="fit"
                     id="quiet-hours-start"
@@ -261,12 +253,17 @@ export function OsNotificationRows({
                     }}
                     data-testid="notifications-quiet-hours-start"
                   />
-                  <label
-                    htmlFor="quiet-hours-end"
-                    className="text-xs fg-secondary"
-                  >
-                    to
-                  </label>
+                }
+              />
+              <SettingsSubRow
+                label="To"
+                htmlFor="quiet-hours-end"
+                description={
+                  quietHours.startHour === quietHours.endHour
+                    ? 'Start and end are the same, so no quiet time applies. Pick different hours.'
+                    : 'Holds promotional notifications only. Agent and workflow alerts still come through.'
+                }
+                control={
                   <SettingsSelect
                     width="fit"
                     id="quiet-hours-end"
@@ -280,9 +277,9 @@ export function OsNotificationRows({
                     }}
                     data-testid="notifications-quiet-hours-end"
                   />
-                </>
-              }
-            />
+                }
+              />
+            </>
           )}
         </ToggleRow>
       )}
@@ -446,16 +443,12 @@ function TestStatusHint({
   }
   if (status === 'unsupported') {
     return (
-      <span className="text-s fg-destructive">
+      <StatusLabel size="s">
         Notifications are not supported on this platform.
-      </span>
+      </StatusLabel>
     );
   }
-  return (
-    <span className="text-s fg-destructive">
-      {pt(uiText.notifications.failure)}
-    </span>
-  );
+  return <StatusLabel size="s">{pt(uiText.notifications.failure)}</StatusLabel>;
 }
 
 interface CategoryMatrixRowProps {

@@ -67,7 +67,7 @@ function buttonNamed(name: string): HTMLButtonElement {
 }
 
 describe('ApiKeysManager errors', () => {
-  it('shows load copy, never the server text, and Retry reads again', async () => {
+  it('shows load copy, never the server text, offers Copy details, and Retry reads again', async () => {
     let reads = 0;
     const client = createFakeSettingsClient({
       'account.apiKeys.list': () => {
@@ -80,6 +80,8 @@ describe('ApiKeysManager errors', () => {
 
     expect(container.textContent).toContain("Couldn't load this.");
     expect(container.textContent).not.toContain(SERVER_SENTINEL);
+    // The raw reason is copyable for support but never rendered.
+    expect(buttonNamed('Copy details')).toBeDefined();
 
     await act(async () => buttonNamed('Try again').click());
 

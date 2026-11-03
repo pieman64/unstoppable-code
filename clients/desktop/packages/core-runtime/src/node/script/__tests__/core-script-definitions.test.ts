@@ -342,6 +342,7 @@ describe('core.script.definition.*', () => {
     const handlers = createCoreScriptDefinitionHandlers({
       resolve: () => Promise.resolve({}),
       readLocal: () => Promise.resolve(undefined),
+      localRevision: () => Promise.resolve(undefined),
       inspect: () => Promise.resolve({ resolved: {}, layers: [] }),
       change: () => Promise.resolve(),
       errorCode: () => undefined,
@@ -372,7 +373,13 @@ describe('core.script.definition.*', () => {
             source: 'repo-canopy',
           },
         }),
-      readLocal: () => Promise.resolve({ build: 'make' }),
+      readLocal: () =>
+        Promise.resolve({
+          build: ' make ',
+          test: { command: 'jest', timeoutSeconds: 60 },
+          lint: null,
+          blank: '',
+        }),
     });
     const effective = await dispatcher.query(
       'core.script.definition.list',
@@ -393,7 +400,16 @@ describe('core.script.definition.*', () => {
         source: 'local-override',
         command: 'make',
       }),
+      expect.objectContaining({ name: 'lint', state: 'disabled' }),
+      expect.objectContaining({ name: 'test', command: 'jest' }),
     ]);
+    // The stored values a save compares and upserts (CAN-5369).
+    expect(local.settings).toEqual({
+      build: 'make',
+      lint: null,
+      test: { command: 'jest', timeoutSeconds: 60 },
+    });
+    expect(effective.settings).toBeUndefined();
   });
 
   it('reports source info without starting a script', async () => {

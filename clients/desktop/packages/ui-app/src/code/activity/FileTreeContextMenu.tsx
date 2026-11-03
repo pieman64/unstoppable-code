@@ -1,13 +1,13 @@
 'use client';
 
 import { useRef, type JSX, type MouseEvent, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
+  FloatingMenuPointAnchor,
   Tooltip,
   actionMenuRowIcon,
   type ActionMenuItem,
@@ -397,13 +397,13 @@ export function FileTreeContextMenu({
 
   if (!document.body) return null;
 
-  return createPortal(
+  return (
     <>
-      <span
+      <FloatingMenuPointAnchor
         ref={anchorRef}
-        aria-hidden="true"
-        className="pointer-events-none fixed h-0 w-0"
-        style={{ left: x, top: y }}
+        x={x}
+        y={y}
+        ownerDocument={document}
       />
       <FloatingMenu
         open
@@ -459,7 +459,6 @@ export function FileTreeContextMenu({
           </div>
         </ActionMenuRowStyle>
       </FloatingMenu>
-    </>,
-    document.body,
+    </>
   );
 }

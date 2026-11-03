@@ -17,21 +17,25 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 const FULL_LEVELS = ['off', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 const NON_ULTRA_LEVELS = ['off', 'medium', 'high', 'xhigh', 'max'] as const;
 
-it('can match Settings capsule selects without changing the default select shape', () => {
+it('can use the Settings dropdown instead of the native select', () => {
   const props = {
     value: 'high',
     supportedLevels: FULL_LEVELS,
     onChange: (): void => undefined,
     variant: 'select',
   } as const;
-  expect(
-    renderToStaticMarkup(
-      <ThinkingLevelControl {...props} selectShape="capsule" />,
-    ),
-  ).toContain('rounded-full');
-  expect(renderToStaticMarkup(<ThinkingLevelControl {...props} />)).toContain(
-    'rounded-md',
+  const settings = renderToStaticMarkup(
+    <ThinkingLevelControl {...props} selectShape="capsule" />,
   );
+  const native = renderToStaticMarkup(<ThinkingLevelControl {...props} />);
+  expect(settings).toContain('role="combobox"');
+  expect(settings).not.toContain('<select');
+  expect(native).toContain('<select');
+  // Dropdowns are rounded rectangles either way (2026-10-30).
+  for (const html of [settings, native]) {
+    expect(html).toContain('rounded-row');
+    expect(html).not.toContain('rounded-full');
+  }
 });
 
 function renderControl(

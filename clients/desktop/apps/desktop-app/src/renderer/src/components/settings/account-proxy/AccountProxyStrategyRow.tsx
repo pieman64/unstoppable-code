@@ -7,6 +7,7 @@ import type {
 import {
   SettingsSelect,
   type SettingsSelectOption,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { useAccountProxyStore } from '@/stores/accountProxyStore';
 import { SettingsRow } from '../SettingsLayout';
@@ -67,12 +68,9 @@ export function AccountProxyStrategyRow({
       dataTestId="account-proxy-strategy"
       description={
         failed ? (
-          <span
-            className="fg-destructive"
-            data-testid="account-proxy-strategy-error"
-          >
+          <StatusLabel data-testid="account-proxy-strategy-error">
             Couldn't change the account order. Try again.
-          </span>
+          </StatusLabel>
         ) : (
           (blockedReason ??
           (local

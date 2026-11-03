@@ -56,6 +56,15 @@ describe('createInProcessCanopyClient', () => {
         'worker.git.diff.get': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.script.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.list': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.pipeline.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -112,6 +121,15 @@ describe('createInProcessCanopyClient', () => {
         'worker.git.diff.get': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.script.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.list': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.pipeline.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -154,6 +172,15 @@ describe('createInProcessCanopyClient', () => {
           throw new Error('Not exercised.');
         },
         'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.list': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },
       },
@@ -209,6 +236,15 @@ describe('createInProcessCanopyClient', () => {
           throw new Error('Not exercised.');
         },
         'worker.git.diff.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.script.execution.list': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },
       },

@@ -90,7 +90,7 @@ describe('HookChatPluginSelectorModal full selections', () => {
   it('records the card and its scrim', () => {
     render(() => undefined);
 
-    const card = container.querySelector('[role="dialog"]');
+    const card = document.body.querySelector('[role="dialog"]');
     expect(
       card?.querySelector('[data-testid="mock-select-plugin"]'),
     ).not.toBeNull();
@@ -100,15 +100,35 @@ describe('HookChatPluginSelectorModal full selections', () => {
     ).toBe(false);
   });
 
+  it('closes on Escape like every dialog', () => {
+    const onClose = jest.fn();
+    act(() => {
+      root.render(
+        <HookChatPluginSelectorModal
+          mode="full"
+          initial={initialSelections()}
+          onSave={() => undefined}
+          onClose={onClose}
+        />,
+      );
+    });
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('normalizes legacy bundle IDs for the selected count', () => {
     render(() => undefined);
-    expect(container.textContent).toContain('1 selected');
+    expect(document.body.textContent).toContain('1 selected');
   });
 
   it('does not discard in-progress selections when the parent rerenders', () => {
     const onSave = jest.fn();
     render(onSave);
-    const selectButton = container.querySelector(
+    const selectButton = document.body.querySelector(
       '[data-testid="mock-select-plugin"]',
     );
     if (!(selectButton instanceof HTMLButtonElement)) {
@@ -116,16 +136,16 @@ describe('HookChatPluginSelectorModal full selections', () => {
     }
 
     act(() => selectButton.click());
-    expect(container.textContent).toContain('1 selected');
+    expect(document.body.textContent).toContain('1 selected');
 
     render(onSave);
-    expect(container.textContent).toContain('1 selected');
+    expect(document.body.textContent).toContain('1 selected');
   });
 
   it('preserves MCP HTTP auth preferences when picker-owned fields change', () => {
     const onSave = jest.fn();
     render(onSave);
-    const selectButton = container.querySelector(
+    const selectButton = document.body.querySelector(
       '[data-testid="mock-select-plugin"]',
     );
     if (!(selectButton instanceof HTMLButtonElement)) {
@@ -133,9 +153,9 @@ describe('HookChatPluginSelectorModal full selections', () => {
     }
     act(() => selectButton.click());
 
-    const saveButton = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Save',
-    );
+    const saveButton = Array.from(
+      document.body.querySelectorAll('button'),
+    ).find((button) => button.textContent === 'Save');
     if (!saveButton) throw new Error('Save button not found');
     act(() => saveButton.click());
 

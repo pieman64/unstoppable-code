@@ -44,6 +44,7 @@ function commandType(command: ChatCommand): string {
     case 'chat.import_session':
     case 'chat.set_scheduled_send_draft':
     case 'chat.commit_terminal_initial_prompt':
+    case 'chat.reject_plan_implementation_delivery':
     case 'chat.set_model':
     case 'chat.set_approval_mode':
     case 'chat.move_queued_message':

@@ -408,7 +408,6 @@ export function tabKeepsWorktreeHydrated(tab: ChatTab): boolean {
     tab.status === 'streaming' ||
     tab.claudeTerminal?.turnState === 'running' ||
     tab.queuedMessages.length > 0 ||
-    tab.queuedForSetup === true ||
     tab.queuedHookPlaceholder === true ||
     tab.pendingPlanExit !== undefined ||
     hasPendingTrackedPlanReview(tab) ||

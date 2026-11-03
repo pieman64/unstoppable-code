@@ -130,4 +130,28 @@ describe('worktree selector floating menus', () => {
     ).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
+
+  it('explains the settings source in a shared hover card on the help icon', async () => {
+    act(() => root.render(<SourceHarness onChange={jest.fn()} />));
+    const help = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Project configuration help"]',
+    );
+    if (!help) throw new Error('help button missing');
+    // Nothing is drawn until the help is asked for.
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+
+    await act(async () => {
+      help.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+
+    const card = document.querySelector('[role="tooltip"]');
+    expect(card?.id).toBe('source-help');
+    expect(card?.textContent).toContain(
+      'Local overrides always take priority.',
+    );
+    expect(help.getAttribute('aria-describedby')).toContain('source-help');
+  });
 });

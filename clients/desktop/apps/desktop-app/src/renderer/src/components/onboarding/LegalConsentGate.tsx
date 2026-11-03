@@ -1,4 +1,4 @@
-import { type JSX, type ReactNode, useId, useState } from 'react';
+import { type JSX, type ReactNode, useState } from 'react';
 import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
 import { localPlatform } from '@/lib/local-platform';
 import { CONSENT_TOS_VERSION } from '@canopy/desktop-shared/constants/consent';
@@ -6,6 +6,7 @@ import { Button } from '@canopy/ui-shared';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brandText } from '@/lib/brand';
 import { useCanopyLegalUrls } from '@/hooks/useCanopyLegalUrls';
+import { ChoiceField, ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface LegalConsentGateProps {
   /**
@@ -27,7 +28,8 @@ interface LegalDocumentLinkProps {
 
 /**
  * A legal document name in the consent sentence. It sits outside the
- * checkbox's `<label>`, so clicking it never toggles acceptance (CAN-2621).
+ * checkbox's label (`ChoiceField`), so clicking it never toggles acceptance
+ * (CAN-2621).
  * It opens the Cloud-hosted page once the base URL resolves; until then, or
  * in a local build with no base URL configured, it is inert text.
  */
@@ -66,7 +68,6 @@ export function LegalConsentGate({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { termsUrl, privacyUrl } = useCanopyLegalUrls();
-  const checkboxId = useId();
 
   const handleContinue = async (): Promise<void> => {
     if (!agreed || submitting) {
@@ -109,52 +110,47 @@ export function LegalConsentGate({
             </div>
           </div>
 
-          {error && (
-            <p
-              className="w-full text-center text-s fg-destructive"
-              data-testid="legal-consent-error"
-              role="alert"
-            >
-              {error}
-            </p>
-          )}
+          <ErrorBanner
+            className="w-full"
+            error={error}
+            testId="legal-consent-error"
+          />
 
-          <div className="flex w-full items-start gap-3 rounded-lg border bg-card p-4 text-left">
-            <input
-              id={checkboxId}
-              type="checkbox"
+          {/* One block: the agreement phrase is the checkbox's label (clicking
+              it toggles), and the document names follow under it in the text
+              column, outside that label, so clicking one never accepts them
+              (CAN-2621). */}
+          <div className="w-full rounded-lg border bg-card p-4 text-left">
+            <ChoiceField
               aria-label="I have read and agree to the Terms of Service and Privacy Policy"
               checked={agreed}
               onChange={(e): void => setAgreed(e.target.checked)}
               disabled={submitting}
               data-testid="legal-consent-checkbox"
-              className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-accent"
+              label={
+                <span data-testid="legal-consent-label">
+                  I have read and agree to the
+                </span>
+              }
+              trailing={
+                <>
+                  <LegalDocumentLink
+                    url={termsUrl}
+                    testId="legal-consent-terms-link"
+                  >
+                    Terms of Service
+                  </LegalDocumentLink>{' '}
+                  and{' '}
+                  <LegalDocumentLink
+                    url={privacyUrl}
+                    testId="legal-consent-privacy-link"
+                  >
+                    Privacy Policy
+                  </LegalDocumentLink>
+                  .
+                </>
+              }
             />
-            {/* Only the agreement phrase is the checkbox label; the document
-                names stay outside it so clicking one never accepts them. */}
-            <p className="text-s fg-secondary">
-              <label
-                htmlFor={checkboxId}
-                className="cursor-pointer"
-                data-testid="legal-consent-label"
-              >
-                I have read and agree to the
-              </label>{' '}
-              <LegalDocumentLink
-                url={termsUrl}
-                testId="legal-consent-terms-link"
-              >
-                Terms of Service
-              </LegalDocumentLink>{' '}
-              and{' '}
-              <LegalDocumentLink
-                url={privacyUrl}
-                testId="legal-consent-privacy-link"
-              >
-                Privacy Policy
-              </LegalDocumentLink>
-              .
-            </p>
           </div>
 
           <Button

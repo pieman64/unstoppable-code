@@ -7,11 +7,11 @@ import type { WorkspaceReadinessIssue } from '@canopy/desktop-shared/types';
  * across workspaces — callers tracking cross-workspace state must prefix it
  * with the workspace id.
  *
- * Recovery evidence also shares this identity with the settings surface.
- * Ordinary recommendations are deliberately NOT shared with the settings surface
- * (`WorkspaceReadinessRecommendations`) or the launcher's own in-flight
- * `launchKey`: both key by launch target with their own fallback semantics,
- * and folding them in would change behavior for a cleanup.
+ * Launched-fix records (`workspaceReadinessLaunches`) and the launcher's
+ * in-flight guard scope this identity by workspace and audit target, so every
+ * surface finds the same launch. Recovery evidence also shares it with the
+ * settings surface, whose own in-flight `launchingKey` keeps its fallback
+ * semantics for ordinary recommendations.
  *
  * Lives in its own store-free leaf module so component tests that mock the
  * launcher wholesale still exercise the real derivation.

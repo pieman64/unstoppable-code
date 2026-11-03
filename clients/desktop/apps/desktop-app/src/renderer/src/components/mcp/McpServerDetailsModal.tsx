@@ -7,12 +7,13 @@ import type {
   MarketplaceInfo,
   PluginInfo,
 } from '@canopy/desktop-shared/types/plugins';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
 import {
   Button,
+  McpConnectionFacts,
   PluginSection,
   StandaloneConfigsSection,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { mcpAuthStatusBadgeClass } from './mcp-card-helpers';
 
@@ -191,7 +192,7 @@ export function McpServerDetailsModal({
       dataTestId="mcp-server-details-modal"
       closeOnBackdrop
     >
-      <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-5 pb-5">
+      <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto">
         {server.description && (
           <p className="text-s fg-secondary">{server.description}</p>
         )}
@@ -208,71 +209,29 @@ export function McpServerDetailsModal({
             {server.authStatusLabel}
           </span>
           {server.lastError && server.authStatus === 'error' && (
-            <span className="fg-destructive">{server.lastError}</span>
+            <StatusLabel>{server.lastError}</StatusLabel>
           )}
         </div>
 
         <div className="rounded-lg border bg-secondary/30 px-4 py-3">
-          <dl className="space-y-1.5 text-s">
-            <div className="flex gap-2">
-              <dt className="whitespace-nowrap font-medium fg-primary">
-                Source:
-              </dt>
-              <dd className="fg-secondary">
-                {sourceInfo.context
-                  ? `${sourceInfo.label} (${sourceInfo.context})`
-                  : sourceInfo.label}
-              </dd>
-            </div>
-            {server.source === 'plugin' && server.pluginServerName && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Plugin server:
-                </dt>
-                <dd className="fg-secondary">{server.pluginServerName}</dd>
-              </div>
-            )}
-            <div className="flex gap-2">
-              <dt className="whitespace-nowrap font-medium fg-primary">
-                Type:
-              </dt>
-              <dd className="fg-secondary">
-                {server.type === 'command' ? 'Command (stdio)' : 'HTTP'}
-              </dd>
-            </div>
-            {server.type === 'http' && httpUrl && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  URL:
-                </dt>
-                <dd className="break-all font-mono text-xs fg-secondary">
-                  {httpUrl}
-                </dd>
-              </div>
-            )}
-            {commandLine && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Command:
-                </dt>
-                <dd
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-all font-mono text-xs fg-secondary`}
-                >
-                  {commandLine}
-                </dd>
-              </div>
-            )}
-            {server.type === 'http' && definition && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  OAuth:
-                </dt>
-                <dd className="fg-secondary">
-                  {definition.oauth ? 'configured' : 'not configured'}
-                </dd>
-              </div>
-            )}
-          </dl>
+          <McpConnectionFacts
+            source={
+              sourceInfo.context
+                ? `${sourceInfo.label} (${sourceInfo.context})`
+                : sourceInfo.label
+            }
+            pluginServerName={
+              server.source === 'plugin' ? server.pluginServerName : undefined
+            }
+            type={server.type === 'command' ? 'command' : 'http'}
+            url={httpUrl}
+            commandLine={commandLine ?? undefined}
+            oauth={
+              server.type === 'http' && definition
+                ? Boolean(definition.oauth)
+                : undefined
+            }
+          />
         </div>
 
         {server.source === 'plugin' && (

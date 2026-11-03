@@ -159,7 +159,11 @@ const FOREIGN = {
 
 /** An owned organization share that also has a public link (CAN-4842). */
 const LINKED_SKILL = {
-  ...skill('can4842-linked-skill', 'Linked Release Skill', VIEWER),
+  ...skill(
+    '3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b',
+    'Linked Release Skill',
+    VIEWER,
+  ),
   publicShare: {
     externalId: 'can4842-linked-skill-public',
     pinnedContentHash: 'sha256:can4842-linked-skill',
@@ -854,6 +858,12 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
         await openEntry(window, kind, FOREIGN[kind]);
         await expect(window.getByTestId('shared-by-you')).toHaveCount(0);
         await expect(
+          window.getByTestId('shared-by-you-copy-link-account'),
+        ).toHaveCount(0);
+        await expect(
+          window.getByTestId('shared-by-you-copy-link-menu'),
+        ).toHaveCount(0);
+        await expect(
           window.getByTestId(`shared-${kind}-detail-audience-author`),
         ).toHaveText(`By ${OTHER.name}`);
         await expect(
@@ -919,6 +929,17 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
       ).toHaveText('Unshare all');
       await window.keyboard.press('Escape');
 
+      // CAN-5452: successful removal must update both copy notices even
+      // when the follow-up detail read is unavailable.
+      await queueFailure(
+        electronApp,
+        'GET',
+        `/api/v1/canopy/skills/${LINKED_SKILL.id}`,
+        {
+          status: 503,
+          body: { error: 'Detail refresh unavailable' },
+        },
+      );
       await section.getByTestId('shared-by-you-unshare-public').click();
       await window
         .getByTestId('shared-by-you-remove-public-link-confirm-action')
@@ -940,6 +961,50 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
         id: LINKED_SKILL.id,
         publicShare: true,
       });
+      // CAN-5452: no reload between revoke and either copy entry point.
+      const beforeCopy = (await readMockRequests(electronApp)).length;
+      const expectedLink = await electronApp.evaluate(({ app }) => {
+        const scheme =
+          app.getName() === 'Unstoppable Code' ? 'unstoppable-code' : 'canopy';
+        return `${scheme}://share/skills/3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b?audience=ORGANIZATION`;
+      });
+      const notice = `Link copied. Only ${ORGANIZATION.name} members can open it.`;
+      const accountCopy = section.getByTestId(
+        'shared-by-you-copy-link-account',
+      );
+      await expect(accountCopy).toHaveAccessibleName(
+        `Copy the ${ORGANIZATION.name} link for ${LINKED_SKILL.name}`,
+      );
+      expect(
+        (await accountCopy.getAttribute('aria-label')) ?? '',
+      ).not.toContain(ORGANIZATION.name);
+      await section.getByTestId('shared-by-you-copy-link-account').click();
+      await expect(
+        section.getByTestId('shared-by-you-copy-link-account'),
+      ).toHaveText('Copied');
+      await expect
+        .poll(() =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        )
+        .toBe(expectedLink);
+      await expect(
+        window.getByTestId('toast-card').filter({ hasText: notice }),
+      ).toBeVisible();
+      await electronApp.evaluate(({ clipboard }) => clipboard.clear());
+      await window.getByTestId('plugins-entry-detail-more').click();
+      await window.getByTestId('shared-by-you-copy-link-menu').click();
+      await expect
+        .poll(() =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        )
+        .toBe(expectedLink);
+      expect(
+        (await readMockRequests(electronApp))
+          .slice(beforeCopy)
+          .filter(({ method }) =>
+            ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method),
+          ),
+      ).toEqual([]);
       // Reopening also reads the settled server state, not a hidden row.
       await backToBrowse(window);
       await openEntry(window, 'skill', LINKED_SKILL);
@@ -988,9 +1053,20 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
     const linkedRowId = `skill:shared:${LINKED_SKILL.id}`;
     const section = window.getByTestId('customize-section-shared-by-me');
     const linkedRow = section.getByTestId(`customize-row-${linkedRowId}`);
-    const badge = section.getByTestId(
-      `customize-row-public-link-${linkedRowId}`,
-    );
+    const source = section.getByTestId(`customize-row-source-${linkedRowId}`);
+    const expectLink = async (present) => {
+      await source.hover();
+      if (present)
+        await expect(window.getByRole('tooltip')).toContainText('Public link');
+      else
+        await expect(window.getByRole('tooltip')).not.toContainText(
+          'Public link',
+        );
+      await expect(window.getByRole('tooltip')).toContainText(
+        ORGANIZATION.name,
+      );
+      await window.mouse.move(0, 0);
+    };
     const openSharedByMe = async () => {
       await openTab(window, 'all');
       await section.scrollIntoViewIfNeeded();
@@ -1009,17 +1085,15 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
       await app.openPluginsPage();
       await openSharedByMe();
 
-      // Only the linked row carries the badge, between audience and date.
-      await expect(badge).toBeVisible();
-      await expect(badge).toHaveText('Public link');
-      await expect(
-        section.getByTestId(`customize-row-subtitle-${linkedRowId}`),
-      ).toContainText(ORGANIZATION.name);
-      await expect(
-        section.getByTestId(
-          `customize-row-public-link-skill:shared:${OWNED.skill.id}`,
-        ),
-      ).toHaveCount(0);
+      await expectLink(true);
+      const unlinkedSource = section.getByTestId(
+        `customize-row-source-skill:shared:${OWNED.skill.id}`,
+      );
+      await unlinkedSource.hover();
+      await expect(window.getByRole('tooltip')).not.toContainText(
+        'Public link',
+      );
+      await window.mouse.move(0, 0);
 
       // A failed removal keeps the link, so the row keeps its badge.
       await queueFailure(
@@ -1037,7 +1111,7 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
         .click();
       await backToBrowse(window);
       await openSharedByMe();
-      await expect(badge).toBeVisible();
+      await expectLink(true);
       expect(await deleteRequests(electronApp)).toEqual([
         expect.objectContaining({
           resource: 'skills',
@@ -1053,10 +1127,10 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
       ).toHaveCount(0, { timeout: 20_000 });
       await backToBrowse(window);
       await openSharedByMe();
-      await expect(badge).toHaveCount(0, { timeout: 20_000 });
-      await expect(
-        section.getByTestId(`customize-row-subtitle-${linkedRowId}`),
-      ).toContainText(ORGANIZATION.name);
+      await expectLink(false);
+      await expect(linkedRow).toHaveAccessibleDescription(
+        new RegExp(ORGANIZATION.name),
+      );
       const deletes = await deleteRequests(electronApp);
       expect(deletes).toEqual([
         expect.objectContaining({
@@ -1083,7 +1157,7 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
       await closeCanopy(electronApp, userDataDir);
     }
   });
-  test('Shared by me drops the date before the audience and keeps the badge whole (CAN-5220)', async () => {
+  test('Shared by me keeps compact rows and creator/scope/public-link explanations at narrow widths (CAN-5220)', async () => {
     test.setTimeout(240_000);
     const longName = {
       ...LINKED_SKILL,
@@ -1100,167 +1174,51 @@ test.describe('CAN-4263 Marketplace Unshare', () => {
       name: 'Public Only Skill',
       shareScope: 'private',
     };
-    const session = await launchOwnerSession('csk_can5220_public_link_layout', [
-      LINKED_SKILL,
-      longName,
-      linkOnly,
-    ]);
-    const { electronApp, userDataDir, window, app } = session;
-    const rowId = `skill:shared:${LINKED_SKILL.id}`;
-    const section = window.getByTestId('customize-section-shared-by-me');
-    const badge = section.getByTestId(`customize-row-public-link-${rowId}`);
-    const since = section.getByTestId(`customize-row-shared-since-${rowId}`);
-    /** Real geometry: whether the audience is cut and the badge fits whole. */
-    const measure = async (id = rowId) => {
-      const line = section.getByTestId(`customize-row-subtitle-${id}`);
-      // Resizing/zooming can put this section below the viewport. Let the
-      // browser render the row before measuring content-visibility geometry.
-      await line.scrollIntoViewIfNeeded();
-      return line.evaluate((line, id) => {
-        const box = line.getBoundingClientRect();
-        const name = line.querySelector(
-          `[data-testid="customize-row-audience-${id}"]`,
-        );
-        const link = line.querySelector(
-          `[data-testid="customize-row-public-link-${id}"]`,
-        );
-        const linkBox = link.getBoundingClientRect();
-        return {
-          audienceCut: name ? name.scrollWidth > name.clientWidth : false,
-          badgeInside:
-            linkBox.width > 0 &&
-            linkBox.left >= box.left - 0.5 &&
-            linkBox.right <= box.right + 0.5 &&
-            linkBox.top >= box.top - 0.5 &&
-            linkBox.bottom <= box.bottom + 0.5,
-          audienceWidth: name?.scrollWidth ?? 0,
-          badgeGroupWidth: link.parentElement.getBoundingClientRect().width,
-          visibleGroupsInside: Array.from(line.children)
-            .filter((child) => getComputedStyle(child).visibility !== 'hidden')
-            .every((child) => {
-              const childBox = child.getBoundingClientRect();
-              return (
-                childBox.left >= box.left - 0.5 &&
-                childBox.right <= box.right + 0.5 &&
-                childBox.top >= box.top - 0.5 &&
-                childBox.bottom <= box.bottom + 0.5
-              );
-            }),
-          sinceWidth:
-            line
-              .querySelector(`[data-testid="customize-row-shared-since-${id}"]`)
-              ?.getBoundingClientRect().width ?? 0,
-        };
-      }, id);
-    };
-    const constrain = (width, id = rowId) =>
-      section
-        .getByTestId(`customize-row-subtitle-${id}`)
-        .evaluate((line, px) => {
-          line.style.width = px === null ? '' : `${px}px`;
-        }, width);
+    const { electronApp, userDataDir, window, app } = await launchOwnerSession(
+      'csk_can5220_public_link_layout',
+      [LINKED_SKILL, longName, linkOnly],
+    );
     try {
       await app.openPluginsPage();
       await openTab(window, 'all');
-      await section.scrollIntoViewIfNeeded();
-      await expect(badge).toBeVisible({ timeout: 20_000 });
-
+      const section = window.getByTestId('customize-section-shared-by-me');
       for (const scale of [100, 125]) {
         await setUiScale(window, scale);
-        const wideWidth = Math.round((1400 * scale) / 100);
-        await window.setViewportSize({ width: wideWidth, height: 900 });
-        // Wide: everything shows and nothing is cut.
-        await expect(since).toBeVisible();
-        const wide = await measure();
-        expect(wide).toMatchObject({
-          audienceCut: false,
-          badgeInside: true,
-          visibleGroupsInside: true,
-        });
-
-        // Room for the audience and badge but not the date: the date goes whole.
-        await constrain(
-          Math.ceil(
-            wide.audienceWidth + wide.badgeGroupWidth + wide.sinceWidth / 2,
-          ),
-        );
-        await expect(since).toBeHidden();
-        await expect(since).toHaveAttribute('aria-hidden', 'true');
-        expect(await measure()).toMatchObject({
-          audienceCut: false,
-          badgeInside: true,
-          visibleGroupsInside: true,
-        });
-
-        // Narrower still: only the audience truncates; the badge stays whole.
-        await constrain(Math.ceil(wide.badgeGroupWidth + 24));
-        await expect(since).toBeHidden();
-        await expect.poll(async () => (await measure()).audienceCut).toBe(true);
-        expect((await measure()).badgeInside).toBe(true);
-
-        // Widening again brings the date back.
-        await constrain(null);
-        await expect(since).toBeVisible();
-        expect(await measure()).toMatchObject({
-          audienceCut: false,
-          badgeInside: true,
-          visibleGroupsInside: true,
-        });
-
-        // A real long name truncates only once its date has gone.
-        const longId = `skill:shared:${longName.id}`;
-        await constrain(Math.ceil(wide.badgeGroupWidth + 100), longId);
-        await expect(
-          section.getByTestId(`customize-row-shared-since-${longId}`),
-        ).toBeHidden();
-        await expect
-          .poll(async () => (await measure(longId)).audienceCut)
-          .toBe(true);
-        expect(await measure(longId)).toMatchObject({
-          badgeInside: true,
-          visibleGroupsInside: true,
-        });
-        await constrain(null, longId);
-
-        const publicId = `skill:shared:${linkOnly.id}`;
-        const publicLine = section.getByTestId(
-          `customize-row-subtitle-${publicId}`,
-        );
-        await expect(publicLine).toHaveText('Public link');
-        await expect(
-          section.getByTestId(`customize-row-audience-${publicId}`),
-        ).toHaveCount(0);
-        await expect(
-          section.getByTestId(`customize-row-shared-since-${publicId}`),
-        ).toHaveCount(0);
-        expect(await measure(publicId)).toMatchObject({
-          badgeInside: true,
-          visibleGroupsInside: true,
-        });
-
-        // Exercise the actual window width, including the actions beside each row.
-        await window.setViewportSize({ width: 980, height: 900 });
-        for (const id of [rowId, longId, publicId]) {
-          await test.info().attach(`subtitle-${scale}-${id}`, {
-            body: JSON.stringify(await measure(id)),
-            contentType: 'application/json',
-          });
-          await expect
-            .poll(() => measure(id), { message: `subtitle ${id} at ${scale}%` })
-            .toMatchObject({ badgeInside: true, visibleGroupsInside: true });
-          const menu = window.getByTestId(`customize-row-menu-${id}`);
-          await expect(menu).toBeVisible();
-          await menu.click();
-          await window.keyboard.press('Escape');
+        for (const width of [1400, 980]) {
+          await window.setViewportSize({ width, height: 900 });
+          for (const item of [LINKED_SKILL, longName, linkOnly]) {
+            const id = `skill:shared:${item.id}`;
+            const row = section.getByTestId(`customize-row-${id}`);
+            await row.scrollIntoViewIfNeeded();
+            await row.focus();
+            await expect(row).toBeFocused();
+            await expect(row).toHaveAccessibleDescription(/Public link/);
+            if (item.shareScope !== 'private')
+              await expect(row).toHaveAccessibleDescription(
+                new RegExp(item.owner.name),
+              );
+            await expect(row.locator('[tabindex="0"]')).toHaveCount(0);
+            await section.getByTestId(`customize-row-source-${id}`).hover();
+            await expect(window.getByRole('tooltip')).toContainText(
+              'Public link',
+            );
+            await window.mouse.move(0, 0);
+            const line = section.getByTestId(`customize-row-subtitle-${id}`);
+            expect(
+              await line.evaluate(
+                (node) => node.getBoundingClientRect().height,
+              ),
+            ).toBeLessThanOrEqual(20);
+            const menu = section.getByTestId(`customize-row-menu-${id}`);
+            await menu.click();
+            await window.keyboard.press('Escape');
+          }
         }
-        await window.setViewportSize({ width: wideWidth, height: 900 });
-        await expect(since).toBeVisible();
       }
-
-      // The existing row control still receives focus and opens detail by keyboard.
-      const row = section.getByTestId(`customize-row-${rowId}`);
+      const row = section.getByTestId(
+        `customize-row-skill:shared:${LINKED_SKILL.id}`,
+      );
       await row.focus();
-      await expect(row).toBeFocused();
       await row.press('Enter');
       await expect(window.getByTestId('shared-by-you')).toBeVisible();
     } finally {

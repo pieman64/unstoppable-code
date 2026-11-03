@@ -1,3 +1,4 @@
+import { isW5ProjectionOnlyView } from './w5-fallback-read';
 import { afterW5Commit } from './w5-commit-scope';
 import { isAbsolute } from 'node:path';
 import {
@@ -33,6 +34,7 @@ import {
 } from './w5-storage';
 import { validateId } from './validation';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
+import type { W5NamedUnreadableError } from './w5-file-store';
 import {
   createWorkspaceIndexRepository,
   type StoredWorkspaceIndexFields,
@@ -81,6 +83,7 @@ import { readEffectiveWorkspaceConfig } from './workspace-source';
 import { countArchivedContainers } from './archived-containers';
 import { readWorkEntrySidebarSummary } from './cowork-work-entries-file';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
+import { workspaceStorageUnavailable } from './workspace-storage-availability';
 
 export {
   WorkspaceIndexUnreadableError,
@@ -269,14 +272,16 @@ export async function readWorkspaceIndexEntry(
   return index.find((entry) => entry.id === workspaceId) ?? null;
 }
 
-/** {@link readWorkspaceIndexEntry} with the entry's stored fields. */
+/** Stored fields for a core read; an unreadable index cannot prove absence. */
 export async function readWorkspaceIndexEntryDetailed(
   workspaceId: string,
 ): Promise<{
   entry: WorkspaceIndexEntry;
   storedFields: StoredWorkspaceIndexFields;
 } | null> {
-  const { entries, storedFields } = await workspaceIndexRepository.readStored();
+  const { entries, storedFields, authority, unserved } =
+    await workspaceIndexRepository.readStored();
+  if (authority === 'unreadable') throw workspaceStorageUnavailable(unserved);
   // The first entry with the id, as in readWorkspaceIndexEntry.
   const position = entries.findIndex(
     (candidate) => candidate.id === workspaceId,
@@ -544,37 +549,44 @@ async function readSingleRepoWorkspace(
   }
 
   const rawScripts = normalizeLegacyScriptFields(config);
-  const [resolvedScripts, resolvedHooks] = await settleAll([
-    resolveProjectScripts({
-      repoPath: config.repoPath,
-      scripts: rawScripts,
-    }),
-    resolveProjectHooks({
-      id: entry.id,
-      owner: config.owner,
-      repoPath: config.repoPath,
-      hooks: config.hooks,
-    }),
-  ]);
+  const [resolvedScripts, resolvedHooks] = isW5ProjectionOnlyView()
+    ? [{}, {}]
+    : await settleAll([
+        resolveProjectScripts({
+          repoPath: config.repoPath,
+          scripts: rawScripts,
+        }),
+        resolveProjectHooks({
+          id: entry.id,
+          owner: config.owner,
+          repoPath: config.repoPath,
+          hooks: config.hooks,
+        }),
+      ]);
 
   const repoPath = config.repoPath;
-  const worktreeEffective = await resolveWorktreeEffective(
-    entry.id,
-    worktrees,
-    (wtPath) =>
-      settleAll([
-        resolveProjectScripts({ repoPath, scripts: rawScripts }, wtPath).catch(
-          () => ({}),
-        ),
-        resolveProjectHooks(
-          { id: entry.id, owner: config.owner, repoPath, hooks: config.hooks },
-          wtPath,
-        ).catch(() => ({})),
-      ]).then(([s, h]) => ({
-        effectiveScripts: toScriptOverrides(s),
-        effectiveHooks: toHookOverrides(h),
-      })),
-  );
+  const worktreeEffective = isW5ProjectionOnlyView()
+    ? undefined
+    : await resolveWorktreeEffective(entry.id, worktrees, (wtPath) =>
+        settleAll([
+          resolveProjectScripts(
+            { repoPath, scripts: rawScripts },
+            wtPath,
+          ).catch(() => ({})),
+          resolveProjectHooks(
+            {
+              id: entry.id,
+              owner: config.owner,
+              repoPath,
+              hooks: config.hooks,
+            },
+            wtPath,
+          ).catch(() => ({})),
+        ]).then(([s, h]) => ({
+          effectiveScripts: toScriptOverrides(s),
+          effectiveHooks: toHookOverrides(h),
+        })),
+      );
 
   return {
     type: 'single-repo',
@@ -620,80 +632,83 @@ async function readMultiRepoWorkspace(
   recordWorkspaceReads(collector, entry.id, configRead, worktreesRead);
   assertWorkspaceConfigReadable(configRead.authority);
   const worktrees = worktreesRead.worktrees;
-  const effectiveConfig = await readEffectiveWorkspaceConfig(
-    entry.id,
-    configRead.config,
-  );
+  const effectiveConfig = isW5ProjectionOnlyView()
+    ? { ...configRead.config, localConfig: configRead.config }
+    : await readEffectiveWorkspaceConfig(entry.id, configRead.config);
   const resolutionPaths = {
     localConfig: effectiveConfig.localConfig,
   };
-  const [workspaceScripts, workspaceHooks, repos] = await settleAll([
-    resolveWorkspaceRootScripts(entry.id, resolutionPaths),
-    resolveWorkspaceRootHooks(entry.id, resolutionPaths),
-    settleAll(
-      effectiveConfig.repos.map((repo) =>
-        resolveWorkspaceRepoDataHooks(entry.id, repo, resolutionPaths),
-      ),
-    ),
-  ]);
-
-  const repoIds = effectiveConfig.repos.map((repo) => repo.id);
-  const worktreeEffective = await resolveWorktreeEffective(
-    entry.id,
-    worktrees,
-    async (wtPath, worktreeId) => {
-      const paths = {
-        workspaceRootPath: wtPath,
-        localConfig: effectiveConfig.localConfig,
-      };
-      const [wtScripts, wtHooks] = await settleAll([
-        resolveWorkspaceRootScripts(entry.id, paths).catch(() => ({})),
-        resolveWorkspaceRootHooks(entry.id, paths).catch(() => ({})),
+  const [workspaceScripts, workspaceHooks, repos] = isW5ProjectionOnlyView()
+    ? ([{}, {}, effectiveConfig.repos] as const)
+    : await settleAll([
+        resolveWorkspaceRootScripts(entry.id, resolutionPaths),
+        resolveWorkspaceRootHooks(entry.id, resolutionPaths),
+        settleAll(
+          effectiveConfig.repos.map((repo) =>
+            resolveWorkspaceRepoDataHooks(entry.id, repo, resolutionPaths),
+          ),
+        ),
       ]);
 
-      const repoEntries = await settleAll(
-        repoIds.map(async (repoId) => {
-          const repoPath = getWorkspaceWorktreeRepoDir(
-            entry.id,
-            worktreeId,
-            repoId,
-          );
-          const repoPaths = {
+  const repoIds = effectiveConfig.repos.map((repo) => repo.id);
+  const worktreeEffective = isW5ProjectionOnlyView()
+    ? undefined
+    : await resolveWorktreeEffective(
+        entry.id,
+        worktrees,
+        async (wtPath, worktreeId) => {
+          const paths = {
             workspaceRootPath: wtPath,
-            repoPath,
             localConfig: effectiveConfig.localConfig,
           };
-          const [rs, rh] = await settleAll([
-            resolveWorkspaceRepoScripts(entry.id, repoId, repoPaths).catch(
-              () => ({}),
-            ),
-            resolveWorkspaceRepoHooks(entry.id, repoId, repoPaths).catch(
-              () => ({}),
-            ),
+          const [wtScripts, wtHooks] = await settleAll([
+            resolveWorkspaceRootScripts(entry.id, paths).catch(() => ({})),
+            resolveWorkspaceRootHooks(entry.id, paths).catch(() => ({})),
           ]);
-          return [
-            repoId,
-            {
-              effectiveScripts: toScriptOverrides(rs),
-              effectiveHooks: toHookOverrides(rh),
-            },
-          ] satisfies [
-            string,
-            {
-              effectiveScripts?: ScriptOverrides;
-              effectiveHooks?: HookOverrides;
-            },
-          ];
-        }),
-      );
 
-      return {
-        effectiveScripts: toScriptOverrides(wtScripts),
-        effectiveHooks: toHookOverrides(wtHooks),
-        repos: Object.fromEntries(repoEntries),
-      };
-    },
-  );
+          const repoEntries = await settleAll(
+            repoIds.map(async (repoId) => {
+              const repoPath = getWorkspaceWorktreeRepoDir(
+                entry.id,
+                worktreeId,
+                repoId,
+              );
+              const repoPaths = {
+                workspaceRootPath: wtPath,
+                repoPath,
+                localConfig: effectiveConfig.localConfig,
+              };
+              const [rs, rh] = await settleAll([
+                resolveWorkspaceRepoScripts(entry.id, repoId, repoPaths).catch(
+                  () => ({}),
+                ),
+                resolveWorkspaceRepoHooks(entry.id, repoId, repoPaths).catch(
+                  () => ({}),
+                ),
+              ]);
+              return [
+                repoId,
+                {
+                  effectiveScripts: toScriptOverrides(rs),
+                  effectiveHooks: toHookOverrides(rh),
+                },
+              ] satisfies [
+                string,
+                {
+                  effectiveScripts?: ScriptOverrides;
+                  effectiveHooks?: HookOverrides;
+                },
+              ];
+            }),
+          );
+
+          return {
+            effectiveScripts: toScriptOverrides(wtScripts),
+            effectiveHooks: toHookOverrides(wtHooks),
+            repos: Object.fromEntries(repoEntries),
+          };
+        },
+      );
 
   return {
     type: 'multi-repo',
@@ -888,7 +903,8 @@ export async function readWorkspaceIndexEntries(): Promise<
   WorkspaceIndexEntry[]
 > {
   const index = await readWorkspaceIndex();
-  registerWorkspaceTypes(buildWorkspaceTypeMap(index));
+  if (!isW5ProjectionOnlyView())
+    registerWorkspaceTypes(buildWorkspaceTypeMap(index));
   return index;
 }
 
@@ -950,6 +966,8 @@ export interface SidebarItemsSnapshot {
   authority: WorkspaceIndexAuthority;
   /** Authority of the index read alone, without the manifest reads. */
   indexAuthority: WorkspaceIndexAuthority;
+  /** The named reason an unreadable index could not be read (CAN-5531, CAN-5542). */
+  indexUnserved?: W5NamedUnreadableError;
   /**
    * Every workspace id in the index, including ones that could not be
    * projected into `file.items`.
@@ -982,13 +1000,16 @@ export async function readAllSidebarItemsSnapshot(options?: {
     entries: index,
     authority: indexAuthority,
     storedFields: indexStoredFields,
+    unserved: indexUnserved,
   } = await workspaceIndexRepository.readStored();
   let authority: WorkspaceIndexAuthority = indexAuthority;
   const workspaceReads = new Map<string, SidebarWorkspaceReads>();
   const manifestStoredFields = new Map<string, StoredWorkspaceManifestFields>();
   const manifestExternalPaths = new Map<string, string | undefined>();
   const collector: ManifestAuthorityCollector = {
-    readOptions: options,
+    readOptions: isW5ProjectionOnlyView()
+      ? { persistRemovalCleanup: false }
+      : options,
     record: (workspaceId, read): void => {
       authority = weakerAuthority(authority, read.authority);
       const reads = workspaceReads.get(workspaceId) ?? {};
@@ -1073,7 +1094,7 @@ export async function readAllSidebarItemsSnapshot(options?: {
     );
 
   // An unreadable index lists nothing; registering it forgets everything.
-  if (indexAuthority !== 'unreadable') {
+  if (indexAuthority !== 'unreadable' && !isW5ProjectionOnlyView()) {
     const externalPaths = new Map<string, string>();
     for (const { id } of index) {
       // Only an ok or absent manifest read decides; otherwise keep the last.
@@ -1090,10 +1111,12 @@ export async function readAllSidebarItemsSnapshot(options?: {
     file: {
       version: 1,
       items,
+      ...(isW5ProjectionOnlyView() ? { stale: true } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
     },
     authority,
     indexAuthority,
+    ...(indexUnserved ? { indexUnserved } : {}),
     indexedWorkspaceIds: index.map((entry) => entry.id),
     workspaceReads,
     storedFields,

@@ -42,8 +42,9 @@ function render(): void {
   });
 }
 
+// DialogModal portals the palette into the document body.
 function scrollContainer(): HTMLElement | null {
-  return container.querySelector<HTMLElement>(
+  return document.querySelector<HTMLElement>(
     '[data-testid="file-search-palette-scroll"]',
   );
 }
@@ -81,7 +82,7 @@ describe('FileSearchPalette session-replay privacy', () => {
       },
     });
     render();
-    const result = container.querySelector<HTMLButtonElement>(
+    const result = document.querySelector<HTMLButtonElement>(
       '[data-testid="file-search-palette-result"]',
     );
     expect(result?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
@@ -96,9 +97,9 @@ describe('FileSearchPalette session-replay privacy', () => {
     render();
 
     const results = scrollContainer();
-    expect(results?.parentElement?.getAttribute('data-testid')).toBe(
-      'file-search-palette',
-    );
+    expect(
+      results?.closest('[data-testid="file-search-palette"]'),
+    ).not.toBeNull();
     expect(results?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
   });
 
@@ -114,7 +115,7 @@ describe('FileSearchPalette session-replay privacy', () => {
     });
     render();
 
-    const error = Array.from(container.querySelectorAll('div')).find(
+    const error = Array.from(document.querySelectorAll('div')).find(
       (element) => element.textContent === 'Unable to index /private/repo',
     );
     expect(error).not.toBeUndefined();
@@ -122,5 +123,41 @@ describe('FileSearchPalette session-replay privacy', () => {
       scrollContainer(),
     );
     expect(error?.closest(`.${POSTHOG_REPLAY_BLOCK_CLASS}`)).toBeNull();
+  });
+
+  it('closes once on Escape from the search field', () => {
+    const onClose = jest.fn();
+    act(() => {
+      root.render(<FileSearchPalette initialQuery="" onClose={onClose} />);
+    });
+    const input = document.querySelector(
+      '[data-testid="file-search-palette-input"]',
+    );
+    act(() => {
+      input?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on a backdrop press', () => {
+    const onClose = jest.fn();
+    act(() => {
+      root.render(<FileSearchPalette initialQuery="" onClose={onClose} />);
+    });
+    const backdrop = document.querySelector(
+      '[data-testid="file-search-palette"]',
+    )?.parentElement;
+    act(() => {
+      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

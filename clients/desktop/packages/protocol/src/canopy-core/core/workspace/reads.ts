@@ -11,8 +11,9 @@ const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
 
 // The typed fields use the `core.workspace.update` patch's value schemas, so a
-// read value echoed back as an edit is accepted (W5a2, decision B3).
-const CORE_WORKSPACE_ACTIVITY_SECTION_IDS = [
+// read value echoed back as an edit is accepted (W5a2, decision B3). The
+// daemon's hosted metadata commands validate section ids against it (W5d1).
+export const CORE_WORKSPACE_ACTIVITY_SECTION_IDS = [
   'plugins',
   'summary',
   'changed-files',

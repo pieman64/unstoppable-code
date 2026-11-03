@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   comparePerformanceResults,
+  compareFrameAreas,
   compareRepeatedPerformanceResults,
+  formatFrameAreaComparisonLines,
+  refreshRateMismatches,
 } from './comparison.mjs';
 
 function result(value, overrides = {}) {
@@ -853,4 +856,111 @@ test('local smoke requires the same number of paired samples on both sides', () 
   );
   assert.equal(result.passed, false);
   assert.equal(result.acceptance.verdict, 'inconclusive');
+});
+
+test('comparison rejects a pair that rendered at different refresh rates', () => {
+  // A 120 Hz baseline against a candidate whose window ran at 60 Hz: key to
+  // next frame roughly doubles without any code change.
+  const at = (effectiveHz, displayHz = 120) => ({
+    scenarios: [
+      {
+        name: 'chats',
+        status: 'ok',
+        frameBudgets: { refresh: { displayHz, effectiveHz } },
+      },
+    ],
+  });
+  const mismatched = comparePerformanceResults(
+    result(100, at(120)),
+    result(100, at(60)),
+  );
+  assert.equal(mismatched.compatible, false);
+  assert.ok(mismatched.incompatibilities.includes('refreshRate'));
+  assert.deepEqual(
+    refreshRateMismatches(result(100, at(120)), result(100, at(60))),
+    [{ scenario: 'chats', reason: 'effective 120.0 Hz vs 60.0 Hz' }],
+  );
+  assert.ok(
+    comparePerformanceResults(
+      result(100, at(120, 120)),
+      result(100, at(120, 60)),
+    ).incompatibilities.includes('refreshRate'),
+  );
+  // Ordinary jitter between two 120 Hz runs still pairs.
+  const matched = comparePerformanceResults(
+    result(100, at(120.5)),
+    result(100, at(118)),
+  );
+  assert.equal(matched.compatible, true);
+  // Artifacts from before the refresh record pair as before.
+  assert.equal(
+    comparePerformanceResults(result(100), result(100)).compatible,
+    true,
+  );
+});
+
+test('frame areas compare per-sample 120 Hz measures between matched runs', () => {
+  const sample = (p95, longTasks) => ({
+    name: 'frame-smoothness',
+    status: 'ok',
+    frameBudgets: {
+      refresh: { displayHz: 120, effectiveHz: 120 },
+      areas: {
+        chat: {
+          frames: 100,
+          framesOverWorkBudget: p95 > 8.33 ? 10 : 0,
+          frameWorkMs: { p95, p99: p95 + 2 },
+          droppedFramePercent: 1,
+          longTasks,
+          inputToNextFrameMs: { p95: 6 },
+          holds120Hz: p95 + 2 <= 8.33 && longTasks === 0,
+        },
+      },
+      windows: [
+        {
+          area: 'chat',
+          label: 'stream_follow',
+          frameWorkMs: { p95 },
+          framesOverWorkBudget: p95 > 8.33 ? 10 : 0,
+        },
+      ],
+    },
+  });
+  const side = (values) => ({
+    scenarios: values.map(([p95, t]) => sample(p95, t)),
+  });
+  const comparison = compareFrameAreas(
+    side([
+      [12, 1],
+      [11, 1],
+      [13, 2],
+    ]),
+    side([
+      [5, 0],
+      [6, 0],
+      [5.5, 0],
+    ]),
+  );
+  assert.equal(comparison.compatible, true);
+  const chat = comparison.scenarios['frame-smoothness'].areas.chat;
+  assert.equal(chat.frameWorkP95Ms.baselineMedian, 12);
+  assert.equal(chat.frameWorkP95Ms.candidateMedian, 5.5);
+  assert.ok(chat.frameWorkP95Ms.shift < 0);
+  assert.deepEqual(chat.holds120Hz, {
+    baseline: 0,
+    candidate: 3,
+    samples: [3, 3],
+  });
+  assert.equal(
+    comparison.scenarios['frame-smoothness'].windows['chat/stream_follow']
+      .frameWorkP95Ms.candidateMedian,
+    5.5,
+  );
+  assert.match(
+    formatFrameAreaComparisonLines(comparison).join('\n'),
+    /chat: frame work p95 12\.00ms -> 5\.50ms/,
+  );
+  const halved = side([[5, 0]]);
+  halved.scenarios[0].frameBudgets.refresh.effectiveHz = 60;
+  assert.equal(compareFrameAreas(side([[5, 0]]), halved).compatible, false);
 });

@@ -30,12 +30,13 @@ export const LocalOnlyMergeConfirmationModal = memo(
 
     return (
       <DialogModal
+        inset="flush"
         onClose={isSubmitting ? (): void => undefined : onClose}
         title="Merge local branches?"
         maxWidth="md"
         closeOnBackdrop={!isSubmitting}
       >
-        <div className="flex flex-col gap-3 p-5 text-s fg-primary">
+        <div className="flex flex-col gap-3 p-6 text-s fg-primary">
           <p>
             These local-only repos will be merged into their default branch. The
             worktree branch will not be deleted.

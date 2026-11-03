@@ -44,6 +44,11 @@ export function createCollectionsAPI(): CollectionsAPI {
     deleteCollection: (id: string): Promise<void> =>
       ipcRenderer.invoke(COLLECTIONS_CHANNELS.DELETE_COLLECTION, id),
 
+    duplicateCollection: (request) =>
+      ipcRenderer.invoke(COLLECTIONS_CHANNELS.DUPLICATE_COLLECTION, request),
+    applySharedUpdate: (request) =>
+      ipcRenderer.invoke(COLLECTIONS_CHANNELS.APPLY_SHARED_UPDATE, request),
+
     // ---- Shared (Canopy Cloud) CRUD ---------------------------------------
     listShared: (
       request: ListSharedCollectionsRequest,

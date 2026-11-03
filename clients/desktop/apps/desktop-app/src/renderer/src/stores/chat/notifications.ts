@@ -159,7 +159,6 @@ export function isUnreadChatActivityStillStoppedAndUnread(
       tab.unread === true &&
       tab.status !== 'streaming' &&
       tab.queuedMessages.length === 0 &&
-      tab.queuedForSetup !== true &&
       tab.forceQueuedMessageCancelPending !== true &&
       !isClaudeTerminalBusyForUnreadNotification(tab)
     );

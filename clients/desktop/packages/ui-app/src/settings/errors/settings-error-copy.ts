@@ -20,7 +20,7 @@ import type { SettingsLogger } from '../host/settings-host';
  * true for a failure on an organization route, the host re-reads the
  * bootstrap and shows its existing access-lost notice (desktop returns to
  * Organizations with the notice; web re-renders the protected route), instead
- * of showing copy. Use `useSettingsLoadErrorCopy` or
+ * of showing copy. Use `useSettingsLoadFailure` or
  * `useSettingsAccessLostRefresh`, which refresh at most once per mount.
  */
 
@@ -252,6 +252,38 @@ export function settingsErrorDetail(error: unknown): string | undefined {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string') return error;
   return undefined;
+}
+
+/**
+ * A failed settings call as the UI holds it: our own sentence (`copy`), which
+ * renders, and the raw reason (`details`), which never renders. Pass `details`
+ * to `ErrorBanner` (or `CopyDetailsButton` in a `Notice`), which copies it for
+ * support behind a `Copy details` action.
+ */
+export interface SettingsFailure {
+  readonly copy: string;
+  readonly details?: string;
+}
+
+/**
+ * The raw reason a `Copy details` action hands to the clipboard, or
+ * `undefined` when there is none worth copying (empty, or the same words as
+ * our sentence).
+ */
+export function settingsFailureDetails(
+  error: unknown,
+  copy: string,
+): string | undefined {
+  const detail = settingsErrorDetail(error)?.trim();
+  if (detail === undefined || detail === '' || detail === copy.trim())
+    return undefined;
+  return detail;
+}
+
+/** Builds a {@link SettingsFailure} from a caught error and its copy. */
+export function settingsFailure(error: unknown, copy: string): SettingsFailure {
+  const details = settingsFailureDetails(error, copy);
+  return details === undefined ? { copy } : { copy, details };
 }
 
 function truncateDetail(detail: string): string {

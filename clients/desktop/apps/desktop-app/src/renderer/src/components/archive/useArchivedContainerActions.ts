@@ -2,6 +2,10 @@ import { useCallback, useRef, useState } from 'react';
 import { navigateToRestoredContainerDestination } from '@/lib/archivedContainerNavigation';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import {
+  ARCHIVED_ITEM_DELETE_FAILED,
+  offerRetainedArchiveDiscard,
+} from './offerRetainedArchiveDiscard';
 
 export interface ArchivedContainerActions {
   /** True while a Deleted ⇄ Archived state change is in flight. */
@@ -94,18 +98,29 @@ export function useArchivedContainerActions(
   }, [addToast, containerId, restoreContainer, workspaceId]);
 
   const deletePermanently = useCallback(async (): Promise<void> => {
-    if (deletingRef.current) return;
-    deletingRef.current = true;
-    setDeleting(true);
-    try {
-      const ok = await deleteContainer(workspaceId, containerId);
-      if (!ok) {
-        addToast("Couldn't permanently delete this item", 'error');
+    const run = async (): Promise<void> => {
+      if (deletingRef.current) return;
+      deletingRef.current = true;
+      setDeleting(true);
+      try {
+        const ok = await deleteContainer(workspaceId, containerId);
+        // CAN-5338: a retained worktree whose deletion can't finish offers
+        // its discard, whose Retry runs this again; anything else keeps the
+        // toast.
+        if (
+          !ok &&
+          !(await offerRetainedArchiveDiscard(workspaceId, containerId, () => {
+            void run();
+          }))
+        ) {
+          addToast(ARCHIVED_ITEM_DELETE_FAILED, 'error');
+        }
+      } finally {
+        deletingRef.current = false;
+        setDeleting(false);
       }
-    } finally {
-      deletingRef.current = false;
-      setDeleting(false);
-    }
+    };
+    await run();
   }, [addToast, containerId, deleteContainer, workspaceId]);
 
   return {

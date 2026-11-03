@@ -2779,7 +2779,7 @@ test('offers a retry when the shared-container listing genuinely fails', async (
     await expect(retry).toBeVisible();
     // CAN-3551: Retry is an icon in the row's trailing column, named for
     // assistive tech because it carries no text, and the copy is unchanged.
-    await expect(retry).toHaveAccessibleName('Retry');
+    await expect(retry).toHaveAccessibleName('Try again');
     await expect(retry).toHaveText('');
     await expect(
       window.getByTestId('shared-container-list-message'),

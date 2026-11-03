@@ -1,3 +1,4 @@
+import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
 import {
   normalizeRepositoryCloneUrl,
   REPOSITORY_CLONE_FAILURE_MESSAGE,
@@ -14,7 +15,6 @@ import {
   updateWorkspaceMetadata,
   WorkspaceMetadataRefusedError,
 } from '../../lib/workspace-metadata';
-import { updateWorkspaceScripts } from '../../lib/workspace-script-hook-settings';
 import { createWorkspace } from '../../lib/workspace-creation';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import { getDefaultReposDir } from '../../lib/paths';
@@ -24,6 +24,7 @@ import {
   readPortalWorkspaceInstructions,
   writePortalWorkspaceInstructions,
   readPortalWorkspaceScriptCommands,
+  savePortalWorkspaceScriptCommands,
 } from '../portal-workspace-reads';
 import { validateId } from '../../lib/validation';
 import { sendToWindow } from '../../lib/window-send';
@@ -84,15 +85,16 @@ export async function handlePortalWorkspaceReorder(
   try {
     validateId(payload.activeWorkspaceId, 'activeWorkspaceId');
     validateId(payload.overWorkspaceId, 'overWorkspaceId');
-    const [{ items }, preferences] = await settleAll([
+    const [sidebarItems, preferences] = await settleAll([
       readPortalSidebarItems(),
       readPreferencesFile(),
     ]);
+    if (sidebarItems.stale) throw new Error(W5_UNREACHABLE_READ_MESSAGE);
     const hiddenWorkspaceIds = new Set(
       preferences.worktreeFilterHiddenWorkspaceIds ?? [],
     );
     await reorderWorkspaces({
-      visibleWorkspaceIds: items
+      visibleWorkspaceIds: sidebarItems.items
         .filter((item) => isPortalVisibleWorkspace(item, hiddenWorkspaceIds))
         .map((item) => item.id),
       activeWorkspaceId: payload.activeWorkspaceId,
@@ -350,7 +352,10 @@ async function isRefusedOnlyForDiscardableItems(
   workspaceId: string,
 ): Promise<boolean> {
   try {
-    const description = await describeProjectDeletionDiscard(workspaceId);
+    // CAN-5338: a client that sees this pointer describes with the opt-in.
+    const description = await describeProjectDeletionDiscard(workspaceId, {
+      retainedArchives: true,
+    });
     return description.status === 'discardable';
   } catch {
     return false;
@@ -383,7 +388,11 @@ export async function handlePortalWorkspaceDeleteDiscardDescribe(
     validateId(payload.workspaceId, 'workspaceId');
     context.complete(
       command,
-      await describeProjectDeletionDiscard(payload.workspaceId),
+      payload.retainedArchives === true
+        ? await describeProjectDeletionDiscard(payload.workspaceId, {
+            retainedArchives: true,
+          })
+        : await describeProjectDeletionDiscard(payload.workspaceId),
     );
   } catch (error) {
     failServiceError(command, context, error);
@@ -531,11 +540,10 @@ export async function handlePortalWorkspaceScriptsGet(
 
 /**
  * Handle `portal.workspace.scripts.save` — merge browser-supplied script command
- * strings into the workspace's persisted scripts and save, through the W5
- * `core.workspace.scripts.update` boundary ({@link updateWorkspaceScripts}),
- * which preserves untouched scripts + non-command `ScriptDefinition` fields
- * and re-normalizes through the same path as the renderer. Additive edit →
- * not flag-gated.
+ * strings into the workspace's persisted scripts and save, through
+ * `core.script.definition.upsert` and `.delete` (CAN-5369), which preserve
+ * untouched scripts + non-command `ScriptDefinition` fields and re-normalize
+ * through the same path as the renderer. Additive edit → not flag-gated.
  */
 export async function handlePortalWorkspaceScriptsSave(
   command: PortalCommandEnvelope<
@@ -566,11 +574,7 @@ export async function handlePortalWorkspaceScriptsSave(
   }
   try {
     validateId(workspaceId, 'workspaceId');
-    await updateWorkspaceScripts({
-      workspaceId,
-      change: { kind: 'merge-commands', commands },
-      source: 'portal',
-    });
+    await savePortalWorkspaceScriptCommands(workspaceId, commands);
     context.complete(command, { success: true });
   } catch (error) {
     failServiceError(command, context, error);

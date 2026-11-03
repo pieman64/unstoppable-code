@@ -1,5 +1,9 @@
 import { useEffect, useState, type JSX } from 'react';
-import { AgentBlockCard, Markdown } from '@canopy/ui-shared/components';
+import {
+  AgentBlockCard,
+  Markdown,
+  EmptyStateRow,
+} from '@canopy/ui-shared/components';
 import type {
   WorkflowAgentProgress,
   WorkflowPhaseInfo,
@@ -256,7 +260,7 @@ export function WorkflowRunView({
                   />
                 ))}
                 {phaseAgents.length === 0 && (
-                  <div className="text-2xs fg-secondary/70">No agents yet.</div>
+                  <EmptyStateRow title="No agents yet." />
                 )}
               </div>
             </div>

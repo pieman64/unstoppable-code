@@ -10,6 +10,7 @@ import {
   QueuedMessageActions,
   type QueuedMessageActionsProps,
 } from '../QueuedMessageActions';
+import { BubbleCopyBadge } from '../../BubbleCopyBadge';
 
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   configurable: true,
@@ -279,7 +280,7 @@ describe('QueuedMessageActions turn phase', () => {
         'queued-message-run-now',
         'queued-message-run-now-icon',
       ]);
-      expect(html).toContain('Retry</button>');
+      expect(html).toContain('Try again</button>');
       expect(html).toContain('Run now</button>');
     },
   );
@@ -374,6 +375,37 @@ describe('QueuedMessageActions corner', () => {
     expect(html).toContain('aria-label="Edit scheduled message"');
     expect(html).toContain('aria-label="Clear scheduled message"');
     expect(html).not.toContain('Edit</button>');
+  });
+
+  it('draws Copy, Edit and Clear in the badge variant with one Button recipe', () => {
+    const container = document.createElement('div');
+    container.innerHTML = markup({
+      placement: 'corner',
+      variant: 'badge',
+      cornerLeading: (
+        <BubbleCopyBadge copyText="queued words" dataTestId="queued-copy" />
+      ),
+      onEdit: noop,
+      onCancel: noop,
+    });
+    const classOf = (testId: string): string | null | undefined =>
+      container
+        .querySelector(`[data-testid="${testId}"]`)
+        ?.getAttribute('class');
+
+    const copy = classOf('queued-copy');
+    expect(copy).toEqual(expect.any(String));
+    // The queued row sits beside the sent bubble's Copy and Revert, so all
+    // three share the secondary icon Button; a mixed row is the drift the
+    // shared badge recipe exists to prevent.
+    expect(classOf('queued-message-edit')).toBe(copy);
+    expect(classOf('queued-message-cancel')).toBe(copy);
+    // On a coarse pointer each 28px Button's hit area reaches 8px past its
+    // sides, so the cluster spaces them 16px apart: neighbouring 44px targets
+    // meet without overlapping, and no tap runs the wrong badge.
+    expect(
+      container.firstElementChild?.getAttribute('class')?.split(/\s+/),
+    ).toContain('pointer-coarse:gap-4');
   });
 
   it('hides Edit and disables Clear while the message is being sent', () => {
@@ -530,7 +562,7 @@ describe('QueuedMessageActions credit-held retry', () => {
       'queued-message-retry-icon',
     ]);
     const retry = retryButton();
-    expect(retry?.textContent).toBe('Retry');
+    expect(retry?.textContent).toBe('Try again');
     expect(retry?.getAttribute('aria-disabled')).toBe('true');
     // Focusable, so the explanation is reachable from the keyboard.
     expect(retry?.disabled).toBe(false);

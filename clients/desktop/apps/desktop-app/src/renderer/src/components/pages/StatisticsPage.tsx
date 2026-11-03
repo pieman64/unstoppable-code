@@ -2,6 +2,7 @@ import { type JSX, useEffect, useState } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
 import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { TabBar } from '@canopy/ui-shared/components';
 import {
   CHAT_UNIT_LABEL_PLURAL,
   WORKTREE_UNIT_LABEL_PLURAL,
@@ -48,12 +49,6 @@ const TAB_LABELS: Record<StatisticsTab, string> = {
   Tools: 'Tools',
 };
 
-function tabButtonClass(active: boolean): string {
-  return active
-    ? 'rounded-full bg-secondary px-3 py-1 text-s font-medium fg-primary'
-    : 'rounded-full px-3 py-1 text-s fg-secondary hover:fg-primary';
-}
-
 export function StatisticsPage(): JSX.Element {
   const initialize = useObservabilityStore((s) => s.initialize);
   const retentionDays = useObservabilityStore((s) => s.retentionDays);
@@ -98,25 +93,17 @@ export function StatisticsPage(): JSX.Element {
 
         <TodayStatisticsPanel />
 
-        <div
-          className="flex flex-wrap gap-1 border-b pb-2"
-          role="tablist"
-          aria-label="Statistics tabs"
-        >
-          {STATISTICS_TABS.map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              data-testid={`statistics-tab-${tab.toLowerCase()}`}
-              className={tabButtonClass(activeTab === tab)}
-              onClick={(): void => setActiveTab(tab)}
-            >
-              {TAB_LABELS[tab]}
-            </button>
-          ))}
-        </div>
+        <TabBar
+          items={STATISTICS_TABS.map((tab) => ({
+            id: tab,
+            label: TAB_LABELS[tab],
+            dataTestId: `statistics-tab-${tab.toLowerCase()}`,
+          }))}
+          value={activeTab}
+          onChange={(next): void => setActiveTab(next)}
+          label="Statistics tabs"
+          scrollable
+        />
 
         {activeTab === 'Tokens' && (
           <MetricsTab

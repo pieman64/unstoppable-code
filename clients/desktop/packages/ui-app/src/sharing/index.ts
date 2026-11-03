@@ -4,6 +4,7 @@ export * from './deriveExistingShare';
 export * from './sharedResourceProvenance';
 export * from './SharedResourceProvenanceMeta';
 export * from './sharedByYouAudiences';
+export * from './sharedByYouScopedLink';
 export { resourceContextRefusalMessage } from './share-refusal-copy';
 export * from './share-errors';
 export * from './share-destination-access';

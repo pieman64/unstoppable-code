@@ -387,6 +387,42 @@ export async function readArchivedContainerRecoveryJournal(
   };
 }
 
+/**
+ * Read-only (CAN-5338): what the finish step of a retained version-3 archive
+ * would act on, or null without a journal of this archive's incarnation. The
+ * identity is the checkout's `dev:ino:birthtimeMs`. An invalid journal throws.
+ */
+export async function readArchivedContainerRecoveryState(
+  manifest: ArchivedContainerRecoveryManifest,
+): Promise<{
+  phase: RecoveryJournal['phase'];
+  identity: string | null;
+  canonicalPath: string;
+  quarantinePath: string;
+  repositories: { referenceRepoPath: string; relativePath: string }[];
+} | null> {
+  const location = paths(manifest.projectId, manifest.id);
+  const journal = await readJournal(location.journal);
+  if (
+    !journal ||
+    journal.createdAt !== manifest.createdAt ||
+    journal.recovery.payloadId !== manifest.recovery.payloadId
+  )
+    return null;
+  return {
+    phase: journal.phase,
+    identity: journal.identity
+      ? `${journal.identity.dev}:${journal.identity.ino}:${journal.identity.birthtimeMs}`
+      : null,
+    canonicalPath: location.canonical,
+    quarantinePath: location.quarantine,
+    repositories: (journal.repositories ?? []).map((repository) => ({
+      referenceRepoPath: repository.referenceRepoPath,
+      relativePath: repository.relativePath,
+    })),
+  };
+}
+
 interface RecoveryRepositoryCandidate {
   repoId: string;
   referenceRepoPath: string;
@@ -1360,6 +1396,14 @@ export interface ArchivedRecoveryFinishOptions {
    * ({@link removeProjectWorktreeRegistrations}).
    */
   discardingArchive?: boolean;
+  /**
+   * CAN-5338, with `discardingArchive`: a user-confirmed discard of the
+   * archive also deletes its checkout or quarantine unverified. The payload
+   * and digest checks are skipped; the identity, occupancy and quarantine
+   * ownership checks still apply. Only the retained archive discard sets it
+   * (see the import-boundary test).
+   */
+  abandonVerification?: boolean;
 }
 
 /**
@@ -1378,6 +1422,7 @@ async function verifyRecoveryBeforeFinish(
 }> {
   const location = paths(manifest.projectId, manifest.id);
   const discarding = options?.discardingArchive === true;
+  const unverified = discarding && options?.abandonVerification === true;
   let journal: RecoveryJournal | null;
   try {
     journal = await readJournal(location.journal);
@@ -1398,6 +1443,7 @@ async function verifyRecoveryBeforeFinish(
   if (journal.phase !== 'captured') {
     if (
       discarding &&
+      !unverified &&
       journal.phase === 'verified' &&
       (await statOrAbsent(location.quarantine))
     )
@@ -1406,7 +1452,7 @@ async function verifyRecoveryBeforeFinish(
   }
   const source = await statOrAbsent(location.canonical);
   const quarantine = await statOrAbsent(location.quarantine);
-  if (discarding && (source || quarantine))
+  if (discarding && !unverified && (source || quarantine))
     await assertPayload(location.root, journal.recovery);
   if (source && quarantine)
     throw new Error('Archive recovery quarantine is occupied.');
@@ -1422,6 +1468,7 @@ async function verifyRecoveryBeforeFinish(
       throw new Error('The worktree changed identity during recovery.');
     if (
       current &&
+      !unverified &&
       (await workspaceRootPayloadDigest({
         rootPath: source ? location.canonical : location.quarantine,
       })) !== (journal.sourceDigest ?? journal.recovery.digest)
@@ -1483,6 +1530,10 @@ export async function finishArchivedContainerRecovery(
         await renameArchiveQuarantine(location.canonical, location.quarantine);
       if (
         (verified.source ?? verified.quarantine) &&
+        !(
+          options?.discardingArchive === true &&
+          options.abandonVerification === true
+        ) &&
         (await workspaceRootPayloadDigest({
           rootPath: location.quarantine,
         })) !== (journal.sourceDigest ?? journal.recovery.digest)
@@ -1568,6 +1619,41 @@ export async function isArchivedContainerGitCleanupBlocked(
   } catch {
     return false;
   }
+}
+
+/**
+ * Read-only (CAN-5338): the recorded repositories whose Git registration
+ * cleanup {@link finishArchivedContainerRecovery} would leave pending, each
+ * inspected on its own. Empty for a missing, mismatched or unreadable
+ * journal, as {@link isArchivedContainerGitCleanupBlocked} is false then.
+ */
+export async function readArchivedContainerGitCleanupBlockedRepositories(
+  manifest: ArchivedContainerRecoveryManifest,
+): Promise<string[]> {
+  let journal: RecoveryJournal | null;
+  try {
+    journal = await readJournal(paths(manifest.projectId, manifest.id).journal);
+  } catch {
+    return [];
+  }
+  if (
+    !journal ||
+    journal.createdAt !== manifest.createdAt ||
+    journal.recovery.payloadId !== manifest.recovery.payloadId
+  )
+    return [];
+  const blocked: string[] = [];
+  for (const repository of journal.repositories ?? []) {
+    const alone: RecoveryJournal = { ...journal, repositories: [repository] };
+    // A failed walk counts as blocked, as in the finish step.
+    if (
+      await cleanupGitRegistrations(manifest, alone, 'inspect').catch(
+        () => true,
+      )
+    )
+      blocked.push(repository.referenceRepoPath);
+  }
+  return blocked;
 }
 
 export async function recoverArchivedFileTeardownsForWorkspace(

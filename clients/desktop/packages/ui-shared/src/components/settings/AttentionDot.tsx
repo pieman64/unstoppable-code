@@ -14,7 +14,7 @@ interface AttentionDotProps {
 /**
  * A tab label with the "needs attention" dot overlaid on its top-right corner.
  *
- * Used by the settings/metric sub-tab strip (`SubTabNav`). One component keeps
+ * Used by the settings rail (`SettingsNavGroups`). One component keeps
  * the accessibility fix below in a single place.
  *
  * `role="img"` is load-bearing, not decoration. The dot is 6px of pure color

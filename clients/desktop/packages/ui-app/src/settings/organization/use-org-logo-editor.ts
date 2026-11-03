@@ -7,7 +7,11 @@ import {
   type OrganizationDetail,
 } from '@canopy/protocol/settings/organization';
 import { useSettingsClient } from '../host';
-import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
+import {
+  useSettingsErrorCopy,
+  type KnownSettingsError,
+  type SettingsFailure,
+} from '../errors';
 import { clearOrgLogo, uploadOrgLogo } from './team-api';
 
 const INVALID_FILE_ERROR = 'Choose a PNG, JPEG, or GIF image up to 5 MB.';
@@ -25,7 +29,7 @@ export interface UseOrgLogoEditorResult {
   /** True while any upload/commit/remove request is in flight. */
   busy: boolean;
   /** Last user-facing error, or `null`. */
-  error: string | null;
+  error: SettingsFailure | null;
   /** Clear the current error (e.g. when reopening an editor). */
   clearError: () => void;
   /**
@@ -51,7 +55,7 @@ export function useOrgLogoEditor(orgId: string): UseOrgLogoEditorResult {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy('settings.organization.logo');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const clearError = useCallback((): void => {
     setError(null);
@@ -68,7 +72,7 @@ export function useOrgLogoEditor(orgId: string): UseOrgLogoEditorResult {
         file.size <= 0 ||
         file.size > ORGANIZATION_LOGO_MAX_BYTES
       ) {
-        setError(INVALID_FILE_ERROR);
+        setError({ copy: INVALID_FILE_ERROR });
         return null;
       }
 
@@ -80,7 +84,7 @@ export function useOrgLogoEditor(orgId: string): UseOrgLogoEditorResult {
         return await uploadOrgLogo(client, orgId, file, mimeType);
       } catch (err) {
         setError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action: 'upload the logo',
             known: UPLOAD_LOGO_KNOWN_ERRORS,
           }),
@@ -103,7 +107,7 @@ export function useOrgLogoEditor(orgId: string): UseOrgLogoEditorResult {
       try {
         return await clearOrgLogo(client, orgId);
       } catch (err) {
-        setError(errorCopy.actionCopy(err, { action: 'remove the logo' }));
+        setError(errorCopy.actionFailure(err, { action: 'remove the logo' }));
         return null;
       } finally {
         setBusy(false);

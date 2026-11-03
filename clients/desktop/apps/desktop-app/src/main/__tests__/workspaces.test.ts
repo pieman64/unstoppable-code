@@ -1,6 +1,10 @@
 import { cloneRepoWithLiveProgress } from '../lib/git';
 import { getCloneJobs } from '../services/clone-jobs-host';
 import { addWorkspaceFromRemote } from '../lib/workspace-service';
+import {
+  beginWorktreeGitSetup,
+  claimWorktreeGitSetup,
+} from '../lib/worktree-git-setup';
 jest.mock('../lib/adhoc-combination-binding', () => ({
   bindCombinationAfterJoin: jest.fn((response) => Promise.resolve(response)),
 }));
@@ -232,6 +236,10 @@ jest.mock('../lib/animals', () => ({
 }));
 jest.mock('../lib/workspace-persistence', () => {
   const readWorkspaceConfig = jest.fn<Promise<WorkspaceConfigFile>, [string]>();
+  const readWorkspaceWorktrees = jest.fn<
+    ReturnType<typeof WorkspacePersistenceModule.readWorkspaceWorktrees>,
+    Parameters<typeof WorkspacePersistenceModule.readWorkspaceWorktrees>
+  >(() => Promise.resolve([]));
   const readWorkspaceConfigDetailed = jest.fn<
     ReturnType<typeof WorkspacePersistenceModule.readWorkspaceConfigDetailed>,
     [string]
@@ -245,10 +253,10 @@ jest.mock('../lib/workspace-persistence', () => {
   return {
     markWorkspaceWorktreeRecentlyRemoved: jest.fn(),
     markWorktreeRecentlyRemoved: jest.fn(),
-    // Type conversion reads the worktree list before converting (CAN-3819).
-    readWorkspaceWorktreesDetailed: jest.fn(() =>
-      Promise.resolve({ worktrees: [], authority: 'ok' }),
-    ),
+    readWorkspaceWorktreesDetailed: jest.fn(async (workspaceId: string) => ({
+      worktrees: await readWorkspaceWorktrees(workspaceId),
+      authority: 'ok',
+    })),
     removeWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
     readWorkspaceConfig,
     readWorkspaceConfigDetailed,
@@ -269,7 +277,7 @@ jest.mock('../lib/workspace-persistence', () => {
         };
       },
     ),
-    readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+    readWorkspaceWorktrees,
     writeWorkspaceWorktrees: jest.fn(() => Promise.resolve()),
     isWorkspaceWorktreeRecentlyRemoved: jest.fn(() => false),
     updateWorkspaceWorktree: jest.fn(() => Promise.resolve(true)),
@@ -698,6 +706,7 @@ import {
   collectReferencedRepoPaths,
   registerWorkspaceHandlers,
 } from '../ipc/workspaces';
+import { createWorkspaceLifecycleTestDispatcher } from './fixtures/workspace-lifecycle-dispatcher';
 import {
   acquireSplitLock,
   releaseSplitLock,
@@ -977,9 +986,11 @@ describe('workspace default plugins', () => {
 
     await saveDefaultPluginsHandler({}, request);
 
+    // With the projection of the registered core.workspace.plugins.update.
     expect(saveDefaultPluginsAndVisibility).toHaveBeenCalledWith(
       request,
       'workspace_settings',
+      expect.any(Function),
     );
     expect(mockedWriteWorkspaceConfig).not.toHaveBeenCalled();
   });
@@ -1135,12 +1146,9 @@ beforeEach(() => {
         void args;
         return Promise.reject(new Error('Unexpected dispatcher query'));
       },
-      instruction: (
-        ...args: Parameters<DesktopCanopyDispatcher['instruction']>
-      ): Promise<never> => {
-        void args;
-        return Promise.reject(new Error('Unexpected dispatcher instruction'));
-      },
+      // The metadata channels (W7a), lifecycle commands (W7b-3/2a) and source
+      // and composition channels (W7b-4) project their registered operations.
+      ...createWorkspaceLifecycleTestDispatcher(),
       queryWorktreeListForLegacyIpc: async ({
         scope,
       }: {
@@ -1152,11 +1160,12 @@ beforeEach(() => {
         ),
       }),
     },
+    // An IPC caller, as the lifecycle projections admit it (W7b-3, W7b-2a, Q8).
     resolveCaller: () => ({
-      principalId: 'test-user',
+      principalId: 'local-desktop-user',
       clientInstanceId: 'test-client',
       authorityId: 'local-desktop',
-      interfaceKind: 'test',
+      interfaceKind: 'desktop',
       grants: ['core.worktree.read'],
     }),
   });
@@ -2341,6 +2350,25 @@ describe('workspace:repair-worktree', () => {
       'release/b',
     );
     expect(mockedCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  it('settles a Git setup left pending by a needs-repair detour as ready, releasing sends held for it', async () => {
+    beginWorktreeGitSetup('test-workspace', 'test-animal');
+    const heldSend = claimWorktreeGitSetup('test-workspace', 'test-animal');
+
+    await repairWorktreeHandler(
+      {},
+      {
+        workspaceId: 'test-workspace',
+        worktreeId: 'test-animal',
+        branchName: 'config-branch',
+      },
+    );
+
+    await expect(heldSend).resolves.toBe('ready');
+    expect(
+      claimWorktreeGitSetup('test-workspace', 'test-animal'),
+    ).toBeUndefined();
   });
 
   it('recreates missing child repos from an existing branch after root repair', async () => {

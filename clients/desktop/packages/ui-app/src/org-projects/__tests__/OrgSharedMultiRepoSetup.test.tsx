@@ -126,7 +126,7 @@ test('previews every repository and locks original selections without consuming 
     'Your original projects and their work stay unchanged.',
   );
   expect(create).not.toHaveBeenCalled();
-  expect(button('Retry the same project')).toBeUndefined();
+  expect(button('Try the same project again')).toBeUndefined();
 });
 test('completion-pending never opens new work; submitted fields stay immutable', async () => {
   const { create, onReady } = mount();
@@ -170,9 +170,9 @@ test('saved progress exposes an explicit same-key retry after losing the origina
   await flush();
   act(() => button('Check saved progress')?.click());
   await flush();
-  expect(button('Retry the same project')).toBeDefined();
+  expect(button('Try the same project again')).toBeDefined();
   expect(resume).not.toHaveBeenCalled();
-  act(() => button('Retry the same project')?.click());
+  act(() => button('Try the same project again')?.click());
   await flush();
   expect(resume).toHaveBeenCalledWith(progress.creationKey);
   expect(create).not.toHaveBeenCalled();
@@ -182,7 +182,7 @@ test('an Add draft cannot bypass its required addition through Retry', async () 
   const { create } = mount(true, false, [], 'add-repositories');
   await flush();
   expect(button('Create shared project')?.disabled).toBe(true);
-  const retry = button('Retry the same project');
+  const retry = button('Try the same project again');
   act(() => retry?.click());
   await flush();
   expect(create).not.toHaveBeenCalled();

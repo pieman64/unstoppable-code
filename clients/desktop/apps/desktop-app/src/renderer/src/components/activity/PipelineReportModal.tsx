@@ -63,7 +63,7 @@ export function PipelineReportModal({
       dataTestId={`pipeline-report-modal-${executionId}`}
       ownerDocument={ownerDocument}
     >
-      <div className="overflow-y-auto p-5">
+      <div className="overflow-y-auto">
         {loading ? (
           <div className="flex items-center text-s fg-secondary">
             <LoadingSpinner tone="active" className="mr-2" />

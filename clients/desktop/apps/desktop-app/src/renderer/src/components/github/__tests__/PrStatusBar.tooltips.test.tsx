@@ -1974,8 +1974,69 @@ describe('PrStatusBar rich top-bar tooltips', () => {
     expect(ciBadge).not.toBeNull();
     if (ciBadge) await hover(ciBadge);
 
-    expect(query('pr-status-bar-ci-popover')).not.toBeNull();
-    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    const popover = query('pr-status-bar-ci-popover');
+    expect(popover).not.toBeNull();
+    // The rich check list is itself a RichHoverTooltip; no other tooltip may
+    // open beside it.
+    const otherTooltips = Array.from(
+      document.body.querySelectorAll('[role="tooltip"]'),
+    ).filter((element) => element !== popover);
+    expect(otherTooltips).toHaveLength(0);
+  });
+
+  it('keeps the multi-repo branch card open over a label whose wrapper has no box', async () => {
+    useProjectsStore.setState({
+      projects: [makeMultiRepoProject()],
+      repoBranches: {
+        [KEY]: [
+          {
+            repoId: 'repo-1',
+            repoName: 'app',
+            branch: 'feature/tooltips',
+            baseBranch: 'main',
+            baseBranchExistsLocally: true,
+            baseBranchExistsInRemote: true,
+          },
+          {
+            repoId: 'repo-2',
+            repoName: 'docs',
+            branch: 'feature/docs',
+            baseBranch: 'develop',
+            baseBranchExistsLocally: true,
+            baseBranchExistsInRemote: true,
+          },
+        ],
+      },
+    });
+    await render();
+
+    const label = Array.from(
+      document.body.querySelectorAll<HTMLSpanElement>('span'),
+    ).find(
+      (span) =>
+        span.textContent === 'Multiple branches' &&
+        span.childElementCount === 0,
+    );
+    if (label === undefined) throw new Error('Missing the branch label');
+    // The card's trigger wrapper is `display: contents`, so it has no box of
+    // its own; only the label inside it is visible.
+    Object.defineProperty(HTMLSpanElement.prototype, 'checkVisibility', {
+      configurable: true,
+      value: () => false,
+    });
+    Object.defineProperty(label, 'checkVisibility', {
+      configurable: true,
+      value: () => true,
+    });
+    try {
+      await hover(label);
+      const card = query('pr-status-bar-repo-branches');
+      expect(card).not.toBeNull();
+      expect(card?.textContent).toContain('feature/docs');
+      expect(card?.textContent).toContain('develop');
+    } finally {
+      Reflect.deleteProperty(HTMLSpanElement.prototype, 'checkVisibility');
+    }
   });
 
   it("shows each multi-repo PR badge tooltip with that repo's actual PR details", async () => {
@@ -3544,6 +3605,13 @@ describe('PrStatusBar branch rename entry and quick copy', () => {
     // Seeded with the raw branch label, so the deliberate path edits the
     // real name rather than starting blank.
     expect(input?.getAttribute('value') ?? '').not.toBe('');
+    // It keeps the pill's 13px type instead of the 14px row edit, so the
+    // name does not resize when editing starts.
+    expect(
+      (input?.className ?? '')
+        .split(' ')
+        .filter((c) => /^(text-(xs|s|m)|h-\d)/.test(c)),
+    ).toEqual([]);
   });
 
   it('keeps the quick copy in-flow inside the pill, outside the trigger button', async () => {
@@ -3586,5 +3654,67 @@ describe('PrStatusBar branch rename entry and quick copy', () => {
     const label = trigger?.querySelector('span[title]');
     expect(label?.className).toContain('truncate');
     expect(label?.className).not.toContain('mask-image');
+  });
+});
+
+describe('PrStatusBar inline branch rename', () => {
+  it('asks in a confirmation dialog before renaming a pushed branch', async () => {
+    const renameBranch = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: { ...window.api, renameBranch },
+    });
+    useProjectsStore.setState({
+      hasBranchBeenPushed: { [`${PROJECT_ID}/${WORKTREE_ID}`]: true },
+    });
+    await render();
+
+    await act(async () => {
+      query('pr-status-bar-branch-menu-trigger')?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      query('branch-menu-rename')?.click();
+      await Promise.resolve();
+    });
+    const input = query('pr-status-bar-branch-rename-input');
+    if (!(input instanceof HTMLInputElement)) throw new Error('no input');
+    await act(async () => {
+      // React tracks the controlled value through the native setter.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked via .call
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set?.call(input, 'feature/renamed');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+
+    // A pushed branch only renames after the question, asked in a dialog.
+    const dialog = query('pr-status-bar-branch-rename-remote-confirm');
+    expect(dialog?.getAttribute('role')).toBe('dialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(renameBranch).not.toHaveBeenCalled();
+
+    await act(async () => {
+      dialog
+        ?.querySelector<HTMLButtonElement>(
+          '[data-testid="confirm-dialog-confirm"]',
+        )
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(renameBranch).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+      newBranchName: 'feature/renamed',
+    });
+    expect(query('pr-status-bar-branch-rename-remote-confirm')).toBeNull();
   });
 });

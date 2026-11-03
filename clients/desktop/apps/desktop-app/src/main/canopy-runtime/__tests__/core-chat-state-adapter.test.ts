@@ -28,6 +28,15 @@ const snapshot: ChatStateSnapshot = {
         createdAt: '2026-09-30T00:00:00.000Z',
         messages: [],
         unread: true,
+        trackedPlanId: 'plan-1',
+        trackedPlanImplementation: {
+          planId: 'plan-1',
+          revisionNumber: 2,
+          userMessageId: 'implementation',
+          startedAt: '2026-08-07T12:00:00.000Z',
+          outcome: 'completed',
+          endedAt: '2026-08-07T12:01:00.000Z',
+        },
       },
       {
         id: 'file-1',
@@ -130,6 +139,9 @@ describe('core chat state read adapter', () => {
           worktreeId: source.worktreeId,
         });
         expect(registered).toEqual(legacy.canonicalResult);
+        expect(registered.tabs.items[0]?.trackedPlanImplementation).toEqual(
+          source.tabsFile.tabs[0]?.trackedPlanImplementation,
+        );
         expect(portal).toEqual(legacy.legacyResult);
         expect(portal).toBe(source);
         expect(registered.runtimeByChatId['chat-1']).toEqual({

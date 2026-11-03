@@ -451,6 +451,29 @@ export function sortLibraryRows(
   }
 }
 
+/** How many Library workflows the empty Runs page previews. */
+export const RUNS_LIBRARY_PREVIEW_LIMIT = 3;
+
+/**
+ * The Library workflows the empty Runs page previews (CAN-4311): the user's
+ * own, project and shared workflows ahead of built-in ones, each group in the
+ * Library's own sort, and never a share that is not added yet.
+ */
+export function selectRunsLibraryPreview(
+  rows: readonly WorkflowLibraryRow[],
+  sort: WorkflowLibrarySort,
+  limit: number = RUNS_LIBRARY_PREVIEW_LIMIT,
+): readonly WorkflowLibraryRow[] {
+  const sorted = sortLibraryRows(
+    rows.filter((row) => row.installable !== true),
+    sort,
+  );
+  return [
+    ...sorted.filter((row) => row.source !== 'built-in'),
+    ...sorted.filter((row) => row.source === 'built-in'),
+  ].slice(0, limit);
+}
+
 export interface WorkflowLibraryPage {
   readonly rows: readonly WorkflowLibraryRow[];
   /** 1-based, clamped into range. */

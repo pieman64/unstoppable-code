@@ -5,7 +5,10 @@ import {
   type OfficePreviewCopy,
   type OfficePreviewRenderFailure,
 } from './office-preview-copy';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useEffect, useState, type JSX } from 'react';
 import { buildDocxPreviewSrcDoc, sanitizeDocxHtml } from './docx-sanitize';
@@ -69,7 +72,9 @@ export function DocxPreview({
           className="flex min-h-0 flex-1 items-center justify-center"
           data-testid="docx-preview-loading"
         >
-          <LoadingPlaceholder />
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       ) : (
         <iframe

@@ -1,8 +1,13 @@
-import { useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
-import { Button } from '@canopy/ui-shared/components';
+import { useId, useRef, useState, type JSX } from 'react';
+import {
+  Button,
+  FloatingPickerMenu,
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionLabel,
+} from '@canopy/ui-shared/components';
 import { ChevronDownIcon } from '@canopy/ui-shared/icons';
-import { useAnchoredMenu } from '@/hooks/useAnchoredMenu';
 import type { CalendarView } from './calendarPreferences';
 
 const VIEW_LABELS: Record<CalendarView, string> = {
@@ -19,17 +24,14 @@ const VIEW_ORDER: readonly CalendarView[] = [
   'schedule',
 ];
 
-const MENU_WIDTH = 160;
-
 interface CalendarViewPickerProps {
   calendarView: CalendarView;
   onChange: (view: CalendarView) => void;
 }
 
 /**
- * Google-Calendar-style "Week ▾" dropdown of Day / Week / Month / Schedule.
- * Uses the shared `useAnchoredMenu` hook (same pattern as `StatusBadgeDropdown`
- * in `AutomationsPage`) so positioning + outside-click-close behave identically.
+ * Google-Calendar-style "Week ▾" dropdown of Day / Week / Month / Schedule,
+ * on the shared picker shell.
  */
 export function CalendarViewPicker({
   calendarView,
@@ -37,14 +39,7 @@ export function CalendarViewPicker({
 }: CalendarViewPickerProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const position = useAnchoredMenu(
-    open,
-    setOpen,
-    anchorRef,
-    menuRef,
-    MENU_WIDTH,
-  );
+  const menuId = useId();
 
   return (
     <>
@@ -54,51 +49,47 @@ export function CalendarViewPicker({
         onClick={(): void => setOpen((prev) => !prev)}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         data-testid="automations-calendar-view-picker"
       >
         <span>{VIEW_LABELS[calendarView]}</span>
         <ChevronDownIcon width={12} height={12} />
       </Button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            role="listbox"
-            onClick={(event): void => event.stopPropagation()}
-            className="rounded-lg bg-popover p-1 shadow-lg"
-            style={{
-              position: 'fixed',
-              zIndex: 'var(--z-index-dropdown)',
-              width: MENU_WIDTH,
-              ...(position
-                ? { top: position.top, left: position.left }
-                : { visibility: 'hidden' }),
-            }}
-          >
-            {VIEW_ORDER.map((view) => {
-              const selected = view === calendarView;
-              return (
-                <button
-                  key={view}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  data-testid={`automations-calendar-view-${view}`}
-                  onClick={(): void => {
-                    setOpen(false);
-                    onChange(view);
-                  }}
-                  className={`flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary ${
-                    selected ? 'bg-secondary fg-primary' : 'fg-primary'
-                  }`}
-                >
+      <FloatingPickerMenu
+        id={menuId}
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={anchorRef}
+        placement="bottom-left"
+        interaction="listbox"
+        role="listbox"
+        aria-label="Calendar view"
+        data-testid="automations-calendar-view-menu"
+      >
+        {VIEW_ORDER.map((view) => {
+          const selected = view === calendarView;
+          return (
+            <PickerMenuOption
+              key={view}
+              role="option"
+              aria-selected={selected}
+              selected={selected}
+              data-testid={`automations-calendar-view-${view}`}
+              onClick={(): void => {
+                setOpen(false);
+                onChange(view);
+              }}
+            >
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>
                   {VIEW_LABELS[view]}
-                </button>
-              );
-            })}
-          </div>,
-          document.body,
-        )}
+                </PickerMenuOptionLabel>
+              </PickerMenuOptionContent>
+              <PickerMenuOptionCheck selected={selected} />
+            </PickerMenuOption>
+          );
+        })}
+      </FloatingPickerMenu>
     </>
   );
 }

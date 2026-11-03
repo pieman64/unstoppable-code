@@ -2,9 +2,9 @@
  * @jest-environment jsdom
  *
  * jsdom-only behavior for `WorkspaceSectionHeader`'s repo-name tooltip: the
- * tooltip content is rendered via `createPortal` into `document.body`, so it
- * is not present in the SSR HTML. These tests exercise the hover/focus open
- * path and verify the truncated "+N more" overflow line.
+ * shared rich hover tooltip renders into `document.body`, so it is not present
+ * in the SSR HTML. These tests exercise the keyboard-focus open path and
+ * verify the truncated "+N more" overflow line.
  */
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -37,6 +37,17 @@ function findTrigger(container: HTMLElement): HTMLButtonElement {
   return trigger;
 }
 
+/**
+ * Keyboard focus: the shared tooltip follows `:focus-visible`, so a Tab
+ * keydown precedes the focus move, as it does in the app.
+ */
+function focusViaKeyboard(element: HTMLElement): void {
+  document.body.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+  );
+  element.focus();
+}
+
 function findPortalTooltip(): HTMLDivElement | null {
   return document.body.querySelector<HTMLDivElement>('div[role="tooltip"]');
 }
@@ -64,7 +75,7 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
       expect(findPortalTooltip()).toBeNull();
 
       act(() => {
-        findTrigger(container).focus();
+        focusViaKeyboard(findTrigger(container));
       });
 
       const tooltip = findPortalTooltip();
@@ -101,7 +112,7 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
     try {
       const trigger = findTrigger(container);
       act(() => {
-        trigger.focus();
+        focusViaKeyboard(trigger);
       });
       expect(findPortalTooltip()).not.toBeNull();
 
@@ -132,7 +143,7 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
 
     try {
       act(() => {
-        findTrigger(container).focus();
+        focusViaKeyboard(findTrigger(container));
       });
 
       const tooltip = findPortalTooltip();
@@ -178,7 +189,10 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
         configurable: true,
         value: 600,
       });
-      jest.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+      // The tooltip places itself against the wrapper around the trigger.
+      const anchor = trigger.parentElement;
+      if (!anchor) throw new Error('Tooltip anchor not found');
+      jest.spyOn(anchor, 'getBoundingClientRect').mockReturnValue({
         top: 100,
         bottom: 116,
         left: 780,
@@ -201,7 +215,7 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
 
       try {
         act(() => {
-          trigger.focus();
+          focusViaKeyboard(trigger);
         });
 
         const tooltip = findPortalTooltip();
@@ -213,8 +227,7 @@ describe('WorkspaceSectionHeader repo-name tooltip (portal)', () => {
         // Tooltip width (220) + padding (8) leaves at most 572px on an 800px
         // viewport. The clamp should produce a non-negative integer left value
         // and never exceed that ceiling.
-        expect(left).toBeLessThanOrEqual(572);
-        expect(left).toBeGreaterThanOrEqual(0);
+        expect(left).toBe(572);
       } finally {
         offsetWidthSpy.mockRestore();
         offsetHeightSpy.mockRestore();

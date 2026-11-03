@@ -7,7 +7,12 @@ import {
   type FormEvent,
   type JSX,
 } from 'react';
-import { Button, ErrorBanner, TextInput } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  SettingsRowsRow,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
   SettingsCard,
@@ -20,6 +25,7 @@ import { useSettingsErrorCopy } from '../errors';
 import { OrganizationLogo } from './OrganizationLogo';
 import { renameOrganization } from './team-api';
 import { useOrgLogoEditor } from './use-org-logo-editor';
+import type { SettingsFailure } from '../errors';
 
 const LOGO_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
 
@@ -45,7 +51,7 @@ export function TeamBrandingSettingsSection({
   const [name, setName] = useState(detail.name);
   const [savedName, setSavedName] = useState(detail.name);
   const [savingName, setSavingName] = useState(false);
-  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<SettingsFailure | null>(null);
   // A rename elsewhere (another tab, a refresh) replaces the field's value.
   if (detail.name !== savedName) {
     setSavedName(detail.name);
@@ -85,7 +91,7 @@ export function TeamBrandingSettingsSection({
       onDetailChange(await renameOrganization(client, detail.id, trimmed));
     } catch (err) {
       setNameError(
-        errorCopy.actionCopy(err, { action: 'rename the organization' }),
+        errorCopy.actionFailure(err, { action: 'rename the organization' }),
       );
     } finally {
       setSavingName(false);
@@ -146,33 +152,35 @@ export function TeamBrandingSettingsSection({
       </div>
       {logoError ? (
         <div className="pb-3">
-          <ErrorBanner error={logoError} />
+          <ErrorBanner error={logoError.copy} details={logoError.details} />
         </div>
       ) : null}
       <form className={SETTINGS_CARD_ROW_CLASS} onSubmit={handleNameSubmit}>
-        <label
-          htmlFor="team-name-input"
-          className="min-w-0 text-s font-medium fg-primary"
-        >
-          Name
-        </label>
-        <div className="w-52 shrink-0">
-          <TextInput
-            id="team-name-input"
-            density="settings"
-            required
-            maxLength={120}
-            value={name}
-            disabled={savingName}
-            onChange={(event) => setName(event.target.value)}
-            onBlur={() => void saveName()}
-            data-testid="team-name-input"
+        <div className="min-w-0 flex-1">
+          <SettingsRowsRow
+            label="Name"
+            htmlFor="team-name-input"
+            control={
+              <div className="w-52 shrink-0">
+                <TextInput
+                  id="team-name-input"
+                  density="settings"
+                  required
+                  maxLength={120}
+                  value={name}
+                  disabled={savingName}
+                  onChange={(event) => setName(event.target.value)}
+                  onBlur={() => void saveName()}
+                  data-testid="team-name-input"
+                />
+              </div>
+            }
           />
         </div>
       </form>
       {nameError ? (
         <div className="pb-3">
-          <ErrorBanner error={nameError} />
+          <ErrorBanner error={nameError?.copy} details={nameError?.details} />
         </div>
       ) : null}
     </SettingsCard>

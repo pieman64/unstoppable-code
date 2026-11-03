@@ -271,8 +271,8 @@ describe('TeamStatisticsSection URL-driven view state', () => {
 
   it('marks the tab from ?tab= active on first render', () => {
     render('tab=people');
-    expect(tab('people').getAttribute('aria-pressed')).toBe('true');
-    expect(tab('overview').getAttribute('aria-pressed')).toBe('false');
+    expect(tab('people').getAttribute('aria-selected')).toBe('true');
+    expect(tab('overview').getAttribute('aria-selected')).toBe('false');
   });
 
   it('replaces the URL with ?tab=people when the People tab is clicked', async () => {
@@ -345,7 +345,7 @@ describe('TeamStatisticsSection URL-driven view state', () => {
       container.querySelector('[data-testid="usage-metric-tab-cost"]'),
     ).toBeNull();
     // A stale ?tab=cost deep link falls back to the default Overview tab.
-    expect(tab('overview').getAttribute('aria-pressed')).toBe('true');
+    expect(tab('overview').getAttribute('aria-selected')).toBe('true');
   });
 });
 

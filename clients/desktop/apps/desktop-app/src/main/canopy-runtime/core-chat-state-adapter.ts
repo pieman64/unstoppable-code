@@ -70,6 +70,9 @@ function projectSnapshot(
     tabs: {
       activeTabId: snapshot.tabsFile.activeTabId,
       items: selectedTabs.map((tab) => ({
+        ...(tab.trackedPlanImplementation === undefined
+          ? {}
+          : { trackedPlanImplementation: tab.trackedPlanImplementation }),
         chatId: tab.id,
         title: chatDisplayLabel({
           customTitle: tab.customTitle,

@@ -1,6 +1,7 @@
 import {
   ComposerTrayProvider,
   TranscriptPagingControls,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { estimateTranscriptWindowBytes } from '@canopy/agent-transcript/transcript-storage';
 import {
@@ -48,16 +49,9 @@ import { useQueuedMessageComposerEditor } from './useQueuedMessageComposerEditor
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
 import type { ChatInterfaceModeControl } from './chatInterfaceModes';
 import {
-  useSetupQueueAnnouncement,
-  useWorktreeSetupWait,
-} from '@/hooks/useWorktreeSetupWait';
-import { QueuedMessageAnnouncer } from '@canopy/ui-shared/components';
-import {
   loadChatMessageListModule,
   loadedChatMessageListModule,
 } from './chatMessageListChunk';
-
-const NO_QUEUED_MESSAGES: readonly QueuedChatMessage[] = [];
 
 const LazyChatMessageList = lazy(() =>
   loadChatMessageListModule().then((m) => ({ default: m.ChatMessageList })),
@@ -269,31 +263,6 @@ export function ChatContent({
         recoveryScope.worktreeId,
         approvalChatId,
       ),
-  );
-
-  // The setup wait a new worktree's queued messages show, and the polite
-  // announcements for it: queued once, and sending when they actually go.
-  const setupChatId = transcript?.id;
-  const setupWaitTarget = useMemo(
-    () =>
-      recoveryScope && setupChatId !== undefined
-        ? {
-            projectId: recoveryScope.projectId,
-            worktreeId: recoveryScope.worktreeId,
-            chatId: setupChatId,
-          }
-        : null,
-    [recoveryScope, setupChatId],
-  );
-  const setupWait = useWorktreeSetupWait(
-    setupWaitTarget,
-    transcript?.queuedForSetup === true,
-    transcript?.queuedMessages ?? NO_QUEUED_MESSAGES,
-  );
-  const queueAnnouncement = useSetupQueueAnnouncement(
-    setupWaitTarget,
-    setupWait,
-    (transcript?.queuedMessages.length ?? 0) > 0,
   );
 
   const canonicalSearchEnabled = Boolean(
@@ -644,8 +613,6 @@ export function ChatContent({
                 }
                 editingQueuedMessageIndex={transcript.editingQueuedMessageIndex}
                 onResetToPoint={readOnly ? undefined : onResetToPoint}
-                queuedForSetup={transcript.queuedForSetup === true}
-                setupWait={setupWait}
                 targetOverride={targetOverride}
                 hideBranchActions={hideBranchActions}
                 containerRef={messageContainerRef}
@@ -660,14 +627,13 @@ export function ChatContent({
                 enableForkedFromLink
               />
             </Suspense>
-            <QueuedMessageAnnouncer announcement={queueAnnouncement} />
             {scheduledMessageError && (
-              <div
-                role="alert"
-                data-testid="chat-scheduled-message-error"
-                className="border-t px-4 py-2 text-xs fg-destructive"
-              >
-                {scheduledMessageError}
+              <div className="border-t px-4 py-2">
+                <ErrorBanner
+                  error={scheduledMessageError}
+                  className=""
+                  testId="chat-scheduled-message-error"
+                />
               </div>
             )}
           </div>

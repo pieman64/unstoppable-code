@@ -17,6 +17,7 @@ import {
   readScriptSourceInfo,
   readWorkspaceScriptCommands,
 } from '../lib/script-source-info';
+import { mergeWorkspaceScriptCommands } from '../lib/script-definition-saves';
 import {
   getWorkspaceInstructions,
   updateWorkspaceInstructions,
@@ -31,6 +32,7 @@ function caller(
   return createPortalCaller({ sessionId }, grants);
 }
 
+/** Reorder and replacement snapshots require authoritative rows (CAN-5580). */
 export async function readPortalSidebarItems(): Promise<SidebarItemsFile> {
   const runtime = getDesktopCanopyRuntime();
   const { legacyResult } = await preserveRuntimeCauseError(
@@ -103,6 +105,17 @@ export function readPortalWorkspaceScriptCommands(
     caller([CORE_SCRIPT_GRANTS.read]),
     workspaceId,
   );
+}
+
+/** `portal.workspace.scripts.save` through `core.script.definition.*`. */
+export function savePortalWorkspaceScriptCommands(
+  workspaceId: string,
+  commands: Record<string, string>,
+): Promise<void> {
+  return mergeWorkspaceScriptCommands(getDesktopCanopyRuntime(), caller([]), {
+    workspaceId,
+    commands,
+  });
 }
 
 /** `portal.workspace_items.list_attachments` through `core.workspace.item.list`. */

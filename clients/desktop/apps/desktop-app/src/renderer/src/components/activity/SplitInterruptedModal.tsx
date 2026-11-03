@@ -1,5 +1,4 @@
 import { type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { Button } from '@canopy/ui-shared/components';
 
@@ -35,15 +34,16 @@ export function SplitInterruptedModal({
   onDiscard,
   onDismiss,
 }: SplitInterruptedModalProps): JSX.Element {
-  return createPortal(
+  return (
     <DialogModal
+      inset="flush"
       onClose={onDismiss}
       title="Split PR interrupted"
       subtitle={`Worktree ${worktreeId}`}
       maxWidth="lg"
       dataTestId="split-interrupted-modal"
     >
-      <div className="space-y-3 px-5 py-4">
+      <div className="space-y-3 px-6 py-4">
         <p className="text-s fg-primary/90">
           A Split PR run for this worktree was interrupted before it finished
           {childTotal > 0
@@ -61,7 +61,7 @@ export function SplitInterruptedModal({
         </p>
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-5 py-3">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-3">
         <Button
           size="compact"
           onClick={onDismiss}
@@ -86,7 +86,6 @@ export function SplitInterruptedModal({
           Resume
         </Button>
       </div>
-    </DialogModal>,
-    document.body,
+    </DialogModal>
   );
 }

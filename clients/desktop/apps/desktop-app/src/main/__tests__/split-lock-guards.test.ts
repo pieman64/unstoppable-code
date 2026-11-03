@@ -210,16 +210,17 @@ describe('split lock chokepoint guards', () => {
     });
 
     it('the setup wrapper runs scripts directly, NOT through the guarded runScript seam', () => {
-      // The post-create setup wrapper calls `runShellScript` from
-      // script-runner (the low-level runner), never scripts-service.runScript
-      // (the guarded chokepoint). If this import edge is ever added, the guard
-      // WOULD block the split engine's own child setup and this must be caught.
-      const source = readFileSync(
-        join(__dirname, '..', 'lib', 'project-worktree-runtime.ts'),
-        'utf8',
-      );
-      expect(source).toContain("from './script-runner'");
+      // The post-create setup wrapper calls `runDesktopScript` from
+      // script-execution (the worker script entry, CAN-4143), never
+      // scripts-service.runScript (the guarded chokepoint). If this import
+      // edge is ever added, the guard WOULD block the split engine's own
+      // child setup and this must be caught.
+      const read = (file: string): string =>
+        readFileSync(join(__dirname, '..', 'lib', file), 'utf8');
+      const source = read('project-worktree-runtime.ts');
+      expect(source).toContain("from './script-execution'");
       expect(source).not.toContain('scripts-service');
+      expect(read('script-execution.ts')).not.toContain('scripts-service');
     });
   });
 });

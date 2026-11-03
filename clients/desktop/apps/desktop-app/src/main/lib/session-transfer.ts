@@ -225,6 +225,8 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   executionHarnessExplicitlyChosen: true,
   pendingPlanExit: true,
   pendingPlanExitRequestId: true,
+  // Stripped with trackedPlanId: plan identity belongs to the source workspace.
+  trackedPlanImplementation: true,
   trackedPlanId: true,
   trackedPlanSource: true,
   trackedPlanReviewStatus: true,

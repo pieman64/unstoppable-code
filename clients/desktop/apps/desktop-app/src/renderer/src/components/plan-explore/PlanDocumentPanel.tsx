@@ -18,7 +18,7 @@ import type {
 import {
   PLAN_MARKDOWN_OPTIONS,
   stripPlanTitleLine,
-} from '@/components/activity/plan-markdown';
+} from '@canopy/ui-app/plan-markdown';
 import { SourcePositionMarkdown } from '@canopy/ui-shared/components/SourcePositionMarkdown';
 import {
   createHighlightContributor,
@@ -52,7 +52,7 @@ import {
   PlanReviewThread,
   type PlanReviewAuthor,
 } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, TextArea } from '@canopy/ui-shared/components';
 
 /**
  * Map a comment to the shared review author shape, from the plan owner's
@@ -717,7 +717,8 @@ function PlanDocumentPanelImpl({
                 author={toReviewAuthor(comment)}
                 timestamp={comment.createdAt}
               >
-                <textarea
+                <TextArea
+                  aria-label="Comment"
                   value={editingComment.body}
                   onChange={(e): void =>
                     setEditingComment({
@@ -740,7 +741,6 @@ function PlanDocumentPanelImpl({
                   rows={3}
                   autoFocus
                   data-testid={`plan-comment-edit-input-${comment.id}`}
-                  className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
                 />
                 <div className="mt-1 flex items-center justify-end gap-1.5">
                   <Button size="compact" onClick={cancelEditingComment}>
@@ -845,7 +845,8 @@ function PlanDocumentPanelImpl({
             <p className="truncate text-2xs italic fg-secondary">
               “{truncateQuote(pendingSelection.renderedText, 60)}”
             </p>
-            <textarea
+            <TextArea
+              aria-label="Comment"
               value={draftBody}
               onChange={(e): void => setDraftBody(e.target.value)}
               onKeyDown={(e): void => {
@@ -862,7 +863,6 @@ function PlanDocumentPanelImpl({
               placeholder="Add a comment… (Enter to save, Shift+Enter for a new line)"
               rows={3}
               autoFocus
-              className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
             />
             <div className="flex items-center justify-end gap-1.5">
               <Button size="compact" onClick={cancelDraft}>

@@ -1,15 +1,6 @@
 'use client';
 
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type JSX,
-  type RefObject,
-} from 'react';
-import { createPortal } from 'react-dom';
+import type { JSX } from 'react';
 import {
   PrBadgeTooltipContent,
   RichHoverTooltip,
@@ -158,182 +149,16 @@ export function CiStatusBadge({ status }: CiStatusBadgeProps): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// Popovers – the per-check CI list and the multi-repo PR list. Each keeps a
-// short close delay plus trigger/popover hover refs so the cursor can travel
-// into the popover (and scroll long lists) without it dismissing.
+// Hover cards – the per-check CI list and the multi-repo PR list. Both are
+// interactive RichHoverTooltips, so the cursor can travel into the card (and
+// scroll a long list) and into the cards nested inside it without it closing.
 // ---------------------------------------------------------------------------
-
-const POPOVER_BRIDGE_PX = 6;
-
-function usePopoverLayout(
-  anchorRect: DOMRect,
-  contentKey: unknown,
-): {
-  cardRef: RefObject<HTMLDivElement | null>;
-  layout: { top: number; left: number; placeAbove: boolean };
-} {
-  const cardRef = useRef<HTMLDivElement>(null);
-  // `placeAbove` flips the bridge to the bottom of the card when the popover
-  // would otherwise overflow the viewport vertically and gets placed above the
-  // anchor. The wrapper top is set to anchorRect.bottom (or anchorRect.top)
-  // with no gap so the cursor never lands in dead space.
-  const [layout, setLayout] = useState<{
-    top: number;
-    left: number;
-    placeAbove: boolean;
-  }>({
-    top: anchorRect.bottom,
-    left: anchorRect.left,
-    placeAbove: false,
-  });
-
-  useLayoutEffect((): void => {
-    const card = cardRef.current;
-    if (!card) return;
-    const cardRect = card.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const totalHeight = cardRect.height + POPOVER_BRIDGE_PX;
-    let left = anchorRect.left;
-    if (left + cardRect.width > vw) left = vw - cardRect.width - 8;
-    if (left < 8) left = 8;
-    const wouldOverflowBelow = anchorRect.bottom + totalHeight > vh;
-    const fitsAbove = anchorRect.top - totalHeight >= 0;
-    const placeAbove = wouldOverflowBelow && fitsAbove;
-    const top = placeAbove ? anchorRect.top - totalHeight : anchorRect.bottom;
-    setLayout({ top, left, placeAbove });
-  }, [anchorRect, contentKey]);
-
-  return { cardRef, layout };
-}
-
-interface CheckDetailsPopoverProps {
-  readonly anchorRect: DOMRect;
-  readonly checkDetails: readonly PullRequestSectionCheckDetail[];
-  readonly onMouseEnter: () => void;
-  readonly onMouseLeave: () => void;
-  readonly dataTestId?: string;
-}
-
-function CheckDetailsPopover({
-  anchorRect,
-  checkDetails,
-  onMouseEnter,
-  onMouseLeave,
-  dataTestId = 'pr-status-bar-ci-popover',
-}: CheckDetailsPopoverProps): JSX.Element {
-  const { cardRef, layout } = usePopoverLayout(anchorRect, checkDetails);
-
-  return createPortal(
-    <div
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className="fixed z-dropdown"
-      style={{ top: layout.top, left: layout.left }}
-      data-testid={dataTestId}
-    >
-      {!layout.placeAbove && <div style={{ height: POPOVER_BRIDGE_PX }} />}
-      <div
-        ref={cardRef}
-        className="min-w-65 max-w-105 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      >
-        <CheckDetailsList checkDetails={checkDetails} scrollable />
-      </div>
-      {layout.placeAbove && <div style={{ height: POPOVER_BRIDGE_PX }} />}
-    </div>,
-    document.body,
-  );
-}
-
-/**
- * Hover state for a trigger and the popover it opens, plus any nested
- * popovers inside it: hides only after a grace period with none hovered.
- * Survives re-renders (status polls arrive often) and brief traversals.
- */
-function useHoverPopover(enabled: boolean): {
-  rect: DOMRect | null;
-  onTriggerEnter: (element: HTMLElement) => void;
-  onTriggerLeave: () => void;
-  onPopoverEnter: () => void;
-  onPopoverLeave: () => void;
-  onNestedEnter: () => void;
-  onNestedLeave: () => void;
-} {
-  const [rect, setRect] = useState<DOMRect | null>(null);
-  const triggerRef = useRef(false);
-  const popoverRef = useRef(false);
-  const nestedRef = useRef(false);
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearHideTimer = useCallback((): void => {
-    if (hideTimerRef.current !== null) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-  }, []);
-  const evaluate = useCallback((): void => {
-    clearHideTimer();
-    if (triggerRef.current || popoverRef.current || nestedRef.current) return;
-    hideTimerRef.current = setTimeout((): void => {
-      hideTimerRef.current = null;
-      // Re-check at fire time in case the user re-entered during the delay.
-      if (triggerRef.current || popoverRef.current || nestedRef.current) {
-        return;
-      }
-      setRect(null);
-    }, 250);
-  }, [clearHideTimer]);
-
-  useEffect((): void => {
-    if (enabled) return;
-    clearHideTimer();
-    triggerRef.current = false;
-    popoverRef.current = false;
-    nestedRef.current = false;
-    setRect(null);
-  }, [enabled, clearHideTimer]);
-  useEffect((): (() => void) => clearHideTimer, [clearHideTimer]);
-
-  return {
-    rect,
-    onTriggerEnter: useCallback(
-      (element: HTMLElement): void => {
-        triggerRef.current = true;
-        if (enabled) setRect(element.getBoundingClientRect());
-        evaluate();
-      },
-      [enabled, evaluate],
-    ),
-    onTriggerLeave: useCallback((): void => {
-      triggerRef.current = false;
-      evaluate();
-    }, [evaluate]),
-    onPopoverEnter: useCallback((): void => {
-      popoverRef.current = true;
-      evaluate();
-    }, [evaluate]),
-    onPopoverLeave: useCallback((): void => {
-      popoverRef.current = false;
-      evaluate();
-    }, [evaluate]),
-    onNestedEnter: useCallback((): void => {
-      nestedRef.current = true;
-      evaluate();
-    }, [evaluate]),
-    onNestedLeave: useCallback((): void => {
-      nestedRef.current = false;
-      evaluate();
-    }, [evaluate]),
-  };
-}
 
 interface CiStatusBadgeWithPopoverProps {
   readonly status: PullRequestSectionCheckStatus;
   readonly checkDetails: readonly PullRequestSectionCheckDetail[];
   readonly badgeTestId?: string;
   readonly popoverTestId?: string;
-  readonly onPopoverMouseEnter?: () => void;
-  readonly onPopoverMouseLeave?: () => void;
 }
 
 export function CiStatusBadgeWithPopover({
@@ -341,52 +166,32 @@ export function CiStatusBadgeWithPopover({
   checkDetails,
   badgeTestId = 'pr-status-bar-ci-badge',
   popoverTestId = 'pr-status-bar-ci-popover',
-  onPopoverMouseEnter,
-  onPopoverMouseLeave,
 }: CiStatusBadgeWithPopoverProps): JSX.Element {
-  const hover = useHoverPopover(checkDetails.length > 0);
-  const { onPopoverEnter, onPopoverLeave } = hover;
-  const handlePopoverEnter = useCallback((): void => {
-    onPopoverMouseEnter?.();
-    onPopoverEnter();
-  }, [onPopoverEnter, onPopoverMouseEnter]);
-  const handlePopoverLeave = useCallback((): void => {
-    onPopoverMouseLeave?.();
-    onPopoverLeave();
-  }, [onPopoverLeave, onPopoverMouseLeave]);
-
+  const badge = (
+    <span className="electron-no-drag inline-flex" data-testid={badgeTestId}>
+      <CiStatusBadge status={status} />
+    </span>
+  );
+  // The rich check list is the real preview, but it only exists when the
+  // provider actually returned per-check details. Without this fallback the
+  // badge is silent on hover in exactly the states where the dot alone is
+  // least self-explanatory (neutral, not run, a status with no detail
+  // payload).
+  if (checkDetails.length === 0) {
+    return <Tooltip label={getCheckStatusLabel(status)}>{badge}</Tooltip>;
+  }
   return (
-    <>
-      {/* The rich check list is the real preview, but it only exists when the
-          provider actually returned per-check details. Without this fallback
-          the badge is silent on hover in exactly the states where the dot
-          alone is least self-explanatory (neutral, not run, a status with no
-          detail payload). Suppressed once the popover can take over. */}
-      <Tooltip
-        label={getCheckStatusLabel(status)}
-        suppressed={checkDetails.length > 0}
-      >
-        <span
-          className="electron-no-drag inline-flex"
-          onMouseEnter={(event): void =>
-            hover.onTriggerEnter(event.currentTarget)
-          }
-          onMouseLeave={hover.onTriggerLeave}
-          data-testid={badgeTestId}
-        >
-          <CiStatusBadge status={status} />
-        </span>
-      </Tooltip>
-      {hover.rect && checkDetails.length > 0 && (
-        <CheckDetailsPopover
-          anchorRect={hover.rect}
-          checkDetails={checkDetails}
-          onMouseEnter={handlePopoverEnter}
-          onMouseLeave={handlePopoverLeave}
-          dataTestId={popoverTestId}
-        />
-      )}
-    </>
+    <RichHoverTooltip
+      interactive
+      placement="below-start"
+      elevation="menu"
+      surfacePadding="card"
+      surfaceClassName="min-w-65 max-w-105"
+      dataTestId={popoverTestId}
+      content={<CheckDetailsList checkDetails={checkDetails} scrollable />}
+    >
+      {badge}
+    </RichHoverTooltip>
   );
 }
 
@@ -414,13 +219,9 @@ export function PullRequestStateBadgeWithTooltip({
 function RepoPrStatusRow({
   repo,
   pr,
-  onNestedPopoverMouseEnter,
-  onNestedPopoverMouseLeave,
 }: {
   readonly repo: PullRequestActionsRepo;
   readonly pr: PullRequestActionsPr;
-  readonly onNestedPopoverMouseEnter: () => void;
-  readonly onNestedPopoverMouseLeave: () => void;
 }): JSX.Element {
   return (
     <div className="flex items-center gap-2 text-xs">
@@ -436,68 +237,8 @@ function RepoPrStatusRow({
         checkDetails={pr.checkDetails}
         badgeTestId={`pr-status-bar-repo-ci-badge-${repo.repoId}`}
         popoverTestId={`pr-status-bar-repo-ci-popover-${repo.repoId}`}
-        onPopoverMouseEnter={onNestedPopoverMouseEnter}
-        onPopoverMouseLeave={onNestedPopoverMouseLeave}
       />
     </div>
-  );
-}
-
-function RepoPrStatusPopover({
-  anchorRect,
-  repos,
-  onMouseEnter,
-  onMouseLeave,
-  onNestedPopoverMouseEnter,
-  onNestedPopoverMouseLeave,
-}: {
-  readonly anchorRect: DOMRect;
-  readonly repos: readonly PullRequestActionsRepo[];
-  readonly onMouseEnter: () => void;
-  readonly onMouseLeave: () => void;
-  readonly onNestedPopoverMouseEnter: () => void;
-  readonly onNestedPopoverMouseLeave: () => void;
-}): JSX.Element {
-  const { cardRef, layout } = usePopoverLayout(anchorRect, repos);
-
-  // React treats portaled descendants as part of the same event tree, so
-  // returning from a nested portaled tooltip may not synthesize a fresh
-  // mouseenter for this DOM parent. Pointer movement in the parent is the
-  // authoritative handoff and cancels any pending close timer.
-  return createPortal(
-    <div
-      onMouseEnter={onMouseEnter}
-      onMouseMove={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className="fixed z-dropdown"
-      style={{ top: layout.top, left: layout.left }}
-      data-testid="pr-status-bar-repo-popover"
-    >
-      {!layout.placeAbove && <div style={{ height: POPOVER_BRIDGE_PX }} />}
-      <div
-        ref={cardRef}
-        className="min-w-70 max-w-120 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      >
-        <div className="mb-1.5 text-3xs font-semibold fg-secondary">
-          Pull requests
-        </div>
-        <div className="space-y-1.5">
-          {repos.map((repo) =>
-            repo.pr === null ? null : (
-              <RepoPrStatusRow
-                key={repo.repoId}
-                repo={repo}
-                pr={repo.pr}
-                onNestedPopoverMouseEnter={onNestedPopoverMouseEnter}
-                onNestedPopoverMouseLeave={onNestedPopoverMouseLeave}
-              />
-            ),
-          )}
-        </div>
-      </div>
-      {layout.placeAbove && <div style={{ height: POPOVER_BRIDGE_PX }} />}
-    </div>,
-    document.body,
   );
 }
 
@@ -512,14 +253,33 @@ export function MultiRepoPrBadge({
   readonly openRepos: readonly PullRequestActionsRepo[];
   readonly onOpen: () => void;
 }): JSX.Element {
-  const hover = useHoverPopover(openRepos.length > 0);
   return (
-    <>
+    <RichHoverTooltip
+      interactive
+      // Enter and Space open the PR details; ArrowDown opens the list.
+      triggerOpenKeys={['ArrowDown']}
+      disabled={openRepos.length === 0}
+      placement="below-start"
+      elevation="menu"
+      surfacePadding="card"
+      surfaceClassName="min-w-70 max-w-120"
+      dataTestId="pr-status-bar-repo-popover"
+      content={
+        <div className="flex flex-col gap-1.5">
+          <div className="text-3xs font-semibold fg-secondary">
+            Pull requests
+          </div>
+          {openRepos.map((repo) =>
+            repo.pr === null ? null : (
+              <RepoPrStatusRow key={repo.repoId} repo={repo} pr={repo.pr} />
+            ),
+          )}
+        </div>
+      }
+    >
       <button
         type="button"
         onClick={onOpen}
-        onMouseEnter={(e): void => hover.onTriggerEnter(e.currentTarget)}
-        onMouseLeave={hover.onTriggerLeave}
         className={`electron-no-drag inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium transition-colors hover:opacity-90 ${
           openRepos.every((r) => r.pr?.state === 'merged')
             ? 'border-fg-special-strong/30 bg-special-subtle fg-special-strong'
@@ -528,16 +288,6 @@ export function MultiRepoPrBadge({
       >
         {openRepos.length} {openRepos.length === 1 ? 'PR' : 'PRs'}
       </button>
-      {hover.rect && openRepos.length > 0 && (
-        <RepoPrStatusPopover
-          anchorRect={hover.rect}
-          repos={openRepos}
-          onMouseEnter={hover.onPopoverEnter}
-          onMouseLeave={hover.onPopoverLeave}
-          onNestedPopoverMouseEnter={hover.onNestedEnter}
-          onNestedPopoverMouseLeave={hover.onNestedLeave}
-        />
-      )}
-    </>
+    </RichHoverTooltip>
   );
 }

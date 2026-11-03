@@ -132,6 +132,8 @@ describe('CAN-5334 Portal worktree discard', () => {
           workspaceId: 'ws-1',
           worktreeId: 'wt-1',
           confirmation: 'token',
+          // CAN-5338: the retained-archive opt-in grants an agent nothing.
+          retainedArchives: true,
         }),
         context(events, { origin }),
       );
@@ -159,6 +161,43 @@ describe('CAN-5334 Portal worktree discard', () => {
       type: 'portal.command.completed',
       payload: { result: description },
     });
+  });
+
+  it('CAN-5338 forwards only a literal retained-archive opt-in to describe and discard', async () => {
+    jest.mocked(describeWorktreeDiscard).mockResolvedValue(description);
+    jest.mocked(discardWorktree).mockResolvedValue({
+      status: 'refused',
+      reason: 'changed',
+      description,
+    });
+    for (const retainedArchives of [true, 'yes']) {
+      await handlePortalWorktreeDiscardDescribe(
+        envelope('portal.worktree.discard.describe', {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-1',
+          retainedArchives,
+        }),
+        context([]),
+      );
+      await handlePortalWorktreeDiscard(
+        envelope('portal.worktree.discard', {
+          workspaceId: 'ws-1',
+          worktreeId: 'wt-1',
+          confirmation: 'token',
+          retainedArchives,
+        }),
+        context([]),
+      );
+    }
+    expect(jest.mocked(describeWorktreeDiscard).mock.calls).toEqual([
+      ['ws-1', 'wt-1', { retainedArchives: true }],
+      ['ws-1', 'wt-1'],
+    ]);
+    expect(
+      jest
+        .mocked(discardWorktree)
+        .mock.calls.map(([request]) => request.retainedArchives),
+    ).toEqual([true, undefined]);
   });
 
   it('requires a confirmation and valid ids', async () => {

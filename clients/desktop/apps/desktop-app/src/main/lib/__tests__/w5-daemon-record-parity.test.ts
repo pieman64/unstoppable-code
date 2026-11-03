@@ -56,7 +56,7 @@ jest.mock('../../portal/portal-event-bus', () => ({
 
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import type { W5CommitRequest } from '@canopy/desktop-shared/node/w5-commit-log';
-import { startW5DaemonRecordHarness } from './fixtures/w5-daemon-record-harness';
+import { startW5DaemonRecordHarness } from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-daemon-record-harness';
 import {
   NOW,
   SCENARIOS,

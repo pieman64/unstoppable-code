@@ -455,3 +455,49 @@ it('reports unreadable reads and typed failed writes when the host is unavailabl
   expect(readFileSync(file, 'utf8')).toBe(contents);
   expect(existsSync(dbPath)).toBe(false);
 });
+
+it('commits record removals on the real worker and refuses stale peer writes without recovery debt', async () => {
+  await withStorageAdmission(PROJECT_W5_STORAGE, async () => {
+    const { store, manifest, list } = repositories();
+    const peer = createW5CommitLogFileStore(() => host);
+    const manifestPath = join(root, 'a', 'workspace.json');
+    const listPath = join(root, 'a', 'worktrees.json');
+    mkdirSync(join(root, 'a'));
+    const oldManifest = JSON.stringify({ version: 1, repos: [] });
+    writeFileSync(manifestPath, oldManifest);
+    writeFileSync(
+      listPath,
+      JSON.stringify({ version: 1, worktrees: [row('one')] }),
+    );
+    const before = await peer.read(manifestPath);
+    expect(before).toEqual({ state: 'present', raw: oldManifest });
+    await store.withCommit({ operation: 'test.records.remove' }, async () => {
+      await manifest.remove('a');
+      await list.remove('a');
+      expect(await store.read(manifestPath)).toEqual({ state: 'absent' });
+      expect(await store.read(listPath)).toEqual({ state: 'absent' });
+    });
+    expect(existsSync(manifestPath)).toBe(false);
+    expect(existsSync(listPath)).toBe(false);
+    expect(
+      await revisions([workspace('a'), worktrees, worktree('one')]),
+    ).toEqual([1, 1, 1]);
+    await expect(
+      peer.replace(manifestPath, '{}', WORKSPACE_MANIFEST_STORAGE, {
+        operation: 'test.stale.peer',
+        advance: [{ kind: 'workspace', workspaceId: 'a' }],
+        previousRaw: oldManifest,
+      }),
+    ).rejects.toBeInstanceOf(W5FileWriteRefusedError);
+    await expect(
+      peer.withCommit(
+        {
+          operation: 'test.stale.list',
+          expectedRevisions: [{ resource: worktrees, revision: 0 }],
+        },
+        async () => {},
+      ),
+    ).rejects.toMatchObject({ name: 'W5RevisionConflictError' });
+    expect((await host.recoveryReport()).recoveryRequired).toEqual([]);
+  });
+});

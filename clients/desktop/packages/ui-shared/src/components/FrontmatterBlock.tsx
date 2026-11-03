@@ -1,11 +1,5 @@
 import { type JSX } from 'react';
-
-function formatFrontmatterKey(key: string): string {
-  return key
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[_-]/g, ' ')
-    .replace(/\b\w/g, (character) => character.toUpperCase());
-}
+import { Fact, FactList } from './FactList';
 
 function formatFrontmatterValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
@@ -32,11 +26,10 @@ export interface FrontmatterBlockProps {
 }
 
 /**
- * Renders frontmatter as a bordered `<dl>` of `Key: value` pairs. Returns an
+ * Renders frontmatter as a bordered fact list: each literal key in a mono
+ * label, its value wrapping beside it (design call 5A, 2026-10-31). Returns an
  * empty fragment when there is nothing worth showing, so callers can render it
- * unconditionally. Ported from the desktop `components/shared` original —
- * class names and formatting match it exactly so tests/selectors and visual
- * diffs are unchanged. Shared by the skills/plugins detail views (via
+ * unconditionally. Shared by the skills/plugins detail views (via
  * {@link import('./MarkdownFrontmatterContent').MarkdownFrontmatterContent})
  * and the file viewer's markdown preview.
  */
@@ -54,18 +47,13 @@ export function FrontmatterBlock({
         className ? ` ${className}` : ''
       }`}
     >
-      <dl className="space-y-1.5 text-s">
+      <FactList size="s" labelMono labelTone="secondary">
         {entries.map(([key, value]) => (
-          <div key={key} className="flex gap-2">
-            <dt className="font-medium fg-primary whitespace-nowrap">
-              {formatFrontmatterKey(key)}:
-            </dt>
-            <dd className="fg-secondary break-words min-w-0">
-              {formatFrontmatterValue(value)}
-            </dd>
-          </div>
+          <Fact key={key} label={key}>
+            {formatFrontmatterValue(value)}
+          </Fact>
         ))}
-      </dl>
+      </FactList>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   LoadingSpinner,
   Notice,
   NoticeButton,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { MacbookIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type {
@@ -198,17 +199,13 @@ export function PairComputerDialog({
       trapFocus
       dataTestId="remote-access-pair-dialog"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+      <div className="flex flex-col gap-4">
         {body}
-        {actionError ? (
-          <p
-            role="alert"
-            className="text-s fg-destructive"
-            data-testid="remote-access-pair-error"
-          >
-            {actionError}
-          </p>
-        ) : null}
+        <ErrorBanner
+          className=""
+          error={actionError}
+          testId="remote-access-pair-error"
+        />
         <div className="flex items-center justify-end gap-2">{footer}</div>
       </div>
     </DialogModal>
@@ -449,16 +446,13 @@ function renderPairing({
     case 'failed':
       return {
         body: (
-          <p
-            role="alert"
-            className="text-s fg-primary"
-            data-testid="remote-access-pair-failed"
-          >
-            Couldn't pair with {pairing.name}.{' '}
-            <span className="fg-secondary">
-              {pairing.error ?? 'The connection ended before it finished.'}
-            </span>
-          </p>
+          <ErrorBanner
+            className=""
+            testId="remote-access-pair-failed"
+            error={`Couldn't pair with ${pairing.name}. ${
+              pairing.error ?? 'The connection ended before it finished.'
+            }`}
+          />
         ),
         footer: (
           <>

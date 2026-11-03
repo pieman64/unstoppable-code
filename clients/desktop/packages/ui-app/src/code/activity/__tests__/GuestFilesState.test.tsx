@@ -37,5 +37,5 @@ it('explains account access with an accessible host-owned sign-in action', () =>
     'true',
   );
   expect(container.querySelector('input, [role="alert"]')).toBeNull();
-  expect(container.textContent).not.toMatch(/Retry|upload|loading/i);
+  expect(container.textContent).not.toMatch(/Retry|Try again|upload|loading/i);
 });

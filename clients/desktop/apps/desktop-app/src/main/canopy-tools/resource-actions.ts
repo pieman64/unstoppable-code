@@ -1,10 +1,6 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { AgentArtifactChangedField } from '@canopy/protocol/agent-artifacts';
-import { randomUUID } from 'node:crypto';
-import {
-  copyPackageInstall,
-  updateSharedPipelinePreservingPackage,
-} from '../pipelines/pipeline-package-service';
+import { updateSharedPipelinePreservingPackage } from '../pipelines/pipeline-package-service';
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
 import {
   assertStoredSkillContext,
@@ -17,8 +13,6 @@ import {
 } from '../pipelines/resource-lanes';
 import {
   authorizeProjectPipelineRequest,
-  assertStoredPipelineContext,
-  copyPipelineInstallOrigin,
   readStoredPipelineContext,
 } from '../pipelines/pipeline-install-context';
 import { readFile, realpath } from 'node:fs/promises';
@@ -66,8 +60,8 @@ import type {
   Pipeline,
   PipelineAgentAuthor,
   PipelineData,
+  IPCResult,
   PipelineInfo,
-  PipelineSaveInput,
   SharedPipelineDetail,
 } from '@canopy/desktop-shared/types/pipeline';
 import type { DispatchActionArgs } from './definitions';
@@ -103,16 +97,18 @@ import {
   serializeWorkspaceContext,
   type WorkspaceContext,
 } from '@canopy/protocol/workspace-context';
-import {
-  readPreferencesFile,
-  updatePreferencesFile,
-} from '../lib/preferences-store';
+import { readPreferencesFile } from '../lib/preferences-store';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import * as pipelineStore from '../pipelines/pipeline-service';
 import {
   deleteUserPipeline,
+  duplicatePipelineDefinition,
+  isPipelineDefinitionNotFound,
   PIPELINE_DEFINITION_AGENT_CALLER,
+  pipelineSourceFailure,
+  readDesktopPipelineSnapshot,
   saveUserPipeline,
+  setPipelineDefinitionEnabled,
 } from '../canopy-runtime/pipeline-definition-dispatch';
 import {
   createSharedPipeline,
@@ -235,59 +231,30 @@ function agentAuthorForRuntime(
   };
 }
 
-async function duplicateScopedAgentPipeline(
-  sourceId: string,
-  input: PipelineSaveInput,
-  project?: { info: PipelineInfo; runtime: AgentResourceActionRuntime },
-): Promise<ReturnType<typeof pipelineStore.savePipeline>> {
-  const id = randomUUID();
-  let savedId: string | undefined;
-  let undoReceipt: (() => Promise<void>) | undefined;
-  try {
-    if (project) {
-      if (!project.info.filePath)
-        throw new Error('Workflow unavailable (unknown-provenance)');
-      const { owner, projectId } = await authorizeProjectPipelineRequest({
-        id: sourceId,
-        cwd: project.runtime.cwd,
-        filePath: project.info.filePath,
-      });
-      if (
-        projectId !== project.runtime.projectId ||
-        owner.type === 'organization'
-      )
-        throw new Error('Workflow unavailable (context-mismatch)');
-    } else {
-      await copyPipelineInstallOrigin(sourceId, id, (undo): void => {
-        undoReceipt = undo;
-      });
-    }
-    const saved = pipelineStore.savePipeline({ ...input, id }, { id });
-    if (!saved.success || !saved.data)
-      throw new Error(saved.error ?? 'Failed to duplicate pipeline.');
-    savedId = saved.data.id;
-    if (savedId !== id) throw new Error('Pipeline create identity mismatch');
-    if (!project) await copyPackageInstall(sourceId, id);
-    return saved;
-  } catch (error) {
-    try {
-      if (savedId) {
-        const removed = pipelineStore.deletePipeline(savedId);
-        if (!removed.success)
-          throw new Error(removed.error ?? 'Failed to roll back pipeline');
-      }
-      await undoReceipt?.();
-    } catch (rollbackError) {
+/** Saves a copy of a project file this runtime found, through core. */
+async function saveAgentProjectCopy(
+  info: PipelineInfo,
+  runtime: AgentResourceActionRuntime,
+  input: { name: string; description: string; icon: string; content: Pipeline },
+): Promise<IPCResult<PipelineInfo>> {
+  if (pipelineResourceContextEnabled()) {
+    if (!info.filePath)
       return {
         success: false,
-        error: `${error instanceof Error ? error.message : String(error)}; ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        error: 'Workflow unavailable (unknown-provenance)',
       };
-    }
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
+    const { owner, projectId } = await authorizeProjectPipelineRequest({
+      id: info.id,
+      cwd: runtime.cwd,
+      filePath: info.filePath,
+    });
+    if (projectId !== runtime.projectId || owner.type === 'organization')
+      return {
+        success: false,
+        error: 'Workflow unavailable (context-mismatch)',
+      };
   }
+  return saveUserPipeline(input, PIPELINE_DEFINITION_AGENT_CALLER);
 }
 
 function json(value: unknown): AppAdvisorJson {
@@ -931,30 +898,45 @@ export async function loadAgentPipelineById(
   runtime: AgentResourceActionRuntime,
   cwd = runtime.cwd,
 ): Promise<PipelineData | null> {
-  if (id.startsWith('curated:')) {
-    const { getManagedCuratedPipeline } =
-      await import('../pipelines/curated-pipeline-catalog');
-    return getManagedCuratedPipeline(id);
-  }
-  const remoteId = id.startsWith('shared:')
-    ? sharedPipelineRemoteId(id)
-    : undefined;
-  if (remoteId) {
-    await assertPipelinesCapability();
-    const detail = await getSharedPipeline(remoteId);
-    if (pipelineResourceContextEnabled())
-      await assertPipelineContext({ owner: detail.owner }, runtime.projectId);
-    return materializeSharedPipeline(detail);
-  }
-  const stored =
-    pipelineResourceContextEnabled() && id.startsWith('project--')
-      ? undefined
-      : pipelineStore.getPipeline(id);
-  if (stored?.success && stored.data) {
-    await assertStoredPipelineContext(id, runtime.projectId);
-    // Hidden like the Orchestrator automation that owns it (CAN-4551).
-    if (await isOwnedPipelineHiddenFromAgent(id, runtime)) return null;
-    return stored.data;
+  return (await loadAgentPipelineSnapshot(id, runtime, cwd))?.pipeline ?? null;
+}
+
+/**
+ * {@link loadAgentPipelineById}, with the checksum of what core read; a
+ * project file read from the runtime's directory has none.
+ */
+async function loadAgentPipelineSnapshot(
+  id: string,
+  runtime: AgentResourceActionRuntime,
+  cwd = runtime.cwd,
+): Promise<{ pipeline: PipelineData; checksum?: string } | null> {
+  // Core resolves every definition but a project file, which is found from
+  // this runtime's directory: core reads project definitions by worktree
+  // scope.
+  if (!id.startsWith('project--')) {
+    try {
+      const snapshot = await readDesktopPipelineSnapshot(
+        id,
+        { workspaceId: runtime.projectId },
+        PIPELINE_DEFINITION_AGENT_CALLER,
+      );
+      // Hidden like the Orchestrator automation that owns it (CAN-4551).
+      if (
+        snapshot.data.info.source === 'user' &&
+        (await isOwnedPipelineHiddenFromAgent(id, runtime))
+      )
+        return null;
+      return { pipeline: snapshot.data, checksum: snapshot.checksum };
+    } catch (error) {
+      // A store id that names nothing is reported as not found.
+      if (
+        isPipelineDefinitionNotFound(error) &&
+        !id.startsWith('curated:') &&
+        !id.startsWith('shared:')
+      )
+        return null;
+      throw pipelineSourceFailure(error);
+    }
   }
   const projects = await discoverProjectPipelines(cwd).catch(() => []);
   const info = projects.find((entry) => entry.id === id);
@@ -968,7 +950,12 @@ export async function loadAgentPipelineById(
       throw new Error('Workflow unavailable (context-mismatch)');
   }
   return info?.filePath
-    ? { info, content: await loadProjectPipelineFromDisk(info.filePath) }
+    ? {
+        pipeline: {
+          info,
+          content: await loadProjectPipelineFromDisk(info.filePath),
+        },
+      }
     : null;
 }
 
@@ -1261,15 +1248,18 @@ async function pipelineAction(
       return withAgentPipelineTelemetry(
         { action: 'duplicate', source: 'unknown', hasPipelineId: true },
         async () => {
-          const current = await loadAgentPipelineById(
+          // The policy checks the very document core copies: a source that
+          // changed since its checksum was read is refused.
+          const snapshot = await loadAgentPipelineSnapshot(
             action.pipelineId,
             runtime,
           );
-          if (!current)
+          if (!snapshot)
             return failure(
               'not_found',
               `Pipeline ${action.pipelineId} was not found.`,
             );
+          const current = snapshot.pipeline;
           const duplicateContent = {
             ...current.content,
             name: `${current.content.name} (Copy)`,
@@ -1286,25 +1276,26 @@ async function pipelineAction(
           );
           if (ownerError) return failure('validation_failed', ownerError);
           const saveData = pipelineSaveData(duplicateContent, {});
-          const scoped = pipelineResourceContextEnabled();
-          const saved = scoped
-            ? await duplicateScopedAgentPipeline(
-                action.pipelineId,
-                saveData,
-                current.info.source === 'project'
-                  ? { info: current.info, runtime }
-                  : undefined,
-              )
-            : pipelineStore.savePipeline(saveData);
+          // Core copies the definition under an id it assigns, with its
+          // provenance. A project file found from this runtime's directory is
+          // saved through core from the content read here, as core reads
+          // project definitions by worktree scope.
+          const saved =
+            current.info.source === 'project'
+              ? await saveAgentProjectCopy(current.info, runtime, saveData)
+              : await duplicatePipelineDefinition(
+                  action.pipelineId,
+                  {
+                    scope: { workspaceId: runtime.projectId },
+                    name: saveData.name,
+                    ...(snapshot.checksum === undefined
+                      ? {}
+                      : { expectedChecksum: snapshot.checksum }),
+                  },
+                  PIPELINE_DEFINITION_AGENT_CALLER,
+                );
           if (!saved.success || !saved.data)
             return ipcFailure(saved.error ?? 'Failed to duplicate pipeline.');
-          if (!scoped)
-            try {
-              await copyPipelineInstallOrigin(action.pipelineId, saved.data.id);
-            } catch (error) {
-              pipelineStore.deletePipeline(saved.data.id);
-              throw error;
-            }
           recordAgentPipelineWrite(saved.data.id, runtime, owner.owner);
           const pipeline: PipelineData = {
             info: saved.data,
@@ -1471,15 +1462,11 @@ async function pipelineAction(
               'not_found',
               `Pipeline ${action.pipelineId} was not found.`,
             );
-          await updatePreferencesFile((preferences) => {
-            const ids = new Set(preferences.disabledPipelineIds);
-            if (action.enabled) {
-              ids.delete(current.info.id);
-            } else {
-              ids.add(current.info.id);
-            }
-            return { disabledPipelineIds: Array.from(ids) };
-          });
+          await setPipelineDefinitionEnabled(
+            current.info.id,
+            action.enabled,
+            PIPELINE_DEFINITION_AGENT_CALLER,
+          );
           return withAgentArtifacts(
             ok({ pipelineId: current.info.id, enabled: action.enabled }),
             [await pipelineReceipt(action.type, current, runtime)],

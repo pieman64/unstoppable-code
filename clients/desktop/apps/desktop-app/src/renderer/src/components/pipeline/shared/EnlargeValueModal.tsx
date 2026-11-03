@@ -1,5 +1,5 @@
 import { type JSX, useState, useEffect } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, TextArea, TextInput } from '@canopy/ui-shared/components';
 import { DialogModal } from '../../shared/DialogModal';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
 
@@ -51,7 +51,7 @@ export function EnlargeValueModal({
       subtitle="Edit input value"
       maxWidth="2xl"
     >
-      <div className="flex flex-col gap-4 p-5 pt-2">
+      <div className="flex flex-col gap-4">
         {valueType === 'boolean' ? (
           <button
             type="button"
@@ -65,26 +65,22 @@ export function EnlargeValueModal({
             {boolValue ? 'true' : 'false'}
           </button>
         ) : valueType === 'number' ? (
-          <input
+          <TextInput
             type="number"
+            mono
+            aria-label={inputKey}
             value={localValue}
             onChange={(e): void => setLocalValue(e.target.value)}
             autoFocus
-            className="w-full px-3 py-2 text-s bg-base border rounded-md
-              fg-primary placeholder:fg-secondary font-mono
-              focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
-              transition-colors"
           />
         ) : (
-          <textarea
+          <TextArea
+            mono
+            aria-label={inputKey}
             value={localValue}
             onChange={(e): void => setLocalValue(e.target.value)}
             autoFocus
             rows={12}
-            className="w-full px-3 py-2 text-s bg-base border rounded-md
-              fg-primary placeholder:fg-secondary font-mono
-              focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
-              transition-colors resize-y min-h-50"
           />
         )}
         <div className="flex justify-end gap-2">

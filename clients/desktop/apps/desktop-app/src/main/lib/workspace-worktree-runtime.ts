@@ -18,9 +18,8 @@ import {
   getWorkspaceWorktreeRepoDir,
   getWorkspaceWorktreeReposDir,
 } from './paths';
-import { runShellScript } from './script-runner';
-import { buildWorktreeDataEnv } from './worktree-data-env';
-import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
+import { runDesktopScript } from './script-execution';
+import type { WorkerScriptContext } from '@canopy/protocol/canopy-core';
 import {
   createScriptCompleteEvent,
   createScriptOutputEvent,
@@ -40,11 +39,6 @@ import {
   type CommandShellDefinition,
   type ScriptDevServerPattern,
 } from '@canopy/desktop-shared/scripts';
-import {
-  appendScriptRunLogLines,
-  completeScriptRunLog,
-  startScriptRunLog,
-} from './script-log-store';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { triggerDiscovery } from '../ipc/worktree-discovery';
 import {
@@ -214,8 +208,7 @@ async function runWorkspaceRuntimeScript({
   script,
   command,
   shell,
-  cwd,
-  env,
+  context,
   timeoutSeconds,
   getWindow,
   kind,
@@ -229,8 +222,8 @@ async function runWorkspaceRuntimeScript({
   script: WorkspaceRuntimeScriptDescriptor;
   command: string;
   shell?: CommandShellDefinition;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
+  /** The checkout the worker runs it in, with the worktree's environment. */
+  context: WorkerScriptContext;
   timeoutSeconds: number | null;
   getWindow: () => BrowserWindow | null;
   kind: WorkspaceRuntimeScriptKind;
@@ -240,13 +233,9 @@ async function runWorkspaceRuntimeScript({
   onStarted?: (ref: WorktreeSetupScriptRef) => void;
 }): Promise<WorktreeSetupScriptResult> {
   assertWorkspaceTargetRuntimeStartAllowed(workspaceId, worktreeId);
-  const scriptLogRef = await startScriptRunLog({
-    projectId: workspaceId,
-    worktreeId,
-    script,
-    invocation: kind,
-  }).catch(() => null);
-  const runId = scriptLogRef?.runId ?? randomUUID();
+  const runId = randomUUID();
+  // The worker writes the run log under this run id.
+  const scriptLogRef = { projectId: workspaceId, worktreeId, script, runId };
   const scriptRef: WorktreeSetupScriptRef = {
     scriptKey: script.scriptKey,
     runId,
@@ -264,47 +253,36 @@ async function runWorkspaceRuntimeScript({
   emitScriptStarted(getWindow, workspaceId, worktreeId, script, kind, runId);
 
   try {
-    const result = await runShellScript({
-      script: command,
-      cwd,
-      env,
-      shell,
-      timeoutSeconds: interactive === true ? null : timeoutSeconds,
-      backgroundPriority: kind === 'automatic-setup',
-      interactive: interactive === true,
-      onChunk: (lines: string[]): void => {
-        if (scriptLogRef) {
-          void appendScriptRunLogLines({
-            ref: scriptLogRef,
-            lines,
-          }).catch(() => {});
-        }
-        emitScriptOutput(
-          getWindow,
-          workspaceId,
-          worktreeId,
-          script,
-          kind,
-          lines,
-          runId,
-        );
-      },
-      tracking: {
+    const { response: result } = await runDesktopScript(
+      {
         projectId: workspaceId,
         worktreeId,
-        scriptKey: script.scriptKey,
-        runId,
+        context,
         script,
         invocation: kind,
-        logRef: scriptLogRef ?? undefined,
+        command,
+        ...(shell ? { shell } : {}),
+        timeoutSeconds: interactive === true ? null : timeoutSeconds,
+        interactive: interactive === true,
+        backgroundPriority: kind === 'automatic-setup',
+        runId,
       },
-    });
-    if (scriptLogRef) {
-      await completeScriptRunLog({
-        ref: scriptLogRef,
-        response: result,
-      }).catch(() => {});
-    }
+      {
+        observer: {
+          onLines: (lines: string[]): void => {
+            emitScriptOutput(
+              getWindow,
+              workspaceId,
+              worktreeId,
+              script,
+              kind,
+              lines,
+              runId,
+            );
+          },
+        },
+      },
+    );
     const scriptResult = buildWorktreeSetupScriptResult(scriptRef, result);
     notifySetupScriptCompleted(tracker, scriptResult);
     emitScriptComplete(
@@ -331,16 +309,7 @@ async function runWorkspaceRuntimeScript({
       timedOut: false,
       durationMs: 0,
     };
-    if (scriptLogRef) {
-      await appendScriptRunLogLines({
-        ref: scriptLogRef,
-        lines: [failureResult.output],
-      }).catch(() => {});
-      await completeScriptRunLog({
-        ref: scriptLogRef,
-        response: failureResult,
-      }).catch(() => {});
-    }
+    // The worker closed the run log of any run it started.
     const scriptResult = buildWorktreeSetupScriptResult(
       scriptRef,
       failureResult,
@@ -386,10 +355,7 @@ async function runWorkspaceRootScript(
     command,
     shell,
     interactive,
-    cwd: workspaceRootPath,
-    env: buildWorktreeDataEnv(workspaceId, worktreeId, undefined, {
-      runtime: 'canopy',
-    }),
+    context: { kind: 'workspace-root' },
     timeoutSeconds,
     getWindow,
     kind: 'workspace-lifecycle',
@@ -437,9 +403,6 @@ async function runRepoSetupScript(
     definition.shell,
     definition.interactive,
   );
-  const childRepoEnv: NodeJS.ProcessEnv = {};
-  setBrandEnv(childRepoEnv, 'WORKSPACE_CHILD_REPO_ID', repo.id);
-
   return runWorkspaceRuntimeScript({
     workspaceId,
     worktreeId,
@@ -447,10 +410,7 @@ async function runRepoSetupScript(
     command,
     shell: definition.shell,
     interactive: definition.interactive,
-    cwd: repoPath,
-    env: buildWorktreeDataEnv(workspaceId, worktreeId, childRepoEnv, {
-      runtime: 'canopy',
-    }),
+    context: { kind: 'workspace-repo', repoId: repo.id },
     timeoutSeconds,
     getWindow,
     kind: 'automatic-setup',

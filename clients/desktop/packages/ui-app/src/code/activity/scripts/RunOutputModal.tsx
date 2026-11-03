@@ -80,6 +80,7 @@ export function RunOutputModal({
 }: RunOutputModalProps): JSX.Element {
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={title}
       subtitle={subtitle}
@@ -96,7 +97,7 @@ export function RunOutputModal({
         data-testid="run-output-body"
       >
         <div
-          className="flex flex-col gap-3 px-5 pb-3 pt-3"
+          className="flex flex-col gap-3 px-6 pb-3 pt-3"
           data-testid="run-output-controls"
         >
           <div className="flex items-center justify-between text-xs">

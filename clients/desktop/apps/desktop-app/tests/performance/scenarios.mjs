@@ -6,6 +6,8 @@ import {
   prepareCodeReviewRegistry,
   runCodeReviewRegistryCleanup,
 } from './code-review-registry-scenario.mjs';
+import { w5StoreScenarios } from './w5-store-scenario.mjs';
+import { w5StoreLaunchEnv } from './w5-store-arms.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   existsSync,
@@ -87,6 +89,7 @@ import {
   diffWorkCounters,
   normalizeAppMetrics,
   ROUTE_EVIDENCE_SOURCE,
+  W5_EVIDENCE_SOURCE,
   startPerformanceMonitor,
   markRendererTask,
 } from './monitor.mjs';
@@ -392,6 +395,8 @@ export function scenarioWorkCounters(summary, tasks = []) {
   }
   // Evidence of which backend served routed reads; not a work metric source.
   if (summary?.routeWork) work[ROUTE_EVIDENCE_SOURCE] = summary.routeWork;
+  // W5 store evidence for the store arms (CAN-5532); not a work metric source.
+  if (summary?.w5Work) work[W5_EVIDENCE_SOURCE] = summary.w5Work;
   if (errors.length > 0) work.errors = errors;
   return work;
 }
@@ -512,6 +517,41 @@ export async function recordStreamedReply(tasks, label, operation) {
   } finally {
     const end = await tasks.rendererMark?.(`reply:end:${label}`);
     tasks.streamedReplies?.push({ label, start, end, completed });
+  }
+}
+
+/**
+ * Brackets one interaction for the 120 Hz frame report
+ * (`scenarios[].frameBudgets.windows` and `.areas`): the renderer-clock
+ * window from before `operation` starts to after it settles, filed under a
+ * focus area (`chat`, `scroll`, `switching`, `feedback`).
+ */
+export async function recordFrameWindow(tasks, area, label, operation) {
+  const id = `${area}:${label}`;
+  // Like task brackets, work samples and trace marks stay outside the
+  // renderer-clock window.
+  const workStart = await tasks.workSample?.();
+  await tasks.traceMark?.(`frames:start:${id}`)?.catch(() => undefined);
+  const start = await tasks.rendererMark?.(`frames:start:${id}`);
+  let completed = false;
+  try {
+    const value = await operation();
+    completed = true;
+    return value;
+  } finally {
+    const end = await tasks.rendererMark?.(`frames:end:${id}`);
+    await tasks.traceMark?.(`frames:end:${id}`)?.catch(() => undefined);
+    const work = workStart
+      ? bracketWork(workStart, await tasks.workSample())
+      : undefined;
+    tasks.frameWindows?.push({
+      area,
+      label,
+      start,
+      end,
+      completed,
+      ...(work ? { work } : {}),
+    });
   }
 }
 
@@ -4442,10 +4482,11 @@ function linearReferenceDom(page) {
       return rect.width > 0 && rect.bottom > top + 1 && rect.top < bottom - 1;
     };
     const visible = viewport ? references.filter(onScreen) : [];
+    // Chips show only the identifier; a bare reference that resolved declares
+    // its canonical URL for the message menu.
+    const resolved = (element) => element.hasAttribute('data-link-url');
     const untitled = visible.filter(
-      (element) =>
-        element.getAttribute('href') === null &&
-        !element.querySelector('[data-testid="linear-reference-title"]'),
+      (element) => element.getAttribute('href') === null && !resolved(element),
     );
     // Inspect mounted React controllers, including closed ones; card DOM is
     // already lazy and cannot distinguish the shell deferral.
@@ -4480,9 +4521,8 @@ function linearReferenceDom(page) {
       icons: references.filter((element) =>
         element.querySelector('svg[aria-hidden="true"]'),
       ).length,
-      titles:
-        scroller?.querySelectorAll('[data-testid="linear-reference-title"]')
-          .length ?? 0,
+      // Resolved bare references (the counter keeps its historical name).
+      titles: references.filter(resolved).length,
       visibleReferences: visible.length,
       visibleUntitled: untitled.length,
       untitledSample: untitled
@@ -4507,7 +4547,7 @@ async function openLinearReferenceTab(page, tabId, lastText) {
 
 /**
  * Enabled state only: the complete catalog decorated the transcript and every
- * visible bare reference resolved its title through the visibility queue.
+ * visible bare reference resolved through the visibility queue.
  */
 async function resolveVisibleLinearTitles(page) {
   let last = null;
@@ -4523,7 +4563,7 @@ async function resolveVisibleLinearTitles(page) {
     {
       timeoutMs: 60_000,
       intervalMs: 20,
-      label: 'decorated Linear references with titles',
+      label: 'decorated and resolved Linear references',
     },
   ).catch((error) => {
     throw new Error(`${error.message}; last DOM ${JSON.stringify(last)}`, {
@@ -5931,6 +5971,340 @@ const prepareTranscriptActiveTurnStop = (userDataDir, config) =>
     },
     true,
   );
+
+const FRAME_SMOOTHNESS_MARKER = 'Canopy-CFRAMESMOOTHNESS';
+const FRAME_SMOOTHNESS_REQUEST_TAG = 'frame-smoothness';
+// A trackpad delivers about one wheel event per 60 Hz frame.
+const FRAME_SMOOTHNESS_WHEEL_GAP_MS = 16;
+const FRAME_SMOOTHNESS_WHEEL_STEPS = 24;
+const FRAME_SMOOTHNESS_WHEEL_DELTA = 120;
+
+/**
+ * Markdown the frame-smoothness reply streams: headings, task lists, tables,
+ * code fences and links, the blocks a long agent reply renders while it
+ * streams.
+ */
+export function buildFrameSmoothnessStreamText(marker, characters) {
+  const suffix = `\n\n${marker} complete.`;
+  let text = '';
+  for (let section = 1; text.length < characters; section += 1) {
+    text += `${syntheticMarkdownSection(marker, section)}\n`;
+    text += `${syntheticText(`Paragraph ${section}`, 360)}\n\n`;
+  }
+  return text.slice(0, Math.max(0, characters - suffix.length)) + suffix;
+}
+
+/**
+ * The frame-smoothness fixture: the stress transcript (one long transcript
+ * and a lean sibling in Default cowork), a loaded worktree with persisted
+ * chats, enough extra Cowork entries for the sidebar to scroll, and a
+ * Markdown reply the mock provider streams after two tool calls.
+ */
+async function prepareFrameSmoothness(userDataDir, config) {
+  prepareTranscriptStreamWorkspace(userDataDir);
+  seedLoadedUiState(userDataDir, config);
+  // The stress seeder writes a workspace index of its own; keep the loaded
+  // worktree's project beside Default cowork.
+  const indexPath = path.join(userDataDir, 'workspaces', 'index.json');
+  const gitWorkspaces = JSON.parse(readFileSync(indexPath, 'utf8')).workspaces;
+  const fixture = await seedStressTranscript(userDataDir, {
+    turns: config.stressTranscriptTurns,
+    batches: config.stressTranscriptBatches,
+    finalBytes: config.stressTranscriptFinalBytes,
+    providerType: 'claude',
+  });
+  const index = JSON.parse(readFileSync(indexPath, 'utf8'));
+  index.workspaces = [
+    ...index.workspaces,
+    ...gitWorkspaces.map((workspace, order) => ({
+      ...workspace,
+      order: index.workspaces.length + order,
+    })),
+  ];
+  writeFileSync(indexPath, JSON.stringify(index));
+  const entriesPath = path.join(
+    userDataDir,
+    'workspaces',
+    fixture.workspaceId,
+    'work-entries.json',
+  );
+  const registry = JSON.parse(readFileSync(entriesPath, 'utf8'));
+  const createdAt = '2026-08-01T12:00:00.000Z';
+  for (
+    let index = 0;
+    index < config.frameSmoothnessSidebarEntries;
+    index += 1
+  ) {
+    const ordinal = String(index + 1).padStart(3, '0');
+    registry.entries.push({
+      id: `frame-smoothness-entry-${ordinal}`,
+      title: `Sidebar entry ${ordinal}`,
+      createdAt,
+      summary: {
+        version: 1,
+        title: `Sidebar entry ${ordinal}`,
+        lastMessageAt: createdAt,
+        providerType: 'claude',
+        chatCount: 0,
+        chats: [],
+      },
+    });
+  }
+  writeFileSync(entriesPath, JSON.stringify(registry));
+  const text = buildFrameSmoothnessStreamText(
+    FRAME_SMOOTHNESS_MARKER,
+    config.transcriptStreamCharacters,
+  );
+  const { steps } = buildTranscriptStreamConversation(
+    FRAME_SMOOTHNESS_MARKER,
+    text,
+    config,
+  );
+  await registerScenario(PERFORMANCE_MOCK_BASE_URL, FRAME_SMOOTHNESS_MARKER, {
+    llm: {
+      steps,
+      stepsByRequestTag: { [FRAME_SMOOTHNESS_REQUEST_TAG]: steps },
+    },
+  });
+  return {
+    ...fixture,
+    marker: FRAME_SMOOTHNESS_MARKER,
+    requestTag: FRAME_SMOOTHNESS_REQUEST_TAG,
+    characters: text.length,
+    sidebarEntries: config.frameSmoothnessSidebarEntries,
+  };
+}
+
+/** Wheel-scrolls `target` at trackpad cadence, `direction` 1 down, -1 up. */
+async function wheelAtTrackpadCadence(page, target, direction) {
+  await target.hover();
+  for (let step = 0; step < FRAME_SMOOTHNESS_WHEEL_STEPS; step += 1) {
+    await page.mouse.wheel(0, direction * FRAME_SMOOTHNESS_WHEEL_DELTA);
+    await delay(FRAME_SMOOTHNESS_WHEEL_GAP_MS);
+  }
+  await nextPaint(page);
+}
+
+/** Moves the pointer down `target` in small steps, as a hand sweeps a list. */
+async function sweepPointer(page, target) {
+  const box = await target.boundingBox();
+  if (!box) throw new Error('Hover sweep target has no box');
+  const x = box.x + box.width / 2;
+  const steps = 40;
+  for (let step = 0; step <= steps; step += 1) {
+    await page.mouse.move(x, box.y + (box.height * step) / steps);
+    await delay(FRAME_SMOOTHNESS_WHEEL_GAP_MS / 2);
+  }
+  await nextPaint(page);
+}
+
+async function runFrameSmoothness({ page, app, config, tasks, fixture }) {
+  const iterations = config.frameSmoothnessIterations;
+  const area = (name, label, operation) =>
+    recordFrameWindow(tasks, name, label, operation);
+
+  await openMainPage(page);
+  await openStressEntry(page);
+  await area('chat', 'open_long_transcript', () =>
+    recordResponsiveTask(
+      tasks,
+      'open_frame_smoothness_transcript',
+      () => openStressChat(page, fixture.turns),
+      {},
+      config.responsivenessBudgetMs,
+    ),
+  );
+
+  const transcript = page.getByTestId('chat-message-list-scroll').last();
+  await area('scroll', 'transcript', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await wheelAtTrackpadCadence(page, transcript, -1);
+      await wheelAtTrackpadCadence(page, transcript, 1);
+    }
+  });
+
+  // One streamed Markdown reply after two tool steps, cut into what a user
+  // does during it: watch it follow the bottom, type, scroll back, finish.
+  await returnToLatestStressTurn(page, fixture);
+  const panel = visibleChatPanel(page);
+  const userMessage = `[${fixture.marker}] [Canopy-Mock-Request:${fixture.requestTag}] Stream the frame-smoothness reply.`;
+  await recordStreamedReply(tasks, 'frame_smoothness_stream', async () => {
+    await area('chat', 'stream_start', async () => {
+      const composer = panel.getByRole('textbox').first();
+      await composer.fill(userMessage);
+      await panel.getByRole('button', { name: 'Send message' }).click();
+      await waitUntil(
+        () =>
+          transcriptActiveTurnCount(page, fixture).then((count) => count > 0),
+        { timeoutMs: 60_000, label: 'frame-smoothness stream to start' },
+      );
+    });
+    await area('chat', 'stream_follow', () =>
+      delay(Math.round(config.transcriptStreamMs / 3)),
+    );
+    await area('chat', 'type_during_stream', () =>
+      recordResponsiveTask(
+        tasks,
+        'type_during_frame_smoothness_stream',
+        () =>
+          typeDraftAndWaitForPaint(page, {
+            scenario: 'frame-smoothness',
+            iteration: 0,
+            characters: config.typingCharacters,
+          }),
+        { characters: config.typingCharacters },
+        config.responsivenessBudgetMs,
+      ),
+    );
+    await area('scroll', 'transcript_during_stream', async () => {
+      await wheelAtTrackpadCadence(page, transcript, -1);
+      await wheelAtTrackpadCadence(page, transcript, 1);
+      await transcript.hover();
+      await page.mouse.wheel(0, 10_000_000);
+      await nextPaint(page);
+    });
+    await area('chat', 'stream_finish', async () => {
+      await waitUntil(
+        () =>
+          transcriptActiveTurnCount(page, fixture).then((count) => count === 0),
+        {
+          timeoutMs: config.transcriptStreamMs + 120_000,
+          label: 'frame-smoothness stream to complete',
+        },
+      );
+      await expect(panel.getByText(`${fixture.marker} complete.`)).toBeAttached(
+        { timeout: 30_000 },
+      );
+      await nextPaint(page);
+    });
+  });
+
+  const leanTab = page.getByTestId(`panel-tab-panel-chat-${fixture.leanId}`);
+  const stressTab = page.getByTestId(`panel-tab-panel-chat-${fixture.chatId}`);
+  await area('switching', 'chat_tab', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      for (const tab of [leanTab, stressTab]) {
+        await tab.click();
+        await expect(tab).toHaveAttribute('aria-selected', 'true');
+        await nextPaint(page);
+      }
+    }
+  });
+
+  await area('switching', 'worktree', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+      await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
+      await nextPaint(page);
+      await openStressEntry(page);
+      await nextPaint(page);
+    }
+  });
+
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  const loadedTabs = page.locator('[role="tab"][data-panel-kind="chat"]');
+  await expect(loadedTabs).toHaveCount(config.loadedChatTabs, {
+    timeout: 30_000,
+  });
+  await area('switching', 'loaded_chat_tab', async () => {
+    for (let iteration = 0; iteration < iterations * 2; iteration += 1) {
+      const tab = loadedTabs.nth((iteration * 3 + 1) % config.loadedChatTabs);
+      await tab.click();
+      await expect(tab).toHaveAttribute('aria-selected', 'true');
+      await nextPaint(page);
+    }
+  });
+
+  await area('switching', 'page', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await page.getByTestId('sidebar-create-task').click();
+      await expect(page.getByTestId('page-home')).toBeVisible();
+      await nextPaint(page);
+      await app.openAutomationsPage();
+      await nextPaint(page);
+      await openMainPage(page);
+      await nextPaint(page);
+    }
+  });
+
+  await area('switching', 'settings', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await app.openSettings();
+      await nextPaint(page);
+      await app.closeSettings();
+      await nextPaint(page);
+    }
+  });
+
+  const sidebar = page.getByTestId('app-sidebar');
+  const sidebarToggle = page.getByTestId('sidebar-toggle');
+  await area('switching', 'sidebar_collapse', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await sidebarToggle.click();
+      await expect(sidebar).toBeHidden();
+      await nextPaint(page);
+      await sidebarToggle.click();
+      await expect(sidebar).toBeVisible();
+      await nextPaint(page);
+    }
+  });
+
+  const sidebarViewport = page.getByTestId('sidebar-scroll-container');
+  await area('scroll', 'sidebar', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await wheelAtTrackpadCadence(page, sidebarViewport, 1);
+      await wheelAtTrackpadCadence(page, sidebarViewport, -1);
+    }
+  });
+
+  await app.openSettings();
+  const settings = page.getByTestId('settings-overlay');
+  await area('scroll', 'settings', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await wheelAtTrackpadCadence(page, settings, 1);
+      await wheelAtTrackpadCadence(page, settings, -1);
+    }
+  });
+  await app.closeSettings();
+
+  await area('feedback', 'hover_sidebar', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await sweepPointer(page, sidebarViewport);
+    }
+  });
+
+  await area('feedback', 'panel_menu', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await openPanelAddMenu(page, 'group-chat');
+      await expect(page.getByTestId('panel-add-menu')).toBeVisible();
+      await nextPaint(page);
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('panel-add-menu')).toBeHidden();
+      await nextPaint(page);
+    }
+  });
+
+  await area('feedback', 'command_palette', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await page.keyboard.press(
+        `${process.platform === 'darwin' ? 'Meta' : 'Control'}+K`,
+      );
+      await expect(page.getByTestId('command-palette')).toBeVisible();
+      await nextPaint(page);
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('command-palette')).toBeHidden();
+      await nextPaint(page);
+    }
+  });
+
+  return {
+    iterations,
+    sidebarEntries: fixture.sidebarEntries,
+    streamCharacters: fixture.characters,
+    streamMs: config.transcriptStreamMs,
+    loadedChatTabs: config.loadedChatTabs,
+  };
+}
 
 export function transcriptStopFenceWaitMs(streamMs) {
   return streamMs + 250;
@@ -16869,6 +17243,16 @@ async function runClaudeGraphOrientation({
   };
 }
 
+const W5_STORE = w5StoreScenarios({
+  FatalWaitError,
+  readWorktreeSetupStatus,
+  recordTask,
+  seedWorkspace,
+  sidebarWorktreeRow,
+  startupJourneyMilestones,
+  waitUntil,
+});
+
 const SCENARIOS = {
   'sidebar-reorder': { prepare: prepareSidebarReorder, run: runSidebarReorder },
   'startup-settle': {
@@ -16962,6 +17346,10 @@ const SCENARIOS = {
   'chat-search-indexing': {
     prepare: prepareChatSearchIndexing,
     run: runChatSearchIndexing,
+  },
+  'frame-smoothness': {
+    prepare: prepareFrameSmoothness,
+    run: runFrameSmoothness,
   },
   'plugin-picker': {
     prepare: preparePluginPicker,
@@ -17103,9 +17491,27 @@ const SCENARIOS = {
     prepare: prepareCodeReviewRegistry,
     run: (context) => runCodeReviewRegistryCleanup(context, { trace: true }),
   },
+  // CAN-5532 W5 store arms; run them with `--w5-store` or `--w5-store-arms`.
+  'w5-store-startup': {
+    prepare: W5_STORE.prepare,
+    run: W5_STORE.runStartup,
+    monitorFromDomContentLoaded: true,
+  },
+  // Renderer reloads would end the monitor's renderer sampling, so they run
+  // and are timed before the measured window, which holds the IPC reloads.
+  'w5-store-reload': {
+    prepare: W5_STORE.prepare,
+    beforeCapture: W5_STORE.reloadSidebar,
+    run: W5_STORE.runReload,
+  },
+  'w5-store-writes': {
+    prepare: W5_STORE.prepare,
+    run: W5_STORE.runWrites,
+  },
 };
 
 const RELEASE_LIKE_E2E_PROVIDER_SCENARIOS = new Set([
+  'frame-smoothness',
   'transcript-streaming-tail',
   'transcript-streaming-history',
   'transcript-active-turn',
@@ -17127,11 +17533,15 @@ const RELEASE_LIKE_E2E_SCHEDULER_SCENARIOS = new Set([
   'code-graph-small-edit',
 ]);
 
-// The Ledger-off switch, the storage-worker probe and the skill suggestion
-// backfill seam exist only in E2E builds.
+// The Ledger-off switch, the storage-worker probe, the skill suggestion
+// backfill seam, and the W5 store arms, marks and counters query exist only
+// in E2E builds.
 const RELEASE_LIKE_E2E_HOOK_SCENARIOS = new Set([
   'ledger-disabled-idle',
   'skill-suggestions-backfill',
+  'w5-store-startup',
+  'w5-store-reload',
+  'w5-store-writes',
 ]);
 
 export function assertReleaseLikeScenarioSupported(name, releaseLike) {
@@ -17260,6 +17670,7 @@ async function runPerformanceScenarioAttempt(
   // of the frame-budget report, journey and phase timings, and work counts it
   // reads itself (such as code-graph build counts).
   Object.defineProperty(tasks, 'streamedReplies', { value: [] });
+  Object.defineProperty(tasks, 'frameWindows', { value: [] });
   Object.defineProperty(tasks, 'timings', { value: {} });
   Object.defineProperty(tasks, 'extraWork', { value: {} });
   const collection = scenarioWorkCollection(name, options);
@@ -17339,6 +17750,7 @@ async function runPerformanceScenarioAttempt(
       ...(options.rendererCodeCacheScheme
         ? { [RENDERER_CODE_CACHE_SCHEME_ENV]: '1' }
         : {}),
+      ...w5StoreLaunchEnv(options.w5Store),
       ...(definition.launchEnv?.(fixture, config) ?? {}),
     };
     // Lab-only startup trace of V8 compile events (`--startup-trace`).
@@ -17528,6 +17940,9 @@ async function runPerformanceScenarioAttempt(
           electronApp,
           config,
           fixture,
+          // Tasks timed here are kept; no window samples bracket them.
+          tasks,
+          launchStartedAt,
         });
         if (definition.beforeCapture) measuredStartedAt = performance.now();
         await startCapture();
@@ -17590,8 +18005,12 @@ async function runPerformanceScenarioAttempt(
       // the measured window and reports its own duration.
       const durationMs = performance.now() - measuredStartedAt;
       const frameBudgets =
-        tasks.streamedReplies.length > 0
-          ? buildFrameBudgetReport(monitoring.raw, tasks.streamedReplies)
+        tasks.streamedReplies.length > 0 || tasks.frameWindows.length > 0
+          ? buildFrameBudgetReport(
+              monitoring.raw,
+              tasks.streamedReplies,
+              tasks.frameWindows,
+            )
           : undefined;
       let startupJourney;
       if (definition.startupJourney) {

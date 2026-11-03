@@ -1,3 +1,5 @@
+import type * as SidebarModule from '../../lib/sidebar-items';
+import type * as W5FileStoreModule from '../../lib/w5-commit-log-file-store';
 import {
   CoreWorkspaceSchema,
   CoreWorktreeSchema,
@@ -189,6 +191,8 @@ describe('core workspace read projections', () => {
           file: sidebar,
           authority: 'partial',
           indexAuthority: 'ok',
+          indexedWorkspaceIds: ['ws-1'],
+          workspaceReads: new Map([['ws-1', { worktrees: 'unreadable' }]]),
         }),
         readWorkspaceConfigDetailed: jest.fn().mockResolvedValue({
           config,
@@ -232,7 +236,10 @@ describe('core workspace read projections', () => {
     });
     expect(allWorktrees).toMatchObject({
       legacyResult: sidebar,
-      legacyAuthority: { authority: 'partial' },
+      legacyAuthority: {
+        authority: 'partial',
+        worktreePreserveWorkspaceIds: ['ws-1'],
+      },
     });
     // The authority comes from the same read as the content.
     expect(readAllSidebarItems).not.toHaveBeenCalled();
@@ -1744,5 +1751,75 @@ describe('list continuation over pinned snapshots (CAN-5319)', () => {
       ),
     ).rejects.toMatchObject(refused('failed_precondition'));
     expect(reads.readAllSidebarItemsSnapshot).not.toHaveBeenCalled();
+  });
+});
+
+describe('unreadable workspace index (CAN-5565)', () => {
+  const realSidebar = jest.requireActual<typeof SidebarModule>(
+    '../../lib/sidebar-items',
+  );
+  const fileStore = jest.requireActual<typeof W5FileStoreModule>(
+    '../../lib/w5-commit-log-file-store',
+  );
+  let indexState: 'unreadable' | 'absent';
+  let runtime: DesktopCanopyDispatcher;
+
+  beforeEach(() => {
+    indexState = 'unreadable';
+    fileStore.__setDesktopW5FileStoreForTests({
+      read: () => Promise.resolve({ state: indexState }),
+      replace: () => Promise.reject(new Error('Read must not write')),
+      remove: () => Promise.reject(new Error('Read must not write')),
+    });
+    runtime = createDesktopRuntime({
+      workspaceServices: {
+        ...makeRuntime(fixture('single-repo')).reads,
+        readWorkspaceIndexEntry: realSidebar.readWorkspaceIndexEntry,
+        readWorkspaceIndexEntryDetailed:
+          realSidebar.readWorkspaceIndexEntryDetailed,
+      },
+    });
+  });
+
+  afterEach(() => fileStore.__setDesktopW5FileStoreForTests(undefined));
+
+  it.each([
+    'core.workspace.get',
+    'core.worktree.list',
+    'core.worktree.get',
+  ] as const)(
+    '%s refuses an unreadable index instead of proving absence',
+    async (operation) => {
+      const params = {
+        scope: { workspaceId: 'ws-1' },
+        workspaceId: 'ws-1',
+        worktreeId: 'wt-1',
+      };
+      // Each operation's schema rejects unrelated keys.
+      const read =
+        operation === 'core.workspace.get'
+          ? runtime.query(
+              operation,
+              { workspaceId: params.workspaceId },
+              { caller },
+            )
+          : operation === 'core.worktree.list'
+            ? runtime.query(operation, { scope: params.scope }, { caller })
+            : runtime.query(
+                operation,
+                { scope: params.scope, worktreeId: params.worktreeId },
+                { caller },
+              );
+      await expect(read).rejects.toMatchObject({
+        payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      });
+    },
+  );
+
+  it('still reports not found for an authoritatively absent index', async () => {
+    indexState = 'absent';
+    await expect(
+      runtime.query('core.workspace.get', { workspaceId: 'ws-1' }, { caller }),
+    ).rejects.toMatchObject({ payload: { kind: 'not_found' } });
   });
 });

@@ -2,7 +2,8 @@
 
 import { useState, type JSX } from 'react';
 import { WORKSPACE_LABEL, WORKSPACE_LABEL_PLURAL } from '@canopy/protocol';
-import { Button } from '@canopy/ui-shared';
+import { Button, SettingsSelect } from '@canopy/ui-shared';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   MCP_WORKSPACE_DEFAULTS_HINT,
@@ -26,9 +27,6 @@ export interface McpWorkspaceDefaultsSectionProps {
   readonly onRemove: (workspaceId: string) => Promise<void>;
   readonly testId: string;
 }
-
-const SELECT_CLASS =
-  'focus-ring min-w-0 max-w-56 truncate rounded-md bg-base px-2 py-1 text-s fg-primary ring-1 ring-inset ring-line-base';
 
 /**
  * Where a signed-in MCP server is on by default. Signing in only makes the
@@ -99,27 +97,23 @@ export function McpWorkspaceDefaultsSection({
       </p>
       <div className="flex flex-wrap items-center gap-2">
         {workspaces.length > 1 && (
-          <select
+          <SettingsSelect
             aria-label={WORKSPACE_LABEL}
             value={target.id}
+            width="fit"
             disabled={pending !== null}
-            onChange={(event): void => {
-              setTargetId(event.target.value);
+            onValueChange={(value): void => {
+              setTargetId(value);
               setError(null);
             }}
-            className={SELECT_CLASS}
+            // Project names are user-authored: session replay masks them.
+            replayPrivacy={{ maskClassName: REPLAY_MASK_CLASS }}
             data-testid={`${testId}-select`}
-          >
-            {workspaces.map((workspace) => (
-              <option
-                key={workspace.id}
-                value={workspace.id}
-                className={REPLAY_MASK_CLASS}
-              >
-                {workspace.name}
-              </option>
-            ))}
-          </select>
+            options={workspaces.map((workspace) => ({
+              value: workspace.id,
+              label: workspace.name,
+            }))}
+          />
         )}
         {target.enabled === true ? (
           <Button
@@ -153,15 +147,7 @@ export function McpWorkspaceDefaultsSection({
           </Button>
         )}
       </div>
-      {error && (
-        <p
-          role="status"
-          className="text-xs fg-destructive"
-          data-testid={`${testId}-error`}
-        >
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error} testId={`${testId}-error`} />
     </section>
   );
 }

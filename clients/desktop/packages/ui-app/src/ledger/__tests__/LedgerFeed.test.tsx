@@ -1283,10 +1283,14 @@ describe('LedgerFeed composer and scope rows', () => {
     click(buttonByTestId('ledger-feed-add-entry'));
 
     const target = byTestId('ledger-feed-target');
+    // Each picker is named by its heading (aria-labelledby).
     expect(
       Array.from(
-        target.querySelectorAll('label'),
-        (label) => label.textContent,
+        target.querySelectorAll('[aria-labelledby]'),
+        (picker) =>
+          document.getElementById(
+            picker.getAttribute('aria-labelledby')?.split(' ')[0] ?? '',
+          )?.textContent,
       ),
     ).toEqual(['Project', 'Task', 'Owner']);
     expect(

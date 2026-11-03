@@ -116,7 +116,7 @@ describe('ShareInstallDialog', () => {
     });
     expect(onClose).not.toHaveBeenCalled();
     const primary = byTestId('share-install-primary');
-    expect(primary instanceof HTMLButtonElement && primary.disabled).toBe(true);
+    expect(primary?.getAttribute('aria-disabled')).toBe('true');
   });
 
   it('renders inputs, a blocker line and a disabled primary', () => {

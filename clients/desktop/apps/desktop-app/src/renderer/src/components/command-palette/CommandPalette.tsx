@@ -16,11 +16,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
+  DialogModal,
   Kbd,
   KeyHintFooter,
   SearchEmptyState,
   SearchField,
-  useOverlayEscape,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { pickerKeyHints, shortcutKeys } from '@canopy/ui-shared/lib/shortcuts';
 import { isCoworkChatTarget } from '@/lib/cowork';
@@ -133,7 +134,6 @@ export function CommandPalette({
   const queryTokenRef = useRef(0);
   const queryRef = useRef(query);
   const queryRevisionRef = useRef(0);
-  useOverlayEscape(true, onClose);
   if (queryRef.current !== query) {
     queryRef.current = query;
     queryRevisionRef.current += 1;
@@ -836,19 +836,20 @@ export function CommandPalette({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-dropdown flex items-center justify-center bg-overlay-scrim px-4"
-      onClick={onClose}
+    <DialogModal
+      onClose={onClose}
+      title="Search"
+      titleId="command-palette-title"
+      placement="top"
+      maxWidth="2xl"
+      inset="flush"
+      headerBorder={false}
+      scrollableBody={false}
+      dataTestId="command-palette"
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Search"
-        data-testid="command-palette"
-        className="flex w-full max-w-160 flex-col overflow-hidden rounded-2xl bg-card shadow-xl"
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
-      >
+      {/* The palette's own keys: Escape closes from anywhere inside, even a
+          focused result row, which the dialog's Escape leaves to the list. */}
+      <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
         <div className="border-b">
           <SearchField
             ref={inputRef}
@@ -896,7 +897,7 @@ export function CommandPalette({
         </div>
         {/* Session replay records the results; a transcript or plan snippet
             row blocks its own snippet (`PaletteResultRow`). */}
-        <div className="max-h-96 overflow-y-auto">
+        <div className="max-h-96 min-h-0 overflow-y-auto">
           {flatItems.length === 0 ? (
             <SearchEmptyState
               testId="command-palette-empty"
@@ -972,16 +973,9 @@ export function CommandPalette({
             </ul>
           )}
         </div>
-        {errorMessage && (
-          <div
-            role="alert"
-            className="border-t px-4 py-3 text-s fg-destructive"
-          >
-            {errorMessage}
-          </div>
-        )}
+        <ErrorBanner error={errorMessage} className="mx-3 mb-3" />
         <KeyHintFooter hints={pickerKeyHints('open')} />
       </div>
-    </div>
+    </DialogModal>
   );
 }

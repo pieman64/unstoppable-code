@@ -30,6 +30,8 @@ export function createDesktopWorkspaceCommitEventHandlers(): WorkspaceCommitEven
     notifyPortalStructureChanged,
     refreshWorkspaceRegistries,
     // An undecided reconcile leaves the session revision behind the file.
+    // Past its bound it also returns undecided, so a stalled commit of the
+    // manifest holds later events no longer than the bridge's retries.
     reconcileManifestPluginDefaults: async (workspaceId) => {
       if (!(await reconcileManifestPluginDefaults(workspaceId, false)))
         throw new ManifestPluginDefaultsUndecidedError(workspaceId);

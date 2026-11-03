@@ -4,88 +4,48 @@
 // accounts, prices, feature flags and the service locator are host inputs
 // here, and the harness in `golden/` fixes them for every host. Any change
 // to a stored line or an aggregated read fails the snapshot.
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   CostScopeRef,
   CostScopeView,
   CostViewResult,
 } from '@canopy/protocol/cost-view';
-import type { OpenAiPricingResponseV1 } from '@canopy/protocol/openai-pricing';
 import type {
   AgentAuditEntry,
   AgentProviderType,
 } from '@canopy/desktop-shared/types';
-import type * as AttributionModule from '../../account-proxy/attribution';
-import type * as PipelineUsageModule from '../../pipelines/pipeline-usage-events';
-import type * as ServiceModule from '../service';
 import type { OpenAiPricingCacheState } from '../../openai-pricing/pricing-client';
 import {
-  GOLDEN_CODEX_MODEL,
-  GOLDEN_CODEX_PRICES,
-  GOLDEN_PROVIDER_ACCOUNTS,
   captureAggregates,
   captureStores,
   diffGolden,
   readFinalAuditLines,
   renderGolden,
   runGoldenScenario,
-  type GoldenObservabilityHost,
-  type GoldenObservabilityIngest,
   type GoldenAggregates,
   type GoldenRun,
   type GoldenScenario,
 } from './golden/harness';
+import {
+  GOLDEN_PRICING_STATE,
+  createDesktopHost,
+  disposeAll,
+  finalAuditEntries,
+  goldenAccount,
+  restoreGoldenEnvironment,
+  useGoldenTimers,
+  type DesktopHost,
+} from './golden/desktop-host';
 import { CHUNKING_SCENARIO, GOLDEN_SCENARIOS } from './golden/scenarios';
 
-const GOLDEN_PRICING_PAYLOAD: OpenAiPricingResponseV1 = {
-  version: 1,
-  currency: 'usd',
-  tokenUnit: 'per_1m_tokens',
-  source: {
-    pricingUrl: 'https://example.invalid/api-pricing',
-    codexPricingUrl: 'https://example.invalid/codex-pricing',
-    codexSpeedUrl: 'https://example.invalid/codex-speed',
-    fetchedAt: '2026-10-20T00:00:00.000Z',
-    generatedBy: 'observability-golden',
-  },
-  cache: { maxAgeSeconds: 3600, staleWhileRevalidateSeconds: 86400 },
-  basis: {
-    tokenPricing: 'openai_api_standard',
-    fastModePricing: 'codex_credit_adjusted_standard_equivalent',
-    notes: ['golden fixture'],
-  },
-  serviceTierAliases: { default: 'standard', priority: 'fast' },
-  models: {
-    [GOLDEN_CODEX_MODEL]: {
-      model: GOLDEN_CODEX_MODEL,
-      standard: GOLDEN_CODEX_PRICES,
-    },
-  },
-  unpricedModels: {},
-  billableTools: {},
-};
-
-const mockPricing: OpenAiPricingCacheState = {
-  payload: GOLDEN_PRICING_PAYLOAD,
-  fetchedAt: GOLDEN_PRICING_PAYLOAD.source.fetchedAt,
-  loadedFrom: 'memory',
-  stale: false,
-};
-
-function mockAccount(
-  provider: AgentProviderType,
-):
-  | (typeof GOLDEN_PROVIDER_ACCOUNTS)[keyof typeof GOLDEN_PROVIDER_ACCOUNTS]
-  | null {
-  return provider === 'claude' || provider === 'codex'
-    ? GOLDEN_PROVIDER_ACCOUNTS[provider]
-    : null;
-}
+const mockPricing = GOLDEN_PRICING_STATE;
+const mockAccount = goldenAccount;
 
 /** The incarnation `getObservabilityService()` returns to producers. */
 let mockCurrentService: unknown = null;
+function setCurrentService(service: unknown): void {
+  mockCurrentService = service;
+}
 
 jest.mock('../index', () => ({
   getObservabilityService: (): unknown => mockCurrentService,
@@ -177,86 +137,8 @@ import type {
   CostScopeLocation,
   CostTurnRecord,
 } from '../../cost-index/types';
-import { normalizeAuditEntry } from '../audit-entry-parser';
 
 jest.setTimeout(300_000);
-
-interface DesktopIncarnation {
-  service: ServiceModule.ObservabilityService;
-  attribution: typeof AttributionModule;
-  pipelineUsage: typeof PipelineUsageModule;
-}
-
-interface DesktopHost extends GoldenObservabilityHost {
-  readonly incarnations: DesktopIncarnation[];
-}
-
-const roots: string[] = [];
-let originalDataDir: string | undefined;
-
-/**
- * Each boot loads a fresh module graph, so the service, the Claude cost
- * ledger and account-proxy attribution start empty, as in a new process.
- */
-function createDesktopHost(): DesktopHost {
-  const parent = realpathSync(
-    mkdtempSync(join(tmpdir(), 'observability-golden-')),
-  );
-  roots.push(parent);
-  const dataRoot = join(parent, 'data');
-  process.env.CANOPY_DATA_DIR = dataRoot;
-  const incarnations: DesktopIncarnation[] = [];
-  const current = (): DesktopIncarnation => {
-    const incarnation = incarnations[incarnations.length - 1];
-    if (!incarnation) throw new Error('No incarnation booted');
-    return incarnation;
-  };
-  return {
-    dataRoot,
-    incarnations,
-    boot: (): Promise<GoldenObservabilityIngest> => {
-      let incarnation: DesktopIncarnation | undefined;
-      jest.isolateModules(() => {
-        const service = new (jest.requireActual<typeof ServiceModule>(
-          '../service',
-        ).ObservabilityService)();
-        incarnation = {
-          service,
-          attribution: jest.requireActual<typeof AttributionModule>(
-            '../../account-proxy/attribution',
-          ),
-          pipelineUsage: jest.requireActual<typeof PipelineUsageModule>(
-            '../../pipelines/pipeline-usage-events',
-          ),
-        };
-      });
-      if (!incarnation) throw new Error('Service did not load');
-      incarnations.push(incarnation);
-      mockCurrentService = incarnation.service;
-      return Promise.resolve(incarnation.service);
-    },
-    setClock: (iso): void => {
-      jest.setSystemTime(new Date(iso));
-    },
-    advanceClock: (ms): void => {
-      jest.setSystemTime(new Date(Date.now() + ms));
-    },
-    recordAccountProxyResponse: (response): void => {
-      current().attribution.recordAccountProxyResponse({
-        sessionId: response.sessionId,
-        connectionId: response.connectionId,
-        traceHeader: `20261020090000-${response.authIndex}-${response.requestId}`,
-        lookupAccount: () => ({
-          label: response.label,
-          provider: response.provider,
-        }),
-      });
-    },
-    recordPipelineRunEvent: (event): void => {
-      current().pipelineUsage.recordPipelineUsageEvent(event);
-    },
-  };
-}
 
 function auditScopes(
   entries: readonly AgentAuditEntry[],
@@ -284,12 +166,6 @@ function auditScopes(
     scopes.set(key, scope);
   }
   return scopes;
-}
-
-function finalAuditEntries(lines: readonly unknown[]): AgentAuditEntry[] {
-  return lines
-    .map((line) => normalizeAuditEntry(line))
-    .filter((entry) => entry !== null);
 }
 
 /**
@@ -385,38 +261,6 @@ async function buildCostIndexViews(
   return { views, scopeViews };
 }
 
-async function disposeAll(host: DesktopHost): Promise<void> {
-  for (const { service } of host.incarnations) {
-    await service.dispose().catch(() => undefined);
-  }
-}
-
-beforeAll(() => {
-  originalDataDir = process.env.CANOPY_DATA_DIR;
-});
-
-function useGoldenTimers(): void {
-  jest.useFakeTimers({
-    doNotFake: [
-      'nextTick',
-      'setImmediate',
-      'queueMicrotask',
-      'performance',
-      'hrtime',
-    ],
-  });
-}
-
-function restoreGoldenEnvironment(): void {
-  jest.useRealTimers();
-  mockCurrentService = null;
-  if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
-  else process.env.CANOPY_DATA_DIR = originalDataDir;
-  for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
 interface CapturedScenario {
   host: DesktopHost;
   stores: string;
@@ -429,7 +273,7 @@ interface CapturedScenario {
 async function captureScenario(
   scenario: GoldenScenario,
 ): Promise<CapturedScenario> {
-  const host = createDesktopHost();
+  const host = createDesktopHost(setCurrentService);
   const run = await runGoldenScenario(host, scenario);
   const aggregates = await captureAggregates(run.context.ingest);
   const stores = await captureStores(host.dataRoot);
@@ -463,7 +307,7 @@ describe.each(GOLDEN_SCENARIOS.map((scenario) => [scenario.name, scenario]))(
 
     afterAll(async () => {
       await disposeAll(captured.host);
-      restoreGoldenEnvironment();
+      restoreGoldenEnvironment(setCurrentService);
     });
 
     it('stores the golden records', () => {
@@ -538,7 +382,7 @@ describe('observability golden: pipeline output chunking', () => {
   beforeAll(async () => {
     useGoldenTimers();
     for (const chunking of ['whole', 'per-character', 'crlf-split'] as const) {
-      const host = createDesktopHost();
+      const host = createDesktopHost(setCurrentService);
       hosts.push(host);
       await runGoldenScenario(host, CHUNKING_SCENARIO, chunking);
       captures.push(await captureStores(host.dataRoot));
@@ -547,7 +391,7 @@ describe('observability golden: pipeline output chunking', () => {
 
   afterAll(async () => {
     for (const host of hosts) await disposeAll(host);
-    restoreGoldenEnvironment();
+    restoreGoldenEnvironment(setCurrentService);
   });
 
   it('stores the same records however pipeline output is chunked', () => {

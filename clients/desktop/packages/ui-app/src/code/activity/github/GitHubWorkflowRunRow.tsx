@@ -1,11 +1,7 @@
 'use client';
 
 import { memo, useMemo, type JSX, type ReactNode } from 'react';
-import {
-  DagProgressBar,
-  type DagJobMeta,
-  type DagJobStatus,
-} from '@canopy/ui-shared/components';
+import { DagProgressBar, type DagJobMeta } from '@canopy/ui-shared/components';
 import {
   formatRelativeTime,
   statusBadgeClassName,
@@ -33,18 +29,12 @@ export type GitHubWorkflowRunRowState =
       readonly terminal: boolean;
     };
 
-export interface GitHubWorkflowRunRowJob {
-  readonly jobId: string;
-  readonly name: string;
-  /** GitHub job status (`queued`, `in_progress`, `completed`, ...). */
-  readonly status: string;
-  readonly conclusion: string | null;
-  readonly htmlUrl: string;
-  /** GitHub's `created_at`; drives dependency-tier inference. */
-  readonly createdAt?: string;
-  readonly startedAt?: string;
-  readonly completedAt?: string;
-}
+export type { GitHubWorkflowRunRowJob } from '@canopy/ui-shared/lib/github-workflow-display';
+export { githubWorkflowJobDagStatus } from '@canopy/ui-shared/lib/github-workflow-display';
+import {
+  githubWorkflowJobDagStatus,
+  type GitHubWorkflowRunRowJob,
+} from '@canopy/ui-shared/lib/github-workflow-display';
 
 export interface GitHubWorkflowRunRowData {
   readonly repository: string;
@@ -143,42 +133,6 @@ export function githubWorkflowRunRowStatus(
     muted: !state.terminal,
     active: !state.terminal,
   };
-}
-
-/** GitHub job status/conclusion → shared DAG dot status. */
-export function githubWorkflowJobDagStatus(
-  job: Pick<GitHubWorkflowRunRowJob, 'status' | 'conclusion'>,
-): DagJobStatus | undefined {
-  if (job.status === 'completed') {
-    switch (job.conclusion) {
-      case 'success':
-        return 'success';
-      case 'failure':
-      case 'timed_out':
-      case 'startup_failure':
-        return 'failure';
-      case 'cancelled':
-        return 'cancelled';
-      case 'skipped':
-      case 'neutral':
-      case 'stale':
-        return 'skipped';
-      case 'action_required':
-        return 'paused';
-      default:
-        return undefined;
-    }
-  }
-  if (job.status === 'in_progress') return 'running';
-  if (
-    job.status === 'queued' ||
-    job.status === 'pending' ||
-    job.status === 'waiting' ||
-    job.status === 'requested'
-  ) {
-    return 'pending';
-  }
-  return undefined;
 }
 
 /** `CI #42 · attempt 2`, falling back to the run id when GitHub gave no name. */

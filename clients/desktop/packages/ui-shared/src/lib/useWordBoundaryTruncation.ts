@@ -36,6 +36,28 @@ function layoutAncestor(element: HTMLElement, view: Window): HTMLElement {
   return element.ownerDocument.body;
 }
 
+/**
+ * The narrowest clipping inline wrapper between the element and its layout
+ * ancestor. Such a wrapper (an `overflow-hidden` `max-w-full` span inside a
+ * shrink-to-fit chip) can be narrower than the element's own capped width.
+ */
+function clipWidth(element: HTMLElement, view: Window): number {
+  let width = Number.POSITIVE_INFINITY;
+  for (
+    let node = element.parentElement;
+    node !== null;
+    node = node.parentElement
+  ) {
+    const style = view.getComputedStyle(node);
+    if (!style.display.startsWith('inline') && style.display !== 'contents') {
+      break;
+    }
+    if (style.overflowX !== 'visible')
+      width = Math.min(width, node.clientWidth);
+  }
+  return width;
+}
+
 function writeAttribute(
   element: HTMLElement,
   name: string,
@@ -115,7 +137,10 @@ export function useWordBoundaryTruncation(
         apply('', null, null);
         return;
       }
-      const available = element.getBoundingClientRect().width;
+      const available = Math.min(
+        element.getBoundingClientRect().width,
+        clipWidth(element, view),
+      );
       const limit =
         maxWords === undefined ? null : wordLimitEnd(node.data, maxWords);
       const clampAt = (end: number, ellipsis: number): number =>

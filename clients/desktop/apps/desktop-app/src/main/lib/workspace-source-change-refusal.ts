@@ -2,7 +2,10 @@ export type WorkspaceSourceChangesRefusal =
   | 'not-found'
   | 'not-single-repo'
   | 'no-source-repository'
-  | 'invalid-request';
+  | 'invalid-request'
+  | 'configuration-unavailable'
+  | 'repository-not-local'
+  | 'repository-id-conflict';
 
 /**
  * `core.workspace.sourceChanges.apply` was refused (CAN-3819). Only a refusal

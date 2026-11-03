@@ -246,7 +246,7 @@ describe('ChangeReviewPage sections', () => {
       'Input required',
       'Advisor running',
       'Workflow',
-      'Retry',
+      'Try again',
       'Start over',
     ]) {
       expect(row?.textContent).toContain(text);

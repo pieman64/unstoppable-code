@@ -345,7 +345,7 @@ describe('ShareAgentModal', () => {
       'existing agent share could not be loaded',
     );
     expect(byTestId('share-agent-unavailable-action')?.textContent).toBe(
-      'Retry',
+      'Try again',
     );
     expect(shareButton()).toBeNull();
   });

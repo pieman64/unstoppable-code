@@ -1,5 +1,4 @@
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
-import { confirmSetupQueueInputDispatch } from '../setup-queue-dispatch';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useDelegationTranscriptStore } from '../../delegationTranscriptStore';
 import {
@@ -406,23 +405,6 @@ export const createEventsSlice: StateCreator<
     installRuntimeDivergenceDetectorSafely();
     const key = `${event.projectId}/${event.worktreeId}`;
     const rawData = event.data;
-    // A fast completed turn can already look stale to the compatibility
-    // reducer below. This live acceptance still proves that our identified
-    // setup input started; resync/cancellation have already retired observers.
-    if (
-      isRecord(rawData) &&
-      rawData.type === CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE &&
-      typeof rawData.canopy_turn_user_message_id === 'string'
-    ) {
-      confirmSetupQueueInputDispatch(
-        {
-          projectId: event.projectId,
-          worktreeId: event.worktreeId,
-          chatId: event.chatId,
-        },
-        rawData.canopy_turn_user_message_id,
-      );
-    }
     // A logged delegate's progress is live-only: it is never committed, so
     // its card reads it from here (`delegated-agent-transcript.ts`).
     if (

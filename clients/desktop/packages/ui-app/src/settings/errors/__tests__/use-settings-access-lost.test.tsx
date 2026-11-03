@@ -10,7 +10,7 @@ import {
 import { SETTINGS_LOAD_ERROR_COPY } from '../settings-error-copy';
 import {
   useSettingsAccessLostRefresh,
-  useSettingsLoadErrorCopy,
+  useSettingsLoadFailure,
 } from '../use-settings-access-lost';
 
 (
@@ -35,18 +35,27 @@ describe('settings access-lost hooks', () => {
   });
 
   function renderHooks(): {
-    loadCopy: ReturnType<typeof useSettingsLoadErrorCopy>;
+    loadCopy: (
+      error: unknown,
+      known?: Parameters<ReturnType<typeof useSettingsLoadFailure>>[1],
+    ) => string;
     refreshOnAccessLost: ReturnType<typeof useSettingsAccessLostRefresh>;
     refresh: jest.Mock<void, []>;
   } {
     const refresh = jest.fn<void, []>();
     const { host } = createTestSettingsHost({ router: { refresh } });
-    let loadCopy: ReturnType<typeof useSettingsLoadErrorCopy> | null = null;
+    let loadCopy:
+      | ((
+          error: unknown,
+          known?: Parameters<ReturnType<typeof useSettingsLoadFailure>>[1],
+        ) => string)
+      | null = null;
     let refreshOnAccessLost: ReturnType<
       typeof useSettingsAccessLostRefresh
     > | null = null;
     function Probe(): JSX.Element | null {
-      loadCopy = useSettingsLoadErrorCopy('organization.test');
+      const loadFailure = useSettingsLoadFailure('organization.test');
+      loadCopy = (error, known): string => loadFailure(error, known).copy;
       refreshOnAccessLost = useSettingsAccessLostRefresh();
       return null;
     }

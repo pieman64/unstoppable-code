@@ -2,12 +2,18 @@
 
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  Notice,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import { useSettingsClient } from '../host';
 import { previewMemorySearch } from './api';
 import { useMemoryErrorCopy } from './memory-error-copy';
 import { gateSummary } from './RetrievalPreview';
 import { FactCard } from './FactCard';
+import type { SettingsFailure } from '../errors';
 
 interface GraphRetrievalPanelProps {
   orgId: string;
@@ -30,7 +36,7 @@ export function GraphRetrievalPanel({
   const errorCopy = useMemoryErrorCopy();
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const requestSequence = useRef(0);
 
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
@@ -48,7 +54,7 @@ export function GraphRetrievalPanel({
       }
     } catch (caught) {
       if (requestSequence.current === sequence) {
-        setError(errorCopy.actionCopy(caught, 'preview retrieval'));
+        setError(errorCopy.actionFailure(caught, 'preview retrieval'));
       }
     } finally {
       if (requestSequence.current === sequence) {
@@ -74,13 +80,12 @@ export function GraphRetrievalPanel({
   return (
     <div className="rounded-xl border bg-card p-4">
       <form onSubmit={(event) => void submit(event)} className="flex gap-2">
-        <input
-          type="search"
+        <SearchField
           value={query}
-          onChange={(event) => onQueryChange(event.target.value)}
+          onValueChange={onQueryChange}
           placeholder="Preview retrieval and highlight matched entities"
           aria-label="Retrieval highlight query"
-          className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+          className="min-w-0 flex-1"
         />
         <Button
           type="submit"
@@ -97,39 +102,31 @@ export function GraphRetrievalPanel({
         counts against the shared search rate limit.
       </p>
 
-      {error !== null && (
-        <p className="mt-3 rounded-lg bg-destructive-subtle px-3 py-2 text-s fg-destructive">
-          {error}
-        </p>
-      )}
+      <ErrorBanner
+        className="mt-3"
+        error={error?.copy}
+        details={error?.details}
+      />
 
       {preview !== null && (
         <div className="mt-3 space-y-3">
-          <div
-            className={`rounded-lg border px-3 py-2 ${
-              preview.gatePassed
-                ? 'border-line-positive/40 bg-success-subtle'
-                : 'border-line-attention/40 bg-warning-subtle'
-            }`}
+          <Notice
+            intent={preview.gatePassed ? 'positive' : 'attention'}
+            title={preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
             data-testid="graph-retrieval-gate"
+            detail={
+              <span className="font-mono">
+                top rerank{' '}
+                {preview.diagnostics.topRerankScore?.toFixed(4) ?? '—'} · top
+                cosine {preview.diagnostics.topCosineScore?.toFixed(4) ?? '—'} ·{' '}
+                {preview.candidates.length} near-miss candidate
+                {preview.candidates.length === 1 ? '' : 's'} ·{' '}
+                {preview.diagnostics.latencyMs} ms
+              </span>
+            }
           >
-            <p
-              className={`text-xs font-semibold ${
-                preview.gatePassed ? 'fg-success' : 'fg-warning'
-              }`}
-            >
-              {preview.gatePassed ? 'Gate passed' : 'Gate blocked'}
-            </p>
-            <p className="mt-1 text-s fg-primary">{gateSummary(preview)}</p>
-            <p className="mt-1 font-mono text-xs fg-secondary">
-              top rerank {preview.diagnostics.topRerankScore?.toFixed(4) ?? '—'}{' '}
-              · top cosine{' '}
-              {preview.diagnostics.topCosineScore?.toFixed(4) ?? '—'} ·{' '}
-              {preview.candidates.length} near-miss candidate
-              {preview.candidates.length === 1 ? '' : 's'} ·{' '}
-              {preview.diagnostics.latencyMs} ms
-            </p>
-          </div>
+            {gateSummary(preview)}
+          </Notice>
           {hiddenEntityCount > 0 && (
             <p className="text-xs fg-warning">
               {hiddenEntityCount} retrieved{' '}

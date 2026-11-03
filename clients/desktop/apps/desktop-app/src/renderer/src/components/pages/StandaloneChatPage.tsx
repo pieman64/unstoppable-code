@@ -415,7 +415,6 @@ export function StandaloneChatPage(): JSX.Element {
           <div className="px-4 pt-4">
             <Notice
               intent="destructive"
-              role="alert"
               data-testid="org-default-chats-provision-error"
               actions={
                 <NoticeButton

@@ -54,6 +54,11 @@ export interface WorktreeCreationRequest<
    */
   callerSource?: WorktreeCreationCallerSource;
   /**
+   * A keyed wire call's receipt caller (W7b-3), derived from its principal;
+   * replaces `desktop-host:<callerSource>`. Never part of the fingerprint.
+   */
+  receiptCaller?: string;
+  /**
    * Called when a keyed create returns its saved outcome instead of creating.
    * Never part of the service request or the fingerprint.
    */
@@ -191,6 +196,7 @@ function admitCreation(
   // Keyed-boundary controls: never service options or fingerprint parameters.
   delete lifecycle.idempotencyKey;
   delete lifecycle.callerSource;
+  delete lifecycle.receiptCaller;
   delete lifecycle.onKeyedReplay;
   validateId(workspaceId, 'workspaceId');
   if (!isWritableScope(workspaceId)) {
@@ -271,7 +277,9 @@ export async function createWorktreeFromSelection(
     };
     return runKeyedW5Operation(
       {
-        caller: `desktop-host:${request.callerSource ?? 'worktree-selection'}`,
+        caller:
+          request.receiptCaller ??
+          `desktop-host:${request.callerSource ?? 'worktree-selection'}`,
         operation: 'core.worktree.create',
         idempotencyKey: request.idempotencyKey,
         parameters,

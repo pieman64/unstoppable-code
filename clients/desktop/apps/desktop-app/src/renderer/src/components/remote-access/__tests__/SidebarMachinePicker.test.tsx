@@ -131,6 +131,11 @@ describe('SidebarMachinePicker', () => {
       STUDIO_WINDOW,
     );
     render();
+    expect(
+      maybeByTestId('sidebar-machine-picker-status')?.getAttribute(
+        'data-dot-tone',
+      ),
+    ).toBe('success');
     openMenu();
     await act(async () => {
       byTestId('sidebar-machine-option-dev-studio').click();
@@ -175,7 +180,9 @@ describe('SidebarMachinePicker', () => {
     expect(trigger.getAttribute('aria-label')).toBe(
       'Computer: Studio desktop, Connecting…',
     );
-    expect(maybeByTestId('sidebar-machine-picker-status')).not.toBeNull();
+    // Connecting is named by the label; the connection Dot is only green
+    // (connected) or red (can't connect).
+    expect(maybeByTestId('sidebar-machine-picker-status')).toBeNull();
 
     openMenu();
     expect(

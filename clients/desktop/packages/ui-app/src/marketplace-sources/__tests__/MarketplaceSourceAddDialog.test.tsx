@@ -123,7 +123,7 @@ describe('MarketplaceSourceAddDialog (CAN-4267)', () => {
       expect(dialog.textContent).toContain(
         'Add a Claude or Codex marketplace.',
       );
-      expect(dialog.querySelector('label span')?.textContent).toBe(field);
+      expect(dialog.querySelector('label')?.textContent).toBe(field);
       const buttons = Array.from(dialog.querySelectorAll('button')).map(
         (button) => button.textContent,
       );

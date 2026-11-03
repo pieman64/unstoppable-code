@@ -15,7 +15,11 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 
 function receipt(file) {
   try {
@@ -135,6 +139,7 @@ for (const terminalFixture of [
         ),
       ).not.toContain('linux:fixture-editor.desktop');
 
+      await captureDaemonDryRunEvidence(electronApp);
       const closed = electronApp.waitForEvent('close');
       await electronApp
         .evaluate(({ app: electron }) => {

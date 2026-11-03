@@ -38,6 +38,7 @@ export function ImportProjectsModal({
   const [phase, setPhase] = useState<ImportProjectsPhase>('scanning');
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Import projects"
       subtitle={subtitleForPhase(phase)}
@@ -47,7 +48,7 @@ export function ImportProjectsModal({
       dataTestId="import-projects-modal"
     >
       {/* DialogModal pads only its header; the body inset matches it. */}
-      <div className="p-5">
+      <div className="p-6">
         <ImportProjectsPanel
           {...(target.providers ? { providers: target.providers } : {})}
           modalEntry={target.source}

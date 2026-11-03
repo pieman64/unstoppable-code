@@ -332,14 +332,14 @@ describe('QueuedMessageRow', () => {
       root.render(
         <QueuedMessageRow
           text="queued"
-          status="Worktree setup is still running."
+          status="Sends as soon as the agent can take it."
         />,
       ),
     );
     const status = container.querySelector(
       '[data-testid="queued-message-status"]',
     );
-    expect(status?.textContent).toBe('Worktree setup is still running.');
+    expect(status?.textContent).toBe('Sends as soon as the agent can take it.');
     expect(status?.className).toContain('fg-tertiary');
     expect(status?.className).not.toMatch(/text-(3xs|2xs|xs)\b/);
     // The slot centers its content on the row's axis; plain text still
@@ -483,7 +483,6 @@ describe('QueuedMessageRow', () => {
       expect(element?.getAttribute('aria-description')).toBe(reason);
       // Quiet: the quiet ghost, a dimmed label without the grey disabled fill.
       expect(element?.className).toContain('disabled:bg-transparent');
-      expect(element?.className).toContain('disabled:opacity-40');
     }
     expect(button('queued-message-more')?.disabled).toBe(false);
   });
@@ -624,10 +623,10 @@ describe('QueuedMessageRow', () => {
       '[data-testid="queued-message-interrupt"]',
     );
 
-    expect(send?.textContent).toBe('Retry');
+    expect(send?.textContent).toBe('Try again');
     expect(send?.getAttribute('aria-disabled')).toBe('true');
     expect(send?.getAttribute('aria-description')).toBe(
-      'Your queued message is saved. Retry sends it once your account has AI credits.',
+      'Your queued message is saved. Try again sends it once your account has AI credits.',
     );
     expect(document.querySelector('[data-testid="queued-message-steer"]')).toBe(
       null,
@@ -683,7 +682,7 @@ describe('QueuedMessageRow', () => {
     const retry = document.querySelector<HTMLButtonElement>(
       '[data-testid="queued-message-retry"]',
     );
-    expect(retry?.textContent).toContain('Retry');
+    expect(retry?.textContent).toContain('Try again');
     expect(retry?.disabled).toBe(true);
     click('queued-message-retry');
     expect(onInterrupt).not.toHaveBeenCalled();

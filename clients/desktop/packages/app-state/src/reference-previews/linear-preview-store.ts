@@ -820,12 +820,20 @@ export function createLinearPreviewStore(
       size += part.length + 1;
     }
     try {
-      deps
-        .storage()
-        ?.setItem(
-          REFERENCE_PREVIEW_STORAGE_KEY,
-          `{${head}"entries":[${parts.join(',')}]${tail}}`,
-        );
+      const storage = deps.storage();
+      // Nothing to save: don't recreate a record a reset just removed.
+      if (
+        head === '' &&
+        tail === '' &&
+        parts.length === 0 &&
+        storage?.getItem(REFERENCE_PREVIEW_STORAGE_KEY) === null
+      ) {
+        return;
+      }
+      storage?.setItem(
+        REFERENCE_PREVIEW_STORAGE_KEY,
+        `{${head}"entries":[${parts.join(',')}]${tail}}`,
+      );
     } catch {
       // Quota or access failure: memory remains the source of truth.
     }

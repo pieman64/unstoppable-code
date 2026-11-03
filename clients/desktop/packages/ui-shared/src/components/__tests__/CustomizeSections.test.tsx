@@ -3,8 +3,6 @@
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { TriggerIcon } from '../../icons/AppIcons';
 import {
   CustomizeInstalledRow,
   customizeRowDomId,
@@ -25,7 +23,6 @@ import {
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../../lib/customize-grid';
-import { sharedByYouSinceLabel } from '../../lib/shared-by-you';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -66,6 +63,220 @@ describe('Customize section primitives', () => {
   function q(testId: string): HTMLElement | null {
     return document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
   }
+
+  it.each(['installed', 'updates', 'shared-by-me', 'browse', 'search'])(
+    'CAN-4847 keeps compact source/version metadata and aligned controls in %s',
+    (sectionId) => {
+      const item = makeEntry({
+        origin: 'marketplace',
+        sourceLabel: 'Anthropic',
+        version: '0.12.0',
+        typeLabel: 'Skill',
+      });
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={item}
+              sectionId={sectionId}
+              showEntryType
+              onSelect={() => {}}
+              status={<button>Status</button>}
+              actions={<button>Update</button>}
+              menuItems={[
+                { id: 'share', label: 'Share…', onSelect: (): void => {} },
+              ]}
+            />
+          </ul>,
+        ),
+      );
+      const subtitle = q(`customize-row-subtitle-${item.id}`);
+      expect(subtitle?.textContent?.replace(/·/g, ' · ')).toBe(
+        'Anthropic · v0.12.0',
+      );
+      expect(subtitle?.textContent).not.toContain('Skill');
+      const row = q(`customize-${sectionId}-row-${item.id}`);
+      const controls = Array.from(row?.querySelectorAll('button') ?? []).map(
+        (node) => node.textContent,
+      );
+      expect(controls.slice(1, 3)).toEqual(['Status', 'Update']);
+      expect(q(`customize-row-share-${item.id}`)).toBeNull();
+      act(() => q(`customize-row-menu-${item.id}`)?.click());
+      expect(q(`customize-row-menu-${item.id}-share`)?.textContent).toBe(
+        'Share…',
+      );
+    },
+  );
+
+  it('CAN-4847 reserves the Update slot even when no update is available', () => {
+    const item = makeEntry();
+    const show = (actions?: React.ReactNode): void => {
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={item}
+              sectionId="installed"
+              onSelect={() => {}}
+              status={<button>Status</button>}
+              actions={actions}
+              menuItems={[
+                { id: 'view', label: 'Open details', onSelect: (): void => {} },
+              ]}
+            />
+          </ul>,
+        ),
+      );
+    };
+    show(<button>Update</button>);
+    const slot = q(
+      `customize-installed-row-${item.id}`,
+    )?.lastElementChild?.children.item(1);
+    expect(slot?.textContent).toBe('Update');
+    show();
+    expect(
+      q(`customize-installed-row-${item.id}`)?.lastElementChild?.children.item(
+        1,
+      ),
+    ).toBe(slot);
+    expect(slot?.textContent).toBe('');
+    expect(slot?.classList.contains('w-7')).toBe(true);
+  });
+
+  it.each([
+    'skill',
+    'plugin',
+    'app',
+    'agent',
+    'pipeline',
+    'collection',
+  ] as const)(
+    'CAN-4847 shows content counts only for collections, kind %s',
+    (kind) => {
+      const item = makeEntry({
+        kind,
+        origin: 'shared',
+        authorName: 'Priya Shah',
+        components: {
+          skills: 2,
+          plugins: 1,
+          mcpServers: 0,
+          commands: 0,
+          agents: 0,
+        },
+      });
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={item}
+              sectionId="installed"
+              onSelect={() => {}}
+            />
+          </ul>,
+        ),
+      );
+      const subtitle = q(`customize-row-subtitle-${item.id}`);
+      expect(subtitle?.textContent).toBe(
+        kind === 'collection' ? 'Priya Shah·11 plugin22 skills' : 'Priya Shah',
+      );
+      expect(subtitle?.querySelectorAll('svg').length).toBe(
+        kind === 'collection' ? 2 : 0,
+      );
+    },
+  );
+
+  it.each([
+    {
+      custom: true,
+      expected: 'You',
+      tooltip: 'Created by you · shared to Design',
+    },
+    {
+      custom: false,
+      expected: 'Priya Shah',
+      tooltip: 'Created by Priya Shah · shared to Design',
+    },
+  ])(
+    'CAN-4847 shows creator and scope on hover: $expected',
+    ({ custom, expected, tooltip }) => {
+      const item = makeEntry({
+        custom,
+        authorName: 'Priya Shah',
+        sharedWith: { audience: 'team', name: 'Design' },
+      });
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={item}
+              sectionId="installed"
+              onSelect={() => {}}
+            />
+          </ul>,
+        ),
+      );
+      const subtitle = q(`customize-row-subtitle-${item.id}`);
+      expect(subtitle?.textContent).toBe(expected);
+      void act(() =>
+        subtitle
+          ?.querySelector('span')
+          ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+      );
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+        tooltip,
+      );
+      expect(
+        document
+          .querySelector('[role="tooltip"]')
+          ?.querySelector(`.${REPLAY_BLOCK_CLASS}`),
+      ).not.toBeNull();
+      expect(
+        q(`customize-row-${item.id}`)?.querySelector('[tabindex="0"]'),
+      ).toBeNull();
+      expect(
+        q(`customize-row-${item.id}`)?.getAttribute('aria-describedby'),
+      ).toBeTruthy();
+      expect(q(`customize-row-custom-${item.id}`) !== null).toBe(custom);
+      expect(subtitle?.textContent).not.toContain('Created by you');
+    },
+  );
+
+  it.each(['2026-10-10T12:00:00.000Z', 'invalid'])(
+    'CAN-4847 formats valid edited dates and omits invalid dates: %s',
+    (editedAt) => {
+      const item = makeEntry({
+        custom: true,
+        editedAt,
+        collectionProvenanceUnknown: true,
+      });
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={item}
+              sectionId="installed"
+              onSelect={() => {}}
+            />
+          </ul>,
+        ),
+      );
+      const source = q(`customize-row-source-${item.id}`);
+      void act(() =>
+        source?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+      );
+      const tooltip = document.querySelector('[role="tooltip"]');
+      expect(tooltip?.textContent).not.toContain(editedAt);
+      if (editedAt !== 'invalid')
+        expect(tooltip?.textContent).toContain('Edited Oct 10, 2026');
+      else expect(tooltip?.textContent).not.toContain('Edited');
+      expect(
+        q(`customize-row-subtitle-${item.id}`)?.classList.contains(
+          REPLAY_BLOCK_CLASS,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it('normalizes versions and never fabricates a latest version', () => {
     expect(displayVersion('1.2.0')).toBe('v1.2.0');
@@ -132,11 +343,11 @@ describe('Customize section primitives', () => {
       ),
     );
     const subtitle = q(`customize-row-subtitle-${agent.id}`);
-    expect(subtitle?.textContent).toBe('Created by you');
+    expect(subtitle?.textContent).toBe('You');
     expect(subtitle?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(false);
     expect(container.textContent).not.toContain('Private instructions');
     const sharedLine = q(`customize-row-subtitle-${shared.id}`);
-    expect(sharedLine?.textContent).toBe('Shared by Dana Smith');
+    expect(sharedLine?.textContent).toBe('Dana Smith');
     expect(sharedLine?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
     expect(
       sharedLine?.parentElement?.closest(`.${REPLAY_BLOCK_CLASS}`),
@@ -148,7 +359,11 @@ describe('Customize section primitives', () => {
       id: 'skill:custom:app:review-helper',
       custom: true,
       editedAt: '2026-10-10T12:00:00.000Z',
-      installedFrom: { sharedByName: 'Ada', ownerName: 'Northwind' },
+      installedFrom: {
+        sharedByName: 'Ada',
+        ownerName: 'Northwind',
+        teamName: 'Design',
+      },
       ref: {
         type: 'skill',
         sourceId: 'custom:app',
@@ -167,8 +382,15 @@ describe('Customize section primitives', () => {
       ),
     );
     const line = q(`customize-row-subtitle-${copy.id}`);
-    expect(line?.textContent).toBe('Shared by Ada · Northwind');
+    expect(line?.textContent).toBe('Ada');
+    expect(q(`customize-row-custom-${copy.id}`)).toBeNull();
     expect(line?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
+    const description = document.getElementById(
+      q(`customize-row-${copy.id}`)?.getAttribute('aria-describedby') ?? '',
+    );
+    expect(description?.textContent).toContain('Northwind');
+    expect(description?.textContent).toContain('Design');
+    expect(description?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
   });
 
   it('names the source on the second line, or the description without one', () => {
@@ -226,7 +448,7 @@ describe('Customize section primitives', () => {
     expect(q(`customize-row-name-line-${plugin.id}`)?.textContent).toBe(
       'Slack',
     );
-    expect(q(`customize-row-subtitle-${custom.id}`)).toBeNull();
+    expect(q(`customize-row-subtitle-${custom.id}`)?.textContent).toBe('You');
   });
 
   it.each([
@@ -293,103 +515,55 @@ describe('Customize section primitives', () => {
       ),
     );
     const line = q(`customize-row-subtitle-${entry.id}`);
-    expect(line?.textContent).toBe(
-      `Northwind · ${sharedByYouSinceLabel('2026-10-12T00:00:00Z')}`,
-    );
+    expect(line?.textContent).toBe('Dana Smith');
     expect(line?.textContent).not.toContain('Organization');
     expect(line?.textContent).not.toContain('Shared by');
     expect(line?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
     expect(q(`customize-row-public-link-${entry.id}`)).toBeNull();
   });
 
-  describe('Shared by me public link (CAN-5220)', () => {
-    const linked = makeEntry({
-      id: 'skill:shared:linked',
+  it('CAN-4847 keeps scope and public-link facts in the creator tooltip and updates them on refresh', () => {
+    const item = makeEntry({
       origin: 'shared',
+      authorName: 'Priya Shah',
       sharedWith: { audience: 'organization', name: 'Northwind' },
-      sharedSince: '2026-10-12T00:00:00Z',
-      publicShare: { since: '2026-09-26T12:00:00Z', upToDate: false },
-      ref: { type: 'shared-skill', skillId: 'linked' },
+      publicShare: {},
     });
-    const orgOnly = makeEntry({
-      id: 'skill:shared:org',
-      origin: 'shared',
-      sharedWith: { audience: 'organization', name: 'Northwind' },
-      sharedSince: '2026-10-12T00:00:00Z',
-      ref: { type: 'shared-skill', skillId: 'org' },
-    });
-
-    function renderRows(
-      entries: readonly UnifiedPluginEntry[],
-      sectionId = 'shared-by-me',
-    ): void {
+    const show = (entry: UnifiedPluginEntry): void => {
       act(() =>
         root.render(
           <ul>
-            {entries.map((entry) => (
-              <CustomizeInstalledRow
-                key={entry.id}
-                entry={entry}
-                sectionId={sectionId}
-                onSelect={() => {}}
-              />
-            ))}
+            <CustomizeInstalledRow
+              entry={entry}
+              sectionId="shared-by-me"
+              onSelect={() => {}}
+            />
           </ul>,
         ),
       );
-    }
-
-    it('badges only the linked row, between the audience and the date', () => {
-      renderRows([linked, orgOnly]);
-      const badge = q(`customize-row-public-link-${linked.id}`);
-      expect(badge?.textContent).toBe('Public link');
-      expect(badge?.getAttribute('title')).toBe(
-        `Public link · ${sharedByYouSinceLabel('2026-09-26T12:00:00Z')}`,
-      );
-      expect(badge?.querySelector('svg')?.getAttribute('aria-hidden')).toBe(
-        'true',
-      );
-      expect(q(`customize-row-subtitle-${linked.id}`)?.textContent).toBe(
-        `Northwind · Public link · ${sharedByYouSinceLabel('2026-10-12T00:00:00Z')}`,
-      );
-      expect(
-        q(`customize-row-subtitle-${linked.id}`)?.classList.contains(
-          REPLAY_BLOCK_CLASS,
-        ),
-      ).toBe(true);
-      expect(q(`customize-row-public-link-${orgOnly.id}`)).toBeNull();
-    });
-
-    it('drops the badge when a rerender clears the public link', () => {
-      renderRows([linked]);
-      expect(q(`customize-row-public-link-${linked.id}`)).not.toBeNull();
-      renderRows([{ ...linked, publicShare: undefined }]);
-      expect(q(`customize-row-public-link-${linked.id}`)).toBeNull();
-      expect(q(`customize-row-subtitle-${linked.id}`)?.textContent).toContain(
-        'Northwind',
-      );
-    });
-
-    it('shows a public-link-only row without a leading separator', () => {
-      const linkOnly = makeEntry({
-        id: 'skill:shared:link-only',
-        origin: 'shared',
-        publicShare: {},
-        ref: { type: 'shared-skill', skillId: 'link-only' },
-      });
-      renderRows([linkOnly]);
-      expect(q(`customize-row-subtitle-${linkOnly.id}`)?.textContent).toBe(
-        'Public link',
-      );
-      expect(
-        q(`customize-row-public-link-${linkOnly.id}`)?.hasAttribute('title'),
-      ).toBe(false);
-    });
-
-    it('keeps the badge out of other sections', () => {
-      renderRows([linked], 'installed');
-      expect(q(`customize-row-public-link-${linked.id}`)).toBeNull();
-    });
+    };
+    show(item);
+    expect(q(`customize-row-subtitle-${item.id}`)?.textContent).toBe(
+      'Priya Shah',
+    );
+    const source = q(`customize-row-source-${item.id}`);
+    void act(() =>
+      source?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+    );
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+      'Created by Priya Shah · shared to Northwind · Public link',
+    );
+    void act(() =>
+      source?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })),
+    );
+    show({ ...item, publicShare: undefined });
+    void act(() =>
+      source?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+    );
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+      'Created by Priya Shah · shared to Northwind',
+    );
+    expect(q(`customize-row-public-link-${item.id}`)).toBeNull();
   });
 
   it('shows pending sign-ins as a sibling chip that connects', () => {
@@ -485,6 +659,46 @@ describe('Customize section primitives', () => {
     expect(onConnect).toHaveBeenCalledWith(entry);
   });
 
+  it.each([
+    ['with', true],
+    ['without', false],
+  ])(
+    'draws attention as one marker-sized warning badge %s a connect action, and drops the duplicate Auth required badge',
+    (_label, connectable) => {
+      const entry = makeEntry({
+        id: 'mcp-local:notion',
+        kind: 'app',
+        name: 'Notion',
+        state: 'needs-auth',
+        connection: { status: 'auth_required' },
+        ref: { type: 'local-mcp', serverId: 'notion' },
+      });
+      act(() =>
+        root.render(
+          <ul>
+            <CustomizeInstalledRow
+              entry={entry}
+              sectionId="installed"
+              onSelect={() => {}}
+              onConnect={connectable ? jest.fn() : undefined}
+            />
+          </ul>,
+        ),
+      );
+      const markers = container.querySelectorAll('[data-badge-tone="warning"]');
+      expect(markers).toHaveLength(1);
+      expect(markers[0]?.textContent).toBe('Needs attention');
+      // A marker, never the 28px warning button capsule.
+      const chip = q(`customize-row-sign-in-${entry.id}`);
+      expect(chip?.className).not.toMatch(/\bh-7\b/);
+      // The attention marker already says it; no second status beside it.
+      expect(q(`plugins-connection-status-${entry.id}`)).toBeNull();
+      expect(container.textContent).not.toContain('Auth required');
+      // The name column keeps room before the trailing markers take it.
+      expect(q(`customize-row-${entry.id}`)?.className).toContain('min-w-32');
+    },
+  );
+
   it('shows a plugin’s bundled sign-ins as a chip that connects through the host', () => {
     const onConnect = jest.fn();
     const entry = makeEntry({
@@ -542,27 +756,19 @@ describe('Customize section primitives', () => {
     expect(q('customize-row-update-marker-b')).toBeNull();
   });
 
-  describe('workflow rows (CAN-4845)', () => {
-    const PIPELINE_ID = 'pipeline:user:nightly';
-    function workflowEntry(
-      workflow: UnifiedPluginEntry['workflow'],
-    ): UnifiedPluginEntry {
-      return makeEntry({
-        id: PIPELINE_ID,
+  describe('CAN-4847 compact workflow metadata', () => {
+    function renderWorkflow(workflow: UnifiedPluginEntry['workflow']): void {
+      const item = makeEntry({
         kind: 'pipeline',
-        name: 'Nightly build',
-        description: 'Builds every night.',
-        typeLabel: 'Pipeline',
+        origin: 'curated',
+        ref: { type: 'pipeline', pipelineId: 'flow', source: 'user' },
         workflow,
-        ref: { type: 'pipeline', pipelineId: 'nightly', source: 'user' },
       });
-    }
-    function renderRow(entry: UnifiedPluginEntry): void {
       act(() =>
         root.render(
           <ul>
             <CustomizeInstalledRow
-              entry={entry}
+              entry={item}
               sectionId="installed"
               onSelect={() => {}}
             />
@@ -570,234 +776,101 @@ describe('Customize section primitives', () => {
         ),
       );
     }
-
-    function hoverTooltip(text: string): string | null {
-      const trigger = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          `[data-testid="customize-row-trigger-${PIPELINE_ID}"] span`,
-        ),
-      ).find((element) => element.textContent === text);
-      act(() => {
-        trigger?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      });
-      const tooltip = document.body.querySelector('[role="tooltip"]');
-      act(() => {
-        trigger?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-      });
-      return tooltip?.textContent ?? null;
-    }
-
-    const configuredTriggers = [
-      { kind: 'manual', label: 'Manual', explainer: 'Runs when you start it' },
-      {
-        kind: 'plan-approved',
-        label: 'Plan approval',
-        explainer: 'Runs automatically when a plan is approved',
-      },
-      {
-        kind: 'task-ready',
-        label: 'Task ready',
-        explainer: 'Runs when a task is marked ready',
-      },
-    ] as const;
-
-    it.each(configuredTriggers)(
-      'uses the canonical trigger glyph for $label',
-      (trigger) => {
-        renderRow(workflowEntry({ triggers: [trigger] }));
-        const line = q(`customize-row-trigger-${PIPELINE_ID}`);
-        expect(line?.textContent).toBe(trigger.label);
-        const expected = document.createElement('span');
-        expected.innerHTML = renderToStaticMarkup(<TriggerIcon size={14} />);
-        expect(line?.querySelector('svg')?.innerHTML).toBe(
-          expected.querySelector('svg')?.innerHTML,
-        );
-      },
-    );
-
-    it.each([2, 3])(
-      'summarizes %i configured triggers and lists each on hover and keyboard focus',
-      (count) => {
-        const triggers = configuredTriggers.slice(0, count);
-        renderRow(workflowEntry({ triggers, stepCount: 4 }));
-        const line = q(`customize-row-trigger-${PIPELINE_ID}`);
-        expect(line?.textContent).toBe(`${count} triggers`);
-        expect(line?.querySelectorAll('svg')).toHaveLength(1);
-        const label = hoverTooltip(`${count} triggers`);
-        for (const trigger of triggers) expect(label).toContain(trigger.label);
-        expect(label).toContain('4 steps');
-        const focusTarget = line?.querySelector<HTMLElement>('[tabindex="0"]');
-        expect(focusTarget).not.toBeNull();
-        act(() => {
-          document.dispatchEvent(
-            new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
-          );
-          focusTarget?.focus();
+    it.each(['Manual', 'Plan approval', 'Task ready'])(
+      'shows the %s trigger without repeating its type',
+      (label) => {
+        renderWorkflow({
+          triggers: [{ kind: 'manual', label, explainer: 'Runs on demand' }],
         });
-        expect(document.activeElement).toBe(focusTarget);
         expect(
-          document.body.querySelector('[role="tooltip"]')?.textContent,
+          q('customize-row-subtitle-skill:github:repo/alpha')?.textContent,
         ).toBe(label);
-        const tooltipClasses = Array.from(
-          document.body.querySelector('[role="tooltip"]')?.classList ?? [],
-        );
-        expect(tooltipClasses).toEqual(
-          expect.arrayContaining(['max-w-xs', 'whitespace-normal']),
-        );
-        expect(tooltipClasses).not.toContain('whitespace-nowrap');
+        expect(
+          q('customize-row-subtitle-skill:github:repo/alpha')?.querySelector(
+            'svg',
+          ),
+        ).toBeNull();
       },
     );
-
-    it('uses a plain failure cross with a keyboard-accessible reason', () => {
-      renderRow(
-        workflowEntry({
-          lastRun: {
-            state: 'failure',
-            at: Date.now() - 3600e3,
-            errorMessage: 'Tests failed',
+    it('summarizes multiple triggers and exposes details to assistive technology without nested tab stops', () => {
+      renderWorkflow({
+        sourceText: 'Shared by Platform',
+        triggers: [
+          { kind: 'manual', label: 'Manual', explainer: 'Runs on demand' },
+          {
+            kind: 'plan-approved',
+            label: 'Plan approval',
+            explainer: 'Runs after approval',
           },
-        }),
-      );
-      const line = q(`customize-row-last-run-line-${PIPELINE_ID}`);
-      expect(line?.querySelector('circle')).toBeNull();
-      const focusTarget = line?.querySelector<HTMLElement>('[tabindex="0"]');
-      expect(focusTarget).not.toBeNull();
+        ],
+        stepCount: 4,
+        lastRun: { state: 'failure', at: 1, errorMessage: 'Tests failed' },
+      });
+      expect(
+        q('customize-row-subtitle-skill:github:repo/alpha')?.textContent,
+      ).toBe('Platform·2 triggers');
+      const trigger = q('customize-row-trigger-skill:github:repo/alpha');
       act(() => {
         document.dispatchEvent(
           new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
         );
-        focusTarget?.focus();
+        q('customize-row-skill:github:repo/alpha')?.focus();
       });
-      expect(
-        document.body.querySelector('[role="tooltip"]')?.textContent,
-      ).toContain('Tests failed');
-      expect(focusTarget?.getAttribute('aria-label')).toContain('Tests failed');
-    });
-
-    it('keeps the trigger details and steps in the tooltip and success time muted', () => {
-      renderRow(
-        workflowEntry({
-          triggers: [
-            {
-              kind: 'manual',
-              label: 'Manual',
-              explainer: 'Runs when you start it',
-            },
-            {
-              kind: 'plan-approved',
-              label: 'Plan approval',
-              explainer: 'Runs automatically when a plan is approved',
-            },
-            {
-              kind: 'task-ready',
-              label: 'Task ready',
-              explainer: 'Runs when a task is marked ready',
-            },
-          ],
-          stepCount: 4,
-          lastRun: { state: 'success', at: Date.now() - 2 * 3600e3 },
-        }),
+      const primary = q('customize-row-skill:github:repo/alpha');
+      expect(primary?.querySelector('[tabindex="0"]')).toBeNull();
+      const tooltip = document.getElementById(
+        primary?.getAttribute('aria-describedby') ?? '',
       );
-      const trigger = q(`customize-row-trigger-${PIPELINE_ID}`);
-      expect(trigger?.textContent).toBe('3 triggers');
-      expect(q(`customize-row-${PIPELINE_ID}`)?.textContent).not.toContain(
-        '4 steps',
+      expect(tooltip?.textContent).toContain('Manual: Runs on demand');
+      expect(tooltip?.textContent).toContain(
+        'Plan approval: Runs after approval',
       );
-      expect(hoverTooltip('3 triggers')).toBe(
-        'Manual: Runs when you start it · Plan approval: Runs automatically when a plan is approved · Task ready: Runs when a task is marked ready · 4 steps',
-      );
-      expect(q(`customize-row-last-run-line-${PIPELINE_ID}`)?.textContent).toBe(
-        '2h ago',
-      );
-      expect(q(`customize-row-last-run-${PIPELINE_ID}`)).toBeNull();
-    });
-
-    it('shows a compact automation schedule and the full schedule tooltip', () => {
-      renderRow(
-        workflowEntry({
-          schedule: {
-            label: 'Weekdays · 09:00',
-            tooltip: 'Every weekday at 09:00',
-          },
-          lastRun: null,
-        }),
-      );
-      expect(q(`customize-row-trigger-${PIPELINE_ID}`)?.textContent).toBe(
-        'Weekdays · 09:00',
-      );
-      expect(hoverTooltip('Weekdays · 09:00')).toBe('Every weekday at 09:00');
-      expect(q(`customize-row-last-run-line-${PIPELINE_ID}`)).toBeNull();
-    });
-
-    it('hides an unknown last run without a trailing separator', () => {
-      renderRow(workflowEntry({ triggerText: 'Manual' }));
-      expect(q(`customize-row-trigger-${PIPELINE_ID}`)?.textContent).toBe(
-        'Manual',
+      expect(tooltip?.textContent).toContain('4 steps');
+      expect(tooltip?.textContent).toContain('Last run: failure: Tests failed');
+      void act(() =>
+        trigger?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
       );
       expect(
-        document.querySelector('[data-testid^="customize-row-last-run-"]'),
+        document
+          .querySelector('[role="tooltip"]')
+          ?.querySelector(`.${REPLAY_BLOCK_CLASS}`),
+      ).not.toBeNull();
+    });
+    it('shows the schedule and explains it in its tooltip', () => {
+      renderWorkflow({
+        schedule: {
+          label: 'Weekdays · 09:00',
+          tooltip: 'Every weekday at 09:00',
+        },
+      });
+      const trigger = q('customize-row-trigger-skill:github:repo/alpha');
+      expect(trigger?.textContent).toBe('Weekdays · 09:00');
+      void act(() =>
+        trigger?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+      );
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+        'Every weekday at 09:00',
+      );
+    });
+    it('protects a person named in the workflow source from replay', () => {
+      renderWorkflow({
+        sourceText: 'Shared by Ada',
+        sourceIsPerson: true,
+        triggerText: 'Manual',
+      });
+      const subtitle = q('customize-row-subtitle-skill:github:repo/alpha');
+      expect(subtitle?.textContent).toBe('Ada·Manual');
+      expect(subtitle?.classList.contains(REPLAY_MASK_CLASS)).toBe(true);
+    });
+    it('omits descriptive prose and absent last-run facts from the row', () => {
+      renderWorkflow(undefined);
+      expect(
+        q('customize-row-subtitle-skill:github:repo/alpha')?.textContent,
+      ).toBe('');
+      expect(container.textContent).not.toContain('An alpha skill.');
+      expect(
+        container.querySelector('[data-testid^="customize-row-last-run-"]'),
       ).toBeNull();
-    });
-
-    it('keeps source and last run on separate wrapping meta lines', () => {
-      renderRow(
-        workflowEntry({
-          triggerText: 'Every day at 09:00',
-          summary: 'App Advisor prompt',
-          sourceText: 'Shared by Platform',
-          lastRun: null,
-        }),
-      );
-      expect(q(`customize-row-source-meta-${PIPELINE_ID}`)?.textContent).toBe(
-        'Shared by Platform',
-      );
-      expect(q(`customize-row-last-run-line-${PIPELINE_ID}`)).toBeNull();
-    });
-
-    it('shows only failed run time and its error tooltip', () => {
-      renderRow(
-        workflowEntry({
-          triggerText: 'Manual',
-          lastRun: {
-            state: 'failure',
-            at: Date.now() - 3600e3,
-            errorMessage: 'Tests failed',
-          },
-        }),
-      );
-      const line = q(`customize-row-last-run-line-${PIPELINE_ID}`);
-      const icon = q(`customize-row-last-run-${PIPELINE_ID}`);
-      expect(line?.textContent).toBe('1h ago');
-      expect(
-        line?.querySelector('[aria-label]')?.getAttribute('aria-label'),
-      ).toBe('Last run failed 1h ago');
-      expect(icon?.getAttribute('data-status-glyph')).toBe('failed');
-      act(() => {
-        icon?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-      });
-      expect(document.body.querySelector('[role="tooltip"]')?.textContent).toBe(
-        'Last run failed 1h ago: Tests failed',
-      );
-    });
-
-    it('masks a source that names a person from session replay', () => {
-      renderRow(
-        workflowEntry({
-          triggerText: 'Manual',
-          sourceText: 'Shared by Ada',
-          sourceIsPerson: true,
-        }),
-      );
-      const source = q(`customize-row-source-meta-${PIPELINE_ID}`);
-      expect(source?.textContent).toBe('Shared by Ada');
-      expect(source?.classList.contains(REPLAY_MASK_CLASS)).toBe(true);
-    });
-
-    it('keeps the description on a pipeline row without facets', () => {
-      renderRow(workflowEntry(undefined));
-      expect(q(`customize-row-subtitle-${PIPELINE_ID}`)?.textContent).toBe(
-        'Builds every night.',
-      );
     });
   });
 
@@ -877,7 +950,9 @@ describe('Customize section primitives', () => {
     ).toBe('true');
     expect(q(`customize-row-content-${id}`)?.className).toContain('opacity-60');
     expect(
-      q(`customize-row-version-${id}`)?.querySelector('.truncate')?.className,
+      q(`customize-row-version-${id}`)?.closest(
+        '[data-testid^="customize-row-content-"]',
+      )?.className,
     ).toContain('opacity-60');
     // Controls keep full ink; the row has no separate update marker.
     expect(q(`customize-row-version-${id}`)?.className).not.toContain(
@@ -967,7 +1042,9 @@ describe('Customize section primitives', () => {
     );
     const source = q('customize-row-source-mkt:openai-curated/slack');
     expect(source?.textContent).toBe('Codex official');
-    expect(source?.className).toContain('fg-tertiary');
+    expect(
+      q('customize-row-subtitle-mkt:openai-curated/slack')?.className,
+    ).toContain('fg-tertiary');
     expect(q('customize-row-source-mcp-local:team-notes')).toBeNull();
   });
 
@@ -993,8 +1070,10 @@ describe('Customize section primitives', () => {
     );
     const from = q('customize-row-from-plugin-mcp-local:slack');
     expect(from?.tagName).toBe('SPAN');
-    expect(from?.textContent).toBe('From the Slack plugin');
-    expect(q('customize-row-subtitle-mcp-local:slack')).toBeNull();
+    expect(from?.textContent).toBe('From Slack');
+    expect(q('customize-row-subtitle-mcp-local:slack')?.textContent).toBe(
+      'From Slack',
+    );
     expect(container.querySelector('a button')).toBeNull();
   });
 
@@ -1240,7 +1319,9 @@ describe('Customize section primitives', () => {
     expect(line?.classList.contains('flex-wrap')).toBe(false);
     expect(line?.firstElementChild?.classList.contains('truncate')).toBe(true);
     expect(line?.firstElementChild?.classList.contains('min-w-0')).toBe(true);
-    expect(line?.firstElementChild?.getAttribute('title')).toBe('Alpha');
+    expect(line?.firstElementChild?.getAttribute('title')).toBe(
+      'Alpha · An alpha skill.',
+    );
     expect(line?.classList.contains('overflow-hidden')).toBe(true);
     const type = q('customize-row-type-skill:github:repo/alpha');
     expect(type?.classList.contains('fg-tertiary')).toBe(true);
@@ -1350,7 +1431,7 @@ describe('Customize section primitives', () => {
     ).toBeNull();
   });
 
-  it('labels installed and needs-auth Browse cards Installed only in label mode', () => {
+  it('keeps Install exclusive to available Browse entries and preserves installed updates', () => {
     const entries = [
       makeEntry({
         id: 'a',
@@ -1361,7 +1442,7 @@ describe('Customize section primitives', () => {
       makeEntry({ id: 'b', name: 'B', state: 'needs-auth' }),
       makeEntry({ id: 'c', name: 'C', state: 'available' }),
     ];
-    const render = (installedAction?: 'label'): void =>
+    const render = (): void =>
       act(() =>
         root.render(
           <PluginsDiscoveryList
@@ -1370,21 +1451,16 @@ describe('Customize section primitives', () => {
             onSelectEntry={() => {}}
             onAddEntry={() => {}}
             emptyMessage="Empty"
-            installedAction={installedAction}
           />,
         ),
       );
     render();
     expect(q('plugins-entry-installed-a')).toBeNull();
-    expect(q('plugins-update-available-a')).not.toBeNull();
-    render('label');
-    const installed = q('plugins-entry-installed-a');
-    expect(installed?.textContent).toBe('Installed');
-    expect(installed?.hasAttribute('disabled')).toBe(true);
-    expect(q('plugins-entry-installed-b')).not.toBeNull();
-    expect(q('plugins-entry-installed-c')).toBeNull();
+    expect(q('plugins-entry-installed-b')).toBeNull();
+    expect(q('plugins-entry-add-a')).toBeNull();
+    expect(q('plugins-entry-add-b')).toBeNull();
     expect(q('plugins-entry-add-c')).not.toBeNull();
-    expect(q('plugins-update-available-a')).toBeNull();
+    expect(q('plugins-update-available-a')).not.toBeNull();
   });
   describe('CAN-4844 — custom skill metadata', () => {
     function renderRow(entry: UnifiedPluginEntry): void {
@@ -1421,8 +1497,10 @@ describe('Customize section primitives', () => {
       ).toBe(true);
       const glyph = marker?.querySelector('svg');
       expect(glyph?.getAttribute('data-icon-size')).toBe('exact');
-      expect(glyph?.style.width).toBe('10px');
-      expect(q(`customize-row-version-${custom.id}`)).toBeNull();
+      expect(glyph?.style.width).toBe('12px');
+      expect(q(`customize-row-version-${custom.id}`)?.textContent).toBe(
+        'v1.2.0',
+      );
       act(() => {
         marker?.parentElement?.dispatchEvent(
           new MouseEvent('mouseover', { bubbles: true }),
@@ -1438,46 +1516,25 @@ describe('Customize section primitives', () => {
       ).toContain('v1.2.0');
     });
 
-    it('moves known creator identity into the badge tooltip and shows only Updated age below', () => {
-      const author = 'Alexandra Montgomery with a long creator name';
-      const editedAt = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
-      const custom = makeEntry({ custom: true, authorName: author, editedAt });
+    it('keeps the known creator in the avatar badge and shows You instead of an age', () => {
+      const author = 'Alexandra Montgomery';
+      const custom = makeEntry({
+        custom: true,
+        authorName: author,
+        editedAt: '2026-10-10T12:00:00Z',
+      });
       renderRow(custom);
       const marker = q(`customize-row-custom-${custom.id}`);
-      const edited = q(`customize-row-edited-${custom.id}`);
-      expect(q(`customize-row-creator-${custom.id}`)).toBeNull();
       expect(marker?.getAttribute('aria-label')).toBe(
         `Custom skill by ${author}`,
       );
       expect(marker?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
-      expect(edited?.textContent?.replace(/\s/g, ' ')).toBe('Updated 4h ago');
-      expect(edited?.querySelector('svg')).toBeNull();
-      expect(edited?.querySelector('time')?.getAttribute('dateTime')).toBe(
-        editedAt,
+      expect(q(`customize-row-subtitle-${custom.id}`)?.textContent).toBe('You');
+      void act(() =>
+        marker?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
       );
-      act(() => {
-        marker?.parentElement?.dispatchEvent(
-          new MouseEvent('mouseover', { bubbles: true }),
-        );
-      });
-      const tooltip = document.querySelector('[role="tooltip"]');
-      expect(tooltip?.textContent).toBe(`Custom skill by ${author}`);
-      expect(tooltip?.querySelector(`.${REPLAY_BLOCK_CLASS}`)).not.toBeNull();
-      act(() => {
-        marker?.parentElement?.dispatchEvent(
-          new MouseEvent('mouseout', { bubbles: true }),
-        );
-      });
-      act(() => {
-        edited?.parentElement?.dispatchEvent(
-          new MouseEvent('mouseover', { bubbles: true }),
-        );
-      });
       expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
-        new Date(editedAt).toLocaleString(undefined, {
-          dateStyle: 'full',
-          timeStyle: 'long',
-        }),
+        `Custom skill by ${author}`,
       );
     });
 
@@ -1487,7 +1544,9 @@ describe('Customize section primitives', () => {
         const custom = makeEntry({ custom: true, editedAt });
         renderRow(custom);
         expect(q(`customize-row-creator-${custom.id}`)).toBeNull();
-        expect(q(`customize-row-subtitle-${custom.id}`)).toBeNull();
+        expect(q(`customize-row-subtitle-${custom.id}`)?.textContent).toBe(
+          'You',
+        );
         expect(
           q(`customize-row-custom-${custom.id}`)?.getAttribute('aria-label'),
         ).toBe('Custom skill');
@@ -1522,7 +1581,7 @@ describe('Customize section primitives', () => {
       for (const subtitle of [
         q('customize-row-subtitle-custom'),
         q('customize-row-subtitle-builtin'),
-        q('customize-row-from-plugin-bundled'),
+        q('customize-row-subtitle-bundled'),
       ]) {
         expect(subtitle?.classList.contains('text-xs')).toBe(true);
         expect(subtitle?.classList.contains('fg-tertiary')).toBe(true);

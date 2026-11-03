@@ -1,3 +1,5 @@
+import { TrackedPlanImplementationSchema } from '../chat-plan-review';
+import { CoreChatUpdateParamsSchema } from '../core/chat/commands-lifecycle';
 import {
   CoreChatCommandReceiptSchema,
   CoreChatMessageSendParamsSchema,
@@ -119,6 +121,95 @@ describe('chat message command contracts', () => {
         },
       }).origin,
     ).toMatchObject({ kind: 'terminalInitialPrompt' });
+  });
+
+  it('accepts identity-only delivery rejection and rejects caller-supplied terminal outcomes', () => {
+    const params = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      commandId: 'reject',
+      _meta: { idempotencyKey: 'reject' },
+      action: {
+        type: 'chat.reject_plan_implementation_delivery',
+        chatId: 'chat-1',
+        userMessageId: 'message-1',
+      },
+    };
+    expect(CoreChatUpdateParamsSchema.safeParse(params).success).toBe(true);
+    expect(
+      CoreChatUpdateParamsSchema.safeParse({
+        ...params,
+        action: { ...params.action, outcome: 'completed' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('core.chat.update distinguishes persisted terminal pairs from writable identity and accepts legacy omission or clear', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'message-1',
+      startedAt: '2026-08-07T12:00:00.000Z',
+    };
+    const update = (trackedPlanImplementation: unknown): boolean =>
+      CoreChatUpdateParamsSchema.safeParse({
+        projectId: 'project',
+        worktreeId: 'worktree',
+        commandId: 'cmd',
+        _meta: { idempotencyKey: 'cmd' },
+        action: {
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { trackedPlanImplementation },
+        },
+      }).success;
+    for (const value of [undefined, null, link])
+      expect(update(value)).toBe(true);
+    for (const outcome of ['completed', 'failed', 'cancelled']) {
+      const settled = { ...link, outcome, endedAt: '2026-08-07T12:01:00.000Z' };
+      expect(TrackedPlanImplementationSchema.safeParse(settled).success).toBe(
+        true,
+      );
+      expect(update(settled)).toBe(false);
+      expect(
+        TrackedPlanImplementationSchema.safeParse({ ...link, outcome }).success,
+      ).toBe(false);
+    }
+    expect(
+      TrackedPlanImplementationSchema.safeParse({
+        ...link,
+        endedAt: link.startedAt,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts implementation identity only for the exact sent message and rejects forged outcomes', () => {
+    const trackedPlanImplementation = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'message-1',
+      startedAt: '2026-08-07T12:00:00.000Z',
+    };
+    const message = {
+      ...base,
+      messageId: 'message-1',
+      text: 'Implement.',
+      trackedPlanImplementation,
+    };
+    expect(CoreChatMessageSendParamsSchema.parse(message)).toEqual(message);
+    for (const invalid of [
+      { ...trackedPlanImplementation, userMessageId: 'other' },
+      { ...trackedPlanImplementation, planId: '../plan' },
+      { ...trackedPlanImplementation, revisionNumber: 0 },
+      { ...trackedPlanImplementation, startedAt: 'yesterday' },
+      { ...trackedPlanImplementation, outcome: 'completed' },
+    ])
+      expect(
+        CoreChatMessageSendParamsSchema.safeParse({
+          ...message,
+          trackedPlanImplementation: invalid,
+        }).success,
+      ).toBe(false);
   });
 
   it('carries a bounded plan review identity with an implementation message', () => {

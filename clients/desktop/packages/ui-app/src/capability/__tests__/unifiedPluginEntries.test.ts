@@ -1,3 +1,6 @@
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { CustomizeInstalledRow } from '@canopy/ui-shared/components';
 import type { CuratedPluginEntry } from '@canopy/protocol/plugin-catalog';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import {
@@ -5660,6 +5663,313 @@ describe('CAN-4840 — Customize row data', () => {
       }),
     ).toBe('1.1.0');
   });
+});
+
+describe('buildUnifiedPluginEntries — collections linked to their share', () => {
+  const at = '2026-10-14T12:00:00.000Z';
+
+  function local(
+    overrides: Partial<CollectionIndexEntry> = {},
+  ): CollectionIndexEntry {
+    return {
+      id: 'local-1',
+      name: 'Design review',
+      description: '',
+      updatedAt: at,
+      skillCount: 2,
+      pluginCount: 2,
+      mcpServerCount: 1,
+      ...overrides,
+    };
+  }
+
+  function shared(
+    overrides: Partial<SharedCollectionSummary> = {},
+  ): SharedCollectionSummary {
+    return {
+      id: 's1',
+      name: 'Design review',
+      description: '',
+      contentHash: 'b',
+      itemCounts: { skills: 2, plugins: 3, customSkills: 1 },
+      shareScope: 'team',
+      owner: {
+        type: 'team',
+        id: 'team-1',
+        name: 'Design',
+        organization: { id: 'org-1', name: 'Organization' },
+      },
+      createdBy: { id: 'u2', name: 'Priya Shah', email: null },
+      createdAt: at,
+      updatedAt: at,
+      canUpdate: false,
+      canDelete: false,
+      ...overrides,
+    };
+  }
+
+  function byId(
+    entries: ReturnType<typeof buildUnifiedPluginEntries>,
+    id: string,
+  ): ReturnType<typeof buildUnifiedPluginEntries>[number] | undefined {
+    return entries.find((entry) => entry.id === id);
+  }
+
+  it('CAN-4847 keeps the collection creator distinct from the team audience', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({ sharedCollections: [shared()] }),
+    );
+    const entry = byId(entries, 'collection:shared:s1');
+    expect(entry).toMatchObject({
+      authorName: 'Priya Shah',
+      sharedWith: { name: 'Design' },
+    });
+    if (!entry) throw new Error('Missing shared collection');
+    const markup = renderToStaticMarkup(
+      createElement(CustomizeInstalledRow, {
+        entry,
+        sectionId: 'browse',
+        onSelect: () => {},
+      }),
+    );
+    expect(markup).toContain('Created by Priya Shah · shared to Design');
+  });
+  it('does not invent created ownership from malformed or unreadable provenance', () => {
+    for (const flags of [
+      { hasSharedSource: true },
+      { provenanceUnknown: true },
+    ]) {
+      const entries = buildUnifiedPluginEntries(
+        emptyInputs({ localCollections: [local(flags)] }),
+      );
+      expect(byId(entries, 'collection:local:local-1')).toMatchObject({
+        collectionProvenanceUnknown: true,
+        ownedByViewer: false,
+      });
+    }
+  });
+  it('retains Installed when the first of multiple linked copies is removed', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ id: 'second', sharedSource: { remoteId: 's1' } }),
+        ],
+        sharedCollections: [shared()],
+      }),
+    );
+    expect(byId(entries, 'collection:shared:s1')).toMatchObject({
+      state: 'installed',
+      installedEntryId: 'collection:local:second',
+    });
+  });
+  it('local collection entries carry components.plugins from pluginCount', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({ localCollections: [local()] }),
+    );
+    expect(byId(entries, 'collection:local:local-1')?.components.plugins).toBe(
+      2,
+    );
+  });
+
+  it('links an added collection to its share', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 's1', contentHash: 'a' } }),
+        ],
+        sharedCollections: [shared()],
+        viewerId: 'u1',
+      }),
+    );
+
+    const localEntry = byId(entries, 'collection:local:local-1');
+    expect(localEntry).toEqual(
+      expect.objectContaining({
+        updateAvailable: true,
+        availabilityLabel: 'Update available',
+        authorName: 'Priya Shah',
+        ownedByViewer: false,
+      }),
+    );
+    expect(localEntry?.sharedWith).toEqual(
+      expect.objectContaining({ audience: 'team', name: 'Design' }),
+    );
+    expect(localEntry?.sharedSource).toEqual({
+      remoteId: 's1',
+      installedContentHash: 'a',
+      latestContentHash: 'b',
+      sharedBy: 'Priya Shah',
+      updatedAt: at,
+      latestItemCounts: { skills: 3, plugins: 3 },
+    });
+
+    const sharedEntry = byId(entries, 'collection:shared:s1');
+    expect(sharedEntry).toEqual(
+      expect.objectContaining({
+        state: 'installed',
+        availabilityLabel: 'Installed',
+        installedEntryId: 'collection:local:local-1',
+      }),
+    );
+    expect(sharedEntry?.components.plugins).toBe(3);
+  });
+
+  it('same hash means no update', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 's1', contentHash: 'b' } }),
+        ],
+        sharedCollections: [shared()],
+        viewerId: 'u1',
+      }),
+    );
+    const localEntry = byId(entries, 'collection:local:local-1');
+    expect(localEntry?.updateAvailable).toBeFalsy();
+    expect(localEntry?.availabilityLabel).toBe('Installed');
+  });
+
+  it('a share without a recorded installed hash never reads as an update', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [local({ sharedSource: { remoteId: 's1' } })],
+        sharedCollections: [shared()],
+      }),
+    );
+    expect(
+      byId(entries, 'collection:local:local-1')?.updateAvailable,
+    ).toBeFalsy();
+  });
+
+  it('own share reads ownedByViewer true', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 's1', contentHash: 'a' } }),
+        ],
+        sharedCollections: [shared()],
+        viewerId: 'u2',
+      }),
+    );
+    expect(byId(entries, 'collection:local:local-1')?.ownedByViewer).toBe(true);
+  });
+
+  it('a null viewerId leaves ownedByViewer undefined on a linked collection', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 's1', contentHash: 'a' } }),
+        ],
+        sharedCollections: [shared()],
+        viewerId: null,
+      }),
+    );
+    expect(
+      byId(entries, 'collection:local:local-1')?.ownedByViewer,
+    ).toBeUndefined();
+  });
+
+  it('unmatched sharedSource keeps the local row without update', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 'gone', contentHash: 'a' } }),
+        ],
+        sharedCollections: [shared()],
+        viewerId: 'u1',
+      }),
+    );
+    const localEntry = byId(entries, 'collection:local:local-1');
+    expect(localEntry?.sharedSource).toEqual({
+      remoteId: 'gone',
+      installedContentHash: 'a',
+    });
+    expect(localEntry?.updateAvailable).toBeFalsy();
+    expect(localEntry?.authorName).toBeUndefined();
+    expect(localEntry?.ownedByViewer).toBeUndefined();
+    expect(byId(entries, 'collection:shared:s1')?.state).toBe('available');
+  });
+
+  it('a local collection without sharedSource is created locally', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [local()],
+        sharedCollections: [shared()],
+        viewerId: 'u1',
+      }),
+    );
+    const localEntry = byId(entries, 'collection:local:local-1');
+    expect(localEntry).not.toHaveProperty('sharedSource');
+    expect(localEntry?.authorName).toBeUndefined();
+    expect(localEntry?.ownedByViewer).toBe(true);
+    expect(localEntry?.sharedWith).toBeUndefined();
+    expect(localEntry?.updateAvailable).toBeFalsy();
+  });
+
+  it('two local copies of one share both link and the shared entry installs to the first by index order', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({
+            id: 'local-1',
+            sharedSource: { remoteId: 's1', contentHash: 'a' },
+          }),
+          local({
+            id: 'local-2',
+            sharedSource: { remoteId: 's1', contentHash: 'a' },
+          }),
+        ],
+        sharedCollections: [shared()],
+      }),
+    );
+    expect(byId(entries, 'collection:local:local-1')?.updateAvailable).toBe(
+      true,
+    );
+    expect(byId(entries, 'collection:local:local-2')?.updateAvailable).toBe(
+      true,
+    );
+    expect(byId(entries, 'collection:shared:s1')?.installedEntryId).toBe(
+      'collection:local:local-1',
+    );
+  });
+
+  it('a summary without createdBy falls back to the owner display name for sharedBy', () => {
+    const entries = buildUnifiedPluginEntries(
+      emptyInputs({
+        localCollections: [
+          local({ sharedSource: { remoteId: 's1', contentHash: 'a' } }),
+        ],
+        sharedCollections: [
+          shared({ createdBy: { id: 'u2', name: null, email: null } }),
+        ],
+      }),
+    );
+    const localEntry = byId(entries, 'collection:local:local-1');
+    expect(localEntry?.sharedSource?.sharedBy).toBe('Design');
+    expect(localEntry?.authorName).toBe('Design');
+  });
+});
+
+it('invalidates collection projections by the opaque index revision', () => {
+  const rows = buildUnifiedPluginEntries(
+    emptyInputs({
+      localCollections: [
+        {
+          id: 'abc',
+          name: 'Kit',
+          description: '',
+          updatedAt: 'same-timestamp',
+          revision: 'opaque:r2',
+          skillCount: 0,
+          pluginCount: 0,
+          mcpServerCount: 0,
+        },
+      ],
+    }),
+  );
+  expect(
+    rows.find((row) => row.id === 'collection:local:abc')?.collectionRevision,
+  ).toBe('opaque:r2');
 });
 
 describe('CAN-4844 — custom skill edit dates', () => {

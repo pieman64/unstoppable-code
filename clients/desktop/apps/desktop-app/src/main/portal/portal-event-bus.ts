@@ -648,7 +648,8 @@ export function createCommandFailedPayload(
     commandId: command.id,
     sequenceNumber: command.sequence,
     error: { code, message },
-    ...(command.type.startsWith('portal.script_actions.')
+    ...(command.type.startsWith('portal.script_actions.') ||
+    command.type === 'portal.collections.save'
       ? { response: { code, message } }
       : {}),
     retryable,

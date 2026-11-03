@@ -963,18 +963,12 @@ export interface ChatQueueSlice {
     expected?: QueuedChatMessage,
   ) => void;
   /**
-   * Drain queued messages on tabs marked `queuedForSetup === true` for the
-   * given worktree. Called by the projectsStore git-ready handler. Idempotent.
-   */
-  flushPendingChatsForWorktree: (projectId: string, worktreeId: string) => void;
-  /**
-   * Drop renderer-side state for a worktree whose Phase B failed. Closes
-   * tabs hydrated by `loadAllWorktreeTabs`, clears `queuedMessages` /
-   * `queuedForSetup`, removes pending questions / plan exits for the
-   * worktree, and clears `selectedWorktree` if it currently points at the
-   * failed worktree (so the renderer doesn't render a stale empty chat for
-   * a worktree that no longer exists). Distinct from `cleanupWorktree`,
-   * which is the post-archive path.
+   * Drop renderer-side state for a removed worktree. Closes tabs hydrated by
+   * `loadAllWorktreeTabs`, clears `queuedMessages`, removes pending questions
+   * / plan exits for the worktree, and clears `selectedWorktree` if it
+   * currently points at that worktree (so the renderer doesn't render a
+   * stale empty chat for a worktree that no longer exists). Distinct from
+   * `cleanupWorktree`, which is the post-archive path.
    */
   dropWorktreeQueuedState: (projectId: string, worktreeId: string) => void;
 }

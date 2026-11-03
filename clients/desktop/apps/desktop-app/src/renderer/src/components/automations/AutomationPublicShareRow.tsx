@@ -7,6 +7,7 @@ import {
   AUTOMATION_PUBLIC_SHARE_CHANGED_EVENT,
 } from '@/lib/share-links';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface AutomationPublicShareRowProps {
   remoteId: string;
@@ -145,15 +146,11 @@ export function AutomationPublicShareRow({
           )}
         </>
       )}
-      {error && (
-        <span
-          className="fg-destructive"
-          role="alert"
-          data-testid="automation-public-share-error"
-        >
-          {error}
-        </span>
-      )}
+      <ErrorBanner
+        className=""
+        error={error}
+        testId="automation-public-share-error"
+      />
     </div>
   );
 }

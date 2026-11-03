@@ -135,7 +135,7 @@ export function ShareInstallDialog({
       <div
         ref={bodyRef}
         tabIndex={-1}
-        className="flex flex-col gap-3 px-5 pb-5 pt-2 outline-none"
+        className="flex flex-col gap-3 outline-none"
       >
         {loading}
         {description !== undefined && description !== '' && (

@@ -646,7 +646,7 @@ export function runtimeChatEventToPortalMessage(
           input.data[CANOPY_MODEL_ACCESS_FAILURE_FIELD],
         )
       : undefined;
-  return {
+  const projected: PortalChatMessage = {
     messageId,
     chatId: input.chatId,
     role: 'assistant',
@@ -669,6 +669,35 @@ export function runtimeChatEventToPortalMessage(
     createdAtMs: now,
     updatedAtMs: now,
   };
+  const refusedUserMessageId = input.data.canopy_turn_user_message_id;
+  if (
+    (type === 'canopy_ai_credits_no_billing_source' ||
+      (type === 'error' && input.data.error_code === 'no_billing_source')) &&
+    typeof refusedUserMessageId === 'string' &&
+    typeof input.data.parent_tool_use_id !== 'string'
+  ) {
+    return {
+      ...projected,
+      status: 'failed',
+      errorCode: 'no_billing_source',
+      errorMessage: projected.text,
+      parts: [
+        ...(projected.parts ?? []),
+        {
+          kind: 'text',
+          data: {
+            text: '',
+            composerRefusal: {
+              code: 'no_billing_source',
+              userMessageId: refusedUserMessageId,
+            },
+            errorText: projected.text,
+          },
+        },
+      ],
+    };
+  }
+  return projected;
 }
 
 /**

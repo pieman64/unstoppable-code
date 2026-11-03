@@ -83,7 +83,6 @@ export function ChatStateRecoveryBanner({
       {showRefreshError && (
         <Notice
           intent="destructive"
-          role="alert"
           data-testid="chat-state-refresh-error"
           title={CHAT_STATE_REFRESH_ERROR_HEADING}
           actions={

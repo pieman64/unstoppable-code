@@ -17,7 +17,10 @@ import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-
 
 import { WorkspaceEnvironmentTab } from '../WorkspaceEnvironmentTab';
 import { useEnvironmentsStore } from '@/stores/environmentsStore';
-import { chooseSettingsOptionSync } from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectOptionLabels,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 
 interface TestApi {
   loadEnvironmentConfig: jest.Mock<Promise<LoadEnvironmentConfigResponse>, []>;
@@ -50,18 +53,8 @@ function render(node: ReactNode): { container: HTMLDivElement; root: Root } {
   return { container, root };
 }
 
-/**
- * Chooses `value` in a runtime select: the native select of the panel, or
- * the shared settings dropdown of a settings page.
- */
+/** Chooses `value` in a runtime dropdown (the shared settings dropdown). */
 function chooseRuntime(select: HTMLElement, value: string): void {
-  if (select instanceof HTMLSelectElement) {
-    act(() => {
-      select.value = value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    return;
-  }
   if (!(select instanceof HTMLButtonElement)) {
     throw new Error('Not a runtime select');
   }
@@ -111,14 +104,12 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     try {
       await flushPromises();
-      const select = container.querySelector<HTMLSelectElement>(
+      const select = container.querySelector<HTMLElement>(
         '[data-testid="workspace-environment-agent"]',
       );
       if (!select) throw new Error('Assignment selector missing');
-      act(() => {
-        select.value = 'default-overall';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      if (!select) throw new Error('Assignment selector missing');
+      chooseRuntime(select, 'default-overall');
       api.loadEnvironmentConfig.mockResolvedValueOnce({
         ok: false,
         error: 'Storage failed.',
@@ -148,7 +139,7 @@ describe('WorkspaceEnvironmentTab', () => {
       await flushPromises();
       expect(api.loadEnvironmentConfig).toHaveBeenCalledTimes(3);
       expect(api.saveEnvironmentConfig).not.toHaveBeenCalled();
-      expect(select.value).toBe('default-overall');
+      expect(select.getAttribute('data-value')).toBe('default-overall');
       expect(
         container.querySelector('[data-testid="secure-storage-notice"]'),
       ).toBeNull();
@@ -238,15 +229,13 @@ describe('WorkspaceEnvironmentTab', () => {
           kind: 'environment',
           data: submitted,
         });
-        const select = container.querySelector<HTMLSelectElement>(
+        const select = container.querySelector<HTMLElement>(
           '[data-testid="workspace-environment-agent"]',
         );
         if (!select) throw new Error('Assignment selector missing');
         if (override) {
-          act(() => {
-            select.value = override;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-          });
+          if (!select) throw new Error('Assignment selector missing');
+          chooseRuntime(select, override);
         }
         const retry = container.querySelector<HTMLButtonElement>(
           '[data-testid="secure-storage-retry"]',
@@ -265,7 +254,9 @@ describe('WorkspaceEnvironmentTab', () => {
         expect(
           useEnvironmentsStore.getState().data?.workspaceAssignments,
         ).toEqual(initial.workspaceAssignments);
-        expect(select.value).toBe(override ?? '__fallback__');
+        expect(select.getAttribute('data-value')).toBe(
+          override ?? '__fallback__',
+        );
         expect(
           container.querySelector<HTMLButtonElement>(
             '[data-testid="workspace-environment-save"]',
@@ -328,14 +319,11 @@ describe('WorkspaceEnvironmentTab', () => {
       />,
     );
     await flushPromises();
-    const select = container.querySelector<HTMLSelectElement>(
+    const select = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    act(() => {
-      if (!select) return;
-      select.value = 'default-overall';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!select) throw new Error('Assignment selector missing');
+    chooseRuntime(select, 'default-overall');
     act(() =>
       container
         .querySelector<HTMLButtonElement>(
@@ -345,11 +333,8 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
     expect(api.saveEnvironmentConfig).toHaveBeenCalledTimes(1);
-    act(() => {
-      if (!select) return;
-      select.value = 'default-canopy';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!select) throw new Error('Assignment selector missing');
+    chooseRuntime(select, 'default-canopy');
     act(() =>
       container
         .querySelector<HTMLButtonElement>(
@@ -362,7 +347,7 @@ describe('WorkspaceEnvironmentTab', () => {
     expect(api.saveEnvironmentConfig.mock.calls[1][0]).toEqual(
       api.saveEnvironmentConfig.mock.calls[0][0],
     );
-    expect(select?.value).toBe('default-canopy');
+    expect(select?.getAttribute('data-value')).toBe('default-canopy');
     expect(
       container.querySelector<HTMLButtonElement>(
         '[data-testid="workspace-environment-save"]',
@@ -391,14 +376,11 @@ describe('WorkspaceEnvironmentTab', () => {
       />,
     );
     await flushPromises();
-    const select = container.querySelector<HTMLSelectElement>(
+    const select = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    act(() => {
-      if (!select) return;
-      select.value = 'default-overall';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!select) throw new Error('Assignment selector missing');
+    chooseRuntime(select, 'default-overall');
     act(() =>
       container
         .querySelector<HTMLButtonElement>(
@@ -408,17 +390,14 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
     const submitted = api.saveEnvironmentConfig.mock.calls[0][0];
-    act(() => {
-      if (!select) return;
-      select.value = 'default-canopy';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!select) throw new Error('Assignment selector missing');
+    chooseRuntime(select, 'default-canopy');
     await act(async () => {
       resolveSave({ ok: true, data: submitted, encryptionAvailable: true });
       await Promise.resolve();
     });
     await flushPromises();
-    expect(select?.value).toBe('default-canopy');
+    expect(select?.getAttribute('data-value')).toBe('default-canopy');
     expect(
       container.querySelector<HTMLButtonElement>(
         '[data-testid="workspace-environment-save"]',
@@ -444,19 +423,20 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
 
-    const canopy = container.querySelector<HTMLSelectElement>(
+    const canopy = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-canopy"]',
     );
-    const agent = container.querySelector<HTMLSelectElement>(
+    const agent = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    const pipeline = container.querySelector<HTMLSelectElement>(
+    const pipeline = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-pipeline"]',
     );
     expect(canopy).not.toBeNull();
     expect(agent).not.toBeNull();
     expect(pipeline).not.toBeNull();
-    expect(canopy?.options[0].textContent).toContain('Global default');
+    if (!(canopy instanceof HTMLButtonElement)) throw new Error('No dropdown');
+    expect(settingsSelectOptionLabels(canopy)[0]).toContain('Global default');
 
     act(() => {
       root.unmount();
@@ -499,16 +479,13 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
 
-    const agentSelect = container.querySelector<HTMLSelectElement>(
+    const agentSelect = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
     expect(agentSelect).not.toBeNull();
 
-    act(() => {
-      const select = agentSelect as HTMLSelectElement;
-      select.value = 'default-overall';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!agentSelect) throw new Error('Assignment selector missing');
+    chooseRuntime(agentSelect, 'default-overall');
     await flushPromises();
 
     const saveButton = container.querySelector<HTMLButtonElement>(
@@ -895,14 +872,11 @@ describe('WorkspaceEnvironmentTab', () => {
       useEnvironmentsStore.getState().setLocal(draft);
     });
 
-    const agentSelect = container.querySelector<HTMLSelectElement>(
+    const agentSelect = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    act(() => {
-      const select = agentSelect as HTMLSelectElement;
-      select.value = 'default-overall';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!agentSelect) throw new Error('Assignment selector missing');
+    chooseRuntime(agentSelect, 'default-overall');
     await flushPromises();
 
     const saveButton = container.querySelector<HTMLButtonElement>(
@@ -943,14 +917,11 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
 
-    const agentSelect = container.querySelector<HTMLSelectElement>(
+    const agentSelect = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    act(() => {
-      const select = agentSelect as HTMLSelectElement;
-      select.value = 'default-overall';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!agentSelect) throw new Error('Assignment selector missing');
+    chooseRuntime(agentSelect, 'default-overall');
     await flushPromises();
     expect(
       container.querySelector<HTMLButtonElement>(
@@ -1045,14 +1016,11 @@ describe('WorkspaceEnvironmentTab', () => {
     );
     await flushPromises();
 
-    const agentSelect = container.querySelector<HTMLSelectElement>(
+    const agentSelect = container.querySelector<HTMLElement>(
       '[data-testid="workspace-environment-agent"]',
     );
-    act(() => {
-      const select = agentSelect as HTMLSelectElement;
-      select.value = '__fallback__';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    if (!agentSelect) throw new Error('Assignment selector missing');
+    chooseRuntime(agentSelect, '__fallback__');
     await flushPromises();
 
     const saveButton = container.querySelector<HTMLButtonElement>(

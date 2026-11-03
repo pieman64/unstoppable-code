@@ -8,7 +8,6 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { createPortal } from 'react-dom';
 import {
   refreshChatShareData,
   useChatShareData,
@@ -280,8 +279,10 @@ export function ChatShareHost(): JSX.Element {
   if (request && loadedPipeline?.data) {
     const pipeline = loadedPipeline.data;
     const close = (): void => finish(request);
-    dialog = createPortal(
-      <Suspense key={request.id} fallback={null}>
+    // The dialog portals itself through DialogModal. The pipeline dialog has
+    // no pop-out document support; it opens in the main window.
+    dialog = (
+      <Suspense key={`dialog-${request.id}`} fallback={null}>
         <DialogOpened onOpened={() => handleOpened(request)} />
         <SharePipelineModal
           pipeline={pipeline.content}
@@ -305,10 +306,7 @@ export function ChatShareHost(): JSX.Element {
             notifyShareCompleted(request);
           }}
         />
-      </Suspense>,
-      // The pipeline dialog has no pop-out document support; it opens in
-      // the main window.
-      document.body,
+      </Suspense>
     );
   } else if (request && resolution?.status === 'resolved') {
     const resolved = resolution.resolved;
@@ -328,9 +326,12 @@ export function ChatShareHost(): JSX.Element {
       // from and remount it without its success notice.
       notifyShareCompleted(request);
     };
-    dialog = createPortal(
-      // Keyed by request so a replacement never inherits dialog state.
-      <Suspense key={request.id} fallback={null}>
+    // Keyed by request so a replacement never inherits dialog state; the
+    // `dialog-` prefix keeps the key apart from the gate's beside it. The
+    // dialog portals itself (DialogModal) into `ownerDocument`, the window
+    // the request came from.
+    dialog = (
+      <Suspense key={`dialog-${request.id}`} fallback={null}>
         <DialogOpened onOpened={() => handleOpened(request)} />
         {resolved.kind === 'skill' ? (
           <ShareSkillModal
@@ -353,8 +354,7 @@ export function ChatShareHost(): JSX.Element {
             {...(ownerDocument ? { ownerDocument } : {})}
           />
         )}
-      </Suspense>,
-      target.body,
+      </Suspense>
     );
   }
 

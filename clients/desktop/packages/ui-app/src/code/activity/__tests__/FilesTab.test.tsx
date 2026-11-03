@@ -172,10 +172,10 @@ describe('FilesTab', () => {
     const out = renderToString(
       <FilesTab
         entries={[{ name: 'stale.txt', isDir: false }]}
-        emptyState={<button type="button">Retry</button>}
+        emptyState={<button type="button">Try again</button>}
       />,
     );
-    expect(out).toContain('Retry');
+    expect(out).toContain('Try again');
     expect(out).not.toContain('stale.txt');
     expect(out).not.toContain('data-testid="activity-files"');
   });

@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import type { JSX } from 'react';
 import {
   subagentAncestors,
   type SubagentNode,
@@ -46,6 +46,7 @@ import {
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
 import { Button } from '../../../Button';
 import { ExecutionActionButton } from '../../../ExecutionActionButton';
+import { ErrorBanner } from '../../../StatusBlocks';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
 import {
@@ -62,6 +63,7 @@ import {
   SubagentStatusGlyph,
   subagentStatusInk,
 } from '../common/SubagentStatusGlyph';
+import { Fact, FactList } from '../../../FactList';
 
 /** Shared callback and content props for the inspector and bottom drawer. */
 export interface SubagentsDetailsProps {
@@ -97,21 +99,6 @@ export interface SubagentsDetailsProps {
   readonly stopError?: string;
   /** Dismiss the detail surface. */
   readonly onClose: () => void;
-}
-
-function InspectorRow({
-  label,
-  children,
-}: {
-  readonly label: string;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{label}</dt>
-      <dd className="min-w-0 fg-primary">{children}</dd>
-    </>
-  );
 }
 
 function SubagentsTaskDetailsBody({
@@ -205,13 +192,14 @@ function SubagentsTaskDetailsBody({
       </div>
 
       {stopError ? (
-        <p role="alert" className="text-xs fg-destructive">
-          <span>{SUBAGENTS_STOP_FAILED_LABEL}</span> <span>{stopError}</span>
-        </p>
+        <ErrorBanner
+          className=""
+          error={`${SUBAGENTS_STOP_FAILED_LABEL} ${stopError}`}
+        />
       ) : null}
 
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-        <InspectorRow label={SUBAGENTS_INSPECTOR_MODEL}>
+      <FactList rowGap="2">
+        <Fact label={SUBAGENTS_INSPECTOR_MODEL}>
           <span className="flex min-w-0 items-center gap-1.5">
             <SubagentHarnessMark harnessId={node.harnessId} />
             <span className="truncate">{node.modelLabel ?? ''}</span>
@@ -221,14 +209,12 @@ function SubagentsTaskDetailsBody({
               </span>
             ) : null}
           </span>
-        </InspectorRow>
+        </Fact>
         {showWorkspaceDetails && workspace ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_WORKSPACE}>
-            {workspace}
-          </InspectorRow>
+          <Fact label={SUBAGENTS_INSPECTOR_WORKSPACE}>{workspace}</Fact>
         ) : null}
         {showWorkspaceDetails && changeTotals ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_CHANGES}>
+          <Fact label={SUBAGENTS_INSPECTOR_CHANGES}>
             <span className="flex flex-wrap items-center gap-1.5">
               <SubagentChangesLabel
                 additions={changeTotals.additions}
@@ -238,9 +224,9 @@ function SubagentsTaskDetailsBody({
                 {subagentFilesCountLabel(changeTotals.filesChanged)}
               </span>
             </span>
-          </InspectorRow>
+          </Fact>
         ) : null}
-        <InspectorRow label={SUBAGENTS_INSPECTOR_LINEAGE}>
+        <Fact label={SUBAGENTS_INSPECTOR_LINEAGE}>
           <span className="flex min-w-0 flex-col gap-0.5">
             <span className={`${REPLAY_MASK_CLASS} truncate fg-tertiary`}>
               {tree.root.title}
@@ -254,13 +240,13 @@ function SubagentsTaskDetailsBody({
               </span>
             ))}
           </span>
-        </InspectorRow>
-        <InspectorRow label={SUBAGENTS_INSPECTOR_STARTED}>
+        </Fact>
+        <Fact label={SUBAGENTS_INSPECTOR_STARTED}>
           {children.length > 0
             ? children.join(', ')
             : SUBAGENTS_INSPECTOR_STARTED_NONE_CLASSIC}
-        </InspectorRow>
-      </dl>
+        </Fact>
+      </FactList>
     </>
   );
 }
@@ -358,14 +344,14 @@ function SubagentsWorkflowRunDetailsBody({
       ) : null}
 
       {stopWorkflowError ? (
-        <p role="alert" className="text-xs fg-destructive">
-          <span>{SUBAGENT_STOP_WORKFLOW_FAILED_LABEL}</span>{' '}
-          <span>{stopWorkflowError}</span>
-        </p>
+        <ErrorBanner
+          className=""
+          error={`${SUBAGENT_STOP_WORKFLOW_FAILED_LABEL} ${stopWorkflowError}`}
+        />
       ) : null}
 
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-        <InspectorRow label={SUBAGENTS_INSPECTOR_CHAT}>
+      <FactList rowGap="2">
+        <Fact label={SUBAGENTS_INSPECTOR_CHAT}>
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="inline-flex shrink-0 fg-secondary">
               <ChatIcon size={12} aria-hidden />
@@ -374,9 +360,9 @@ function SubagentsWorkflowRunDetailsBody({
               {tree.root.title}
             </span>
           </span>
-        </InspectorRow>
+        </Fact>
         {run.workflow ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_RUN}>
+          <Fact label={SUBAGENTS_INSPECTOR_RUN}>
             <span className="flex min-w-0 flex-col gap-0.5">
               <span>
                 {subagentWorkflowRunPositionLabel(
@@ -388,10 +374,10 @@ function SubagentsWorkflowRunDetailsBody({
                 {run.workflow.runId}
               </span>
             </span>
-          </InspectorRow>
+          </Fact>
         ) : null}
         {phases.length > 0 ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_PHASES}>
+          <Fact label={SUBAGENTS_INSPECTOR_PHASES}>
             <span className="flex min-w-0 flex-col gap-1">
               {phases.map((phase) => (
                 <span
@@ -414,15 +400,11 @@ function SubagentsWorkflowRunDetailsBody({
                 </span>
               ))}
             </span>
-          </InspectorRow>
+          </Fact>
         ) : null}
-        {usage ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_USAGE}>{usage}</InspectorRow>
-        ) : null}
-        {time ? (
-          <InspectorRow label={SUBAGENTS_INSPECTOR_TIME}>{time}</InspectorRow>
-        ) : null}
-      </dl>
+        {usage ? <Fact label={SUBAGENTS_INSPECTOR_USAGE}>{usage}</Fact> : null}
+        {time ? <Fact label={SUBAGENTS_INSPECTOR_TIME}>{time}</Fact> : null}
+      </FactList>
     </>
   );
 }

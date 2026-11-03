@@ -89,16 +89,21 @@ export async function applyReservedWorktreeRecord(
 ): Promise<boolean> {
   // Set by the updater, which runs under the list lock.
   const pass = { updated: false };
-  await updateWorkspaceWorktrees(target.workspaceId, (rows) => {
-    const next = applyReservedWorktreeRecordTo(
-      rows,
-      { id: target.worktreeId, createdAt: target.createdAt },
-      decision,
-    );
-    if ('refusal' in next) refuse(next.refusal);
-    pass.updated = next.updated;
-    return next.worktrees;
-  });
+  await updateWorkspaceWorktrees(
+    target.workspaceId,
+    (rows) => {
+      const next = applyReservedWorktreeRecordTo(
+        rows,
+        { id: target.worktreeId, createdAt: target.createdAt },
+        decision,
+      );
+      if ('refusal' in next) refuse(next.refusal);
+      pass.updated = next.updated;
+      return next.worktrees;
+    },
+    // Only a complete existing list can prove the reservation is stale.
+    { requireAuthoritativeRead: true, requireExistingList: true },
+  );
   return pass.updated;
 }
 

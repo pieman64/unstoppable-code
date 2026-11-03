@@ -288,7 +288,7 @@ test.describe('Add project clone progress', () => {
       pending.locator('[data-testid^="sidebar-pending-project-spinner-"]'),
     ).toHaveCount(0);
     const retry = pending.getByRole('button', {
-      name: `Retry ${REPO_NAME}`,
+      name: `Try again for ${REPO_NAME}`,
       exact: true,
     });
     await retry.focus();

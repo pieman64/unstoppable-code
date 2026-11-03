@@ -216,7 +216,7 @@ export function BackgroundTaskDetailModal({
       maxWidth="3xl"
       dataTestId="bg-process-detail-modal"
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5 pt-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {/* Metadata */}
         <div className="mb-4 grid grid-cols-2 gap-x-6 gap-y-2 text-s">
           <div>

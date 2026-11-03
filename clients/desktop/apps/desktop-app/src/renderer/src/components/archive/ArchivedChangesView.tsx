@@ -374,7 +374,7 @@ export function ArchivedChangesView({
                 data-testid="archived-changes-page-retry"
                 onClick={retryChanges}
               >
-                Retry
+                Try again
               </Button>
             </div>
           ) : manualPagingRequired ? (
@@ -426,7 +426,7 @@ export function ArchivedChangesView({
             data-testid="archived-changes-list-retry"
             onClick={retryChanges}
           >
-            Retry
+            Try again
           </Button>
         </div>
       ) : changes.files.length === 0 ? (
@@ -482,7 +482,7 @@ export function ArchivedChangesView({
                   data-testid="archived-changes-diff-retry"
                   onClick={retryDiff}
                 >
-                  Retry
+                  Try again
                 </Button>
               </div>
             ) : (

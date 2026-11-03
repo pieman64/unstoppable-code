@@ -33,6 +33,22 @@ import {
 import { BrandLogo } from '@/components/BrandLogo';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import {
+  bulkSelection,
+  CODE_REPOSITORY_DETAIL,
+  isBulkSelectable,
+  isDirectPick,
+  isCurrentSelection,
+  isPickerCandidate,
+  isRepositoryParent,
+  orderPickedGroups,
+  pickedSummary,
+  PLAIN_FOLDER_DETAIL,
+  reconcileSelection,
+  selectAllExclusive,
+  selectExclusive,
+  type PickedSummary,
+} from '@/components/import-projects/pickedFolders';
+import {
   SettingsGroup,
   SettingsLoading,
   SettingsPage,
@@ -118,6 +134,17 @@ function RowDetail({
   const split = Math.max(shown.lastIndexOf('/'), shown.lastIndexOf('\\')) + 1;
   const parent = shown.slice(0, split);
   const name = shown.slice(split);
+  // A picked folder says what kind it is, ahead of any chat history.
+  const pickedType = isPickerCandidate(candidate)
+    ? candidate.kind === 'git'
+      ? CODE_REPOSITORY_DETAIL
+      : PLAIN_FOLDER_DETAIL
+    : null;
+  const activity = candidate.lastActivityAt
+    ? formatCompactAge(candidate.lastActivityAt, now)
+    : pickedType === null
+      ? 'No chat history'
+      : null;
   return (
     <span className="flex min-w-0 gap-1.5 max-sm:flex-wrap">
       {/* The folder name tells projects apart, so the parents truncate and
@@ -129,12 +156,8 @@ function RowDetail({
         <span className="min-w-0 truncate">{parent}</span>
         <span className="max-w-full shrink-0">{name}</span>
       </span>
-      <span className="shrink-0">
-        ·{' '}
-        {candidate.lastActivityAt
-          ? formatCompactAge(candidate.lastActivityAt, now)
-          : 'No chat history'}
-      </span>
+      {pickedType !== null && <span className="shrink-0">· {pickedType}</span>}
+      {activity !== null && <span className="shrink-0">· {activity}</span>}
     </span>
   );
 }
@@ -177,14 +200,16 @@ function HarnessTags({
   );
 }
 
+// A folder holding repositories, or one whose scan is uncertain, waits for an
+// explicit choice; so does a repository found inside a picked folder.
 function initialSelection(
   response: ExternalProjectDiscoverResponse,
   include: (candidate: ExternalProjectCandidate) => boolean,
 ): Set<string> {
-  return new Set(
-    response.candidates
-      .filter((c) => c.status === 'available' && include(c))
-      .map((c) => c.id),
+  return reconcileSelection(
+    response.candidates.map((c) => c.id),
+    response.candidates,
+    (c) => c.status === 'available' && isBulkSelectable(c) && include(c),
   );
 }
 
@@ -448,17 +473,30 @@ function CandidateRows({
   // Recent projects start checked and always show, so nothing checked is
   // hidden; older ones start unchecked behind the toggle. When none is
   // recent, every project shows unchecked and there is no toggle (CAN-4712).
+  // A picked folder's rows always show, checked or not (CAN-5487).
   const visible =
     expanded || allOlder
       ? importable
-      : importable.filter((c) => isRecent(c) || selected.has(c.id));
+      : importable.filter(
+          (c) => isRecent(c) || selected.has(c.id) || isPickerCandidate(c),
+        );
   const hiddenCount = importable.length - visible.length;
-  const allOn = importable.every((c) => selected.has(c.id));
+  // Select all skips folders holding repositories and uncertain picks.
+  const bulk = bulkSelection(visible);
+  const allOn =
+    bulk.size > 0 && Array.from(bulk).every((id) => selected.has(id));
   const toggle = (id: string): void =>
     setSelected((current) => {
+      if (!current.has(id)) return selectExclusive(current, id, importable);
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      next.delete(id);
+      return next;
+    });
+  const toggleAll = (): void =>
+    setSelected((current) => {
+      if (!allOn) return selectAllExclusive(current, bulk, importable);
+      const next = new Set(current);
+      for (const id of bulk) next.delete(id);
       return next;
     });
   return (
@@ -472,11 +510,8 @@ function CandidateRows({
             <Checkbox
               id="first-run-select-all"
               checked={allOn}
-              onChange={(): void =>
-                setSelected(
-                  allOn ? new Set() : new Set(importable.map((c) => c.id)),
-                )
-              }
+              disabled={bulk.size === 0}
+              onChange={toggleAll}
             />
           }
         />
@@ -486,12 +521,23 @@ function CandidateRows({
           key={candidate.id}
           dataTestId={`first-run-import-row-${candidate.id}`}
           label={
-            <span className="flex min-w-0 items-center gap-2">
-              <span className={`truncate ${POSTHOG_REPLAY_MASK_CLASS}`}>
-                {candidate.displayName}
+            isRepositoryParent(candidate) ? (
+              // Secondary, not disabled: the folder is still a valid choice.
+              <span className="block min-w-0 truncate fg-secondary">
+                Add{' '}
+                <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                  {candidate.displayName}
+                </span>{' '}
+                as a plain folder
               </span>
-              <HarnessTags providers={candidate.providers} />
-            </span>
+            ) : (
+              <span className="flex min-w-0 items-center gap-2">
+                <span className={`truncate ${POSTHOG_REPLAY_MASK_CLASS}`}>
+                  {candidate.displayName}
+                </span>
+                <HarnessTags providers={candidate.providers} />
+              </span>
+            )
           }
           description={<RowDetail candidate={candidate} now={now} />}
           htmlFor={`first-run-${candidate.id}`}
@@ -527,14 +573,42 @@ function CandidateRows({
  * the page's actions sit at its bottom, so finishing the scan or showing
  * older projects never pushes them out of view (CAN-4679).
  */
+function PickedSummaryText({
+  summary,
+}: {
+  summary: PickedSummary;
+}): JSX.Element {
+  return (
+    // One run of sentences, not a line per fact.
+    <span data-testid="first-run-import-picked-summary">
+      {summary.lines.map((line, index) => (
+        <span key={line.key}>
+          {index > 0 && ' '}
+          {line.lead}
+          {line.name !== null && (
+            <span className={POSTHOG_REPLAY_MASK_CLASS}>{line.name}</span>
+          )}
+          {line.tail}.
+        </span>
+      ))}
+      {summary.notes.map((note) => (
+        <span key={note}> {note}.</span>
+      ))}
+    </span>
+  );
+}
+
 function ProjectsSection({
   body,
+  picked,
   selected,
   setSelected,
   chooseFolder,
   actions,
 }: {
   body: ProjectsBody;
+  /** What the picked folders found; it outranks the generic description. */
+  picked: PickedSummary | null;
   selected: Set<string>;
   setSelected: Dispatch<SetStateAction<Set<string>>>;
   chooseFolder: () => void;
@@ -542,16 +616,22 @@ function ProjectsSection({
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const now = Date.now();
+  // Picked rows always show, so they count as recent here.
   const allOlder =
-    body.kind === 'candidates' && !body.importable.some(isRecent);
+    body.kind === 'candidates' &&
+    !body.importable.some((c) => isRecent(c) || isPickerCandidate(c));
   return (
     <SettingsSection
       fill
       title="Projects"
       description={
-        allOlder
-          ? foundProjectsDescription(body.importable, now)
-          : PROJECTS_DESCRIPTION
+        picked ? (
+          <PickedSummaryText summary={picked} />
+        ) : allOlder ? (
+          foundProjectsDescription(body.importable, now)
+        ) : (
+          PROJECTS_DESCRIPTION
+        )
       }
       dataTestId="first-run-import-projects"
     >
@@ -645,13 +725,15 @@ export function FirstRunImportPage({
   const [scanFailed, setScanFailed] = useState(false);
   const importing = useRef(false);
   const mounted = useRef(false);
+  // Latest pick wins: a slower earlier scan never replaces a newer one.
+  const pickRequest = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
     void window.api.externalProjects
       .discover({})
       .then((response) => {
-        if (cancelled) return;
+        if (cancelled || pickRequest.current > 0) return;
         setScan(response);
         setSelected(
           initialSelection(
@@ -661,7 +743,7 @@ export function FirstRunImportPage({
         );
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelled || pickRequest.current > 0) return;
         setScanFailed(true);
         setError("Couldn't look for Claude and Codex projects. Try again.");
       });
@@ -672,15 +754,28 @@ export function FirstRunImportPage({
 
   const importable = useMemo(
     () =>
-      (scan?.candidates ?? [])
-        .filter(
+      orderPickedGroups(
+        (scan?.candidates ?? []).filter(
           (candidate) =>
             candidate.status === 'available' && !isScratchSession(candidate),
-        )
-        .sort(
-          (a, b) => activityMs(b.lastActivityAt) - activityMs(a.lastActivityAt),
         ),
+        (a, b) =>
+          activityMs(b.lastActivityAt) - activityMs(a.lastActivityAt) ||
+          a.displayName.localeCompare(b.displayName) ||
+          a.rootPath.localeCompare(b.rootPath),
+      ),
     [scan],
+  );
+  // Built from every picked folder before availability filtering.
+  const picked = useMemo(
+    () =>
+      scan
+        ? pickedSummary(
+            scan.candidates,
+            new Set(importable.map((candidate) => candidate.id)),
+          )
+        : null,
+    [scan, importable],
   );
 
   // Telemetry only (CAN-4635): one visit per mount, so effect replay keeps
@@ -728,9 +823,26 @@ export function FirstRunImportPage({
 
   const runImport = async (): Promise<void> => {
     if (!scan || selected.size === 0 || importing.current) return;
+    if (
+      !isCurrentSelection(
+        selected,
+        importable,
+        (candidate) => candidate.status === 'available',
+      )
+    ) {
+      setSelected(
+        reconcileSelection(
+          selected,
+          importable,
+          (candidate) => candidate.status === 'available',
+        ),
+      );
+      setError('Your project choices changed. Review them before importing.');
+      return;
+    }
+    const selectedIds = Array.from(selected);
     importing.current = true;
     const submission = captureProjectImportSubmission();
-    const selectedIds = Array.from(selected);
     const tracking =
       selectedIds.length > 0
         ? startProjectImportSubmission({
@@ -801,25 +913,29 @@ export function FirstRunImportPage({
   };
 
   const chooseFolder = (): void => {
+    let request = 0;
     void window.api.externalProjects
       .pickFolder()
       .then(async (folder) => {
         if (!folder) return;
+        request = ++pickRequest.current;
         visit.markPickedFolder();
         const response = await window.api.externalProjects.discover({
           customRoots: [folder],
         });
+        if (request !== pickRequest.current) return;
         setScan(response);
         // Only the picked folder: the rescan also returns the default finds,
         // including hidden scratch sessions and older projects. Its root is
         // canonicalized, so match the custom-folder surface, not the path.
-        setSelected(
-          initialSelection(response, (c) =>
-            c.surfaces.includes('custom-folder'),
-          ),
-        );
+        // Repositories found inside it start unticked.
+        setSelected(initialSelection(response, isDirectPick));
       })
-      .catch(() => setError("Couldn't add that folder. Try again."));
+      .catch(() => {
+        // A failed dialog has no request; a stale scan's failure is moot.
+        if (request === 0 || request === pickRequest.current)
+          setError("Couldn't add that folder. Try again.");
+      });
   };
 
   // Offered only once both checks have finished and neither provider is
@@ -886,6 +1002,7 @@ export function FirstRunImportPage({
 
         <ProjectsSection
           body={body}
+          picked={picked}
           selected={selected}
           setSelected={setSelected}
           chooseFolder={chooseFolder}

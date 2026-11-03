@@ -140,7 +140,8 @@ describe('VariableInsertDropdown', () => {
     );
     expect(menu).not.toBeNull();
     expect(menu?.parentElement).toBe(document.body);
-    expect(menu?.classList.contains('z-dropdown')).toBe(true);
+    // The shared floating layer (z-dropdown tier).
+    expect(menu?.classList.contains('canopy-floating-menu')).toBe(true);
     expect(item).not.toBeNull();
     expect(item?.disabled).toBe(false);
     expect(item?.getAttribute('aria-disabled')).toBe('true');
@@ -192,5 +193,55 @@ describe('VariableInsertDropdown', () => {
       if (item) fireClick(item);
     });
     expect(onInsert).toHaveBeenCalledWith('CANOPY_PR_URL');
+  });
+
+  it('opens from the trigger arrow, skips unavailable rows, and Escape returns focus', async () => {
+    resetInputModality(document);
+    renderIntoBody(
+      <VariableInsertDropdown
+        variables={[
+          { name: 'FIRST', description: 'first' },
+          {
+            name: 'LOCKED',
+            description: 'locked',
+            disabled: true,
+            disabledReason: 'Not available here.',
+          },
+          { name: 'THIRD', description: 'third' },
+        ]}
+        onInsert={jest.fn()}
+      />,
+    );
+    const trigger = document.body.querySelector<HTMLButtonElement>(
+      'button[aria-haspopup="menu"]',
+    );
+    if (!trigger) throw new Error('trigger missing');
+    act(() => trigger.focus());
+    const press = (key: string): void => {
+      act(() => {
+        document.activeElement?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    };
+    press('ArrowDown');
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+    });
+    const rows = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    );
+    expect(document.activeElement).toBe(rows[0]);
+    press('ArrowDown');
+    expect(document.activeElement).toBe(rows[2]);
+    press('Escape');
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });

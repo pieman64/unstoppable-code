@@ -59,7 +59,11 @@ describe('WorktreeActionsMenu', () => {
     });
     expect(marked()).toBe(true);
     act(() => {
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      // A whole outside press: the menu swallows the click it completes.
+      document.body.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      );
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(marked()).toBe(false);
 
@@ -431,9 +435,11 @@ describe('WorktreeActionsMenu', () => {
     expect(document.activeElement).toBe(trigger);
     act(() => trigger?.click());
     act(() => {
+      // A whole outside press: the menu swallows the click it completes.
       document.body.dispatchEvent(
-        new MouseEvent('mousedown', { bubbles: true }),
+        new MouseEvent('pointerdown', { bubbles: true }),
       );
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(document.body.querySelector('[data-testid="menu"]')).toBeNull();
   });
@@ -507,10 +513,8 @@ describe('WorktreeActionsMenu', () => {
         '[data-testid="menu"]',
       );
       expect(menu).not.toBeNull();
-      const right = Number.parseFloat(menu?.style.right ?? 'NaN');
-      expect(Number.isNaN(right)).toBe(false);
-      const menuWidth = 180;
-      const leftEdge = window.innerWidth - right - menuWidth;
+      const leftEdge = Number.parseFloat(menu?.style.left ?? 'NaN');
+      expect(Number.isNaN(leftEdge)).toBe(false);
       // Fully on screen: the menu's own left edge never goes negative.
       expect(leftEdge).toBeGreaterThanOrEqual(0);
     } finally {

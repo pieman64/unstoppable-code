@@ -1,4 +1,4 @@
-import { useEffect, useRef, type JSX, type KeyboardEvent } from 'react';
+import type { JSX } from 'react';
 import {
   BulletListIcon,
   PlayCircleIcon,
@@ -9,6 +9,7 @@ import {
   WORKFLOWS_TABS,
   type WorkflowsTabId,
 } from '../lib/workflows-tabs';
+import { TabBar, type TabBarChangeSource, type TabBarItem } from './TabBar';
 
 const TAB_ICONS: Readonly<Record<WorkflowsTabId, JSX.Element>> = {
   workflows: <PlayCircleIcon width={14} height={14} />,
@@ -17,7 +18,7 @@ const TAB_ICONS: Readonly<Record<WorkflowsTabId, JSX.Element>> = {
 };
 
 /** How the user picked a tab. */
-export type WorkflowsTabChangeSource = 'pointer' | 'keyboard';
+export type WorkflowsTabChangeSource = TabBarChangeSource;
 
 export interface WorkflowsTabBarProps {
   readonly value: WorkflowsTabId;
@@ -60,89 +61,27 @@ export function WorkflowsTabBar({
   counts,
   className,
 }: WorkflowsTabBarProps): JSX.Element {
-  const tabRefs = useRef<Partial<Record<WorkflowsTabId, HTMLButtonElement>>>(
-    {},
+  const items: readonly TabBarItem<WorkflowsTabId>[] = WORKFLOWS_TABS.map(
+    (tab) => ({
+      id: tab,
+      label: WORKFLOWS_TAB_LABELS[tab],
+      icon: TAB_ICONS[tab],
+      count: counts?.[tab],
+      dataTestId: `workflows-tab-${tab}`,
+      countTestId: `workflows-tab-count-${tab}`,
+      tabId: workflowsTabElementId(tab),
+    }),
   );
-  const initial = useRef({ value, focusSelectedOnMount });
-
-  useEffect(() => {
-    if (initial.current.focusSelectedOnMount) {
-      tabRefs.current[initial.current.value]?.focus();
-    }
-  }, []);
-
-  const selectAt = (index: number): void => {
-    const count = WORKFLOWS_TABS.length;
-    const next = WORKFLOWS_TABS[((index % count) + count) % count];
-    if (next === undefined) return;
-    tabRefs.current[next]?.focus();
-    onChange(next, 'keyboard');
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
-    const index = WORKFLOWS_TABS.indexOf(value);
-    switch (event.key) {
-      case 'ArrowRight':
-        selectAt(index + 1);
-        break;
-      case 'ArrowLeft':
-        selectAt(index - 1);
-        break;
-      case 'Home':
-        selectAt(0);
-        break;
-      case 'End':
-        selectAt(WORKFLOWS_TABS.length - 1);
-        break;
-      default:
-        return;
-    }
-    event.preventDefault();
-  };
-
   return (
-    <div
-      role="tablist"
-      aria-label="Workflows"
-      data-testid="workflows-tabs"
-      className={`canopy-tab-list flex shrink-0 gap-2 ${className ?? ''}`.trim()}
-    >
-      {WORKFLOWS_TABS.map((tab) => {
-        const selected = value === tab;
-        const count = counts?.[tab];
-        return (
-          <button
-            key={tab}
-            ref={(element): void => {
-              if (element) tabRefs.current[tab] = element;
-              else delete tabRefs.current[tab];
-            }}
-            type="button"
-            role="tab"
-            id={workflowsTabElementId(tab)}
-            data-testid={`workflows-tab-${tab}`}
-            aria-selected={selected}
-            aria-controls={WORKFLOWS_TAB_PANEL_ID}
-            tabIndex={selected ? 0 : -1}
-            onClick={(): void => onChange(tab, 'pointer')}
-            onKeyDown={onKeyDown}
-            className={`canopy-tab-trigger focus-ring inline-flex items-center gap-1.5 px-3 py-2 text-s transition-colors ${
-              selected ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-            }`}
-          >
-            {TAB_ICONS[tab]}
-            <span>{WORKFLOWS_TAB_LABELS[tab]}</span>
-            {count !== undefined && count > 0 ? (
-              <span
-                className="text-xs tabular-nums fg-tertiary"
-                data-testid={`workflows-tab-count-${tab}`}
-              >
-                {count}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
-    </div>
+    <TabBar
+      items={items}
+      value={value}
+      onChange={onChange}
+      label="Workflows"
+      panelId={WORKFLOWS_TAB_PANEL_ID}
+      focusSelectedOnMount={focusSelectedOnMount}
+      dataTestId="workflows-tabs"
+      className={className}
+    />
   );
 }

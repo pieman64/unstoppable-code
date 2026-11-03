@@ -184,12 +184,14 @@ describe('SharedContainerPastSharesList', () => {
     );
   });
 
-  it('reports a failed removed listing with Retry and keeps Accepted', () => {
+  it('reports a failed removed listing with Try again and keeps Accepted', () => {
     const handlers = render({ removed: [], removedStatus: 'error' });
 
     expect(query('-removed-error')?.textContent).toContain(
       'Couldn’t load removed shares.',
     );
+    expect(query('-removed-error')?.getAttribute('role')).toBe('alert');
+    expect(query('-removed-retry')?.textContent).toBe('Try again');
     act(() => query('-removed-retry')?.click());
     expect(handlers.onRetryRemoved).toHaveBeenCalledTimes(1);
     expect(rowIds('accepted')).toHaveLength(3);

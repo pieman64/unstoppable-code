@@ -5,6 +5,7 @@ import type {
 } from '../types';
 import { Button } from '../../../Button';
 import { FileChangeMetadata } from '../../../FileChangeMetadata';
+import { ErrorBanner } from '../../../StatusBlocks';
 import { GitCommitIcon } from '../../../../icons/AppIcons';
 import {
   SUBAGENT_SHOW_CHANGES_LABEL,
@@ -27,25 +28,11 @@ import {
   subagentTopFilesShownLabel,
 } from '../subagent-copy';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
+import { Fact, FactList } from '../../../FactList';
 
 export interface SubagentWorktreeDetailsProps {
   readonly state: SubagentWorktreeSummaryState;
   readonly onShowChanges?: () => void;
-}
-
-function DetailRow({
-  label,
-  children,
-}: {
-  readonly label: string;
-  readonly children: JSX.Element | string;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{label}</dt>
-      <dd className="min-w-0 break-words fg-primary">{children}</dd>
-    </>
-  );
 }
 
 function FileRow({
@@ -84,19 +71,15 @@ export function SubagentWorktreeDetails({
   }
   if (state.status === 'error') {
     return (
-      <div className="flex flex-col items-start gap-2 text-xs" role="alert">
-        <p className="fg-destructive">
-          {subagentFailureWithReason(
-            SUBAGENT_WORKTREE_FAILED_LABEL,
-            state.error,
-          )}
-        </p>
-        {state.onRetry ? (
-          <Button size="compact" variant="secondary" onClick={state.onRetry}>
-            {SUBAGENTS_RETRY_LABEL}
-          </Button>
-        ) : null}
-      </div>
+      <ErrorBanner
+        className=""
+        error={subagentFailureWithReason(
+          SUBAGENT_WORKTREE_FAILED_LABEL,
+          state.error,
+        )}
+        onRetry={state.onRetry}
+        retryLabel={SUBAGENTS_RETRY_LABEL}
+      />
     );
   }
   if (state.status === 'unavailable') {
@@ -112,11 +95,11 @@ export function SubagentWorktreeDetails({
   const startingRevision = summary.startingRevision.slice(0, 7);
   return (
     <div className="flex min-w-0 flex-col gap-2.5">
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
-        <DetailRow label={SUBAGENT_WORKTREE_CHECKOUT}>
+      <FactList>
+        <Fact label={SUBAGENT_WORKTREE_CHECKOUT}>
           {subagentCheckoutLabel(summary.checkout)}
-        </DetailRow>
-        <DetailRow label={SUBAGENT_WORKTREE_STARTED_FROM}>
+        </Fact>
+        <Fact label={SUBAGENT_WORKTREE_STARTED_FROM}>
           <span
             className="flex min-w-0 items-center gap-1.5"
             title={summary.startingSubject}
@@ -129,8 +112,8 @@ export function SubagentWorktreeDetails({
               </span>
             ) : null}
           </span>
-        </DetailRow>
-        <DetailRow label={SUBAGENT_WORKTREE_CHANGES}>
+        </Fact>
+        <Fact label={SUBAGENT_WORKTREE_CHANGES}>
           <span className="flex flex-wrap items-center gap-x-1.5">
             <SubagentChangesLabel
               additions={summary.additions}
@@ -140,14 +123,14 @@ export function SubagentWorktreeDetails({
               {subagentFilesCountLabel(summary.filesChanged)}
             </span>
           </span>
-        </DetailRow>
-        <DetailRow label={SUBAGENT_WORKTREE_HISTORY}>
+        </Fact>
+        <Fact label={SUBAGENT_WORKTREE_HISTORY}>
           {subagentHistoryLabel(summary.commitsAhead, summary.untrackedFiles)}
-        </DetailRow>
-        <DetailRow label={SUBAGENT_WORKTREE_APPLIED}>
+        </Fact>
+        <Fact label={SUBAGENT_WORKTREE_APPLIED}>
           {subagentApplyStateLabel(summary.applyState)}
-        </DetailRow>
-      </dl>
+        </Fact>
+      </FactList>
       {files.length > 0 ? (
         <ul className="flex min-w-0 flex-col gap-0.5">
           {files.map((file) => (

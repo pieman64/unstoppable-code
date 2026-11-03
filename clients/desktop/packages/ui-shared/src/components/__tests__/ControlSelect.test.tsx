@@ -12,7 +12,7 @@ describe('ControlSelect', () => {
     expect(html).toContain('<select');
     expect(html).toContain('aria-label="Sound"');
     expect(html).toContain('h-7');
-    expect(html).toContain('rounded-md');
+    expect(html).toContain('rounded-row');
     expect(html).toContain('text-xs');
     expect(html).toContain('appearance-none');
     expect(html).toContain('bg-quaternary');

@@ -1,29 +1,55 @@
 import type { JSX } from 'react';
+import { Select } from '@canopy/ui-shared/components';
 
-interface SelectFieldProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
-  options: { value: string; label: string }[];
-  placeholder?: string;
+/** What `SelectField` reports when the person picks an option. */
+export interface SelectFieldChange {
+  readonly target: { readonly value: string };
 }
 
+interface SelectFieldProps {
+  options: readonly { value: string; label: string }[];
+  value: string;
+  onChange: (event: SelectFieldChange) => void;
+  /** A first option with the empty value, so the field can be unset. */
+  placeholder?: string;
+  disabled?: boolean;
+  id?: string;
+  'aria-label'?: string;
+  'data-testid'?: string;
+  /** Placement only (width, margins, flex). */
+  className?: string;
+}
+
+/**
+ * The pipeline editor's dropdown: the shared 36px `Select`, beside the
+ * editor's 36px text fields.
+ */
 export function SelectField({
   options,
+  value,
+  onChange,
   placeholder,
-  ...props
+  disabled,
+  id,
+  'aria-label': ariaLabel,
+  'data-testid': dataTestId,
+  className,
 }: SelectFieldProps): JSX.Element {
-  return (
-    <select
-      {...props}
-      className={`w-full px-3 py-2 text-s bg-base border rounded-md
- fg-primary
- focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
- transition-colors ${props.className || ''}`}
-    >
-      {placeholder && <option value="">{placeholder}</option>}
-      {options.map((opt) => (
-        <option key={opt.value} value={opt.value}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
+  const items =
+    placeholder === undefined
+      ? options
+      : [{ value: '', label: placeholder }, ...options];
+  const select = (
+    <Select
+      id={id}
+      aria-label={ariaLabel}
+      data-testid={dataTestId}
+      options={items}
+      value={value}
+      placeholder={placeholder}
+      disabled={disabled}
+      onValueChange={(next) => onChange({ target: { value: next } })}
+    />
   );
+  return className ? <div className={className}>{select}</div> : select;
 }

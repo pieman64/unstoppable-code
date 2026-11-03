@@ -1018,6 +1018,7 @@ describe('desktop Ledger lifecycle', () => {
         // Disk stays empty: only a read through the repositories sees these.
         storeModule.__setDesktopW5FileStoreForTests({
           read: (path) => Promise.resolve(files.get(path) ?? ABSENT),
+          remove: () => Promise.reject(new Error('Reads never remove')),
           replace: (path) => {
             replaced.push(path);
             return Promise.reject(new Error('Reads never write'));

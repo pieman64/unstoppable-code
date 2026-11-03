@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   clearScenario,
@@ -780,7 +781,10 @@ test('Overview and notifications default to the selected context and cross-conte
     // The optional all-context view preserves the selected-context default,
     // while still providing a route to a foreign notification. Its click
     // must land the owning context before opening the hidden worktree.
-    await window.getByTestId('overview-context-filter').selectOption('all');
+    await chooseSettingsOption(
+      window.getByTestId('overview-context-filter'),
+      'all',
+    );
     await expect(cards).toHaveCount(3);
     const acmeNotification = window.locator(
       `[data-testid="overview-notification-card"][data-project-id="${ORG_CONTEXT_WORKSPACE}"]`,
@@ -799,7 +803,10 @@ test('Overview and notifications default to the selected context and cross-conte
     // must switch to the owning context just like the surrounding card.
     await app.openOverviewPage();
     await selectWorkspaceContext(window, ORG_CONTEXT_B);
-    await window.getByTestId('overview-context-filter').selectOption('all');
+    await chooseSettingsOption(
+      window.getByTestId('overview-context-filter'),
+      'all',
+    );
     const acmePipeline = window
       .getByTestId('overview-in-progress-pipeline-card')
       .filter({ hasText: 'Acme context pipeline' });

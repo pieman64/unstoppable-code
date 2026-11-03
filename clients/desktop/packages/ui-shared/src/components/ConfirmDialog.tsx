@@ -14,6 +14,7 @@ import {
   formatChord,
 } from '../lib/shortcut-platform';
 import { Button } from './Button';
+import { CopyDetailsButton } from './CopyDetailsButton';
 import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
 
@@ -47,6 +48,11 @@ export interface ConfirmDialogProps {
    * failure the user never saw.
    */
   readonly errorMessage?: string | null;
+  /**
+   * The failure's raw reason (a server's text). Never rendered: it adds a
+   * `Copy details` action under `errorMessage` that copies it for support.
+   */
+  readonly errorDetails?: string;
   /**
    * Something is lost for good. The action takes the destructive role and
    * the dialog has no default button: focus starts on Cancel, so Enter can't
@@ -86,6 +92,12 @@ export interface ConfirmDialogProps {
    * stable ancestor so keyboard users resume somewhere meaningful.
    */
   readonly restoreFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * The document of the window the dialog opens in (default: the global
+   * document). Pass a popped-out window's document so the dialog opens and
+   * listens for Escape there, instead of wrapping it in `createPortal`.
+   */
+  readonly ownerDocument?: Document;
 }
 
 /**
@@ -106,6 +118,7 @@ export function ConfirmDialog({
   busyLabel,
   busy = false,
   errorMessage,
+  errorDetails,
   destructive = false,
   onConfirm,
   confirmDisabled = false,
@@ -117,6 +130,7 @@ export function ConfirmDialog({
   children,
   focusCancel = false,
   restoreFocusRef,
+  ownerDocument,
 }: ConfirmDialogProps): JSX.Element {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
@@ -148,8 +162,9 @@ export function ConfirmDialog({
       trapFocus
       initialFocusRef={startOnCancel ? cancelRef : confirmRef}
       restoreFocusRef={restoreFocusRef}
+      ownerDocument={ownerDocument}
     >
-      <div className="flex flex-col px-5 pb-4">
+      <div className="flex flex-col">
         <div className="mt-1 text-s text-pretty fg-secondary">{message}</div>
         {children ? <div className="mt-3">{children}</div> : null}
         {errorMessage && (
@@ -161,6 +176,11 @@ export function ConfirmDialog({
             {errorMessage}
           </div>
         )}
+        {errorMessage && errorDetails ? (
+          <div className="mt-2">
+            <CopyDetailsButton details={errorDetails} />
+          </div>
+        ) : null}
         {/* Wraps instead of clipping when a long action label and a
             secondary action outgrow the card (CAN-5336). */}
         <div className="mt-4.5 flex flex-wrap items-center justify-end gap-2">

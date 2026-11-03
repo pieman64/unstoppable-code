@@ -1383,10 +1383,11 @@ describe('local setup slot', (): void => {
       expect.objectContaining({ id: 'p1' }),
       expect.any(AbortSignal),
     );
-    expect(el('[data-testid="team-projects-set-up-p1"]')).toHaveProperty(
-      'disabled',
-      true,
-    );
+    expect(
+      el('[data-testid="team-projects-set-up-p1"]').getAttribute(
+        'aria-disabled',
+      ),
+    ).toBe('true');
     // No double submit while the first is running.
     await click(el('[data-testid="team-projects-set-up-p1"]'));
     expect(slot.setUp).toHaveBeenCalledTimes(1);
@@ -2135,8 +2136,8 @@ it('filters the picker by visibility and archived state', async (): Promise<void
   ]);
   const shown = (): number[] =>
     Array.from(
-      document.querySelectorAll<HTMLInputElement>(
-        '[data-testid^="team-projects-repo-"][type="checkbox"]',
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid^="team-projects-repo-"][role="checkbox"]',
       ),
     ).map((box): number =>
       Number(
@@ -2338,10 +2339,9 @@ it('creates definitions with shared grants, preserves drafts on Back and renders
     el('[data-testid="team-projects-grants-editor"] input[type="checkbox"]'),
   );
   await click(button('Back'));
-  expect(el('[data-testid="team-projects-repo-1"]')).toHaveProperty(
-    'checked',
-    true,
-  );
+  expect(
+    el('[data-testid="team-projects-repo-1"]').getAttribute('aria-checked'),
+  ).toBe('true');
   await click(button('Next'));
   const created = { ...project, id: 'created', name: 'New name' };
   jest.mocked(createOrganizationProjects).mockResolvedValue({
@@ -2514,10 +2514,9 @@ it('keeps loaded repositories and selection when pagination fails, then retries 
       new TeamApiError(502, 'Page failed', 'github-unavailable'),
     );
   await click(el('[data-testid="team-projects-repo-load-more"]'));
-  expect(el('[data-testid="team-projects-repo-1"]')).toHaveProperty(
-    'checked',
-    true,
-  );
+  expect(
+    el('[data-testid="team-projects-repo-1"]').getAttribute('aria-checked'),
+  ).toBe('true');
   expect(document.body.textContent).toContain(
     "Couldn't reach GitHub. Try again.",
   );
@@ -2592,10 +2591,18 @@ function mockRepositories(repositories: OrganizationRepository[]): void {
 function repositoryItem(id: number): HTMLElement {
   return el(`[data-testid="team-projects-repository-${id}"]`);
 }
-function hideBox(id: number): HTMLInputElement {
+/** The Hide switch of a repository row (saves at once). */
+function hideBox(id: number): HTMLButtonElement {
   const box = el(`[data-testid="team-projects-repository-hide-${id}"]`);
-  if (!(box instanceof HTMLInputElement)) throw new Error('Not a checkbox');
+  if (
+    !(box instanceof HTMLButtonElement) ||
+    box.getAttribute('role') !== 'switch'
+  )
+    throw new Error('Not a switch');
   return box;
+}
+function hidden(id: number): boolean {
+  return hideBox(id).getAttribute('aria-checked') === 'true';
 }
 
 describe('repositories', (): void => {
@@ -2654,8 +2661,8 @@ describe('repositories', (): void => {
     expect(repositoryItem(5).textContent).toContain(
       'Skipped by refresh: archived on GitHub',
     );
-    expect(hideBox(1).checked).toBe(false);
-    expect(hideBox(3).checked).toBe(true);
+    expect(hidden(1)).toBe(false);
+    expect(hidden(3)).toBe(true);
     expect(hideBox(1).getAttribute('aria-label')).toBe('Hide acme/website');
   });
 
@@ -2828,7 +2835,7 @@ describe('repositories', (): void => {
         name: 'website',
       },
     );
-    expect(hideBox(1).checked).toBe(true);
+    expect(hidden(1)).toBe(true);
     expect(repositoryItem(1).textContent).toContain(
       'Project: Website (archived)',
     );
@@ -2871,7 +2878,7 @@ describe('repositories', (): void => {
         hidden: false,
       },
     );
-    expect(hideBox(1).checked).toBe(false);
+    expect(hidden(1)).toBe(false);
     expect(repositoryItem(1).textContent).toContain('Project: Website');
     expect(repositoryItem(1).textContent).not.toContain('archived');
     expect(
@@ -2897,7 +2904,7 @@ describe('repositories', (): void => {
 
     await click(hideBox(1));
 
-    expect(hideBox(1).checked).toBe(true);
+    expect(hidden(1)).toBe(true);
     expect(hideBox(1).disabled).toBe(true);
     expect(repositoryItem(1).getAttribute('aria-busy')).toBe('true');
     await act(async (): Promise<void> => {
@@ -2908,7 +2915,7 @@ describe('repositories', (): void => {
         project: null,
       });
     });
-    expect(hideBox(1).checked).toBe(true);
+    expect(hidden(1)).toBe(true);
     expect(hideBox(1).disabled).toBe(false);
     expect(repositoryItem(1).getAttribute('aria-busy')).toBe('false');
   });
@@ -2923,7 +2930,7 @@ describe('repositories', (): void => {
 
     await click(hideBox(1));
 
-    expect(hideBox(1).checked).toBe(false);
+    expect(hidden(1)).toBe(false);
     expect(hideBox(1).disabled).toBe(false);
     expect(document.body.textContent).toContain(
       "Couldn't update this repository. Try again.",

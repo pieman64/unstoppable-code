@@ -2,10 +2,17 @@
 
 import {
   Button,
+  DialogFormField,
   DialogModal,
   DisplayAvatar,
+  ErrorBanner,
+  Notice,
+  NoticeButton,
   PickerMenuOptionCheck,
+  SearchField,
+  SettingsSelect,
   StatusPill,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import type {
   SharedContainerCapability,
@@ -291,12 +298,13 @@ export function InviteTeammateDialog({
 
   return (
     <DialogModal
+      inset="flush"
       title="Share chat"
       subtitle={chatTitle}
       maxWidth="md"
       onClose={onClose}
     >
-      <div className="space-y-4 px-5 py-4">
+      <div className="space-y-4 px-6 py-4">
         <p className="text-s fg-secondary">
           Teammates you invite can read this chat, send prompts, and stop
           running turns. Their prompts run and bill under your account.
@@ -310,29 +318,25 @@ export function InviteTeammateDialog({
         )}
 
         {(organizations.length > 1 || organizationId === '') && (
-          <label className="block space-y-1 text-s fg-secondary">
-            <span>Organization</span>
-            <select
+          <DialogFormField
+            label="Organization"
+            htmlFor="invite-teammate-organization"
+          >
+            <SettingsSelect
+              id="invite-teammate-organization"
               data-testid="invite-teammate-organization"
-              value={organizationId}
+              value={organizationId === '' ? null : organizationId}
+              placeholder="Choose an organization"
               disabled={submitting || boundOrganizationId !== undefined}
-              onChange={(event): void => {
-                selectOrganization(event.target.value);
+              onValueChange={(value): void => {
+                selectOrganization(value);
               }}
-              className="w-full rounded-lg bg-base px-3 py-2 ring-1 ring-inset ring-line-base fg-primary focus-ring"
-            >
-              {organizationId === '' && (
-                <option value="" disabled>
-                  Choose an organization
-                </option>
-              )}
-              {organizations.map((organization) => (
-                <option key={organization.id} value={organization.id}>
-                  {organization.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={organizations.map((organization) => ({
+                value: organization.id,
+                label: organization.name,
+              }))}
+            />
+          </DialogFormField>
         )}
         {organizations.length <= 1 && organizationId !== '' && (
           <p
@@ -349,31 +353,29 @@ export function InviteTeammateDialog({
         )}
 
         <div className="space-y-3">
-          <input
-            type="search"
+          <SearchField
             value={query}
             placeholder="Search teammates"
             aria-label="Search teammates"
-            onChange={(event): void => setQuery(event.target.value)}
-            className="w-full rounded-lg bg-base px-3 py-2 text-s ring-1 ring-inset ring-line-base fg-primary focus-ring"
+            onValueChange={setQuery}
           />
           {membersLoading && (
             <p className="text-s fg-secondary">Loading teammates…</p>
           )}
           {!membersLoading && membersError && (
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-s fg-destructive" role="alert">
-                {membersError}
-              </p>
-              <button
-                type="button"
-                data-testid="invite-teammate-search-retry"
-                onClick={(): void => void refreshMembers()}
-                className="text-s fg-accent hover:underline"
-              >
-                Try again
-              </button>
-            </div>
+            <Notice
+              intent="destructive"
+              actions={
+                <NoticeButton
+                  data-testid="invite-teammate-search-retry"
+                  onClick={(): void => void refreshMembers()}
+                >
+                  Try again
+                </NoticeButton>
+              }
+            >
+              {membersError}
+            </Notice>
           )}
           {!membersLoading && !membersError && (
             <div
@@ -426,22 +428,24 @@ export function InviteTeammateDialog({
               <p className="text-s fg-secondary">Loading people…</p>
             )}
             {!recipientsLoading && recipientsError && (
-              <div className="flex items-center gap-2 text-s fg-destructive">
-                <p role="alert">{recipientsError}</p>
-                <button
-                  type="button"
-                  data-testid="invite-teammate-recipients-retry"
-                  className="focus-ring rounded underline"
-                  onClick={(): void => void refreshRecipients()}
-                >
-                  Try again
-                </button>
-              </div>
+              <Notice
+                intent="destructive"
+                actions={
+                  <NoticeButton
+                    data-testid="invite-teammate-recipients-retry"
+                    onClick={(): void => void refreshRecipients()}
+                  >
+                    Try again
+                  </NoticeButton>
+                }
+              >
+                {recipientsError}
+              </Notice>
             )}
             {!recipientsLoading &&
               !recipientsError &&
               recipients.length === 0 && (
-                <p className="text-s fg-secondary">No one has access yet.</p>
+                <EmptyStateRow title="No one has access yet." />
               )}
             {!recipientsLoading &&
               !recipientsError &&
@@ -483,14 +487,10 @@ export function InviteTeammateDialog({
           </div>
         </div>
 
-        {mutationError && (
-          <p className="text-s fg-destructive" role="alert">
-            {mutationError}
-          </p>
-        )}
+        <ErrorBanner className="" error={mutationError} />
       </div>
 
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         <Button
           type="button"
           variant="secondary"

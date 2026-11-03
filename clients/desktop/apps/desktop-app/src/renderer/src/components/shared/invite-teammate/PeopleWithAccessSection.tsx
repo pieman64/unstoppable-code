@@ -7,11 +7,12 @@ import type {
 import {
   Button,
   CapabilityPill,
+  ConfirmDialog,
   StatusPill,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
-  CANCEL_LABEL,
   INVITED_LABEL,
   JOINED_WITH_LINK_LABEL,
   MEMBER_LOADING_LABEL,
@@ -133,11 +134,14 @@ export function PeopleWithAccessSection({
           <p className="text-xs fg-secondary">{MEMBER_LOADING_LABEL}</p>
         )}
         {!recipients.recipientsLoading && recipients.recipientsError && (
-          <p className="text-xs fg-destructive" role="alert">
-            {recipients.recipients.length > 0
-              ? RECIPIENTS_PARTIAL_ERROR_LABEL
-              : RECIPIENTS_ERROR_LABEL}
-          </p>
+          <ErrorBanner
+            className=""
+            error={
+              recipients.recipients.length > 0
+                ? RECIPIENTS_PARTIAL_ERROR_LABEL
+                : RECIPIENTS_ERROR_LABEL
+            }
+          />
         )}
         {recipientsKnownEmpty && (
           <p className="text-xs fg-secondary">{NO_RECIPIENTS_LABEL}</p>
@@ -227,43 +231,24 @@ export function PeopleWithAccessSection({
           <ShareScopePanel containerType={containerType} share={share} />
         )}
         {recipients.pendingRevokeGrant && (
-          <div
-            role="alertdialog"
-            aria-label="Confirm teammate access removal"
-            className="space-y-3 rounded-lg border bg-base px-3 py-3"
-            data-testid="shared-container-invite-modal-revoke-confirmation"
-          >
-            <div className="space-y-1">
-              <p className="text-s font-medium fg-primary">
+          <ConfirmDialog
+            dataTestId="shared-container-invite-modal-revoke-confirmation"
+            title={
+              <>
                 Remove access for{' '}
                 <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
                   {grantRecipientLabel(recipients.pendingRevokeGrant)}
                 </span>
                 ?
-              </p>
-              <p className="text-xs fg-secondary">
-                They will immediately lose access to this {noun}.
-              </p>
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                size="compact"
-                disabled={accessActionsDisabled}
-                onClick={recipients.cancelRevoke}
-              >
-                {CANCEL_LABEL}
-              </Button>
-              <Button
-                variant="destructive"
-                size="compact"
-                disabled={accessActionsDisabled}
-                onClick={recipients.confirmRevoke}
-              >
-                Remove access
-              </Button>
-            </div>
-          </div>
+              </>
+            }
+            message={`They will immediately lose access to this ${noun}.`}
+            confirmLabel="Remove access"
+            destructive
+            confirmDisabled={accessActionsDisabled}
+            onCancel={recipients.cancelRevoke}
+            onConfirm={recipients.confirmRevoke}
+          />
         )}
       </div>
     </section>

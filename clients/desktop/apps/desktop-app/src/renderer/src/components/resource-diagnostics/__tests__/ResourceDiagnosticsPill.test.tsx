@@ -481,7 +481,12 @@ describe('ResourceDiagnosticsPill', () => {
       ).not.toBeNull();
       expect(button?.getAttribute('aria-expanded')).toBe('true');
       expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
-      expect(document.activeElement).toBe(button);
+      // The shared Popover moves focus into the panel it opens.
+      expect(
+        document.body
+          .querySelector('[data-testid="resource-diagnostics-popover"]')
+          ?.contains(document.activeElement),
+      ).toBe(true);
 
       act(() => {
         button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -674,6 +679,65 @@ describe('ResourceDiagnosticsPopover', () => {
     __resetResourceDiagnosticsSortForTests();
     setProjectsState([]);
   });
+
+  it.each([
+    ['sidebar footer', { statusBar: false, compactLabel: false }],
+    ['compact header', { statusBar: true, compactLabel: true }],
+  ])(
+    'returns focus to the %s control when Escape closes the panel',
+    (_name, layout) => {
+      setStoreState({
+        initialized: true,
+        loading: false,
+        snapshot: makeSnapshot(),
+        error: null,
+      });
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const root = createRoot(container);
+
+      try {
+        act(() => {
+          root.render(
+            <ResourceDiagnosticsPill
+              collapsed={false}
+              ready={true}
+              {...layout}
+            />,
+          );
+        });
+        const button = container.querySelector<HTMLButtonElement>(
+          '[data-testid="sidebar-resource-diagnostics-pill"]',
+        );
+        act(() => focusViaKeyboard(button));
+        act(() => button?.click());
+        const panel = document.body.querySelector(
+          '[data-testid="resource-diagnostics-popover"]',
+        );
+        expect(panel?.contains(document.activeElement)).toBe(true);
+
+        act(() => {
+          document.activeElement?.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'Escape',
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        });
+
+        expect(
+          document.body.querySelector(
+            '[data-testid="resource-diagnostics-popover"]',
+          ),
+        ).toBeNull();
+        expect(document.activeElement).toBe(button);
+      } finally {
+        act(() => root.unmount());
+        container.remove();
+      }
+    },
+  );
 
   it('bounds the panel and scrolls the diagnostics body', () => {
     const html = renderToStaticMarkup(

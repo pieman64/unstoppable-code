@@ -16,7 +16,6 @@ export * from './AutomationsIcon';
 export * from './BarChart4BarsIcon';
 export * from './BrightnessAutoIcon';
 export * from './BuildingIcon';
-export * from './CanopyLogo';
 export * from './ChatIcon';
 export * from './CheckIcon';
 export * from './CloudBackendIcon';

@@ -8,10 +8,8 @@ import {
   type ScriptRunResponse,
 } from '@canopy/desktop-shared/types';
 import { logMainProcessError } from '../lib/main-process-logging';
-import {
-  readScriptRunLogTail,
-  type PersistedScriptRunFile,
-} from '../lib/script-log-store';
+import type { WorkerScriptExecution } from '@canopy/protocol/canopy-core';
+import { readScriptRun } from '../lib/script-execution';
 import { isTrackedShellScriptRunning } from '../lib/script-runner';
 import { sendToWindow, type SendableBrowserWindow } from '../lib/window-send';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
@@ -195,7 +193,7 @@ function scriptIdentity(script: ScriptDescriptor): {
 }
 
 function lastRunJson(
-  meta: PersistedScriptRunFile,
+  meta: WorkerScriptExecution,
   running: boolean,
 ): AppAdvisorJson {
   // A persisted running record with no live process was stopped, for
@@ -208,7 +206,7 @@ function lastRunJson(
     timedOut: meta.timedOut,
     durationMs: meta.durationMs,
     startedAt: meta.startedAt,
-    completedAt: meta.completedAt ?? null,
+    completedAt: meta.completedAt,
   };
 }
 
@@ -218,12 +216,12 @@ async function scriptListRow(
 ): Promise<AppAdvisorJson> {
   const running = isScriptActive(target, script.scriptKey);
   const block = agentRunBlock(script);
-  const meta = await readScriptRunLogTail({
+  const meta = await readScriptRun({
     ...target,
     scriptKey: script.scriptKey,
-    maxLines: 0,
+    tailLines: 0,
   }).then(
-    (tail) => tail.meta,
+    ({ run }) => run?.execution ?? null,
     (): null => null,
   );
   return {

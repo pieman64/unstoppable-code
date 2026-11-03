@@ -1590,19 +1590,6 @@ export function WorktreeManager(): JSX.Element {
         });
       if (!created) return;
 
-      // Capture whether the worktree is still doing git ops at creation time.
-      // The setup-queue treatment (queued bubble) must not depend
-      // on winning the race against Phase B `git-ready`, which can complete
-      // before `sendMessage` runs below.
-      const createdWorkspace = useProjectsStore
-        .getState()
-        .projects.find((p) => p.id === workspaceId);
-      const createdWorktree =
-        createdWorkspace && createdWorkspace.type !== 'cowork'
-          ? createdWorkspace.worktrees.find((w) => w.id === created.id)
-          : undefined;
-      const createdAsPending = createdWorktree?.setupPhase === 'git-pending';
-
       // Explicit targeting: do not rely on `selectedWorktree` between awaits.
       // A rapid second Create Task in another workspace can flip the
       // selection before sendMessage runs.
@@ -1619,17 +1606,11 @@ export function WorktreeManager(): JSX.Element {
       // Branch/PR mode may create-and-open with no task text: nothing to send.
       if (taskText.trim().length === 0) return;
 
-      await useChatStore.getState().sendMessage(
-        taskText,
-        undefined,
-        {
-          projectId: workspaceId,
-          worktreeId: created.id,
-          chatId,
-        },
-        undefined,
-        createdAsPending ? { queueForSetup: true } : undefined,
-      );
+      await useChatStore.getState().sendMessage(taskText, undefined, {
+        projectId: workspaceId,
+        worktreeId: created.id,
+        chatId,
+      });
     },
     [],
   );
@@ -1650,17 +1631,6 @@ export function WorktreeManager(): JSX.Element {
           suppressStartPage: taskText.trim().length > 0,
         });
       if (!created) return;
-
-      // See handleChooseChat: capture the git-pending phase at creation so the
-      // setup-queue treatment is deterministic regardless of the git-ready race.
-      const createdWorkspace = useProjectsStore
-        .getState()
-        .projects.find((p) => p.id === workspaceId);
-      const createdWorktree =
-        createdWorkspace && createdWorkspace.type !== 'cowork'
-          ? createdWorkspace.worktrees.find((w) => w.id === created.id)
-          : undefined;
-      const createdAsPending = createdWorktree?.setupPhase === 'git-pending';
 
       await useChatStore
         .getState()
@@ -1684,17 +1654,11 @@ export function WorktreeManager(): JSX.Element {
         worktreeId: created.id,
         chatId,
       });
-      await useChatStore.getState().sendMessage(
-        taskText,
-        undefined,
-        {
-          projectId: workspaceId,
-          worktreeId: created.id,
-          chatId,
-        },
-        undefined,
-        createdAsPending ? { queueForSetup: true } : undefined,
-      );
+      await useChatStore.getState().sendMessage(taskText, undefined, {
+        projectId: workspaceId,
+        worktreeId: created.id,
+        chatId,
+      });
     },
     [],
   );

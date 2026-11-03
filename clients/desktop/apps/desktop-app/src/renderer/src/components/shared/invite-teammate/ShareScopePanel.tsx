@@ -17,6 +17,7 @@ import type { UseSharePreviewResult } from './useSharePreview';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { openStartPageSettings } from '@/lib/start-page/save-start-page';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface ShareScopePanelProps {
   containerType: SharedContainerType;
@@ -96,13 +97,11 @@ export function ShareScopePanel({
         whole revision.
       */}
       {share.undisclosedRepositoryCount > 0 && (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
-          data-testid="shared-container-invite-modal-undisclosed-repositories"
-        >
-          {`${brandText.appName} could not resolve a pushed GitHub remote and commit for ${share.undisclosedRepositoryCount === 1 ? '1 repository' : `${share.undisclosedRepositoryCount} repositories`} in this project, so nothing publishes until that is fixed. Push ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} to GitHub, or remove ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} from this project.`}
-        </p>
+        <ErrorBanner
+          className=""
+          testId="shared-container-invite-modal-undisclosed-repositories"
+          error={`${brandText.appName} could not resolve a pushed GitHub remote and commit for ${share.undisclosedRepositoryCount === 1 ? '1 repository' : `${share.undisclosedRepositoryCount} repositories`} in this project, so nothing publishes until that is fixed. Push ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} to GitHub, or remove ${share.undisclosedRepositoryCount === 1 ? 'it' : 'them'} from this project.`}
+        />
       )}
       {/*
         Surfaced only once publishing would refuse, and never collapsed: a
@@ -111,16 +110,14 @@ export function ShareScopePanel({
       */}
       {share.artifactBudgetExceeded && (
         <div className="space-y-2">
-          <p
-            className="text-xs fg-destructive"
-            role="alert"
-            data-testid="shared-container-invite-modal-artifact-budget"
-          >
-            {artifactBudgetExceededLabel(
+          <ErrorBanner
+            className=""
+            testId="shared-container-invite-modal-artifact-budget"
+            error={artifactBudgetExceededLabel(
               share.artifactBudgetUsed,
               share.artifactBudgetLimit,
             )}
-          </p>
+          />
           <ShareBudgetPushAction
             budgetPush={share.budgetPush}
             dataTestId="shared-container-invite-modal-artifact-budget-push"

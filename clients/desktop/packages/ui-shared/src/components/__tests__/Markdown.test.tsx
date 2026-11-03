@@ -524,6 +524,18 @@ describe('Markdown', () => {
       expect(html).toContain('href="mailto:a@example.com"');
     });
 
+    it('gives navigable links the faint underline set clear of the text', () => {
+      const html = renderToStaticMarkup(
+        <Markdown options={TRANSCRIPT_MARKDOWN_OPTIONS}>
+          {'[docs](https://example.com/docs)'}
+        </Markdown>,
+      );
+
+      expect(html).toContain('underline-offset-4');
+      expect(html).toContain('decoration-accent/30');
+      expect(html).toContain('hover:decoration-current');
+    });
+
     it('does not navigate absolute filesystem paths as site URLs', () => {
       const html = renderToStaticMarkup(
         <Markdown options={TRANSCRIPT_MARKDOWN_OPTIONS}>

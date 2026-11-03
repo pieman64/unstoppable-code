@@ -4,6 +4,10 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
+  chooseSettingsOption,
+  settingsSelectTrigger,
+} from '../../settings/__tests__/helpers/settings-select';
+import {
   InviteTeammateDialog,
   InviteTeammateRefusal,
 } from '../InviteTeammateDialog';
@@ -140,9 +144,9 @@ describe('InviteTeammateDialog', () => {
 
     expect(searchMembers).toHaveBeenCalledWith('org-2', '');
     expect(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="invite-teammate-organization"]',
-      )?.value,
+      document
+        .querySelector('[data-testid="invite-teammate-organization"]')
+        ?.getAttribute('data-value'),
     ).toBe('org-2');
   });
 
@@ -175,10 +179,10 @@ describe('InviteTeammateDialog', () => {
       )?.disabled,
     ).toBe(true);
     expect(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="invite-teammate-organization"]',
-      )?.value,
-    ).toBe('');
+      document
+        .querySelector('[data-testid="invite-teammate-organization"]')
+        ?.getAttribute('data-value'),
+    ).toBeNull();
   });
 
   it('rebinds an unowned dialog and names the new context', async () => {
@@ -240,9 +244,9 @@ describe('InviteTeammateDialog', () => {
         ?.textContent,
     ).toContain('Switched to Beta.');
     expect(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="invite-teammate-organization"]',
-      )?.value,
+      document
+        .querySelector('[data-testid="invite-teammate-organization"]')
+        ?.getAttribute('data-value'),
     ).toBe('org-2');
   });
 
@@ -292,9 +296,9 @@ describe('InviteTeammateDialog', () => {
       document.querySelector('[data-testid="invite-teammate-context-changed"]'),
     ).toBeNull();
     expect(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="invite-teammate-organization"]',
-      )?.value,
+      document
+        .querySelector('[data-testid="invite-teammate-organization"]')
+        ?.getAttribute('data-value'),
     ).toBe('org-1');
   });
 
@@ -539,9 +543,12 @@ describe('InviteTeammateDialog', () => {
 
     expect(searchMembers).toHaveBeenCalledWith('org-2', '');
     expect(loadRecipients).toHaveBeenCalledWith('org-2', 'chat-1');
-    expect(document.querySelector<HTMLSelectElement>('select')?.disabled).toBe(
-      true,
-    );
+    expect(
+      settingsSelectTrigger(
+        document,
+        '[data-testid="invite-teammate-organization"]',
+      ).disabled,
+    ).toBe(true);
   });
 
   it('starts on the default organization when the chat is not shared yet (CAN-3458)', async () => {
@@ -578,9 +585,9 @@ describe('InviteTeammateDialog', () => {
     await settle();
     expect(loadRecipients).not.toHaveBeenCalledWith('org-1', 'chat-1');
     expect(
-      document.querySelector<HTMLSelectElement>(
-        '[data-testid="invite-teammate-organization"]',
-      )?.value,
+      document
+        .querySelector('[data-testid="invite-teammate-organization"]')
+        ?.getAttribute('data-value'),
     ).toBe('org-2');
   });
 
@@ -683,12 +690,13 @@ describe('InviteTeammateDialog', () => {
     ]);
     await settle();
 
-    const select = document.querySelector<HTMLSelectElement>('select');
-    await act(async () => {
-      if (select) select.value = 'org-2';
-      select?.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
+    await chooseSettingsOption(
+      settingsSelectTrigger(
+        document,
+        '[data-testid="invite-teammate-organization"]',
+      ),
+      'org-2',
+    );
     await settle();
     await act(async () => {
       resolveFirst?.({ containerId: 'container-1', recipients: [] });

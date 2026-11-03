@@ -1,5 +1,12 @@
+import * as fsPromises from 'node:fs/promises';
 // CAN-5318: the request-local W5 read view over the real commit-log worker.
-import { readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 jest.mock('node:worker_threads', () =>
@@ -295,4 +302,357 @@ it('reads a direct test store live and says so', async () => {
     reason: 'direct-store',
   });
   expect(raw(outcome.read)).toBe(list(['one']));
+});
+
+it('serves an opted-in disk projection after authority loss without any write or commit', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const { withW5ProjectionOnlyRead, W5_PROJECTION_ONLY_READ } =
+    await import('../w5-fallback-read');
+  jest
+    .spyOn(host, 'capture')
+    .mockRejectedValue(new W5AuthorityUnreachableError('refused', 'lost'));
+  const commit = jest.spyOn(host, 'commit');
+  const atomic = jest.spyOn(nodeW5FileStore, 'replace');
+  const deferred = jest.fn(() => Promise.resolve());
+  const result = await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5ReadView(scoped, async (view) => {
+      expect(await desktopW5FileStore.read(listPath())).toEqual({
+        state: 'present',
+        raw: list(['one']),
+      });
+      expect(await desktopW5FileStore.read(join(root, 'missing.json'))).toEqual(
+        { state: 'absent' },
+      );
+      expect(deferUntilW5ReadViewCloses(deferred)).toBe(true);
+      await expect(
+        withW5Commit({ operation: 'forbidden' }, () => Promise.resolve()),
+      ).rejects.toBeInstanceOf(W5ReadViewWriteRefusedError);
+      await expect(
+        desktopW5FileStore.replace(listPath(), 'bad', WORKTREE_LIST_STORAGE, {
+          operation: 'forbidden',
+          advance: [],
+          previousRaw: null,
+        }),
+      ).rejects.toBeInstanceOf(W5ReadViewWriteRefusedError);
+      return view;
+    }),
+  );
+  expect(result).toEqual({
+    status: 'uncaptured',
+    reason: 'daemon-unavailable',
+  });
+  expect(deferred).not.toHaveBeenCalled();
+  expect(commit).not.toHaveBeenCalled();
+  expect(atomic).not.toHaveBeenCalled();
+});
+
+it('does not opt decision reads into fallback, or degrade a live typed refusal', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const { withW5ProjectionOnlyRead, W5_PROJECTION_ONLY_READ } =
+    await import('../w5-fallback-read');
+  const lost = new W5AuthorityUnreachableError('refused', 'lost');
+  const capture = jest.spyOn(host, 'capture').mockRejectedValue(lost);
+  const read = await runW5ReadView(scoped, () =>
+    desktopW5FileStore.read(listPath()),
+  );
+  expect(read).toEqual({ state: 'unreadable', error: lost });
+  capture.mockRejectedValue(
+    new W5CommitRefusedError('invalid-state', 'root', {
+      capture: 'root-changed',
+    }),
+  );
+  await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5ReadView(scoped, async (view) => {
+      expect(view).toEqual({ status: 'uncaptured', reason: 'root-changed' });
+      expect((await desktopW5FileStore.read(listPath())).state).toBe(
+        'unreadable',
+      );
+    }),
+  );
+});
+
+it('does not mask a nested live refusal with an outer disk projection', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const { withW5ProjectionOnlyRead, W5_PROJECTION_ONLY_READ } =
+    await import('../w5-fallback-read');
+  jest
+    .spyOn(host, 'capture')
+    .mockRejectedValueOnce(new W5AuthorityUnreachableError('refused', 'lost'))
+    .mockRejectedValueOnce(
+      new W5CommitRefusedError('invalid-state', 'root', {
+        capture: 'root-changed',
+      }),
+    );
+  await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5ReadView(scoped, async () => {
+      expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+        list(['one']),
+      );
+      await runW5ReadView(scoped, async () => {
+        expect((await desktopW5FileStore.read(listPath())).state).toBe(
+          'unreadable',
+        );
+      });
+      expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+        list(['one']),
+      );
+    }),
+  );
+});
+
+it('never labels outer fallback bytes as a nested authoritative capture', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const {
+    allowsW5ProjectionOnlyRead,
+    isW5ProjectionOnlyView,
+    withW5ProjectionOnlyRead,
+    W5_PROJECTION_ONLY_READ,
+  } = await import('../w5-fallback-read');
+  const deferred = jest.fn(() => Promise.resolve());
+  const captured = await host.capture(scoped);
+  writeFileSync(listPath(), list(['disk-only']));
+  jest
+    .spyOn(host, 'capture')
+    .mockRejectedValueOnce(new W5AuthorityUnreachableError('refused', 'lost'))
+    .mockResolvedValueOnce(captured);
+  await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5ReadView(scoped, async () => {
+      expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+        list(['disk-only']),
+      );
+      await runW5ReadView(scoped, async (view) => {
+        expect(view.status).toBe('captured');
+        expect(isW5ProjectionOnlyView()).toBe(false);
+        expect(allowsW5ProjectionOnlyRead()).toBe(false);
+        expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+          list(['one']),
+        );
+        expect(deferUntilW5ReadViewCloses(deferred)).toBe(true);
+        await expect(
+          withW5Commit({ operation: 'forbidden' }, () => Promise.resolve()),
+        ).rejects.toBeInstanceOf(W5ReadViewWriteRefusedError);
+      });
+      expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+        list(['disk-only']),
+      );
+      expect(deferred).not.toHaveBeenCalled();
+    }),
+  );
+});
+
+it('does not lend a presentation opt-in to a nested decision query', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const {
+    allowsW5ProjectionOnlyRead,
+    isW5ProjectionOnlyView,
+    withW5ProjectionOnlyRead,
+    W5_PROJECTION_ONLY_READ,
+  } = await import('../w5-fallback-read');
+  const lost = new W5AuthorityUnreachableError('refused', 'lost');
+  jest.spyOn(host, 'capture').mockRejectedValue(lost);
+  await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5ReadView(scoped, async () => {
+      expect(isW5ProjectionOnlyView()).toBe(true);
+      expect(allowsW5ProjectionOnlyRead()).toBe(false);
+      await runW5ReadView(scoped, async (view) => {
+        expect(view).toEqual({
+          status: 'uncaptured',
+          reason: 'capture-failed',
+          error: lost,
+        });
+        expect(isW5ProjectionOnlyView()).toBe(false);
+        expect(allowsW5ProjectionOnlyRead()).toBe(false);
+        expect(await desktopW5FileStore.read(listPath())).toEqual({
+          state: 'unreadable',
+          error: lost,
+        });
+      });
+      expect(isW5ProjectionOnlyView()).toBe(true);
+      expect(raw(await desktopW5FileStore.read(listPath()))).toBe(
+        list(['one']),
+      );
+    }),
+  );
+});
+
+it.each(['single-repo', 'multi-repo'] as const)(
+  'lists a stale %s sidebar without revisions, pinned pages or registry changes',
+  async (type) => {
+    const { W5AuthorityUnreachableError } =
+      await import('@canopy/core-runtime/node/w5/file-store');
+    const { withW5ProjectionOnlyRead, W5_PROJECTION_ONLY_READ } =
+      await import('../w5-fallback-read');
+    const { createDesktopRuntime } =
+      await import('../../canopy-runtime/desktop-runtime');
+    const {
+      getWorkspaceType,
+      getWorkspaceExternalPath,
+      registerWorkspaceTypes,
+      registerWorkspaceExternalPaths,
+    } = await import('../workspace-registry');
+    const workspaceSource = await import('../workspace-source');
+    const sourceResolution = jest.spyOn(
+      workspaceSource,
+      'readEffectiveWorkspaceConfig',
+    );
+    if (type === 'multi-repo') {
+      writeFileSync(
+        join(root, 'a', 'workspace.json'),
+        JSON.stringify({
+          version: 1,
+          type,
+          sourceRepoPath: '/unavailable/source',
+          repos: [],
+        }),
+      );
+    }
+    mkdirSync(join(root, 'b'));
+    writeFileSync(
+      join(root, 'b', 'workspace.json'),
+      readFileSync(join(root, 'a', 'workspace.json')),
+    );
+    writeFileSync(
+      join(root, 'b', 'worktrees.json'),
+      JSON.stringify({ version: 1, worktrees: [] }),
+    );
+    writeFileSync(
+      join(root, 'index.json'),
+      JSON.stringify({
+        version: 1,
+        workspaces: ['a', 'b'].map((id, order) => ({
+          id,
+          name: id,
+          type,
+          color: '#7C3AED',
+          collapsed: false,
+          order,
+        })),
+      }),
+    );
+    const originalDataDir = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = join(dir, 'data');
+    registerWorkspaceTypes(new Map([['a', 'cowork']]));
+    registerWorkspaceExternalPaths(new Map([['a', '/previous/external']]));
+    jest
+      .spyOn(host, 'capture')
+      .mockRejectedValue(new W5AuthorityUnreachableError('refused', 'lost'));
+    const commit = jest.spyOn(host, 'commit');
+    const reserve = jest.spyOn(host, 'reserve');
+    const release = jest.spyOn(host, 'releaseReservation');
+    const atomic = jest.spyOn(nodeW5FileStore, 'replace');
+    const runtime = createDesktopRuntime();
+    const writes = [
+      jest.spyOn(fsPromises, 'writeFile'),
+      jest.spyOn(fsPromises, 'appendFile'),
+      jest.spyOn(fsPromises, 'mkdir'),
+      jest.spyOn(fsPromises, 'rename'),
+      jest.spyOn(fsPromises, 'unlink'),
+    ];
+    try {
+      const listed = await withW5ProjectionOnlyRead(
+        W5_PROJECTION_ONLY_READ,
+        () =>
+          runtime.queryWorkspaceListForLegacyIpc(
+            { pageSize: 1 },
+            {
+              caller: {
+                principalId: 'test',
+                clientInstanceId: 'test',
+                authorityId: 'local-desktop',
+                interfaceKind: 'test',
+                grants: ['core.workspace.read'],
+              },
+            },
+          ),
+      );
+      expect(listed.legacyResult).toMatchObject({
+        stale: true,
+        items: [
+          { id: 'a', type, worktrees: [{ id: 'one' }] },
+          { id: 'b', type, worktrees: [] },
+        ],
+      });
+      expect(listed.canonicalResult?.nextCursor).toBeNull();
+      expect(listed.canonicalResult).not.toHaveProperty('collectionRevision');
+      expect(listed.canonicalResult?.items[0]).not.toHaveProperty('revision');
+      expect(listed.legacyAuthority?.provenance).toMatchObject({
+        position: { status: 'uncaptured', reason: 'daemon-unavailable' },
+        result: { filters: ['page', 'possibly-stale'] },
+      });
+      expect(getWorkspaceType('a')).toBe('cowork');
+      expect(getWorkspaceExternalPath('a')).toBe('/previous/external');
+      expect(sourceResolution).not.toHaveBeenCalled();
+      for (const write of writes) expect(write).not.toHaveBeenCalled();
+      expect(commit).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+      expect(atomic).not.toHaveBeenCalled();
+    } finally {
+      if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = originalDataDir;
+      await runtime.shutdown();
+    }
+  },
+);
+
+it('expires projection permission and the active fallback even in escaped async work', async () => {
+  const {
+    allowsW5ProjectionOnlyRead,
+    isW5ProjectionOnlyView,
+    runW5FallbackRead,
+    withW5ProjectionOnlyRead,
+    W5_PROJECTION_ONLY_READ,
+  } = await import('../w5-fallback-read');
+  let resume: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let escaped: Promise<boolean[]> | undefined;
+  await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+    runW5FallbackRead(() => {
+      expect(allowsW5ProjectionOnlyRead()).toBe(false);
+      expect(isW5ProjectionOnlyView()).toBe(true);
+      escaped = gate.then(() => [
+        allowsW5ProjectionOnlyRead(),
+        isW5ProjectionOnlyView(),
+      ]);
+      return Promise.resolve();
+    }),
+  );
+  resume();
+  await expect(escaped).resolves.toEqual([false, false]);
+});
+
+it('keeps project discovery and the App Advisor owner inventory fail-closed', async () => {
+  const { W5AuthorityUnreachableError } =
+    await import('@canopy/core-runtime/node/w5/file-store');
+  const { createDesktopRuntime } =
+    await import('../../canopy-runtime/desktop-runtime');
+  const { readProjectWorktrees } =
+    await import('../../project-discovery/sources');
+  const { listAuthorizedProjectInventory } =
+    await import('../../project-discovery/owner-policy');
+  const originalDataDir = process.env.CANOPY_DATA_DIR;
+  process.env.CANOPY_DATA_DIR = join(dir, 'data');
+  const lost = new W5AuthorityUnreachableError('refused', 'lost');
+  const capture = jest.spyOn(host, 'capture').mockRejectedValue(lost);
+  const runtime = createDesktopRuntime();
+  try {
+    await expect(readProjectWorktrees('a')).rejects.toMatchObject({
+      runtimeCause: lost,
+    });
+    await expect(
+      listAuthorizedProjectInventory({ kind: 'app_advisor', chatId: 'chat' }),
+    ).rejects.toMatchObject({ runtimeCause: lost });
+    expect(capture).toHaveBeenCalledTimes(2);
+  } finally {
+    if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
+    else process.env.CANOPY_DATA_DIR = originalDataDir;
+    await runtime.shutdown();
+  }
 });

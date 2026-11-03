@@ -1,4 +1,7 @@
-import { ChatPlanReviewApprovalSchema } from '../../chat-plan-review';
+import {
+  TrackedPlanImplementationInputSchema,
+  ChatPlanReviewApprovalSchema,
+} from '../../chat-plan-review';
 import { z } from 'zod';
 import {
   CanopyQueryRequestMetadataSchema,
@@ -51,6 +54,7 @@ export const CoreChatCommandReceiptSchema = z
   .catchall(CanopyJsonValueSchema);
 
 export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
+  trackedPlanImplementation: TrackedPlanImplementationInputSchema.optional(),
   planReviewApproval: ChatPlanReviewApprovalSchema.optional(),
   messageId: IdentifierSchema,
   text: z.string(),
@@ -60,9 +64,29 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
       turnTimerMessageId: IdentifierSchema,
     })
     .optional(),
-}).refine((params) => !params.origin || !params.planReviewApproval, {
-  message: 'Plan approval requires a canonical implementation message.',
-});
+})
+  .refine(
+    (params) =>
+      !params.origin ||
+      (!params.planReviewApproval && !params.trackedPlanImplementation),
+    {
+      message: 'Plan approval requires a canonical implementation message.',
+    },
+  )
+  .refine(
+    (params) =>
+      !params.trackedPlanImplementation ||
+      (params.trackedPlanImplementation.userMessageId === params.messageId &&
+        (!params.planReviewApproval ||
+          (params.planReviewApproval.planId ===
+            params.trackedPlanImplementation.planId &&
+            params.planReviewApproval.revisionNumber ===
+              params.trackedPlanImplementation.revisionNumber))),
+    {
+      message:
+        'Implementation must identify the sent message and reviewed revision.',
+    },
+  );
 
 export const CoreChatQueueEntryCancelParamsSchema =
   ChatCommandBaseSchema.extend({ entryId: IdentifierSchema });

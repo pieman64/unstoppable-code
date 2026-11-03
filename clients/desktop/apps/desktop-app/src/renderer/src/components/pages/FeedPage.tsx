@@ -22,7 +22,6 @@ import {
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
-import { PageContent } from '../shared/PageContent';
 import { PageTitlebar } from '../shared/PageTitlebar';
 
 /** Whether the window is on screen; the Feed looks for activity only then. */
@@ -111,20 +110,15 @@ export function FeedPage(): JSX.Element {
     <section className="flex h-full min-h-0 flex-col" data-testid="page-feed">
       <PageTitlebar />
       <FeedUiStateReporter store={store} />
-      <LedgerFeedPage
-        capabilities={capabilities}
-        store={store}
-        local={local}
-        visible={visible}
-        frameHeading={(heading) => (
-          <PageContent bottomInset="tight">{heading}</PageContent>
-        )}
-        frameFeed={(feed) => (
-          <PageContent className="flex min-h-0 flex-1 flex-col">
-            {feed}
-          </PageContent>
-        )}
-      />
+      {/* The window keeps 32px below the Feed's scroller. */}
+      <div className="flex min-h-0 flex-1 flex-col pb-8">
+        <LedgerFeedPage
+          capabilities={capabilities}
+          store={store}
+          local={local}
+          visible={visible}
+        />
+      </div>
     </section>
   );
 }

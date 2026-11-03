@@ -78,6 +78,14 @@ import {
   type SharedContainerForkRevision,
 } from './useSharedContainerForkRevision';
 import { RevisionTime } from './RevisionTime';
+import {
+  ChoiceList,
+  ChoiceListRow,
+  DialogFormField,
+  ErrorBanner,
+  SettingsSelect,
+  TextInput,
+} from '@canopy/ui-shared/components';
 
 export interface SharedContainerForkModalProps {
   containerId: string;
@@ -488,7 +496,7 @@ function SharedContainerForkReview({
       closeOnBackdrop={!busy}
       dataTestId="shared-container-fork-modal"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5">
+      <div className="flex flex-col gap-4">
         {/* Polite live region: announced on either step, focus stays put. */}
         <div role="status" aria-live="polite">
           {updated !== null && (
@@ -518,13 +526,11 @@ function SharedContainerForkReview({
             </div>
           )}
           {unavailable && (
-            <p
-              className="text-s fg-destructive"
-              data-testid="shared-container-fork-revision-unavailable"
-            >
-              This share can't be copied right now. Open it again, then make
-              your copy.
-            </p>
+            <ErrorBanner
+              className=""
+              testId="shared-container-fork-revision-unavailable"
+              error="This share can't be copied right now. Open it again, then make your copy."
+            />
           )}
         </div>
 
@@ -540,88 +546,42 @@ function SharedContainerForkReview({
             </p>
 
             {owningContext === null && (
-              <p
-                className="text-s fg-destructive"
-                data-testid="shared-container-fork-context-unavailable"
-              >
-                This share's organization couldn't be identified, so a copy
-                can't be made right now.
-              </p>
+              <ErrorBanner
+                className=""
+                testId="shared-container-fork-context-unavailable"
+                error="This share's organization couldn't be identified, so a copy can't be made right now."
+              />
             )}
 
-            <label className="flex items-start gap-2 text-s fg-secondary">
-              <input
-                type="radio"
-                name="shared-container-fork-destination-kind"
+            <ChoiceList kind="radio" aria-label="Destination">
+              <ChoiceListRow
+                kind="radio"
                 data-testid="shared-container-fork-destination-new"
-                checked={kind === 'new'}
-                onChange={(): void => setKind('new')}
-                className="mt-1"
-              />
-              <span className="flex flex-col">
-                <span className="fg-primary">
+                selected={kind === 'new'}
+                onClick={(): void => setKind('new')}
+              >
+                <span className="block">
                   {isCowork ? 'New Cowork project' : 'New workspace'}
                 </span>
-                <span className="text-xs fg-quaternary">
+                <span className="block text-xs fg-quaternary">
                   {isCowork
                     ? 'Creates a project just for this copy.'
                     : 'Copies the repositories to this computer and sets up a workspace around them.'}
                 </span>
-              </span>
-            </label>
-
-            {kind === 'new' && owningContext !== null && (
-              <p
-                className="pl-6 text-xs fg-quaternary"
-                data-testid="shared-container-fork-destination-context"
-              >
-                Belongs to{' '}
-                <span className="font-medium fg-primary">{contextName}</span>
-              </p>
-            )}
-
-            {kind === 'new' && !isCowork && (
-              <div className="flex flex-col gap-1 pl-6">
-                <span className="text-xs fg-quaternary">Save the code in</span>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    data-testid="shared-container-fork-location"
-                    value={parentDirectory}
-                    onChange={(event): void =>
-                      setParentDirectory(event.currentTarget.value)
-                    }
-                    className="min-w-0 flex-1 rounded border bg-base px-2 py-1 text-xs fg-primary"
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    data-testid="shared-container-fork-browse"
-                    onClick={(): void => void handleBrowse()}
-                  >
-                    Browse
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <label className="flex items-start gap-2 text-s fg-secondary">
-              <input
-                type="radio"
-                name="shared-container-fork-destination-kind"
+              </ChoiceListRow>
+              <ChoiceListRow
+                kind="radio"
                 data-testid="shared-container-fork-destination-existing"
-                checked={kind === 'existing'}
+                selected={kind === 'existing'}
                 disabled={candidates.length === 0}
-                onChange={(): void => setKind('existing')}
-                className="mt-1"
-              />
-              <span className="flex flex-col">
-                <span className="fg-primary">
+                onClick={(): void => setKind('existing')}
+              >
+                <span className="block">
                   {isCowork
                     ? 'An existing Cowork project'
                     : 'An existing workspace'}
                 </span>
-                <span className="text-xs fg-quaternary">
+                <span className="block text-xs fg-quaternary">
                   {candidates.length === 0 ? (
                     owningContext === null ? (
                       'Unavailable until the organization is known.'
@@ -636,39 +596,75 @@ function SharedContainerForkReview({
                     'Only works in a workspace that already has the same repositories.'
                   )}
                 </span>
-              </span>
-            </label>
+              </ChoiceListRow>
+            </ChoiceList>
+
+            {kind === 'new' && owningContext !== null && (
+              <p
+                className="pl-6 text-xs fg-quaternary"
+                data-testid="shared-container-fork-destination-context"
+              >
+                Belongs to{' '}
+                <span className="font-medium fg-primary">{contextName}</span>
+              </p>
+            )}
+
+            {kind === 'new' && !isCowork && (
+              <div className="flex flex-col gap-1 pl-6">
+                <span
+                  id="shared-container-fork-location-label"
+                  className="text-xs fg-quaternary"
+                >
+                  Save the code in
+                </span>
+                <div className="flex items-center gap-2">
+                  <TextInput
+                    type="text"
+                    density="compact"
+                    aria-labelledby="shared-container-fork-location-label"
+                    data-testid="shared-container-fork-location"
+                    value={parentDirectory}
+                    onChange={(event): void =>
+                      setParentDirectory(event.currentTarget.value)
+                    }
+                    className="min-w-0 flex-1"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="shared-container-fork-browse"
+                    onClick={(): void => void handleBrowse()}
+                  >
+                    Browse
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {kind === 'existing' && candidates.length > 0 && (
-              <label className="ml-6 flex flex-col gap-1">
-                <span
-                  className="text-xs fg-quaternary"
-                  data-testid="shared-container-fork-workspace-context"
-                >
-                  Projects in {contextName}
-                </span>
-                <select
-                  data-testid="shared-container-fork-workspace"
-                  value={selectedWorkspace ? workspaceId : ''}
-                  onChange={(event): void =>
-                    setWorkspaceId(event.currentTarget.value)
+              <div className="ml-6">
+                <DialogFormField
+                  htmlFor="shared-container-fork-workspace"
+                  label={
+                    <span data-testid="shared-container-fork-workspace-context">
+                      Projects in {contextName}
+                    </span>
                   }
-                  className="rounded border bg-base px-2 py-1 text-s fg-primary"
                 >
-                  <option value="" disabled>
-                    Choose a project
-                  </option>
-                  {candidates.map((item) => (
-                    <option
-                      key={item.id}
-                      value={item.id}
-                      className={POSTHOG_REPLAY_MASK_CLASS}
-                    >
-                      {item.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <SettingsSelect
+                    id="shared-container-fork-workspace"
+                    data-testid="shared-container-fork-workspace"
+                    value={selectedWorkspace ? workspaceId : null}
+                    onValueChange={setWorkspaceId}
+                    placeholder="Choose a project"
+                    replayPrivacy={{ maskClassName: POSTHOG_REPLAY_MASK_CLASS }}
+                    options={candidates.map((item) => ({
+                      value: item.id,
+                      label: item.name,
+                    }))}
+                  />
+                </DialogFormField>
+              </div>
             )}
           </div>
         )}
@@ -779,15 +775,13 @@ function SharedContainerForkReview({
           </div>
         )}
 
-        {error !== null && (
-          // Main's refusals can name the share's owner.
-          <p
-            className={`text-xs fg-destructive ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-            data-testid="shared-container-fork-error"
-          >
-            {error}
-          </p>
-        )}
+        {/* Main's refusals can name the share's owner. */}
+        <ErrorBanner
+          className=""
+          error={error}
+          testId="shared-container-fork-error"
+          blockMessageFromReplay
+        />
 
         <div className="flex justify-end gap-2">
           {step === 'destination' && (

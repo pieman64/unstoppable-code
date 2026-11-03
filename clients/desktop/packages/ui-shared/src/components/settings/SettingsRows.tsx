@@ -1,3 +1,5 @@
+'use client';
+
 import {
   useRef,
   type JSX,
@@ -94,14 +96,21 @@ export interface SettingsRowsGroupProps {
   readonly dataTestId?: string;
   /** Names the box as a group for assistive technology. */
   readonly ariaLabel?: string;
-  /** Dims and blocks the rows while a parent setting turns them off. */
+  /**
+   * Dims and blocks the rows while a parent setting turns them off. The box
+   * is `inert`, so the keyboard cannot reach or flip a control in it either.
+   */
   readonly disabled?: boolean;
   /**
    * `box` groups the rows in the settings box, as on a Settings page.
    * `plain` is rows separated by hairlines with no box, for a surface that
    * is already a card, such as a dialog.
+   * `list` is rows separated by hairlines with no box and no padding around
+   * each row, so every row is its own 40px line: a list of figures in a
+   * panel, sheet or popover (cost and usage rows, design call 1C,
+   * 2026-10-31).
    */
-  readonly surface?: 'box' | 'plain';
+  readonly surface?: 'box' | 'plain' | 'list';
   /**
    * Host-owned replay marker for rows that render user content, such as
    * instruction text. The heading above the box stays recorded. Set it from
@@ -123,6 +132,7 @@ export interface SettingsRowsGroupProps {
 }
 
 const PLAIN_GROUP_CLASS = 'flex flex-col divide-y *:py-3';
+const LIST_GROUP_CLASS = 'flex flex-col divide-y';
 
 /**
  * A `fill` box. The box itself grows into the section, so its minimum stays
@@ -150,13 +160,17 @@ export function SettingsRowsGroup({
   children,
 }: SettingsRowsGroupProps): JSX.Element {
   const surfaceClass =
-    surface === 'plain'
+    surface === 'list'
       ? fill
-        ? `${PLAIN_GROUP_CLASS} ${FILL_CLASS}`
-        : PLAIN_GROUP_CLASS
-      : fill
-        ? FILL_BOX_CLASS
-        : SETTINGS_GROUP_CLASS;
+        ? `${LIST_GROUP_CLASS} ${FILL_CLASS}`
+        : LIST_GROUP_CLASS
+      : surface === 'plain'
+        ? fill
+          ? `${PLAIN_GROUP_CLASS} ${FILL_CLASS}`
+          : PLAIN_GROUP_CLASS
+        : fill
+          ? FILL_BOX_CLASS
+          : SETTINGS_GROUP_CLASS;
   const replayClass = replayPrivacy ? `${replayPrivacy.blockClassName} ` : '';
   const disabledClass = disabled ? ' pointer-events-none opacity-50' : '';
   return (
@@ -164,6 +178,7 @@ export function SettingsRowsGroup({
       role={ariaLabel ? 'group' : undefined}
       aria-label={ariaLabel}
       aria-disabled={disabled || undefined}
+      inert={disabled}
       data-testid={dataTestId}
       data-surface={surface}
       className={`${replayClass}${surfaceClass}${disabledClass}`}
@@ -236,6 +251,13 @@ export interface SettingsRowsRowProps {
   readonly labelId?: string;
   readonly dataTestId?: string;
   /**
+   * A fact rather than a setting: the label keeps its own width and the
+   * value takes the rest of the row, wrapping on the trailing edge, so a
+   * long value never runs into its label. Detail pages set it on every row
+   * whose control is a `SettingsRowsValue`.
+   */
+  readonly fact?: boolean;
+  /**
    * Content under the label that belongs to this row: an editor, a status
    * line, or `SettingsRowsSubRow`s for settings that depend on this one.
    */
@@ -256,6 +278,7 @@ function RowLine({
   htmlFor,
   labelId,
   dataTestId,
+  fact = false,
   children,
   labelClassName,
   gapClassName,
@@ -270,7 +293,13 @@ function RowLine({
         className="flex min-h-10 items-center justify-between gap-x-6 gap-y-2 max-sm:flex-wrap"
         onClick={onRowClick}
       >
-        <div className="min-w-0 flex-1 space-y-0.5 max-sm:min-w-[min(100%,12rem)]">
+        <div
+          className={
+            fact
+              ? 'shrink-0 space-y-0.5'
+              : 'min-w-0 flex-1 space-y-0.5 max-sm:min-w-[min(100%,12rem)]'
+          }
+        >
           {htmlFor ? (
             <label
               id={labelId}
@@ -298,7 +327,11 @@ function RowLine({
         {control ? (
           <div
             ref={controlRef}
-            className="flex max-w-full shrink-0 items-center gap-2"
+            className={
+              fact
+                ? 'flex min-w-0 flex-1 items-center justify-end gap-2'
+                : 'flex max-w-full shrink-0 items-center gap-2'
+            }
           >
             {control}
           </div>
@@ -322,6 +355,41 @@ export function SettingsRowsRow(props: SettingsRowsRowProps): JSX.Element {
       gapClassName="gap-3"
       rowLabel
     />
+  );
+}
+
+export interface SettingsRowsValueProps {
+  readonly dataTestId?: string;
+  /** Tabular figures for counts, amounts and times. */
+  readonly numeric?: boolean;
+  /** A monospaced value (a key, a path, a score); breaks anywhere. */
+  readonly mono?: boolean;
+  /** Full value on hover. */
+  readonly title?: string;
+  readonly children?: ReactNode;
+}
+
+/**
+ * A fact's value in a row's `control` slot: body text in the secondary ink,
+ * on the trailing edge, wrapping long words. Pair it with the row's `fact`
+ * layout so the value, not the label, gives way in a narrow column. Detail
+ * pages show their facts as rows with this value (docs/design/pages.md).
+ */
+export function SettingsRowsValue({
+  dataTestId,
+  numeric = false,
+  mono = false,
+  title,
+  children,
+}: SettingsRowsValueProps): JSX.Element {
+  return (
+    <span
+      className={`min-w-0 text-right text-s fg-secondary${mono ? ' break-all font-mono' : ' break-words'}${numeric ? ' tabular-nums' : ''}`}
+      data-testid={dataTestId}
+      title={title}
+    >
+      {children}
+    </span>
   );
 }
 

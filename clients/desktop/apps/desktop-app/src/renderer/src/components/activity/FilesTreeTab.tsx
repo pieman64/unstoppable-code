@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -22,7 +23,10 @@ import type {
   FileTreeItemReference,
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
-import { LoadingPlaceholder } from '@/components/shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import {
   acquireFileTreeWatch,
   releaseFileTreeWatch,
@@ -62,9 +66,15 @@ import {
 } from './files-tree-tab-state';
 import { FileTypeIcon } from '@/components/shared/file-icons';
 import {
+  FieldError,
   FileRootGroupRow,
   FileTreeRow,
   FilesTreeRefreshButton,
+  ErrorBanner,
+  ErrorState,
+  SearchField,
+  StatusLabel,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { Tooltip } from '@canopy/ui-shared';
@@ -302,6 +312,7 @@ function InlineTreeEditorRow({
 }: InlineTreeEditorRowProps): JSX.Element {
   const interaction = useContext(ExplorerInteractionContext);
   const inputRef = useRef<HTMLInputElement>(null);
+  const errorId = useId();
   const cancelledRef = useRef(false);
   const inFlightRef = useRef(false);
   const isDirectory =
@@ -365,10 +376,13 @@ function InlineTreeEditorRow({
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <input
+        <TextInput
           ref={inputRef}
+          density="compact"
           value={editor.value}
           disabled={interaction?.mutationBusy}
+          aria-invalid={interaction?.mutationError ? true : undefined}
+          aria-describedby={interaction?.mutationError ? errorId : undefined}
           data-testid="files-tree-inline-editor"
           aria-label={
             editor.mode === 'rename'
@@ -399,11 +413,10 @@ function InlineTreeEditorRow({
               interaction?.cancelInlineEditor();
             }
           }}
-          className="focus-ring h-6 w-full rounded-sm border border-fg-accent bg-base px-1 text-xs fg-primary"
         />
         {interaction?.mutationError && (
-          <div className="mt-1 text-3xs fg-destructive" role="alert">
-            {interaction.mutationError}
+          <div className="mt-1" role="alert">
+            <FieldError id={errorId}>{interaction.mutationError}</FieldError>
           </div>
         )}
       </div>
@@ -801,11 +814,11 @@ function DirectoryChildren({
   if (error) {
     return (
       <div
-        className="px-2 py-1 text-2xs fg-destructive"
+        className="px-2 py-1 text-2xs"
         style={{ paddingLeft: `${depth * 16 + 32}px` }}
         data-testid="files-tree-folder-error"
       >
-        Unable to load folder.
+        <StatusLabel>Unable to load folder.</StatusLabel>
       </div>
     );
   }
@@ -3258,17 +3271,20 @@ export function FilesTreeTab({
   } else if (searchActive) {
     if ((indexError && !indexEntry) || (rootsError && !rootsEntry)) {
       body = (
-        <div
-          className="flex items-center justify-center px-4 py-12 text-s fg-destructive"
-          data-testid="files-tree-search-error"
-        >
-          Unable to search files.
-        </div>
+        <ErrorState
+          space="panel"
+          message="Couldn’t search files."
+          testId="files-tree-search-error"
+        />
       );
     } else if (!indexEntry || !renderedRootsEntry) {
       // Both data sets are required to key results by root. Before their first
       // requests dispatch, absence still means loading rather than empty.
-      body = <LoadingPlaceholder />;
+      body = (
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
+      );
     } else if (filteredResults.matchCount === 0) {
       body = (
         <>
@@ -3340,13 +3356,13 @@ export function FilesTreeTab({
       );
     }
   } else if (rootsLoading && !renderedRootsEntry) {
-    body = <LoadingPlaceholder />;
-  } else if (rootsError && !renderedRootsEntry) {
     body = (
-      <div className="flex items-center justify-center px-4 py-12 text-s fg-destructive">
-        Unable to load files.
-      </div>
+      <DelayedLoadingPlaceholder>
+        <CenteredLoadingSpinner className="my-12" />
+      </DelayedLoadingPlaceholder>
     );
+  } else if (rootsError && !renderedRootsEntry) {
+    body = <ErrorState space="panel" message="Couldn’t load files." />;
   } else if (renderedRootsEntry && roots.length === 0) {
     body = (
       <div className="flex items-center justify-center px-4 py-12 text-s fg-secondary">
@@ -3505,31 +3521,18 @@ export function FilesTreeTab({
           className="flex items-center gap-1.5 border-b px-2 py-1.5"
           data-testid="files-tree-search"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border bg-base/80 px-2 py-1">
-            <SearchIcon className="h-3 w-3 shrink-0 fg-secondary" />
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              onKeyDown={handleSearchKeyDown}
-              placeholder="Filter files…"
-              data-testid="files-tree-search-input"
-              aria-label="Filter files"
-              className="min-w-0 flex-1 bg-transparent text-xs fg-primary outline-none placeholder:fg-secondary"
-            />
-            {searchQuery.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                data-testid="files-tree-search-clear"
-                className="shrink-0 rounded-sm p-0.5 fg-secondary transition-colors hover:fg-primary"
-                aria-label="Clear file filter"
-              >
-                <CloseIcon className="h-3 w-3" />
-              </button>
-            )}
-          </div>
+          <SearchField
+            ref={searchInputRef}
+            className="flex-1"
+            value={searchQuery}
+            onValueChange={setSearchQuery}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Filter files…"
+            data-testid="files-tree-search-input"
+            aria-label="Filter files"
+            clearLabel="Clear file filter"
+            clearTestId="files-tree-search-clear"
+          />
           <Button
             variant="ghost"
             size="compact"
@@ -3543,11 +3546,8 @@ export function FilesTreeTab({
         </div>
       )}
       {!inlineEditor && mutationError && (
-        <div
-          className="border-b border-line-destructive/40 bg-destructive-subtle px-3 py-1.5 text-3xs fg-destructive"
-          role="alert"
-        >
-          {mutationError}
+        <div className="border-b px-3 py-1.5">
+          <ErrorBanner error={mutationError} className="" />
         </div>
       )}
       <div

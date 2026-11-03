@@ -109,7 +109,7 @@ export function SectionDisclosureButton({
     >
       {expanded ? expandedLabel : collapsedLabel}
       <ChevronDownIcon
-        size={12}
+        size="sm"
         className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
       />
     </Button>
@@ -170,7 +170,7 @@ function MatcherRow({
           {...attributes}
           {...listeners}
         >
-          <DragHandleIcon size={12} className="shrink-0" />
+          <DragHandleIcon size="sm" className="shrink-0" />
         </span>
         <ToggleSwitch
           checked={matcher.enabled}
@@ -208,16 +208,22 @@ function MatcherRow({
           </div>
         )}
         <Tooltip label="When this matcher matches, stop assigning further labels to the file.">
-          <span className="flex shrink-0 items-center gap-2">
-            <label htmlFor={stopId} className="text-xs fg-secondary">
-              Don&apos;t keep matching
-            </label>
-            <ToggleSwitch
-              id={stopId}
-              checked={matcher.stopMatching}
-              label={`Don't keep matching after ${matcher.pattern}`}
-              dataTestId={`file-label-matcher-stop-${matcher.id}`}
-              onChange={(next) => onChange({ ...matcher, stopMatching: next })}
+          {/* The caption is the switch's label, so clicking it flips it. */}
+          <span className="shrink-0">
+            <SettingsSubRow
+              htmlFor={stopId}
+              label="Don't keep matching"
+              control={
+                <ToggleSwitch
+                  id={stopId}
+                  checked={matcher.stopMatching}
+                  label={`Don't keep matching after ${matcher.pattern}`}
+                  dataTestId={`file-label-matcher-stop-${matcher.id}`}
+                  onChange={(next) =>
+                    onChange({ ...matcher, stopMatching: next })
+                  }
+                />
+              }
             />
           </span>
         </Tooltip>
@@ -230,7 +236,7 @@ function MatcherRow({
             aria-label={`Delete matcher ${matcher.pattern}`}
             data-testid={`file-label-matcher-delete-${matcher.id}`}
           >
-            <TrashIcon size={12} />
+            <TrashIcon size="sm" />
           </Button>
         )}
       </div>
@@ -445,7 +451,7 @@ function BucketRow({
             {...attributes}
             {...listeners}
           >
-            <DragHandleIcon size={12} className="shrink-0" />
+            <DragHandleIcon size="sm" className="shrink-0" />
           </span>
           <ToggleSwitch
             id={`file-label-switch-${bucket.id}`}
@@ -455,12 +461,12 @@ function BucketRow({
             onChange={() => onChange({ ...bucket, enabled: !bucket.enabled })}
           />
           {bucket.builtin ? (
-            <label
-              htmlFor={`file-label-switch-${bucket.id}`}
-              className="min-w-0 flex-1 truncate text-s font-medium fg-primary"
-            >
-              {bucket.name}
-            </label>
+            <div className="min-w-0 flex-1">
+              <SettingsRow
+                htmlFor={`file-label-switch-${bucket.id}`}
+                label={bucket.name}
+              />
+            </div>
           ) : (
             <div className="min-w-0 flex-1">
               <SettingsTextField
@@ -493,7 +499,7 @@ function BucketRow({
             data-testid={`file-label-expand-${bucket.id}`}
           >
             <ChevronRightIcon
-              size={12}
+              size="sm"
               className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
             />
             {`${enabledMatchers}/${bucket.matchers.length} matcher${bucket.matchers.length === 1 ? '' : 's'}`}
@@ -716,7 +722,7 @@ export function FileLabelsSection({
                       onClick={handleAdd}
                       data-testid="file-labels-add-label"
                     >
-                      <PlusIcon size={14} />
+                      <PlusIcon size="sm" />
                       Add label
                     </Button>
                   )}

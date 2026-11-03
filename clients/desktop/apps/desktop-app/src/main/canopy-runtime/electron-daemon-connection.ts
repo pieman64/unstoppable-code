@@ -11,8 +11,24 @@ import {
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { stableStringify } from '@canopy/protocol/plans';
+import type { BackgroundServiceUnreachableReason } from '@canopy/desktop-shared/lib/background-service-status';
 
 type Connection = CanopyLeaseClient & CanopyAuthorityConnection;
+
+/**
+ * Whether the daemon could be reached, as the service observes it. A typed
+ * refusal from a connected daemon is none of these.
+ */
+export type ElectronDaemonReachability =
+  /** An attach (setup or lease reconnect) resolved with a usable client. */
+  | { readonly kind: 'reached' }
+  /** A connected client dropped while its session was live. */
+  | { readonly kind: 'lost' }
+  | {
+      readonly kind: 'unreachable';
+      readonly reason: BackgroundServiceUnreachableReason;
+    };
+
 export interface ElectronDaemonSession<C extends Connection> {
   readonly client: C;
   readonly lease: Pick<CanopyClientLease<C>, 'state' | 'lease' | 'register'>;
@@ -23,6 +39,7 @@ export interface ElectronDaemonConnectionService<C extends Connection> {
   get(
     caller: CanopyCallerDescriptor,
     owner: AbortSignal,
+    options?: ElectronDaemonGetOptions,
   ): Promise<ElectronDaemonSession<C>>;
   dispose(): Promise<void>;
 }
@@ -40,12 +57,77 @@ export interface ElectronDaemonConnectionOptions<C extends Connection> {
     session: ElectronDaemonSession<C>,
     caller: CanopyCallerDescriptor,
   ) => void;
+  /** Observes reachability across every caller's session. Never throws into a read. */
+  readonly onReachability?: (event: ElectronDaemonReachability) => void;
+  /**
+   * An attach rejection inside a restart the app runs itself: left untagged,
+   * so it shows nothing (q-13). Not consulted once the lifetime aborted.
+   */
+  readonly isRestartRefusal?: (error: unknown) => boolean;
+}
+export interface ElectronDaemonGetOptions {
+  /**
+   * Attempt again even within a failed setup's 1 s reuse window (an explicit
+   * Try again). A live or pending session is still reused.
+   */
+  readonly reprobe?: boolean;
 }
 const failure = (
   kind: CanopyClientError['payload']['kind'],
   message: string,
 ): CanopyClientError =>
   new CanopyClientError({ kind, message, retry: { kind: 'never' } });
+
+const unreachable = new WeakMap<object, BackgroundServiceUnreachableReason>();
+
+/**
+ * Why a `get` failure means the daemon couldn't be reached, or `null` for a
+ * refusal or cancellation. The failure keeps its identity.
+ */
+export function daemonUnreachableReason(
+  error: unknown,
+): BackgroundServiceUnreachableReason | null {
+  return typeof error === 'object' && error !== null
+    ? (unreachable.get(error) ?? null)
+    : null;
+}
+
+/**
+ * Tags a failure as an unreachable daemon; only connect, setup and host
+ * stages tag. The first reason wins: a reconnect failure surfaced by acquire
+ * keeps its own.
+ */
+export function markUnreachable(
+  error: unknown,
+  reason: BackgroundServiceUnreachableReason,
+): unknown {
+  const marked =
+    typeof error === 'object' && error !== null
+      ? error
+      : failure('unavailable', 'Desktop daemon is unreachable.');
+  if (!unreachable.has(marked)) unreachable.set(marked, reason);
+  return marked;
+}
+
+/**
+ * Any attach rejection (spawn, exit before ready, data root preparation)
+ * means no session could exist, so the daemon is unreachable; `cancelled` is
+ * not. Callers skip this once the session's lifetime is aborted: that
+ * rejection is the owner closing, never the daemon.
+ *
+ * A handshake `unauthenticated` and an incompatible protocol
+ * (`failed_precondition`) also map to `start_failed`, by decision, even
+ * though a live daemon answered: no session results, so nothing can serve.
+ */
+function attachFailureReason(
+  error: unknown,
+): BackgroundServiceUnreachableReason | null {
+  if (!(error instanceof CanopyClientError)) return 'start_failed';
+  if (error.payload.kind === 'cancelled') return null;
+  return error.payload.kind === 'deadline_exceeded'
+    ? 'connect_timeout'
+    : 'start_failed';
+}
 
 /** One connection/lease per trusted caller lifetime, shared by its migrated consumers. */
 export function createElectronDaemonConnectionService<C extends Connection>(
@@ -63,9 +145,18 @@ export function createElectronDaemonConnectionService<C extends Connection>(
   const admissions = new Map<string, Promise<unknown>>();
   let disposed = false;
   let disposing: Promise<void> | undefined;
+  const observe = (event: ElectronDaemonReachability): void => {
+    if (disposed) return;
+    try {
+      options.onReachability?.(event);
+    } catch {
+      // An observer never fails the session's consumer.
+    }
+  };
   async function get(
     raw: CanopyCallerDescriptor,
     owner: AbortSignal,
+    { reprobe = false }: ElectronDaemonGetOptions = {},
   ): Promise<ElectronDaemonSession<C>> {
     if (disposed || owner.aborted)
       throw failure('cancelled', 'Desktop connection owner is closed.');
@@ -85,7 +176,7 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       existing.owner === owner &&
       (existing.failedAt === undefined
         ? existing.usable()
-        : performance.now() - existing.failedAt < 1_000)
+        : !reprobe && performance.now() - existing.failedAt < 1_000)
     )
       return existing.pending;
     if (existing) {
@@ -112,7 +203,10 @@ export function createElectronDaemonConnectionService<C extends Connection>(
     const setupTimer = setTimeout(
       () =>
         lifetime.abort(
-          failure('deadline_exceeded', 'Desktop connection setup timed out.'),
+          markUnreachable(
+            failure('deadline_exceeded', 'Desktop connection setup timed out.'),
+            'connect_timeout',
+          ),
         ),
       options.setupTimeoutMs ?? 30_000,
     );
@@ -166,7 +260,16 @@ export function createElectronDaemonConnectionService<C extends Connection>(
     };
     const connect = async (): Promise<C> => {
       if (lifetime.signal.aborted) throw stop();
-      const client = await options.attach(lifetime.signal);
+      let client: C;
+      try {
+        client = await options.attach(lifetime.signal);
+      } catch (error) {
+        const reason =
+          lifetime.signal.aborted || options.isRestartRefusal?.(error)
+            ? null
+            : attachFailureReason(error);
+        throw reason ? markUnreachable(error, reason) : error;
+      }
       clients.add(client);
       client.signal.addEventListener('abort', () => clients.delete(client), {
         once: true,
@@ -178,11 +281,33 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         client.identity.profile === 'worker'
       ) {
         await client.close();
-        throw failure(
-          lifetime.signal.aborted ? 'cancelled' : 'failed_precondition',
-          'Desktop daemon authority is unavailable.',
+        if (lifetime.signal.aborted)
+          throw failure(
+            'cancelled',
+            'Desktop daemon authority is unavailable.',
+          );
+        throw markUnreachable(
+          failure(
+            'failed_precondition',
+            'Desktop daemon authority is unavailable.',
+          ),
+          'start_failed',
         );
       }
+      // Listened only after the checks: closing a rejected client is no loss,
+      // nor is the lease closing a replacement it never adopted.
+      client.signal.addEventListener(
+        'abort',
+        () => {
+          if (
+            !lifetime.signal.aborted &&
+            (lease === undefined || lease.client === client)
+          )
+            observe({ kind: 'lost' });
+        },
+        { once: true },
+      );
+      if (!client.signal.aborted) observe({ kind: 'reached' });
       return client;
     };
     const attach = (): Promise<C> => {
@@ -194,11 +319,18 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       );
       return task;
     };
+    let established = false;
     const setup = (async (): Promise<ElectronDaemonSession<C>> => {
-      authorityId =
-        typeof options.authorityId === 'string'
-          ? options.authorityId
-          : await options.authorityId(lifetime.signal);
+      try {
+        authorityId =
+          typeof options.authorityId === 'string'
+            ? options.authorityId
+            : await options.authorityId(lifetime.signal);
+      } catch (error) {
+        throw lifetime.signal.aborted
+          ? error
+          : markUnreachable(error, 'host_unavailable');
+      }
       if (caller.authorityId !== authorityId)
         throw failure(
           'failed_precondition',
@@ -244,23 +376,53 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         },
         renewalIntervalMs: 15_000,
         presence: () => ({ interactive: true, foreground: false }),
+        onError: (error) => {
+          if (lifetime.signal.aborted) return;
+          // A replacement attach the lease retries with backoff ("Core exited
+          // before it was ready."): still restarting, so nothing to show
+          // (Mike, q-13 GA3-1). Giving up fails the lease, reported below.
+          if (ownedLease.state === 'reconnecting') return;
+          // Setup failures surface through `pending`; this sees later ones.
+          if (!established || ownedLease.state !== 'failed') return;
+          established = false;
+          // A refusal on a connected client is not an unreachable daemon.
+          if (
+            daemonUnreachableReason(error) !== null ||
+            ownedLease.client.signal.aborted
+          )
+            observe({ kind: 'unreachable', reason: 'reconnect_failed' });
+        },
       }));
-      await ownedLease.acquire();
+      try {
+        await ownedLease.acquire();
+      } catch (error) {
+        throw !lifetime.signal.aborted && ownedLease.client.signal.aborted
+          ? markUnreachable(error, 'connection_lost')
+          : error;
+      }
       if (lifetime.signal.aborted) throw stop();
+      established = true;
       return {
         get client(): C {
           if (lifetime.signal.aborted) throw stop();
-          if (registryClient !== ownedLease.client) {
-            registryClient = ownedLease.client;
-            registry = createCanopyAuthorityRegistry({
-              primary: registryClient,
+          try {
+            if (registryClient !== ownedLease.client) {
+              registryClient = ownedLease.client;
+              registry = createCanopyAuthorityRegistry({
+                primary: registryClient,
+              });
+              guardedClient = fence(registryClient);
+            }
+            registry.resolve({
+              mode: 'authority',
+              authorityId,
             });
-            guardedClient = fence(registryClient);
+          } catch (error) {
+            // Down while the lease replaces it: as unreachable as a failed attach.
+            throw ownedLease.client.signal.aborted
+              ? markUnreachable(error, 'connection_lost')
+              : error;
           }
-          registry.resolve({
-            mode: 'authority',
-            authorityId,
-          });
           return guardedClient;
         },
         lease: {
@@ -295,20 +457,22 @@ export function createElectronDaemonConnectionService<C extends Connection>(
     entries.set(caller.clientInstanceId, entry);
     owner.addEventListener('abort', onLoss, { once: true });
     if (owner.aborted) onLoss();
-    void pending.catch(async () => {
+    void pending.catch(async (error: unknown) => {
       entry.failedAt = performance.now();
+      const reason = daemonUnreachableReason(error);
+      if (reason) observe({ kind: 'unreachable', reason });
       // Release before allowing a later attempt; no background retry of failed setup.
       await close().catch(() => undefined);
     });
     return pending;
   }
   return {
-    get(caller, owner): Promise<ElectronDaemonSession<C>> {
+    get(caller, owner, getOptions): Promise<ElectronDaemonSession<C>> {
       const previous =
         admissions.get(caller.clientInstanceId) ?? Promise.resolve();
       const next = previous
         .catch(() => undefined)
-        .then(() => get(caller, owner))
+        .then(() => get(caller, owner, getOptions))
         .then((session) => {
           try {
             options.onSession?.(session, caller);

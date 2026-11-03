@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { RuleType, type MarkdownToJSX } from 'markdown-to-jsx';
+import { Checkbox } from './Choice';
 import { DeferredMarkdownMath } from './DeferredMarkdownMath';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
 import { MarkdownMermaid } from './MarkdownMermaid';
@@ -203,6 +204,13 @@ export function isNavigableTranscriptHref(href: string): boolean {
 }
 
 /**
+ * A text link in prose: accent ink over a faint underline set clear of the
+ * descenders; the underline takes the ink's full colour on hover and focus.
+ */
+export const TRANSCRIPT_LINK_CLASS =
+  'fg-accent underline decoration-accent/30 decoration-1 underline-offset-4 transition-[text-decoration-color] hover:decoration-current focus-visible:decoration-current';
+
+/**
  * Anchor override for agent transcripts: navigable URLs stay links, everything
  * else renders as inert text carrying the original target in `title` so the
  * path is still readable and copyable.
@@ -214,7 +222,7 @@ export function TranscriptMarkdownAnchor({
 }: AnchorProps): JSX.Element {
   if (typeof href === 'string' && isNavigableTranscriptHref(href)) {
     return (
-      <a {...props} href={href}>
+      <a {...props} href={href} className={TRANSCRIPT_LINK_CLASS}>
         {children}
       </a>
     );
@@ -225,7 +233,7 @@ export function TranscriptMarkdownAnchor({
       {...props}
       data-testid="markdown-non-navigable-link"
       title={typeof href === 'string' ? href : undefined}
-      className="break-all underline decoration-dotted underline-offset-2"
+      className="break-all underline decoration-dotted decoration-1 underline-offset-4"
     >
       {children}
     </span>
@@ -275,6 +283,17 @@ export function MarkdownTableBlock({
   );
 }
 
+/**
+ * Typography for agent and user prose in a chat transcript. Desktop and web
+ * transcripts both take it from here so their prose cannot drift apart.
+ * Inline code is a neutral box: it names something without opening it, so it
+ * stays out of the accent ink that marks links and chips. Its box has the
+ * inline chip's geometry (InlineMention.tsx): the same height, padding,
+ * corners and centring on the surrounding cap height.
+ */
+export const TRANSCRIPT_PROSE_CLASS =
+  'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:before:content-none prose-code:after:content-none [&_:not(pre)>code]:inline-block [&_:not(pre)>code]:max-w-full [&_:not(pre)>code]:rounded-sm [&_:not(pre)>code]:bg-muted [&_:not(pre)>code]:pt-[0.125em] [&_:not(pre)>code]:pb-[0.042em] [&_:not(pre)>code]:px-[0.417em] [&_:not(pre)>code]:align-[0.0625em] [&_:not(pre)>code]:leading-[1.5] [&_:not(pre)>code]:font-normal [&_:not(pre)>code]:fg-primary prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
+
 export const DEFAULT_MARKDOWN_OVERRIDES: MarkdownToJSX.Overrides = {
   a: sanitizedAnchorOverride(),
   pre: MarkdownCodeBlock,
@@ -289,12 +308,16 @@ export const DEFAULT_MARKDOWN_OVERRIDES: MarkdownToJSX.Overrides = {
       {children}
     </td>
   ),
+  // Raw HTML is never parsed (`disableParsingRawHTML`), so the only input
+  // the renderer emits is a GFM task-list marker: a read-only, disabled
+  // checkbox drawn as the shared mark, kept inline with the item's text.
   input: ({
-    type,
-    disabled,
-    ...props
+    checked,
+    readOnly,
   }: ComponentPropsWithoutRef<'input'>): JSX.Element => (
-    <input type={type} disabled={type === 'checkbox' || disabled} {...props} />
+    <span className="inline-flex pr-1.5 align-middle">
+      <Checkbox checked={checked} readOnly={readOnly} disabled />
+    </span>
   ),
 };
 

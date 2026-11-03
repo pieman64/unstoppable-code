@@ -80,7 +80,8 @@ for (const saved of ['opaque', 'translucent']) {
       await expect
         .poll(async () => {
           const bounds = await menu.boundingBox();
-          return bounds ? Math.abs(bounds.x - pointer.x - 2) : 1000;
+          // #7267/#7270 align at pointer x; only the vertical gap is 2px.
+          return bounds ? Math.abs(bounds.x - pointer.x) : 1000;
         })
         .toBeLessThan(1);
       const bounds = await menu.boundingBox();

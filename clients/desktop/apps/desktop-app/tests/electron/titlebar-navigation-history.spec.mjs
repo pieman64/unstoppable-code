@@ -71,7 +71,11 @@ test.describe('titlebar navigation history', () => {
               rows.map((row) => row.getAttribute('data-testid')),
             ),
         )
-        .toEqual(['sidebar-create-task', 'sidebar-search']);
+        .toEqual([
+          'sidebar-create-task',
+          'sidebar-search',
+          'sidebar-activity-toggle',
+        ]);
       await expect(sidebarSearch).toHaveAttribute('aria-label', 'Search');
       await sidebarSearch.click();
       await expect(window.getByTestId('command-palette')).toBeVisible();

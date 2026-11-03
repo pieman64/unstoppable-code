@@ -21,6 +21,7 @@ import {
   seedPluginsCache,
 } from './seeders/index.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const DEMO_APP_ID = 'ts-pnpm-vite';
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
@@ -213,9 +214,10 @@ async function enablePluginOrSkill(window, { kind, name }) {
   const applyFilters = async () => {
     await expect(dialog).toBeVisible({ timeout: 2_000 });
     await dialog.getByPlaceholder('Search by name…').fill(name);
-    await dialog
-      .getByRole('combobox', { name: 'Kind filter' })
-      .selectOption(kind);
+    await chooseSettingsOption(
+      dialog.getByRole('combobox', { name: 'Kind filter' }),
+      kind,
+    );
     await expect(checkbox).toBeVisible({ timeout: 2_000 });
   };
 

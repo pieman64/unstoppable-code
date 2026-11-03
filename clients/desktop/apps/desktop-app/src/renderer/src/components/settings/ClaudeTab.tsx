@@ -32,9 +32,10 @@ import { hasVisibleClaudeSettingsSections } from '@/lib/claude-settings-availabi
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
+  ChoiceList,
+  ChoiceListRow,
   ErrorState,
   Notice,
-  Radio,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
@@ -755,9 +756,9 @@ function ModeRadioList({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex flex-col gap-3" role="radiogroup" aria-label={label}>
+    <ChoiceList kind="radio" aria-label={label}>
       {children}
-    </div>
+    </ChoiceList>
   );
 }
 
@@ -787,29 +788,20 @@ function ModeRadioOption({
 }: ModeRadioOptionProps): JSX.Element {
   return (
     <Tooltip label={disabledReason} disabled={!disabled} className="w-full">
-      <label
-        className={`flex w-full items-start gap-2.5 ${
-          disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
-        }`}
+      <ChoiceListRow
+        kind="radio"
+        name={name}
+        value={value}
+        selected={checked}
+        disabled={disabled}
+        onClick={(): void => onSelect(value)}
+        data-testid={dataTestId}
       >
-        <Radio
-          name={name}
-          value={value}
-          checked={checked}
-          disabled={disabled}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>): void => {
-            onSelect(e.target.value);
-          }}
-          className="mt-0.5"
-          data-testid={dataTestId}
-        />
-        <span className="min-w-0 space-y-0.5">
-          <span className="block text-s font-medium fg-primary">{label}</span>
-          <span className="block text-xs text-pretty fg-secondary">
-            {description}
-          </span>
+        <span className="block font-medium">{label}</span>
+        <span className="block text-xs text-pretty fg-secondary">
+          {description}
         </span>
-      </label>
+      </ChoiceListRow>
     </Tooltip>
   );
 }

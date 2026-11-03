@@ -164,6 +164,12 @@ describe('chat message command adapter', () => {
       userMessageId: 'message-1',
       text: 'Implement.',
       planReviewApproval: approval,
+      trackedPlanImplementation: {
+        planId: approval.planId,
+        revisionNumber: approval.revisionNumber,
+        userMessageId: 'message-1',
+        startedAt: '2026-08-07T12:00:00.000Z',
+      },
     };
     try {
       await dispatchTrustedChatCommand(
@@ -172,7 +178,10 @@ describe('chat message command adapter', () => {
       );
       expect(instruction).toHaveBeenCalledWith(
         'core.chat.message.send',
-        expect.objectContaining({ planReviewApproval: approval }),
+        expect.objectContaining({
+          planReviewApproval: approval,
+          trackedPlanImplementation: send.trackedPlanImplementation,
+        }),
         expect.anything(),
       );
       expect(command).toHaveBeenCalledWith(request(send));
@@ -186,6 +195,10 @@ describe('chat message command adapter', () => {
           messageId: 'message-2',
           text: 'Implement.',
           planReviewApproval: approval,
+          trackedPlanImplementation: {
+            ...send.trackedPlanImplementation,
+            userMessageId: 'message-2',
+          },
           _meta: { idempotencyKey: 'portable-approval' },
         },
         { caller, metadata: { idempotencyKey: 'portable-approval' } },
@@ -193,6 +206,10 @@ describe('chat message command adapter', () => {
       expect(command.mock.calls).toHaveProperty(
         '0.0.command.planReviewApproval',
         approval,
+      );
+      expect(command.mock.calls).toHaveProperty(
+        '0.0.command.trackedPlanImplementation.userMessageId',
+        'message-2',
       );
       expect(command.mock.calls).toHaveProperty(
         '0.0.command.userMessageId',

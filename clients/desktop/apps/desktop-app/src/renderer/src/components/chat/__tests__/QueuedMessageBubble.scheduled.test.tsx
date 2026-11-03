@@ -8,10 +8,7 @@ import type {
   ChatTurnPhase,
   QueuedMessageWaitingReason,
 } from '@canopy/desktop-shared/types';
-import {
-  QUEUED_MESSAGE_WAITING_REASON_COPY,
-  type QueuedMessageSetupWait,
-} from '@canopy/ui-shared';
+import { QUEUED_MESSAGE_WAITING_REASON_COPY } from '@canopy/ui-shared';
 import {
   QueuedMessageBubble,
   type ScheduledMessageBubbleDescriptor,
@@ -80,19 +77,11 @@ describe('QueuedMessageBubble scheduled variant', () => {
     });
   }
 
-  function setupQuote(): Element | null {
-    return container.querySelector(
-      '[data-testid="queued-message-setup-quote"]',
-    );
-  }
-
   function renderQueueRow(
     options: {
       text?: string;
       waitingReason?: QueuedMessageWaitingReason;
       reason?: string;
-      setupWait?: QueuedMessageSetupWait;
-      clockNowMs?: number;
       scheduled?: ScheduledMessageBubbleDescriptor;
     } = {},
   ): void {
@@ -111,8 +100,6 @@ describe('QueuedMessageBubble scheduled variant', () => {
           index={0}
           message={message}
           onClear={jest.fn()}
-          setupWait={options.setupWait}
-          clockNowMs={options.clockNowMs}
           scheduled={options.scheduled}
         />,
       );
@@ -296,115 +283,6 @@ describe('QueuedMessageBubble scheduled variant', () => {
     ).toBeNull();
   });
 
-  it('prefers the setup reason over the host waiting reason', () => {
-    renderQueueRow({
-      waitingReason: 'steer_unavailable',
-      setupWait: { projectName: 'canopy', startedAtMs: 1_000 },
-      clockNowMs: 13_000,
-    });
-
-    const setup = container.querySelector(
-      '[data-testid="queued-message-setup-reason"]',
-    );
-    expect(setup?.textContent).toContain(
-      "Setting up this chat's copy of canopy.",
-    );
-    expect(setup?.textContent).toContain('0:12 elapsed');
-    expect(setup?.textContent).toContain(
-      "Your message will send automatically when it's ready.",
-    );
-    expect(
-      container.querySelector('[data-testid="queued-message-waiting-reason"]'),
-    ).toBeNull();
-  });
-
-  it('prefers free text over the setup reason', () => {
-    renderQueueRow({
-      reason: 'Waiting for active chat sessions to finish.',
-      setupWait: { startedAtMs: 1_000 },
-      clockNowMs: 2_000,
-    });
-
-    expect(
-      container.querySelector('[data-testid="queued-message-setup-reason"]'),
-    ).toBeNull();
-    expect(container.textContent).toContain(
-      'Waiting for active chat sessions to finish.',
-    );
-  });
-
-  it('shows the scheduled state instead of a setup reason', () => {
-    renderQueueRow({
-      setupWait: { startedAtMs: 1_000 },
-      clockNowMs: 2_000,
-      scheduled: {
-        automationId: 'automation-1',
-        activityName: 'Nightly',
-        scheduledAt: new Date(60_000).toISOString(),
-        onEdit: jest.fn(),
-        onClear: jest.fn(),
-        onInterrupt: jest.fn(),
-      },
-    });
-
-    expect(
-      container.querySelector('[data-testid="queued-message-setup-reason"]'),
-    ).toBeNull();
-    expect(setupQuote()).toBeNull();
-    expect(
-      container.querySelector('[data-testid="scheduled-message-send-label"]')
-        ?.className,
-    ).toContain('text-xs');
-  });
-
-  it('quotes the message body while it waits for setup', () => {
-    renderQueueRow({
-      text: 'First paragraph\n\nSecond paragraph',
-      setupWait: { projectName: 'canopy', startedAtMs: 1_000 },
-      clockNowMs: 2_000,
-    });
-
-    const quote = setupQuote();
-    expect(quote).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="queued-message-setup-reason"]')
-        ?.nextElementSibling,
-    ).toBe(quote);
-    expect(quote?.querySelector('.break-words')).not.toBeNull();
-    const paragraphs = Array.from(container.querySelectorAll('p'));
-    expect(paragraphs.map((p) => p.textContent)).toEqual([
-      'First paragraph',
-      'Second paragraph',
-    ]);
-    expect(paragraphs.every((p) => quote?.contains(p))).toBe(true);
-  });
-
-  it('quotes the body only when the setup reason renders', () => {
-    renderQueueRow({
-      reason: 'Held.',
-      setupWait: { startedAtMs: 1_000 },
-      clockNowMs: 2_000,
-    });
-    expect(setupQuote()).toBeNull();
-
-    renderQueueRow({ waitingReason: 'steer_unavailable' });
-    expect(setupQuote()).toBeNull();
-
-    renderQueueRow({
-      waitingReason: 'steer_unavailable',
-      setupWait: { startedAtMs: 1_000 },
-      clockNowMs: 2_000,
-    });
-    const hasReason =
-      container.querySelector('[data-testid="queued-message-setup-reason"]') !==
-      null;
-    expect(setupQuote() !== null).toBe(hasReason);
-
-    renderQueueRow();
-    expect(setupQuote()).toBeNull();
-    expect(container.querySelector('.break-words')).not.toBeNull();
-  });
-
   it('hides the host waiting reason on a scheduled row', () => {
     renderQueueRow({
       waitingReason: 'steer_unavailable',
@@ -526,6 +404,31 @@ describe('QueuedMessageBubble queue actions by turn phase', () => {
     });
     expect(onRetry).toHaveBeenCalledWith(0);
     expect(onRunNow).toHaveBeenCalledWith(0);
+  });
+
+  it('keeps Edit and Clear but locks Run now on a row behind a setup hold', () => {
+    act(() => {
+      root.render(
+        <QueuedMessageBubble
+          index={0}
+          message={{
+            text: 'follow-up',
+            hostQueueEntryId: 'entry-1',
+            forceLocked: true,
+          }}
+          onClear={jest.fn()}
+          onEdit={jest.fn()}
+          onForce={jest.fn()}
+          onRunNow={jest.fn()}
+          canForce
+          turnPhase="foreground"
+        />,
+      );
+    });
+    expect(present('queued-message-edit')).toBe(true);
+    expect(present('queued-message-run-now')).toBe(false);
+    expect(present('queued-message-interrupt')).toBe(false);
+    expect(container.textContent).not.toContain('Setting up');
   });
 
   it('withholds Retry and Run now from rows behind the head', () => {

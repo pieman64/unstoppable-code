@@ -52,6 +52,7 @@ import type {
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type * as TimersModule from 'node:timers';
 import type { ResourceOwner } from '@canopy/protocol/resource-owner';
 import type {
   MarketplaceInfo,
@@ -189,8 +190,16 @@ const mockReadProjectPluginDefaults = jest.fn<
   ReturnType<typeof WorkspacePersistenceModule.readProjectPluginDefaults>,
   Parameters<typeof WorkspacePersistenceModule.readProjectPluginDefaults>
 >();
+const mockReadSetupWorktrees = jest.fn<
+  ReturnType<typeof WorkspacePersistenceModule.readWorkspaceWorktreesDetailed>,
+  Parameters<typeof WorkspacePersistenceModule.readWorkspaceWorktreesDetailed>
+>();
 jest.mock('../lib/workspace-persistence', () => {
   return {
+    readWorkspaceWorktreesDetailed: (
+      ...args: Parameters<typeof mockReadSetupWorktrees>
+    ): ReturnType<typeof mockReadSetupWorktrees> =>
+      mockReadSetupWorktrees(...args),
     readWorkspaceConfigDetailed: (
       ...args: Parameters<typeof mockReadBackgroundWorkspace>
     ): ReturnType<typeof readWorkspaceConfigDetailed> =>
@@ -1086,6 +1095,9 @@ async function writeAutomationFile(value: unknown): Promise<void> {
   await writeFile(automationsFilePath, JSON.stringify(value, null, 2), 'utf8');
 }
 
+const { setTimeout: setRealTimeout, clearTimeout: clearRealTimeout } =
+  jest.requireActual<typeof TimersModule>('node:timers');
+
 async function flushAsyncWork(turns = 10): Promise<void> {
   for (let index = 0; index < turns; index++) {
     await Promise.resolve();
@@ -1171,6 +1183,9 @@ describe('AutomationsService', () => {
       .mockReset()
       .mockResolvedValue({ success: false, error: 'Plugins unavailable' });
     mockReadProjectPluginDefaults.mockReset().mockResolvedValue({});
+    mockReadSetupWorktrees
+      .mockReset()
+      .mockResolvedValue({ authority: 'ok', worktrees: [] });
     mockOrganizations = [];
     mockAccountEpoch = 1;
     mockReadWorkspaceIndexEntry.mockReset().mockResolvedValue(null);
@@ -1318,6 +1333,11 @@ describe('AutomationsService', () => {
         worktreeId: 'worktree-new',
         branchName: 'worktree-new',
       });
+      options.onGitSetupSettled?.({
+        projectId: options.workspaceId,
+        worktreeId: 'worktree-new',
+        outcome: 'ready',
+      });
       return Promise.resolve({
         id: 'worktree-new',
         branchName: 'worktree-new',
@@ -1329,6 +1349,11 @@ describe('AutomationsService', () => {
         projectId: options.workspaceId,
         worktreeId: 'worktree-new',
         branchName: 'worktree-new',
+      });
+      options.onGitSetupSettled?.({
+        projectId: options.workspaceId,
+        worktreeId: 'worktree-new',
+        outcome: 'ready',
       });
       return Promise.resolve({
         id: 'worktree-new',
@@ -10037,6 +10062,11 @@ describe('AutomationsService', () => {
         worktreeId,
         branchName: worktreeId,
       });
+      options.onGitSetupSettled?.({
+        projectId: options.workspaceId,
+        worktreeId,
+        outcome: 'ready',
+      });
       return Promise.resolve({
         id: worktreeId,
         branchName: worktreeId,
@@ -10498,6 +10528,230 @@ describe('AutomationsService', () => {
     );
   });
 
+  describe.each(['single-repo', 'multi-repo'] as const)(
+    '%s automation setup outcomes',
+    (kind) => {
+      it.each([
+        'cancelled',
+        'failed',
+        'storage failure',
+        'storage recovered',
+        'storage recovered before response',
+        'storage read failure',
+        'ready then failed',
+        'slow success',
+        'timeout',
+      ] as const)(
+        'finishes promptly for %s and preserves unknown storage',
+        async (scenario) => {
+          const { service } = makeService();
+          if (kind === 'multi-repo') {
+            mockedReadAllSidebarItems.mockResolvedValue({
+              version: 1,
+              items: [
+                {
+                  type: 'multi-repo',
+                  id: 'workspace-1',
+                  name: 'Workspace',
+                  repos: [],
+                  worktrees: [],
+                  color: 'blue',
+                  collapsed: false,
+                  order: 0,
+                },
+              ],
+            });
+          }
+          let started!: () => void;
+          const creationStarted = new Promise<void>((resolve) => {
+            started = resolve;
+          });
+          const create =
+            kind === 'single-repo'
+              ? mockedCreateSingleRepoWorktree
+              : mockedCreateMultiRepoWorktree;
+          create.mockImplementationOnce((options) => {
+            if (scenario === 'storage failure') {
+              mockReadSetupWorktrees.mockResolvedValue({
+                authority: 'unreadable',
+                worktrees: [],
+              });
+            }
+            if (scenario === 'storage read failure') {
+              mockReadSetupWorktrees.mockRejectedValue(
+                new Error('W5 authority read failed'),
+              );
+            }
+            if (scenario === 'storage recovered before response') {
+              options.onGitFailed?.({
+                projectId: options.workspaceId,
+                worktreeId: 'worktree-new',
+                error: 'Worktree setup failed: storage is unreadable.',
+                failureReason: 'storage-unavailable',
+              });
+              options.onGitSetupSettled?.({
+                projectId: options.workspaceId,
+                worktreeId: 'worktree-new',
+                outcome: 'failed',
+              });
+            } else if (scenario !== 'timeout') {
+              setTimeout(
+                () => {
+                  if (scenario === 'slow success') {
+                    options.onGitReady?.({
+                      projectId: options.workspaceId,
+                      worktreeId: 'worktree-new',
+                      branchName: 'worktree-new',
+                    });
+                    options.onGitSetupSettled?.({
+                      projectId: options.workspaceId,
+                      worktreeId: 'worktree-new',
+                      outcome: 'ready',
+                    });
+                  } else {
+                    if (scenario === 'ready then failed') {
+                      options.onGitReady?.({
+                        projectId: options.workspaceId,
+                        worktreeId: 'worktree-new',
+                        branchName: 'worktree-new',
+                      });
+                    }
+                    if (
+                      scenario === 'storage failure' ||
+                      scenario === 'storage recovered' ||
+                      scenario === 'storage read failure'
+                    ) {
+                      options.onGitFailed?.({
+                        projectId: options.workspaceId,
+                        worktreeId: 'worktree-new',
+                        error: 'Worktree setup failed: storage is unreadable.',
+                        failureReason:
+                          scenario === 'storage recovered'
+                            ? 'storage-unavailable'
+                            : undefined,
+                      });
+                    }
+                    options.onGitSetupSettled?.({
+                      projectId: options.workspaceId,
+                      worktreeId: 'worktree-new',
+                      outcome:
+                        scenario === 'cancelled' ? 'cancelled' : 'failed',
+                    });
+                  }
+                },
+                scenario === 'slow success' ? 60_000 : 1000,
+              );
+            }
+            started();
+            return Promise.resolve({
+              id: 'worktree-new',
+              branchName: 'worktree-new',
+              createdAt: new Date().toISOString(),
+              setupPhase: 'git-pending',
+            });
+          });
+          const created = await service.create({
+            name: 'Setup outcome',
+            schedule: {
+              kind: 'one_time',
+              runAt: '2026-05-28T12:30:00.000Z',
+              timezone: 'local',
+            },
+            action: {
+              type: 'worktree_prompt',
+              workspaceId: 'workspace-1',
+              prompt: 'Implement',
+            },
+          });
+          if (!created.ok || !created.activity)
+            throw new Error('create failed');
+          const run = service.runNow({ id: created.activity.id });
+          await creationStarted;
+          let deadline: ReturnType<typeof setRealTimeout> | undefined;
+          try {
+            if (scenario === 'slow success') {
+              await jest.advanceTimersByTimeAsync(30_000);
+              expect(mockedSendWorktreeChatMessage).not.toHaveBeenCalled();
+              await jest.advanceTimersByTimeAsync(30_000);
+              await expect(run).resolves.toMatchObject({
+                ok: true,
+                run: { status: 'success' },
+              });
+            } else {
+              await jest.advanceTimersByTimeAsync(
+                scenario === 'timeout' ? 600_000 : 2000,
+              );
+              // Leave real I/O time to persist the run, not ten fake minutes.
+              const result = await Promise.race([
+                run,
+                new Promise<undefined>((resolve) => {
+                  deadline = setRealTimeout(() => resolve(undefined), 2000);
+                }),
+              ]);
+              const expectedError: unknown =
+                scenario === 'timeout'
+                  ? expect.stringMatching(
+                      /Timed out.*last.*phase.*git-pending/i,
+                    )
+                  : scenario === 'storage failure' ||
+                      scenario === 'storage recovered' ||
+                      scenario === 'storage recovered before response' ||
+                      scenario === 'storage read failure'
+                    ? expect.stringMatching(/storage is unreadable/)
+                    : expect.stringMatching(
+                        new RegExp(
+                          scenario === 'cancelled' ? 'cancelled' : 'failed',
+                        ),
+                      );
+              expect(result).toMatchObject({
+                ok: true,
+                run: {
+                  status: 'failure',
+                  error: expectedError,
+                },
+              });
+            }
+            if (
+              scenario === 'storage failure' ||
+              scenario === 'storage recovered' ||
+              scenario === 'storage recovered before response' ||
+              scenario === 'storage read failure' ||
+              scenario === 'slow success'
+            ) {
+              expect(mockedArchiveSingleRepoWorktree).not.toHaveBeenCalled();
+              expect(mockedArchiveMultiRepoWorktree).not.toHaveBeenCalled();
+              if (
+                scenario === 'storage recovered' ||
+                scenario === 'storage recovered before response'
+              ) {
+                await expect(
+                  mockReadSetupWorktrees('workspace-1'),
+                ).resolves.toMatchObject({
+                  authority: 'ok',
+                });
+              }
+            } else {
+              const archive =
+                kind === 'single-repo'
+                  ? mockedArchiveSingleRepoWorktree
+                  : mockedArchiveMultiRepoWorktree;
+              expect(archive).toHaveBeenCalledWith(
+                expect.objectContaining({
+                  worktreeId: 'worktree-new',
+                  retainAsArchivedContainer: false,
+                }),
+              );
+            }
+          } finally {
+            if (deadline) clearRealTimeout(deadline);
+            await jest.advanceTimersByTimeAsync(600_000);
+            await run;
+          }
+        },
+      );
+    },
+  );
+
   it('removes automation worktrees when deferred git setup fails', async () => {
     const createdAt = '2026-05-28T12:00:00.000Z';
     mockedCreateSingleRepoWorktree.mockImplementationOnce((options) => {
@@ -10554,6 +10808,11 @@ describe('AutomationsService', () => {
         projectId: options.workspaceId,
         worktreeId: 'worktree-send-failed',
         branchName: 'worktree-send-failed',
+      });
+      options.onGitSetupSettled?.({
+        projectId: options.workspaceId,
+        worktreeId: 'worktree-send-failed',
+        outcome: 'ready',
       });
       return Promise.resolve({
         id: 'worktree-send-failed',

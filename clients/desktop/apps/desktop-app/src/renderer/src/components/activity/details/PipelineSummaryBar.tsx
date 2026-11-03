@@ -4,7 +4,8 @@ import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import { buildEventInputs } from '@/lib/pipelineDetailsView';
 import { ChevronIcon, HookIcon } from '@canopy/ui-shared/icons';
 import { PipelineTimer } from '../PipelineTimer';
-import { getPipelineExecutionStatusBadgeClassName } from '../utils';
+import { Badge, Fact, FactList } from '@canopy/ui-shared/components';
+import { pipelineStatusBadge } from '../utils';
 import { KeyValueTable } from './PipelineStepDetailParts';
 import { Button } from '@canopy/ui-shared/components';
 
@@ -39,21 +40,6 @@ function SummaryField({
       >
         {children}
       </div>
-    </div>
-  );
-}
-
-function DetailRow({
-  label,
-  children,
-}: {
-  label: string;
-  children: JSX.Element | string;
-}): JSX.Element {
-  return (
-    <div className="min-w-0">
-      <div className="text-3xs font-medium fg-secondary">{label}</div>
-      <div className="mt-0.5 break-words text-s fg-primary/80">{children}</div>
     </div>
   );
 }
@@ -101,18 +87,8 @@ export function PipelineSummaryBar({
       >
         <SummaryField label="Status">
           <span className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-3xs font-medium ${getPipelineExecutionStatusBadgeClassName(
-                state.status,
-              )}`}
-            >
-              {state.status}
-            </span>
-            {planUpdated && (
-              <span className="whitespace-nowrap rounded-full bg-info-subtle px-2 py-0.5 text-3xs font-medium fg-info">
-                Plan updated
-              </span>
-            )}
+            <Badge {...pipelineStatusBadge(state.status)}>{state.status}</Badge>
+            {planUpdated && <Badge tone="info">Plan updated</Badge>}
           </span>
         </SummaryField>
         <SummaryField label="Duration">
@@ -150,42 +126,44 @@ export function PipelineSummaryBar({
       </Button>
 
       {expanded && (
-        <div className="mt-3 space-y-3 border-t pt-3">
-          <DetailRow label="Trigger">{state.event_name ?? 'unknown'}</DetailRow>
-          <DetailRow label="Working directory">
-            <span className="break-words font-mono text-xs fg-primary/80">
+        <div className="mt-3 border-t pt-3">
+          <FactList
+            layout="stacked"
+            size="s"
+            rowGap="3"
+            labelTone="secondary"
+            dataTestId="pipeline-summary-details"
+          >
+            <Fact label="Trigger">{state.event_name ?? 'unknown'}</Fact>
+            <Fact label="Working directory" mono>
               {state.cwd}
-            </span>
-          </DetailRow>
-          {hookTrigger && (
-            <DetailRow label="Triggered by hook">
-              <span className="inline-flex items-center gap-1.5">
+            </Fact>
+            {hookTrigger && (
+              <Fact label="Triggered by hook" fit="inline">
                 <HookIcon width={13} height={13} className="fg-secondary/80" />
-                {hookTrigger.hook_label} ·{' '}
-                {formatTimingTimestamp(hookTrigger.triggered_at)}
-              </span>
-            </DetailRow>
-          )}
-          {state.pipeline_snapshot.description && (
-            <DetailRow label="Description">
-              {state.pipeline_snapshot.description}
-            </DetailRow>
-          )}
-          <DetailRow label="Workflow ID">
-            <span className="break-words font-mono text-xs fg-primary/80">
+                <span>
+                  {hookTrigger.hook_label} ·{' '}
+                  {formatTimingTimestamp(hookTrigger.triggered_at)}
+                </span>
+              </Fact>
+            )}
+            {state.pipeline_snapshot.description && (
+              <Fact label="Description">
+                {state.pipeline_snapshot.description}
+              </Fact>
+            )}
+            <Fact label="Workflow ID" mono>
               {state.pipeline_id}
-            </span>
-          </DetailRow>
-          <DetailRow label="Execution ID">
-            <span className="break-words font-mono text-xs fg-primary/80">
+            </Fact>
+            <Fact label="Execution ID" mono>
               {state.id}
-            </span>
-          </DetailRow>
-          {eventInputEntries.length > 0 && (
-            <DetailRow label="Event inputs">
-              <KeyValueTable values={eventInputs} />
-            </DetailRow>
-          )}
+            </Fact>
+            {eventInputEntries.length > 0 && (
+              <Fact label="Event inputs">
+                <KeyValueTable values={eventInputs} />
+              </Fact>
+            )}
+          </FactList>
         </div>
       )}
     </div>

@@ -1,12 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type {
   MarketplaceSourcesClient,
   MarketplaceSourceAddCompletion,
 } from '@canopy/app-core/client';
 import { useMarketplaceSourceAdd } from '@canopy/app-state';
-import { Button, DialogModal } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogFormField,
+  DialogModal,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import { MarketplaceSourceAddPreview } from './MarketplaceSourceAddPreview';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -30,6 +35,7 @@ export function MarketplaceSourceAddDialog({
   onComplete,
 }: MarketplaceSourceAddDialogProps): JSX.Element | null {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const repoInputId = useId();
   const closing = useRef(false);
   const [repoInput, setRepoInput] = useState(initialInput);
   const binding = useMarketplaceSourceAdd(client, onComplete);
@@ -80,7 +86,7 @@ export function MarketplaceSourceAddDialog({
       trapFocus
       initialFocusRef={inputRef}
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-1">
+      <div className="flex flex-col gap-4">
         {phase === 'complete' && !binding.completionWarning && (
           <p role="status" className="text-s fg-secondary">
             Marketplace added. Refreshing the list…
@@ -95,14 +101,17 @@ export function MarketplaceSourceAddDialog({
                 ? `${ADD_SOURCE_LEAD} You can also use a skills repository or a skills.sh link. Preview the contents, then confirm the revision.`
                 : `${ADD_SOURCE_LEAD} The repository is checked for Claude and Codex plugins when you add it.`}
             </p>
-            <label className="block text-s">
-              <span className="mb-1.5 block fg-secondary">
-                {session.inputKind === 'github-or-skills'
+            <DialogFormField
+              label={
+                session.inputKind === 'github-or-skills'
                   ? 'Repository or skills.sh URL'
-                  : 'Repository'}
-              </span>
-              <input
+                  : 'Repository'
+              }
+              htmlFor={repoInputId}
+            >
+              <TextInput
                 ref={inputRef}
+                id={repoInputId}
                 type="text"
                 value={repoInput}
                 disabled={review !== null || busy}
@@ -118,10 +127,9 @@ export function MarketplaceSourceAddDialog({
                   }
                 }}
                 placeholder="owner/repo or https://github.com/owner/repo"
-                className="w-full rounded-lg border bg-base px-3 py-2 text-s focus:outline-none focus-visible:ring-2 focus-visible:ring-line-accent disabled:opacity-60"
                 data-testid="cloud-marketplace-add-input"
               />
-            </label>
+            </DialogFormField>
           </>
         )}
 
@@ -150,7 +158,7 @@ export function MarketplaceSourceAddDialog({
                 onClick={() => void session.retryPreview()}
                 data-testid="cloud-marketplace-preview-retry"
               >
-                Retry preview
+                Try again
               </Button>
             )}
           {phase !== 'complete' && (
@@ -188,7 +196,7 @@ export function MarketplaceSourceAddDialog({
                   disabled={busy}
                   data-testid="cloud-marketplace-preview-retry"
                 >
-                  {phase === 'previewing' ? 'Previewing…' : 'Retry preview'}
+                  {phase === 'previewing' ? 'Previewing…' : 'Try again'}
                 </Button>
               ) : (
                 <Button

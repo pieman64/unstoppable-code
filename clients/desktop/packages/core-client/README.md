@@ -235,6 +235,47 @@ within a 5 s cleanup window before release; late clients are disposed. The ports
 stand in for CAN-3766 (C5) and CAN-3852 (C2c); this package supplies no host spawn,
 file-writing, or lock implementation. Real binding/adoption/fault injection is CAN-3729.
 
+### W5 startup handoff (GB12, CAN-5543)
+
+The contract the desktop flip launch and the CLI cutover (CAN-5533 C4) share.
+Later lanes conform to it and extend it only additively. Nothing in production
+turns it on yet.
+
+- `daemon.w5Host` (or `w5Host` on `createCanopyDaemonHostLaunch`) appends
+  `--w5-host v1` to a spawn. Callers still may not pass the switch in `args`.
+- `beforeSpawn: { timeoutMs, run }` runs once, only on the spawn path: after the
+  startup claim is held, which the child then adopts, and before `spawnDaemon`.
+  The launch deadline stops while it runs under its own budget; caller abort
+  still applies. A failure spawns nothing. The claim is released only after
+  `run` settles, even when its budget expired first. Windows has no claim, so
+  it refuses the hook `capability_unavailable`.
+- `probeCanopyDaemon` classifies the descriptor and connects to a live daemon
+  through the caller's `connect`, which must not lease, so the daemon's idle
+  grace keeps running. It returns `absent`, `stale`, `incompatible`,
+  `unreachable` or `live` with the value, which the caller closes.
+- `CanopyDaemonDeadline` lets hosts share a monotonic budget and caller abort
+  across discovery and post-connect capability queries. Pass its signal and
+  remaining budget to the probe and queries; dispose it in `finally`. Hosts
+  still own client cleanup, including values returned after the budget ends.
+- `classifyCanopyDaemonCapability` is pure. It takes the operations the host
+  needs (its definition maps fit), the effective manifest, the lease-free
+  `manifest.get` operations, and optionally `health.get` checks. Calls carry no
+  operation version, so the `manifest.get` versions are required. It accepts
+  when every needed operation is served at a matching version, even if the
+  runtime is `degraded`. It refuses `version_skew` when only some are served
+  or a version differs. When none is served, it refuses `writer_held` if the
+  `core.daemon.w5-commit-log` check reports `writer_unavailable`, and otherwise
+  returns `wait`.
+- `waitForCanopyDaemonRelease` re-reads only the descriptor until the refused
+  PID and start identity stop publishing. It returns whatever replaced them,
+  for the caller to probe again. At its bound (default 45 s: a 30 s idle grace,
+  the stop, and slack) it refuses `peer_held`.
+- Refusals are `CanopyClientError`s with `details.refusal` from
+  `CANOPY_DAEMON_REFUSALS`; read one with `canopyDaemonRefusal`. Each is
+  `failed_precondition`, so a launcher `attach` never retries it, except
+  `exited_before_ready`, which keeps the launcher's existing `unavailable`
+  failure and now carries the tag.
+
 ## Client lease (`createCanopyClientLease`)
 
 One owner per logical client; the host owns clients, `attach`, eviction and

@@ -13,6 +13,7 @@ import {
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { HeaderActionButton } from './HeaderActionButton';
 import { SearchBar } from './SearchBar';
+import { ErrorBanner } from './StatusBlocks';
 
 /** Which focused surface the floating find bar searches. */
 export type FindSurfaceMode =
@@ -286,18 +287,12 @@ export function FindInSurfaceBar({
         />
       </div>
       {error ? (
-        <div
-          role="alert"
-          className="flex items-center gap-2 px-2 pb-0.5 text-xs fg-destructive"
-          data-testid="surface-find-error"
-        >
-          <span className="min-w-0 flex-1 truncate">{error.message}</span>
-          {error.onRetry ? (
-            <HeaderActionButton tone="neutral" onClick={error.onRetry}>
-              Retry
-            </HeaderActionButton>
-          ) : null}
-        </div>
+        <ErrorBanner
+          className="mx-1 mb-1"
+          error={error.message}
+          onRetry={error.onRetry}
+          testId="surface-find-error"
+        />
       ) : null}
     </div>
   );

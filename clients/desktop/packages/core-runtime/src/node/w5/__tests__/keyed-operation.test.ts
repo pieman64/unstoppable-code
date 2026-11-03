@@ -9,6 +9,7 @@ import type { W5ReservationInput } from '../commit-log-file-store';
 import {
   admitLifecycleJournals,
   createW5KeyedOperationRunner,
+  type W5AttemptHold,
   type W5KeyedAttempt,
   type W5KeyedOperationInput,
   type W5ReceiptStore,
@@ -288,11 +289,50 @@ describe('admission', () => {
     await expect(
       run(refused, { admit: () => Promise.reject(failure) }, work),
     ).rejects.toBe(failure);
-    expect(refused.calls).toEqual(['lookup']);
+    expect(refused.calls).toEqual(['lookup', 'lookup']);
     expect(work).not.toHaveBeenCalled();
   });
 
-  it('swallows a replay observer failure at both replay returns', async () => {
+  it('holds from the reservation through the work and its failure handling, never during admission', async () => {
+    const store = fakeStore();
+    const hold = <R>(work: () => Promise<R>): Promise<R> => {
+      store.calls.push('hold');
+      return work().finally(() => store.calls.push('released'));
+    };
+    const admit = (): Promise<void> => {
+      store.calls.push('admit');
+      return Promise.resolve();
+    };
+    await expect(
+      run(store, { hold, admit }, () => {
+        store.calls.push('work');
+        return Promise.reject(new Error('failed'));
+      }),
+    ).rejects.toThrow('failed');
+    expect(store.calls).toEqual([
+      'lookup',
+      'admit',
+      'hold',
+      'reserve',
+      'work',
+      'recovery',
+      'released',
+    ]);
+
+    const refused = fakeStore();
+    await expect(
+      run(refused, {
+        hold: <R>(work: () => Promise<R>): Promise<R> => {
+          refused.calls.push('hold');
+          return work();
+        },
+        admit: () => Promise.reject(new Error('stale')),
+      }),
+    ).rejects.toThrow('stale');
+    expect(refused.calls).toEqual(['lookup', 'lookup']);
+  });
+
+  it('swallows a replay observer failure at every replay return', async () => {
     const onReplay = jest.fn(() => {
       throw new Error('observer failed');
     });
@@ -310,11 +350,122 @@ describe('admission', () => {
       new W5CommitRefusedError('in-progress', 'Already reserved.'),
     );
     await expect(run(racing, { onReplay })).resolves.toEqual({ id: 'winner' });
-    expect(onReplay).toHaveBeenCalledTimes(2);
+    await expect(
+      run(
+        fakeStore(
+          { status: 'none' },
+          {
+            status: 'replay',
+            commitId: 3,
+            outcome: { id: 'admission-winner' },
+          },
+        ),
+        { admit: () => Promise.reject(new Error('state changed')), onReplay },
+      ),
+    ).resolves.toEqual({ id: 'admission-winner' });
+    expect(onReplay).toHaveBeenCalledTimes(3);
   });
 });
 
 describe('reservation races', () => {
+  it('replays a racing winner when mutable admission fails, without holding or reserving', async () => {
+    const store = fakeStore(
+      { status: 'none' },
+      { status: 'replay', commitId: 2, outcome: { id: 'winner' } },
+    );
+    const work = jest.fn(() => Promise.resolve({ id: 'fresh' }));
+    const onHold = jest.fn();
+    const hold: W5AttemptHold = <R>(work: () => Promise<R>): Promise<R> => {
+      onHold();
+      return work();
+    };
+    const onReplay = jest.fn();
+    await expect(
+      run(
+        store,
+        {
+          admit: () => Promise.reject(new Error('state changed')),
+          hold,
+          onReplay,
+        },
+        work,
+      ),
+    ).resolves.toEqual({ id: 'winner' });
+    expect(onReplay).toHaveBeenCalledTimes(1);
+    expect(onHold).not.toHaveBeenCalled();
+    expect(work).not.toHaveBeenCalled();
+    expect(store.calls).toEqual(['lookup', 'lookup']);
+  });
+
+  it.each([
+    [{ status: 'key-reused' }, 'key-reused'],
+    [{ status: 'replay-expired', commitId: 2 }, 'outcome-expired'],
+    [{ status: 'in-progress', reservationId: 'other' }, 'in-progress'],
+    [
+      { status: 'commit-recovery-required', commitId: 2, diagnostics: null },
+      'recovery-required',
+    ],
+    [
+      {
+        status: 'recovery-required',
+        reservationId: 'other',
+        diagnostics: null,
+      },
+      'recovery-required',
+    ],
+  ] satisfies Array<[W5ReceiptLookup, string]>)(
+    'reclassifies a failed admission through a racing %s receipt',
+    async (lookup, reason) => {
+      const store = fakeStore({ status: 'none' }, lookup);
+      const work = jest.fn(() => Promise.resolve({ id: 'fresh' }));
+      await expect(
+        run(
+          store,
+          { admit: () => Promise.reject(new Error('state changed')) },
+          work,
+        ),
+      ).rejects.toMatchObject({ reason });
+      expect(work).not.toHaveBeenCalled();
+      expect(store.calls).toEqual(['lookup', 'lookup']);
+    },
+  );
+
+  it('does not run work when a racing admission-failure replay cannot be decoded', async () => {
+    const store = fakeStore(
+      { status: 'none' },
+      { status: 'replay', commitId: 2, outcome: 'invalid' },
+    );
+    const work = jest.fn(() => Promise.resolve({ id: 'fresh' }));
+    await expect(
+      run(
+        store,
+        { admit: () => Promise.reject(new Error('state changed')) },
+        work,
+      ),
+    ).rejects.toThrow('Unexpected outcome');
+    expect(work).not.toHaveBeenCalled();
+    expect(store.calls).toEqual(['lookup', 'lookup']);
+  });
+
+  it('fails closed when the admission-failure receipt recheck is unavailable', async () => {
+    const store = fakeStore();
+    const unavailable = new Error('worker unavailable');
+    store.lookupReceipt.mockResolvedValueOnce({ status: 'none' });
+    store.lookupReceipt.mockRejectedValueOnce(unavailable);
+    const work = jest.fn(() => Promise.resolve({ id: 'fresh' }));
+    await expect(
+      run(
+        store,
+        { admit: () => Promise.reject(new Error('state changed')) },
+        work,
+      ),
+    ).rejects.toBe(unavailable);
+    expect(work).not.toHaveBeenCalled();
+    expect(store.reserve).not.toHaveBeenCalled();
+    expect(store.releaseReservation).not.toHaveBeenCalled();
+    expect(store.markReservationRecoveryRequired).not.toHaveBeenCalled();
+  });
+
   it('replays a racing winner after a reserve refusal without running the work', async () => {
     const store = fakeStore(
       { status: 'none' },

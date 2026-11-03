@@ -1,5 +1,6 @@
 import { type JSX, useState } from 'react';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
+import { TextArea } from '@canopy/ui-shared/components';
 import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
 import { ActionTooltip } from '@/components/shared/ActionTooltip';
@@ -196,16 +197,14 @@ export function KeyValueEditor({
                   disabled={readonly}
                 />
               ) : (
-                <textarea
+                <TextArea
+                  mono
+                  aria-label={`Value for ${key}`}
                   value={String(val)}
                   onChange={(e) => updateValue(key, e.target.value)}
                   placeholder="Value"
                   rows={2}
                   disabled={readonly}
-                  className={`w-full px-3 py-2 text-s bg-base border rounded-md
- fg-primary placeholder:fg-secondary font-mono
- focus:outline-none focus:ring-2 focus:ring-line-accent/50 focus:border-line-accent
- transition-colors resize-y min-h-15 ${readonly ? 'opacity-70 cursor-not-allowed' : ''}`}
                 />
               )}
             </div>

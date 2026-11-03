@@ -10,7 +10,10 @@ import {
 import type * as monaco from 'monaco-editor';
 import { CheckIcon } from '@canopy/ui-shared/icons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { LoadingPlaceholder } from '@/components/shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { configureMonaco } from '@/lib/monaco-setup';
 import {
   consumePendingEditorRangeReveal,
@@ -503,7 +506,11 @@ export function MonacoFileEditor({
         language={language}
         value={value}
         theme={isDark ? 'vs-dark' : 'vs'}
-        loading={<LoadingPlaceholder />}
+        loading={
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
+        }
         onChange={(next) => onChange(next ?? '')}
         onMount={(editor, monacoApi: typeof monaco) => {
           editorRef.current = editor;

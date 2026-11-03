@@ -1,7 +1,11 @@
 'use client';
 
 import { useId, type JSX, type ReactNode } from 'react';
-import { HomeSection, SuggestionRow } from '@canopy/ui-shared';
+import {
+  HomeSection,
+  SuggestionRow,
+  SuggestionRowTrailing,
+} from '@canopy/ui-shared';
 import { Button } from '@canopy/ui-shared/components';
 import {
   ApprovalAskIcon,
@@ -283,8 +287,7 @@ export function ContinueSection({
                 </span>
               )}
             </SuggestionRow>
-            {/* 16px in, under the section header's •••. */}
-            <div className="absolute right-4 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1">
+            <SuggestionRowTrailing>
               {interruptedSession?.onOpen ? (
                 <Button
                   type="button"
@@ -307,7 +310,7 @@ export function ContinueSection({
               >
                 <CloseMediumIcon width={14} height={14} />
               </Button>
-            </div>
+            </SuggestionRowTrailing>
           </li>
         ) : null}
         {model.needsInput.map((item) => (

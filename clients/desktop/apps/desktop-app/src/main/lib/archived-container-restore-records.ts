@@ -4,6 +4,7 @@ import {
   applyArchiveRestoreRemovalDecision,
 } from './archived-container-restore-decision-port';
 import { IdentifierValidationError, validateId } from './validation';
+import { w5NamedUnreadable } from './w5-file-store';
 import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
 import type {
   ArchiveRestoreRecordDecision,
@@ -180,9 +181,12 @@ async function stageRestoredWorktree(
     );
   } catch (error) {
     if (error instanceof WorktreeRegistryUnreadableError) {
+      const named = w5NamedUnreadable(error.cause);
       throw refuse(
         'worktrees-unavailable',
-        `The worktree list could not be fully read, so staged recovery worktree ${id} was not recorded; the archived container was preserved.`,
+        named
+          ? `${named.message} Staged recovery worktree ${id} was not recorded; the archived container was preserved.`
+          : `The worktree list could not be fully read, so staged recovery worktree ${id} was not recorded; the archived container was preserved.`,
       );
     }
     throw error;

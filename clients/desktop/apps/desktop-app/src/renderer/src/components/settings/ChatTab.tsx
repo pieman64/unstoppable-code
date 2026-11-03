@@ -329,6 +329,7 @@ function ProviderRow({
     : provider;
   const hasModels = models.length > 0;
   const radioDisabled = disabled || selection === null;
+  const radioId = `chat-defaults-radio-${radioName}-${provider}`;
 
   const effectiveModel = selection?.model ?? '';
   const effectiveThinking = selection?.thinkingLevel ?? 'high';
@@ -423,104 +424,111 @@ function ProviderRow({
     <div
       data-testid={`chat-defaults-row-${provider}`}
       data-lane-dimmed={dimmed ? 'true' : 'false'}
-      className={`flex min-h-10 items-center justify-between gap-6${
-        dimmed ? ' opacity-60' : ''
-      }`}
+      className={dimmed ? 'opacity-60' : undefined}
     >
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <label className="flex min-w-0 items-center gap-2.5 text-s font-medium fg-primary">
-          {isCreditsRow ? (
-            // No radio: the credits lane is not an `AgentProviderType`, so it can
-            // never be `defaultProvider`. It is reached by lane resolution when
-            // no native subscription can pay, and configured here.
-            <span aria-hidden="true" className="size-4 shrink-0" />
-          ) : (
-            <Radio
-              name={radioName}
-              checked={isDefault}
-              disabled={radioDisabled}
-              onChange={(): void => onSelectDefault()}
-            />
-          )}
-          {PROVIDER_LABELS[provider]}
-        </label>
-        {reason && (
-          <div
-            data-testid={`chat-defaults-reason-${provider}`}
-            className="text-xs text-pretty fg-secondary"
-          >
-            {reason}
-          </div>
-        )}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="inline-flex w-36">
-          <SettingsSelect
-            width="fill"
-            data-testid={`chat-defaults-model-${provider}`}
-            options={modelOptions}
-            value={effectiveModel}
-            disabled={disabled || !hasModels}
-            onValueChange={(value): void => {
-              if (!value) {
-                onChangeSelection(null);
-                return;
-              }
-              // Leaving a visible Sol Low saves the level the row then shows,
-              // so no hidden `low` reaches new chats on the next model.
-              const clampedThinking =
-                exposeSolLow &&
-                effectiveThinking === 'low' &&
-                value !== SOL_LOW_MODEL
-                  ? getThinkingUiValueForProvider(
-                      'low',
-                      'high',
-                      thinkingProvider,
-                      value,
-                    )
-                  : isCreditsRow
+      <SettingsRow
+        htmlFor={isCreditsRow ? undefined : radioId}
+        label={
+          <span className="flex min-w-0 items-center gap-2.5">
+            {isCreditsRow ? (
+              // No radio: the credits lane is not an `AgentProviderType`, so it
+              // can never be `defaultProvider`. It is reached by lane
+              // resolution when no native subscription can pay, and
+              // configured here.
+              <span aria-hidden="true" className="size-4 shrink-0" />
+            ) : (
+              <Radio
+                id={radioId}
+                name={radioName}
+                checked={isDefault}
+                disabled={radioDisabled}
+                onChange={(): void => onSelectDefault()}
+              />
+            )}
+            {PROVIDER_LABELS[provider]}
+          </span>
+        }
+        description={
+          reason ? (
+            <span data-testid={`chat-defaults-reason-${provider}`}>
+              {reason}
+            </span>
+          ) : undefined
+        }
+        control={
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="inline-flex w-36">
+              <SettingsSelect
+                width="fill"
+                data-testid={`chat-defaults-model-${provider}`}
+                options={modelOptions}
+                value={effectiveModel}
+                disabled={disabled || !hasModels}
+                onValueChange={(value): void => {
+                  if (!value) {
+                    onChangeSelection(null);
+                    return;
+                  }
+                  // Leaving a visible Sol Low saves the level the row then shows,
+                  // so no hidden `low` reaches new chats on the next model.
+                  const clampedThinking =
+                    exposeSolLow &&
+                    effectiveThinking === 'low' &&
+                    value !== SOL_LOW_MODEL
+                      ? getThinkingUiValueForProvider(
+                          'low',
+                          'high',
+                          thinkingProvider,
+                          value,
+                        )
+                      : isCreditsRow
+                        ? effectiveThinking
+                        : normalizeThinkingForProvider(
+                            effectiveThinking,
+                            provider,
+                          );
+                  onChangeSelection({
+                    model: value,
+                    thinkingLevel: clampedThinking,
+                  });
+                }}
+              />
+            </span>
+            <span className="inline-flex w-36">
+              <SettingsSelect
+                width="fill"
+                data-testid={`chat-defaults-thinking-${provider}`}
+                options={thinkingSelectOptions}
+                value={
+                  selectedModelUnavailable
                     ? effectiveThinking
-                    : normalizeThinkingForProvider(effectiveThinking, provider);
-              onChangeSelection({
-                model: value,
-                thinkingLevel: clampedThinking,
-              });
-            }}
-          />
-        </span>
-        <span className="inline-flex w-36">
-          <SettingsSelect
-            width="fill"
-            data-testid={`chat-defaults-thinking-${provider}`}
-            options={thinkingSelectOptions}
-            value={
-              selectedModelUnavailable
-                ? effectiveThinking
-                : exposeSolLow && effectiveThinking === 'low'
-                  ? 'low'
-                  : getThinkingUiValueForProvider(
-                      effectiveThinking,
-                      'high',
-                      thinkingProvider,
-                      selection?.model,
-                    )
-            }
-            disabled={
-              disabled || selection === null || selectedModelUnavailable
-            }
-            onValueChange={(next): void => {
-              if (!selection) return;
-              onChangeSelection({
-                ...selection,
-                thinkingLevel: getSelectedThinkingLevel(
-                  next,
-                  selection.thinkingLevel,
-                ),
-              });
-            }}
-          />
-        </span>
-      </div>
+                    : exposeSolLow && effectiveThinking === 'low'
+                      ? 'low'
+                      : getThinkingUiValueForProvider(
+                          effectiveThinking,
+                          'high',
+                          thinkingProvider,
+                          selection?.model,
+                        )
+                }
+                disabled={
+                  disabled || selection === null || selectedModelUnavailable
+                }
+                onValueChange={(next): void => {
+                  if (!selection) return;
+                  onChangeSelection({
+                    ...selection,
+                    thinkingLevel: getSelectedThinkingLevel(
+                      next,
+                      selection.thinkingLevel,
+                    ),
+                  });
+                }}
+              />
+            </span>
+          </div>
+        }
+      />
     </div>
   );
 }

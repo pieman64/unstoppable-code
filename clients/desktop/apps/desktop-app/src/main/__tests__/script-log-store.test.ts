@@ -326,7 +326,6 @@ describe('script-log-store', () => {
         response: {
           success: true,
           exitCode: 0,
-          output: '',
           timedOut: false,
           durationMs: 42,
         },
@@ -366,7 +365,6 @@ describe('script-log-store', () => {
       response: {
         success: false,
         exitCode: 1,
-        output: 'stale',
         timedOut: false,
         durationMs: 1,
       },
@@ -721,7 +719,6 @@ describe('script-log-store', () => {
         response: {
           success: false,
           exitCode: 3,
-          output: '',
           timedOut: false,
           durationMs: 5,
         },

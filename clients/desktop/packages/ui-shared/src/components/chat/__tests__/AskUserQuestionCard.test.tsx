@@ -563,12 +563,24 @@ describe('AskUserQuestionCard', () => {
     expect(container.textContent).not.toContain('p@ss');
   });
 
-  it('gives every option label and action button a coarse-pointer touch target and no hover-only gating', () => {
+  it('gives every option row and action button a coarse-pointer touch target and no hover-only gating', () => {
     mount(singleSelect);
+    // Each option is a `ChoiceField` label that is itself the padded,
+    // touch-sized row, so a click anywhere on the row selects it; the letter
+    // hint sits inside the label, so clicking it selects the option too.
     const labels = Array.from(container.querySelectorAll('label'));
     expect(labels.length).toBeGreaterThan(0);
     for (const el of labels) {
       expect(el.className).toContain('pointer-coarse:min-h-11');
+      expect(el.className).toContain('py-2');
+      expect(el.className).toContain('w-full');
+    }
+    for (const hint of Array.from(
+      container.querySelectorAll(
+        '[data-testid="ask-user-question-choice-shortcut"]',
+      ),
+    )) {
+      expect(hint.closest('label')).not.toBeNull();
     }
     // Shared header action keeps a 28px visual height and expands its coarse hit area to 44px.
     for (const button of [submitBtn(), dismissBtn()]) {

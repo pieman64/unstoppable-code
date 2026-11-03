@@ -1,5 +1,10 @@
 import { useState, type JSX, type ReactNode } from 'react';
-import { Checkbox, ChoiceMark, Radio } from '@canopy/ui-shared/components';
+import {
+  Checkbox,
+  ChoiceField,
+  ChoiceMark,
+  Radio,
+} from '@canopy/ui-shared/components';
 
 /**
  * The shared `Checkbox`, `Radio`, and `ChoiceMark` (question forms lab,
@@ -65,19 +70,18 @@ function Rows({ multi }: { multi: boolean }): JSX.Element {
           : [...current, label]
         : [label],
     );
-  const Control = multi ? Checkbox : Radio;
   return (
     <div className="-mx-2 flex flex-col gap-0.5">
       {ROW_LABELS.map((label) => (
-        <label key={label} className={ROW_CLASS}>
-          <Control
-            className="mt-0.5"
+        <div key={label} className={ROW_CLASS}>
+          <ChoiceField
+            kind={multi ? 'checkbox' : 'radio'}
+            label={label}
             name={multi ? undefined : 'lab-radio-rows'}
             checked={picked.includes(label)}
             onChange={() => toggle(label)}
           />
-          <span className="min-w-0">{label}</span>
-        </label>
+        </div>
       ))}
     </div>
   );

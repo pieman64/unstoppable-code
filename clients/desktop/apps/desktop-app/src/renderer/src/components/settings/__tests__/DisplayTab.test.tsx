@@ -443,11 +443,6 @@ describe('DisplayTab project layout default', () => {
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
         "Couldn't save project layout setting.",
       );
-      expect(
-        container
-          .querySelector('[role="alert"]')
-          ?.classList.contains('fg-destructive'),
-      ).toBe(true);
     } finally {
       cleanup();
     }
@@ -750,7 +745,7 @@ describe('DisplayTab chat area data enrichment', () => {
         '[data-testid="chat-enrichment-how-it-works"]',
       )?.textContent;
       expect(explanation).toContain(
-        'Show titles and icons in chat, with previews on hover or focus.',
+        'Show links with icons, IDs and Linear titles, with previews on hover or focus.',
       );
       expect(explanation).toContain(
         'Keep the original text and add links with previews on hover or focus.',
@@ -827,7 +822,6 @@ describe('DisplayTab chat area data enrichment', () => {
       expect(alert?.textContent).toBe(
         'Could not save this setting. Try again.',
       );
-      expect(alert?.classList.contains('fg-destructive')).toBe(true);
       expect(
         container.querySelector(
           '[data-testid="linear-chat-enrichment-row"] [role="alert"]',

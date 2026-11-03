@@ -22,8 +22,10 @@ import {
   reduceQuestionPlayground,
   type PlaygroundPhase,
 } from '@/components/pages/chatQuestionPlaygroundData';
+import { ChoiceField } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import { ChoiceOptionsLab } from './ChoiceOptionsLab';
+import { LabComposerReplicaInput } from './LabComposerReplicaInput';
 import { FieldOptionsLab } from './FieldOptionsLab';
 
 /**
@@ -234,14 +236,13 @@ export function QuestionFormsLabPage(): JSX.Element {
                   Start again
                 </Button>
               </div>
-              <label className="flex items-center gap-2 px-2 text-xs fg-secondary">
-                <input
-                  type="checkbox"
+              <div className="px-2">
+                <ChoiceField
+                  label="Resolve automatically"
                   checked={autoResolve}
                   onChange={(event) => setAutoResolve(event.target.checked)}
                 />
-                Resolve automatically
-              </label>
+              </div>
             </LabSection>
           </>
         )}
@@ -350,7 +351,7 @@ export function QuestionFormsLabPage(): JSX.Element {
                     open ? COMPACT_EDITOR_CLASS : 'min-h-22 px-4 pb-12 pt-3'
                   }
                 >
-                  <input
+                  <LabComposerReplicaInput
                     aria-label="Message"
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}

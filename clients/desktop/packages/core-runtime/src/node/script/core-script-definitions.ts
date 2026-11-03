@@ -8,21 +8,19 @@ import type {
   CoreScriptSourceLayer,
   CoreScriptTarget,
 } from '@canopy/protocol/canopy-core';
-import type { ScriptValue } from '@canopy/protocol/scripts';
+import { normalizeScriptInputMap } from '@canopy/protocol/scripts';
 import { CanopyOperationError } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
 import {
   listCoreScriptDefinitions,
   resolveLocalScriptMap,
   toCoreScriptDefinition,
+  type CoreScriptLocalChange,
   type ResolvedScriptMap,
   type ScriptSourceMap,
 } from './definitions';
 
-/** A change to one script in a target's own settings. */
-export type CoreScriptLocalChange =
-  | { kind: 'set'; name: string; value: ScriptValue }
-  | { kind: 'remove'; name: string };
+export type { CoreScriptLocalChange } from './definitions';
 
 /**
  * The host reads script sources with the precedence in `./definitions` and
@@ -32,6 +30,11 @@ export type CoreScriptLocalChange =
 export interface CoreScriptDefinitionsHost {
   resolve(target: CoreScriptTarget): Promise<ResolvedScriptMap>;
   readLocal(target: CoreScriptTarget): Promise<ScriptSourceMap | undefined>;
+  /**
+   * The revision a change to the target's own settings checks, when the host
+   * keeps one.
+   */
+  localRevision(target: CoreScriptTarget): Promise<number | undefined>;
   /** One script's resolution and every layer that defines it, in one read. */
   inspect(
     target: CoreScriptTarget,
@@ -154,13 +157,25 @@ export function createCoreScriptDefinitionHandlers(
   return {
     queries: {
       'core.script.definition.list': ({ target, layer }) =>
-        run(async () => ({
-          definitions: listCoreScriptDefinitions(
-            layer === 'local'
-              ? resolveLocalScriptMap(await host.readLocal(target))
-              : await host.resolve(target),
-          ),
-        })),
+        run(async () => {
+          if (layer !== 'local') {
+            return {
+              definitions: listCoreScriptDefinitions(
+                await host.resolve(target),
+              ),
+            };
+          }
+          // Read first: a write in between makes it stale, never too new.
+          const revision = await host.localRevision(target);
+          const local = await host.readLocal(target);
+          return {
+            definitions: listCoreScriptDefinitions(
+              resolveLocalScriptMap(local),
+            ),
+            settings: normalizeScriptInputMap(local) ?? {},
+            ...(revision === undefined ? {} : { revision }),
+          };
+        }),
       'core.script.definition.get': ({ target, name }) =>
         run(async () => {
           const { resolved, layers } = await host.inspect(target, name);

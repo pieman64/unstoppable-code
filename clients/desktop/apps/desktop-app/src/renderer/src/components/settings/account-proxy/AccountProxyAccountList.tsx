@@ -31,6 +31,7 @@ import {
   accountProxyAccountDescription,
   accountProxyProviderLabel,
 } from './accountProxyCopy';
+import { ErrorBanner, StatusLabel } from '@canopy/ui-shared/components';
 
 const STATUS_DOT_TONES: Readonly<
   Record<AccountProxyAccountStatus, ProviderStatusDotTone>
@@ -132,7 +133,7 @@ function AccountMenu({
         data-testid={`account-proxy-account-menu-${account.authIndex}`}
         onClick={(): void => setOpen((value) => !value)}
       >
-        <MoreHorizontalIcon size={16} aria-hidden />
+        <MoreHorizontalIcon size="sm" aria-hidden />
       </Button>
       <FloatingMenu
         open={open}
@@ -267,7 +268,7 @@ export function AccountProxyAccountList({
         }
         description={
           account.status === 'error' ? (
-            <span className="fg-destructive">{description}</span>
+            <StatusLabel>{description}</StatusLabel>
           ) : (
             description
           )
@@ -285,7 +286,7 @@ export function AccountProxyAccountList({
         }
         description={
           account.status === 'error' ? (
-            <span className="fg-destructive">{description}</span>
+            <StatusLabel>{description}</StatusLabel>
           ) : (
             description
           )
@@ -300,14 +301,11 @@ export function AccountProxyAccountList({
   return (
     <>
       {rows}
-      {error ? (
-        <p
-          className="text-xs fg-destructive"
-          data-testid="account-proxy-account-error"
-        >
-          {error}
-        </p>
-      ) : null}
+      <ErrorBanner
+        className=""
+        error={error}
+        testId="account-proxy-account-error"
+      />
       {removing ? (
         <DeleteConfirmModal
           title="Remove this account from the proxy?"

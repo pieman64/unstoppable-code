@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { CanopyClientError } from '@canopy/core-client';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
+  BACKGROUND_SERVICE_UNREACHABLE_REASONS,
+  type BackgroundServiceUnreachableReason,
+} from '@canopy/desktop-shared/lib/background-service-status';
+import {
   resetWorkCounters,
   snapshotWorkCounters,
 } from '@canopy/desktop-shared/node/work-counters';
@@ -34,6 +38,7 @@ import {
   isDirectoryEntryName,
   normalizeDaemonFilesError,
 } from '../daemon-files-route';
+import { markUnreachable } from '../electron-daemon-connection';
 import {
   AUTHORITY,
   bridgeCaller,
@@ -646,15 +651,23 @@ describe('typed failures', () => {
     expect(h.direct.roots).not.toHaveBeenCalled();
   });
 
-  it('reports a data root it cannot prepare as unavailable', async () => {
+  it('reads a data root it cannot prepare in-process, and warns (CAN-5541)', async () => {
     h = await createRouteHarness();
+    resetWorkCounters();
     h.hostContext.mockRejectedValueOnce(new Error('EACCES /private/path'));
-    await expect(rejection(h.roots(SINGLE, sender()))).resolves.toEqual({
-      kind: 'unavailable',
-      message: 'The desktop daemon data root could not be prepared.',
-      retry: { kind: 'never' },
-    });
+    const result = await h.roots(SINGLE, sender());
+    expect(result.legacyResult).toEqual(
+      await h.direct.roots.mock.results[0]?.value,
+    );
     expect(h.connections.gets).toHaveLength(0);
+    expect(h.health.getStatus()).toMatchObject({
+      state: 'unavailable',
+      reason: 'host_unavailable',
+    });
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 1,
+      'files.roots.daemon.fallback.host_unavailable': 1,
+    });
   });
 
   it('keeps only the operation codes the operation declares', () => {
@@ -703,6 +716,275 @@ describe('typed failures', () => {
       retry: { kind: 'never' },
     });
     expect(h.direct.directory).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `file-tree:roots` and `file-tree:directory` reads selected for the daemon
+ * (`worker.filesystem.roots.list`, `worker.filesystem.directory.list`) that
+ * can't reach it are answered by the direct reader; a live daemon's refusals
+ * above stay typed.
+ */
+describe('an unreachable daemon falls back (CAN-5541)', () => {
+  /** A connect failure as the connection service tags and reports it. */
+  const unreachableGet =
+    (reason: BackgroundServiceUnreachableReason) => (): Error => {
+      // Its only connection_lost tag: the lease's client dropped, reported first.
+      if (reason === 'connection_lost') h.health.observe({ kind: 'lost' });
+      const failure = markUnreachable(
+        new CanopyClientError({
+          kind: 'failed_precondition',
+          message: 'Core launch failed.',
+          retry: { kind: 'never' },
+        }),
+        reason,
+      );
+      if (!(failure instanceof Error)) throw new Error('Expected an Error.');
+      return failure;
+    };
+  /** The connection closes under a query, as a killed daemon closes it. */
+  const closesUnderQuery = (): Error | null => {
+    h.connections.drop();
+    // The connection service reports the dropped client.
+    h.health.observe({ kind: 'lost' });
+    h.daemon.fail = null;
+    return new CanopyClientError({
+      kind: 'unavailable',
+      message: 'The connection closed.',
+      retry: { kind: 'same_request' },
+    });
+  };
+
+  it.each(BACKGROUND_SERVICE_UNREACHABLE_REASONS)(
+    'answers a %s connect failure in-process, once per read, and warns unless the daemon is restarting',
+    async (reason) => {
+      h = await createRouteHarness();
+      resetWorkCounters();
+      h.connections.fail = unreachableGet(reason);
+      const local = sender();
+      const roots = await h.roots(SINGLE, local);
+      const listed = await h.directory(SINGLE, 'single', '', local);
+      expect(roots.legacyResult).toEqual(
+        await h.direct.roots.mock.results[0]?.value,
+      );
+      expect(listed.legacyResult).toEqual(
+        await h.direct.directory.mock.results[0]?.value,
+      );
+      expect(h.direct.roots).toHaveBeenCalledTimes(1);
+      expect(h.direct.directory).toHaveBeenCalledTimes(1);
+      expect(h.daemon.queries).toHaveLength(0);
+      // A lost connection is a restart in progress until the lease's
+      // reconnect fails; every other reason is a failure to reach it.
+      expect(h.health.getStatus()).toEqual(
+        reason === 'connection_lost'
+          ? expect.objectContaining({ state: 'reconnecting' })
+          : expect.objectContaining({ state: 'unavailable', reason }),
+      );
+      // A start-class failure latches: the next read never asks again.
+      const latched = reason !== 'connection_lost';
+      expect(h.health.isLatched()).toBe(latched);
+      expect(h.connections.gets).toHaveLength(latched ? 1 : 2);
+      expect(snapshotWorkCounters().route).toEqual({
+        'files.roots.daemon': 1,
+        [`files.roots.daemon.fallback.${reason}`]: 1,
+        'files.directory.daemon': 1,
+        [latched
+          ? 'files.directory.daemon.bypassed'
+          : `files.directory.daemon.fallback.${reason}`]: 1,
+      });
+    },
+  );
+
+  it('skips the daemon while latched, and reads through it again once reached', async () => {
+    h = await createRouteHarness();
+    h.health.observe({ kind: 'unreachable', reason: 'start_failed' });
+    resetWorkCounters();
+    await h.roots(SINGLE, sender());
+    expect(h.connections.gets).toHaveLength(0);
+    expect(h.direct.roots).toHaveBeenCalledTimes(1);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 1,
+      'files.roots.daemon.bypassed': 1,
+    });
+    h.health.observe({ kind: 'reached' });
+    resetWorkCounters();
+    await h.roots(SINGLE, sender());
+    expect(h.direct.roots).toHaveBeenCalledTimes(1);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 1,
+      'files.roots.daemon.queries': 1,
+      'files.roots.daemon.served': 1,
+    });
+  });
+
+  it('keeps pre-contact refusals typed while latched', async () => {
+    h = await createRouteHarness();
+    h.health.observe({ kind: 'unreachable', reason: 'start_failed' });
+    await expect(
+      rejection(h.directory(SINGLE, 'single', 'src/../..', sender())),
+    ).resolves.toMatchObject({ kind: 'invalid_argument' });
+    await expect(
+      rejection(
+        h.roots({ workspaceId: 'malformed', worktreeId: 'task' }, sender()),
+      ),
+    ).resolves.toMatchObject({
+      kind: 'failed_precondition',
+      code: 'worker.filesystem.roots.invalidState',
+    });
+    expect(h.direct.roots).not.toHaveBeenCalled();
+    expect(h.direct.directory).not.toHaveBeenCalled();
+    expect(h.connections.gets).toHaveLength(0);
+  });
+
+  it('answers a read whose connection closed under its query in-process, without latching or warning while the daemon restarts', async () => {
+    h = await createRouteHarness();
+    resetWorkCounters();
+    const local = sender();
+    h.daemon.fail = closesUnderQuery;
+    const first = await h.roots(SINGLE, local);
+    expect(first.legacyResult).toEqual(
+      await h.direct.roots.mock.results[0]?.value,
+    );
+    expect(h.health.getStatus()).toMatchObject({ state: 'reconnecting' });
+    expect(h.health.getStatus()).not.toHaveProperty('reason');
+    expect(h.health.isLatched()).toBe(false);
+    // The lease's replacement connection serves the next read.
+    await h.roots(SINGLE, local);
+    expect(h.direct.roots).toHaveBeenCalledTimes(1);
+    expect(h.daemon.queries).toHaveLength(2);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 2,
+      'files.roots.daemon.queries': 2,
+      'files.roots.daemon.fallback.connection_lost': 1,
+      'files.roots.daemon.served': 1,
+    });
+  });
+
+  it('warns once the restart behind a lost connection fails, and skips the daemon after', async () => {
+    h = await createRouteHarness();
+    resetWorkCounters();
+    const local = sender();
+    h.daemon.fail = closesUnderQuery;
+    await h.roots(SINGLE, local);
+    expect(h.health.getStatus()).toMatchObject({ state: 'reconnecting' });
+    // The connection service's report of the lease's failed restart.
+    h.health.observe({ kind: 'unreachable', reason: 'reconnect_failed' });
+    expect(h.health.getStatus()).toMatchObject({
+      state: 'unavailable',
+      reason: 'reconnect_failed',
+    });
+    await h.roots(SINGLE, local);
+    expect(h.direct.roots).toHaveBeenCalledTimes(2);
+    expect(h.daemon.queries).toHaveLength(1);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 2,
+      'files.roots.daemon.queries': 1,
+      'files.roots.daemon.fallback.connection_lost': 1,
+      'files.roots.daemon.bypassed': 1,
+    });
+  });
+
+  it('answers a read whose connection closed after its reply in-process', async () => {
+    h = await createRouteHarness();
+    resetWorkCounters();
+    h.daemon.afterReply = (): Promise<void> => {
+      h.connections.drop();
+      h.daemon.afterReply = null;
+      return Promise.resolve();
+    };
+    await h.directory(SINGLE, 'single', '', sender());
+    expect(h.direct.directory).toHaveBeenCalledTimes(1);
+    expect(snapshotWorkCounters().route).toMatchObject({
+      'files.directory.daemon.fallback.connection_lost': 1,
+    });
+  });
+
+  it.each(['flag', 'document', 'dispose'] as const)(
+    'keeps a lost read typed when the %s ended it',
+    async (cause) => {
+      h = await createRouteHarness();
+      const hold = holdReplies(h.daemon);
+      const local = sender();
+      const read = rejection(h.roots(SINGLE, local));
+      await hold.reached(1, read);
+      h.connections.drop();
+      if (cause === 'flag') h.flag.set(false);
+      else if (cause === 'document') local.destroy();
+      else h.route.dispose();
+      hold.release();
+      expect((await read).kind).toBe('cancelled');
+      expect(h.direct.roots).not.toHaveBeenCalled();
+      expect(h.health.getStatus().state).toBe('ok');
+    },
+  );
+
+  it('keeps an untagged connect failure typed, with nothing to warn about', async () => {
+    h = await createRouteHarness();
+    h.connections.fail = (): Error => new Error('/private/socket refused');
+    await expect(rejection(h.roots(SINGLE, sender()))).resolves.toEqual({
+      kind: 'internal',
+      message: 'The daemon Files read failed.',
+      retry: { kind: 'never' },
+    });
+    expect(h.direct.roots).not.toHaveBeenCalled();
+    expect(h.health.getStatus().state).toBe('ok');
+  });
+
+  it('returns a failed fallback read with the direct error, counting no daemon failure', async () => {
+    h = await createRouteHarness();
+    resetWorkCounters();
+    h.connections.fail = unreachableGet('start_failed');
+    h.direct.directory.mockRejectedValue(
+      new Error('EACCES: permission denied'),
+    );
+    const baseline = h.route.observe().cursor;
+    const fellBack = await rejection(
+      h.directory(SINGLE, 'single', '', sender()),
+    );
+    expect(
+      h.route.observe(baseline).entries.map((event) => event.phase),
+    ).toEqual(['started', 'failed']);
+    h.flag.set(false);
+    expect(
+      await rejection(h.directory(SINGLE, 'single', '', sender())),
+    ).toEqual(fellBack);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.directory.daemon': 1,
+      'files.directory.daemon.fallback.start_failed': 1,
+      'files.directory.direct': 1,
+    });
+  });
+
+  it('discards a fallback read that spans a flag flip', async () => {
+    h = await createRouteHarness();
+    h.connections.fail = unreachableGet('start_failed');
+    const hold = holdDirectRoots();
+    const read = rejection(h.roots(SINGLE, sender()));
+    await untilReached(hold.started, read);
+    h.flag.set(false);
+    hold.release();
+    expect(await read).toMatchObject({
+      kind: 'cancelled',
+      retry: { kind: 'after_refresh', resource: 'filesystem-roots' },
+    });
+  });
+
+  it('records the fallback in the route evidence, never a daemon success', async () => {
+    h = await createRouteHarness();
+    h.connections.fail = unreachableGet('start_failed');
+    const baseline = h.route.observe().cursor;
+    await h.roots(SINGLE, sender());
+    await h.roots(SINGLE, sender());
+    expect(
+      h.route
+        .observe(baseline)
+        .entries.map((event) => [event.phase, event.backend]),
+    ).toEqual([
+      ['started', 'daemon'],
+      ['fallback', 'daemon'],
+      ['started', 'daemon'],
+      ['fallback', 'daemon'],
+    ]);
   });
 });
 

@@ -3,17 +3,26 @@ import {
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
+  type PipelineDefinition,
   type PipelineDefinitionDeleteResult,
+  type PipelineDefinitionDuplicateResult,
   type PipelineDefinitionUpsertParams,
   type PipelineDefinitionUpsertResult,
 } from '@canopy/protocol/canopy-core';
 import { createCanopyDispatcher } from '../../../runtime/dispatcher';
 import type { CanopyDispatcher } from '../../../runtime/types';
-import { createCorePipelineDefinitionHandlers } from '../core-pipeline-definitions';
+import {
+  createCorePipelineDefinitionHandlers,
+  type PipelineDefinitionReplayLedger,
+  type PipelineDefinitionReplayStore,
+} from '../core-pipeline-definitions';
 import {
   createPipelineDefinitionService,
   PipelineDefinitionSourceError,
+  type PipelineDefinitionCopy,
+  type PipelineDefinitionService,
   type PipelineDefinitionSourceDocument,
+  type PipelineDefinitionSourcePort,
   type PipelineDefinitionWrite,
   type PipelineDefinitionWritePort,
 } from '../definitions';
@@ -36,15 +45,39 @@ const UNKNOWN_DEPENDENCY = VALID.replace(
 interface Stored {
   revision: number;
   text: string;
+  name: string;
+}
+
+function storedDocument(
+  id: string,
+  entry: Stored,
+): PipelineDefinitionSourceDocument {
+  return {
+    source: 'user',
+    definitionId: id,
+    name: entry.name,
+    description: '',
+    icon: '',
+    readonly: false,
+    revision: entry.revision,
+    owner: 'personal',
+    createdAt: null,
+    updatedAt: null,
+    format: 'yaml',
+    text: entry.text,
+  };
 }
 
 /** An in-memory user store with the compare-and-swap a host writer keeps. */
-function memoryWriter(): PipelineDefinitionWritePort & {
+function memoryWriter(
+  stored = new Map<string, Stored>(),
+): PipelineDefinitionWritePort & {
   stored: Map<string, Stored>;
   writes: PipelineDefinitionWrite[];
+  copies: PipelineDefinitionCopy[];
 } {
-  const stored = new Map<string, Stored>();
   const writes: PipelineDefinitionWrite[] = [];
+  const copies: PipelineDefinitionCopy[] = [];
   let next = 0;
   const conflict = (id: string): PipelineDefinitionSourceError =>
     new PipelineDefinitionSourceError(
@@ -54,6 +87,13 @@ function memoryWriter(): PipelineDefinitionWritePort & {
   return {
     stored,
     writes,
+    copies,
+    copy: (copy): Promise<PipelineDefinitionSourceDocument> => {
+      copies.push(copy);
+      const entry = { revision: 1, text: copy.text, name: copy.name };
+      stored.set(copy.definitionId, entry);
+      return Promise.resolve(storedDocument(copy.definitionId, entry));
+    },
     upsert: (write): Promise<PipelineDefinitionSourceDocument> => {
       writes.push(write);
       const id = write.definitionId ?? `created-${(next += 1)}`;
@@ -73,6 +113,7 @@ function memoryWriter(): PipelineDefinitionWritePort & {
       const entry = {
         revision: (current?.revision ?? 0) + 1,
         text: write.text ?? VALID,
+        name: write.name,
       };
       stored.set(id, entry);
       return Promise.resolve({
@@ -123,22 +164,85 @@ type WriteDispatcher = CanopyDispatcher<
   Record<never, never>
 >;
 
+/** The memory store and a bundled definition, read as their sources do. */
+function memoryPort(
+  stored: Map<string, Stored>,
+  readGate?: () => Promise<void>,
+): PipelineDefinitionSourcePort {
+  const bundled: PipelineDefinitionSourceDocument = {
+    ...storedDocument('bundled-review', {
+      revision: 0,
+      text: VALID.replace('  name: Review', '  name: Review\n  readonly: true'),
+      name: 'Bundled review',
+    }),
+    source: 'bundled',
+    readonly: true,
+    owner: null,
+  };
+  return {
+    sources: ['user', 'bundled'],
+    list: () =>
+      Promise.resolve(
+        Array.from(stored, ([id, entry]) => storedDocument(id, entry)),
+      ),
+    read: async (
+      source,
+      id,
+    ): Promise<PipelineDefinitionSourceDocument | null> => {
+      await readGate?.();
+      if (source === 'bundled')
+        return id === bundled.definitionId ? bundled : null;
+      const entry = stored.get(id);
+      return entry ? storedDocument(id, entry) : null;
+    },
+  };
+}
+
+/** A replay store that outlives the handlers, as a file does a process. */
+function memoryReplays(): PipelineDefinitionReplayStore & {
+  ledger: PipelineDefinitionReplayLedger;
+  failSaves: boolean;
+} {
+  const replays = {
+    ledger: { entries: [], expired: [] } as PipelineDefinitionReplayLedger,
+    failSaves: false,
+    load: (): Promise<PipelineDefinitionReplayLedger> =>
+      Promise.resolve(structuredClone(replays.ledger)),
+    save: (ledger: PipelineDefinitionReplayLedger): Promise<void> => {
+      if (replays.failSaves) return Promise.reject(new Error('disk full'));
+      replays.ledger = structuredClone(ledger);
+      return Promise.resolve();
+    },
+  };
+  return replays;
+}
+
 function setup(
   options: {
     noWriter?: boolean;
     setEnabled?: (id: string, enabled: boolean) => Promise<void>;
+    stored?: Map<string, Stored>;
+    disabled?: Set<string>;
+    replays?: PipelineDefinitionReplayStore;
+    disabledIds?: () => Promise<ReadonlySet<string>>;
+    readGate?: () => Promise<void>;
+    wrap?: (service: PipelineDefinitionService) => PipelineDefinitionService;
   } = {},
 ): {
   dispatcher: WriteDispatcher;
   store: ReturnType<typeof memoryWriter>;
   disabled: Set<string>;
 } {
-  const store = memoryWriter();
-  const disabled = new Set<string>();
+  const store = memoryWriter(options.stored);
+  const disabled = options.disabled ?? new Set<string>();
+  let copies = 0;
   const service = createPipelineDefinitionService({
-    ports: [],
+    ports: [memoryPort(store.stored, options.readGate)],
+    createDefinitionId: () => `copy-${(copies += 1)}`,
     writer: options.noWriter ? undefined : store,
-    disabledDefinitionIds: () => Promise.resolve(new Set(disabled)),
+    disabledDefinitionIds:
+      options.disabledIds ??
+      ((): Promise<Set<string>> => Promise.resolve(new Set(disabled))),
     setDefinitionEnabled:
       options.setEnabled ??
       ((id, enabled): Promise<void> => {
@@ -149,7 +253,8 @@ function setup(
   });
   const handlers = createCorePipelineDefinitionHandlers({
     authorityId: 'local-desktop',
-    load: () => Promise.resolve(service),
+    load: () => Promise.resolve(options.wrap?.(service) ?? service),
+    replays: options.replays,
   });
   return {
     store,
@@ -208,6 +313,37 @@ function remove(
   return dispatcher.instruction(
     'core.pipeline.definition.delete',
     { definitionId, expectedRevision, _meta: { idempotencyKey: key } },
+    { caller: writer, metadata: { idempotencyKey: key } },
+  );
+}
+
+function duplicate(
+  dispatcher: WriteDispatcher,
+  sourceDefinitionId: string,
+  key: string,
+  name?: string,
+): Promise<PipelineDefinitionDuplicateResult> {
+  return dispatcher.instruction(
+    'core.pipeline.definition.duplicate',
+    {
+      sourceDefinitionId,
+      scope: {},
+      ...(name === undefined ? {} : { name }),
+      _meta: { idempotencyKey: key },
+    },
+    { caller: writer, metadata: { idempotencyKey: key } },
+  );
+}
+
+function setEnabled(
+  dispatcher: WriteDispatcher,
+  definitionId: string,
+  enabled: boolean,
+  key: string,
+): Promise<{ definitionId: string; enabled: boolean }> {
+  return dispatcher.instruction(
+    'core.pipeline.definition.setEnabled',
+    { definitionId, enabled, _meta: { idempotencyKey: key } },
     { caller: writer, metadata: { idempotencyKey: key } },
   );
 }
@@ -296,7 +432,7 @@ describe('pipeline definition writes', () => {
     await expect(upsert(dispatcher, missing)).rejects.toMatchObject({
       payload: { code: 'core.pipeline.definitionNotFound' },
     });
-    store.stored.set('missing', { revision: 0, text: VALID });
+    store.stored.set('missing', { revision: 0, text: VALID, name: 'Review' });
     expect((await upsert(dispatcher, missing)).definition.revision).toBe(1);
   });
 
@@ -551,5 +687,531 @@ describe('pipeline definition writes', () => {
     release();
     await Promise.all([disabling, enabling]);
     expect(disabled.has(id)).toBe(false);
+  });
+
+  it('copies a read-only definition as a user definition under the id core assigns', async () => {
+    const { dispatcher, store } = setup();
+    const { definition, sourceDefinitionId } = await duplicate(
+      dispatcher,
+      'bundled-review',
+      'copy',
+    );
+    expect(sourceDefinitionId).toBe('bundled-review');
+    expect(definition).toMatchObject({
+      definitionId: 'copy-1',
+      source: 'user',
+      readonly: false,
+      name: 'Bundled review (Copy)',
+      revision: 1,
+    });
+    expect(definition.document).toContain('name: Bundled review (Copy)');
+    expect(definition.document).not.toContain('readonly');
+    expect(store.copies).toMatchObject([
+      {
+        definitionId: 'copy-1',
+        origin: { source: 'bundled', definitionId: 'bundled-review' },
+      },
+    ]);
+    expect(await duplicate(dispatcher, 'bundled-review', 'copy')).toEqual({
+      definition,
+      sourceDefinitionId,
+    });
+    expect(store.copies).toHaveLength(1);
+  });
+
+  it('names a copy as asked and refuses a missing source', async () => {
+    const { dispatcher } = setup();
+    const { definition: created } = await upsert(
+      dispatcher,
+      upsertParams('create'),
+    );
+    expect(
+      (
+        await duplicate(
+          dispatcher,
+          created.definitionId,
+          'named',
+          'Review again',
+        )
+      ).definition.name,
+    ).toBe('Review again');
+    await expect(
+      duplicate(dispatcher, 'missing', 'missing'),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.definitionNotFound' },
+    });
+  });
+
+  it('enables and disables a definition of any source', async () => {
+    const { dispatcher, disabled } = setup();
+    expect(
+      await setEnabled(dispatcher, 'bundled-review', false, 'off'),
+    ).toEqual({ definitionId: 'bundled-review', enabled: false });
+    expect(disabled.has('bundled-review')).toBe(true);
+    await setEnabled(dispatcher, 'curated:catalog-item', false, 'curated');
+    expect(disabled.has('curated:catalog-item')).toBe(true);
+    await setEnabled(dispatcher, 'bundled-review', true, 'on');
+    expect(disabled.has('bundled-review')).toBe(false);
+  });
+
+  it('replays committed writes after a restart', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    const first = setup({ replays, stored, disabled });
+    const created = await upsert(first.dispatcher, upsertParams('create'));
+    const copied = await duplicate(first.dispatcher, 'bundled-review', 'copy');
+    const toggled = await setEnabled(first.dispatcher, 'x', false, 'toggle');
+    const removed = await remove(
+      first.dispatcher,
+      copied.definition.definitionId,
+      1,
+      'remove',
+    );
+
+    const restarted = setup({ replays, stored, disabled });
+    expect(await upsert(restarted.dispatcher, upsertParams('create'))).toEqual(
+      created,
+    );
+    expect(
+      await setEnabled(restarted.dispatcher, 'x', false, 'toggle'),
+    ).toEqual(toggled);
+    expect(
+      await remove(
+        restarted.dispatcher,
+        copied.definition.definitionId,
+        1,
+        'remove',
+      ),
+    ).toEqual(removed);
+    expect(restarted.store.writes).toEqual([]);
+    await expect(
+      upsert(restarted.dispatcher, upsertParams('create', { name: 'Other' })),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    // The copy has been deleted since, so its receipt cannot be answered.
+    await expect(
+      duplicate(restarted.dispatcher, 'bundled-review', 'copy'),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.definitionNotFound' },
+    });
+    expect(restarted.store.copies).toEqual([]);
+  });
+
+  it('refuses after a restart a receipt whose definition moved on, without writing', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const first = setup({ replays, stored });
+    const { definition } = await upsert(
+      first.dispatcher,
+      upsertParams('create'),
+    );
+    await upsert(
+      first.dispatcher,
+      upsertParams('edit', {
+        definitionId: definition.definitionId,
+        expectedRevision: 1,
+      }),
+    );
+    const restarted = setup({ replays, stored });
+    await expect(
+      upsert(restarted.dispatcher, upsertParams('create')),
+    ).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition', retry: { kind: 'never' } },
+    });
+    expect(restarted.store.writes).toEqual([]);
+  });
+
+  it('finishes enablement after a restart for a write that committed before failing', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    const first = setup({
+      replays,
+      stored,
+      disabled,
+      setEnabled: () => Promise.reject(new Error('preferences locked')),
+    });
+    const params = upsertParams('enable-later', { enabled: false });
+    await expect(upsert(first.dispatcher, params)).rejects.toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    const restarted = setup({ replays, stored, disabled });
+    const { definition } = await upsert(restarted.dispatcher, params);
+    expect(definition).toMatchObject({ revision: 1, enabled: false });
+    expect(restarted.store.writes).toEqual([]);
+    expect(stored.size).toBe(1);
+  });
+
+  it('refuses aged-out keys after a restart', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const first = setup({ replays, stored });
+    await setEnabled(first.dispatcher, 'x', false, 'first');
+    for (let index = 0; index < 256; index += 1)
+      await setEnabled(first.dispatcher, 'x', false, `filler-${index}`);
+    const restarted = setup({ replays, stored });
+    await expect(
+      setEnabled(restarted.dispatcher, 'x', false, 'first'),
+    ).rejects.toMatchObject({ payload: { kind: 'failed_precondition' } });
+  });
+
+  it('answers a committed write whose receipt could not be stored, and stores it with the next save', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const { dispatcher, store } = setup({ replays, stored });
+    replays.failSaves = true;
+    const first = await upsert(dispatcher, upsertParams('unrecorded'));
+    expect(first.definition.revision).toBe(1);
+    expect(await upsert(dispatcher, upsertParams('unrecorded'))).toEqual(first);
+    expect(store.writes).toHaveLength(1);
+    expect(replays.ledger.entries).toHaveLength(0);
+    replays.failSaves = false;
+    await setEnabled(dispatcher, 'x', false, 'later');
+    expect(replays.ledger.entries).toHaveLength(2);
+    const restarted = setup({ replays, stored });
+    expect(
+      await upsert(restarted.dispatcher, upsertParams('unrecorded')),
+    ).toEqual(first);
+    expect(restarted.store.writes).toEqual([]);
+  });
+
+  it('never records an enabled state after a restart for a write that set none', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    const first = setup({ replays, stored, disabled });
+    const { definition } = await upsert(
+      first.dispatcher,
+      upsertParams('create'),
+    );
+    disabled.add(definition.definitionId);
+    let failRead = true;
+    const failing = setup({
+      replays,
+      stored,
+      disabled,
+      disabledIds: (): Promise<ReadonlySet<string>> => {
+        if (!failRead) return Promise.resolve(new Set(disabled));
+        failRead = false;
+        return Promise.reject(new Error('preferences locked'));
+      },
+    });
+    const edit = upsertParams('edit', {
+      definitionId: definition.definitionId,
+      expectedRevision: 1,
+      enabled: undefined,
+    });
+    await expect(upsert(failing.dispatcher, edit)).rejects.toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    const restarted = setup({ replays, stored, disabled });
+    expect((await upsert(restarted.dispatcher, edit)).definition).toMatchObject(
+      { revision: 2, enabled: false },
+    );
+    expect(disabled.has(definition.definitionId)).toBe(true);
+  });
+
+  it('keeps a stored receipt through an overlapping save while its restoration fails', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const first = setup({ replays, stored });
+    const created = await upsert(first.dispatcher, upsertParams('create'));
+    const id = created.definition.definitionId;
+    const entry = stored.get(id);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const restarted = setup({ replays, stored, readGate: () => gate });
+    const settled = upsert(restarted.dispatcher, upsertParams('create')).then(
+      () => 'resolved',
+      (error: unknown) => error,
+    );
+    // Another write saves the ledger while the restoration waits.
+    await setEnabled(restarted.dispatcher, 'x', false, 'overlap');
+    stored.delete(id);
+    release();
+    expect(await settled).toMatchObject({
+      payload: { code: 'core.pipeline.definitionNotFound' },
+    });
+    if (entry) stored.set(id, entry);
+    const again = setup({ replays, stored });
+    expect(await upsert(again.dispatcher, upsertParams('create'))).toEqual(
+      created,
+    );
+    expect(again.store.writes).toEqual([]);
+  });
+
+  it('refuses after a restart a receipt whose enabled state changed since', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    const first = setup({ replays, stored, disabled });
+    const params = upsertParams('create', { enabled: false });
+    const { definition } = await upsert(first.dispatcher, params);
+    await setEnabled(first.dispatcher, definition.definitionId, true, 'on');
+    const restarted = setup({ replays, stored, disabled });
+    await expect(upsert(restarted.dispatcher, params)).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition', retry: { kind: 'never' } },
+    });
+    expect(restarted.store.writes).toEqual([]);
+  });
+
+  it('keeps one copy when reading enablement fails, and copies on retry', async () => {
+    let failRead = true;
+    const disabled = new Set<string>();
+    const { dispatcher, store } = setup({
+      disabled,
+      disabledIds: (): Promise<ReadonlySet<string>> => {
+        if (!failRead) return Promise.resolve(new Set(disabled));
+        failRead = false;
+        return Promise.reject(new Error('preferences locked'));
+      },
+    });
+    await expect(
+      duplicate(dispatcher, 'bundled-review', 'copy'),
+    ).rejects.toBeDefined();
+    expect(store.copies).toEqual([]);
+    const { definition } = await duplicate(
+      dispatcher,
+      'bundled-review',
+      'copy',
+    );
+    expect(store.copies).toHaveLength(1);
+    expect(definition.definitionId).toBe(store.copies[0]?.definitionId);
+  });
+
+  it('refuses after a restart an unfinished write a later enablement superseded', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    let failEnable = true;
+    const first = setup({
+      replays,
+      stored,
+      disabled,
+      setEnabled: (id, enabled): Promise<void> => {
+        if (failEnable) {
+          failEnable = false;
+          return Promise.reject(new Error('preferences locked'));
+        }
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+        return Promise.resolve();
+      },
+    });
+    const params = upsertParams('create', { enabled: false });
+    await expect(upsert(first.dispatcher, params)).rejects.toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    const id = Array.from(stored.keys())[0] ?? '';
+    await setEnabled(first.dispatcher, id, true, 'on');
+    await expect(upsert(first.dispatcher, params)).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition' },
+    });
+    const restarted = setup({ replays, stored, disabled });
+    await expect(upsert(restarted.dispatcher, params)).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition' },
+    });
+    expect(disabled.has(id)).toBe(false);
+  });
+
+  it('refuses to copy a source that changed since its checksum was read', async () => {
+    const { dispatcher, store } = setup();
+    await expect(
+      dispatcher.instruction(
+        'core.pipeline.definition.duplicate',
+        {
+          sourceDefinitionId: 'bundled-review',
+          scope: {},
+          expectedChecksum: 'sha256:stale',
+          _meta: { idempotencyKey: 'stale-copy' },
+        },
+        { caller: writer, metadata: { idempotencyKey: 'stale-copy' } },
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.revisionConflict' },
+    });
+    expect(store.copies).toEqual([]);
+  });
+
+  it('never lets a retry queued behind a newer enablement overturn it', async () => {
+    const disabled = new Set<string>();
+    let failNext = true;
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { dispatcher, store } = setup({
+      disabled,
+      setEnabled: async (id, enabled): Promise<void> => {
+        if (failNext) {
+          failNext = false;
+          throw new Error('preferences locked');
+        }
+        await hold;
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+      },
+    });
+    const params = upsertParams('create', { enabled: false });
+    await expect(upsert(dispatcher, params)).rejects.toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    const id = Array.from(store.stored.keys())[0] ?? '';
+    const enabling = setEnabled(dispatcher, id, true, 'on');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const retry = upsert(dispatcher, params).then(
+      () => 'resolved',
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    await enabling;
+    expect(await retry).toMatchObject({
+      payload: { code: 'core.pipeline.revisionConflict' },
+    });
+    expect(disabled.has(id)).toBe(false);
+  });
+
+  it('never lets a restored enablement waiting on the lock overturn a newer one', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    let failNext = true;
+    const first = setup({
+      replays,
+      stored,
+      disabled,
+      setEnabled: (id, enabled): Promise<void> => {
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error('preferences locked'));
+        }
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+        return Promise.resolve();
+      },
+    });
+    const params = upsertParams('create', { enabled: false });
+    await expect(upsert(first.dispatcher, params)).rejects.toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    const id = Array.from(stored.keys())[0] ?? '';
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holdOnce = true;
+    const restarted = setup({
+      replays,
+      stored,
+      disabled,
+      setEnabled: async (target, enabled): Promise<void> => {
+        if (holdOnce) {
+          holdOnce = false;
+          await hold;
+        }
+        if (enabled) disabled.delete(target);
+        else disabled.add(target);
+      },
+    });
+    const enabling = setEnabled(restarted.dispatcher, id, true, 'on');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const replay = upsert(restarted.dispatcher, params).then(
+      () => 'resolved',
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    await enabling;
+    expect(await replay).toMatchObject({ payload: { kind: 'conflict' } });
+    expect(disabled.has(id)).toBe(false);
+  });
+
+  it('never records a failed enablement a newer one overtook as replayable', async () => {
+    const replays = memoryReplays();
+    const stored = new Map<string, Stored>();
+    const disabled = new Set<string>();
+    let failNext = true;
+    let overtaking: Promise<unknown> = Promise.resolve();
+    const first: { dispatcher?: WriteDispatcher } = {};
+    first.dispatcher = setup({
+      replays,
+      stored,
+      disabled,
+      setEnabled: (id, enabled): Promise<void> => {
+        if (failNext) {
+          failNext = false;
+          if (first.dispatcher)
+            overtaking = setEnabled(first.dispatcher, id, true, 'on');
+          return Promise.reject(new Error('preferences locked'));
+        }
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+        return Promise.resolve();
+      },
+      // The newer enabled state lands after the lock is released but before
+      // the ledger sees the failure.
+      wrap: (service) => ({
+        ...service,
+        upsert: async (params, signal): Promise<PipelineDefinition> => {
+          try {
+            return await service.upsert(params, signal);
+          } catch (error) {
+            await overtaking;
+            throw error;
+          }
+        },
+      }),
+    }).dispatcher;
+    const params = upsertParams('create', { enabled: false });
+    await expect(upsert(first.dispatcher, params)).rejects.toBeDefined();
+    const id = Array.from(stored.keys())[0] ?? '';
+    expect(disabled.has(id)).toBe(false);
+    const restarted = setup({ replays, stored, disabled });
+    await expect(upsert(restarted.dispatcher, params)).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition', retry: { kind: 'never' } },
+    });
+    expect(disabled.has(id)).toBe(false);
+  });
+
+  it('keeps an edit queued behind a toggle resumable when its own enablement fails', async () => {
+    let release: () => void = () => undefined;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { dispatcher, disabled } = setup({
+      setEnabled: async (id, enabled): Promise<void> => {
+        calls += 1;
+        if (calls === 1) await hold;
+        if (calls === 2) throw new Error('preferences locked');
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+      },
+    });
+    const { definition } = await upsert(dispatcher, upsertParams('create'));
+    const id = definition.definitionId;
+    const enabling = setEnabled(dispatcher, id, true, 'on');
+    const edit = upsertParams('edit', {
+      definitionId: id,
+      expectedRevision: 1,
+      enabled: false,
+    });
+    const editing = upsert(dispatcher, edit).then(
+      () => 'resolved',
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    release();
+    await enabling;
+    expect(await editing).toMatchObject({
+      payload: { retry: { kind: 'same_idempotency_key' } },
+    });
+    await expect(upsert(dispatcher, edit)).resolves.toMatchObject({
+      definition: { definitionId: id, revision: 2, enabled: false },
+    });
+    expect(disabled.has(id)).toBe(true);
   });
 });

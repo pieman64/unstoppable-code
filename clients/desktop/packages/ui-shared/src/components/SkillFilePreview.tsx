@@ -1,5 +1,7 @@
 import type { JSX } from 'react';
-import { ErrorBanner, LoadingPlaceholder } from './StatusBlocks';
+import { ErrorBanner } from './StatusBlocks';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { SkillMarkdownBody } from './SkillFileExplorer';
 
 export interface SkillFilePreviewContent {
@@ -23,7 +25,12 @@ export function SkillFilePreview({
   filePath,
   state,
 }: SkillFilePreviewProps): JSX.Element {
-  if (state.loading) return <LoadingPlaceholder />;
+  if (state.loading)
+    return (
+      <DelayedLoadingPlaceholder>
+        <CenteredLoadingSpinner className="my-12" />
+      </DelayedLoadingPlaceholder>
+    );
   if (state.error) return <ErrorBanner error={state.error} />;
   if (!state.data) return <></>;
   if (state.data.binary) {

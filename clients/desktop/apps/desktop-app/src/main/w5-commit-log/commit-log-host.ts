@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 import { getW5CommitLogPath, getWorkspacesRootDir } from '../lib/paths';
 import { desktopW5HostAdmission } from '../lib/w5-host-admission';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { hostW5ConfinementAddon } from './confinement-addon';
 
 export {
@@ -34,6 +35,7 @@ export function getW5CommitLogHost(): W5CommitLogHost {
       dataRoot,
       workerEntry: join(__dirname, WORKER_FILENAME),
       confinementAddon: hostW5ConfinementAddon(),
+      warn: logMainProcessWarn,
       // TRANSITIONAL (CAN-3797): remove when the W5 rows move to `daemon`.
       admission: (): Promise<void> => desktopW5HostAdmission(dataRoot),
     });
@@ -52,4 +54,14 @@ export function getW5CommitLogHost(): W5CommitLogHost {
 export function shutdownW5CommitLogHost(): Promise<void> {
   defaultHostShutDown = true;
   return defaultHost === undefined ? Promise.resolve() : defaultHost.shutdown();
+}
+
+/** Whether this process stopped its host for good; nothing reopens it. */
+export function isW5CommitLogHostShutDown(): boolean {
+  return defaultHostShutDown;
+}
+
+/** Workers the app's host still runs; 0 when it never started one. */
+export function runningW5CommitLogWorkers(): number {
+  return defaultHost?.runningWorkerCount ?? 0;
 }

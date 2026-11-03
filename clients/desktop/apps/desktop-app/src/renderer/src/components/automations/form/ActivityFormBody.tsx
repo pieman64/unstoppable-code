@@ -65,7 +65,7 @@ import {
   type PipelineRepoChoice,
 } from '@/components/activity/PipelineTriggerModal';
 import { usePipelineWorktreeContext } from '@/components/activity/usePipelineWorktreeContext';
-import { CanopyLogo } from '@/components/CanopyLogo';
+import { BrandLogo } from '@/components/BrandLogo';
 import { useClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
 import {
   AppAdvisorIcon,
@@ -79,11 +79,18 @@ import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   AutomationPipelineTargetFields,
+  FORM_FIELD_LABEL_CLASS,
+  FormField,
+  type FormFieldControlProps,
   isAutomationPipelineTaskStale,
   Button,
   Notice,
   NoticeButton,
+  ErrorBanner,
   SegmentedControl as SharedSegmentedControl,
+  TextArea,
+  TextInput,
+  ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { automationDestinationExecutionScope } from '@canopy/pipeline-interop/automation-target';
@@ -267,7 +274,7 @@ function InterfaceModePill({
     {
       value: 'canopy',
       label: brandText.shortName,
-      icon: <CanopyLogo width={14} height={14} aria-hidden="true" />,
+      icon: <BrandLogo width={14} height={14} aria-hidden />,
     },
     {
       value: 'claude-code',
@@ -1016,30 +1023,29 @@ export function ActivityFormBody({
         {showDefinition && (
           <>
             <Field label="Name">
-              <input
-                type="text"
-                value={state.name}
-                onChange={(event): void => update('name', event.target.value)}
-                readOnly={formReadOnly}
-                placeholder="Daily standup digest"
-                data-testid="automations-form-name"
-                className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary read-only:cursor-default read-only:opacity-80"
-              />
+              {(control) => (
+                <TextInput
+                  {...control}
+                  type="text"
+                  value={state.name}
+                  onChange={(event): void => update('name', event.target.value)}
+                  readOnly={formReadOnly}
+                  placeholder="Daily standup digest"
+                  data-testid="automations-form-name"
+                />
+              )}
             </Field>
             {showEnabledField && (
-              <label className="flex items-center gap-2 text-xs fg-primary">
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2 text-xs fg-primary">
+                <ToggleSwitch
+                  label="Enabled"
                   checked={state.enabled}
-                  onChange={(event): void =>
-                    update('enabled', event.target.checked)
-                  }
+                  onChange={(next): void => update('enabled', next)}
                   disabled={formReadOnly}
-                  data-testid="automations-form-enabled"
-                  className="h-4 w-4 rounded bg-base"
+                  dataTestId="automations-form-enabled"
                 />
-                <span>Enabled</span>
-              </label>
+                <span aria-hidden="true">Enabled</span>
+              </div>
             )}
           </>
         )}
@@ -1058,22 +1064,26 @@ export function ActivityFormBody({
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <Field label="Date">
-                    <input
-                      type="date"
-                      value={state.oneTimeDate}
-                      readOnly
-                      data-testid="automations-form-date"
-                      className="w-full cursor-default rounded-md border bg-base px-2 py-1.5 text-s fg-primary opacity-80"
-                    />
+                    {(control) => (
+                      <TextInput
+                        {...control}
+                        type="date"
+                        value={state.oneTimeDate}
+                        readOnly
+                        data-testid="automations-form-date"
+                      />
+                    )}
                   </Field>
                   <Field label="Time">
-                    <input
-                      type="time"
-                      value={state.oneTimeTime}
-                      readOnly
-                      data-testid="automations-form-time"
-                      className="w-full cursor-default rounded-md border bg-base px-2 py-1.5 text-s fg-primary opacity-80"
-                    />
+                    {(control) => (
+                      <TextInput
+                        {...control}
+                        type="time"
+                        value={state.oneTimeTime}
+                        readOnly
+                        data-testid="automations-form-time"
+                      />
+                    )}
                   </Field>
                 </div>
                 {previewDate ? (
@@ -1095,45 +1105,47 @@ export function ActivityFormBody({
               />
             )}
             {!formReadOnly && state.triggerKind === 'cron' ? (
-              <Field label="Cron expression">
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={state.cronExpression}
-                    onChange={(event): void =>
-                      update('cronExpression', event.target.value)
-                    }
-                    disabled={cronGenerating}
-                    aria-busy={cronGenerating}
-                    spellCheck={false}
-                    data-testid="automations-form-cron"
-                    className={`focus-ring w-full rounded-md border bg-base px-2 py-1.5 pr-9 font-mono text-xs fg-primary disabled:cursor-wait disabled:opacity-70 ${
-                      cronGenerating ? 'animate-pulse' : ''
-                    }`}
-                  />
-                  <span className="absolute right-1 top-1/2 -translate-y-1/2">
-                    <Tooltip label="Generate cron expression">
-                      <Button
-                        variant="ghost"
-                        size="compact"
-                        iconOnly
-                        aria-label="Generate cron expression"
-                        disabled={cronGenerating}
-                        onClick={(): void => {
-                          setCronAssistantOpen((open) => !open);
-                          setCronGenerationWarning(null);
-                        }}
-                        data-testid="automations-form-cron-assistant"
-                      >
-                        <AppAdvisorIcon className="h-4 w-4" />
-                      </Button>
-                    </Tooltip>
-                  </span>
-                </div>
+              <div className="flex flex-col">
+                <FormField label="Cron expression">
+                  {(control) => (
+                    <TextInput
+                      {...control}
+                      type="text"
+                      mono
+                      value={state.cronExpression}
+                      onChange={(event): void =>
+                        update('cronExpression', event.target.value)
+                      }
+                      disabled={cronGenerating}
+                      aria-busy={cronGenerating}
+                      spellCheck={false}
+                      data-testid="automations-form-cron"
+                      trailing={
+                        <Tooltip label="Generate cron expression">
+                          <Button
+                            variant="ghost"
+                            size="compact"
+                            iconOnly
+                            aria-label="Generate cron expression"
+                            disabled={cronGenerating}
+                            onClick={(): void => {
+                              setCronAssistantOpen((open) => !open);
+                              setCronGenerationWarning(null);
+                            }}
+                            data-testid="automations-form-cron-assistant"
+                          >
+                            <AppAdvisorIcon className="h-4 w-4" />
+                          </Button>
+                        </Tooltip>
+                      }
+                    />
+                  )}
+                </FormField>
                 {cronAssistantOpen && !cronGenerating && (
                   <div className="mt-2 flex items-center gap-2">
-                    <input
+                    <TextInput
                       type="text"
+                      aria-label="Describe schedule"
                       value={cronAssistantText}
                       onChange={(event): void =>
                         setCronAssistantText(event.target.value)
@@ -1145,7 +1157,7 @@ export function ActivityFormBody({
                       }}
                       placeholder="Describe schedule in natural language"
                       data-testid="automations-form-cron-natural-language"
-                      className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+                      className="min-w-0 flex-1"
                     />
                     <Button
                       size="compact"
@@ -1189,30 +1201,34 @@ export function ActivityFormBody({
                     Next trigger: {previewDate.toLocaleString()}
                   </div>
                 ) : null}
-              </Field>
+              </div>
             ) : !formReadOnly ? (
               <div className="flex flex-col gap-2">
                 <Field label="Date">
-                  <input
-                    type="date"
-                    value={state.oneTimeDate}
-                    onChange={(event): void =>
-                      update('oneTimeDate', event.target.value)
-                    }
-                    data-testid="automations-form-date"
-                    className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
-                  />
+                  {(control) => (
+                    <TextInput
+                      {...control}
+                      type="date"
+                      value={state.oneTimeDate}
+                      onChange={(event): void =>
+                        update('oneTimeDate', event.target.value)
+                      }
+                      data-testid="automations-form-date"
+                    />
+                  )}
                 </Field>
                 <Field label="Time">
-                  <input
-                    type="time"
-                    value={state.oneTimeTime}
-                    onChange={(event): void =>
-                      update('oneTimeTime', event.target.value)
-                    }
-                    data-testid="automations-form-time"
-                    className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
-                  />
+                  {(control) => (
+                    <TextInput
+                      {...control}
+                      type="time"
+                      value={state.oneTimeTime}
+                      onChange={(event): void =>
+                        update('oneTimeTime', event.target.value)
+                      }
+                      data-testid="automations-form-time"
+                    />
+                  )}
                 </Field>
                 {previewDate ? (
                   previewDate.getTime() <= Date.now() ? (
@@ -1269,8 +1285,10 @@ export function ActivityFormBody({
                       to compare against all automations. Idempotency lines are
                       stripped from prompt output.
                     </p>
-                    <div className="relative">
-                      <textarea
+                    <div className="flex items-start gap-2">
+                      <TextArea
+                        mono
+                        aria-label="If command"
                         value={state.ifCommand}
                         onChange={(event): void =>
                           update('ifCommand', event.target.value)
@@ -1280,9 +1298,11 @@ export function ActivityFormBody({
                         spellCheck={false}
                         placeholder="e.g. test -f ~/ready-to-run.txt"
                         data-testid="automations-form-if-command"
-                        className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 pr-9 font-mono text-xs fg-primary disabled:cursor-wait disabled:opacity-70"
+                        className="min-w-0 flex-1"
                       />
-                      <span className="absolute right-1 top-1">
+                      {/* A 36px cell centers the 28px button 4px below the
+                          field's top edge, level with its first line. */}
+                      <span className="flex h-9 shrink-0 items-center">
                         <Tooltip label="Generate if command">
                           <Button
                             variant="ghost"
@@ -1303,8 +1323,9 @@ export function ActivityFormBody({
                     </div>
                     {ifCommandAssistantOpen && !ifCommandGenerating && (
                       <div className="flex items-center gap-2">
-                        <input
+                        <TextInput
                           type="text"
+                          aria-label="Describe the gate"
                           value={ifCommandAssistantText}
                           onChange={(event): void =>
                             setIfCommandAssistantText(event.target.value)
@@ -1316,7 +1337,7 @@ export function ActivityFormBody({
                           }}
                           placeholder="Describe the gate in natural language"
                           data-testid="automations-form-if-command-natural-language"
-                          className="focus-ring min-w-0 flex-1 rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
+                          className="min-w-0 flex-1"
                         />
                         <Button
                           size="compact"
@@ -1385,26 +1406,29 @@ export function ActivityFormBody({
             {actionCategory === 'workspace' && (
               <>
                 <Field label="Project">
-                  <SearchableSelect
-                    value={selectedWorkspaceId}
-                    ownerDocument={ownerDocument}
-                    selectedFallback={
-                      selectedProject && selectedOutsideContext
-                        ? projectPickerOption(selectedProject)
-                        : undefined
-                    }
-                    options={pickerProjects.map(projectPickerOption)}
-                    onChange={handleWorkspaceChange}
-                    placeholder={
-                      pickerProjects.length === 0
-                        ? 'No projects available'
-                        : 'Select a project'
-                    }
-                    searchPlaceholder="Search projects"
-                    emptyListMessage="No matching projects"
-                    disabled={pickerProjects.length === 0}
-                    testId="automations-form-workspace"
-                  />
+                  {(control) => (
+                    <SearchableSelect
+                      id={control.id}
+                      value={selectedWorkspaceId}
+                      ownerDocument={ownerDocument}
+                      selectedFallback={
+                        selectedProject && selectedOutsideContext
+                          ? projectPickerOption(selectedProject)
+                          : undefined
+                      }
+                      options={pickerProjects.map(projectPickerOption)}
+                      onChange={handleWorkspaceChange}
+                      placeholder={
+                        pickerProjects.length === 0
+                          ? 'No projects available'
+                          : 'Select a project'
+                      }
+                      searchPlaceholder="Search projects"
+                      emptyListMessage="No matching projects"
+                      disabled={pickerProjects.length === 0}
+                      testId="automations-form-workspace"
+                    />
+                  )}
                 </Field>
                 {contextNote && (
                   <Notice data-testid="automations-form-context-note">
@@ -1449,31 +1473,34 @@ export function ActivityFormBody({
                   (state.actionType !== 'worktree_pipeline' ||
                     pipelineRunIn === 'new_worktree') && (
                     <Field label={`Base ${WORKTREE_UNIT_LABEL}`}>
-                      <SearchableSelect
-                        value={state.baseWorktreeId}
-                        ownerDocument={ownerDocument}
-                        options={selectedProjectWorktrees.map((worktree) => ({
-                          id: worktree.id,
-                          label: getAutomationWorktreeLabel(worktree),
-                        }))}
-                        onChange={(nextId): void =>
-                          onChange({
-                            ...state,
-                            baseWorktreeId: nextId,
-                            ...(nextId ? { baseBranch: '' } : {}),
-                            ...clearedPipelineSelection(),
-                          })
-                        }
-                        placeholder="Project default"
-                        emptyOption={{
-                          id: '',
-                          label: 'Project default',
-                          subtitle: "Use the project's default branch",
-                        }}
-                        searchPlaceholder="Search worktrees"
-                        emptyListMessage="No matching worktrees"
-                        testId="automations-form-base-worktree"
-                      />
+                      {(control) => (
+                        <SearchableSelect
+                          id={control.id}
+                          value={state.baseWorktreeId}
+                          ownerDocument={ownerDocument}
+                          options={selectedProjectWorktrees.map((worktree) => ({
+                            id: worktree.id,
+                            label: getAutomationWorktreeLabel(worktree),
+                          }))}
+                          onChange={(nextId): void =>
+                            onChange({
+                              ...state,
+                              baseWorktreeId: nextId,
+                              ...(nextId ? { baseBranch: '' } : {}),
+                              ...clearedPipelineSelection(),
+                            })
+                          }
+                          placeholder="Project default"
+                          emptyOption={{
+                            id: '',
+                            label: 'Project default',
+                            subtitle: "Use the project's default branch",
+                          }}
+                          searchPlaceholder="Search worktrees"
+                          emptyListMessage="No matching worktrees"
+                          testId="automations-form-base-worktree"
+                        />
+                      )}
                     </Field>
                   )}
               </>
@@ -1481,7 +1508,7 @@ export function ActivityFormBody({
             {sidebarGroupScope &&
               (sidebarGroupScope.appAdvisor ||
                 selectedProject !== undefined) && (
-                <Field label="Sidebar group" as="div">
+                <Field label="Sidebar group">
                   <AutomationSidebarGroupPicker
                     scope={sidebarGroupScope}
                     value={state.sidebarGroupName}
@@ -1497,7 +1524,7 @@ export function ActivityFormBody({
                 state.actionType === 'standalone_prompt') &&
                 selectedProject) ||
               isWorktreeSessionPrompt) && (
-              <Field label="Prompt" as="div">
+              <Field label="Prompt">
                 <ConfigurationChatComposer
                   editorId={`automation-${state.id ?? 'new'}`}
                   dataTestId="automations-form-prompt"
@@ -1600,7 +1627,7 @@ export function ActivityFormBody({
             {actionTypeTakesPipelineDependencies(state.actionType) &&
               (state.actionType === 'app_advisor_prompt' || selectedProject) &&
               !formReadOnly && (
-                <Field label="Pipelines" as="div">
+                <Field label="Pipelines">
                   <AutomationPipelineDependenciesField
                     value={state.pipelineDependencies ?? []}
                     disabled={saving}
@@ -1663,15 +1690,11 @@ export function ActivityFormBody({
                           ? 'Change workflow'
                           : 'Select workflow'}
                       </Button>
-                      {modelAliasBlockingError && (
-                        <div
-                          role="alert"
-                          data-testid="automations-form-model-alias-error"
-                          className="mt-2 rounded-md border border-line-destructive/40 bg-destructive-subtle px-2 py-1.5 text-xs fg-primary"
-                        >
-                          {modelAliasBlockingError}
-                        </div>
-                      )}
+                      <ErrorBanner
+                        className="mt-2"
+                        error={modelAliasBlockingError}
+                        testId="automations-form-model-alias-error"
+                      />
                     </div>
                   </Field>
                   {state.pipelineInputs.length > 0 && (
@@ -1779,25 +1802,26 @@ export function ActivityFormBody({
   );
 }
 
+/**
+ * One labelled field of the automation form. A single control takes the
+ * shared `FormField` through a render prop; a composite editor (buttons and
+ * fields together) is a named group with the same label.
+ */
 function Field({
   label,
   children,
-  as: Component = 'label',
 }: {
   label: string;
-  children: ReactNode;
-  /** Composite editors contain buttons that must not become implicit label targets. */
-  as?: 'label' | 'div';
+  children: ReactNode | ((control: FormFieldControlProps) => ReactNode);
 }): JSX.Element {
+  if (typeof children === 'function') {
+    return <FormField label={label}>{children}</FormField>;
+  }
   return (
-    <Component
-      className="flex flex-col gap-1 text-xs fg-secondary"
-      role={Component === 'div' ? 'group' : undefined}
-      aria-label={Component === 'div' ? label : undefined}
-    >
-      <span>{label}</span>
+    <div role="group" aria-label={label} className="flex flex-col gap-1.5">
+      <span className={FORM_FIELD_LABEL_CLASS}>{label}</span>
       {children}
-    </Component>
+    </div>
   );
 }
 

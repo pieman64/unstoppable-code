@@ -204,12 +204,12 @@ afterEach(() => {
 });
 
 describe('ChatBlockRenderer GitHub reference previews', () => {
-  it('preserves raw URL and custom labels in Hover without icons or passive title reads', async () => {
+  it('preserves raw URL and custom labels in Hover with icons but no passive reads', async () => {
     mockModes.github = 'hover';
     const url = 'https://github.com/acme/app/pull/12/files?w=1#diff';
     await render(`acme/app#12 ${url} [my label](${url})`);
     expect(referenceTexts()).toEqual(['acme/app#12', url, 'my label']);
-    expect(container.querySelector('svg')).toBeNull();
+    expect(container.querySelectorAll('svg')).toHaveLength(3);
     expect(calls('referencePreview.github')).toEqual([]);
   });
 
@@ -227,7 +227,7 @@ describe('ChatBlockRenderer GitHub reference previews', () => {
       'See #12, acme/app#12, other/lib#12 and https://github.com/acme/app/pull/7; bare acme/app stays prose.';
     await render(text);
     // A raw URL label becomes the generated ID, short in its own repository,
-    // while its title is expected.
+    // while the item is expected to resolve.
     expect(referenceTexts()).toEqual([
       '#12',
       'acme/app#12',

@@ -333,6 +333,7 @@ export function ShareDialogFrame({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={busy ? (): void => {} : onDismiss}
       title={title}
       {...(subtitle !== undefined ? { subtitle } : {})}
@@ -345,7 +346,7 @@ export function ShareDialogFrame({
       trapFocus
     >
       <div
-        className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-6 py-4"
         data-testid={`${p}-body`}
       >
         {gated ? (
@@ -371,17 +372,16 @@ export function ShareDialogFrame({
       </div>
 
       {actionErrorMessage !== undefined && actionErrorMessage !== '' && (
-        <div className="px-5 pb-3">
-          <Notice intent="destructive" role="alert" data-testid={`${p}-error`}>
+        <div className="px-6 pb-3">
+          <Notice intent="destructive" data-testid={`${p}-error`}>
             {actionErrorMessage}
           </Notice>
         </div>
       )}
       {lifecycle.status === 'error' && errorMessage && (
-        <div className="px-5 pb-3">
+        <div className="px-6 pb-3">
           <Notice
             intent="destructive"
-            role="alert"
             data-testid={`${p}-error`}
             {...(errorAction !== undefined ? { actions: errorAction } : {})}
           >
@@ -390,7 +390,7 @@ export function ShareDialogFrame({
         </div>
       )}
       {partial && partialMessage && (
-        <div className="px-5 pb-3">
+        <div className="px-6 pb-3">
           <Notice intent="attention" data-testid={`${p}-partial`}>
             {partialMessage}
           </Notice>
@@ -398,7 +398,7 @@ export function ShareDialogFrame({
       )}
 
       {lifecycle.status === 'success' && success && (
-        <div className="px-5 pb-3">
+        <div className="px-6 pb-3">
           {success.link !== undefined ? (
             <Notice
               intent={success.tone === 'success' ? 'positive' : 'attention'}

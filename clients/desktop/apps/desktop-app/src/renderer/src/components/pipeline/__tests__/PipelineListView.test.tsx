@@ -110,6 +110,25 @@ function makeSharedState(): SharedCloudListState {
   };
 }
 
+/** Opens a shared dropdown and picks the option with this value. */
+async function chooseOption(
+  trigger: HTMLButtonElement,
+  value: string,
+): Promise<void> {
+  await act(async () => {
+    trigger.click();
+    await Promise.resolve();
+  });
+  const option = document.querySelector<HTMLElement>(
+    `[role="option"][data-value="${value}"]`,
+  );
+  if (!option) throw new Error(`Missing option ${value}`);
+  await act(async () => {
+    option.click();
+    await Promise.resolve();
+  });
+}
+
 describe('PipelineListView', () => {
   let container: HTMLElement;
   let root: Root;
@@ -174,7 +193,7 @@ describe('PipelineListView', () => {
       await Promise.resolve();
     });
 
-    const triggerFilter = container.querySelector<HTMLSelectElement>(
+    const triggerFilter = container.querySelector<HTMLButtonElement>(
       '[data-testid="pipeline-trigger-filter"]',
     );
     expect(triggerFilter).not.toBeNull();
@@ -182,11 +201,7 @@ describe('PipelineListView', () => {
       throw new Error('Expected trigger filter select to render');
     }
 
-    await act(async () => {
-      triggerFilter.value = 'dispatch';
-      triggerFilter.dispatchEvent(new Event('change', { bubbles: true }));
-      await Promise.resolve();
-    });
+    await chooseOption(triggerFilter, 'dispatch');
 
     expect(container.textContent).toContain('Implicit triggers');
     expect(container.textContent).not.toContain('Plan only');
@@ -432,7 +447,7 @@ describe('PipelineListView', () => {
     const searchInput = container.querySelector<HTMLInputElement>(
       '[data-testid="pipeline-search"]',
     );
-    const triggerFilter = container.querySelector<HTMLSelectElement>(
+    const triggerFilter = container.querySelector<HTMLButtonElement>(
       '[data-testid="pipeline-trigger-filter"]',
     );
     expect(searchInput).not.toBeNull();
@@ -451,10 +466,9 @@ describe('PipelineListView', () => {
       }
       valueDescriptor.set.call(searchInput, 'shared deploy');
       searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-      triggerFilter.value = 'plan_ready';
-      triggerFilter.dispatchEvent(new Event('change', { bubbles: true }));
       await Promise.resolve();
     });
+    await chooseOption(triggerFilter, 'plan_ready');
 
     expect(onSharedFilterChange).toHaveBeenLastCalledWith({
       q: 'shared deploy',

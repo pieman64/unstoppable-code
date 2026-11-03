@@ -20,9 +20,13 @@ const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
 
 const openSkillViewer = jest.fn();
+const openShareInstall = jest.fn();
 jest.mock('@/stores/navigationStore', () => ({
   useNavigationStore: {
-    getState: (): { openSkillViewer: jest.Mock } => ({ openSkillViewer }),
+    getState: (): {
+      openSkillViewer: jest.Mock;
+      openShareInstall: jest.Mock;
+    } => ({ openSkillViewer, openShareInstall }),
   },
 }));
 jest.mock('@/stores/workspaceContextStore', (): object => {
@@ -131,6 +135,7 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   getShared.mockReset();
   openSkillViewer.mockReset();
+  openShareInstall.mockReset();
   latest = undefined;
   useWorkspaceContextStore.setState({ accountEpoch: 0 });
 });
@@ -359,5 +364,101 @@ describe('useInstalledShareProvenance (CAN-5018)', () => {
     );
     expect(latest?.updateAvailable).toBeUndefined();
     expect(getShared).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('useInstalledShareProvenance Update (CAN-5306)', () => {
+  it.each([
+    ['team', 'TEAM'],
+    ['organization', 'ORGANIZATION'],
+  ] as const)(
+    'opens the %s review in-app for a changed source',
+    async (scope, audience) => {
+      getShared.mockResolvedValue(sharedDetail({ contentHash: HASH_B }));
+      render({ installedFromShare: { ...origin, shareScope: scope } });
+      expect(latest?.onUpdate).toBeUndefined();
+      await flush();
+      expect(latest?.updateAvailable).toBe(true);
+      latest?.onUpdate?.();
+      expect(openShareInstall).toHaveBeenCalledWith(
+        {
+          entity: 'skill',
+          externalId: 'share-1',
+          intent: 'install',
+          audience,
+        },
+        'in-app',
+        { sourceId: 'custom:app', skillName: 'first-copy' },
+      );
+    },
+  );
+
+  it.each([
+    ['a matching hash', origin, HASH_A],
+    ['an absent installed hash', { ...origin, contentHash: undefined }, HASH_B],
+    ['an invalid installed hash', { ...origin, contentHash: 'abc' }, HASH_B],
+    ['an invalid source hash', origin, 'not-a-hash'],
+  ])('offers no Update for %s', async (_case, installedFrom, sourceHash) => {
+    getShared.mockResolvedValue(sharedDetail({ contentHash: sourceHash }));
+    render({ installedFromShare: installedFrom });
+    await flush();
+    expect(latest?.updateAvailable).toBe(false);
+    expect(latest?.onUpdate).toBeUndefined();
+  });
+
+  it.each([
+    ['private', 'private' as const],
+    ['unknown', undefined],
+  ])(
+    'keeps the status without an action for a %s scope',
+    async (_case, scope) => {
+      getShared.mockResolvedValue(sharedDetail({ contentHash: HASH_B }));
+      render({ installedFromShare: { ...origin, shareScope: scope } });
+      await flush();
+      expect(latest?.updateAvailable).toBe(true);
+      expect(latest?.onUpdate).toBeUndefined();
+      expect(latest?.source?.kind).toBe('action');
+    },
+  );
+
+  it('offers no Update while a read fails or runs again', async () => {
+    getShared.mockRejectedValueOnce(new Error('403'));
+    render({ installedFromShare: origin });
+    await flush();
+    expect(latest?.onUpdate).toBeUndefined();
+
+    getShared.mockResolvedValueOnce(sharedDetail({ contentHash: HASH_B }));
+    render({ installedFromShare: origin }, 'second-copy');
+    await flush();
+    expect(latest?.onUpdate).toBeDefined();
+
+    // A new account's read starts without the previous eligibility.
+    getShared.mockReturnValue(new Promise(() => {}));
+    act(() => useWorkspaceContextStore.setState({ accountEpoch: 1 }));
+    expect(latest?.onUpdate).toBeUndefined();
+  });
+
+  it('never exposes Update from a late read for a previous skill', async () => {
+    const stale = deferred<SharedSkillDetail>();
+    getShared.mockReturnValueOnce(stale.promise);
+    getShared.mockResolvedValueOnce(sharedDetail({ id: 'share-2' }));
+    render({ installedFromShare: origin });
+    render({ installedFromShare: { ...origin, remoteId: 'share-2' } });
+    await flush();
+    stale.resolve(sharedDetail({ contentHash: HASH_B }));
+    await flush();
+    expect(latest?.updateAvailable).toBe(false);
+    expect(latest?.onUpdate).toBeUndefined();
+  });
+
+  it('clears Update once the receipt reaches the source hash', async () => {
+    getShared.mockResolvedValue(sharedDetail({ contentHash: HASH_B }));
+    render({ installedFromShare: origin });
+    await flush();
+    expect(latest?.onUpdate).toBeDefined();
+    render({ installedFromShare: { ...origin, contentHash: HASH_B } });
+    expect(latest?.onUpdate).toBeUndefined();
+    await flush();
+    expect(latest?.onUpdate).toBeUndefined();
   });
 });

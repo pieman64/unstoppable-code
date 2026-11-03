@@ -1113,7 +1113,7 @@ describe('ShareInstallModal failure recovery (CAN-5222)', () => {
     renderHost();
     open();
     const retry = byTestId('deep-link-share-retry');
-    expect(retry?.textContent).toBe('Retry');
+    expect(retry?.textContent).toBe('Try again');
     act(() => retry?.click());
     expect(mockRetryResolve).toHaveBeenCalledTimes(1);
     expect(mockSignIn).not.toHaveBeenCalled();

@@ -265,20 +265,23 @@ function ModelAliasItem({
           </FormField>
 
           <div className="space-y-2">
-            <label className="text-xs font-medium fg-secondary ">
-              Defaults
-            </label>
-            <SelectField
-              value={mode}
-              onChange={(e) => setMode(e.target.value as AliasMode)}
-              options={[
-                { value: 'none', label: 'No default' },
-                { value: 'inline', label: 'Inline model' },
-                { value: 'agent', label: 'Agent' },
-              ]}
-              disabled={readonly}
-              data-testid={`model-alias-${alias.id}-mode`}
-            />
+            <FormField
+              label="Defaults"
+              htmlFor={`model-alias-${alias.id}-mode`}
+            >
+              <SelectField
+                id={`model-alias-${alias.id}-mode`}
+                value={mode}
+                onChange={(e) => setMode(e.target.value as AliasMode)}
+                options={[
+                  { value: 'none', label: 'No default' },
+                  { value: 'inline', label: 'Inline model' },
+                  { value: 'agent', label: 'Agent' },
+                ]}
+                disabled={readonly}
+                data-testid={`model-alias-${alias.id}-mode`}
+              />
+            </FormField>
 
             {mode === 'none' && (
               <p className="text-xs fg-secondary">

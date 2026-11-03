@@ -1,11 +1,14 @@
 import { type JSX, useCallback, useEffect, useState } from 'react';
 import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   Markdown,
   PlanCommentComposer,
   PlanReviewComment,
   PlanReviewThread,
   markdownOptions,
   type PlanReviewAuthor,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import type {
   SharedRunComment,
@@ -14,7 +17,6 @@ import type {
 } from '@canopy/protocol/runs';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
 import { brandText } from '@/lib/brand';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -23,7 +25,7 @@ import {
 } from '@/stores/runCommentsStore';
 
 const TITLE = 'Run comments';
-const LOADING_LABEL = 'Loading comments…';
+const SLOW_LOADING_NOTE = 'Still loading comments…';
 const EMPTY_LABEL = 'No comments on this shared run yet.';
 const UNAVAILABLE_LABEL = `Comments aren't available for this session. It may no longer be shared, or the connected ${brandText.appName} Cloud doesn't support run comments yet.`;
 const GENERIC_ERROR = 'Unable to load comments.';
@@ -160,6 +162,7 @@ export function RunCommentsModal({
 
   return (
     <DialogModal
+      inset="flush"
       title={TITLE}
       subtitle={target.title}
       onClose={onClose}
@@ -167,7 +170,9 @@ export function RunCommentsModal({
       dataTestId="run-comments-modal"
     >
       {loading && detail === null ? (
-        <LoadingPlaceholder label={LOADING_LABEL} />
+        <DelayedLoadingPlaceholder slowNote={SLOW_LOADING_NOTE}>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       ) : detail === null ? (
         <p className="text-s fg-secondary" data-testid="run-comments-empty">
           {error ?? UNAVAILABLE_LABEL}
@@ -205,15 +210,7 @@ export function RunCommentsModal({
             />
           </div>
 
-          {error && (
-            <p
-              className="text-s fg-destructive"
-              role="alert"
-              data-testid="run-comments-error"
-            >
-              {error}
-            </p>
-          )}
+          <ErrorBanner className="" error={error} testId="run-comments-error" />
         </div>
       )}
     </DialogModal>

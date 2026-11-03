@@ -1,10 +1,12 @@
 import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
 import {
   Button,
+  DialogFormField,
   Notice,
   type SettingsSaveState,
 } from '@canopy/ui-shared/components';
 import { ArrowUpRightIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { ErrorState } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsRow,
@@ -455,23 +457,15 @@ export function WorkspaceEnvironmentTab({
             onRetry={(): void => void load()}
           />
         ) : status === 'error' ? (
-          <div className="space-y-3">
-            <p
-              className="text-s fg-destructive"
-              data-testid="workspace-environment-error"
-            >
-              Could not load environment assignments.
-            </p>
-            <Button
-              size="compact"
-              onClick={() => {
-                void useEnvironmentsStore.getState().load();
-              }}
-              data-testid="workspace-environment-retry"
-            >
-              Retry
-            </Button>
-          </div>
+          <ErrorState
+            space="panel"
+            message="Couldn’t load environment assignments."
+            onRetry={() => {
+              void useEnvironmentsStore.getState().load();
+            }}
+            testId="workspace-environment-error"
+            retryTestId="workspace-environment-retry"
+          />
         ) : (
           <p
             className="text-s fg-secondary"
@@ -595,13 +589,11 @@ export function WorkspaceEnvironmentTab({
           const fallback = getFallbackEnvironment(data, runtime);
           const fallbackLabel = `Global default (${fallback?.name ?? 'unassigned'})`;
           return (
-            <div key={runtime} className="space-y-1">
-              <label className="block text-s font-medium fg-primary">
-                {RUNTIME_META[runtime].label}
-              </label>
-              <p className="text-xs fg-secondary">
-                {runtimeHelper(runtime, workspaceKind)}
-              </p>
+            <DialogFormField
+              key={runtime}
+              label={RUNTIME_META[runtime].label}
+              description={runtimeHelper(runtime, workspaceKind)}
+            >
               <EnvironmentRuntimeSelect
                 environments={sortedEnvironments}
                 value={resolveValue(runtime)}
@@ -610,7 +602,7 @@ export function WorkspaceEnvironmentTab({
                 testId={`workspace-environment-${runtime}`}
                 ariaLabel={`${RUNTIME_META[runtime].label} assignment`}
               />
-            </div>
+            </DialogFormField>
           );
         })}
       </div>

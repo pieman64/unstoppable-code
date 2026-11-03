@@ -3136,6 +3136,7 @@ export class ChatStateV2Repository {
             for (const key of [
               'mcpActivation',
               'inputDelivery',
+              'trackedPlanImplementation',
               'lastAcceptedUserMessageId',
               'unacceptedTurnEnds',
               'turnEnds',

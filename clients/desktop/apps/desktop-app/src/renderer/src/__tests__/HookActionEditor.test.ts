@@ -330,12 +330,17 @@ describe('HookActionEditor helpers', () => {
         await Promise.resolve();
       });
       const addSection = container.querySelector('.border-dashed');
-      const actionType = addSection?.querySelectorAll('select')[1];
+      if (!addSection) throw new Error('new hook action section not found');
+      const actionType = addSection.querySelector<HTMLButtonElement>(
+        '[data-testid="hook-add-action-type"]',
+      );
       if (!actionType) throw new Error('new hook action type not found');
-      act(() => {
-        actionType.value = 'chat';
-        actionType.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      act(() => actionType.click());
+      const chatOption = document.querySelector<HTMLElement>(
+        '[role="option"][data-value="chat"]',
+      );
+      if (!chatOption) throw new Error('chat action type option not found');
+      act(() => chatOption.click());
       const editor = (): HTMLElement | null =>
         container.querySelector('[data-testid="hook-chat-draft-pr:create"]');
       expect(editor()).not.toBeNull();

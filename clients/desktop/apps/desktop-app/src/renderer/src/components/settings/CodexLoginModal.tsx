@@ -5,7 +5,13 @@ import {
 } from '@/components/pages/usage/OtherAccountSnapshots';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { CodexLoginState } from '@canopy/desktop-shared/types';
-import { Button, Checkbox, DialogModal } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceList,
+  ChoiceListRow,
+  DialogModal,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
@@ -172,6 +178,7 @@ export function CodexLoginModal({
 
   return (
     <DialogModal
+      inset="flush"
       title="Sign in to Codex"
       maxWidth="md"
       onClose={cancel}
@@ -246,7 +253,7 @@ export function CodexLoginModal({
     >
       <div className="flex flex-col">
         <div
-          className="space-y-4 px-5 pt-5 pb-4.5 text-s fg-primary"
+          className="space-y-4 px-6 pt-6 pb-4.5 text-s fg-primary"
           aria-live="polite"
         >
           {state.phase === 'confirm' ? (
@@ -256,17 +263,20 @@ export function CodexLoginModal({
                 After signing in or cancelling, you can choose which chats and
                 workflows to resume.
               </p>
-              <label className="flex w-fit cursor-pointer items-center gap-2">
-                <Checkbox
-                  checked={method === 'chatgptDeviceCode'}
-                  onChange={(event) =>
+              <ChoiceList aria-label="Sign-in method">
+                <ChoiceListRow
+                  selected={method === 'chatgptDeviceCode'}
+                  onClick={() =>
                     setMethod(
-                      event.target.checked ? 'chatgptDeviceCode' : 'chatgpt',
+                      method === 'chatgptDeviceCode'
+                        ? 'chatgpt'
+                        : 'chatgptDeviceCode',
                     )
                   }
-                />
-                Use a device code
-              </label>
+                >
+                  Use a device code
+                </ChoiceListRow>
+              </ChoiceList>
             </>
           ) : state.phase === 'waiting' ? (
             <>
@@ -339,11 +349,7 @@ export function CodexLoginModal({
               )}
             </>
           )}
-          {error && (
-            <p role="alert" className="fg-destructive">
-              {error}
-            </p>
-          )}
+          <ErrorBanner error={error} className="" />
         </div>
       </div>
     </DialogModal>

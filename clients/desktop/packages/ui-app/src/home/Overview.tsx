@@ -13,7 +13,11 @@ import {
   type OverviewState,
 } from '@canopy/app-state';
 import type { PortalPipelineRunProjection } from '@canopy/protocol/portal';
-import { LoadingSpinner, PageHeader } from '@canopy/ui-shared/components';
+import {
+  LoadingSpinner,
+  PageHeader,
+  Count,
+} from '@canopy/ui-shared/components';
 import { PlanModeIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { OverviewCard } from './OverviewCard';
@@ -101,11 +105,8 @@ export function OverviewSectionHeader({
       <div className="flex min-w-0 items-center gap-2">
         <h2 className="text-xs font-semibold fg-secondary">{title}</h2>
         {count !== undefined && count > 0 && (
-          <span
-            aria-label={countLabel ?? `${count} ${title.toLowerCase()}`}
-            className="rounded-full bg-accent-subtle px-1.5 text-3xs fg-accent"
-          >
-            {count}
+          <span aria-label={countLabel ?? `${count} ${title.toLowerCase()}`}>
+            <Count value={count} />
           </span>
         )}
       </div>

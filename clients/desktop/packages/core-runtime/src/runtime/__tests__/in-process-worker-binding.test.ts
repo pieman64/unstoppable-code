@@ -70,6 +70,15 @@ function build(
           'worker.git.diff.get': (): never => {
             throw new Error('Not exercised.');
           },
+          'worker.script.execution.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.script.execution.list': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.pipeline.execution.get': (): never => {
+            throw new Error('Not exercised.');
+          },
         },
         instructions: {},
         streams: {},

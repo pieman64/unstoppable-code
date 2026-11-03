@@ -21,8 +21,16 @@ import type { WorkerFilesystemRootsListResult } from '../canopy-core/worker/file
 import type { TurnFileRecord } from '../turn-files';
 import type { OnboardingTipsUpdate } from '../onboarding-tips';
 import type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
-export { ChatPlanReviewApprovalSchema } from '../canopy-core/chat-plan-review';
-export type { ChatPlanReviewApproval } from '../canopy-core/chat-plan-review';
+export {
+  TrackedPlanImplementationInputSchema,
+  TrackedPlanImplementationSchema,
+  ChatPlanReviewApprovalSchema,
+} from '../canopy-core/chat-plan-review';
+export type {
+  TrackedPlanImplementationInput,
+  TrackedPlanImplementation,
+  ChatPlanReviewApproval,
+} from '../canopy-core/chat-plan-review';
 import type { OpenCodeReportedUsage } from './opencode-usage';
 export {
   parseOpenCodeReportedUsage,
@@ -140,7 +148,14 @@ import type {
   McpServerScope,
   McpServerType,
 } from '../mcp-servers';
-import type { CollectionConfig, CollectionIndexEntry } from '../collections';
+import type {
+  ApplyCollectionUpdateResult,
+  CollectionConfig,
+  CollectionIndexEntry,
+  CollectionMcpRef,
+  CollectionPluginRef,
+  CollectionSkillRef,
+} from '../collections';
 import type { CuratedMcpUrlOption } from '../mcp-catalog';
 import type { CapabilityUnavailable } from '../capability-bundle';
 import type { AgentTaskStopReason } from '../cloud-session/agent-task';
@@ -390,6 +405,8 @@ export type PortalCommandType =
   | 'portal.mcp.delete_server'
   | 'portal.collections.list'
   | 'portal.collections.get'
+  | 'portal.collections.save'
+  | 'portal.collections.apply_update'
   | 'portal.installed_items.list_status'
   | 'portal.installed_items.set_status'
   | 'portal.installed_items.uninstall'
@@ -565,6 +582,8 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.mcp.delete_server',
   'portal.collections.list',
   'portal.collections.get',
+  'portal.collections.save',
+  'portal.collections.apply_update',
   'portal.installed_items.list_status',
   'portal.installed_items.set_status',
   'portal.installed_items.uninstall',
@@ -697,6 +716,9 @@ export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.mcp.delete_server',
     'portal.collections.list',
     'portal.collections.get',
+    // A collection save is a fast local file write, completed inline like the
+    // MCP config toggle.
+    'portal.collections.save',
     'portal.workspace_items.list_notes',
     'portal.workspace_items.read_note',
     'portal.workspace_items.list_prompts',
@@ -759,6 +781,7 @@ export const PORTAL_LONG_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.pipeline.share',
     'portal.pipeline.install_curated',
     'portal.collections.share',
+    'portal.collections.apply_update',
     'portal.marketplace.add',
     'portal.marketplace.update',
     'portal.marketplace.remove',
@@ -1699,6 +1722,16 @@ export const PORTAL_CAPABILITY_PLUGIN_MUTATIONS = 'plugin_mutations' as const;
  * generic {@link PORTAL_CAPABILITY_PLUGIN_MUTATIONS} do not imply it.
  */
 export const PORTAL_CAPABILITY_INSTALLED_ITEMS = 'installed_items_v1' as const;
+/**
+ * Desktop serves `portal.collections.save` (CAN-4847): create, edit and
+ * duplicate collections from the Portal. Older desktops lack it, so browsers
+ * hide those controls rather than send an unknown command.
+ */
+export const PORTAL_CAPABILITY_COLLECTION_MUTATIONS =
+  'collection_mutations_v1' as const;
+/** Revision-guarded shared updates, independent of local collection editing. */
+export const PORTAL_CAPABILITY_COLLECTION_UPDATES =
+  'collection_updates_v1' as const;
 /** Desktop serves `portal.worktree.discard.describe` and `.discard` (CAN-5334). */
 export const PORTAL_CAPABILITY_WORKTREE_DISCARD =
   'worktree_discard_v1' as const;
@@ -3552,6 +3585,51 @@ export interface PortalCollectionsGetPayload {
   collectionId: string;
 }
 
+/** A shared update names only the local copy and the revision being replaced. */
+export interface PortalCollectionsApplyUpdatePayload {
+  projectId: string;
+  collectionId: string;
+  expectedRevision: string;
+}
+
+/** Partial imports are retained even when the final grouping was not saved. */
+export type PortalCollectionsApplyUpdateResult =
+  | {
+      success: true;
+      update: ApplyCollectionUpdateResult;
+    }
+  | {
+      success: false;
+      code:
+        | 'invalid_payload'
+        | 'permission_denied'
+        | 'not_found'
+        | 'conflict'
+        | 'execution_failed';
+      message: string;
+      partialResourceEffects: string[];
+    };
+
+/**
+ * Payload for `portal.collections.save`: create a collection (no `id`) or
+ * replace an existing one's name, description and members. Share links
+ * (`remote`, `sharedSource`) and `createdAt` are never accepted from the
+ * browser; the desktop keeps the stored values.
+ */
+export interface PortalCollectionsSavePayload {
+  projectId: string;
+  collection: {
+    id?: string;
+    /** Echo the complete local snapshot revision on edit; omitted on create. */
+    expectedRevision?: string;
+    name: string;
+    description: string;
+    skills: CollectionSkillRef[];
+    plugins: CollectionPluginRef[];
+    mcpServers: CollectionMcpRef[];
+  };
+}
+
 /**
  * Frontmatter + markdown body returned by the catalog content read commands
  * (`portal.plugins.read_component_content`, `portal.skills.read`). `truncated`
@@ -3957,6 +4035,11 @@ export interface PortalCollectionsListResult {
    * {@link PORTAL_CATALOG_RESULT_MAX_BYTES}. Absent means complete.
    */
   truncated?: boolean;
+}
+
+/** Result of `portal.collections.save`: the collection as stored. */
+export interface PortalCollectionsSaveResult {
+  collection: CollectionConfig;
 }
 
 /** Result of `portal.collections.get`. */
@@ -5635,6 +5718,8 @@ export interface PortalCommandPayloadMap {
   'portal.mcp.delete_server': PortalMcpGetServerPayload;
   'portal.collections.list': PortalCollectionsListPayload;
   'portal.collections.get': PortalCollectionsGetPayload;
+  'portal.collections.save': PortalCollectionsSavePayload;
+  'portal.collections.apply_update': PortalCollectionsApplyUpdatePayload;
   'portal.installed_items.list_status': { projectId: string };
   'portal.installed_items.set_status': SetInstalledItemStatusRequest & {
     projectId: string;
@@ -5848,7 +5933,7 @@ export interface PortalCommandCompletedPayload<TResult = unknown> {
  * limits.
  */
 export interface PortalCommandFailedPayload {
-  /** Typed script-action refusal retained by the waited RPC path. */
+  /** Typed script-action or collection-save refusal retained by the waited RPC path. */
   response?: { code: string; message: string };
   commandId: string;
   sequenceNumber: number;
@@ -6041,6 +6126,8 @@ export type PortalAdapterFailureCode =
   | 'invalid_payload'
   | 'invalid_target'
   | 'not_found'
+  | 'conflict'
+  | 'permission_denied'
   | 'not_found_or_firing'
   | 'forbidden'
   | 'execution_failed'
@@ -6056,6 +6143,8 @@ export const PORTAL_ADAPTER_FAILURE_CODES = [
   'invalid_payload',
   'invalid_target',
   'not_found',
+  'conflict',
+  'permission_denied',
   'not_found_or_firing',
   'forbidden',
   'execution_failed',

@@ -32,6 +32,21 @@ import {
   type UpdateChatProjectRequest,
 } from '@canopy/desktop-shared/types';
 import { syncChatProjectAgentsMd } from '../lib/chat-project-utils';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import {
+  projectedWorkspaceMetadataCommands,
+  type ProjectedWorkspaceMetadataCommands,
+} from '../canopy-runtime/workspace-metadata-dispatch';
+import {
+  projectedWorkspaceGuardedCommands,
+  type ProjectedWorkspaceGuardedCommands,
+} from '../canopy-runtime/workspace-guarded-dispatch';
+import { admitCoworkSaveRequest } from '../lib/cowork-workspace-records';
+import {
+  projectedWorkspaceLifecycleCommands,
+  type ProjectedWorkspaceLifecycleCommands,
+} from '../canopy-runtime/workspace-lifecycle-dispatch';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import {
   createCoworkWorkspace,
   createCoworkWorkspaceFromBlueprint,
@@ -135,19 +150,73 @@ async function createChatProject(
   return { project };
 }
 
-async function updateChatProject(req: UpdateChatProjectRequest): Promise<void> {
+/**
+ * A save splits by owner (A28'(a)): its Cowork settings, as their own
+ * decision, project `core.workspace.cowork.update`, whose boundary retries a
+ * stale-file refusal (W5d2 P2), then its name, color and Always show project
+ * `core.workspace.update` over the unkeyed save of the rest, explicit default
+ * plugins included. The whole save is admitted first, so a refusal writes no
+ * part. The settings land first, and the rest's write derives the defaults
+ * again from the stored preset, so a selected preset still wins.
+ */
+async function updateChatProject(
+  req: UpdateChatProjectRequest,
+  commands: Pick<ProjectedWorkspaceMetadataCommands, 'updateCoworkMetadata'> &
+    Pick<ProjectedWorkspaceGuardedCommands, 'updateCoworkSettings'>,
+): Promise<void> {
   if (req.startPage !== undefined) {
     assertStartPageFeatureEnabled();
   }
   const workspaceId = resolveCoworkWorkspaceId(req.projectId);
-  await updateCoworkWorkspace({ ...req, projectId: workspaceId });
+  admitCoworkSaveRequest({ ...req, projectId: workspaceId });
+  const { name, color, alwaysShow, defaultPluginSelections } = req;
+  const settings = {
+    description: req.description,
+    defaultModel: req.defaultModel,
+    defaultPresetId: req.defaultPresetId,
+    presets: req.presets,
+    archiveRetentionDays: req.archiveRetentionDays,
+    autoArchiveDays: req.autoArchiveDays,
+    starterPrompts: req.starterPrompts,
+    startPage: req.startPage,
+  };
+  const presentation = {
+    ...(name !== undefined && { name }),
+    ...(color !== undefined && { color }),
+    ...(alwaysShow !== undefined && { alwaysShow }),
+  };
+  const hasPresentation = Object.keys(presentation).length > 0;
+  // An empty save still applies the selected preset again, as before.
+  if (
+    Object.values(settings).some((value) => value !== undefined) ||
+    (!hasPresentation && defaultPluginSelections === undefined)
+  )
+    await commands.updateCoworkSettings({
+      projectId: workspaceId,
+      ...settings,
+    });
+  const saveRest = (): Promise<void> =>
+    updateCoworkWorkspace({
+      projectId: workspaceId,
+      ...presentation,
+      ...(defaultPluginSelections !== undefined && { defaultPluginSelections }),
+    });
+  if (hasPresentation)
+    await commands.updateCoworkMetadata(
+      { workspaceId, patch: presentation },
+      saveRest,
+    );
+  else if (defaultPluginSelections !== undefined) await saveRest();
   recordStandaloneProjectCrudTelemetry({
     action: 'update',
     projectId: workspaceId,
   });
 }
 
-async function deleteChatProject(req: DeleteChatProjectRequest): Promise<void> {
+async function deleteChatProject(
+  req: DeleteChatProjectRequest,
+  lifecycle: Pick<ProjectedWorkspaceLifecycleCommands, 'deleteWorkspace'>,
+): Promise<void> {
   validateId(req.projectId, 'projectId');
   if (req.chatDisposition !== 'move' && req.chatDisposition !== 'delete') {
     throw new Error('Invalid chatDisposition');
@@ -158,11 +227,14 @@ async function deleteChatProject(req: DeleteChatProjectRequest): Promise<void> {
   // admission in the workspace and sentinel scopes, tears down sessions and
   // removes the project. `coworkProject` refuses a code project or an
   // unindexed id as "Chat project not found" before any effect.
-  await deleteWorkspace({
-    workspaceId,
-    source: 'chat_project_delete',
-    coworkProject: true,
-  });
+  // Projected as core.workspace.delete (W7b-2a), running this request.
+  await lifecycle.deleteWorkspace({ workspaceId }, () =>
+    deleteWorkspace({
+      workspaceId,
+      source: 'chat_project_delete',
+      coworkProject: true,
+    }),
+  );
   recordStandaloneProjectCrudTelemetry({
     action: 'delete',
     projectId: workspaceId,
@@ -365,7 +437,10 @@ async function revokeChatProjectTemplateShare(
   });
 }
 
-export function registerChatProjectHandlers(): void {
+export function registerChatProjectHandlers(runtime: {
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   registerIpcHandler<[], ChatProjectListResponse>(
     IPC_CHANNELS.chatProjectList,
     async () => serializeChatProjectOperation(listChatProjects),
@@ -707,15 +782,35 @@ export function registerChatProjectHandlers(): void {
 
   registerIpcHandler<[UpdateChatProjectRequest], void>(
     IPC_CHANNELS.chatProjectUpdate,
-    async (_event, req) => {
-      await serializeChatProjectOperation(() => updateChatProject(req));
+    async (event, req) => {
+      // Resolved before any write, so an untrusted sender changes nothing.
+      const target = {
+        dispatcher: runtime.dispatcher,
+        caller: runtime.resolveCaller(event),
+      };
+      const metadata = projectedWorkspaceMetadataCommands(target);
+      const guarded = projectedWorkspaceGuardedCommands(target);
+      await serializeChatProjectOperation(() =>
+        updateChatProject(req, {
+          updateCoworkMetadata: (request, save) =>
+            metadata.updateCoworkMetadata(request, save),
+          updateCoworkSettings: (request) =>
+            guarded.updateCoworkSettings(request),
+        }),
+      );
     },
   );
 
   registerIpcHandler<[DeleteChatProjectRequest], void>(
     IPC_CHANNELS.chatProjectDelete,
-    async (_event, req) => {
-      await serializeChatProjectOperation(() => deleteChatProject(req));
+    async (event, req) => {
+      const lifecycle = projectedWorkspaceLifecycleCommands({
+        dispatcher: runtime.dispatcher,
+        caller: runtime.resolveCaller(event),
+      });
+      await serializeChatProjectOperation(() =>
+        deleteChatProject(req, lifecycle),
+      );
     },
   );
 

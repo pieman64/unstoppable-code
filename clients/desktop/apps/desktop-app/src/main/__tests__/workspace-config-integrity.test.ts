@@ -119,7 +119,11 @@ import {
 } from '../lib/workspace-persistence';
 import { addWorkspaceRepository } from '../lib/workspace-repositories';
 import { saveWorkspaceHooksFromService } from '../services/hooks-service';
-import { saveWorkspaceRepoScriptsFromService } from '../services/scripts-service';
+import { saveWorkspaceRepoScripts } from '../lib/script-definition-saves';
+import {
+  DESKTOP_SCRIPT_CALLER,
+  scriptDefinitionsDispatcher,
+} from './helpers/script-definitions-dispatcher';
 import { updateWorkspacePlanDetection } from '../lib/workspace-script-hook-settings';
 
 const MULTI_ID = 'multi';
@@ -368,10 +372,14 @@ describe('workspace.json integrity (real fs)', () => {
 
     it('save repository scripts', async () => {
       await expect(
-        saveWorkspaceRepoScriptsFromService({
-          workspaceId: MULTI_ID,
-          repos: [{ repoId: 'api', scripts: { setup: 'npm ci' } }],
-        }),
+        saveWorkspaceRepoScripts(
+          scriptDefinitionsDispatcher(),
+          DESKTOP_SCRIPT_CALLER,
+          {
+            workspaceId: MULTI_ID,
+            repos: [{ repoId: 'api', scripts: { setup: 'npm ci' } }],
+          },
+        ),
       ).rejects.toThrow(/could not be read/i);
       await expectUntouched();
     });

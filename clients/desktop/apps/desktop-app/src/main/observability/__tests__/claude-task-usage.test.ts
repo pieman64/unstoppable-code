@@ -111,6 +111,7 @@ import {
 } from 'node:fs/promises';
 import { ClaudeTaskUsageTracker } from '../capture-fields';
 import { ObservabilityService } from '../service';
+import { createDesktopObservabilityHost } from '../host';
 import { setExperimentalFeaturesEnabled } from '../../lib/experimental-features';
 
 const mockReaddir = jest.mocked(readdirModuleMock);
@@ -438,7 +439,7 @@ describe('Claude task usage through ObservabilityService', () => {
   });
 
   function createService(): ObservabilityService {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     return service;
   }

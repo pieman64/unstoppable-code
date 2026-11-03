@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
   clearScenario,
@@ -109,15 +110,17 @@ async function openWorktreeRowMenu(window, workspaceId, worktreeId) {
   await expect(window.getByTestId('worktree-actions-menu')).toBeVisible();
 }
 
-async function pickAndMove(window, organizationName) {
+async function pickAndMove(window, organizationId) {
   const dialog = window.getByTestId('move-project-to-organization-dialog');
   await expect(dialog).toBeVisible();
   await expect(
     window.getByTestId('move-project-to-organization-move'),
   ).toBeDisabled();
-  await window
-    .getByTestId('move-project-to-organization-select')
-    .selectOption({ label: organizationName });
+  // A Canopy dropdown: open the trigger, choose the option by its value.
+  const trigger = window.getByTestId('move-project-to-organization-select');
+  await expect(trigger).toBeFocused();
+  await chooseSettingsOption(trigger, { value: organizationId });
+  await expect(trigger).toHaveAttribute('data-value', organizationId);
   await window.getByTestId('move-project-to-organization-move').click();
 }
 
@@ -144,7 +147,7 @@ test('a worktree row moves its whole project to the picked organization', async 
     await expect(dialog).toContainText(
       `Once ${PERSONAL_NAME} moves to an organization, it stays there and cannot move back to your personal space.`,
     );
-    await pickAndMove(window, 'Acme');
+    await pickAndMove(window, ORG_CONTEXT_A);
 
     await expect(dialog).toHaveCount(0);
     await expect(
@@ -208,7 +211,7 @@ test('the project header and Cowork project menus move their project', async () 
     await expect(
       window.getByTestId('move-project-to-organization-dialog'),
     ).toContainText(`Once ${SECOND_PROJECT.name} moves to an organization`);
-    await pickAndMove(window, 'Acme');
+    await pickAndMove(window, ORG_CONTEXT_A);
     await expect(
       window
         .getByTestId('toast-card')
@@ -246,7 +249,7 @@ test('the project header and Cowork project menus move their project', async () 
     await coworkMenu
       .getByTestId('workspace-move-to-organization-menu-item')
       .click();
-    await pickAndMove(window, 'Acme');
+    await pickAndMove(window, ORG_CONTEXT_A);
     await expect(
       window
         .getByTestId('toast-card')
@@ -276,9 +279,9 @@ test('a refused move keeps the dialog open and the project in Personal', async (
     await window
       .getByTestId('worktree-actions-menu-move-to-organization')
       .click();
-    await pickAndMove(window, 'Acme');
+    await pickAndMove(window, ORG_CONTEXT_A);
     const error = window.getByTestId('move-project-to-organization-error');
-    await expect(error).toHaveAttribute('role', 'alert');
+    await expect(error.getByRole('alert')).toBeVisible();
     await expect(error).toHaveText(
       `Couldn't move ${PERSONAL_NAME}. You've reached Acme's limit for private projects.`,
     );

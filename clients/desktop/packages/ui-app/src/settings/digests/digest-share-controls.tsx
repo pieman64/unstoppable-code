@@ -7,6 +7,8 @@ import {
   copyTextToClipboard,
   FloatingMenu,
   FLOATING_PICKER_GAP,
+  TextInput,
+  CopyDetailsButton,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import {
@@ -18,7 +20,7 @@ import type {
   DigestProfileAudience,
   DigestProfileFeatureResponse,
 } from '@canopy/protocol/settings';
-import { useSettingsErrorCopy } from '../errors';
+import { useSettingsErrorCopy, type SettingsFailure } from '../errors';
 import {
   SettingsConfirmDialog,
   useSettingsClient,
@@ -127,7 +129,9 @@ export function DigestShareControls({
   const [sharePath, setSharePath] = useState(initialSharePath);
   const [sharingEnabled, setSharingEnabled] = useState(initialSharingEnabled);
   const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<SettingsFailure | null>(null);
+  // A status line that is not a failure: our sentence, nothing to copy.
+  const say = (copy: string): void => setStatus({ copy });
   const [pendingAction, setPendingAction] = useState<PendingShareAction | null>(
     null,
   );
@@ -334,7 +338,7 @@ export function DigestShareControls({
         // the UI does not claim a grant that the server refused.
         const terminal = `This digest can no longer be shared with ${audience.organizationName}. Refresh to see its current state.`;
         setStatus(
-          errorCopy.actionCopy(error, {
+          errorCopy.actionFailure(error, {
             action: 'update profile sharing',
             known: [
               { status: 404, copy: terminal },
@@ -354,7 +358,7 @@ export function DigestShareControls({
             : item,
         ),
       );
-      setStatus(
+      say(
         next.featured
           ? `Shared on your ${audience.organizationName} profile.`
           : `Removed from your ${audience.organizationName} profile.`,
@@ -377,13 +381,13 @@ export function DigestShareControls({
       // Turning sharing off ROTATES the slug server-side, so this is
       // destructive in the same way "Rotate link" is. Saying nothing here
       // would let it read as a reversible switch.
-      setStatus(
+      say(
         next.sharingEnabled
           ? 'Sharing is on. Anyone with the link can view this digest.'
           : 'Sharing is off. Previously shared links no longer work, even if you turn sharing back on.',
       );
     } catch (error) {
-      setStatus(errorCopy.actionCopy(error, { action: 'update sharing' }));
+      setStatus(errorCopy.actionFailure(error, { action: 'update sharing' }));
     } finally {
       setSaving(false);
     }
@@ -400,13 +404,13 @@ export function DigestShareControls({
       // a dead URL. Both mutate paths serialize with `includeShareLink`, so
       // this cannot currently fire; saying so out loud keeps it that way.
       if (next.sharePath === undefined) {
-        setStatus('Link rotated, but the new link could not be read. Reload.');
+        say('Link rotated, but the new link could not be read. Reload.');
         return;
       }
       setSharePath(next.sharePath);
-      setStatus('A new share link is ready. Previous links no longer work.');
+      say('A new share link is ready. Previous links no longer work.');
     } catch (error) {
-      setStatus(errorCopy.actionCopy(error, { action: 'rotate the link' }));
+      setStatus(errorCopy.actionFailure(error, { action: 'rotate the link' }));
     } finally {
       setSaving(false);
     }
@@ -424,7 +428,7 @@ export function DigestShareControls({
     // every other action here reports its own.
     const wrote = await copyTextToClipboard(shareUrl);
     setCopiedUrl(wrote ? shareUrl : null);
-    setStatus(wrote ? 'Share link copied.' : 'Unable to copy the link.');
+    say(wrote ? 'Share link copied.' : 'Unable to copy the link.');
   }
 
   // The trigger answers "is this digest shared with ANYONE", not "is the
@@ -525,17 +529,18 @@ export function DigestShareControls({
           {sharingEnabled ? (
             <>
               <div className="flex items-center gap-2">
-                <input
-                  readOnly
-                  value={shareUrl}
-                  aria-label="Share link"
-                  data-testid="digest-share-link"
-                  onFocus={(event): void => event.currentTarget.select()}
-                  className={joinClassNames(
-                    'min-w-0 flex-1 rounded-lg border bg-base px-2 py-1.5 text-xs fg-secondary',
-                    blockClassName,
-                  )}
-                />
+                <div
+                  className={joinClassNames('min-w-0 flex-1', blockClassName)}
+                >
+                  <TextInput
+                    readOnly
+                    density="settings"
+                    value={shareUrl}
+                    aria-label="Share link"
+                    data-testid="digest-share-link"
+                    onFocus={(event): void => event.currentTarget.select()}
+                  />
+                </div>
                 <Button
                   ref={copyRef}
                   variant="secondary"
@@ -666,7 +671,10 @@ export function DigestShareControls({
             browse-mode traversal encounters the sentence twice, which is the
             accepted trade for static-text-plus-live-region.
           */}
-          {status && <p className="text-xs fg-secondary">{status}</p>}
+          {status && <p className="text-xs fg-secondary">{status.copy}</p>}
+          {status?.details !== undefined ? (
+            <CopyDetailsButton details={status.details} />
+          ) : null}
         </div>
       </FloatingMenu>
 
@@ -687,7 +695,7 @@ export function DigestShareControls({
         this one is for assistive tech only.
       */}
       <p role="status" aria-live="polite" className="sr-only">
-        {status ?? ''}
+        {status?.copy ?? ''}
       </p>
 
       {pendingAction && (

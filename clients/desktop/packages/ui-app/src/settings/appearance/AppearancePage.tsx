@@ -19,6 +19,7 @@ import {
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy } from '../errors';
+import type { SettingsFailure } from '../errors';
 
 const ACCOUNT_APPEARANCE_ERROR_SCOPE = 'settings.account.appearance';
 
@@ -41,8 +42,8 @@ export function AppearancePage(): JSX.Element {
   const errorCopy = useSettingsErrorCopy(ACCOUNT_APPEARANCE_ERROR_SCOPE);
   const [saved, setSaved] = useState<ChatDetail | null>(null);
   const [requested, setRequested] = useState<ChatDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Bumped by Retry so the load effect runs again.
   const [loadAttempt, setLoadAttempt] = useState(0);
   const mounted = useRef(true);
@@ -70,7 +71,7 @@ export function AppearancePage(): JSX.Element {
         setSaved(next);
         setLoadError(null);
       } catch (caught: unknown) {
-        if (active) setLoadError(errorCopy.loadCopy(caught));
+        if (active) setLoadError(errorCopy.loadFailure(caught));
       }
     };
     void load();
@@ -100,7 +101,7 @@ export function AppearancePage(): JSX.Element {
         } catch (caught: unknown) {
           if (mounted.current && generation === saveGeneration.current)
             setError(
-              errorCopy.actionCopy(caught, { action: 'save your choice' }),
+              errorCopy.actionFailure(caught, { action: 'save your choice' }),
             );
         } finally {
           if (mounted.current && generation === saveGeneration.current)
@@ -116,7 +117,11 @@ export function AppearancePage(): JSX.Element {
   return (
     <div className="flex flex-col gap-6" data-testid="account-appearance-page">
       {loadError !== null ? (
-        <ErrorBanner error={loadError} onRetry={retryLoad} />
+        <ErrorBanner
+          error={loadError?.copy}
+          details={loadError?.details}
+          onRetry={retryLoad}
+        />
       ) : shown === null ? (
         <DelayedLoadingPlaceholder>
           <SettingsFormSkeleton rows={1} />
@@ -124,7 +129,13 @@ export function AppearancePage(): JSX.Element {
       ) : (
         <SettingsCard title="Chats" testId="account-appearance-chats">
           <div className="flex flex-col gap-3">
-            {error !== null && <ErrorBanner className="" error={error} />}
+            {error !== null && (
+              <ErrorBanner
+                className=""
+                error={error?.copy}
+                details={error?.details}
+              />
+            )}
             <div
               className={SETTINGS_CARD_ROW_CLASS}
               data-testid="settings-chat-detail-row"

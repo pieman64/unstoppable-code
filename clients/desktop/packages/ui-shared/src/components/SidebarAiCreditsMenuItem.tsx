@@ -137,7 +137,7 @@ export function SidebarAiCreditsMenuItem({
       data-testid={dataTestId}
     >
       <DropdownMenuItemIcon>
-        <CreditCard aria-hidden="true" />
+        <CreditCard size="xl" aria-hidden="true" />
       </DropdownMenuItemIcon>
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {balance !== null && (

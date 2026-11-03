@@ -5,12 +5,35 @@ import type {
   InstalledSkillInfo,
   SharedSkillInstallOrigin,
 } from '@canopy/protocol';
+import type { DetailMoreMenuItem } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import type * as SkillReadDetailModule from '../SkillReadDetail';
+
+// The header constructs its formatter when the module loads. Pin only that
+// input, then restore Intl; the tests still render the production header.
+jest.mock('../SkillReadDetail', () => {
+  const NativeDateTimeFormat = Intl.DateTimeFormat;
+  const formatter = jest
+    .spyOn(Intl, 'DateTimeFormat')
+    .mockImplementation(
+      (_locales, options) =>
+        new NativeDateTimeFormat('en-US', { ...options, timeZone: 'UTC' }),
+    );
+  try {
+    return jest.requireActual<typeof SkillReadDetailModule>(
+      '../SkillReadDetail',
+    );
+  } finally {
+    formatter.mockRestore();
+  }
+});
+
 import {
   SkillReadDetail,
   installedSkillDetailHeader,
 } from '../SkillReadDetail';
 import {
+  InstalledShareUpdateButton,
   shareSourceHashChanged,
   sharedSkillDisplayNames,
   type InstalledShareProvenanceOptions,
@@ -45,6 +68,7 @@ function installed(
 ): NonNullable<HeaderInstalled> {
   return {
     source: 'Custom skills',
+    installedAt: '2026-10-14T12:00:00.000Z',
     updatedAt: '2026-10-20T12:00:00.000Z',
     custom: true,
     description: 'Reviews code',
@@ -123,7 +147,7 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
     ).toBe('acme/skills');
   });
 
-  it('orders organization, team, sharer, copy, update, date and link', () => {
+  it('orders organization, team, sharer, copy, status and link', () => {
     const onSelect = jest.fn();
     const container = renderHeader(
       installed({
@@ -136,11 +160,11 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
       'Team: Platform',
       'Shared by Lena Park',
       'One-time copy',
-      'Update available',
-      'Updated Oct 20, 2026',
+      'Update available·Installed Oct 14, 2026',
       'View shared skill',
     ]);
     expect(container.textContent).not.toContain('Custom');
+    expect(container.textContent).not.toContain('Updated');
     const link = container.querySelector<HTMLButtonElement>(
       '[data-testid="installed-share-source-link"]',
     );
@@ -182,7 +206,7 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
     expect(metaFacts(container)).toEqual([
       'Shared by Sam',
       'One-time copy',
-      'Updated Oct 20, 2026',
+      'Installed Oct 14, 2026',
     ]);
   });
 
@@ -193,7 +217,7 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
     );
     expect(metaFacts(container)).toEqual([
       'One-time copy',
-      'Updated Oct 20, 2026',
+      'Installed Oct 14, 2026',
       'View shared skill',
     ]);
     expect(
@@ -213,7 +237,7 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
     expect(metaFacts(container)).toEqual([
       'From Acme Corp',
       'One-time copy',
-      'Updated Oct 20, 2026',
+      'Installed Oct 14, 2026',
     ]);
   });
 
@@ -242,6 +266,174 @@ describe('installedSkillDetailHeader shared provenance (CAN-5018)', () => {
     });
     expect(modified.defaultPrevented).toBe(false);
     expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('installedSkillDetailHeader status and date (CAN-5306)', () => {
+  const shared = (
+    overrides: Partial<InstalledSkillInfo> = {},
+  ): NonNullable<HeaderInstalled> =>
+    installed({ installedFromShare: { remoteId: 'share-3' }, ...overrides });
+
+  it.each([undefined, '', 'not a date'])(
+    'falls back from an absent or invalid install date (%s) to the update date',
+    (installedAt) => {
+      expect(metaFacts(renderHeader(shared({ installedAt })))).toEqual([
+        'One-time copy',
+        'Installed Oct 20, 2026',
+      ]);
+    },
+  );
+
+  it('uses the valid install date even when the update date is invalid', () => {
+    expect(
+      metaFacts(renderHeader(shared({ updatedAt: 'not a date' }))),
+    ).toEqual(['One-time copy', 'Installed Oct 14, 2026']);
+  });
+
+  it('keeps the badge alone when neither date parses', () => {
+    const container = renderHeader(
+      shared({ installedAt: '', updatedAt: 'nope' }),
+      { updateAvailable: true },
+    );
+    expect(metaFacts(container)).toEqual(['One-time copy', 'Update available']);
+    const status = container.querySelector(
+      '[data-testid="installed-share-status"]',
+    );
+    expect(status?.textContent).toBe('Update available');
+  });
+
+  it('leaves out the status fact when it has nothing to say', () => {
+    const container = renderHeader(
+      shared({ installedAt: '', updatedAt: 'nope' }),
+    );
+    expect(metaFacts(container)).toEqual(['One-time copy']);
+    expect(
+      container.querySelector('[data-testid="installed-share-status"]'),
+    ).toBeNull();
+  });
+
+  it('shows the update as an info badge with an icon, outside replay blocks', () => {
+    const container = renderHeader(shared(), { updateAvailable: true });
+    const statuses = container.querySelectorAll(
+      '[data-testid="installed-share-status"]',
+    );
+    expect(statuses).toHaveLength(1);
+    const badge = statuses[0]?.querySelector(
+      '[data-testid="installed-share-update-available"]',
+    );
+    expect(badge?.getAttribute('data-badge-tone')).toBe('info');
+    expect(badge?.querySelector('svg')).not.toBeNull();
+    expect(statuses[0]?.closest(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
+    expect(statuses[0]?.querySelector(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
+  });
+
+  it('keeps Updated for a skill that is not a shared copy', () => {
+    expect(metaFacts(renderHeader(installed()))).toEqual([
+      'Custom',
+      'Updated Oct 20, 2026',
+    ]);
+  });
+});
+
+describe('SkillReadDetail host menu items and Update (CAN-5306)', () => {
+  function renderDetail(
+    props: Partial<Parameters<typeof SkillReadDetail>[0]>,
+  ): HTMLDivElement {
+    return mount(
+      <SkillReadDetail
+        skill={{ sourceId: 'custom:app', name: 'review' }}
+        content={null}
+        files={[]}
+        loading={false}
+        error=""
+        readFile={() =>
+          Promise.resolve({ content: '', truncated: false, binary: false })
+        }
+        {...props}
+      />,
+    );
+  }
+
+  function openMenu(container: HTMLElement): string[] {
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-testid="skill-read-detail-more"]',
+    );
+    act(() => trigger?.click());
+    return Array.from(
+      document.querySelectorAll(
+        '[data-testid="skill-read-detail-menu"] [data-testid^="skill-read-detail-"]',
+      ),
+    ).map((item) => item.getAttribute('data-testid') ?? '');
+  }
+
+  const tryItItem = (onSelect: () => void): DetailMoreMenuItem => ({
+    id: 'try-it',
+    label: 'Try it',
+    icon: null,
+    testId: 'skill-read-detail-try-it',
+    onSelect,
+  });
+
+  it.each([
+    ['header', { title: 'Review' }],
+    ['dialog', undefined],
+  ])('puts host items first in the %s layout', (_layout, header) => {
+    const onSelect = jest.fn();
+    const container = renderDetail({
+      ...(header ? { header } : {}),
+      leadingMenuItems: [tryItItem(onSelect)],
+      onRemove: jest.fn(),
+      updateAction: {
+        status: 'ready',
+        updateAvailable: false,
+        pending: 'none',
+        onCheck: jest.fn(),
+        onApply: jest.fn(),
+      },
+    });
+    const items = openMenu(container);
+    expect(items[0]).toBe('skill-read-detail-try-it');
+    expect(items).toContain('skill-read-detail-check-updates');
+    act(() =>
+      document
+        .querySelector<HTMLElement>('[data-testid="skill-read-detail-try-it"]')
+        ?.click(),
+    );
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it('activates Update with its name and respects a host-disabled state', () => {
+    const onUpdate = jest.fn();
+    const container = renderDetail({
+      header: { title: 'Review' },
+      primaryAction: (
+        <InstalledShareUpdateButton name="Review" onUpdate={onUpdate} />
+      ),
+    });
+    const button = container.querySelector<HTMLButtonElement>(
+      '[data-testid="installed-share-update"]',
+    );
+    expect(button?.textContent).toBe('Update');
+    expect(button?.getAttribute('aria-label')).toBe('Update Review');
+    act(() => button?.click());
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    act(() =>
+      mounted?.render(
+        <InstalledShareUpdateButton
+          name="Review"
+          onUpdate={onUpdate}
+          disabled
+        />,
+      ),
+    );
+    const disabled = container.querySelector<HTMLButtonElement>(
+      '[data-testid="installed-share-update"]',
+    );
+    expect(disabled?.disabled).toBe(true);
+    act(() => disabled?.click());
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 });
 

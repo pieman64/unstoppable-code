@@ -80,6 +80,7 @@ import {
   type ScheduledActivity,
   type ScheduledActivityRun,
   type SidebarItem,
+  type WorktreeGitFailedEvent,
 } from '@canopy/desktop-shared/types';
 import type { PipelineShareInstallPin } from '@canopy/protocol/pipelines';
 import {
@@ -198,6 +199,7 @@ import {
   createSingleRepoWorktree,
 } from '../lib/worktree-service';
 import { readAllSidebarItems } from '../lib/sidebar-items';
+import { readWorkspaceWorktreesDetailed } from '../lib/workspace-persistence';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { sendToWindow } from '../lib/window-send';
 import { reserveWorkspaceTargetRuntimeStart } from '../lib/workspace-target-exclusion';
@@ -5839,6 +5841,8 @@ export class AutomationsService {
     const existingWorktreeIds = workspace.worktrees.map(
       (worktree) => worktree.id,
     );
+    let lastSetupPhase = 'reserving';
+    let setupFailureReason: WorktreeGitFailedEvent['failureReason'];
     let resolveReady!: () => void;
     let rejectReady!: (error: Error) => void;
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -5846,31 +5850,43 @@ export class AutomationsService {
       resolveReady = resolve;
       rejectReady = reject;
       timeout = setTimeout(() => {
-        reject(new Error('Timed out waiting for worktree setup.'));
+        reject(
+          new Error(
+            `Timed out waiting for worktree setup (last observed phase: ${lastSetupPhase}).`,
+          ),
+        );
       }, WORKTREE_GIT_READY_TIMEOUT_MS);
       timeout.unref?.();
     });
+    // Phase B can settle before the reservation response reaches this waiter.
+    void readyPromise.catch(() => undefined);
+    const onGitSetupSettled: NonNullable<
+      Parameters<typeof createSingleRepoWorktree>[0]['onGitSetupSettled']
+    > = ({ outcome }): void => {
+      lastSetupPhase = outcome;
+      if (outcome === 'ready') {
+        resolveReady();
+      } else {
+        rejectReady(new Error(`Worktree setup ${outcome}.`));
+      }
+    };
     const onGitReady = (payload: Parameters<typeof sendToWindow>[2]): void => {
+      lastSetupPhase = 'git-ready';
       sendToWindow(
         this.surfaces?.getMainWindow() ?? null,
         IPC_CHANNELS.worktreeGitReady,
         payload,
       );
-      resolveReady();
     };
-    const onGitFailed = (payload: Parameters<typeof sendToWindow>[2]): void => {
+    const onGitFailed = (payload: WorktreeGitFailedEvent): void => {
+      lastSetupPhase = 'failed';
+      setupFailureReason = payload.failureReason;
       sendToWindow(
         this.surfaces?.getMainWindow() ?? null,
         IPC_CHANNELS.worktreeGitFailed,
         payload,
       );
-      rejectReady(
-        new Error(
-          isRecord(payload) && typeof payload.error === 'string'
-            ? payload.error
-            : 'Worktree setup failed.',
-        ),
-      );
+      rejectReady(new Error(payload.error));
     };
     let created: { id: string; createdAt: string } | null = null;
     try {
@@ -5890,6 +5906,7 @@ export class AutomationsService {
               deferGitSetup: true,
               onGitReady,
               onGitFailed,
+              onGitSetupSettled,
             })
           : await createMultiRepoWorktree({
               workspaceId: workspaceId,
@@ -5901,11 +5918,15 @@ export class AutomationsService {
               deferGitSetup: true,
               onGitReady,
               onGitFailed,
+              onGitSetupSettled,
             });
       if ('needsRepair' in result && result.needsRepair === true) {
         throw new Error('Created worktree requires repair.');
       }
       created = result;
+      if (lastSetupPhase === 'reserving') {
+        lastSetupPhase = result.setupPhase ?? 'reserved';
+      }
       await readyPromise;
       return {
         id: created.id,
@@ -5919,6 +5940,7 @@ export class AutomationsService {
           workspaceId,
           created.id,
           created.createdAt,
+          setupFailureReason,
         ).catch((cleanupError) => {
           // eslint-disable-next-line no-console
           console.error(
@@ -5938,7 +5960,17 @@ export class AutomationsService {
     workspaceId: string,
     worktreeId: string,
     expectedCreatedAt: string,
+    setupFailureReason?: WorktreeGitFailedEvent['failureReason'],
   ): Promise<void> {
+    // Later W5 recovery cannot authorize rollback of an unknown-authority failure.
+    if (setupFailureReason === 'storage-unavailable') return;
+
+    const list = await readWorkspaceWorktreesDetailed(workspaceId, {
+      persistRemovalCleanup: false,
+    });
+    // Unknown storage is not permission to roll back a checkout.
+    if (list.authority !== 'ok') return;
+
     // Rolls back a worktree whose setup failed before any chat activity —
     // never retain these as archived containers (they would be junk rows).
     if (workspaceType === 'single-repo') {

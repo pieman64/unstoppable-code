@@ -50,7 +50,7 @@ function byTestId(testId: string): HTMLElement {
 }
 
 describe('ChoiceList', () => {
-  it('is a hairline box of whole-row toggles marked by the neutral choice mark', () => {
+  it('is a hairline box of whole-row toggles marked by the choice mark', () => {
     const onClick = jest.fn();
     render(
       <ChoiceList aria-label="Projects" data-testid="list">
@@ -70,16 +70,21 @@ describe('ChoiceList', () => {
 
     const on = byTestId('on');
     const off = byTestId('off');
-    expect(on.getAttribute('aria-pressed')).toBe('true');
-    expect(off.getAttribute('aria-pressed')).toBe('false');
+    // A checkbox to assistive technology, not a pressed button.
+    expect(on.getAttribute('role')).toBe('checkbox');
+    expect(on.getAttribute('aria-checked')).toBe('true');
+    expect(off.getAttribute('aria-checked')).toBe('false');
     // Selection is the mark alone: no accent and no selected fill on the row.
     for (const row of [on, off]) {
       expect(row.className).not.toMatch(/accent/);
       expect(row.className).not.toContain('bg-selected');
       expect(row.className).toContain('hover:bg-subtle');
     }
-    expect(on.querySelector('.bg-fg-primary')).toBeInstanceOf(Element);
-    expect(off.querySelector('.bg-fg-primary')).toBeNull();
+    // The mark carries the accent; the row itself stays neutral.
+    expect(on.querySelector('[data-choice-glyph="check"]')).toBeInstanceOf(
+      Element,
+    );
+    expect(off.querySelector('[data-choice-glyph]')).toBeNull();
     expect(off.textContent).toContain('2 repos');
 
     act(() => on.click());

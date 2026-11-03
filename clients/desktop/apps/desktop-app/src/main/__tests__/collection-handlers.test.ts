@@ -1,3 +1,8 @@
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as paths from '../lib/paths';
+import type * as CollectionStore from '../collections/collection-store';
 import { COLLECTIONS_CHANNELS } from '@canopy/desktop-shared/constants/collection-channels';
 
 const registered = new Map<string, (...args: unknown[]) => unknown>();
@@ -54,6 +59,20 @@ jest.mock('../collections/canopy-server-client', () => ({
   ),
 }));
 
+jest.mock('../lib/resource-context', () => ({
+  resourceContextEnabled: (): boolean => false,
+}));
+jest.mock('../lib/resource-install-context', () => ({
+  assertInstalledResourceContext: jest.fn(() => Promise.resolve()),
+  assertLocalCollectionManagementContext: jest.fn(() => Promise.resolve()),
+  recordResourceInstall: jest.fn(() => Promise.resolve()),
+  classifyInstalledResourceOrigin: jest.fn(() => Promise.resolve('local')),
+}));
+jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
+  recordSharedItemInstall: jest.fn(),
+  recordSharedItemUninstall: jest.fn(),
+}));
+
 jest.mock('../skills/skill-package-install', () => ({
   installSubjectCapabilityPackage: jest.fn(),
 }));
@@ -63,6 +82,15 @@ jest.mock('../mcp/connection-status', () => ({
   getMcpServerStatusByName: jest.fn(() => Promise.resolve(null)),
 }));
 
+jest.mock('../collections/collection-mutations', () => ({
+  duplicateLocalCollection: jest.fn(),
+  applyCollectionUpdate: jest.fn(),
+}));
+
+import {
+  duplicateLocalCollection,
+  applyCollectionUpdate,
+} from '../collections/collection-mutations';
 import { assertCanopyCloudCapability } from '../canopy-cloud/client';
 import { registerCollectionHandlers } from '../collections/collection-handlers';
 import {
@@ -125,6 +153,34 @@ describe('collection IPC handlers', () => {
         totalBytes: 0,
       },
     });
+  });
+
+  it('collections:duplicate-collection forwards the request and detached result', async () => {
+    registerCollectionHandlers();
+    const request = { collectionId: 'local-1' };
+    const copy = { ...localCollection, id: 'local-2', name: 'Local copy' };
+    jest.mocked(duplicateLocalCollection).mockResolvedValueOnce(copy);
+    await expect(
+      registered.get(COLLECTIONS_CHANNELS.DUPLICATE_COLLECTION)?.(
+        null,
+        request,
+      ),
+    ).resolves.toBe(copy);
+    expect(duplicateLocalCollection).toHaveBeenCalledWith(request);
+  });
+
+  it('collections:apply-shared-update preserves revision and partial failure evidence', async () => {
+    registerCollectionHandlers();
+    const request = { collectionId: 'local-1', expectedRevision: 'revision-1' };
+    const failure = Object.assign(new Error('Import refused'), {
+      code: 'permission_denied',
+      partialResourceEffects: ['skill:review'],
+    });
+    jest.mocked(applyCollectionUpdate).mockRejectedValueOnce(failure);
+    await expect(
+      registered.get(COLLECTIONS_CHANNELS.APPLY_SHARED_UPDATE)?.(null, request),
+    ).rejects.toBe(failure);
+    expect(applyCollectionUpdate).toHaveBeenCalledWith(request);
   });
 
   it('deletes a newly created remote Collection when local link persistence fails', async () => {
@@ -243,7 +299,7 @@ describe('collection IPC handlers', () => {
   });
 
   it.each(['revoked', 'index write failed'])(
-    'cleans only its prepared new shared collection when initial SAVE fails (%s)',
+    'collections:save-collection cleans only its prepared new shared collection when initial save fails (%s)',
     async (message) => {
       mockSaveCollectionConfig.mockImplementationOnce((input, prepared) => {
         prepared?.({ ...localCollection, ...input, id: 'main-generated' });
@@ -373,6 +429,52 @@ describe('collection IPC handlers', () => {
     expect(mockSaveCollectionConfig).toHaveBeenNthCalledWith(
       2,
       localCollection,
+      undefined,
+      { expectedRevision: undefined },
+    );
+  });
+
+  it('keeps the existing sharedSource when installing into an added Collection', async () => {
+    const sharedSource = {
+      remoteId: 'shared-1',
+      fetchedAt: '2026-10-14T12:00:00.000Z',
+      contentHash: 'hash-old',
+    };
+    mockReadCollectionConfig.mockResolvedValue({
+      version: 2,
+      collection: { ...localCollection, sharedSource },
+    });
+    mockInstallSubjectCapabilityPackage.mockImplementation(async (request) => {
+      await request.finalizeInstall?.({
+        supportingFileCount: 0,
+        installedSkills: [
+          {
+            name: 'Helper',
+            localName: 'helper-2',
+            resourceId: 'helper-resource',
+          },
+        ],
+        uninstalledResourceLabels: [],
+        keptLocalFiles: [],
+      });
+      return {
+        supportingFileCount: 0,
+        installedSkills: [],
+        uninstalledResourceLabels: [],
+        keptLocalFiles: [],
+      };
+    });
+    registerCollectionHandlers();
+
+    const handler = registered.get(COLLECTIONS_CHANNELS.PACKAGE_INSTALL);
+    await handler?.(null, {
+      collectionId: 'shared-1',
+      localCollectionId: 'local-1',
+      packageRef: { version: 1, digest: packageDigest },
+    });
+
+    expect(mockSaveCollectionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'local-1', sharedSource }),
     );
   });
 
@@ -420,4 +522,104 @@ describe('collection IPC handlers', () => {
 
     expect(mockInstallSubjectCapabilityPackage).not.toHaveBeenCalled();
   });
+});
+
+describe('package rollback with real collection revisions', () => {
+  it.each([false, true])(
+    'restores only its finalized revision (intervening edit: %s)',
+    async (interveningEdit) => {
+      const temp = await fs.mkdtemp(
+        path.join(os.tmpdir(), 'collection-package-rollback-'),
+      );
+      const configPath = jest
+        .spyOn(paths, 'getCollectionConfigFilePath')
+        .mockImplementation((id) => path.join(temp, `collection-${id}.json`));
+      const indexPath = jest
+        .spyOn(paths, 'getCollectionsIndexFilePath')
+        .mockReturnValue(path.join(temp, 'index.json'));
+      const bundlesPath = jest
+        .spyOn(paths, 'getBundlesIndexFilePath')
+        .mockReturnValue(path.join(temp, 'absent-bundles.json'));
+      try {
+        const store = jest.requireActual<typeof CollectionStore>(
+          '../collections/collection-store',
+        );
+        const initial = await store.saveCollectionConfig({
+          name: 'Existing',
+          skills: [],
+          plugins: [],
+          mcpServers: [],
+        });
+        mockReadCollectionConfig.mockImplementation(store.readCollectionConfig);
+        mockSaveCollectionConfig.mockImplementation(store.saveCollectionConfig);
+        mockGetCollectionPackage.mockResolvedValue({
+          digest: packageDigest,
+          manifest: {
+            version: 1,
+            pipelineContentHash: 'content-hash',
+            totalFiles: 0,
+            totalBytes: 0,
+            resources: [],
+            environmentRequirements: [],
+            bindings: [],
+          },
+        });
+        mockInstallSubjectCapabilityPackage.mockImplementation(
+          async (request) => {
+            await request.finalizeInstall?.({
+              supportingFileCount: 0,
+              installedSkills: [
+                {
+                  name: 'Helper',
+                  localName: 'helper-2',
+                  resourceId: 'helper-resource',
+                },
+              ],
+              uninstalledResourceLabels: [],
+              keptLocalFiles: [],
+            });
+            if (interveningEdit) {
+              const finalized = await store.readCollectionConfig(initial.id);
+              if (!finalized) throw new Error('Missing finalized collection');
+              await store.saveCollectionConfig({
+                ...finalized.collection,
+                name: 'Concurrent edit',
+              });
+            }
+            await request.rollbackFinalization?.();
+            throw new Error('provenance failed');
+          },
+        );
+        registerCollectionHandlers();
+        await expect(
+          registered.get(COLLECTIONS_CHANNELS.PACKAGE_INSTALL)?.(null, {
+            collectionId: 'shared-1',
+            localCollectionId: initial.id,
+            packageRef: { version: 1, digest: packageDigest },
+          }),
+        ).rejects.toThrow(
+          interveningEdit ? 'Collection changed' : 'provenance failed',
+        );
+        const restored = await store.readCollectionConfig(initial.id);
+        expect(restored?.collection.name).toBe(
+          interveningEdit ? 'Concurrent edit' : initial.name,
+        );
+        expect(restored?.collection.skills).toEqual(
+          interveningEdit
+            ? [{ sourceId: 'custom:app', skillName: 'helper-2' }]
+            : [],
+        );
+        const index = await store.readCollectionIndex();
+        expect(index.collections[0]?.revision).toBe(
+          restored?.collection.revision,
+        );
+        expect(index.collections[0]?.skillCount).toBe(interveningEdit ? 1 : 0);
+      } finally {
+        configPath.mockRestore();
+        indexPath.mockRestore();
+        bundlesPath.mockRestore();
+        await fs.rm(temp, { recursive: true, force: true });
+      }
+    },
+  );
 });

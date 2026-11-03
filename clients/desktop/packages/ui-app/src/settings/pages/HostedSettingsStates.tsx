@@ -26,7 +26,7 @@ export const HOSTED_SETTINGS_COPY = {
   unsupported: 'These settings need a newer server.',
   uncertain: "Couldn't confirm the change. Check again before trying again.",
   signIn: 'Sign in',
-  retry: 'Retry',
+  retry: 'Try again',
   organizations: 'Organizations',
   openOnWeb: 'Open on web',
 } as const;

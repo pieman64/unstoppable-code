@@ -537,9 +537,12 @@ describe('UsageIndicator', () => {
       ['Cache read', '10'],
       ['Cache write', '5'],
     ]) {
-      const row = Array.from(popup?.querySelectorAll('dt') ?? []).find(
-        (element) => element.textContent === label,
-      )?.parentElement;
+      // Each figure is one value row: its label leading, its value trailing.
+      const row = Array.from(
+        popup?.querySelectorAll('[data-settings-row-label]') ?? [],
+      )
+        .find((element) => element.textContent === label)
+        ?.closest('.min-h-10');
       expect(row?.textContent).toBe(`${label}${value}`);
     }
     expect(popup?.textContent).not.toContain('Response tokens');

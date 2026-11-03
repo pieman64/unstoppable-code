@@ -16,6 +16,8 @@ import type {
 export interface LabsSettingsPort {
   readonly rows: readonly LabsExperimentRowView[];
   readonly error: string | null;
+  /** The save error's raw reason: copied by `Copy details`, never shown. */
+  readonly errorDetails?: string;
   readonly onToggle: (experimentId: string, enabled: boolean) => void;
   /** The host's own section/group/row kit; the card kit when absent. */
   readonly layout?: LabsExperimentsSectionLayout;

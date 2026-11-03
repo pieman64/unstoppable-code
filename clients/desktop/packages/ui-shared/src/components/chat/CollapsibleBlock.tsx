@@ -61,10 +61,10 @@ export function CollapsibleBlock({
   const clean = useCleanChatLook();
   if (clean) {
     return (
-      <div>
+      <div data-chat-disclosure="">
         <StepRow
           step
-          icon={icon ?? <LightbulbIcon />}
+          icon={icon}
           label={
             running
               ? (thinkingHeadline(content) ?? label)
@@ -78,6 +78,7 @@ export function CollapsibleBlock({
         {isOpen && (
           <div
             className={`${STEP_ROW_BODY_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words fg-tertiary`}
+            data-chat-reveal-body=""
           >
             {content}
           </div>

@@ -91,7 +91,7 @@ export function ReleaseHighlightsDialog({
       // releases and short windows.
       scrollableBody={false}
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-5 pb-4 pt-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
         {entry.headline ? (
           <p
             className="text-s fg-secondary"
@@ -106,7 +106,7 @@ export function ReleaseHighlightsDialog({
           dataTestId="release-highlights-list"
         />
       </div>
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 px-5 pb-5 pt-1">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
         {fullNotesAction}
         <Button
           ref={gotItRef}

@@ -116,6 +116,7 @@ describe('core chat command router', () => {
       'chat.mark_unread',
       'chat.move_queued_message',
       'chat.patch_tab_settings',
+      'chat.reject_plan_implementation_delivery',
       'chat.reorder_tabs',
       'chat.restore_archive',
       'chat.send_message',
@@ -278,6 +279,32 @@ describe('core chat command router', () => {
       await runtime.shutdown();
       setChatStateCommandPort(null);
     }
+  });
+
+  it('routes pending plan delivery rejection through core.chat.update to the canonical command port', async () => {
+    const { port, command } = makePort();
+    const adapter = createCoreChatCommandAdapter(() => port);
+    const request: ChatCommandRequest = {
+      schemaVersion: 1,
+      commandId: 'delivery-rejection',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: {
+        type: 'chat.reject_plan_implementation_delivery',
+        chatId: 'tab',
+        userMessageId: 'implementation-1',
+      },
+    };
+    const instruction = jest.fn(async (name: string, params: unknown) => {
+      expect(name).toBe('core.chat.update');
+      expect(CoreChatUpdateParamsSchema.parse(params).action).toEqual(
+        request.command,
+      );
+      return adapter.instructions['core.chat.update'](params);
+    });
+    await dispatchTrustedChatCommand(request, { port, caller, instruction });
+    expect(instruction).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith(request);
   });
 
   it('keeps unrouted commands on the command port', async () => {

@@ -99,8 +99,6 @@ function QueuedStateRow({ state }: QueuedStateRowProps): JSX.Element {
         settingsHeld={state.message.restartHeldChanges}
         onEdit={noop}
         canForce={state.canForce}
-        setupWait={state.setupWait}
-        clockNowMs={GALLERY_FIXED_NOW}
         scheduled={scheduled}
       />
     </div>

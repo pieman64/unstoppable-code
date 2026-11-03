@@ -45,7 +45,9 @@ export type WorkspaceCreationSource =
   | 'org-shared-multi-repo-setup'
   | 'org-member-multi-repo-create'
   | 'shared_container_fork'
-  | 'external_projects_import';
+  | 'external_projects_import'
+  /** A registered `core.workspace.create` wire call (W7b-3). */
+  | 'desktop_canopy_client';
 
 /**
  * The supported create and import variants. Local paths are trusted host
@@ -83,6 +85,11 @@ export interface WorkspaceCreationRequest {
   /** The workspaces collection revision read before this create. */
   expectedRevision?: number;
   idempotencyKey?: string;
+  /**
+   * A keyed wire call's receipt caller (W7b-3), derived from its principal;
+   * defaults to `desktop-host:<source>`. Never part of the fingerprint.
+   */
+  receiptCaller?: string;
 }
 
 export interface WorkspaceCreationOutcome {
@@ -347,7 +354,7 @@ export function createWorkspace(
         : 'core.workspace.import';
     return runKeyedW5Operation(
       {
-        caller: `desktop-host:${request.source}`,
+        caller: request.receiptCaller ?? `desktop-host:${request.source}`,
         operation,
         idempotencyKey: request.idempotencyKey,
         parameters: variant,

@@ -2,7 +2,16 @@
 
 import { useMemo, useState, type FormEvent, type JSX } from 'react';
 import { Pencil, Trash2, Users } from '@canopy/ui-shared/icons/AppIcons';
-import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceList,
+  ChoiceListRow,
+  DialogFormField,
+  DialogModal,
+  ErrorBanner,
+  TextInput,
+  EmptyStateRow,
+} from '@canopy/ui-shared/components';
 import type {
   OrganizationDetail,
   OrganizationSubTeam,
@@ -19,6 +28,7 @@ import {
   setSubTeamMembership,
 } from './team-api';
 import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
+import type { SettingsFailure } from '../errors';
 
 /** Failures of creating or renaming a team that have their own copy. */
 const TEAM_NAME_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -67,7 +77,7 @@ export function TeamSubTeamsSection({
 }: TeamSubTeamsSectionProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(TEAMS_ERROR_SCOPE);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [newName, setNewName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [editingMembership, setEditingMembership] =
@@ -105,7 +115,7 @@ export function TeamSubTeamsSection({
       closeCreateForm();
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'create the team',
           known: TEAM_NAME_KNOWN_ERRORS,
         }),
@@ -123,7 +133,7 @@ export function TeamSubTeamsSection({
       onDetailChange(updated);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'delete the team',
           known: [ORGANIZATION_LAPSED_ERROR],
         }),
@@ -140,21 +150,24 @@ export function TeamSubTeamsSection({
       className="flex flex-col gap-4"
       data-testid="team-subteams-section"
     >
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner className="" error={error?.copy} details={error?.details} />
 
       {creating && (
         <form onSubmit={handleCreate} className="flex items-center gap-2">
-          <input
-            type="text"
-            autoFocus
-            required
-            maxLength={120}
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Team name"
-            data-testid="team-subteam-name-input"
-            className="flex-1 rounded-md border bg-card px-3 py-2 text-s fg-primary"
-          />
+          <div className="min-w-0 flex-1">
+            <TextInput
+              density="settings"
+              type="text"
+              autoFocus
+              required
+              maxLength={120}
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Team name"
+              aria-label="Team name"
+              data-testid="team-subteam-name-input"
+            />
+          </div>
           <Button
             type="submit"
             variant="secondary"
@@ -172,7 +185,7 @@ export function TeamSubTeamsSection({
       <div>
         {detail.subTeams.length === 0 ? (
           <div className={SETTINGS_GROUP_CLASS}>
-            <p className="text-s fg-secondary">No teams yet.</p>
+            <EmptyStateRow title="No teams yet." />
           </div>
         ) : (
           <ul className={SETTINGS_GROUP_CLASS}>
@@ -282,7 +295,7 @@ function RenameSubTeamDialog({
   const errorCopy = useSettingsErrorCopy(TEAMS_ERROR_SCOPE);
   const [name, setName] = useState(subTeam.name);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const handleSubmit = async (
     event: FormEvent<HTMLFormElement>,
@@ -300,7 +313,7 @@ function RenameSubTeamDialog({
       onRenamed(updated);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'rename the team',
           known: TEAM_NAME_KNOWN_ERRORS,
         }),
@@ -316,23 +329,20 @@ function RenameSubTeamDialog({
       maxWidth="md"
       dataTestId="rename-subteam-dialog"
     >
-      <form
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-4 px-5 pb-5 pt-4"
-      >
-        <ErrorBanner error={error} />
-        <label className="flex flex-col gap-1 text-s fg-secondary">
-          <span className="font-medium fg-primary">Name</span>
-          <input
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <ErrorBanner error={error?.copy} details={error?.details} />
+        <DialogFormField label="Name" htmlFor="rename-subteam-name">
+          <TextInput
+            id="rename-subteam-name"
+            density="settings"
             type="text"
             autoFocus
             required
             maxLength={120}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="rounded-md border bg-card px-3 py-2 text-s fg-primary"
           />
-        </label>
+        </DialogFormField>
         <div className="flex items-center justify-end gap-2">
           <Button variant="secondary" size="compact" onClick={onClose}>
             Cancel
@@ -392,7 +402,7 @@ function SubTeamMembershipDialog({
 
   const [selected, setSelected] = useState<Set<string>>(initialSelected);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const toggle = (memberId: string): void => {
     setSelected((prev) => {
@@ -419,7 +429,7 @@ function SubTeamMembershipDialog({
       onSaved(updated);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, { action: "update the team's members" }),
+        errorCopy.actionFailure(err, { action: "update the team's members" }),
       );
       setSubmitting(false);
     }
@@ -433,23 +443,24 @@ function SubTeamMembershipDialog({
       maxWidth="md"
       dataTestId="subteam-membership-dialog"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
-        <ErrorBanner error={error} />
-        <ul className="max-h-72 divide-y overflow-y-auto rounded-md border">
-          {detail.members.map((member) => (
-            <li key={member.id}>
-              <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-s hover:bg-secondary">
-                <input
-                  type="checkbox"
-                  checked={selected.has(member.id)}
-                  onChange={() => toggle(member.id)}
-                  // While lapsed only removals are permitted, so a member who
-                  // is not currently on the sub-team cannot be added.
-                  disabled={orgLapsed && !initialSelected.has(member.id)}
-                  data-testid="subteam-member-checkbox"
-                  className="h-4 w-4 rounded disabled:cursor-not-allowed disabled:opacity-40"
-                />
-                <span className={joinClassNames('min-w-0', blockClassName)}>
+      <div className="flex flex-col gap-4">
+        <ErrorBanner error={error?.copy} details={error?.details} />
+        {/* The whole list scrolls in its capped box. */}
+        <div className="max-h-72 overflow-y-auto rounded-lg">
+          <ChoiceList aria-label="Members">
+            {detail.members.map((member) => (
+              <ChoiceListRow
+                key={member.id}
+                selected={selected.has(member.id)}
+                onClick={() => toggle(member.id)}
+                // While lapsed only removals are permitted, so a member who
+                // is not currently on the sub-team cannot be added.
+                disabled={orgLapsed && !initialSelected.has(member.id)}
+                data-testid="subteam-member-checkbox"
+              >
+                <span
+                  className={joinClassNames('block min-w-0', blockClassName)}
+                >
                   <span className="block truncate font-medium fg-primary">
                     {member.name}
                   </span>
@@ -457,10 +468,10 @@ function SubTeamMembershipDialog({
                     {member.email}
                   </span>
                 </span>
-              </label>
-            </li>
-          ))}
-        </ul>
+              </ChoiceListRow>
+            ))}
+          </ChoiceList>
+        </div>
         <div className="flex items-center justify-end gap-2">
           <Button variant="secondary" size="compact" onClick={onClose}>
             Cancel

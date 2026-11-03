@@ -72,6 +72,9 @@ function workerDispatcher(
       'worker.git.executable.get': notExercised,
       'worker.git.remote.get': notExercised,
       'worker.git.worktree.health.get': notExercised,
+      'worker.script.execution.get': notExercised,
+      'worker.script.execution.list': notExercised,
+      'worker.pipeline.execution.get': notExercised,
     },
   });
 }

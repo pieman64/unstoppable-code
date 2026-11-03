@@ -1,11 +1,18 @@
 'use client';
 
-import { useState, type FormEvent, type JSX } from 'react';
-import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { useId, useState, type FormEvent, type JSX } from 'react';
+import {
+  Button,
+  DialogFormField,
+  DialogModal,
+  ErrorBanner,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import type { OrganizationDetail } from '@canopy/protocol/settings';
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
 import { createOrganization } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 /** Failures of `organization.create` that have their own copy. */
 const CREATE_ORGANIZATION_KNOWN_ERRORS: readonly KnownSettingsError[] = [
@@ -33,9 +40,10 @@ export function CreateTeamDialog({
 }: CreateTeamDialogProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy('settings.organizations');
+  const nameId = useId();
   const [name, setName] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const handleSubmit = async (
     event: FormEvent<HTMLFormElement>,
@@ -52,7 +60,7 @@ export function CreateTeamDialog({
       onCreated(detail);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'create the organization',
           known: CREATE_ORGANIZATION_KNOWN_ERRORS,
         }),
@@ -69,14 +77,12 @@ export function CreateTeamDialog({
       maxWidth="md"
       dataTestId="create-team-dialog"
     >
-      <form
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-4 px-5 pb-5 pt-4"
-      >
-        <ErrorBanner error={error} />
-        <label className="flex flex-col gap-1 text-s fg-secondary">
-          <span className="font-medium fg-primary">Organization name</span>
-          <input
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <ErrorBanner error={error?.copy} details={error?.details} />
+        <DialogFormField label="Organization name" htmlFor={nameId}>
+          <TextInput
+            id={nameId}
+            density="settings"
             type="text"
             autoFocus
             required
@@ -85,9 +91,8 @@ export function CreateTeamDialog({
             onChange={(e) => setName(e.target.value)}
             placeholder="Acme Engineering"
             data-testid="create-team-name-input"
-            className="rounded-md border bg-card px-3 py-2 text-s fg-primary"
           />
-        </label>
+        </DialogFormField>
         {/* No Cancel: the dialog closes from its X, Escape, or the backdrop. */}
         <div className="flex items-center justify-end gap-2">
           <Button

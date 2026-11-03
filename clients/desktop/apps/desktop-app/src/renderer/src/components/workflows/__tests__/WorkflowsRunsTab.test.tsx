@@ -10,14 +10,18 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
 import type { ExecutionSummary } from '@canopy/desktop-shared/types/pipeline';
 import {
+  EMPTY_WORKFLOW_LIBRARY_FILTERS,
   EMPTY_WORKFLOW_RUN_FILTERS,
+  type WorkflowLibraryRow,
   type WorkflowRunRow,
 } from '@canopy/ui-app/workflows';
 import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useAutomationsStore } from '@/stores/automationsStore';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
+import type { WorkflowLibraryTarget } from '../library/useWorkflowLibraryRows';
 import type { WorkflowRunFeed } from '../runs/useWorkflowRunFeed';
 import { WorkflowsRunsTab } from '../runs/WorkflowsRunsTab';
 
@@ -326,6 +330,137 @@ describe('WorkflowsRunsTab', () => {
     expect(useWorkflowsViewStore.getState().libraryFilters.query).toBe(
       'Nightly check',
     );
+  });
+
+  describe('with no runs', () => {
+    const builtIn: WorkflowLibraryRow = {
+      key: 'pipeline:bundled:bundled-code-review',
+      kind: 'pipeline',
+      name: 'Code Review (Claude)',
+      triggers: ['manual'],
+      triggerText: 'Manual',
+      steps: ['agent'],
+      summary: '4 steps',
+      source: 'built-in',
+      sourceLabel: 'Built-in',
+      actions: ['run', 'edit', 'view-runs', 'duplicate'],
+    };
+    const mine: WorkflowLibraryRow = {
+      key: 'automation:a-1',
+      kind: 'automation',
+      name: 'Nightly check',
+      triggers: ['schedule'],
+      triggerText: 'Weekdays at 9:00 AM',
+      steps: ['chat'],
+      summary: 'Start chat in storefront',
+      source: 'mine',
+      enabled: true,
+      actions: ['toggle', 'run', 'edit'],
+    };
+    const library = {
+      rows: [builtIn, mine],
+      targets: new Map<string, WorkflowLibraryTarget>([
+        [
+          builtIn.key,
+          {
+            kind: 'pipeline',
+            pipeline: {
+              id: 'bundled-code-review',
+              name: 'Code Review (Claude)',
+              filename: 'code-review-claude.yaml',
+              description: 'Review the branch',
+              icon: '🔎',
+              createdAt: '2026-06-18T00:00:00.000Z',
+              updatedAt: '2026-06-24T00:00:00.000Z',
+              triggerTypes: ['dispatch'],
+              source: 'bundled',
+              readonly: true,
+            },
+          },
+        ],
+      ]),
+    };
+
+    function previewRow(key: string): HTMLElement {
+      const found = container.querySelector<HTMLElement>(
+        `[data-testid="workflows-runs-library-preview-row"][data-row-key="${key}"]`,
+      );
+      if (!found) throw new Error(`No preview row ${key}`);
+      return found;
+    }
+
+    beforeEach(() => {
+      useNavigationStore.setState({
+        activePage: 'workflows',
+        pendingPipelineReveal: undefined,
+      });
+      useWorkflowsViewStore.setState({
+        librarySort: 'recently-run',
+        libraryFilters: { ...EMPTY_WORKFLOW_LIBRARY_FILTERS, query: 'old' },
+      });
+      act(() => {
+        root.render(
+          <WorkflowsRunsTab
+            feed={{ ...feed(), rows: [] }}
+            library={library}
+            onRunWorkflow={jest.fn()}
+          />,
+        );
+      });
+    });
+
+    it('previews the Library with your own workflows first', () => {
+      expect(
+        Array.from(
+          container.querySelectorAll<HTMLElement>(
+            '[data-testid="workflows-runs-library-preview-row"]',
+          ),
+        ).map((element) => element.dataset.rowKey),
+      ).toEqual([mine.key, builtIn.key]);
+    });
+
+    it('reveals a local pipeline in the Library', () => {
+      click(previewRow(builtIn.key));
+      const navigation = useNavigationStore.getState();
+      expect(navigation.activePage).toBe('workflows-library');
+      expect(navigation.pendingPipelineReveal).toEqual({
+        pipelineId: 'bundled-code-review',
+      });
+    });
+
+    it('opens the Library on the name of anything it cannot reveal', () => {
+      click(previewRow(mine.key));
+      expect(useNavigationStore.getState().activePage).toBe(
+        'workflows-library',
+      );
+      expect(useWorkflowsViewStore.getState().libraryFilters).toEqual({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        query: 'Nightly check',
+      });
+    });
+
+    it('opens the whole Library from See your library', () => {
+      click(
+        container.querySelector('[data-testid="workflows-runs-empty-library"]'),
+      );
+      expect(useNavigationStore.getState().activePage).toBe(
+        'workflows-library',
+      );
+      expect(useWorkflowsViewStore.getState().libraryFilters).toEqual(
+        EMPTY_WORKFLOW_LIBRARY_FILTERS,
+      );
+    });
+
+    it('previews nothing once there are runs', () => {
+      act(() => {
+        root.render(<WorkflowsRunsTab feed={feed()} library={library} />);
+      });
+      expect(
+        container.querySelector(
+          '[data-testid="workflows-runs-library-preview"]',
+        ),
+      ).toBeNull();
+    });
   });
 
   it('offers Load more when no loaded run matches the search', () => {

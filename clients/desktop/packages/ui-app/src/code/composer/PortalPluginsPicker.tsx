@@ -12,6 +12,7 @@ import {
   type RefObject,
 } from 'react';
 import {
+  ErrorBanner,
   Button,
   ExternalTextLink,
   SecurityAuditSummary,
@@ -1096,7 +1097,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
             </Button>
           }
         >
-          <div className="flex min-h-96 flex-1 flex-col p-5 pt-4">
+          <div className="flex min-h-96 flex-1 flex-col">
             {notice && (
               <Notice
                 role="none"
@@ -1157,9 +1158,10 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
                   onChange={setDraftAllowed}
                 />
                 {saveError && (
-                  <p role="alert" className="text-xs text-destructive">
-                    Could not save plugin settings. Try again.
-                  </p>
+                  <ErrorBanner
+                    className=""
+                    error="Couldn't save plugin settings. Try again."
+                  />
                 )}
               </div>
             )}
@@ -1180,7 +1182,7 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
           maxWidth="2xl"
           dataTestId="portal-plugin-details-modal"
         >
-          <div className="p-5">
+          <div className="">
             {(provenanceLicense(detailEntry.license) !== undefined ||
               isGitHubTreeUrl(detailEntry.sourceUrl) ||
               detailSecurityAudit !== null) && (

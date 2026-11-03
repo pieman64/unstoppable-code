@@ -604,6 +604,7 @@ export function createCanopyDispatcher(
       return { ...cursor };
     };
     const sink = {
+      buffered: (): number => queue.length,
       emit(
         item: unknown,
         onCursorAssigned?: (cursor: CanopyStreamCursor) => void,

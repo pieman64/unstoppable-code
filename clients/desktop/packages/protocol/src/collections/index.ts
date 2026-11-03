@@ -1,6 +1,6 @@
 import { MARKETPLACE_PUBLIC_SHARE_PREFIXES } from '../marketplace';
 import type { ResourceOwner } from '../resource-owner';
-import type { ShareRemoteMetadata } from '../sharing';
+import { parseShareRemoteMetadata, type ShareRemoteMetadata } from '../sharing';
 // ---------------------------------------------------------------------------
 // Shared Collection API contracts.
 //
@@ -517,6 +517,35 @@ export interface CollectionPluginRef {
 /** Reference to an MCP server configuration inside a Collection. */
 export type CollectionMcpRef = McpServerRef;
 
+/** Index projection of CollectionConfig.sharedSource; never carries fetchedAt. */
+export interface CollectionIndexSharedSource {
+  remoteId: string;
+  /** The share's content hash when this copy was added; absent on older scoped installs. */
+  contentHash?: string;
+  fromPublicShare?: boolean;
+}
+
+/** Sanitize optional provenance independently from the usable local row. */
+export function parseCollectionIndexSharedSource(
+  value: unknown,
+): CollectionIndexSharedSource | undefined {
+  if (
+    !isRecord(value) ||
+    typeof value.remoteId !== 'string' ||
+    !value.remoteId.trim()
+  )
+    return undefined;
+  return {
+    remoteId: value.remoteId,
+    ...(typeof value.contentHash === 'string' && value.contentHash.trim()
+      ? { contentHash: value.contentHash }
+      : {}),
+    ...(typeof value.fromPublicShare === 'boolean'
+      ? { fromPublicShare: value.fromPublicShare }
+      : {}),
+  };
+}
+
 /**
  * Summary entry stored in collections/index.json (sufficient for table
  * display).
@@ -526,11 +555,19 @@ export interface CollectionIndexEntry {
   name: string;
   description: string;
   updatedAt: string;
+  /** Opaque local snapshot revision, absent on older hosts. */
+  revision?: string;
   skillCount: number;
   pluginCount: number;
   mcpServerCount: number;
   /** True when the local Collection is bound to a current Cloud share. */
   hasExistingShare?: boolean;
+  /** Set when the Collection was added from a Cloud share. */
+  sharedSource?: CollectionIndexSharedSource;
+  /** Provenance existed even if an older/malformed projection cannot be read. Never infer created ownership. */
+  hasSharedSource?: boolean;
+  /** An unreadable legacy config could not establish local/shared ownership. */
+  provenanceUnknown?: boolean;
 }
 
 /**
@@ -538,6 +575,8 @@ export interface CollectionIndexEntry {
  * `collections/collection-<id>.json`.
  */
 export interface CollectionConfig {
+  /** Opaque local store revision. Echo when replacing an existing snapshot. */
+  revision?: string;
   id: string;
   name: string;
   description: string;
@@ -561,4 +600,80 @@ export interface CollectionConfig {
     /** The snapshot verified immediately before installing a Public collection. */
     contentHash?: string;
   };
+}
+
+export interface DuplicateLocalCollectionRequest {
+  collectionId: string;
+}
+
+export interface ApplyCollectionUpdateRequest {
+  collectionId: string;
+  expectedRevision: string;
+}
+
+export interface ApplyCollectionUpdateResult {
+  collection: CollectionConfig;
+  /** Legacy documents do not represent MCP membership. */
+  preservedLegacyMcpRefs: boolean;
+  /** Package resources outside represented collection membership were not installed. */
+  uninstalledResourceLabels?: string[];
+  /** Existing local supporting files retained by the established importer. */
+  keptLocalFiles?: string[];
+}
+
+/** Narrow, validated detail used for collection membership comparisons. */
+export type SharedCollectionComparisonDetail = Pick<
+  SharedCollectionDetail,
+  'id' | 'contentHash' | 'collection'
+>;
+
+/** Structural validation of a complete local snapshot, including claimed metadata. */
+export function isLocalCollectionConfig(
+  value: unknown,
+): value is CollectionConfig {
+  const text = (field: unknown): field is string =>
+    typeof field === 'string' && field.trim().length > 0;
+  if (
+    !isRecord(value) ||
+    !text(value.id) ||
+    !text(value.name) ||
+    typeof value.description !== 'string' ||
+    !text(value.createdAt) ||
+    !text(value.updatedAt) ||
+    (value.revision !== undefined && !text(value.revision)) ||
+    !Array.isArray(value.skills) ||
+    !Array.isArray(value.plugins) ||
+    !Array.isArray(value.mcpServers)
+  )
+    return false;
+  if (
+    !value.skills.every(
+      (ref: unknown) =>
+        isRecord(ref) && text(ref.sourceId) && text(ref.skillName),
+    ) ||
+    !value.plugins.every(
+      (ref: unknown) =>
+        isRecord(ref) && text(ref.marketplaceId) && text(ref.pluginName),
+    ) ||
+    !value.mcpServers.every(
+      (ref: unknown) =>
+        isRecord(ref) && text(ref.serverId) && text(ref.configId),
+    )
+  )
+    return false;
+  if (value.remote !== undefined && !parseShareRemoteMetadata(value.remote))
+    return false;
+  if (value.sharedSource !== undefined) {
+    const source = value.sharedSource;
+    if (
+      !isRecord(source) ||
+      !text(source.remoteId) ||
+      !text(source.fetchedAt) ||
+      (source.contentHash !== undefined && !text(source.contentHash)) ||
+      (source.fromPublicShare !== undefined &&
+        typeof source.fromPublicShare !== 'boolean')
+    )
+      return false;
+  }
+  return true;
 }

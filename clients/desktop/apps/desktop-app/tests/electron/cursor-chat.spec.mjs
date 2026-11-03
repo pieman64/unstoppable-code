@@ -34,7 +34,11 @@ import {
   connectMockCloudAccount,
   DEFAULT_MOCK_BASE_URL,
 } from './seeders/index.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 
 import { cursorRuntimeFixture } from './fixtures/cursor-runtime.mjs';
 import { expectCursorConnected } from './fixtures/cursor-tile.mjs';
@@ -1835,6 +1839,7 @@ for (const tool of live
             'printf CURSOR_CHAT_OK > cursor-chat-result.txt',
           );
         if (decision === 'quit') {
+          await captureDaemonDryRunEvidence(launched.electronApp);
           const appProcess = launched.electronApp.process();
           await launched.electronApp.evaluate(({ app }) => {
             app.quit();

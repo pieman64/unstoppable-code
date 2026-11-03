@@ -288,9 +288,11 @@ describe('PanelTabContextMenu split actions', () => {
     // The file rows form one group; the close rows come last.
     expect(button.previousElementSibling).toBe(copyRelativePathButton);
     expect(button.nextElementSibling?.getAttribute('role')).toBe('separator');
-    expect(menu?.lastElementChild?.getAttribute('data-testid')).toBe(
-      'panel-tab-context-close-all',
-    );
+    expect(
+      (menu ? menuRowsOf(menu) : null)?.lastElementChild?.getAttribute(
+        'data-testid',
+      ),
+    ).toBe('panel-tab-context-close-all');
     // Similar rows share one icon: only the first row of a run shows it.
     expect(copyPathButton.querySelector('svg')).not.toBeNull();
     expect(copyRelativePathButton.querySelector('svg')).toBeNull();
@@ -751,7 +753,7 @@ describe('PanelTabContextMenu file actions first (Work navigation)', () => {
       '[data-testid="panel-tab-context-menu"]',
     );
     if (!menu) return [];
-    return Array.from(menu.children).map((row) =>
+    return Array.from(menuRowsOf(menu).children).map((row) =>
       row.getAttribute('role') === 'separator'
         ? '|'
         : (row.getAttribute('data-testid') ?? '?').replace(
@@ -882,3 +884,8 @@ describe('PanelTabContextMenu file actions first (Work navigation)', () => {
     act(() => root.unmount());
   });
 });
+
+/** The element that holds a FloatingMenu's rows, inside its scroll area. */
+function menuRowsOf(menu: Element): Element {
+  return menu.querySelector('[data-overlay-scroll-content]') ?? menu;
+}

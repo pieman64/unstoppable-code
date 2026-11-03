@@ -1,0 +1,161 @@
+import type { JSX } from 'react';
+import {
+  Button,
+  ListRow,
+  type ButtonSize,
+  type ButtonVariant,
+} from '@canopy/ui-shared/components';
+import {
+  ChevronRightIcon,
+  FolderIcon,
+  PlusIcon,
+  SettingsIcon,
+  TrashIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+import {
+  FocusOnMount,
+  SpecimenCell,
+  SpecimenGrid,
+  SpecimenPanel,
+} from './componentsLabParts';
+
+const VARIANTS: readonly ButtonVariant[] = [
+  'primary',
+  'secondary',
+  'outline',
+  'ghost',
+  'ghost-quiet',
+  'ghost-accent',
+  'ghost-destructive',
+  'ghost-overlay',
+  'warning',
+  'destructive',
+];
+
+// `control` is deprecated (use `compact`) and `field` is the dropdown
+// trigger's rectangle, shown with the fields; neither is an action size.
+const ACTION_SIZES: readonly { size: ButtonSize; label: string }[] = [
+  { size: 'sm', label: 'sm' },
+  { size: 'md', label: 'md (default)' },
+  { size: 'lg', label: 'lg' },
+  { size: 'compact', label: 'compact, 28px' },
+];
+
+export function ButtonsSpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Variants at md">
+        <SpecimenGrid>
+          {VARIANTS.map((variant) => (
+            <SpecimenCell key={variant} label={variant}>
+              <Button variant={variant}>Save changes</Button>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Disabled">
+        <SpecimenGrid>
+          {VARIANTS.map((variant) => (
+            <SpecimenCell key={variant} label={variant}>
+              <Button variant={variant} disabled>
+                Save changes
+              </Button>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Sizes">
+        <SpecimenGrid min={360}>
+          {ACTION_SIZES.map(({ size, label }) => (
+            <SpecimenCell key={size} label={label}>
+              <Button size={size} variant="primary">
+                Create
+              </Button>
+              <Button size={size}>
+                <PlusIcon />
+                New chat
+              </Button>
+              <Button size={size} iconOnly aria-label="Settings">
+                <SettingsIcon />
+              </Button>
+              <Button
+                size={size}
+                variant="ghost"
+                iconOnly
+                aria-label="More actions"
+              >
+                <FolderIcon />
+              </Button>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="States and extras">
+        <SpecimenGrid min={200}>
+          <SpecimenCell label="Focused (keyboard ring)">
+            <FocusOnMount>
+              <Button variant="secondary">Focused</Button>
+            </FocusOnMount>
+          </SpecimenCell>
+          <SpecimenCell label="aria-disabled (busy, stays in tab order)">
+            <Button variant="primary" aria-disabled>
+              Connecting…
+            </Button>
+          </SpecimenCell>
+          <SpecimenCell label="With shortcut">
+            <Button shortcut="⌘P">Open file</Button>
+          </SpecimenCell>
+          <SpecimenCell label="Destructive with icon">
+            <Button variant="destructive" size="compact">
+              <TrashIcon />
+              Delete
+            </Button>
+          </SpecimenCell>
+          <SpecimenCell label="Dialog pair: Cancel is secondary" wide>
+            <Button size="compact">Cancel</Button>
+            <Button size="compact" variant="primary">
+              Archive
+            </Button>
+          </SpecimenCell>
+          <SpecimenCell label='variant="link", inside a sentence' wide>
+            <p className="text-s fg-secondary">
+              The token expired. <Button variant="link">Sign in again</Button>{' '}
+              to keep syncing.
+            </p>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+    </div>
+  );
+}
+
+export function ListRowSpecimen(): JSX.Element {
+  return (
+    <SpecimenPanel>
+      <div className="flex max-w-90 flex-col gap-0.5">
+        <ListRow icon={<FolderIcon />} trailing="2m">
+          Idle row with icon and trailing
+        </ListRow>
+        <ListRow icon={<FolderIcon />} selected aria-current="true">
+          Selected row
+        </ListRow>
+        <ListRow
+          icon={<FolderIcon />}
+          description="One line of secondary text"
+          trailing={<ChevronRightIcon />}
+        >
+          Two-line row
+        </ListRow>
+        <ListRow icon={<FolderIcon />} disabled trailing="Off">
+          Disabled row
+        </ListRow>
+        <ListRow trailing="12">
+          A row whose label is long enough to truncate before the trailing count
+        </ListRow>
+        <FocusOnMount>
+          <ListRow icon={<SettingsIcon />}>Focused row</ListRow>
+        </FocusOnMount>
+      </div>
+    </SpecimenPanel>
+  );
+}

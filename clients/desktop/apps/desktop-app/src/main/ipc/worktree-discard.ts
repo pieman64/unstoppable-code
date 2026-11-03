@@ -29,7 +29,12 @@ export function registerWorktreeDiscardHandlers(): void {
       validateId(request.projectId, 'projectId');
       assertWritableScope(request.projectId);
       validateId(request.worktreeId, 'worktreeId');
-      return describeWorktreeDiscard(request.projectId, request.worktreeId);
+      // Older callers keep their exact call; only the opt-in adds options.
+      return request.retainedArchives === true
+        ? describeWorktreeDiscard(request.projectId, request.worktreeId, {
+            retainedArchives: true,
+          })
+        : describeWorktreeDiscard(request.projectId, request.worktreeId);
     },
   );
 
@@ -49,6 +54,9 @@ export function registerWorktreeDiscardHandlers(): void {
         worktreeId: request.worktreeId,
         confirmation: request.confirmation,
         source: 'desktop-ui',
+        ...(request.retainedArchives === true
+          ? { retainedArchives: true }
+          : {}),
       });
     },
   );
@@ -62,7 +70,11 @@ export function registerWorktreeDiscardHandlers(): void {
     ): Promise<ProjectDeletionDiscardDescription> => {
       validateId(request.workspaceId, 'workspaceId');
       assertWritableScope(request.workspaceId);
-      return describeProjectDeletionDiscard(request.workspaceId);
+      return request.retainedArchives === true
+        ? describeProjectDeletionDiscard(request.workspaceId, {
+            retainedArchives: true,
+          })
+        : describeProjectDeletionDiscard(request.workspaceId);
     },
   );
 }

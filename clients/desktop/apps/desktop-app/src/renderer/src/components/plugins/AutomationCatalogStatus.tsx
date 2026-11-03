@@ -48,7 +48,9 @@ export function AutomationCatalogStatus({
       role="none"
       title="Couldn't load curated automations."
       data-testid="plugins-curated-automations-error"
-      actions={<NoticeButton onClick={curated.onRefresh}>Retry</NoticeButton>}
+      actions={
+        <NoticeButton onClick={curated.onRefresh}>Try again</NoticeButton>
+      }
     >
       {curated.error}
     </Notice>

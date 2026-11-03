@@ -10,14 +10,16 @@ import { useCallback, useEffect, useState, type JSX } from 'react';
 import {
   Button,
   DelayedLoadingPlaceholder,
+  EmptyState,
   ErrorBanner,
   SettingsFormSkeleton,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import type { SubscriptionPlanPricingRow } from '@canopy/protocol/telemetry';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { useSettingsClient } from '../../host';
-import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../../errors';
+import { useSettingsErrorCopy, useSettingsLoadFailure } from '../../errors';
 import {
   getSubscriptionPlanPricing,
   setSubscriptionPlanPriceOverride,
@@ -28,6 +30,7 @@ import { USAGE_KNOWN_LOAD_ERRORS } from '../statistics/usage-error-copy';
 const PRICING_ERROR_SCOPE = 'settings.organization.plan-pricing';
 import { formatUsd } from '../statistics/format';
 import { formatProviderLabel } from '../statistics/run-display';
+import type { SettingsFailure } from '../../errors';
 
 interface TeamSubscriptionPricingSectionProps {
   detail: OrganizationDetail;
@@ -47,14 +50,14 @@ export function TeamSubscriptionPricingSection({
   detail,
 }: TeamSubscriptionPricingSectionProps): JSX.Element | null {
   const client = useSettingsClient();
-  const loadErrorCopy = useSettingsLoadErrorCopy(PRICING_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(PRICING_ERROR_SCOPE);
   const orgId = detail.id;
   const [plans, setPlans] = useState<SubscriptionPlanPricingRow[]>([]);
   const [canEdit, setCanEdit] = useState(false);
   const [loading, setLoading] = useState(true);
   // A failed load offers Retry; a failed save does not.
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const applyResponse = useCallback(
     (response: { plans: SubscriptionPlanPricingRow[]; canEdit: boolean }) => {
@@ -104,10 +107,15 @@ export function TeamSubscriptionPricingSection({
       <div className={SETTINGS_CARD_GROUP_CLASS}>
         <ErrorBanner
           className="mt-3"
-          error={loadError}
+          error={loadError?.copy}
+          details={loadError?.details}
           onRetry={() => void loadPricing()}
         />
-        <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
 
         {loading ? (
           <div className="mt-4">
@@ -116,13 +124,11 @@ export function TeamSubscriptionPricingSection({
             </DelayedLoadingPlaceholder>
           </div>
         ) : loadError ? null : plans.length === 0 ? (
-          <p
-            className="mt-4 rounded-lg border border-dashed px-4 py-6 text-center text-s fg-secondary"
-            data-testid="subscription-pricing-empty"
-          >
-            No AI provider plans observed yet. Plans appear here once your team
-            drives agent work through an AI provider plan.
-          </p>
+          <EmptyState
+            testId="subscription-pricing-empty"
+            title="No AI provider plans observed yet"
+            subtitle="Plans appear here once your team drives agent work through an AI provider plan."
+          />
         ) : (
           <ul className="flex flex-col">
             {plans.map((plan) => (
@@ -152,7 +158,7 @@ interface PlanRowProps {
     plans: SubscriptionPlanPricingRow[];
     canEdit: boolean;
   }) => void;
-  onError: (message: string | null) => void;
+  onError: (failure: SettingsFailure | null) => void;
 }
 
 function PlanRow({
@@ -181,7 +187,7 @@ function PlanRow({
       );
       onSaved(response);
     } catch (err: unknown) {
-      onError(errorCopy.actionCopy(err, { action: 'save the plan price' }));
+      onError(errorCopy.actionFailure(err, { action: 'save the plan price' }));
     } finally {
       setSaving(false);
     }
@@ -195,7 +201,7 @@ function PlanRow({
     }
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed) || parsed < 0) {
-      onError('Enter a valid non-negative monthly price.');
+      onError({ copy: 'Enter a valid non-negative monthly price.' });
       return;
     }
     void commit(parsed);
@@ -233,11 +239,10 @@ function PlanRow({
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <div className="relative">
-          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs fg-secondary">
-            $
-          </span>
-          <input
+        <div className="w-28">
+          <TextInput
+            density="settings"
+            leading="$"
             type="number"
             min={0}
             step="0.01"
@@ -252,7 +257,6 @@ function PlanRow({
                 : plan.defaultMonthlyUsd.toFixed(2)
             }
             onChange={(event) => setDraft(event.target.value)}
-            className="w-28 rounded-md border bg-card py-1.5 pl-5 pr-2 text-s fg-primary disabled:opacity-50"
           />
         </div>
         {canEdit ? (

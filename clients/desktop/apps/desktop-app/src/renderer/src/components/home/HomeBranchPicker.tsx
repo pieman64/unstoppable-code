@@ -1769,7 +1769,7 @@ function BranchTargetPicker({
                     selected={isSelected}
                   >
                     <PickerMenuOptionLeading>
-                      <BranchIcon />
+                      <BranchIcon size="md" />
                     </PickerMenuOptionLeading>
                     <PickerMenuOptionContent>
                       <PickerMenuOptionLabel>
@@ -1841,7 +1841,7 @@ function BranchTargetPicker({
                     tone="accent"
                   >
                     <PickerMenuOptionLeading>
-                      <LinearIcon />
+                      <LinearIcon size="md" />
                     </PickerMenuOptionLeading>
                     <PickerMenuOptionContent>
                       <PickerMenuOptionLabel>
@@ -1900,7 +1900,7 @@ function BranchTargetPicker({
                       selected={isSelected}
                     >
                       <PickerMenuOptionLeading>
-                        <LinearIcon />
+                        <LinearIcon size="md" />
                       </PickerMenuOptionLeading>
                       <PickerMenuOptionContent>
                         <PickerMenuOptionLabel>

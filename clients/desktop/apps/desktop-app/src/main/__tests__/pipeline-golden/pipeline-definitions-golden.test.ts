@@ -15,7 +15,20 @@ import {
   GOLDEN_UNPARSEABLE_YAML,
   GOLDEN_USER_PIPELINE_YAML,
 } from '@canopy/desktop-shared/node/pipelines/__tests__/golden-fixtures';
-import { getStoredPipeline } from '@canopy/desktop-shared/pipelines/store';
+import {
+  deleteStoredPipeline,
+  getStoredPipeline,
+  getStoredPipelinePath,
+  listStoredPipelines,
+  saveStoredPipeline,
+} from '@canopy/desktop-shared/pipelines/store';
+import { rmSync } from 'node:fs';
+import { app } from 'electron';
+import * as storeModule from '@canopy/desktop-shared/pipelines/store';
+import * as pipelineInstallContext from '../../pipelines/pipeline-install-context';
+import * as resourceLanes from '../../pipelines/resource-lanes';
+import { PIPELINE_GRANTS } from '@canopy/protocol/canopy-core';
+import { readPreferencesFile } from '../../lib/preferences-store';
 import type {
   IPCResult,
   PipelineInfo,
@@ -62,9 +75,13 @@ jest.setTimeout(120_000);
 let world: GoldenWorld;
 
 let runtime: DesktopCanopyDispatcher;
+let userData: jest.SpiedFunction<typeof app.getPath>;
 
 beforeAll(async () => {
   world = await createPipelineGoldenWorld();
+  // Write effects persist Portal state under userData, which the Electron
+  // mock otherwise resolves to the checkout.
+  userData = jest.spyOn(app, 'getPath').mockReturnValue(world.root);
   // Definition writes reach core through the desktop dispatcher.
   runtime = createDesktopRuntime();
   setDesktopCanopyRuntime(runtime);
@@ -76,6 +93,7 @@ beforeAll(async () => {
 afterAll(async () => {
   setDesktopCanopyRuntime(null);
   await runtime.shutdown();
+  userData.mockRestore();
   world.dispose();
 });
 
@@ -397,5 +415,203 @@ describe('core definition writes', () => {
       success: false,
       error: `Workflow not found: ${id}`,
     });
+  });
+});
+
+// CAN-5368: duplicates, enablement and replay go through core too.
+describe('core definition copies, enablement and replay', () => {
+  it('copies a bundled definition under an id core assigns, as a user definition', async () => {
+    const before = new Set(
+      (listStoredPipelines().data ?? []).map((info) => info.id),
+    );
+    const copied = (await invokeIpc(
+      PIPELINE_CHANNELS.DUPLICATE,
+      GOLDEN_BUNDLED_PIPELINE_ID,
+    )) as IPCResult<PipelineInfo>;
+    expect(copied).toMatchObject({
+      success: true,
+      data: { source: 'user', readonly: false, revision: 1 },
+    });
+    const id = copied.data?.id ?? '';
+    expect(before.has(id)).toBe(false);
+    const stored = getStoredPipeline(id).data;
+    expect(stored?.info.name).toBe(`${stored?.content.name ?? ''}`);
+    expect(stored?.info.name).toMatch(/ \(Copy\)$/);
+    expect(stored?.content.readonly).toBeUndefined();
+    expect(
+      readPipelineLocalMetadata({ type: 'stored', source: 'user', value: id })
+        .owner,
+    ).toBe('personal');
+    expect(await invokeIpc(PIPELINE_CHANNELS.DELETE, id)).toEqual({
+      success: true,
+    });
+  });
+
+  it("never copies an organization's project workflow out as Personal", async () => {
+    const contexts = jest
+      .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+      .mockReturnValue(true);
+    const owner = jest
+      .spyOn(pipelineInstallContext, 'readProjectPipelineOwner')
+      .mockResolvedValue({
+        type: 'organization',
+        id: 'org-golden',
+        name: null,
+      });
+    const before = listStoredPipelines().data?.length;
+    try {
+      await expect(
+        runtime.instruction(
+          'core.pipeline.definition.duplicate',
+          {
+            sourceDefinitionId: GOLDEN_PROJECT_PIPELINE_ID,
+            scope: {
+              workspaceId: GOLDEN_WORKSPACE_ID,
+              worktreeId: GOLDEN_WORKTREE_ID,
+            },
+            _meta: { idempotencyKey: 'golden-org-copy' },
+          },
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: 'golden-org-copy',
+              authorityId: 'local-desktop',
+              interfaceKind: 'test',
+              grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
+            },
+            metadata: { idempotencyKey: 'golden-org-copy' },
+          },
+        ),
+      ).rejects.toMatchObject({
+        payload: { code: 'core.pipeline.contextMismatch' },
+      });
+      expect(listStoredPipelines().data?.length).toBe(before);
+    } finally {
+      owner.mockRestore();
+      contexts.mockRestore();
+    }
+  });
+
+  it('enables and disables read-only definitions through core', async () => {
+    const runtime = goldenWorktreeActionRuntime(world.worktreePath);
+    for (const pipelineId of [
+      GOLDEN_BUNDLED_PIPELINE_ID,
+      `curated:${GOLDEN_CURATED_KEY}`,
+    ]) {
+      expect(
+        await dispatchAgentAction(
+          { type: 'pipeline.set_enabled', pipelineId, enabled: false },
+          runtime,
+        ),
+      ).toMatchObject({ isError: false });
+      expect((await readPreferencesFile()).disabledPipelineIds).toContain(
+        pipelineId,
+      );
+      await dispatchAgentAction(
+        { type: 'pipeline.set_enabled', pipelineId, enabled: true },
+        runtime,
+      );
+      expect((await readPreferencesFile()).disabledPipelineIds).not.toContain(
+        pipelineId,
+      );
+    }
+  });
+
+  it('reads a bundled definition a user one shadows by its explicit source', async () => {
+    const bundled = getStoredPipeline(GOLDEN_BUNDLED_PIPELINE_ID).data;
+    expect(bundled?.info.source).toBe('bundled');
+    const shadow = saveStoredPipeline(
+      {
+        name: 'Golden shadow',
+        description: '',
+        icon: '',
+        content: parsePipelineText(GOLDEN_USER_PIPELINE_YAML),
+      },
+      { id: GOLDEN_BUNDLED_PIPELINE_ID },
+    );
+    expect(shadow).toMatchObject({
+      success: true,
+      data: { id: GOLDEN_BUNDLED_PIPELINE_ID },
+    });
+    try {
+      expect(
+        await invokeIpc(PIPELINE_CHANNELS.GET, {
+          source: 'bundled',
+          id: GOLDEN_BUNDLED_PIPELINE_ID,
+        }),
+      ).toMatchObject({
+        success: true,
+        data: { info: { source: 'bundled', name: bundled?.info.name } },
+      });
+      // An unreadable shadow never blocks the bundled read.
+      const shadowFile = getStoredPipelinePath(GOLDEN_BUNDLED_PIPELINE_ID).data;
+      if (shadowFile) rmSync(shadowFile);
+      expect(
+        await invokeIpc(PIPELINE_CHANNELS.GET, {
+          source: 'bundled',
+          id: GOLDEN_BUNDLED_PIPELINE_ID,
+        }),
+      ).toMatchObject({ success: true, data: { info: { source: 'bundled' } } });
+    } finally {
+      deleteStoredPipeline(GOLDEN_BUNDLED_PIPELINE_ID);
+    }
+  });
+
+  it('answers a get with the revision of the document it read', async () => {
+    const read = getStoredPipeline(world.userPipelineId).data;
+    // A save landing between core's read and the row's index lookup.
+    const index = jest
+      .spyOn(storeModule, 'getStoredPipelineIndexEntry')
+      .mockImplementation((id, source) => {
+        index.mockRestore();
+        const entry = storeModule.getStoredPipelineIndexEntry(id, source);
+        return entry ? { ...entry, revision: (entry.revision ?? 0) + 1 } : null;
+      });
+    try {
+      expect(
+        await invokeIpc(PIPELINE_CHANNELS.GET, world.userPipelineId),
+      ).toMatchObject({
+        success: true,
+        data: { info: { revision: read?.info.revision } },
+      });
+    } finally {
+      index.mockRestore();
+    }
+  });
+
+  it('replays a committed write for its key after a restart', async () => {
+    const caller = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'golden-replay',
+      authorityId: 'local-desktop',
+      interfaceKind: 'test' as const,
+      grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
+    };
+    const params = {
+      definitionId: null,
+      expectedRevision: null,
+      scope: {},
+      source: 'user' as const,
+      name: 'Golden replay',
+      format: 'yaml' as const,
+      document: GOLDEN_USER_PIPELINE_YAML,
+      _meta: { idempotencyKey: 'golden-replay-key' },
+    };
+    const upsert = (
+      dispatcher: DesktopCanopyDispatcher,
+    ): ReturnType<DesktopCanopyDispatcher['instruction']> =>
+      dispatcher.instruction('core.pipeline.definition.upsert', params, {
+        caller,
+        metadata: { idempotencyKey: 'golden-replay-key' },
+      });
+    const first = await upsert(runtime);
+    const count = listStoredPipelines().data?.length;
+    const restarted = createDesktopRuntime();
+    try {
+      expect(await upsert(restarted)).toEqual(first);
+      expect(listStoredPipelines().data?.length).toBe(count);
+    } finally {
+      await restarted.shutdown();
+    }
   });
 });

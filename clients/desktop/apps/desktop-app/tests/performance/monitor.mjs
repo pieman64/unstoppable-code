@@ -55,6 +55,9 @@ const MAX_LONG_ANIMATION_FRAMES = 2_000;
 // Scripts kept per Long Animation Frame, largest duration first.
 const MAX_LONG_ANIMATION_FRAME_SCRIPTS = 8;
 const TOP_LONG_ANIMATION_FRAME_SCRIPTS = 10;
+// Key and pointer presses kept per run for input-to-frame; later ones are
+// counted as dropped.
+const MAX_INPUT_EVENTS = 20_000;
 
 /**
  * `Performance.getMetrics` counters recorded as work. `LayoutCount` and
@@ -122,6 +125,18 @@ export const APP_WORK_SOURCES = Object.freeze([...MAIN_WORK_SOURCES, 'react']);
  */
 export const ROUTE_EVIDENCE_SOURCE = 'route';
 
+/**
+ * Main's `w5` counters (CAN-5532) count W5 store reads, captures, commits and
+ * record-port calls. Like `route` they are evidence, kept as
+ * `summary.w5Work`, never bracketed per task or turned into metrics.
+ */
+export const W5_EVIDENCE_SOURCE = 'w5';
+
+const EVIDENCE_SOURCES = Object.freeze([
+  ROUTE_EVIDENCE_SOURCE,
+  W5_EVIDENCE_SOURCE,
+]);
+
 function isCounterMap(value) {
   return (
     value !== null &&
@@ -145,11 +160,21 @@ function mainWorkSamples(snapshot) {
   return samples;
 }
 
-function routeEvidenceSample(snapshot) {
-  const counters = snapshot?.[ROUTE_EVIDENCE_SOURCE];
+function evidenceSample(snapshot, source) {
+  const counters = snapshot?.[source];
   return Number.isFinite(snapshot?.generation) && isCounterMap(counters)
     ? { generation: snapshot.generation, counters: { ...counters } }
     : null;
+}
+
+/** `{ route, w5 }` evidence samples of one main snapshot, null where absent. */
+function evidenceSamples(snapshot) {
+  return Object.fromEntries(
+    EVIDENCE_SOURCES.map((source) => [
+      source,
+      snapshot ? evidenceSample(snapshot, source) : null,
+    ]),
+  );
 }
 
 function reactWorkSample(snapshot) {
@@ -373,6 +398,7 @@ async function installRendererCollector(
       observeLongAnimationFrames,
       maxLongAnimationFrames,
       maxLongAnimationFrameScripts,
+      maxInputEvents,
     }) => {
       const existing = window.__CANOPY_DESKTOP_PERF__;
       existing?.stop?.();
@@ -429,20 +455,72 @@ async function installRendererCollector(
         }
       }, configuredIntervalMs);
 
+      // Opt-in with frame budgets. A message posted from inside a frame's
+      // animation-frame callback runs as the next task, after that frame's
+      // style, layout, paint and commit, so its arrival ends the frame's
+      // main-thread work. That work, measured from the frame's own
+      // timestamp, does not depend on the display refresh rate.
+      const frameWorkChannel =
+        observeLongAnimationFrames && typeof MessageChannel === 'function'
+          ? new MessageChannel()
+          : null;
+      let frameAwaitingRenderEnd = null;
+      if (frameWorkChannel) {
+        frameWorkChannel.port1.onmessage = () => {
+          if (frameAwaitingRenderEnd) {
+            frameAwaitingRenderEnd.renderEndMs = performance.now();
+            frameAwaitingRenderEnd = null;
+          }
+        };
+      }
       let animationFrameId = 0;
       let lastFrameAt = 0;
       const onFrame = (now) => {
         if (state.stopped) return;
-        state.frames.push({
+        const frame = {
           timestampMs: now,
           observedAtMs: performance.now(),
           ...visibility(),
-        });
+        };
+        state.frames.push(frame);
+        if (frameWorkChannel) {
+          frameAwaitingRenderEnd = frame;
+          frameWorkChannel.port2.postMessage(0);
+        }
         if (lastFrameAt > 0) state.frameGapsMs.push(now - lastFrameAt);
         lastFrameAt = now;
         animationFrameId = requestAnimationFrame(onFrame);
       };
       animationFrameId = requestAnimationFrame(onFrame);
+
+      // Opt-in with frame budgets: every key and pointer press, with the
+      // event's own timestamp, so a frame window can report input to its
+      // next frame for clicks as well as typing.
+      if (observeLongAnimationFrames) {
+        state.inputEvents = [];
+        state.inputEventsDropped = 0;
+      }
+      const onInputEvent = (event) => {
+        if (state.stopped) return;
+        if (state.inputEvents.length >= maxInputEvents) {
+          state.inputEventsDropped += 1;
+          return;
+        }
+        const input = {
+          type: event.type,
+          eventAtMs: event.timeStamp,
+          handledAtMs: performance.now(),
+        };
+        state.inputEvents.push(input);
+        requestAnimationFrame((frameAt) => {
+          input.nextFrameMs = frameAt;
+          input.nextFrameObservedAtMs = performance.now();
+        });
+      };
+      if (observeLongAnimationFrames) {
+        document.addEventListener('keydown', onInputEvent, true);
+        document.addEventListener('pointerdown', onInputEvent, true);
+      }
 
       const isMeasuredKey = (event) =>
         state.typingProbeActive &&
@@ -607,6 +685,9 @@ async function installRendererCollector(
         clearInterval(intervalId);
         clearInterval(ipcIntervalId);
         cancelAnimationFrame(animationFrameId);
+        if (frameWorkChannel) frameWorkChannel.port1.onmessage = null;
+        document.removeEventListener('keydown', onInputEvent, true);
+        document.removeEventListener('pointerdown', onInputEvent, true);
         document.removeEventListener('keydown', onKeyDown, true);
         document.removeEventListener('keyup', onKeyUp, true);
         observer?.disconnect();
@@ -624,6 +705,7 @@ async function installRendererCollector(
       observeLongAnimationFrames: longAnimationFrames,
       maxLongAnimationFrames: MAX_LONG_ANIMATION_FRAMES,
       maxLongAnimationFrameScripts: MAX_LONG_ANIMATION_FRAME_SCRIPTS,
+      maxInputEvents: MAX_INPUT_EVENTS,
     },
   );
 }
@@ -656,6 +738,7 @@ async function startWorkCounters(
     chromium: { start: null, end: null },
     app: { start: {}, end: {} },
     route: { start: null, end: null },
+    w5: { start: null, end: null },
     errors: [],
   };
   let session = null;
@@ -738,8 +821,8 @@ async function startWorkCounters(
       }
     }
     if (wanted.includes('react')) record('react', react, reactWorkSample);
-    const route = mainSamples ? routeEvidenceSample(main) : null;
-    return { values, errors, route };
+    const evidence = evidenceSamples(mainSamples ? main : null);
+    return { values, errors, evidence };
   }
 
   const appStart = await readAppWork(true);
@@ -748,7 +831,8 @@ async function startWorkCounters(
     raw.app.start[source] = value;
     appSources.add(source);
   }
-  raw.route.start = appStart.route;
+  for (const source of EVIDENCE_SOURCES)
+    raw[source].start = appStart.evidence[source];
 
   return {
     raw,
@@ -798,11 +882,14 @@ async function startWorkCounters(
         }
       }
       // A reset in the window already reported its error for the main sources.
-      if (
-        raw.route.start &&
-        app.route?.generation === raw.route.start.generation
-      ) {
-        raw.route.end = app.route;
+      for (const source of EVIDENCE_SOURCES) {
+        const end = app.evidence[source];
+        if (
+          raw[source].start &&
+          end?.generation === raw[source].start.generation
+        ) {
+          raw[source].end = end;
+        }
       }
     },
     async detach() {
@@ -844,6 +931,12 @@ async function readAndStopRendererCollector(page) {
       keyToNextFrameMs: state.keyToNextFrameMs,
       keyToPaintConfirmationMs: state.keyToPaintConfirmationMs,
       longTasks: state.longTasks,
+      ...(state.inputEvents
+        ? {
+            inputEvents: state.inputEvents,
+            inputEventsDropped: state.inputEventsDropped,
+          }
+        : {}),
       ...(state.longAnimationFrames
         ? {
             longAnimationFrames: state.longAnimationFrames,
@@ -1044,6 +1137,14 @@ export function buildSummary(raw) {
                 ),
               }
             : {}),
+          ...(raw.work.w5?.start && raw.work.w5?.end
+            ? {
+                w5Work: diffWorkCounters(
+                  raw.work.w5.start.counters,
+                  raw.work.w5.end.counters,
+                ),
+              }
+            : {}),
           workErrors: raw.work.errors,
         }
       : {}),
@@ -1144,6 +1245,7 @@ export function frameBudgetForWindow(
   frames,
   { startAtMs, endAtMs },
   longAnimationFrames = [],
+  { vsyncMs = null, longTasks = [], inputEvents = [] } = {},
 ) {
   const timestamps = (frames ?? [])
     .map((frame) => frame.timestampMs)
@@ -1166,7 +1268,36 @@ export function frameBudgetForWindow(
   const loaf = (longAnimationFrames ?? []).filter(
     (entry) => entry.startTime >= startAtMs && entry.startTime <= endAtMs,
   );
+  // Each frame's main-thread work: from its own timestamp to the end of its
+  // rendering steps. Refresh-independent, so it is judged against the 120 Hz
+  // budget whatever the display ran at.
+  const frameWork = (frames ?? [])
+    .filter(
+      (frame) =>
+        Number.isFinite(frame.timestampMs) &&
+        Number.isFinite(frame.renderEndMs) &&
+        frame.timestampMs >= startAtMs &&
+        frame.timestampMs <= endAtMs,
+    )
+    .map((frame) => frame.renderEndMs - frame.timestampMs);
+  // A frame is dropped for each whole refresh interval that passed without
+  // one; an interval up to 1.5 refreshes long is one frame of jitter.
+  const droppedFrames = Number.isFinite(vsyncMs)
+    ? intervals.reduce(
+        (total, interval) =>
+          total + Math.max(0, Math.round(interval / vsyncMs) - 1),
+        0,
+      )
+    : null;
+  const tasks = (longTasks ?? []).filter(
+    (entry) => entry.startTime >= startAtMs && entry.startTime <= endAtMs,
+  );
+  const inputs = (inputEvents ?? []).filter(
+    (input) => input.eventAtMs >= startAtMs && input.eventAtMs <= endAtMs,
+  );
   return {
+    startAtMs,
+    endAtMs,
     windowMs: endAtMs - startAtMs,
     frames: inWindow.length,
     intervals: intervals.length,
@@ -1180,6 +1311,28 @@ export function frameBudgetForWindow(
     ),
     trailingOpenIntervalMs:
       lastFrame === undefined ? endAtMs - startAtMs : endAtMs - lastFrame,
+    intervalMs: summarizeSeries(intervals),
+    frameWorkMs: summarizeSeries(frameWork),
+    framesOverWorkBudget: frameWork.filter(
+      (work) => work > FRAME_BUDGETS_MS.hz120 + FRAME_BUDGET_TOLERANCE_MS,
+    ).length,
+    droppedFrames,
+    longTasks: {
+      count: tasks.length,
+      totalMs: tasks.reduce((total, entry) => total + entry.duration, 0),
+      maxMs: tasks.length > 0 ? Math.max(...tasks.map((t) => t.duration)) : 0,
+    },
+    input: {
+      count: inputs.length,
+      delayMs: summarizeSeries(
+        inputs.map((input) => input.handledAtMs - input.eventAtMs),
+      ),
+      toNextFrameMs: summarizeSeries(
+        inputs
+          .filter((input) => Number.isFinite(input.nextFrameObservedAtMs))
+          .map((input) => input.nextFrameObservedAtMs - input.eventAtMs),
+      ),
+    },
     longAnimationFrames: {
       count: loaf.length,
       totalBlockingMs: loaf.reduce(
@@ -1197,31 +1350,187 @@ export function frameBudgetForWindow(
  * with the display refresh rate the run used. `replies` holds renderer-clock
  * windows recorded by the scenario (`{ label, start, end }` renderer marks).
  */
-export function buildFrameBudgetReport(raw, replies = []) {
+export function buildFrameBudgetReport(raw, replies = [], frameWindows = []) {
   const renderer = raw?.renderer;
   const frameGaps = renderer?.frameGapsMs ?? [];
+  const observedFrameIntervalP50Ms = summarizeSeries(frameGaps).p50;
+  const refresh = effectiveRefresh(raw?.display, observedFrameIntervalP50Ms);
+  const measure = (window) =>
+    frameBudgetForWindow(
+      renderer?.frames,
+      { startAtMs: window.start.atMs, endAtMs: window.end.atMs },
+      renderer?.longAnimationFrames,
+      {
+        vsyncMs: refresh.vsyncMs,
+        longTasks: renderer?.longTasks,
+        inputEvents: renderer?.inputEvents,
+      },
+    );
+  const measurable = (window) =>
+    Number.isFinite(window.start?.atMs) && Number.isFinite(window.end?.atMs);
   const windows = replies
-    .filter(
-      (reply) =>
-        Number.isFinite(reply.start?.atMs) && Number.isFinite(reply.end?.atMs),
-    )
-    .map((reply) => ({
-      label: reply.label,
-      ...frameBudgetForWindow(
-        renderer?.frames,
-        { startAtMs: reply.start.atMs, endAtMs: reply.end.atMs },
-        renderer?.longAnimationFrames,
-      ),
-    }));
+    .filter(measurable)
+    .map((reply) => ({ label: reply.label, ...measure(reply) }));
+  const interactions = frameWindows.filter(measurable).map((window) => ({
+    area: window.area,
+    label: window.label,
+    ...measure(window),
+    ...(window.work ? { work: window.work } : {}),
+  }));
   return {
     advisory: true,
     method: FRAME_BUDGET_METHOD,
     budgetsMs: FRAME_BUDGETS_MS,
     display: raw?.display ?? null,
-    observedFrameIntervalP50Ms: summarizeSeries(frameGaps).p50,
+    observedFrameIntervalP50Ms,
+    refresh,
     replies: windows,
     unmeasuredReplies: replies.length - windows.length,
+    ...(frameWindows.length > 0
+      ? {
+          windows: interactions,
+          unmeasuredWindows: frameWindows.length - interactions.length,
+          areas: summarizeFrameAreas(renderer, interactions, refresh),
+        }
+      : {}),
   };
+}
+
+/**
+ * The refresh rate a run actually rendered at, beside the one the display
+ * reports. A hidden or throttled window can run at a different rate than its
+ * display; interval counts, dropped frames and input-to-next-frame only mean
+ * the same thing between runs at the same effective rate.
+ */
+export function effectiveRefresh(display, observedFrameIntervalP50Ms) {
+  const effectiveHz =
+    Number.isFinite(observedFrameIntervalP50Ms) &&
+    observedFrameIntervalP50Ms > 0
+      ? 1_000 / observedFrameIntervalP50Ms
+      : null;
+  return {
+    displayHz: Number.isFinite(display?.refreshRateHz)
+      ? display.refreshRateHz
+      : null,
+    effectiveHz,
+    vsyncMs: Number.isFinite(effectiveHz) ? 1_000 / effectiveHz : null,
+    // The 120 Hz budget's interval and drop counts hold only at 120 Hz.
+    matchesBudget:
+      Number.isFinite(effectiveHz) &&
+      Math.abs(effectiveHz - 120) / 120 <= REFRESH_MATCH_TOLERANCE,
+  };
+}
+
+// Relative effective-refresh difference two runs may have and still be paired.
+export const REFRESH_MATCH_TOLERANCE = 0.1;
+
+/**
+ * Why two runs' refresh rates make their frame and input timings
+ * incomparable, or null when they match. Keyed by scenario name.
+ */
+export function refreshRateMismatch(baselineRefresh, currentRefresh) {
+  if (!baselineRefresh && !currentRefresh) return null;
+  if (!baselineRefresh || !currentRefresh) return 'refresh rate missing';
+  if (baselineRefresh.displayHz !== currentRefresh.displayHz)
+    return `display ${baselineRefresh.displayHz} Hz vs ${currentRefresh.displayHz} Hz`;
+  const left = baselineRefresh.effectiveHz;
+  const right = currentRefresh.effectiveHz;
+  if (!Number.isFinite(left) || !Number.isFinite(right))
+    return 'effective refresh rate missing';
+  if (Math.abs(left - right) / Math.max(left, right) > REFRESH_MATCH_TOLERANCE)
+    return `effective ${left.toFixed(1)} Hz vs ${right.toFixed(1)} Hz`;
+  return null;
+}
+
+/**
+ * One 120 Hz verdict per focus area, over every frame of its windows. An
+ * area holds 120 Hz when its frames' main-thread work fits the 8.33 ms budget
+ * at p99, it drops no more than 1% of its frames, and it has no long task.
+ * The drop rule needs a run that rendered at 120 Hz; at another rate the
+ * verdict rests on frame work and long tasks alone and says so.
+ */
+export function summarizeFrameAreas(renderer, windows, refresh) {
+  const byArea = new Map();
+  for (const window of windows) {
+    const list = byArea.get(window.area) ?? [];
+    list.push(window);
+    byArea.set(window.area, list);
+  }
+  const frames = renderer?.frames ?? [];
+  const inputEvents = renderer?.inputEvents ?? [];
+  const areas = {};
+  for (const [area, list] of byArea) {
+    const inside = (atMs) =>
+      list.some((window) => atMs >= window.startAtMs && atMs <= window.endAtMs);
+    const work = frames
+      .filter(
+        (frame) =>
+          Number.isFinite(frame.renderEndMs) && inside(frame.timestampMs),
+      )
+      .map((frame) => frame.renderEndMs - frame.timestampMs);
+    const inputToNextFrame = inputEvents
+      .filter(
+        (input) =>
+          Number.isFinite(input.nextFrameObservedAtMs) &&
+          inside(input.eventAtMs),
+      )
+      .map((input) => input.nextFrameObservedAtMs - input.eventAtMs);
+    const sum = (key) => list.reduce((total, w) => total + (w[key] ?? 0), 0);
+    const frameCount = sum('frames');
+    const droppedFrames = refresh.matchesBudget ? sum('droppedFrames') : null;
+    const longTaskCount = list.reduce((t, w) => t + w.longTasks.count, 0);
+    const frameWorkMs = summarizeSeries(work);
+    const workFits =
+      frameWorkMs.count > 0 && frameWorkMs.p99 <= FRAME_BUDGETS_MS.hz120;
+    const dropsFit =
+      droppedFrames === null || droppedFrames <= frameCount * 0.01;
+    areas[area] = {
+      windows: list.length,
+      frames: frameCount,
+      frameWorkMs,
+      framesOverWorkBudget: sum('framesOverWorkBudget'),
+      droppedFrames,
+      droppedFramePercent:
+        droppedFrames === null || frameCount === 0
+          ? null
+          : (droppedFrames / frameCount) * 100,
+      longTasks: longTaskCount,
+      longestIntervalMs: Math.max(
+        0,
+        ...list.map((w) => w.longestIntervalMs ?? 0),
+      ),
+      inputToNextFrameMs: summarizeSeries(inputToNextFrame),
+      holds120Hz: workFits && dropsFit && longTaskCount === 0,
+      verdictBasis: refresh.matchesBudget
+        ? 'frame work, drops, long tasks'
+        : 'frame work, long tasks (run did not render at 120 Hz)',
+    };
+  }
+  return areas;
+}
+
+/** Console lines for a run's 120 Hz focus-area verdicts. */
+export function frameAreaLines(frameBudgets) {
+  const areas = frameBudgets?.areas;
+  if (!areas) return [];
+  const ms = (value) =>
+    Number.isFinite(value) ? `${value.toFixed(1)}ms` : 'n/a';
+  const refresh = frameBudgets.refresh;
+  return [
+    `[perf]   120 Hz frames (display ${refresh?.displayHz ?? 'n/a'} Hz, effective ${
+      Number.isFinite(refresh?.effectiveHz)
+        ? refresh.effectiveHz.toFixed(1)
+        : 'n/a'
+    } Hz):`,
+    ...Object.entries(areas).map(
+      ([area, summary]) =>
+        `[perf]     ${area}: ${summary.holds120Hz ? 'holds' : 'MISSES'} 120 Hz; ` +
+        `frame work p50 ${ms(summary.frameWorkMs.p50)} p95 ${ms(summary.frameWorkMs.p95)} p99 ${ms(summary.frameWorkMs.p99)}, ` +
+        `${summary.framesOverWorkBudget}/${summary.frames} over 8.33ms, ` +
+        `dropped ${summary.droppedFrames ?? 'n/a'}, long tasks ${summary.longTasks}, ` +
+        `input to next frame p95 ${ms(summary.inputToNextFrameMs.p95)}`,
+    ),
+  ];
 }
 
 /** Each app source's change over the measured window, if collected cleanly. */

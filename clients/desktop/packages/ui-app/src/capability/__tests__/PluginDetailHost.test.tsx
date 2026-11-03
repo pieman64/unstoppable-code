@@ -320,8 +320,10 @@ describe('PluginDetailHost', () => {
         mcpServerHealth: { resolve: () => ({ kind: 'loading' }) },
       });
       expect(
-        container.querySelector('[data-mcp-member="slack"]')?.textContent,
-      ).toContain('Loading…');
+        container
+          .querySelector('[data-mcp-member="slack"]')
+          ?.querySelector('.canopy-inline-skeleton'),
+      ).not.toBeNull();
       expect(byTestId('plugin-detail-mcp-status-unavailable')).toBeNull();
 
       renderHost({
@@ -497,7 +499,7 @@ describe('PluginDetailHost', () => {
       const error = container.querySelector(
         '[data-testid="plugin-detail-update-error"]',
       );
-      expect(error?.getAttribute('role')).toBe('alert');
+      expect(error?.querySelector('[role="alert"]')).toBeTruthy();
       expect(error?.textContent).toContain(
         'Could not fetch the plugin source.',
       );

@@ -7,4 +7,4 @@
  * server-rendered pages read it too.
  */
 export const SHARE_LANDER_BUTTON_CLASS_NAME =
-  'inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium fg-emphasis transition-colors hover:opacity-90 disabled:opacity-60';
+  'inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium fg-emphasis transition-colors hover:opacity-90 disabled:opacity-60 aria-disabled:opacity-60';

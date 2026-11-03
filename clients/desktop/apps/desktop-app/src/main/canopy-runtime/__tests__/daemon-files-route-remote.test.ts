@@ -167,11 +167,8 @@ describe('remote-control bridge Files reads (direct by decision)', () => {
     expect(harness.direct.directory).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps every bridge read direct on macOS with every read selectable', async () => {
-    h = await createRouteHarness({
-      platform: 'darwin',
-      selectable: new Set(['roots', 'directory', 'file', 'search', 'link']),
-    });
+  it('keeps every bridge read direct on macOS under the production selection', async () => {
+    h = await createRouteHarness({ platform: 'darwin' });
     const harness = h;
     const registry = new Map<number, string>();
     const bridges = await remoteSession(registry);

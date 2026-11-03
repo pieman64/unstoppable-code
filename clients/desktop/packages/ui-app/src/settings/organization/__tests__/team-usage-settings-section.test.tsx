@@ -1241,11 +1241,11 @@ describe('TeamDataSharingSection data sharing card', () => {
     it('renders the toggle off by default with its label and helper text', async () => {
       await render();
 
-      const checkbox = require_<HTMLInputElement>(
+      const toggle = require_<HTMLButtonElement>(
         'allow-external-container-sharing-checkbox',
       );
-      expect(checkbox.checked).toBe(false);
-      expect(checkbox.disabled).toBe(false);
+      expect(toggle.getAttribute('aria-checked')).toBe('false');
+      expect(toggle.disabled).toBe(false);
       expect(container.textContent).toContain(
         'Allow sharing outside the organization',
       );
@@ -1258,9 +1258,10 @@ describe('TeamDataSharingSection data sharing card', () => {
       await render(makeDetail({ allowExternalContainerSharing: true }));
 
       expect(
-        require_<HTMLInputElement>('allow-external-container-sharing-checkbox')
-          .checked,
-      ).toBe(true);
+        require_<HTMLButtonElement>(
+          'allow-external-container-sharing-checkbox',
+        ).getAttribute('aria-checked'),
+      ).toBe('true');
     });
 
     it('stays visible whether or not the data sharing policy is enforced', async () => {
@@ -1326,9 +1327,10 @@ describe('TeamDataSharingSection data sharing card', () => {
       );
       expect(onDetailChange).not.toHaveBeenCalled();
       expect(
-        require_<HTMLInputElement>('allow-external-container-sharing-checkbox')
-          .checked,
-      ).toBe(false);
+        require_<HTMLButtonElement>(
+          'allow-external-container-sharing-checkbox',
+        ).getAttribute('aria-checked'),
+      ).toBe('false');
     });
 
     it('freezes the card while the external sharing save is in flight', async () => {
@@ -1382,9 +1384,11 @@ it('Statistics role picker renders one shared disclosure indicator', () => {
         </TestSettingsHost>,
       );
     });
-    const label = container.querySelector('label');
-    expect(label?.textContent).toContain('Who can view usage stats');
-    expect(label?.querySelectorAll('svg')).toHaveLength(1);
+    const field = container.querySelector(
+      '[data-testid="usage-min-role-field"]',
+    );
+    expect(field?.textContent).toContain('Who can view usage stats');
+    expect(field?.querySelectorAll('svg')).toHaveLength(1);
   } finally {
     act(() => root.unmount());
     container.remove();

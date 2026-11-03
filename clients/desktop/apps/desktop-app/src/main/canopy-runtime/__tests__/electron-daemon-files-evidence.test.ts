@@ -19,6 +19,7 @@ jest.mock('../electron-daemon-access', () => ({
   getElectronDaemonConnections: jest.fn(),
   getElectronDaemonFilesContext: jest.fn(),
   disposeElectronDaemonConnections: jest.fn(),
+  setElectronDaemonFilesConsumerEnabled: jest.fn(),
 }));
 
 it('publishes only a read-only view of the real lazy production singleton and counters', async () => {

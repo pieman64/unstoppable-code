@@ -340,6 +340,53 @@ describe('dispatchAutomationAction', () => {
     ).rejects.toThrow(AUTOMATION_OWNER_MISMATCH_MESSAGE);
   });
 
+  it('reports retryable storage unavailability from the real send with an unreadable store', async () => {
+    const { __setDesktopW5FileStoreForTests } =
+      await import('../../lib/w5-commit-log-file-store');
+    __setDesktopW5FileStoreForTests({
+      read: () => Promise.resolve({ state: 'unreadable' }),
+      replace: () => Promise.reject(new Error('Read must not write')),
+      remove: () => Promise.reject(new Error('Read must not write')),
+    });
+    const { createDesktopRuntime } =
+      await import('../../canopy-runtime/desktop-runtime');
+    const sidebar = await import('../../lib/sidebar-items');
+    const persistence = await import('../../lib/workspace-persistence');
+    const { readEffectiveWorkspaceConfig } =
+      await import('../../lib/workspace-source');
+    const runtime = createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: sidebar.readAllSidebarItems,
+        readAllSidebarItemsSnapshot: sidebar.readAllSidebarItemsSnapshot,
+        readWorkspaceIndexEntry: sidebar.readWorkspaceIndexEntry,
+        readWorkspaceIndexEntryDetailed:
+          sidebar.readWorkspaceIndexEntryDetailed,
+        readWorkspaceConfig: persistence.readWorkspaceConfig,
+        readWorkspaceWorktrees: persistence.readWorkspaceWorktrees,
+        readEffectiveWorkspaceConfig,
+      },
+    });
+    const actual = jest.requireActual<typeof ProjectBotPortModule>(
+      '../../agent-actions/desktop-project-bot-port',
+    );
+    mockRunPort.mockImplementation(actual.runPipelineProjectBotAction);
+    try {
+      const storageMessage: unknown =
+        expect.stringMatching(/storage.*unavailable/i);
+      await expect(
+        dispatchAutomationAction(action, caller, {
+          actionType: 'worktree_session_prompt',
+        }),
+      ).rejects.toMatchObject({
+        message: storageMessage,
+        payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      });
+    } finally {
+      await runtime.shutdown();
+      __setDesktopW5FileStoreForTests(undefined);
+    }
+  });
+
   it('rethrows anything else unchanged', async () => {
     const failure = new Error('disk full');
     mockRunPort.mockRejectedValue(failure);

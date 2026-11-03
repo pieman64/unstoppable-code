@@ -9,7 +9,6 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import {
   runStatusGlyphState,
@@ -18,6 +17,7 @@ import {
 import { SpinnerStyleProvider } from './spinner-style';
 import { StatusGlyph } from './StatusGlyph';
 import { CometSpinner } from './CometSpinner';
+import { RichHoverTooltip } from './RichHoverTooltip';
 
 /**
  * Closed enumeration of DAG job statuses understood by the shared progress
@@ -210,10 +210,6 @@ function ScrollArrow({
   );
 }
 
-const POPOVER_APPROX_HEIGHT = 100;
-const POPOVER_GAP = 8;
-const VIEWPORT_PADDING = 8;
-
 function JobDot({
   job,
   onJobClick,
@@ -225,61 +221,68 @@ function JobDot({
   const isActive = job.status === 'running' || job.status === 'restarting';
   const durationLabel = isActive ? 'Elapsed' : 'Duration';
   const duration = formatDuration(job.startedAt, job.completedAt);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
 
-  const handleMouseEnter = (): void => {
-    if (buttonRef.current) {
-      setHoverRect(buttonRef.current.getBoundingClientRect());
-    }
-  };
-
-  const handleMouseLeave = (): void => {
-    setHoverRect(null);
-  };
-
-  const handleFocus = (): void => {
-    if (buttonRef.current) {
-      setHoverRect(buttonRef.current.getBoundingClientRect());
-    }
-  };
-
-  const handleBlur = (): void => {
-    setHoverRect(null);
-  };
-
-  let popoverStyle: React.CSSProperties | undefined;
-  let flipBelow = false;
-  if (hoverRect) {
-    flipBelow =
-      hoverRect.top < POPOVER_APPROX_HEIGHT + POPOVER_GAP + VIEWPORT_PADDING;
-    const top = flipBelow
-      ? hoverRect.bottom + POPOVER_GAP
-      : hoverRect.top - POPOVER_GAP;
-    const left = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(
-        hoverRect.left + hoverRect.width / 2,
-        window.innerWidth - VIEWPORT_PADDING,
-      ),
-    );
-    popoverStyle = {
-      top: `${top}px`,
-      left: `${left}px`,
-      transform: flipBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)',
-    };
-  }
+  const detail = (
+    <>
+      <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-semibold fg-primary/80">
+        <StatusGlyph state={jobGlyphState(job.status)} size={12} />
+        {job.name}
+      </div>
+      <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+        <span>Status</span>
+        <span
+          className={`inline-block rounded px-1.5 py-px text-3xs font-semibold ${statusBadge.className}`}
+        >
+          {statusBadge.label}
+        </span>
+      </div>
+      {duration && (
+        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+          <span>{durationLabel}</span>
+          <span className="font-medium fg-primary/80">{duration}</span>
+        </div>
+      )}
+      {job.stepProgress && (
+        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+          <span>Steps</span>
+          <span className="font-medium fg-primary/80">{job.stepProgress}</span>
+        </div>
+      )}
+      {job.variantProgress && (
+        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+          <span>Children</span>
+          <span className="font-medium fg-primary/80">
+            {job.variantProgress}
+          </span>
+        </div>
+      )}
+      {job.maxParallel !== undefined && (
+        <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
+          <span>Max parallel</span>
+          <span className="font-medium fg-primary/80">{job.maxParallel}</span>
+        </div>
+      )}
+      {job.variantBreakdown && (
+        <div className="pt-0.5 text-3xs fg-secondary">
+          {job.variantBreakdown}
+        </div>
+      )}
+    </>
+  );
 
   return (
-    <div className="relative inline-flex">
+    <RichHoverTooltip
+      content={detail}
+      // The job's card: the menu's corners and shadow, above the dot and
+      // below it when there is no room.
+      elevation="menu"
+      surfacePadding="card"
+      surfaceClassName="min-w-45 max-w-55"
+      dataTestId={`dag-job-detail-${job.jobId}`}
+    >
       <button
-        ref={buttonRef}
         type="button"
         data-job-id={job.jobId}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-        onFocus={handleFocus}
-        onBlur={handleBlur}
         onClick={(e: MouseEvent<HTMLButtonElement>): void => {
           e.stopPropagation();
           onJobClick?.(job.jobId);
@@ -295,71 +298,7 @@ function JobDot({
       >
         <StatusGlyph state={jobGlyphState(job.status)} size={12} />
       </button>
-      {hoverRect &&
-        typeof document !== 'undefined' &&
-        createPortal(
-          <div
-            className="pointer-events-none fixed z-tooltip min-w-45 max-w-55 rounded-lg bg-popover p-2.5 shadow-xl"
-            style={popoverStyle}
-          >
-            <div
-              className={`absolute left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-popover ${
-                flipBelow
-                  ? '-top-1.25 border-l border-t'
-                  : '-bottom-1.25 border-b border-r'
-              }`}
-            />
-            <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-semibold fg-primary/80">
-              <StatusGlyph state={jobGlyphState(job.status)} size={12} />
-              {job.name}
-            </div>
-            <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-              <span>Status</span>
-              <span
-                className={`inline-block rounded px-1.5 py-px text-3xs font-semibold ${statusBadge.className}`}
-              >
-                {statusBadge.label}
-              </span>
-            </div>
-            {duration && (
-              <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-                <span>{durationLabel}</span>
-                <span className="font-medium fg-primary/80">{duration}</span>
-              </div>
-            )}
-            {job.stepProgress && (
-              <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-                <span>Steps</span>
-                <span className="font-medium fg-primary/80">
-                  {job.stepProgress}
-                </span>
-              </div>
-            )}
-            {job.variantProgress && (
-              <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-                <span>Children</span>
-                <span className="font-medium fg-primary/80">
-                  {job.variantProgress}
-                </span>
-              </div>
-            )}
-            {job.maxParallel !== undefined && (
-              <div className="flex items-center justify-between py-0.5 text-3xs fg-secondary">
-                <span>Max parallel</span>
-                <span className="font-medium fg-primary/80">
-                  {job.maxParallel}
-                </span>
-              </div>
-            )}
-            {job.variantBreakdown && (
-              <div className="pt-0.5 text-3xs fg-secondary">
-                {job.variantBreakdown}
-              </div>
-            )}
-          </div>,
-          document.body,
-        )}
-    </div>
+    </RichHoverTooltip>
   );
 }
 

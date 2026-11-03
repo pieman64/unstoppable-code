@@ -3,7 +3,7 @@
  */
 import { setTestEarlyAccessFeatures } from '@/test-utils/labsExperiments';
 
-import { act, type JSX } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { FileTreeChangeEvent } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -24,12 +24,6 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { brandText } from '@/lib/brand';
 import { FilesTreeTab } from '../FilesTreeTab';
 import { EarlyAccessUiProviders } from '@/components/EarlyAccessUiProviders';
-
-jest.mock('@/components/shared', () => ({
-  LoadingPlaceholder: (): JSX.Element => (
-    <div data-testid="loading-placeholder" />
-  ),
-}));
 
 jest.mock('@/lib/clipboard', () => ({
   copyTextToClipboard: jest.fn(() => Promise.resolve(true)),
@@ -575,9 +569,11 @@ describe('FilesTreeTab', () => {
     });
 
     expect(container.textContent).toContain('src');
-    expect(container.textContent).not.toContain('Loading…');
     expect(
-      container.querySelector('[data-testid="loading-placeholder"]'),
+      container.querySelector('[data-testid="delayed-loading-placeholder"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
     ).toBeNull();
   });
 
@@ -606,7 +602,10 @@ describe('FilesTreeTab', () => {
       getFolderButton(container, 'src').getAttribute('aria-selected'),
     ).toBe('true');
     expect(
-      container.querySelector('[data-testid="loading-placeholder"]'),
+      container.querySelector('[data-testid="delayed-loading-placeholder"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="centered-loading-spinner"]'),
     ).toBeNull();
   });
 
@@ -683,7 +682,7 @@ describe('FilesTreeTab', () => {
       });
     });
 
-    expect(container.textContent).toContain('Unable to load files.');
+    expect(container.textContent).toContain('Couldn’t load files.');
     expect(container.textContent).not.toContain('src');
   });
 
@@ -2803,7 +2802,7 @@ describe('FilesTreeTab', () => {
         });
 
         expect(
-          container.querySelector('[data-testid="loading-placeholder"]'),
+          container.querySelector('[data-testid="centered-loading-spinner"]'),
         ).not.toBeNull();
         expect(
           container.querySelector('[data-testid="files-tree-search-empty"]'),

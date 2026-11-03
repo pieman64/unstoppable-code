@@ -3,7 +3,9 @@
 import { act, useState, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { resetInputModality } from '../../lib/input-modality';
+import { ActionTooltip } from '../ActionTooltip';
 import { RichHoverTooltip } from '../RichHoverTooltip';
+import { useOverlayEscape } from '../useOverlayEscape';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -466,7 +468,7 @@ describe('RichHoverTooltip Escape dismissal', () => {
     expect(tooltip()).not.toBeNull();
   });
 
-  it('leaves Escape alone for callers that did not opt in or while closed', () => {
+  it('leaves Escape alone for callers that opt out or while closed', () => {
     const trigger = render(false);
     hover(trigger);
     expect(pressEscape(trigger).defaultPrevented).toBe(false);
@@ -477,6 +479,291 @@ describe('RichHoverTooltip Escape dismissal', () => {
     expect(pressEscape(optedIn).defaultPrevented).toBe(false);
   });
 });
+
+function EscapeOverlay({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: JSX.Element;
+}): JSX.Element {
+  useOverlayEscape(true, onClose);
+  return children;
+}
+
+describe('rich tooltip Escape over a dialog', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    resetInputModality(document);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    document.body.replaceChildren();
+  });
+
+  const tooltip = (): Element | null =>
+    document.body.querySelector('[role="tooltip"]');
+
+  function hoverOpen(): void {
+    act(() => {
+      container.querySelector('button')?.dispatchEvent(
+        new MouseEvent('mouseover', {
+          bubbles: true,
+          relatedTarget: document.body,
+        }),
+      );
+    });
+    expect(tooltip()).not.toBeNull();
+  }
+
+  function pressEscape(): void {
+    act(() => {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  }
+
+  const plain = (deferred: boolean): JSX.Element => (
+    <RichHoverTooltip content="Body" deferUntilInteraction={deferred}>
+      <button type="button">Trigger</button>
+    </RichHoverTooltip>
+  );
+  const interactive = (deferred: boolean): JSX.Element => (
+    <RichHoverTooltip
+      content={<button type="button">Action</button>}
+      interactive
+      deferUntilInteraction={deferred}
+    >
+      <button type="button">Trigger</button>
+    </RichHoverTooltip>
+  );
+
+  it.each([
+    ['a plain card', (): JSX.Element => plain(false)],
+    ['a deferred plain card', (): JSX.Element => plain(true)],
+    ['an interactive card', (): JSX.Element => interactive(false)],
+    ['a deferred interactive card', (): JSX.Element => interactive(true)],
+    [
+      'an action tooltip',
+      (): JSX.Element => (
+        <ActionTooltip title="Run" description="Starts the pipeline">
+          <button type="button">Trigger</button>
+        </ActionTooltip>
+      ),
+    ],
+  ])(
+    'closes %s opened by hover first, then lets Escape reach the dialog',
+    (_kind, renderTip) => {
+      const onClose = jest.fn();
+      act(() =>
+        root.render(
+          <EscapeOverlay onClose={onClose}>{renderTip()}</EscapeOverlay>,
+        ),
+      );
+      hoverOpen();
+
+      pressEscape();
+      expect(tooltip()).toBeNull();
+      expect(onClose).not.toHaveBeenCalled();
+
+      pressEscape();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe.each([false, true])(
+  'interactive card blur (deferred=%s)',
+  (deferUntilInteraction) => {
+    let container: HTMLDivElement;
+    let root: Root;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      container = document.createElement('div');
+      document.body.appendChild(container);
+      root = createRoot(container);
+      resetInputModality(document);
+    });
+
+    afterEach(() => {
+      act(() => root.unmount());
+      document.body.replaceChildren();
+      jest.useRealTimers();
+    });
+
+    const card = (): Element | null =>
+      document.body.querySelector('[role="tooltip"]');
+
+    function openCard(): {
+      readonly trigger: HTMLButtonElement;
+      readonly first: HTMLButtonElement;
+      readonly second: HTMLButtonElement;
+      readonly text: HTMLElement;
+    } {
+      act(() =>
+        root.render(
+          <RichHoverTooltip
+            interactive
+            deferUntilInteraction={deferUntilInteraction}
+            content={
+              <span>
+                <span data-testid="card-text">feature-01</span>
+                <button type="button">First</button>
+                <button type="button">Second</button>
+              </span>
+            }
+          >
+            <button type="button">Trigger</button>
+          </RichHoverTooltip>,
+        ),
+      );
+      const trigger = container.querySelector('button');
+      if (!trigger) throw new Error('trigger missing');
+      act(() => {
+        trigger.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+      });
+      const surface = card();
+      const [first, second] = Array.from(
+        surface?.querySelectorAll('button') ?? [],
+      );
+      const text = surface?.querySelector<HTMLElement>(
+        '[data-testid="card-text"]',
+      );
+      if (!surface || !first || !second || !text) {
+        throw new Error('card not open');
+      }
+      // The pointer crosses from the trigger onto the card.
+      act(() => {
+        trigger.dispatchEvent(
+          new MouseEvent('mouseout', { bubbles: true, relatedTarget: text }),
+        );
+        text.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: trigger,
+          }),
+        );
+      });
+      return { trigger, first, second, text };
+    }
+
+    it('stays open when a press inside the hovered card moves focus off a control', () => {
+      const { first } = openCard();
+      act(() => first.focus());
+      // Pressing the card's text drops focus to nothing.
+      act(() => first.blur());
+      act(() => jest.advanceTimersByTime(500));
+      expect(card()).not.toBeNull();
+    });
+
+    it('stays open when a press moves focus to another control in the card', () => {
+      const { first, second } = openCard();
+      act(() => first.focus());
+      act(() => second.focus());
+      act(() => jest.advanceTimersByTime(500));
+      expect(card()).not.toBeNull();
+    });
+
+    it('reopens from the keyboard after Escape closes the card under the pointer', () => {
+      act(() =>
+        root.render(
+          <RichHoverTooltip
+            interactive
+            dismissOnEscape
+            deferUntilInteraction={deferUntilInteraction}
+            content={
+              <span>
+                <span data-testid="card-text">feature-01</span>
+                <button type="button">First</button>
+              </span>
+            }
+          >
+            <button type="button">Trigger</button>
+          </RichHoverTooltip>,
+        ),
+      );
+      const trigger = container.querySelector('button');
+      if (!trigger) throw new Error('trigger missing');
+      act(() => {
+        trigger.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+      });
+      const text = card()?.querySelector('[data-testid="card-text"]');
+      if (!text) throw new Error('card not open');
+      act(() => {
+        trigger.dispatchEvent(
+          new MouseEvent('mouseout', { bubbles: true, relatedTarget: text }),
+        );
+        text.dispatchEvent(
+          new MouseEvent('mouseover', {
+            bubbles: true,
+            relatedTarget: trigger,
+          }),
+        );
+      });
+      // Escape removes the card under the pointer, so no mouseleave follows.
+      act(() => {
+        trigger.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Escape',
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+      expect(card()).toBeNull();
+      // Focus leaving clears the dismissal; focus returning opens the card.
+      act(() => trigger.focus());
+      act(() => trigger.blur());
+      act(() => jest.advanceTimersByTime(500));
+      act(() => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }),
+        );
+        trigger.focus();
+      });
+      act(() => jest.advanceTimersByTime(500));
+      expect(card()).not.toBeNull();
+    });
+
+    it('closes once focus and the pointer have both left', () => {
+      const { first, text } = openCard();
+      act(() => first.focus());
+      act(() => {
+        text.dispatchEvent(
+          new MouseEvent('mouseout', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+      });
+      act(() => first.blur());
+      act(() => jest.advanceTimersByTime(500));
+      expect(card()).toBeNull();
+    });
+  },
+);
 
 describe('RichHoverTooltip mount cost', () => {
   let container: HTMLDivElement;

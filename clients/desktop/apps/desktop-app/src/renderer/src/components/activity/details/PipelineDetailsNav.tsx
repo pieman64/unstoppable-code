@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
+import { useMemo, useRef, useState, type JSX } from 'react';
 import type {
   ExecutionState,
   MaterializedJob,
@@ -12,7 +12,17 @@ import {
 import type { PipelineEditDeepLink } from '@/stores/navigationStore';
 import { CostIcon } from '@canopy/ui-shared/components/cost';
 import { capitalizeFirstLetter } from '@canopy/ui-shared/lib';
-import { getPipelineJobStatusDotClassName } from '../utils';
+import {
+  Count,
+  FloatingPickerMenu,
+  PickerMenuOption,
+  PickerMenuOptionCheck,
+  PickerMenuOptionContent,
+  PickerMenuOptionLabel,
+  PickerMenuOptionTrailing,
+  StatusGlyph,
+} from '@canopy/ui-shared/components';
+import { pipelineStatusGlyphState } from '../utils';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { isPipelineDetailsDefinitionSelection } from './pipelineDetailTypes';
 import { FilterIcon } from '../../shared/icons/FilterIcon';
@@ -318,19 +328,17 @@ function PipelineNavJob({
           aria-current={parentActive ? 'true' : undefined}
           data-testid={`pipeline-details-nav-job-${jobId}`}
         >
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(
-              group?.status ?? 'pending',
-            )}`}
-            aria-hidden="true"
+          <StatusGlyph
+            state={pipelineStatusGlyphState(group?.status ?? 'pending')}
+            size={12}
           />
           <span className="min-w-0 flex-1 truncate text-s">{name}</span>
           {isMatrix && (
             <span
-              className="shrink-0 rounded-full bg-fg-primary/[0.06] px-1.5 py-0.5 text-3xs font-medium fg-secondary"
+              className="shrink-0 text-2xs fg-quaternary"
               data-testid={`pipeline-details-nav-job-child-count-${jobId}`}
             >
-              {children.length} variants
+              <Count value={children.length} /> variants
             </span>
           )}
         </button>
@@ -390,11 +398,9 @@ function PipelineNavMatrixVariant({
       aria-current={active ? 'true' : undefined}
       data-testid={`pipeline-details-nav-child-${jobId}-${child.id}`}
     >
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(
-          child.result?.status ?? 'pending',
-        )}`}
-        aria-hidden="true"
+      <StatusGlyph
+        state={pipelineStatusGlyphState(child.result?.status ?? 'pending')}
+        size={12}
       />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-2xs">
@@ -409,10 +415,6 @@ function PipelineNavMatrixVariant({
   );
 }
 
-function isDomNode(value: EventTarget | null): value is Node {
-  return value !== null && 'nodeType' in value;
-}
-
 function PipelineStatusFilter({
   present,
   value,
@@ -425,37 +427,31 @@ function PipelineStatusFilter({
   onChange: (status: JobStatus | 'all') => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const active = value !== 'all';
+  const options: ReadonlyArray<{
+    readonly status: JobStatus | 'all';
+    readonly label: string;
+    readonly count: number;
+  }> = [
+    { status: 'all', label: 'All', count: total },
+    ...present.map(({ status, count }) => ({
+      status,
+      label: capitalizeFirstLetter(status),
+      count,
+    })),
+  ];
 
-  // A press anywhere outside the filter closes the menu, in whichever window
-  // document the list is shown.
-  useEffect(() => {
-    if (!open) return undefined;
-    const ownerDocument = rootRef.current?.ownerDocument;
-    if (ownerDocument === undefined) return undefined;
-    const handlePointerDown = (event: PointerEvent): void => {
-      const target = event.target;
-      if (isDomNode(target) && rootRef.current?.contains(target) === true) {
-        return;
-      }
-      setOpen(false);
-    };
-    ownerDocument.addEventListener('pointerdown', handlePointerDown, true);
-    return (): void => {
-      ownerDocument.removeEventListener('pointerdown', handlePointerDown, true);
-    };
-  }, [open]);
-
+  // The picker owns placement and outside-press dismissal, in whichever
+  // window shows the list. Escape on the button is taken here: an enclosing
+  // preview handles Escape as the key bubbles through React, before the
+  // picker's document listener would see it, so the menu closes first, focus
+  // stays on its button, and the preview sees the key as handled.
   return (
     <div
-      ref={rootRef}
       className="relative"
       onKeyDown={(event): void => {
-        // Escape closes the menu first and keeps focus on its button; an
-        // enclosing preview or dialog sees the key as handled.
-        if (event.key !== 'Escape' || !open) return;
+        if (event.key !== 'Escape' || !open || event.defaultPrevented) return;
         event.preventDefault();
         setOpen(false);
         buttonRef.current?.focus();
@@ -478,38 +474,40 @@ function PipelineStatusFilter({
       >
         <FilterIcon active={active} />
       </button>
-      {open && (
-        <div
-          className="absolute right-0 z-30 mt-1 w-56 rounded-lg bg-popover p-1.5 shadow-lg"
-          data-testid="pipeline-details-filter-popover"
-        >
-          <button
-            type="button"
-            className="focus-ring flex w-full items-center justify-between rounded px-2 py-1.5 hover:bg-fg-primary/[0.05]"
-            onClick={(): void => {
-              onChange('all');
-              setOpen(false);
-            }}
-          >
-            <span>All</span>
-            <span className="fg-secondary">{total}</span>
-          </button>
-          {present.map(({ status, count }) => (
-            <button
-              key={status}
-              type="button"
-              className="focus-ring flex w-full items-center justify-between rounded px-2 py-1.5 hover:bg-fg-primary/[0.05]"
+      <FloatingPickerMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={buttonRef}
+        placement="bottom-right"
+        gap={4}
+        interaction="menu"
+        aria-label="Filter by status"
+        data-testid="pipeline-details-filter-popover"
+      >
+        {options.map((option) => {
+          const selected = option.status === value;
+          return (
+            <PickerMenuOption
+              key={option.status}
+              role="menuitemradio"
+              aria-checked={selected}
+              selected={selected}
               onClick={(): void => {
-                onChange(status);
+                onChange(option.status);
                 setOpen(false);
               }}
             >
-              <span>{capitalizeFirstLetter(status)}</span>
-              <span className="fg-secondary">{count}</span>
-            </button>
-          ))}
-        </div>
-      )}
+              <PickerMenuOptionContent>
+                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
+              </PickerMenuOptionContent>
+              <PickerMenuOptionTrailing tone="tertiary">
+                {option.count}
+              </PickerMenuOptionTrailing>
+              <PickerMenuOptionCheck selected={selected} reserveSpace />
+            </PickerMenuOption>
+          );
+        })}
+      </FloatingPickerMenu>
     </div>
   );
 }

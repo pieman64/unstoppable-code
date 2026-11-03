@@ -111,10 +111,15 @@ function setup(
   };
 }
 
+const WATCH_STREAM_DEFINITIONS = {
+  'worker.filesystem.watch':
+    WORKER_STREAM_DEFINITIONS['worker.filesystem.watch'],
+};
+
 type WatchDispatcher = CanopyDispatcher<
   Record<never, never>,
   Record<never, never>,
-  typeof WORKER_STREAM_DEFINITIONS
+  typeof WATCH_STREAM_DEFINITIONS
 >;
 
 function createDispatcher(
@@ -125,7 +130,7 @@ function createDispatcher(
     definitions: {
       queries: {},
       instructions: {},
-      streams: WORKER_STREAM_DEFINITIONS,
+      streams: WATCH_STREAM_DEFINITIONS,
     },
     handlers: {
       queries: {},

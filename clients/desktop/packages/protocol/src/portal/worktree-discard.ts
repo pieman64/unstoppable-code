@@ -21,7 +21,13 @@ export type WorktreeDiscardCause =
   /** Git works, the configuration reads cleanly, and a source is missing or not a repository. */
   | 'source-gone'
   /** An earlier discard of this worktree was interrupted. */
-  | 'interrupted-discard';
+  | 'interrupted-discard'
+  /**
+   * CAN-5338: a retained archive's saved copy fails verification while the
+   * checkout it would remove is unchanged. Edits made after the archive may
+   * be lost.
+   */
+  | 'archive-recovery-unverified';
 
 export type WorktreeDiscardRefusal =
   | 'not-found'
@@ -70,7 +76,12 @@ export type WorktreeDiscardTargetKind =
   | 'live-checkout'
   | 'git-quarantine'
   | 'files-only-recovery'
-  | 'recreated-checkout-path';
+  | 'recreated-checkout-path'
+  /**
+   * CAN-5338: a retained (archived or deleted) worktree's own directory, with
+   * its chats, plans and saved copy. Described only with `retainedArchives`.
+   */
+  | 'retained-archive';
 
 export interface WorktreeDiscardTargetRepository {
   repoId: string;
@@ -163,6 +174,13 @@ export interface WorktreeArchiveTypedRefusal {
 export interface PortalWorktreeDiscardDescribePayload {
   workspaceId: string;
   worktreeId: string;
+  /**
+   * CAN-5338: also describe a retained archive of this id whose permanent
+   * deletion can't finish. Only a client that renders `retained-archive`
+   * targets and the `archive-recovery-unverified` cause sends it; a host
+   * without it ignores the field and refuses as before.
+   */
+  retainedArchives?: boolean;
 }
 
 /**
@@ -173,4 +191,6 @@ export interface PortalWorktreeDiscardPayload {
   workspaceId: string;
   worktreeId: string;
   confirmation: string;
+  /** CAN-5338: set when the confirmed description lists a `retained-archive` target. */
+  retainedArchives?: boolean;
 }

@@ -14,9 +14,7 @@ import { QueuedMessageActions } from './QueuedMessageActions';
 import {
   QUEUED_MESSAGE_LABEL_CLASS,
   QueuedMessageReason,
-  QueuedMessageSetupQuote,
 } from './QueuedMessageReason';
-import type { QueuedMessageSetupWait } from './QueuedMessageSetupClock';
 import { hostMessagePresentation } from './SteeringRequestTitle';
 import {
   MessageEditSurface,
@@ -35,8 +33,6 @@ export interface QueuedMessageBubbleMessage {
   readonly text: string;
   readonly reason?: string;
   readonly waitingReason?: QueuedMessageWaitingReason;
-  /** The message waits for this chat's copy of the project to be set up. */
-  readonly setup?: QueuedMessageSetupWait;
   readonly editLocked?: boolean;
   /** The host cannot hold the row while editing, so double-click stays off. */
   readonly editLockAdvisory?: boolean;
@@ -67,8 +63,6 @@ export interface QueuedMessageBubbleProps {
    * only in `foreground`; `undefined` (an older host) keeps the earlier rule.
    */
   readonly turnPhase?: ChatTurnPhase;
-  /** Fixed setup-clock reading for fixtures and captures; never ticks. */
-  readonly clockNowMs?: number;
 }
 
 export const QueuedMessageBubble = memo(function QueuedMessageBubble({
@@ -83,7 +77,6 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   onRunNow,
   steeringSupported = false,
   turnPhase,
-  clockNowMs,
 }: QueuedMessageBubbleProps): JSX.Element {
   const receivingContext = useAgentSentReceivingContext(explicitContext);
   // A delegate's steering request or a fired watcher arrives as a hidden
@@ -91,23 +84,6 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   const steeringRequest = hostMessagePresentation(message.text);
   const paragraphs = (steeringRequest?.text ?? message.text).split(/\n{2,}/);
   const editHandler = message.editLocked ? undefined : onEdit;
-  // Free text wins over setup; the setup reason and its quoted body render
-  // together or not at all.
-  const showSetupReason = !message.reason && message.setup !== undefined;
-  const body = (
-    <div className="break-words">
-      {paragraphs.map((paragraph, index) => (
-        <p
-          key={`${message.id}-${index}`}
-          className={
-            index === 0 ? 'whitespace-pre-wrap' : 'mt-2 whitespace-pre-wrap'
-          }
-        >
-          {paragraph}
-        </p>
-      ))}
-    </div>
-  );
   return (
     <div className="flex justify-end" data-testid="queued-message-bubble">
       {/*
@@ -147,16 +123,23 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
           {steeringRequest?.title}
           {message.reason ? (
             <QueuedMessageReason reason={message.reason} />
-          ) : showSetupReason ? (
-            <QueuedMessageReason setup={message.setup} nowMs={clockNowMs} />
           ) : message.waitingReason !== undefined ? (
             <QueuedMessageReason waitingReason={message.waitingReason} />
           ) : null}
-          {showSetupReason ? (
-            <QueuedMessageSetupQuote>{body}</QueuedMessageSetupQuote>
-          ) : (
-            body
-          )}
+          <div className="break-words">
+            {paragraphs.map((paragraph, index) => (
+              <p
+                key={`${message.id}-${index}`}
+                className={
+                  index === 0
+                    ? 'whitespace-pre-wrap'
+                    : 'mt-2 whitespace-pre-wrap'
+                }
+              >
+                {paragraph}
+              </p>
+            ))}
+          </div>
         </MessageEditSurface>
         <QueuedMessageActions
           placement="footer"

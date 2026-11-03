@@ -36,6 +36,7 @@ import {
   resolveSharedSkillUrl,
 } from '@/lib/share-links';
 import { canManagePublicLink } from '@/components/shared/share/canManagePublicLink';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 const COLLECTIONS_CRUD_CAPABILITY = 'collections-crud-v1';
 const SHARE_SCOPES: readonly ShareResourceScope[] = [
@@ -80,9 +81,10 @@ export function ShareCollectionModal({
       return {
         status: 'blocked',
         body: (
-          <p role="alert" className="text-s fg-destructive">
-            Collections containing MCP servers cannot be shared.
-          </p>
+          <ErrorBanner
+            className=""
+            error="Collections containing MCP servers cannot be shared."
+          />
         ),
       } satisfies ShareResourcePreflightResult;
     }

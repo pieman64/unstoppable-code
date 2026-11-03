@@ -15,6 +15,7 @@ import {
 import {
   Button,
   DelayedLoadingPlaceholder,
+  ErrorBanner,
   Markdown,
   SettingsTableSkeleton,
   useCopyToClipboard,
@@ -941,9 +942,7 @@ function WorktreeSummaryHistory({
             </DelayedLoadingPlaceholder>
           )}
           {status === 'error' && (
-            <p className="text-xs fg-destructive">
-              Couldn&apos;t load history.
-            </p>
+            <ErrorBanner className="" error="Couldn't load history." />
           )}
           {status === 'loaded' && entries.length === 0 && (
             <p className="text-xs fg-secondary">No earlier versions.</p>
@@ -992,9 +991,10 @@ function WorktreeSummaryHistory({
             </Button>
           )}
           {status === 'loaded' && loadMoreFailed && (
-            <p className="mt-2 text-xs fg-destructive">
-              Couldn&apos;t load more. Try again.
-            </p>
+            <ErrorBanner
+              className="mt-2"
+              error="Couldn't load more. Try again."
+            />
           )}
         </div>
       )}

@@ -4810,7 +4810,6 @@
     "packages/ui-app/src/settings/navigation/__tests__/settings-nav-items.test.ts": 0.963,
     "packages/ui-app/src/settings/organization/__tests__/MemberAvatar.error.test.tsx": 0.034,
     "packages/ui-app/src/settings/organization/__tests__/MemberAvatar.test.tsx": 0.058,
-    "packages/ui-app/src/settings/organization/__tests__/SubTabNav.test.tsx": 0.068,
     "packages/ui-app/src/settings/organization/__tests__/create-team-dialog.dismiss.test.tsx": 0.344,
     "packages/ui-app/src/settings/organization/__tests__/feed-format.test.ts": 0.04,
     "packages/ui-app/src/settings/organization/__tests__/merge-live-feed-item.test.ts": 0.034,

@@ -6,7 +6,6 @@ import {
   type ReactNode,
   type ComponentPropsWithoutRef,
 } from 'react';
-import { LightbulbIcon } from '../icons/AppIcons';
 import { ChatToolStepGroup } from './ChatToolStepGroup';
 import { useCleanChatLook } from './chat-look';
 import { ChatCopyAction } from './chat/ChatCopyAction';
@@ -304,7 +303,14 @@ export function TurnFooterRow({
     <div
       {...props}
       data-focus-within={focusWithin ? '' : undefined}
-      className={className}
+      // Paint containment must not clip focus rings or enlarged hit targets.
+      // Keep it only on inactive fine-pointer rows; touch rows stay uncontained.
+      className={`${className} content-auto group-hover/turn:content-visible group-data-[hover]/turn:content-visible focus-within:content-visible data-[focus-within]:content-visible pointer-coarse:content-visible [@media(hover:none)]:content-visible`}
+      // `auto` remembers the measured height of inactive historical rows.
+      style={{
+        ...props.style,
+        containIntrinsicSize: 'auto 28px',
+      }}
       onFocusCapture={(event): void => {
         focusedRef.current = event.target;
         setFocusWithin(true);
@@ -721,7 +727,7 @@ export function TurnTimer({
             inset={inset}
             live={{
               label: workingLabel ?? 'Thinking',
-              icon: <LightbulbIcon />,
+              icon: null,
             }}
           />
         ) : (
@@ -806,7 +812,7 @@ export function TurnTimer({
               {stampAccessory != null && (
                 <span
                   data-testid="turn-timer-stamp-accessory"
-                  className="flex shrink-0 items-center"
+                  className="flex shrink-0 items-center gap-0.5"
                 >
                   {stampAccessory}
                 </span>
@@ -821,9 +827,8 @@ export function TurnTimer({
           const stamp = (
             <span
               data-testid="turn-timer-relative"
-              // The small caption style and a quieter ink than the reply,
-              // brightening while the turn is hovered or focused.
-              className={`ml-1 shrink-0 whitespace-nowrap text-2xs tabular-nums fg-tertiary group-hover/turn:fg-secondary group-focus-within/turn:fg-secondary ${reveal}`}
+              // Timestamps keep their quiet ink while the turn is hovered or focused.
+              className={`ml-1 shrink-0 whitespace-nowrap text-xs proportional-nums fg-tertiary ${reveal}`}
             >
               {relativeLabel}
             </span>

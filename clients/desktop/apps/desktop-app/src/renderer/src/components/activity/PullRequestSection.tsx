@@ -185,7 +185,7 @@ function SplitProgressOverlay({
             onClick={onRetry}
             data-testid="split-progress-retry"
           >
-            Retry
+            Try again
           </Button>
         )}
         {view.terminal === 'error' && canEditPlan && (

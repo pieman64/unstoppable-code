@@ -54,6 +54,10 @@ import type {
   LifecycleJournalQuarantineResult,
 } from '@canopy/protocol/portal/lifecycle-journal';
 import type { UnifiedEntryRef } from '@canopy/protocol/unified-entry';
+import type {
+  PlanDetectionRule,
+  WorkspacePlanDetectionConfig,
+} from '@canopy/protocol/plan-detection';
 import type { TryItCapability } from '@canopy/protocol/try-it';
 import type { ChatDetail } from '@canopy/protocol/chat-detail';
 import type { EditorSetupAction } from '@canopy/agent-actions/families/editor-setup/actions';
@@ -79,6 +83,7 @@ export type {
   FileIndexingCustomGlob,
 } from '@canopy/protocol/file-indexing';
 import type { LabsExperimentsSnapshot } from './lib/labs-experiments';
+import type { BackgroundServiceApi } from './lib/background-service-status';
 import type { LabsExperimentChoiceRequest } from '@canopy/protocol/experiments';
 export type { LabsExperimentsSnapshot } from './lib/labs-experiments';
 export type { LabsExperimentChoiceRequest } from '@canopy/protocol/experiments';
@@ -93,7 +98,11 @@ export type {
   CodeGraphReadFailure,
 } from './types/code-graph-tools';
 import type { WorktreeReplicaState } from './worktree-replica';
-import type { ChatPlanReviewApproval } from '@canopy/protocol/portal';
+import type {
+  TrackedPlanImplementationInput,
+  TrackedPlanImplementation,
+  ChatPlanReviewApproval,
+} from '@canopy/protocol/portal';
 import type { McpActivationRecord } from '@canopy/protocol/mcp-servers';
 import type { AppAdvisorCodeGraphAction } from './types/app-advisor-code-graph';
 import type { DataSharingOptInFeature } from '@canopy/protocol/canopy-server';
@@ -3839,6 +3848,8 @@ export type SidebarItemsLoadWarning =
 
 export interface SidebarItemsFile {
   version: 1;
+  /** Projection-only disk read; not an edit or revision baseline. */
+  stale?: true;
   items: SidebarItem[];
   warnings?: SidebarItemsLoadWarning[];
   /**
@@ -4456,6 +4467,8 @@ export interface DeleteProjectRequest {
 /** `workspace:delete-discard-describe`: read-only (CAN-5337). */
 export interface ProjectDeletionDiscardDescribeRequest {
   workspaceId: string;
+  /** CAN-5338: also list blocking retained archives. */
+  retainedArchives?: boolean;
 }
 
 export interface AddRepoToWorktreeRequest {
@@ -4950,6 +4963,8 @@ export interface ReadWorkspaceReadinessRequest {
 
 export interface ReadWorkspaceReadinessResponse {
   issues: WorkspaceReadinessIssue[];
+  /** True only when every requested checkout was inspected. Older hosts omit it. */
+  complete?: boolean;
 }
 
 export interface WorkspaceDriftIssue {
@@ -7916,21 +7931,11 @@ export interface FileLabelBucket {
   matchers: FileLabelMatcher[];
 }
 
-export type PlanDetectionRuleKind = 'include' | 'exclude';
-
-/**
- * One plan-detection glob rule. `include` rules nominate files as plan
- * documents; `exclude` rules veto them (exclude always wins at match time).
- * `label` is purely organizational. `id` is stable; built-in rule ids must
- * never change once shipped so finer tiers can disable them by id.
- */
-export interface PlanDetectionRule {
-  id: string;
-  label: string;
-  kind: PlanDetectionRuleKind;
-  pattern: string;
-  enabled: boolean;
-}
+export type {
+  PlanDetectionRule,
+  PlanDetectionRuleKind,
+  WorkspacePlanDetectionConfig,
+} from '@canopy/protocol/plan-detection';
 
 /**
  * Global tier — mirrors {@link FileIndexingPreferences}. Attached to
@@ -7940,16 +7945,6 @@ export interface PlanDetectionRule {
 export interface PlanDetectionPreferences {
   disabledBuiltinRuleIds: string[];
   customRules: PlanDetectionRule[];
-}
-
-/**
- * Workspace-local tier (machine-specific). Attached to
- * {@link WorkspaceConfigFile} as `planDetection`.
- */
-export interface WorkspacePlanDetectionConfig {
-  /** Ids of any inherited rule (built-in, global custom, or canopy.json) to disable. */
-  disabledRuleIds?: string[];
-  customRules?: PlanDetectionRule[];
 }
 
 /**
@@ -8150,6 +8145,8 @@ export interface ArchiveWorktreeResponse {
 export interface WorktreeDiscardDescribeRequest {
   projectId: string;
   worktreeId: string;
+  /** CAN-5338: also describe a retained archive of this id. */
+  retainedArchives?: boolean;
 }
 
 /** `worktree:discard`: user-only and permanent; binds to a description. */
@@ -8157,6 +8154,8 @@ export interface WorktreeDiscardRequest {
   projectId: string;
   worktreeId: string;
   confirmation: string;
+  /** CAN-5338: the confirmed description lists a retained archive. */
+  retainedArchives?: boolean;
 }
 
 export interface CreateWorktreeRequest extends SidebarItemGroupCreationOptions {
@@ -8315,6 +8314,8 @@ export interface WorktreeGitFailedEvent {
   worktreeId: string;
   error: string;
   healthIssue?: WorktreeHealthIssue;
+  /** Unknown list authority during setup forbids automatic checkout rollback. */
+  failureReason?: 'storage-unavailable';
 }
 
 /**
@@ -11352,6 +11353,11 @@ export interface HostQueuedMessageView {
   enqueuedAtMs: number;
   turnPhase?: ChatTurnPhase;
   editLocked?: boolean;
+  /**
+   * Transient: Run now is locked while edit and delete still work, as for a
+   * row queued behind a turn its worktree's Git setup holds.
+   */
+  forceLocked?: true;
   /** Host-authoritative eligibility for moving this row into the active turn. */
   canSteer?: boolean;
   /** Steer must wait for the next turn to apply this message's tool selections. */
@@ -11717,7 +11723,15 @@ export type ExternalProjectSurface =
   | 'claude-desktop'
   | 'codex-cli'
   | 'codex-desktop'
-  | 'custom-folder';
+  | 'custom-folder'
+  | 'nested-repository';
+
+export interface ExternalProjectNestedRepositories {
+  /** Distinct confirmed repository candidates found within the scan scope. */
+  count: number;
+  /** False if discovery or identity resolution could not finish. */
+  complete: boolean;
+}
 
 export type ExternalProjectCandidateStatus =
   | 'available'
@@ -11766,6 +11780,10 @@ export interface ExternalProjectCandidate {
   sessionCount: number;
   /** Sessions that no earlier import brought in. */
   importableSessionCount: number;
+  /** Bounded scan summary for an explicitly picked plain folder. */
+  nestedRepositories?: ExternalProjectNestedRepositories;
+  /** Sorted discovery provenance, including families rooted outside a pick. */
+  parentCandidateIds?: string[];
 }
 
 export interface ExternalProjectDiscoveryDiagnostic {
@@ -12628,6 +12646,8 @@ export interface PersistedChatTab {
   pendingPlanExit?: Record<string, unknown>;
   /** Correlates a plan-resolution command with the proposal it reviewed. */
   pendingPlanExitRequestId?: string;
+  /** Accepted implementation turn; outcome and end time are main-owned. */
+  trackedPlanImplementation?: TrackedPlanImplementation | null;
   trackedPlanId?: string;
   trackedPlanSource?: TrackedPlanSource;
   trackedPlanReviewStatus?: TrackedPlanReviewStatus;
@@ -13119,6 +13139,8 @@ export interface ChatTabSettingsPatch {
   /** Opaque provider plan proposal; null explicitly clears restored approval. */
   pendingPlanExit?: Record<string, unknown> | null;
   pendingPlanExitRequestId?: string | null;
+  /** Registration is atomic with send; settings may replay its identity or clear. */
+  trackedPlanImplementation?: TrackedPlanImplementationInput | null;
   trackedPlanId?: string | null;
   trackedPlanSource?: TrackedPlanSource | null;
   trackedPlanReviewStatus?: TrackedPlanReviewStatus | null;
@@ -13170,6 +13192,7 @@ export const CHAT_TAB_SETTINGS_PATCH_KEYS = [
   'newChatStartedWatcherFiredAt',
   'pendingPlanExit',
   'pendingPlanExitRequestId',
+  'trackedPlanImplementation',
   'trackedPlanId',
   'trackedPlanSource',
   'trackedPlanReviewStatus',
@@ -13381,6 +13404,8 @@ export interface ChatSendAutomationDispatch {
 }
 
 export interface ChatSendMessageCommand {
+  /** Registered durably with admission, before any provider can run. */
+  trackedPlanImplementation?: TrackedPlanImplementationInput;
   /** Checked and committed with the implementation message. */
   planReviewApproval?: ChatPlanReviewApproval;
   type: 'chat.send_message';
@@ -13529,6 +13554,12 @@ export type ChatCommand =
     }
   | ChatSendMessageCommand
   | ChatCommitTerminalInitialPromptCommand
+  | {
+      /** Report refusal before an admitted plan implementation reaches its provider. */
+      type: 'chat.reject_plan_implementation_delivery';
+      chatId: string;
+      userMessageId: string;
+    }
   | {
       type: 'chat.edit_queued_message';
       chatId: string;
@@ -21912,6 +21943,8 @@ export interface CanopyApi {
   appWindow: AppWindowApi;
   /** Launch at sign-in (CAN-3449). See {@link LaunchAtLoginApi}. */
   launchAtLogin: LaunchAtLoginApi;
+  /** Local background service health (CAN-5541). See {@link BackgroundServiceApi}. */
+  backgroundService: BackgroundServiceApi;
   /** Codex speed capability projection. See {@link CodexSpeedApi}. */
   codexSpeed: CodexSpeedApi;
   terminal: TerminalApi;
@@ -25225,7 +25258,10 @@ export type AppAdvisorAction =
       worktreeId: string;
       chatId: string;
       text: string;
-      /** Use the normal queued-during-worktree-setup treatment. */
+      /**
+       * Accepted for compatibility. A send during worktree setup is held in
+       * main and shown as sent whether or not this is set.
+       */
       queueForSetup?: boolean;
       watchers?: AppAdvisorInlineWatcherSetup[];
     }
@@ -28130,6 +28166,8 @@ export interface ClaudeTerminalSettingsSync {
  * queueing the prompt until the running turn returns to idle.
  */
 export interface ClaudeTerminalScheduledPromptEvent {
+  /** Canonically admitted plan delivery; refuse instead of parking in a local queue. */
+  terminalPlanImplementation?: true;
   autoResume?: AutoResumeMetadata;
   projectId: string;
   worktreeId: string;
@@ -28355,6 +28393,9 @@ export const IPC_CHANNELS = {
   launchAtLoginSetEnabled: 'launch-at-login:set-enabled',
   launchAtLoginOpenSystemSettings: 'launch-at-login:open-system-settings',
   launchAtLoginStatusChanged: 'launch-at-login:status-changed',
+  backgroundServiceStatus: 'background-service:status', // renderer → main invoke
+  backgroundServiceRetry: 'background-service:retry', // renderer → main invoke
+  backgroundServiceStatusChanged: 'background-service:status-changed', // main → renderer event
   codexSpeedRead: 'codex-speed:read', // renderer → main invoke
   codexSpeedReadRoute: 'codex-speed:read-route', // renderer → main invoke
   codexSpeedSetActive: 'codex-speed:set-active', // renderer → main invoke

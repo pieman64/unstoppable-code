@@ -20,6 +20,9 @@ import { fileURLToPath } from 'node:url';
 import {
   comparePerformanceResults,
   compareRepeatedPerformanceResults,
+  compareFrameAreas,
+  formatFrameAreaComparisonLines,
+  refreshRateMismatches,
 } from './comparison.mjs';
 import {
   MAX_REPEAT,
@@ -31,6 +34,7 @@ import {
 import { aggregateSampleMetrics, isRepeatedResult } from './results.mjs';
 import { roundMetric } from './statistics.mjs';
 import { VERDICT_DEFAULTS } from './verdicts.mjs';
+import { parseW5StoreArms } from './w5-store-arms.mjs';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(currentDir, '../../../..');
@@ -57,6 +61,7 @@ Interleaved driver (runs both builds, one fresh launch per sample):
   --warmup <n>                       Unrecorded launches per side and scenario first (default 1)
   --release-like                     Launch each checkout's production out/ bundle instead of out-e2e/
   --order <abba|alternate>           Side order per sample (default abba)
+  --w5-store-arms <baseline>,<candidate> W5 store arm of each side (in-process or daemon-record-port); both sides launch the candidate build
   --output-dir <path>                Artifact directory (default .performance/desktop/interleaved-<time>)
   Other workload options, such as --chats, are passed to both sides.
 
@@ -361,6 +366,9 @@ const INTERLEAVED_VALUE_OPTIONS = Object.freeze({
       throw new Error(`--order expects ${INTERLEAVED_ORDERS.join(' or ')}`);
     plan.order = value;
   },
+  '--w5-store-arms': (plan, value) => {
+    plan.w5StoreArms = parseW5StoreArms(value);
+  },
 });
 
 /** Passes one runner option, and its value if it takes one, to both sides. */
@@ -402,6 +410,16 @@ function runnerOptionOwners(option) {
 function validatePlan(plan) {
   if (plan.warmup > MAX_REPEAT)
     throw new Error(`--warmup cannot exceed ${MAX_REPEAT}`);
+  if (plan.w5StoreArms) {
+    if (plan.releaseLike)
+      throw new Error(
+        '--w5-store-arms compares E2E-only W5 store arms and cannot be used with --release-like',
+      );
+    if (plan.runnerOptions.some(({ option }) => option === '--w5-store'))
+      throw new Error(
+        '--w5-store-arms sets the --w5-store of each side; do not pass --w5-store as well',
+      );
+  }
   for (const { option } of plan.runnerOptions) {
     const owners = runnerOptionOwners(option);
     if (owners && !owners.some((scenario) => plan.scenarios.includes(scenario)))
@@ -410,10 +428,11 @@ function validatePlan(plan) {
       );
   }
   // Children run `--repeat 1`; the driver's count is checked as the runner
-  // would check it, so a refusal comes before the first launch.
-  const validate = (scenarios) =>
+  // would check it, so a refusal comes before the first launch. Each side's
+  // store arm is checked too; arms never enter the workload configuration.
+  const validate = (scenarios, side) =>
     parsePerformanceArgs([
-      ...runnerArgsFor(plan, scenarios),
+      ...runnerArgsFor(plan, scenarios, side),
       '--repeat',
       String(plan.repeat),
     ]).config;
@@ -421,6 +440,8 @@ function validatePlan(plan) {
     plan.scenarios.map((scenario) => [scenario, validate([scenario])]),
   );
   plan.config = validate(plan.scenarios);
+  if (plan.w5StoreArms)
+    for (const side of SIDES) validate(plan.scenarios, side);
 }
 
 export function parseInterleavedArgs(argv) {
@@ -434,6 +455,8 @@ export function parseInterleavedArgs(argv) {
     releaseLike: false,
     order: 'abba',
     outputDir: '',
+    // `{ baseline, candidate }` W5 store arms of one build (CAN-5532).
+    w5StoreArms: null,
     verdictOptions: {},
     runnerArgs: [],
     runnerOptions: [],
@@ -471,9 +494,11 @@ export function parseInterleavedArgs(argv) {
 
 /**
  * The runner options shared by both sides for the given scenarios. A
- * scenario-scoped option goes only to the scenarios that own it.
+ * scenario-scoped option goes only to the scenarios that own it. With W5
+ * store arms, `side` adds that side's `--w5-store`.
  */
-export function runnerArgsFor(plan, scenarios) {
+export function runnerArgsFor(plan, scenarios, side) {
+  const arm = side && plan.w5StoreArms ? plan.w5StoreArms[side] : null;
   return [
     '--profile',
     plan.profile,
@@ -489,7 +514,18 @@ export function runnerArgsFor(plan, scenarios) {
         );
       })
       .flatMap(({ args }) => args),
+    ...(arm ? ['--w5-store', arm] : []),
   ];
+}
+
+/**
+ * The checkout each side launches. W5 store arms compare one artifact, so
+ * both sides launch the candidate's build and the baseline root is unused.
+ */
+export function sideBuildRoots(plan, roots) {
+  return plan.w5StoreArms
+    ? { baseline: roots.candidate, candidate: roots.candidate }
+    : roots;
 }
 
 /**
@@ -678,11 +714,12 @@ function defaultInterleavedOutputDir() {
 }
 
 function assertBuiltCheckouts(plan, roots) {
+  const launched = sideBuildRoots(plan, roots);
   for (const side of SIDES) {
-    const entry = measuredBundleEntry(roots[side], plan.releaseLike);
+    const entry = measuredBundleEntry(launched[side], plan.releaseLike);
     if (!existsSync(entry))
       throw new Error(
-        `The ${side} checkout has no ${path.relative(roots[side], entry)}. Run \`${plan.releaseLike ? 'npm run build' : 'npm run build:e2e -- --performance-sourcemaps'}\` there first.`,
+        `The ${side} checkout has no ${path.relative(launched[side], entry)}. Run \`${plan.releaseLike ? 'npm run build' : 'npm run build:e2e -- --performance-sourcemaps'}\` there first.`,
       );
   }
 }
@@ -733,9 +770,9 @@ function runSideOnce(plan, roots, { side, scenario, output, label }) {
           '--import',
           'tsx',
           RUN_SCRIPT,
-          ...runnerArgsFor(plan, [scenario]),
+          ...runnerArgsFor(plan, [scenario], side),
           plan.releaseLike ? '--release-like-root' : '--e2e-root',
-          roots[side],
+          sideBuildRoots(plan, roots)[side],
           '--output',
           output,
           '--label',
@@ -806,8 +843,24 @@ function runInterleavedComparison(plan) {
   console.log(
     `[interleave] ${plan.releaseLike ? 'release-like' : 'E2E'} ${plan.profile}: ${plan.scenarios.join(',')} x ${plan.repeat} sample(s) per side after ${plan.warmup} warm-up, ${plan.order} order`,
   );
-  for (const side of SIDES) console.log(`[interleave] ${side}: ${roots[side]}`);
-  if (roots.baseline === roots.candidate)
+  if (plan.w5StoreArms) {
+    for (const side of SIDES)
+      console.log(
+        `[interleave] ${side}: ${roots.candidate} with W5 store arm ${plan.w5StoreArms[side]}`,
+      );
+    if (roots.baseline !== roots.candidate)
+      console.log(
+        `[interleave] W5 store arms launch one build; the baseline root ${roots.baseline} is not launched.`,
+      );
+    if (plan.w5StoreArms.baseline === plan.w5StoreArms.candidate)
+      console.log(
+        '[interleave] Both sides name one W5 store arm: this is a calibration run and should report no regression.',
+      );
+  } else {
+    for (const side of SIDES)
+      console.log(`[interleave] ${side}: ${roots[side]}`);
+  }
+  if (!plan.w5StoreArms && roots.baseline === roots.candidate)
     console.log(
       '[interleave] Both sides name one build: this is a calibration run and should report no regression.',
     );
@@ -835,6 +888,10 @@ function runInterleavedComparison(plan) {
   for (const line of formatRepeatedComparisonLines(comparison, {
     profile: plan.profile,
   }))
+    console.log(line);
+  const frameAreas = compareFrameAreas(combined.baseline, combined.candidate);
+  writeJson(path.join(outputDir, 'frame-areas.json'), frameAreas);
+  for (const line of formatFrameAreaComparisonLines(frameAreas))
     console.log(line);
   console.log(`[interleave] Artifacts: ${outputDir}`);
   return comparison;
@@ -966,6 +1023,10 @@ function runArtifactComparison(parsed) {
       profile: current.profile,
     }))
       console.log(line);
+    for (const line of formatFrameAreaComparisonLines(
+      compareFrameAreas(baseline, current),
+    ))
+      console.log(line);
     if (parsed.output) {
       const output = path.resolve(parsed.output);
       mkdirSync(path.dirname(output), { recursive: true });
@@ -979,6 +1040,8 @@ function runArtifactComparison(parsed) {
   const result = comparePerformanceResults(baseline, current, parsed.options);
   if (!result.compatible) {
     console.error(`Incompatible runs: ${result.incompatibilities.join(', ')}`);
+    for (const { scenario, reason } of refreshRateMismatches(baseline, current))
+      console.error(`  ${scenario}: refresh rate ${reason}`);
   }
   const sorted = [...result.comparisons].sort(
     (left, right) => (right.percent ?? Infinity) - (left.percent ?? Infinity),

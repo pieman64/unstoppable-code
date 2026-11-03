@@ -141,7 +141,7 @@ function ScopeSelector({
           leading:
             locked === scope ? (
               <Lock
-                size={11}
+                size="sm"
                 className="shrink-0"
                 aria-hidden="true"
                 data-testid={`${testIdPrefix}-lock`}

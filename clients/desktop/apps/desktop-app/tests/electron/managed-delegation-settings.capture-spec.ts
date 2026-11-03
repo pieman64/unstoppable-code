@@ -75,7 +75,7 @@ test('captures read-only consultation settings', async () => {
         'off',
       );
       await expect(
-        window.getByRole('button', { name: 'Retry shutdown', exact: true }),
+        window.getByRole('button', { name: 'Try again', exact: true }),
       ).toBeVisible();
       await consultation.screenshot({
         path: path.join(

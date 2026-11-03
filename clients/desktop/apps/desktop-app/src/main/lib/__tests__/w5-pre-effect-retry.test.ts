@@ -9,6 +9,7 @@ import {
 import { runW5Commit } from '../w5-commit-scope';
 import {
   recordW5PortConflict,
+  runW5DecisionOnlyUnit,
   runW5PreEffectUnit,
   setW5PreEffectAttempts,
   w5ConflictCounts,
@@ -143,5 +144,120 @@ describe('daemon-backed composition (3 attempts)', () => {
   it('rejects an attempt bound that is not a positive integer', () => {
     expect(() => setW5PreEffectAttempts(0)).toThrow();
     expect(() => setW5PreEffectAttempts(1.5)).toThrow();
+  });
+});
+
+// W5d2 O-1/O-2: decision-only units, whose one decision is their only effect.
+describe('decision-only units', () => {
+  /** `work` inside the commit scope of its one decision. */
+  const scoped = (work: () => Promise<string>): (() => Promise<string>) =>
+    jest.fn(() => withW5Commit({ operation: 'decision' }, work));
+
+  it('runs once in process', async () => {
+    const work = failing(conflict());
+    await expect(
+      runW5DecisionOnlyUnit('decision-unit', scoped(work)),
+    ).rejects.toBeInstanceOf(W5FileWriteRefusedError);
+    expect(work).toHaveBeenCalledTimes(1);
+  });
+
+  describe('daemon-backed (3 attempts)', () => {
+    beforeEach(() => {
+      restore = setW5PreEffectAttempts(3);
+    });
+
+    it('reruns a refusal of the commit scope it opened, and counts it', async () => {
+      const before = count('decision-unit fingerprint retried');
+      const work = failing(conflict(), conflict());
+      await expect(
+        runW5DecisionOnlyUnit('decision-unit', scoped(work)),
+      ).resolves.toBe('done');
+      expect(work).toHaveBeenCalledTimes(3);
+      expect(count('decision-unit fingerprint retried')).toBe(before + 2);
+      expect(count('decision-unit fingerprint post-effect')).toBe(0);
+    });
+
+    it('surfaces the last refusal once the attempts run out', async () => {
+      const last = conflict();
+      const work = failing(conflict(), conflict(), last);
+      await expect(
+        runW5DecisionOnlyUnit('exhausting-decision', scoped(work)),
+      ).rejects.toBe(last);
+      expect(work).toHaveBeenCalledTimes(3);
+      expect(count('exhausting-decision fingerprint exhausted')).toBe(1);
+    });
+
+    it.each([
+      ['a revision conflict', new W5RevisionConflictError('workspace:a', 1, 2)],
+      [
+        'recovery-required',
+        new W5CommitRefusedError('recovery-required', 'needs recovery'),
+      ],
+      [
+        'an unapplied change',
+        new W5CommitRefusedError('unapplied-change', 'not applied'),
+      ],
+      ['a thrown transport failure', canopyInternalError('lost')],
+    ])('never reruns %s', async (_name, error) => {
+      const work = failing(error);
+      await expect(
+        runW5DecisionOnlyUnit('decision-unit', scoped(work)),
+      ).rejects.toBe(error);
+      expect(work).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs once nested in a unit, which owns the retry', async () => {
+      const inner = failing(conflict());
+      const outer = jest.fn(() => runW5DecisionOnlyUnit('inner', inner));
+      await expect(runW5PreEffectUnit('outer', outer)).resolves.toBe('done');
+      expect(outer).toHaveBeenCalledTimes(2);
+      expect(inner).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs once nested in another decision-only unit, which owns the retry', async () => {
+      const inner = failing(conflict());
+      const outer = jest.fn(() => runW5DecisionOnlyUnit('nested', inner));
+      await expect(runW5DecisionOnlyUnit('outer', outer)).resolves.toBe('done');
+      expect(outer).toHaveBeenCalledTimes(2);
+      expect(inner).toHaveBeenCalledTimes(2);
+      expect(count('nested fingerprint retried')).toBe(0);
+    });
+
+    it('runs a pre-effect unit inside its scope once, owning the retry itself', async () => {
+      const inner = failing(conflict());
+      const work = jest.fn(() =>
+        withW5Commit({ operation: 'decision' }, () =>
+          runW5PreEffectUnit('inner-read', inner),
+        ),
+      );
+      await expect(runW5DecisionOnlyUnit('decision-unit', work)).resolves.toBe(
+        'done',
+      );
+      expect(work).toHaveBeenCalledTimes(2);
+      expect(inner).toHaveBeenCalledTimes(2);
+      expect(count('inner-read fingerprint retried')).toBe(0);
+    });
+
+    it('runs once inside a commit scope, whose decision comes later', async () => {
+      const work = failing(conflict());
+      await expect(
+        runW5Commit(
+          {},
+          { operation: 'scope' },
+          () => runW5DecisionOnlyUnit('in-scope', work),
+          () => Promise.resolve(),
+        ),
+      ).rejects.toBeInstanceOf(W5FileWriteRefusedError);
+      expect(work).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts a port refusal inside it as its own, not surfaced', async () => {
+      const before = count('w5.decision fingerprint surfaced');
+      await runW5DecisionOnlyUnit('decision-unit', () => {
+        recordW5PortConflict('w5.decision', 'fingerprint');
+        return Promise.resolve();
+      });
+      expect(count('w5.decision fingerprint surfaced')).toBe(before);
+    });
   });
 });

@@ -12,10 +12,18 @@ import * as path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { BRAND } from '@canopy/brand/current';
+import { daemonName } from '@canopy/protocol/brand';
 import { createLinuxCliInstaller } from '../ipc/linux-cli-install';
 
 const execFileAsync = promisify(execFile);
 const TOOLS = ['claude', 'codex', 'codex-code-mode-host', 'gh', 'rg', 'rtk'];
+const DAEMON = daemonName(BRAND);
+const DAEMON_COMPANIONS = [
+  DAEMON,
+  `${DAEMON}.identity.json`,
+  'w5-commit-log-worker.js',
+  'node-pty',
+];
 let root: string;
 let home: string;
 let gui: string;
@@ -74,6 +82,18 @@ async function distribution(version: string, packaged = true): Promise<void> {
       0o755,
     );
   }
+  const bin = packaged ? path.join(gui, 'resources/bin') : cli;
+  await write(path.join(bin, DAEMON), `daemon-${version}`, 0o755);
+  await write(
+    path.join(bin, `${DAEMON}.identity.json`),
+    JSON.stringify({ brandId: BRAND.id, version }),
+  );
+  await write(path.join(bin, 'w5-commit-log-worker.js'), `worker-${version}`);
+  await write(path.join(bin, 'node-pty/package.json'), '{}');
+  await write(
+    path.join(bin, 'node-pty/build/Release/pty.node'),
+    `pty-${version}`,
+  );
   await write(
     path.join(cli, 'resources/code-graph/parser.wasm'),
     `wasm-${version}`,
@@ -151,8 +171,19 @@ describe('Linux complete per-user CLI install', () => {
       path.join(home, '.local/share', BRAND.cliName, 'cli/versions'),
     );
     expect((await fs.stat(copied)).mode & 0o777).toBe(0o700);
-    for (const tool of [BRAND.cliName, ...TOOLS]) {
+    for (const tool of [BRAND.cliName, ...TOOLS, DAEMON]) {
       expect((await fs.stat(path.join(copied, tool))).mode & 0o777).toBe(0o755);
+    }
+    for (const file of [
+      DAEMON,
+      `${DAEMON}.identity.json`,
+      'w5-commit-log-worker.js',
+      'node-pty/package.json',
+      'node-pty/build/Release/pty.node',
+    ]) {
+      expect(await fs.readFile(path.join(copied, file))).toEqual(
+        await fs.readFile(path.join(gui, 'resources/bin', file)),
+      );
     }
     expect(await fs.readFile(path.join(copied, 'LICENSE'), 'utf8')).toBe(
       'license-v1',
@@ -191,6 +222,57 @@ describe('Linux complete per-user CLI install', () => {
     await fs.writeFile(path.join(gui, 'resources/bin/rg'), 'updated-rg');
     expect((await installer().getStatus()).state).toBe('outdated');
     expect((await installer().uninstall()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('missing');
+  });
+
+  it('detects a daemon-only upgrade and retains the old daemon generation on refresh', async () => {
+    const daemon = path.join(gui, 'resources/bin', DAEMON);
+    const timestamp = 1_700_000_000;
+    await fs.utimes(daemon, timestamp, timestamp);
+    expect((await installer().install()).success).toBe(true);
+    const old = await installedRoot();
+    await fs.writeFile(daemon, 'daemon-v2');
+    await fs.utimes(daemon, timestamp, timestamp);
+    expect((await installer().getStatus()).state).toBe('outdated');
+    expect((await installer().install()).success).toBe(true);
+    expect((await installer().getStatus()).state).toBe('correct-symlink');
+    expect(await fs.readFile(path.join(old, DAEMON), 'utf8')).toBe('daemon-v1');
+    expect(
+      await fs.readFile(path.join(await installedRoot(), DAEMON), 'utf8'),
+    ).toBe('daemon-v2');
+  });
+
+  it('refuses a split package missing its daemon before publishing a generation', async () => {
+    await fs.unlink(path.join(gui, 'resources/bin', DAEMON));
+    expect(await installer().install()).toEqual({
+      success: false,
+      error: `Incomplete CLI distribution: ${DAEMON}`,
+    });
+    expect((await installer().getStatus()).state).toBe('missing');
+    expect(
+      await fs.readdir(
+        path.join(home, '.local/share', BRAND.cliName, 'cli/versions'),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([
+    `${DAEMON}.identity.json`,
+    'w5-commit-log-worker.js',
+    'node-pty/package.json',
+    'node-pty/build/Release/pty.node',
+  ])('refuses a package missing the daemon dependency %s', async (file) => {
+    await fs.unlink(path.join(gui, 'resources/bin', file));
+    expect((await installer().install()).success).toBe(false);
+    expect((await installer().getStatus()).state).toBe('missing');
+  });
+
+  it('refuses a non-executable daemon', async () => {
+    await fs.chmod(path.join(gui, 'resources/bin', DAEMON), 0o644);
+    expect(await installer().install()).toEqual({
+      success: false,
+      error: `Incomplete CLI distribution: ${DAEMON}`,
+    });
     expect((await installer().getStatus()).state).toBe('missing');
   });
 
@@ -254,6 +336,11 @@ describe('Linux complete per-user CLI install', () => {
     'resources/cli/resources/code-graph/query.scm',
     'resources/cli/node_modules/web-tree-sitter/index.js',
     'resources/cli/node_modules/typescript/package.json',
+    `resources/bin/${DAEMON}`,
+    `resources/bin/${DAEMON}.identity.json`,
+    'resources/bin/w5-commit-log-worker.js',
+    'resources/bin/node-pty/package.json',
+    'resources/bin/node-pty/build/Release/pty.node',
   ])(
     'keeps an owned CLI removable when a package asset is truncated (%s)',
     async (asset) => {
@@ -345,7 +432,11 @@ describe('Linux complete per-user CLI install', () => {
 
   it('preserves a complete resources/cli tree without overwriting existing sibling members', async () => {
     const cli = path.dirname(bundledCliPath);
-    for (const member of [...TOOLS, 'THIRD_PARTY_NOTICES.txt']) {
+    for (const member of [
+      ...TOOLS,
+      ...DAEMON_COMPANIONS,
+      'THIRD_PARTY_NOTICES.txt',
+    ]) {
       const parent =
         member === 'THIRD_PARTY_NOTICES.txt'
           ? path.join(gui, 'resources')
@@ -359,6 +450,31 @@ describe('Linux complete per-user CLI install', () => {
     expect(
       await fs.readFile(path.join(copied, 'THIRD_PARTY_NOTICES.txt'), 'utf8'),
     ).toBe('notices-v1');
+  });
+
+  it('refuses a flat resources/cli tree missing only the daemon instead of mixing sources', async () => {
+    const cli = path.dirname(bundledCliPath);
+    for (const member of [
+      ...TOOLS,
+      ...DAEMON_COMPANIONS,
+      'THIRD_PARTY_NOTICES.txt',
+    ]) {
+      const parent =
+        member === 'THIRD_PARTY_NOTICES.txt'
+          ? path.join(gui, 'resources')
+          : path.join(gui, 'resources/bin');
+      await fs.rename(path.join(parent, member), path.join(cli, member));
+    }
+    // A valid sibling daemon must not conceal an incomplete in-place tree.
+    await fs.rename(
+      path.join(cli, DAEMON),
+      path.join(gui, 'resources/bin', DAEMON),
+    );
+    expect(await installer().install()).toEqual({
+      success: false,
+      error: 'Incomplete in-place CLI distribution.',
+    });
+    expect((await installer().getStatus()).state).toBe('missing');
   });
 
   it('rejects a partial in-place distribution instead of mixing companion sources', async () => {

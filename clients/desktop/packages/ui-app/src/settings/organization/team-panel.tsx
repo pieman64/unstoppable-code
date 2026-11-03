@@ -34,6 +34,7 @@ import { OrganizationLogo } from './OrganizationLogo';
 import { joinClassNames } from './join-class-names';
 import { useMembershipChangeFollowUp } from './membership-change';
 import { resolveJoinedOrganization } from './resolve-joined-organization';
+import type { SettingsFailure } from '../errors';
 
 export type TeamPanelStatus = 'loading' | 'ready' | 'error';
 
@@ -100,8 +101,8 @@ export function TeamPanel({
     initialInvitations ?? [],
   );
   // A failed list load offers Retry; a failed accept or decline does not.
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [actionError, setActionError] = useState<SettingsFailure | null>(null);
   const [respondingId, setRespondingId] = useState<string | null>(null);
   // Declining is irreversible, so it confirms via the shared ConfirmDialog.
   const [pendingDecline, setPendingDecline] =
@@ -134,7 +135,7 @@ export function TeamPanel({
       setStatus('ready');
       return orgs;
     } catch (err) {
-      setLoadError(errorCopy.loadCopy(err));
+      setLoadError(errorCopy.loadFailure(err));
       setStatus('error');
       return null;
     }
@@ -167,7 +168,7 @@ export function TeamPanel({
         if (match !== null) selectOrganization(match.id);
       } catch (err) {
         setActionError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action:
               action === 'accept'
                 ? 'accept the invitation'
@@ -211,10 +212,15 @@ export function TeamPanel({
     <section className="flex flex-col gap-6" data-testid="team-panel">
       <ErrorBanner
         className=""
-        error={loadError}
+        error={loadError?.copy}
+        details={loadError?.details}
         onRetry={() => void refresh()}
       />
-      <ErrorBanner className="" error={actionError} />
+      <ErrorBanner
+        className=""
+        error={actionError?.copy}
+        details={actionError?.details}
+      />
 
       {status === 'ready' && invitations.length > 0 && (
         <div data-testid="team-invitations">

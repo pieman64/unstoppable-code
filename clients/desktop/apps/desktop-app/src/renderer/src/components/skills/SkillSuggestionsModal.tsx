@@ -67,7 +67,7 @@ export function SkillSuggestionsModal(): JSX.Element | null {
       headerBorder={false}
       dataTestId="skill-suggestions-modal"
     >
-      <div className="px-5 pb-5">
+      <div className="">
         {suggestions === null ? null : (
           <SkillSuggestionsList
             suggestions={items}

@@ -152,6 +152,7 @@ import {
   ObservabilityService,
   type PipelineExecutionStateSyncInput,
 } from '../service';
+import { createDesktopObservabilityHost } from '../host';
 
 const mockReaddir = jest.mocked(readdirModuleMock);
 const mockRename = jest.mocked(renameModuleMock);
@@ -359,7 +360,7 @@ describe('pipeline output ingestion', () => {
       usage: {},
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     await service.start();
 
@@ -406,7 +407,7 @@ describe('pipeline output ingestion', () => {
       usage: {},
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     await service.start();
     mockPeekProviderAccountIdentity.mockClear();
@@ -473,7 +474,7 @@ describe('pipeline output ingestion', () => {
       ],
       usage: {},
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     await service.start();
 
@@ -518,7 +519,7 @@ describe('pipeline output ingestion', () => {
   });
 
   it('counts output chunks that arrive without a matching open audit entry', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     const data = '{"type":"thread.token_usage.updated"}\n';
 
@@ -537,7 +538,7 @@ describe('pipeline output ingestion', () => {
   });
 
   it('ingests Codex lifecycle and usage events separately from a Claude result across matrix variants', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     const codexJobId = '__matrix__review__0';
     const claudeJobId = '__matrix__review__1';
@@ -626,7 +627,7 @@ describe('pipeline output ingestion', () => {
   });
 
   it('prices each agent-loop iteration from zero because each is a fresh query', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     service.syncPipelineExecutionState(
       pipelineState('exec-agent-loop', {
@@ -675,7 +676,7 @@ describe('pipeline output ingestion', () => {
   });
 
   it('keeps output and usage isolated between iterations of the same pipeline step', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     services.push(service);
     service.syncPipelineExecutionState(
       pipelineState('exec-iteration', {

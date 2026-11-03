@@ -1709,6 +1709,7 @@ describe('Portal session manager chat outbox compaction', () => {
       expect(field(capabilities, 'transcript_reads_v1')).toBe(true);
       expect(field(capabilities, 'transcript_reads_v2')).toBe(true);
       expect(field(capabilities, 'pr_status_push_v1')).toBe(true);
+      expect(field(capabilities, 'watched_github_items')).toBe(true);
     } finally {
       await stopCanopyPortal('app_shutdown');
     }

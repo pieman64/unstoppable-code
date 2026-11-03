@@ -22,7 +22,11 @@ import { seedWorkspace } from '../performance/scenarios.mjs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
   injectChatEvent,
@@ -1615,6 +1619,7 @@ test('recovers a force-quit tool-heavy turn through its last acknowledged event 
     ).toBeGreaterThan(4096);
     // Kill only this fixture's Electron main process: no drain, so with
     // default journal storage the turn's records are still only in the journal.
+    await captureDaemonDryRunEvidence(launched.electronApp);
     const mainPid = await launched.electronApp.evaluate(() => process.pid);
     process.kill(mainPid, 'SIGKILL');
   } finally {

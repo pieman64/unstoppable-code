@@ -118,6 +118,7 @@ export interface BackgroundTrayProps {
   readonly onDismissRun?: (runId: string) => void;
   /** Opens a run: its detail, or a GitHub run's page; absent, no Open run. */
   readonly onOpenRun?: (runId: string) => void;
+  readonly onOpenGitHubRun?: (runId: string) => void;
   /** Opens one job from the run inspector's job bar. */
   readonly onRunJobClick?: (runId: string, jobId: string) => void;
   /** The run's watcher button, in its inspector. */
@@ -223,6 +224,7 @@ export function BackgroundTray({
   onResumeRun,
   onDismissRun,
   onOpenRun,
+  onOpenGitHubRun,
   onRunJobClick,
   renderRunWatcher,
   presentation = 'drawer',
@@ -379,38 +381,42 @@ export function BackgroundTray({
     open: boolean,
     onToggle: (key: string) => void,
     closeCompletedHistory = false,
-  ): JSX.Element => (
-    <RunRow
-      key={run.id}
-      run={run}
-      now={now}
-      open={open}
-      onToggle={(): void => onToggle(`run:${run.id}`)}
-      onStop={onStopRun}
-      onRespond={onRespondRun}
-      onResume={onResumeRun}
-      onDismiss={onDismissRun}
-      onOpen={
-        closeCompletedHistory && onOpenRun
-          ? (runId): void => {
-              setCompletedChatId(null);
-              onOpenRun(runId);
-            }
-          : onOpenRun
-      }
-      onJobClick={
-        closeCompletedHistory && onRunJobClick
-          ? (runId, jobId): void => {
-              setCompletedChatId(null);
-              onRunJobClick(runId, jobId);
-            }
-          : onRunJobClick
-      }
-      renderWatcher={renderRunWatcher}
-      listRef={listRef}
-      topInset={topInset}
-    />
-  );
+  ): JSX.Element => {
+    const openRun =
+      run.kind === 'pipeline' ? onOpenRun : (onOpenGitHubRun ?? onOpenRun);
+    return (
+      <RunRow
+        key={run.id}
+        run={run}
+        now={now}
+        open={open}
+        onToggle={(): void => onToggle(`run:${run.id}`)}
+        onStop={onStopRun}
+        onRespond={onRespondRun}
+        onResume={onResumeRun}
+        onDismiss={onDismissRun}
+        onOpen={
+          closeCompletedHistory && openRun
+            ? (runId): void => {
+                setCompletedChatId(null);
+                openRun(runId);
+              }
+            : openRun
+        }
+        onJobClick={
+          closeCompletedHistory && onRunJobClick
+            ? (runId, jobId): void => {
+                setCompletedChatId(null);
+                onRunJobClick(runId, jobId);
+              }
+            : onRunJobClick
+        }
+        renderWatcher={renderRunWatcher}
+        listRef={listRef}
+        topInset={topInset}
+      />
+    );
+  };
   const runRow = (run: BackgroundTrayRun): JSX.Element =>
     renderRunRow(run, openKey === `run:${run.id}`, toggleRow);
   const toggleCompletedRow = (key: string): void =>

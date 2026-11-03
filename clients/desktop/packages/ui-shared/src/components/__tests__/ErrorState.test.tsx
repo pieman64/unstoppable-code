@@ -90,7 +90,7 @@ describe('ErrorState', () => {
     const retry = onlyButton();
     expect(retry.textContent).toBe(TRYING_AGAIN_LABEL);
     expect(retry.getAttribute('aria-busy')).toBe('true');
-    expect(retry.disabled).toBe(true);
+    expect(retry.getAttribute('aria-disabled')).toBe('true');
     expect(container.textContent).toContain("Couldn't load the Feed.");
   });
 
@@ -131,6 +131,47 @@ describe('ErrorBanner retry', () => {
 });
 
 describe('NoticeButton busy', () => {
+  function layer(button: HTMLElement, name: 'rest' | 'busy'): HTMLElement {
+    const element = button.querySelector<HTMLElement>(
+      `[data-busy-layer="${name}"]`,
+    );
+    if (!(element instanceof HTMLElement)) throw new Error(`no ${name} layer`);
+    return element;
+  }
+
+  function reserved(element: HTMLElement): string | null {
+    return (
+      element
+        .querySelector('[data-reserved-label]')
+        ?.getAttribute('data-reserved-label') ?? null
+    );
+  }
+
+  it('keeps one width as it turns busy, so the actions beside it never move', () => {
+    const banner = (retrying: boolean): JSX.Element => (
+      <ErrorBanner
+        error="Couldn't load shared workflows. Yours are listed."
+        onRetry={jest.fn()}
+        retrying={retrying}
+      />
+    );
+    render(banner(false));
+    let retry = onlyButton();
+    expect(retry.textContent).toBe(TRY_AGAIN_LABEL);
+    // The spinner and the verb in progress are laid out, hidden, from the
+    // first render, in the same cell as the resting label.
+    expect(layer(retry, 'busy').classList.contains('invisible')).toBe(true);
+    expect(layer(retry, 'busy').getAttribute('aria-hidden')).toBe('true');
+    expect(reserved(layer(retry, 'busy'))).toBe(TRYING_AGAIN_LABEL);
+
+    render(banner(true));
+    retry = onlyButton();
+    expect(retry.textContent).toBe(TRYING_AGAIN_LABEL);
+    expect(layer(retry, 'rest').classList.contains('invisible')).toBe(true);
+    expect(reserved(layer(retry, 'rest'))).toBe(TRY_AGAIN_LABEL);
+    expect(layer(retry, 'busy').hasAttribute('aria-hidden')).toBe(false);
+  });
+
   it('keeps the label without a busy label and stops taking presses', () => {
     const onClick = jest.fn();
     render(

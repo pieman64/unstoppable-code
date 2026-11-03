@@ -7,7 +7,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useProjectsStore } from '@/stores/projectsStore';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
+import { ErrorBanner } from '@/components/shared/StatusBlocks';
 import type { TabSpec } from './tab-specs';
 import { formatCurrencyUsd, formatNumber } from './format';
 
@@ -83,53 +88,55 @@ export function MetricsBreakdownPanel({
     >
       <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2 text-s">
         <div className="flex items-center gap-2">
-          <label
+          <span
+            id={`breakdown-metric-${spec.id}-label`}
             className="text-xs fg-secondary"
-            htmlFor={`breakdown-metric-${spec.id}`}
           >
             Metric:
-          </label>
-          <select
+          </span>
+          <SettingsSelect
             id={`breakdown-metric-${spec.id}`}
+            width="fit"
+            aria-labelledby={`breakdown-metric-${spec.id}-label`}
+            options={spec.tableMetrics.map((opt) => ({
+              value: opt.value,
+              label: opt.label,
+            }))}
             value={metric}
-            onChange={(event): void => onMetricChange(event.target.value)}
+            onValueChange={onMetricChange}
             data-testid={`usage-breakdown-metric-${spec.id}`}
-            className="rounded border bg-base px-1 py-0.5 text-s fg-primary"
-          >
-            {spec.tableMetrics.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          />
         </div>
         <div className="flex items-center gap-2">
-          <label
+          <span
+            id={`breakdown-group-${spec.id}-label`}
             className="text-xs fg-secondary"
-            htmlFor={`breakdown-group-${spec.id}`}
           >
             Group by:
-          </label>
-          <select
+          </span>
+          <SettingsSelect
             id={`breakdown-group-${spec.id}`}
+            width="fit"
+            aria-labelledby={`breakdown-group-${spec.id}-label`}
+            options={spec.tableGroupings.map((opt) => ({
+              value: opt.value,
+              label: opt.label,
+            }))}
             value={groupBy}
-            onChange={(event): void => onGroupByChange(event.target.value)}
+            onValueChange={onGroupByChange}
             data-testid={`usage-breakdown-groupby-${spec.id}`}
-            className="rounded border bg-base px-1 py-0.5 text-s fg-primary"
-          >
-            {spec.tableGroupings.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          />
         </div>
       </div>
       {error ? (
-        <div className="px-3 py-4 text-s fg-destructive">{error}</div>
+        <div className="px-3 py-4">
+          <ErrorBanner error={error} className="" />
+        </div>
       ) : response === null ? (
         <div className="px-3">
-          <LoadingPlaceholder space="section" label="Loading breakdown…" />
+          <DelayedLoadingPlaceholder slowNote="Still loading breakdown…">
+            <CenteredLoadingSpinner className="my-8" />
+          </DelayedLoadingPlaceholder>
         </div>
       ) : response.rows.length === 0 ? (
         <div className="px-3 py-4 text-s fg-secondary">{spec.emptyMessage}</div>

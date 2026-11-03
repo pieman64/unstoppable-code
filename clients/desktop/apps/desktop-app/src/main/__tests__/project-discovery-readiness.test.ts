@@ -1,3 +1,4 @@
+import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 jest.mock('../lib/project-owner', () => ({
   decideSameOwnerAccess: jest.fn(),
   resolveProjectSavedOwner: jest.fn(),
@@ -500,7 +501,7 @@ describe('project discovery organization Chats readiness', () => {
 
   test.each([
     ['partial', 'execution_failed'],
-    ['unreadable', 'execution_failed'],
+    ['unreadable', 'unavailable'],
     ['absent', 'not_found'],
     ['ok', 'not_found'],
   ] as const)(
@@ -534,8 +535,40 @@ describe('project discovery organization Chats readiness', () => {
           kind: 'app_advisor',
           chatId: 'advisor-chat',
         }),
-      ).rejects.toMatchObject({ code });
+      ).rejects.toMatchObject(
+        authority === 'unreadable'
+          ? {
+              payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+            }
+          : { code },
+      );
       expect(readConfig).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    ['targeted identity', requireAuthorizedProjectIdentity],
+    ['full project', requireAuthorizedProject],
+  ] as const)(
+    '%s preserves unavailable if the index fails during its config query',
+    async (_name, read) => {
+      const { cowork } = organizationFixture();
+      jest.spyOn(sidebarItems, 'getWorkspaceIndexRepository').mockReturnValue({
+        read: jest
+          .fn()
+          .mockResolvedValue({ authority: 'ok', entries: [cowork] }),
+        update: jest.fn(),
+      });
+      const unavailable = workspaceStorageUnavailable();
+      jest
+        .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceGetForLegacyIpc')
+        .mockRejectedValue(unavailable);
+      await expect(
+        read(cowork.id, {
+          kind: 'app_advisor',
+          chatId: 'advisor-chat',
+        }),
+      ).rejects.toBe(unavailable);
     },
   );
 
@@ -1559,7 +1592,7 @@ describe('project discovery index authority isolation', () => {
         });
       if (authority === 'unreadable') {
         await expect(readProjectInventory()).rejects.toMatchObject({
-          code: 'execution_failed',
+          payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
         });
       } else {
         await expect(readProjectInventory()).resolves.toMatchObject({
@@ -1587,7 +1620,29 @@ describe('project discovery index authority isolation', () => {
       dispatchProjectDiscoveryAction(query, advisor),
     ).resolves.toMatchObject({
       ok: false,
-      error: { code: 'execution_failed' },
+      error: { code: 'surface_unavailable', retryable: true },
+    });
+  });
+
+  test('public discovery preserves storage unavailability after a successful inventory read', async () => {
+    organizationFixture();
+    jest
+      .spyOn(readinessModule, 'getOrganizationMemberships')
+      .mockResolvedValue([{ id: ORGANIZATION_ID }]);
+    const unavailable = workspaceStorageUnavailable();
+    jest
+      .spyOn(getActiveDesktopRuntime(), 'queryWorkspaceGetForLegacyIpc')
+      .mockRejectedValueOnce(unavailable);
+
+    await expect(
+      dispatchProjectDiscoveryAction(query, advisor),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: 'surface_unavailable',
+        message: unavailable.message,
+        retryable: true,
+      },
     });
   });
 

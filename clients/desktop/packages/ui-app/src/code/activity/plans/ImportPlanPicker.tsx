@@ -11,8 +11,11 @@ import { derivePlanTitle } from '@canopy/protocol/plans';
 import {
   Badge,
   Button,
+  DialogModal,
+  ErrorState,
   HighlightedSegments,
   LoadingSpinner,
+  SearchField,
   splitMatchSegments,
 } from '@canopy/ui-shared/components';
 import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -180,7 +183,7 @@ function PreviewPane({
     <aside
       data-testid="import-plan-preview"
       aria-label="Preview"
-      className="hidden w-72 shrink-0 flex-col gap-3 border-l px-4 py-3 md:flex"
+      className="hidden w-72 shrink-0 flex-col gap-3 border-l py-3 pl-4 pr-6 md:flex"
     >
       <div className="min-w-0">
         {title !== undefined ? (
@@ -330,8 +333,12 @@ export function ImportPlanPicker({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
-    // An IME composition owns Escape, the arrow keys and Enter until it ends.
-    if (event.nativeEvent.isComposing) return;
+    // An IME composition owns Escape, the arrow keys and Enter until it ends,
+    // so its Escape must not reach the dialog's own Escape either.
+    if (event.nativeEvent.isComposing) {
+      if (event.key === 'Escape') event.stopPropagation();
+      return;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       onClose();
@@ -383,7 +390,7 @@ export function ImportPlanPicker({
           if (!importing) setSelectedKey(key);
         }}
         onDoubleClick={(): void => runPrimary(item)}
-        className={`flex min-w-0 flex-1 items-center justify-between gap-3 px-4 py-2 text-left transition-colors aria-disabled:opacity-50 ${
+        className={`flex min-w-0 flex-1 items-center justify-between gap-3 px-6 py-2 text-left transition-colors aria-disabled:opacity-50 ${
           selected
             ? 'bg-accent-subtle fg-accent'
             : 'fg-primary hover:bg-secondary'
@@ -404,45 +411,64 @@ export function ImportPlanPicker({
   const showEmpty = !hasRows && !showFilesLoading && !error;
 
   return (
-    <div
-      className="fixed inset-0 z-modal flex items-start justify-center bg-overlay-scrim px-4 pt-[10vh]"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        data-testid="import-plan-modal"
-        className="flex max-h-[80vh] w-full max-w-220 flex-col overflow-hidden rounded-2xl bg-card shadow-xl"
-        onClick={(event): void => event.stopPropagation()}
-        onKeyDown={handleKeyDown}
-      >
-        <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-s font-semibold fg-primary">
-              Import plan
-            </h2>
-            <p className="mt-0.5 text-xs fg-secondary">
-              Turn a Markdown or text file into a tracked plan.
+    <DialogModal
+      onClose={onClose}
+      title="Import plan"
+      subtitle="Turn a Markdown or text file into a tracked plan."
+      titleId={titleId}
+      dataTestId="import-plan-modal"
+      maxWidth="4xl"
+      placement="top"
+      inset="flush"
+      scrollableBody={false}
+      headerActions={
+        <Button
+          type="button"
+          variant="secondary"
+          size="compact"
+          data-testid="import-plan-browse"
+          disabled={importing}
+          onClick={onBrowse}
+        >
+          Browse…
+        </Button>
+      }
+      footer={
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-4">
+          <div className="flex min-w-0 flex-col gap-0.5 text-xs fg-secondary">
+            {selectedTrackedPlanId ? null : (
+              <p className="md:hidden">{COPY_NOTICE}</p>
+            )}
+            <p data-testid="import-plan-hint">
+              Or tell your agent{' '}
+              <span className="font-mono fg-primary/80">
+                {'"Import @<file> as a plan"'}
+              </span>
             </p>
           </div>
           <Button
-            type="button"
-            variant="secondary"
+            variant="primary"
             size="compact"
-            data-testid="import-plan-browse"
-            disabled={importing}
-            onClick={onBrowse}
+            data-testid="import-plan-primary"
+            disabled={importing || !selectedItem}
+            shortcut={formatShortcut('list-open')}
+            onClick={(): void => runPrimary(selectedItem)}
           >
-            Browse…
+            {selectedTrackedPlanId ? 'Open plan' : 'Import plan'}
           </Button>
         </div>
-
-        <div className="border-b px-4 py-3">
-          <input
+      }
+    >
+      {/* The palette's own keys (arrows, Enter, Escape) are handled here, so
+          the field never clears on Escape and an IME composition keeps them. */}
+      <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleKeyDown}>
+        <div className="border-b px-6 py-3">
+          <SearchField
             ref={inputRef}
+            size="lg"
+            clearOnEscape={false}
             value={query}
-            onChange={(event): void => onQueryChange(event.target.value)}
+            onValueChange={onQueryChange}
             placeholder="Search files (.md or .txt)…"
             aria-label="Search plan files"
             role="combobox"
@@ -455,11 +481,10 @@ export function ImportPlanPicker({
                 : optionIds.get(selectedItemKey)
             }
             data-testid="import-plan-input"
-            className="w-full bg-transparent text-m fg-primary outline-none placeholder:fg-secondary"
           />
         </div>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 border-b">
           <div className="max-h-104 min-w-0 flex-1 overflow-y-auto">
             {hasRows && (
               <div
@@ -476,7 +501,7 @@ export function ImportPlanPicker({
                   >
                     <div
                       id={`${titleId}-suggestions`}
-                      className="px-4 pb-1 pt-2 text-2xs font-medium fg-secondary"
+                      className="px-6 pb-1 pt-2 text-2xs font-medium fg-secondary"
                     >
                       From your chats
                     </div>
@@ -490,7 +515,7 @@ export function ImportPlanPicker({
                         <div
                           key={suggestion.id}
                           role="none"
-                          className="group/suggestion flex items-center"
+                          className="group/suggestion flex items-center gap-2 pr-4"
                         >
                           {renderOption(
                             item,
@@ -518,7 +543,6 @@ export function ImportPlanPicker({
                             type="button"
                             variant="ghost"
                             size="compact"
-                            className="mx-2"
                             data-testid={`import-plan-detected-dismiss-${suggestion.id}`}
                             disabled={importing}
                             onClick={(): void =>
@@ -540,7 +564,7 @@ export function ImportPlanPicker({
                   >
                     <div
                       id={`${titleId}-files`}
-                      className="px-4 pb-1 pt-2 text-2xs font-medium fg-secondary"
+                      className="px-6 pb-1 pt-2 text-2xs font-medium fg-secondary"
                     >
                       All files
                     </div>
@@ -580,18 +604,14 @@ export function ImportPlanPicker({
               </div>
             )}
             {showFilesLoading && (
-              <div className="flex items-center justify-center px-4 py-8">
+              <div className="flex items-center justify-center px-6 py-8">
                 <LoadingSpinner tone="secondary" />
               </div>
             )}
-            {error && (
-              <div className="px-4 py-8 text-center text-s fg-destructive">
-                {error}
-              </div>
-            )}
+            {error && <ErrorState space="panel" message={error} />}
             {showEmpty && (
               <div
-                className="px-4 py-8 text-center text-s fg-secondary"
+                className="px-6 py-8 text-center text-s fg-secondary"
                 data-testid="import-plan-empty"
               >
                 {query
@@ -604,7 +624,7 @@ export function ImportPlanPicker({
                 data-testid="import-plan-dismissed-section"
                 className="group border-t"
               >
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2 text-xs fg-secondary hover:fg-primary">
+                <summary className="flex cursor-pointer list-none items-center gap-2 px-6 py-2 text-xs fg-secondary hover:fg-primary">
                   <ChevronRightMediumIcon
                     width="12"
                     height="12"
@@ -616,7 +636,7 @@ export function ImportPlanPicker({
                   {hiddenSuggestions.map((suggestion) => (
                     <li
                       key={suggestion.id}
-                      className="flex items-center justify-between gap-3 px-4 py-2"
+                      className="flex items-center justify-between gap-3 px-6 py-2"
                     >
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-s font-medium fg-primary">
@@ -656,31 +676,7 @@ export function ImportPlanPicker({
             />
           )}
         </div>
-
-        <div className="flex items-center justify-between gap-4 border-t px-4 py-3">
-          <div className="min-w-0 space-y-0.5 text-xs fg-secondary">
-            {selectedTrackedPlanId ? null : (
-              <p className="md:hidden">{COPY_NOTICE}</p>
-            )}
-            <p data-testid="import-plan-hint">
-              Or tell your agent{' '}
-              <span className="font-mono fg-primary/80">
-                {'"Import @<file> as a plan"'}
-              </span>
-            </p>
-          </div>
-          <Button
-            variant="primary"
-            size="compact"
-            data-testid="import-plan-primary"
-            disabled={importing || !selectedItem}
-            shortcut={formatShortcut('list-open')}
-            onClick={(): void => runPrimary(selectedItem)}
-          >
-            {selectedTrackedPlanId ? 'Open plan' : 'Import plan'}
-          </Button>
-        </div>
       </div>
-    </div>
+    </DialogModal>
   );
 }

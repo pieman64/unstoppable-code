@@ -71,6 +71,10 @@ function repository(recordIdentity = false): WorktreeListRepository {
   return createWorktreeListRepository({
     store: {
       read: (path) => nodeW5FileStore.read(path),
+      remove: (path, storage, removal) =>
+        withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
+          nodeW5FileStore.remove(path, storage, removal),
+        ),
       replace: (path, contents, storage, replacement) =>
         withStorageAdmission([WORKTREE_LIST_STORAGE], () =>
           nodeW5FileStore.replace(path, contents, storage, replacement),

@@ -253,12 +253,14 @@ describe('ChatTranscript', () => {
       return container.querySelector<HTMLElement>(`[data-turn-id="${id}"]`);
     }
 
-    it('gives the wake no feedback slot', () => {
+    it('gives each wake its own response feedback slot', () => {
       renderAndShow({ spawningUserMessageId: 'u1' });
       expect(
         container.querySelector('[data-testid="feedback-u1"]'),
       ).not.toBeNull();
-      expect(container.querySelector('[data-testid="feedback-tw"]')).toBeNull();
+      expect(
+        container.querySelector('[data-testid="feedback-tw"]'),
+      ).not.toBeNull();
     });
 
     it("opens the call's collapsed turn, centers the call and highlights only it", () => {
@@ -650,6 +652,25 @@ describe('ChatTranscript', () => {
       </ChatLookProvider>,
     );
     expect(out).toContain('data-testid="chat-transcript-streaming"');
+  });
+
+  it('keeps pre-timer Thinking iconless like the live timer row', () => {
+    const out = renderToString(
+      <ChatLookProvider value="clean">
+        <ChatTranscript
+          messages={MESSAGES}
+          turnGroups={TURN_GROUPS}
+          status="streaming"
+        />
+      </ChatLookProvider>,
+    );
+    const container = document.createElement('div');
+    container.innerHTML = out;
+    const row = container.querySelector(
+      '[data-testid="chat-transcript-streaming"]',
+    );
+    expect(row?.textContent).toContain('Thinking');
+    expect(row?.querySelector('svg')).toBeNull();
   });
 
   it('leaves the row a plain element when no host supplied a working label', () => {
@@ -1172,53 +1193,68 @@ it('keeps following content after StrictMode replays effects', async () => {
   act(() => root.unmount());
 });
 
-it('keeps a pinned reader at the bottom when the footer grows', () => {
-  const observed: Element[] = [];
-  let notify: (() => void) | null = null;
-  const previous = globalThis.ResizeObserver;
-  class RecordingResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      notify = (): void => callback([], this);
+it.each([false, true])(
+  'follows footer growth unless a disclosure was clicked (%p)',
+  (disclosureClicked) => {
+    const observed: Element[] = [];
+    let notify: (() => void) | null = null;
+    const previous = globalThis.ResizeObserver;
+    class RecordingResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        notify = (): void => callback([], this);
+      }
+      observe(target: Element): void {
+        observed.push(target);
+      }
+      unobserve(): void {}
+      disconnect(): void {}
     }
-    observe(target: Element): void {
-      observed.push(target);
+    globalThis.ResizeObserver = RecordingResizeObserver;
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      act(() =>
+        root.render(
+          <ChatLookProvider value="classic">
+            <ChatTranscript
+              messages={[]}
+              turnGroups={[]}
+              status="idle"
+              footerSlot={
+                <div data-testid="queued-footer">
+                  <button data-step-row="" aria-expanded="false">
+                    Read 2 files
+                  </button>
+                </div>
+              }
+            />
+          </ChatLookProvider>,
+        ),
+      );
+      const viewport = container.querySelector(
+        '[data-testid="chat-transcript"]',
+      );
+      const footer = container.querySelector('[data-testid="queued-footer"]');
+      if (!viewport || !footer?.parentElement)
+        throw new Error('Transcript missing');
+      // Growth inside the footer resizes the column, not the scroll container.
+      expect(observed).toContain(footer.parentElement);
+      Object.defineProperties(viewport, {
+        scrollHeight: { value: 2000 },
+        scrollTop: { value: 0, writable: true },
+      });
+      if (disclosureClicked) {
+        const toggle = footer.querySelector('button');
+        act(() => toggle?.click());
+      }
+      act(() => notify?.());
+      expect(viewport.scrollTop).toBe(disclosureClicked ? 0 : 2000);
+    } finally {
+      act(() => root.unmount());
+      globalThis.ResizeObserver = previous;
     }
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  globalThis.ResizeObserver = RecordingResizeObserver;
-  const container = document.createElement('div');
-  const root = createRoot(container);
-  try {
-    act(() =>
-      root.render(
-        <ChatLookProvider value="classic">
-          <ChatTranscript
-            messages={[]}
-            turnGroups={[]}
-            status="idle"
-            footerSlot={<div data-testid="queued-footer">queued</div>}
-          />
-        </ChatLookProvider>,
-      ),
-    );
-    const viewport = container.querySelector('[data-testid="chat-transcript"]');
-    const footer = container.querySelector('[data-testid="queued-footer"]');
-    if (!viewport || !footer?.parentElement)
-      throw new Error('Transcript missing');
-    // Growth inside the footer resizes the column, not the scroll container.
-    expect(observed).toContain(footer.parentElement);
-    Object.defineProperties(viewport, {
-      scrollHeight: { value: 2000 },
-      scrollTop: { value: 0, writable: true },
-    });
-    act(() => notify?.());
-    expect(viewport.scrollTop).toBe(2000);
-  } finally {
-    act(() => root.unmount());
-    globalThis.ResizeObserver = previous;
-  }
-});
+  },
+);
 
 describe('ChatTranscript and the Chat visuals panel', () => {
   const reference = {
@@ -1782,5 +1818,149 @@ describe('CAN-4450 recovered credit hold in Portal transcript', () => {
       'Chat stopped. Choose how to pay for this message to keep going.',
     );
     expect(out.match(/data-testid="turn-timer"/g)).toHaveLength(3);
+  });
+});
+
+describe('ChatTranscript first turn during worktree setup', () => {
+  const NOW = Date.parse('2026-10-30T12:00:00.000Z');
+  const prompt: PortalChatMessage = {
+    ...msg('u1', 'hello there'),
+    createdAtMs: NOW - 2_000,
+  };
+  const startingGroup: PortalChatTurnGroup[] = [
+    { userMessageId: 'u1', intermediateMessageIds: [], finalMessageIds: [] },
+  ];
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('reads the first starting turn as its setup, then "Starting…" on the same node', () => {
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    const render = (phase: string): void => {
+      act(() => {
+        root.render(
+          <ChatTranscript
+            chatId="c1"
+            messages={[prompt]}
+            turnGroups={startingGroup}
+            status="streaming"
+            worktreeSetup={{
+              phase,
+              createdAt: new Date(NOW - 8_000).toISOString(),
+              projectName: 'canopy',
+            }}
+          />,
+        );
+      });
+    };
+
+    render('git-pending');
+    const header = host.querySelector('[data-testid="turn-starting-status"]');
+    const status = header?.querySelector('[role="status"]');
+    expect(header?.getAttribute('data-turn-header')).toBe('setup');
+    expect(status?.textContent).toBe("Setting up this chat's copy of canopy");
+    expect(header?.textContent).toContain('0:08');
+    // One status in the transcript: the turn itself shows none.
+    expect(
+      host.querySelectorAll('[data-testid="turn-starting-status"]'),
+    ).toHaveLength(1);
+
+    render('ready');
+    const after = host.querySelector('[data-testid="turn-starting-status"]');
+    expect(after?.getAttribute('data-turn-header')).toBe('starting');
+    expect(after?.querySelector('[role="status"]')).toBe(status);
+    expect(status?.textContent).toBe('Starting…');
+    act(() => root.unmount());
+  });
+
+  it('keeps plain "Starting…" without a worktree setup', () => {
+    const html = renderToString(
+      <ChatTranscript
+        chatId="c1"
+        messages={[prompt]}
+        turnGroups={startingGroup}
+        status="streaming"
+      />,
+    );
+    expect(html).toContain('data-turn-header="starting"');
+    expect(html).not.toContain('Setting up');
+  });
+
+  it('shows a first turn another host sent, held with no timer, as setting up', () => {
+    const render = (
+      phase: string,
+      turnGroups: PortalChatTurnGroup[],
+      messages: PortalChatMessage[] = [prompt],
+    ): string =>
+      renderToString(
+        <ChatTranscript
+          chatId="held-elsewhere"
+          messages={messages}
+          turnGroups={turnGroups}
+          status="idle"
+          worktreeSetup={{ phase, projectName: 'canopy' }}
+        />,
+      );
+    const lone: PortalChatTurnGroup[] = [
+      { ...startingGroup[0], complete: true },
+    ];
+
+    expect(render('git-pending', lone)).toContain('data-turn-header="setup"');
+    // Once setup is done, only the turn's own frames say it is running.
+    expect(render('idle', lone)).not.toContain('turn-starting-status');
+    // A turn that ended (Stop, or setup failed) is no longer starting.
+    const ended: PortalChatMessage = {
+      ...msg('t1', ''),
+      role: 'system',
+      status: 'cancelled',
+    };
+    expect(
+      render(
+        'git-pending',
+        [{ ...lone[0], intermediateMessageIds: ['t1'] }],
+        [prompt, ended],
+      ),
+    ).not.toContain('turn-starting-status');
+    // Stop during setup ends the held turn by closing its timer, while the
+    // worktree stays `git-pending`.
+    const closedTimer: PortalChatMessage = {
+      ...msg('u1-turn-timer', ''),
+      role: 'system',
+      parts: [
+        {
+          kind: 'turn_timer',
+          data: { startedAt: NOW - 2_000, completedAt: NOW },
+        },
+      ],
+    };
+    expect(
+      render(
+        'git-pending',
+        [{ ...lone[0], intermediateMessageIds: ['u1-turn-timer'] }],
+        [prompt, closedTimer],
+      ),
+    ).not.toContain('turn-starting-status');
+  });
+
+  it('lets a host footer status own the slot', () => {
+    const html = renderToString(
+      <ChatTranscript
+        chatId="c1"
+        messages={[]}
+        turnGroups={[]}
+        status="idle"
+        footerStatus={<div data-testid="host-first-send" />}
+        worktreeSetup={{ phase: 'git-pending', projectName: 'canopy' }}
+      />,
+    );
+    expect(html).toContain('data-testid="host-first-send"');
+    expect(html).not.toContain('Setting up');
   });
 });

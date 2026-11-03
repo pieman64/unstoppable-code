@@ -64,8 +64,8 @@ it('renders the capabilities row inside a definition list', (): void => {
       <DelegatedAgentCapabilities summary={capabilitySummary} />
     </dl>,
   );
-  expect(html).toContain('<dt>Capabilities</dt>');
-  expect(html).toContain('<dd data-testid="delegated-agent-capabilities"');
+  expect(html).toMatch(/<dt[^>]*>Capabilities<\/dt>/);
+  expect(html).toMatch(/<dd[^>]*data-testid="delegated-agent-capabilities"/);
 });
 
 it('shows collapsed counts and toggles the capabilities details', (): void => {
@@ -228,5 +228,28 @@ it('bounds capability items and displayed names defensively', (): void => {
   );
   expect(inherited?.textContent).toContain('capability-127');
   expect(inherited?.textContent).not.toContain('capability-128');
+  unmount();
+});
+
+it('keeps the omitted count when every item was trimmed to fit', (): void => {
+  const summary: DelegationCapabilitySummary = {
+    ...capabilitySummary,
+    items: [],
+    skipped: [],
+    omittedItems: 5,
+  };
+  const { container, unmount } = mountCapabilities(summary);
+  act((): void => {
+    container
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="delegated-agent-capabilities-toggle"]',
+      )
+      ?.click();
+  });
+  expect(
+    container.querySelector(
+      '[data-testid="delegated-agent-capability-omitted"]',
+    )?.textContent,
+  ).toContain('and 5 more');
   unmount();
 });

@@ -14,6 +14,7 @@ import {
 } from '@canopy/desktop-shared/lib/account-usage-snapshots';
 import {
   Button,
+  SettingsSelect,
   UsageRowList,
   UsageWindowRow,
 } from '@canopy/ui-shared/components';
@@ -123,27 +124,26 @@ export function OtherAccountSnapshotsPanel({
       </p>
 
       {snapshots.length > 1 ? (
-        <select
+        <SettingsSelect
+          width="fill"
           aria-label="Select account snapshot"
           data-testid={`other-account-select-${provider}`}
-          value={selected.accountKey}
-          onChange={(event): void => {
-            setSelectedAccountKey(event.target.value);
+          // Option values are list positions, not account keys: a key holds
+          // the account's email, and replay records each value's
+          // `data-value` attribute.
+          options={snapshots.map((snapshot, index) => ({
+            value: String(index),
+            label: accountOptionLabel(snapshot),
+          }))}
+          value={String(snapshots.indexOf(selected))}
+          onValueChange={(value) => {
+            const chosen = snapshots[Number(value)];
+            if (chosen) setSelectedAccountKey(chosen.accountKey);
           }}
-          className="w-full truncate rounded-md border bg-base px-2 py-1.5 text-s fg-primary"
-        >
-          {snapshots.map((snapshot) => (
-            // Each option names an account's email. A native option cannot
-            // hold a span, so session replay blocks the whole option.
-            <option
-              key={snapshot.accountKey}
-              value={snapshot.accountKey}
-              className={POSTHOG_REPLAY_BLOCK_CLASS}
-            >
-              {accountOptionLabel(snapshot)}
-            </option>
-          ))}
-        </select>
+          // Each option names an account's email: session replay blocks the
+          // label text on the trigger and in the menu.
+          replayPrivacy={{ blockClassName: POSTHOG_REPLAY_BLOCK_CLASS }}
+        />
       ) : (
         <div
           data-testid={`other-account-single-${provider}`}

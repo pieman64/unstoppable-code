@@ -6,7 +6,10 @@ import { LazyPlanVisualizerPanel } from '@/components/plan-explore/lazyPlanVisua
 import { usePlanComments } from '@/components/plan-explore/usePlanComments';
 import { usePlanDiagramRevealRequest } from '@/components/plan-explore/usePlanDiagramRevealRequest';
 import { useSharedPlanCommentPull } from '@/components/plan-explore/usePlanViewData';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import {
   planDiagramPanelTitle,
   useIsPlanPanelOnScreen,
@@ -99,7 +102,12 @@ export const PlanDiagramPanelView = memo(function PlanDiagramPanelView({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <Suspense
           fallback={
-            <LoadingPlaceholder label="Loading diagram…" className="flex-1" />
+            <DelayedLoadingPlaceholder
+              className="flex-1"
+              slowNote="Still loading diagram…"
+            >
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           }
         >
           <LazyPlanVisualizerPanel

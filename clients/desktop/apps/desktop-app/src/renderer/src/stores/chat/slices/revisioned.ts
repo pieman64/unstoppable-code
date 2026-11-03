@@ -1,9 +1,5 @@
 import type { ChatTab } from '../types';
 import {
-  clearSetupQueueScope,
-  confirmSetupQueueCommittedDispatch,
-} from '../setup-queue-dispatch';
-import {
   getWorktreeEntry,
   isCurrentWorktreeEntry,
 } from '../attention-landing-intent';
@@ -850,15 +846,6 @@ function publishScopeStatus(
   status: ChatScopeSyncStatus | null,
 ): void {
   const key = chatScopeKey(projectId, worktreeId);
-  // First-send initialization may start tracking after the setup input was
-  // observed. Only a refresh of an already-live scope invalidates that live
-  // identity; an initial snapshot cannot itself emit provider acceptance.
-  if (
-    status === null ||
-    (status.phase === 'refreshing' &&
-      chatStoreApi().getState().chatStateSync[key]?.phase === 'live')
-  )
-    clearSetupQueueScope(projectId, worktreeId);
   chatStoreApi().setState((state) => {
     const next = { ...state.chatStateSync };
     if (status === null) delete next[key];
@@ -1193,7 +1180,6 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
     changes: event.changes.length,
   });
   const api = chatStoreApi();
-  confirmSetupQueueCommittedDispatch(event, api.getState().runtimeByChatId);
   const { projectId, worktreeId } = event;
   const key = chatScopeKey(projectId, worktreeId);
   const correlationId = `${key}:${event.revision}`;

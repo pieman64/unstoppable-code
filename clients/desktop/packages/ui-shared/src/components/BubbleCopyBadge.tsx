@@ -1,10 +1,7 @@
 import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon } from '../icons/CheckIcon';
 import { CopyIcon } from '../icons/CopyIcon';
-import {
-  BUBBLE_ACTION_BADGE_CLASS,
-  BUBBLE_ACTION_GLYPH_PX,
-} from './bubble-badge';
+import { Button } from './Button';
 import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
 import { Tooltip } from './Tooltip';
 
@@ -22,8 +19,8 @@ export interface BubbleCopyBadgeProps {
 
 /**
  * A message bubble's corner copy action. It shares the copy behavior with
- * `CopyButton` but keeps the bubble badge chrome, the same as the revert
- * badge beside it, instead of the app Button. Its name says whose words it
+ * `CopyButton` and is drawn as the 28px secondary icon Button, the same
+ * recipe as the revert badge beside it. Its name says whose words it
  * copies, apart from the reply's and plan's Copy actions, and a polite status
  * announces `Copied` (CAN-5354). The cluster reveals on focus-within, so
  * tabbing to the badge shows it.
@@ -50,26 +47,16 @@ function BubbleCopyBadgeControl({
   return (
     <span className="relative inline-flex">
       <Tooltip label={name}>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="compact"
+          iconOnly
           onClick={handleClick}
-          className={BUBBLE_ACTION_BADGE_CLASS}
           aria-label={name}
           data-testid={dataTestId}
         >
-          {copied ? (
-            <CheckIcon
-              width={BUBBLE_ACTION_GLYPH_PX}
-              height={BUBBLE_ACTION_GLYPH_PX}
-              aria-hidden="true"
-            />
-          ) : (
-            <CopyIcon
-              width={BUBBLE_ACTION_GLYPH_PX}
-              height={BUBBLE_ACTION_GLYPH_PX}
-            />
-          )}
-        </button>
+          {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon />}
+        </Button>
       </Tooltip>
       {/* Mounted only around a copy, so a long transcript does not carry a
           status per prompt; it mounts empty and fills a beat later. */}

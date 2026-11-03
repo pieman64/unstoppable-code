@@ -18,7 +18,6 @@ export function PluginsDiscoveryList(
   return (
     <SharedPluginsDiscoveryList
       {...props}
-      showPipelineSources
       McpServerLogoComponent={McpServerLogo}
     />
   );

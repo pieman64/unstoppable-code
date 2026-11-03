@@ -69,11 +69,11 @@ import {
   useCleanChatLook,
   useSmoothStreaming,
   type PlanCopyState,
+  TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import { stripOpaqueAgentCitationMarkers } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { DotIcon, WrenchIcon } from '@canopy/ui-shared/icons';
-import { LightbulbIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { ChatAssetImage } from './ChatMessageAttachments';
 import {
   DelegationChildPages,
@@ -520,8 +520,7 @@ function ToolOutputSlot({
   );
 }
 
-const PLAN_PROSE_CLASSES =
-  'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 prose-pre:my-1.5 prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
+const PLAN_PROSE_CLASSES = TRANSCRIPT_PROSE_CLASS;
 const PLAN_MARKDOWN_OPTIONS = markdownOptions();
 
 /**
@@ -769,7 +768,6 @@ function ChatPartViewImpl({
           // thinking; the classic row never shows it running.
           running={clean && live === true && !settled}
           content={readPartText(data)}
-          icon={<LightbulbIcon />}
         />
       );
 

@@ -5,7 +5,10 @@ import { ChatGroupArchivedChatsAccessory } from '@/components/panels/ChatGroupAr
 import { PanelAddTabMenu } from '@/components/panels/PanelAddTabMenu';
 import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessionConfirmationModal';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { useCanopyDesktopStartPageEnabled } from '@/hooks/useCanopyDesktopStartPageEnabled';
 import { useExportSessionAction } from '@/hooks/useExportSessionAction';
 import { useShareRunAction } from '@/hooks/useShareRunAction';
@@ -810,7 +813,9 @@ export function PanelGridSurface({
         data-panel-grid-loading
         data-testid="panel-grid-loading"
       >
-        <LoadingPlaceholder space="inline" className="flex-1" />
+        <DelayedLoadingPlaceholder className="flex-1">
+          <CenteredLoadingSpinner />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }

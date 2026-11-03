@@ -6,7 +6,7 @@ import {
   createScriptKey,
   parseScriptKey,
 } from '@canopy/desktop-shared/scripts';
-import { readScriptRunLogTail } from '../lib/script-log-store';
+import { readScriptRun } from '../lib/script-execution';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { getWorkspaceType, isCoworkWorkspace } from '../lib/workspace-registry';
 
@@ -23,7 +23,13 @@ export interface ScriptOutputSnapshot {
   scriptKey?: string;
   label?: string;
   invocation?: ScriptStartedEvent['invocation'];
-  humanStatus?: 'running' | 'succeeded' | 'failed' | 'timed out' | 'stopped';
+  humanStatus?:
+    | 'running'
+    | 'succeeded'
+    | 'failed'
+    | 'timed out'
+    | 'stopped'
+    | 'interrupted';
   exitCode?: number | null;
   timedOut?: boolean;
   durationMs?: number;
@@ -72,14 +78,14 @@ export async function loadScriptOutputSnapshot(args: {
       MAX_ALLOWED_LINES,
     ) || DEFAULT_MAX_LINES,
   );
-  const { meta, lines } = await readScriptRunLogTail({
+  const { run } = await readScriptRun({
     projectId: args.projectId,
     worktreeId: args.worktreeId,
     scriptKey,
-    maxLines,
+    tailLines: maxLines,
   });
 
-  if (!meta) {
+  if (!run) {
     return {
       found: false,
       scriptKey,
@@ -88,6 +94,7 @@ export async function loadScriptOutputSnapshot(args: {
     };
   }
 
+  const { execution: meta, lines } = run;
   return {
     found: true,
     scriptKey,
@@ -190,12 +197,16 @@ export async function resolveScriptKey(args: {
 }
 
 export function mapHumanStatus(meta: {
-  status: 'running' | 'success' | 'failed' | 'cancelled';
+  status: 'running' | 'success' | 'failed' | 'cancelled' | 'lost';
   timedOut: boolean;
   exitCode: number | null;
 }): NonNullable<ScriptOutputSnapshot['humanStatus']> {
   if (meta.status === 'running') {
     return 'running';
+  }
+  // A restart interrupted the run; it was not run again.
+  if (meta.status === 'lost') {
+    return 'interrupted';
   }
   if (meta.status === 'success') {
     return 'succeeded';

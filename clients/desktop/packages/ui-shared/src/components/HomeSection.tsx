@@ -181,7 +181,7 @@ export function HomeSection({
     <section
       data-testid={testId}
       aria-labelledby={id}
-      className="flex w-full min-w-0 select-none flex-col gap-3"
+      className="group/home-section flex w-full min-w-0 select-none flex-col gap-3"
     >
       <div className="mx-4 flex flex-col gap-2 border-b-[length:var(--border-hairline)] border-line-quaternary pb-3">
         <div className="flex min-h-7 items-center gap-2">
@@ -196,26 +196,35 @@ export function HomeSection({
           >
             {title}
           </h2>
-          <DetailMoreMenu
-            name={typeof title === 'string' ? title : 'this section'}
-            variant="ghost-overlay"
-            size="compact"
-            placement="bottom-right"
-            triggerTestId={`home-section-more-${sectionId}`}
-            menuTestId={`home-section-menu-${sectionId}`}
-            items={[
-              {
-                id: 'hide',
-                label: 'Hide section',
-                icon: <EyeOffIcon width={16} height={16} aria-hidden />,
-                testId: `home-section-hide-${sectionId}`,
-                onSelect: (): void => {
-                  if (context) context.hide(sectionId);
-                  else setHidden(true);
+          {/* Shown while the section is hovered or focused, or its menu is
+              open (the menu portals out of the section); always on touch.
+              It bleeds 6px past the divider into the column a row's
+              trailing control sits in (SuggestionRowTrailing, 10px in). */}
+          <span
+            data-testid={`home-section-actions-${sectionId}`}
+            className="-mr-1.5 flex opacity-0 transition-opacity group-hover/home-section:opacity-100 group-focus-within/home-section:opacity-100 has-[[aria-expanded=true]]:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100"
+          >
+            <DetailMoreMenu
+              name={typeof title === 'string' ? title : 'this section'}
+              variant="ghost-overlay"
+              size="compact"
+              placement="bottom-right"
+              triggerTestId={`home-section-more-${sectionId}`}
+              menuTestId={`home-section-menu-${sectionId}`}
+              items={[
+                {
+                  id: 'hide',
+                  label: 'Hide section',
+                  icon: <EyeOffIcon width={16} height={16} aria-hidden />,
+                  testId: `home-section-hide-${sectionId}`,
+                  onSelect: (): void => {
+                    if (context) context.hide(sectionId);
+                    else setHidden(true);
+                  },
                 },
-              },
-            ]}
-          />
+              ]}
+            />
+          </span>
         </div>
         {description && (
           <p className="text-xs leading-5 fg-secondary">{description}</p>

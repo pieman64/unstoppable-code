@@ -132,6 +132,28 @@ function delegationEvent(status: 'running' | 'cancelled'): unknown {
   };
 }
 
+it('anchors an unstamped no-billing startup refusal to the dispatch that created the session', async () => {
+  const refusal = {
+    type: 'error',
+    error_code: 'no_billing_source',
+    error: 'No billing source.',
+  };
+  getSessionMock.mockImplementationOnce(async (_options, emit) => {
+    await emit(refusal);
+    return makeSession();
+  });
+  const handler = jest.fn();
+  await getOrCreateRoutedSession(options, handler, () => null, {
+    turnUserMessageId: 'refused-dispatch',
+    drainEventsBeforeRemoval: emptyDrain,
+  });
+  expect(handler).toHaveBeenCalledWith(
+    { ...refusal, canopy_turn_user_message_id: 'refused-dispatch' },
+    expect.any(Function),
+  );
+  expect(refusal).not.toHaveProperty('canopy_turn_user_message_id');
+});
+
 it('delivers a terminal delegation transcript after provider route removal', async () => {
   getSessionMock.mockResolvedValue(makeSession());
   const handler = jest.fn();

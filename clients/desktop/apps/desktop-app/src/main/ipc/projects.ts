@@ -1,7 +1,12 @@
+import {
+  W5_PROJECTION_ONLY_READ,
+  withW5ProjectionOnlyRead,
+} from '../lib/w5-fallback-read';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { projectedSourceCompositionCommands } from '../canopy-runtime/source-composition-dispatch';
 import {
   IPC_CHANNELS,
   type DeleteProjectRequest,
@@ -29,6 +34,10 @@ import {
   validateSidebarItems,
 } from '../lib/sidebar-items';
 import { saveSidebarItems } from '../lib/sidebar-save-adapter';
+import {
+  projectedWorkspaceGuardedCommands,
+  type ProjectedWorkspaceGuardedCommands,
+} from '../canopy-runtime/workspace-guarded-dispatch';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { getSidebarItemsPreserveWorkspaceIds } from '../lib/sidebar-items-preservation';
 import { syncTrackedWorktrees as syncTrackedGitHubWorktrees } from '../lib/github-poller';
@@ -48,14 +57,12 @@ import {
 import { backfillMissingWorktreeChatBadges } from '../lib/chat-badge-sync';
 import { registerIpcHandler } from './register';
 import {
-  reorderWorkspaces,
-  updateWorkspaceMetadata,
-} from '../lib/workspace-metadata';
+  projectedWorkspaceMetadataCommands,
+  type ProjectedWorkspaceMetadataCommands,
+} from '../canopy-runtime/workspace-metadata-dispatch';
+import { projectedWorkspaceLifecycleCommands } from '../canopy-runtime/workspace-lifecycle-dispatch';
 import { recordRealisticStartupPerformanceEvent } from '../lib/realistic-startup-performance';
-import {
-  updateWorktree,
-  WorktreeUpdateRefusedError,
-} from '../lib/worktree-update';
+import { WorktreeUpdateRefusedError } from '../lib/worktree-update';
 import { serializeChatProjectOperation } from '../lib/chat-project-operation-queue';
 import { deleteWorkspace } from '../lib/workspace-deletion';
 import { saveDefaultPluginsAndVisibility } from '../lib/workspace-default-plugins-save';
@@ -376,6 +383,49 @@ export function registerProjectHandlers(
         }),
       );
     try {
+      const initial = (
+        await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+          dispatcher.queryWorkspaceListForLegacyIpc(
+            {},
+            { caller: resolveCaller(event) },
+          ),
+        )
+      ).legacyResult;
+      // A stale projection may only be delivered, never reconciled or remembered.
+      if (initial.stale)
+        return {
+          ...initial,
+          items: initial.items.filter(isVisibleSidebarItem),
+        };
+      const initialItems = initial.items.filter(isVisibleSidebarItem);
+      const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
+      syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
+      syncTrackedWorkspaces(initialItems, initialFailedWorkspaceIds);
+      syncCodeGraphBaseRepositories(initialItems, initialFailedWorkspaceIds);
+      await settleAll(
+        initialItems.map(async (item) => {
+          if (item.type !== 'multi-repo' || !item.sourceRepoPath) {
+            return;
+          }
+
+          await repairExistingWorkspaceRootWorktrees(item.id).catch(() => {});
+        }),
+      );
+      const refreshed = (
+        await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
+          dispatcher.queryWorktreeListForLegacyIpc(
+            {},
+            { caller: resolveCaller(event) },
+          ),
+        )
+      ).legacyResult;
+      if (Array.isArray(refreshed))
+        throw new Error('Unscoped worktree projection was not captured.');
+      if (refreshed.stale)
+        return {
+          ...refreshed,
+          items: refreshed.items.filter(isVisibleSidebarItem),
+        };
       if (!didReconcileGitPendingWorktrees) {
         didReconcileGitPendingWorktrees = true;
         // Recovery may copy an interrupted archive for minutes. It owns its
@@ -393,34 +443,6 @@ export function registerProjectHandlers(
           ),
         );
       }
-      const initial = (
-        await dispatcher.queryWorkspaceListForLegacyIpc(
-          {},
-          { caller: resolveCaller(event) },
-        )
-      ).legacyResult;
-      const initialItems = initial.items.filter(isVisibleSidebarItem);
-      const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
-      syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
-      syncTrackedWorkspaces(initialItems, initialFailedWorkspaceIds);
-      syncCodeGraphBaseRepositories(initialItems, initialFailedWorkspaceIds);
-      await settleAll(
-        initialItems.map(async (item) => {
-          if (item.type !== 'multi-repo' || !item.sourceRepoPath) {
-            return;
-          }
-
-          await repairExistingWorkspaceRootWorktrees(item.id).catch(() => {});
-        }),
-      );
-      const refreshed = (
-        await dispatcher.queryWorktreeListForLegacyIpc(
-          {},
-          { caller: resolveCaller(event) },
-        )
-      ).legacyResult;
-      if (Array.isArray(refreshed))
-        throw new Error('Unscoped worktree projection was not captured.');
       const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
       const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
       syncTrackedGitHubWorktrees(refreshedItems, refreshedFailedWorkspaceIds);
@@ -486,11 +508,26 @@ export function registerProjectHandlers(
     }
   });
 
+  const metadataCommands = (
+    event: IpcMainInvokeEvent,
+  ): ProjectedWorkspaceMetadataCommands =>
+    projectedWorkspaceMetadataCommands({
+      dispatcher,
+      caller: resolveCaller(event),
+    });
+  const guardedCommands = (
+    event: IpcMainInvokeEvent,
+  ): ProjectedWorkspaceGuardedCommands =>
+    projectedWorkspaceGuardedCommands({
+      dispatcher,
+      caller: resolveCaller(event),
+    });
+
   registerIpcHandler(
     IPC_CHANNELS.workspaceUpdateMetadata,
-    async (_event, request: UpdateWorkspaceMetadataRequest): Promise<void> => {
+    async (event, request: UpdateWorkspaceMetadataRequest): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
-      await updateWorkspaceMetadata({
+      await metadataCommands(event).updateMetadata({
         workspaceId: request.workspaceId,
         patch: {
           name: request.name,
@@ -505,7 +542,7 @@ export function registerProjectHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceReorder,
-    async (_event, request: ReorderWorkspacesRequest): Promise<void> => {
+    async (event, request: ReorderWorkspacesRequest): Promise<void> => {
       validateId(request.activeWorkspaceId, 'activeWorkspaceId');
       validateId(request.overWorkspaceId, 'overWorkspaceId');
       const [{ items }, preferences] = await settleAll([
@@ -522,7 +559,7 @@ export function registerProjectHandlers(
           return hasVisibleWorkspaceContent(item);
         })
         .map((item) => item.id);
-      await reorderWorkspaces({
+      await metadataCommands(event).reorder({
         visibleWorkspaceIds,
         activeWorkspaceId: request.activeWorkspaceId,
         overWorkspaceId: request.overWorkspaceId,
@@ -532,7 +569,7 @@ export function registerProjectHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetTrackedBaseBranch,
-    async (_event, request: SetTrackedBaseBranchRequest): Promise<void> => {
+    async (event, request: SetTrackedBaseBranchRequest): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
       validateId(request.worktreeId, 'worktreeId');
       // Source-backed workspaces address the workspace root through the
@@ -546,7 +583,7 @@ export function registerProjectHandlers(
       // repository's entry, and clears the merge-retarget grouping parent.
       const baseBranch = request.baseBranch;
       try {
-        await updateWorktree({
+        await guardedCommands(event).updateWorktree({
           workspaceId: request.workspaceId,
           worktreeId: request.worktreeId,
           patch:
@@ -575,6 +612,9 @@ export function registerProjectHandlers(
       options?.preserveWorkspaceIds?.forEach((workspaceId) => {
         validateId(workspaceId, 'preserved project id');
       });
+      // Resolved before any write, so an untrusted sender changes nothing.
+      const commands = metadataCommands(event);
+      const worktreeCommands = guardedCommands(event);
       return serializeChatProjectOperation(async () => {
         const previousItems = event?.sender
           ? deliveredSidebarItems.get(event.sender)
@@ -584,6 +624,8 @@ export function registerProjectHandlers(
           items,
           options,
           previousItems,
+          updateWorkspaceMetadata: (update) => commands.updateMetadata(update),
+          updateWorktree: (update) => worktreeCommands.updateWorktree(update),
         });
         const preservedWorkspaceIds = getFailedWorkspaceIds(result);
         // The store ignores the save response and retains its submitted view.
@@ -623,12 +665,15 @@ export function registerProjectHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.projectSaveDefaultPlugins,
-    async (_event, request: SaveDefaultPluginsRequest) => {
+    async (event, request: SaveDefaultPluginsRequest) => {
       validateId(request.projectId, 'project id');
+      const commands = guardedCommands(event);
       // Ordered with the other project operations, as before; only this
       // project's manifest is written.
       return serializeChatProjectOperation(() =>
-        saveDefaultPluginsAndVisibility(request, 'project_settings'),
+        saveDefaultPluginsAndVisibility(request, 'project_settings', (update) =>
+          commands.updatePlugins(update),
+        ),
       );
     },
   );
@@ -636,7 +681,7 @@ export function registerProjectHandlers(
   registerIpcHandler(
     IPC_CHANNELS.projectApplySourceChanges,
     async (
-      _event,
+      event,
       request: ProjectApplySourceChangesRequest,
     ): Promise<ProjectApplySourceChangesResponse> => {
       validateId(request.projectId, 'projectId');
@@ -647,25 +692,34 @@ export function registerProjectHandlers(
         validateId(request.target.worktreeId, 'worktreeId');
       }
 
-      return applySourceChanges({
-        kind: 'project',
-        source: 'project_settings',
-        request,
-        getWindow,
-        onApplied: (event) => {
-          const window = getWindow();
-          if (!window) {
-            return;
-          }
-          sendToWindow(window, IPC_CHANNELS.projectSourceChangesApplied, event);
-        },
-      });
+      return projectedSourceCompositionCommands({
+        dispatcher,
+        caller: resolveCaller(event),
+      }).applySourceChanges(request.projectId, request, () =>
+        applySourceChanges({
+          kind: 'project',
+          source: 'project_settings',
+          request,
+          getWindow,
+          onApplied: (applied) => {
+            const window = getWindow();
+            if (!window) {
+              return;
+            }
+            sendToWindow(
+              window,
+              IPC_CHANNELS.projectSourceChangesApplied,
+              applied,
+            );
+          },
+        }),
+      );
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.projectDelete,
-    async (_event, request: DeleteProjectRequest): Promise<void> => {
+    async (event, request: DeleteProjectRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
       if (request.supersedeInterruptedDeletion !== undefined)
         validateId(
@@ -674,12 +728,17 @@ export function registerProjectHandlers(
         );
       // The full workspace deletion (CAN-3799 B6): it refuses anything but a
       // single-repo project and also removes an app-created managed repo.
-      const outcome = await deleteWorkspace({
-        workspaceId: request.projectId,
-        source: 'single_repo_project_delete',
-        singleRepoProject: true,
-        supersedeInterruptedDeletion: request.supersedeInterruptedDeletion,
-      });
+      const outcome = await projectedWorkspaceLifecycleCommands({
+        dispatcher,
+        caller: resolveCaller(event),
+      }).deleteWorkspace({ workspaceId: request.projectId }, () =>
+        deleteWorkspace({
+          workspaceId: request.projectId,
+          source: 'single_repo_project_delete',
+          singleRepoProject: true,
+          supersedeInterruptedDeletion: request.supersedeInterruptedDeletion,
+        }),
+      );
       // This channel has always failed when the managed repository could not
       // be removed; keep that visible although the project itself is gone.
       const repository = outcome.cleanup.managedRepository;

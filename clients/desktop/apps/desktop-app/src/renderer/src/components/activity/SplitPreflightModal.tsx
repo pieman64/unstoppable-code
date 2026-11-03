@@ -1,5 +1,4 @@
 import { type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import { Button, Notice } from '@canopy/ui-shared/components';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useActivityStore } from '@/stores/activityStore';
@@ -94,19 +93,20 @@ export function SplitPreflightModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onCancel}
       title="Start Split PR"
       subtitle={`Worktree ${worktreeId}`}
       maxWidth="lg"
       dataTestId="split-preflight-modal"
     >
-      <div className="space-y-4 px-5 py-4">
+      <div className="space-y-4 px-6 py-4">
         <div>
           <p className="mb-2 text-xs font-semibold fg-secondary">
             What happens next
           </p>
           <ol
-            className="list-decimal space-y-1 pl-5 text-s fg-primary/90"
+            className="list-decimal space-y-1 pl-6 text-s fg-primary/90"
             data-testid="split-preflight-steps"
           >
             {SPLIT_PREFLIGHT_STEPS.map((step) => (
@@ -153,7 +153,7 @@ export function SplitPreflightModal({
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+      <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
         <Button
           size="compact"
           onClick={onCancel}
@@ -298,7 +298,7 @@ export function SplitPreflightModalHost(): JSX.Element {
     scripts,
   };
 
-  return createPortal(
+  return (
     <SplitPreflightModal
       projectId={projectId}
       worktreeId={worktreeId}
@@ -313,7 +313,6 @@ export function SplitPreflightModalHost(): JSX.Element {
         void startSplitWorkflow(projectId, worktreeId);
       }}
       onCancel={closeSplitPreflight}
-    />,
-    document.body,
+    />
   );
 }

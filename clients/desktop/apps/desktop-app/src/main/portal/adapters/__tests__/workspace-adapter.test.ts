@@ -1,3 +1,4 @@
+import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
 import type * as SidebarItemsModule from '../../../lib/sidebar-items';
 import type * as WorkspaceClaudeMdModule from '../../../lib/workspace-claude-md';
 import type { SidebarItemsFile } from '@canopy/desktop-shared/types';
@@ -33,8 +34,10 @@ import {
   updateWorkspaceMetadata,
   WorkspaceMetadataRefusedError,
 } from '../../../lib/workspace-metadata';
-import { readPortalWorkspaceScriptCommands } from '../../portal-workspace-reads';
-import { updateWorkspaceScripts } from '../../../lib/workspace-script-hook-settings';
+import {
+  readPortalWorkspaceScriptCommands,
+  savePortalWorkspaceScriptCommands,
+} from '../../portal-workspace-reads';
 import {
   loadWorkspaceClaudeMd,
   saveWorkspaceClaudeMd,
@@ -64,9 +67,6 @@ jest.mock('../../../lib/workspace-metadata', () => ({
   ),
   reorderWorkspaces: jest.fn(),
   updateWorkspaceMetadata: jest.fn(),
-}));
-jest.mock('../../../lib/workspace-script-hook-settings', () => ({
-  updateWorkspaceScripts: jest.fn(),
 }));
 jest.mock('../../../lib/workspace-claude-md', () => ({
   loadWorkspaceClaudeMd: jest.fn(),
@@ -112,8 +112,10 @@ jest.mock('../../portal-workspace-reads', () => ({
         typeof WorkspaceClaudeMdModule
       >('../../../lib/workspace-claude-md')
       .saveWorkspaceClaudeMd(workspaceId, content, 'portal'),
-  // The Portal reads scripts through core.script.definition.list (CAN-4153).
+  // The Portal reads scripts through core.script.definition.list (CAN-4153)
+  // and saves them through upsert and delete (CAN-5369).
   readPortalWorkspaceScriptCommands: jest.fn(),
+  savePortalWorkspaceScriptCommands: jest.fn(),
 }));
 jest.mock('../../../lib/window-send', () => ({
   sendToWindow: jest.fn(),
@@ -140,7 +142,7 @@ const mockedDescribeDeletionDiscard = jest.mocked(
 const mockedSendToWindow = jest.mocked(sendToWindow);
 const mockedUpdateMeta = jest.mocked(updateWorkspaceMetadata);
 const mockedReadScripts = jest.mocked(readPortalWorkspaceScriptCommands);
-const mockedSaveScripts = jest.mocked(updateWorkspaceScripts);
+const mockedSaveScripts = jest.mocked(savePortalWorkspaceScriptCommands);
 const mockedLoadClaudeMd = jest.mocked(loadWorkspaceClaudeMd);
 const mockedSaveClaudeMd = jest.mocked(saveWorkspaceClaudeMd);
 const mockedAddRemote = jest.mocked(addWorkspaceFromRemote);
@@ -336,7 +338,10 @@ describe('project portal adapter — deletion discard (CAN-5337)', () => {
       adapterContext(events),
     );
 
-    expect(mockedDescribeDeletionDiscard).toHaveBeenCalledWith('ws-1');
+    // CAN-5338: retained archives count, as for the client the pointer opens.
+    expect(mockedDescribeDeletionDiscard).toHaveBeenCalledWith('ws-1', {
+      retainedArchives: true,
+    });
     expect(failures(events)).toEqual([
       {
         error: {
@@ -467,6 +472,33 @@ describe('project portal adapter — deletion discard (CAN-5337)', () => {
       expect.objectContaining({ type: 'portal.command.failed' }),
     ]);
   });
+
+  it('CAN-5338 forwards only a literal retained-archive opt-in, and an agent stays forbidden with it', async () => {
+    mockedDescribeDeletionDiscard.mockResolvedValue(discardable);
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'ws-1', retainedArchives: true }),
+      adapterContext(events),
+    );
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'ws-1', retainedArchives: 'yes' }),
+      adapterContext(events),
+    );
+    await handlePortalWorkspaceDeleteDiscardDescribe(
+      command({ workspaceId: 'ws-1', retainedArchives: true }),
+      { ...adapterContext(events), origin: agent },
+    );
+
+    expect(mockedDescribeDeletionDiscard.mock.calls).toEqual([
+      ['ws-1', { retainedArchives: true }],
+      ['ws-1'],
+    ]);
+    expect(events[2]).toMatchObject({
+      type: 'portal.command.failed',
+      payload: { error: { code: 'forbidden' } },
+    });
+  });
 });
 
 describe('project portal adapter — reorder', () => {
@@ -541,6 +573,46 @@ describe('project portal adapter — reorder', () => {
     );
     expect(events.map((event) => event.type)).toEqual([
       'portal.command.completed',
+    ]);
+  });
+
+  it('refuses a reorder before deriving visible slots from a stale projection', async () => {
+    mockedReadSidebarItems.mockResolvedValue({
+      version: 1,
+      stale: true,
+      items: [
+        {
+          type: 'single-repo',
+          id: 'ws-a',
+          name: 'A',
+          repoPath: '/data/repos/a',
+          color: '#fff',
+          collapsed: false,
+          order: 0,
+          alwaysShow: false,
+          worktrees: [],
+        },
+      ],
+    });
+    const events: PortalEventEnvelope[] = [];
+
+    await handlePortalWorkspaceReorder(
+      reorderCommand({ activeWorkspaceId: 'ws-a', overWorkspaceId: 'ws-b' }),
+      adapterContext(events),
+    );
+
+    expect(mockedReorderWorkspaces).not.toHaveBeenCalled();
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'portal.command.failed',
+        payload: {
+          error: {
+            code: 'execution_failed',
+            message: W5_UNREACHABLE_READ_MESSAGE,
+          },
+        },
+      }),
     ]);
   });
 
@@ -1199,7 +1271,7 @@ describe('project portal adapter — scripts get/save', () => {
     expect(events.map((e) => e.type)).toEqual(['portal.command.failed']);
   });
 
-  it('saves scripts through the W5 scripts command, keeping only string commands', async () => {
+  it('saves scripts through core.script.definition.*, keeping only string commands', async () => {
     mockedSaveScripts.mockResolvedValue();
     const events: PortalEventEnvelope[] = [];
     await handlePortalWorkspaceScriptsSave(
@@ -1210,13 +1282,9 @@ describe('project portal adapter — scripts get/save', () => {
       }),
       adapterContext(events),
     );
-    expect(mockedSaveScripts).toHaveBeenCalledWith({
-      workspaceId: 'ws-1',
-      change: {
-        kind: 'merge-commands',
-        commands: { setup: 'npm ci', teardown: '' },
-      },
-      source: 'portal',
+    expect(mockedSaveScripts).toHaveBeenCalledWith('ws-1', {
+      setup: 'npm ci',
+      teardown: '',
     });
     expect(events.map((e) => e.type)).toEqual(['portal.command.completed']);
   });

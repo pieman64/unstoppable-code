@@ -289,7 +289,7 @@ describe('ToolCallCard', () => {
       </ChatLookProvider>,
     );
     const word =
-      /<span class="([^"]*)" data-testid="tool-call-error">error<\/span>/.exec(
+      /<span data-testid="tool-call-error" class="([^"]*)">error<\/span>/.exec(
         html,
       );
     expect(word).not.toBeNull();
@@ -329,7 +329,7 @@ describe('ToolCallCard', () => {
     const heading = (
       result: Parameters<typeof ToolCallCard>[0]['result'],
     ): string | undefined =>
-      /class="([^"]*)" data-testid="tool-call-result-heading"/.exec(
+      /data-testid="tool-call-result-heading">(.*?)<\/div>/.exec(
         renderToString(
           <ChatLookProvider value="classic">
             <ToolCallCard
@@ -363,8 +363,9 @@ describe('ToolCallCard', () => {
         />
       </ChatLookProvider>,
     );
-    const heading =
-      /class="([^"]*)" data-testid="tool-call-result-heading"/.exec(html);
+    const heading = /data-testid="tool-call-result-heading">(.*?)<\/div>/.exec(
+      html,
+    );
     expect(heading).not.toBeNull();
     expect(heading?.[1]).not.toContain('fg-destructive');
   });
@@ -700,20 +701,16 @@ describe('ToolCallCard waiting for approval (CAN-5291)', () => {
     );
 
   it.each([
-    ['Read', { file_path: '/repo/src/a.ts' }, 'Waiting to read'],
-    [
-      'Write',
-      { file_path: '/repo/notes.md', content: 'x' },
-      'Waiting to write',
-    ],
+    ['Read', { file_path: '/repo/src/a.ts' }, 'Read'],
+    ['Write', { file_path: '/repo/notes.md', content: 'x' }, 'Write'],
     [
       'Edit',
       { file_path: '/repo/src/a.ts', old_string: 'a', new_string: 'b' },
-      'Waiting to edit',
+      'Edit',
     ],
-    ['Bash', { command: 'pnpm test' }, 'Waiting to run'],
-    ['Grep', { pattern: 'approval' }, 'Waiting to search for'],
-    ['Glob', { pattern: '*.ts' }, 'Waiting to find files matching'],
+    ['Bash', { command: 'pnpm test' }, 'Run'],
+    ['Grep', { pattern: 'approval' }, 'Search for'],
+    ['Glob', { pattern: '*.ts' }, 'Find files matching'],
   ])('says %s waits, without shimmer', (toolName, input, verb) => {
     const raw = JSON.stringify(input);
     const html = renderClean(
@@ -729,7 +726,8 @@ describe('ToolCallCard waiting for approval (CAN-5291)', () => {
     expect(html).toContain('data-tool-status="pending"');
     expect(html).toContain('data-tool-approval="waiting"');
     expect(html).not.toContain('canopy-text-shimmer');
-    expect(html).not.toContain('tool-call-waiting');
+    expect(html).toContain('tool-call-waiting');
+    expect(html).toContain('Waiting for approval');
   });
 
   it('keeps the running presentation once approval clears', () => {
@@ -740,7 +738,7 @@ describe('ToolCallCard waiting for approval (CAN-5291)', () => {
         input={bash}
       />,
     );
-    expect(html).toContain('Running');
+    expect(html).toContain('Run');
     expect(html).toContain('canopy-text-shimmer-strong');
     expect(html).not.toContain('data-tool-approval');
   });

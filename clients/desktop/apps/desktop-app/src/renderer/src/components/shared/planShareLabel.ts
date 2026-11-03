@@ -34,7 +34,7 @@ export function shareButtonLabel(
     case 'synced':
       return 'Shared';
     case 'error':
-      return 'Retry share';
+      return 'Try sharing again';
     default:
       return 'Share';
   }

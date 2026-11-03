@@ -9,4 +9,8 @@ export {
   type W5RecordConflictKind,
   type W5RecordHostPortOptions,
 } from './host-port';
-export { w5RecordTargetFor, type W5RecordPortTransport } from './contract';
+export {
+  w5RecordTargetFor,
+  w5UnnameableRecordFor,
+  type W5RecordPortTransport,
+} from './contract';

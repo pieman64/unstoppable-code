@@ -119,7 +119,7 @@ export function OrgProjectPlaceholderRow({
             <button
               type="button"
               disabled={!available}
-              aria-label={`${failed ? 'Retry' : 'Set up'} ${project.name}`}
+              aria-label={`${failed ? 'Try again for' : 'Set up'} ${project.name}`}
               data-testid={`sidebar-org-project-${failed ? 'retry' : 'setup'}-${project.id}`}
               className="focus-ring shrink-0 rounded text-xs fg-accent underline-offset-2 hover:underline disabled:cursor-default disabled:no-underline disabled:fg-quaternary"
               onClick={(): void =>
@@ -129,7 +129,7 @@ export function OrgProjectPlaceholderRow({
                 )
               }
             >
-              {failed ? 'Retry' : 'Set up'}
+              {failed ? 'Try again' : 'Set up'}
             </button>
           )}
         </div>

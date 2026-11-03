@@ -3,7 +3,6 @@ import {
   useCallback,
   useEffect,
   useId,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,7 +11,6 @@ import {
   type ReactElement,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -70,9 +68,11 @@ import { resolvePrMergeRoute, type PrMergeRoute } from './mergeButtonRoute';
 import {
   ActionMenuRowStyle,
   Button,
+  ConfirmDialog,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
+  InlineTextInput,
   Tooltip,
   type WorktreeRowPrStatus,
   LoadingIndicator,
@@ -354,41 +354,16 @@ function resolveBranchLabel(
 }
 
 // ---------------------------------------------------------------------------
-// Popover – shows branch → base per repo (multi-repo hover)
+// Hover card – shows branch → base per repo (multi-repo)
 // ---------------------------------------------------------------------------
 
-function RepoBranchPopover({
-  anchorRect,
+function RepoBranchesCard({
   repoBranches,
 }: {
-  anchorRect: DOMRect;
   repoBranches: RepoBranchInfo[];
 }): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ top: number; left: number }>({
-    top: anchorRect.bottom + 4,
-    left: anchorRect.left,
-  });
-
-  useLayoutEffect((): void => {
-    const el = popoverRef.current;
-    if (!el) return;
-    const elRect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    let top = anchorRect.bottom + 4;
-    let left = anchorRect.left;
-    if (left + elRect.width > vw) left = vw - elRect.width - 8;
-    if (top + elRect.height > vh) top = anchorRect.top - elRect.height - 4;
-    setPosition({ top, left });
-  }, [anchorRect]);
-
-  return createPortal(
-    <div
-      ref={popoverRef}
-      className="pointer-events-none fixed z-tooltip min-w-60 max-w-120 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
-    >
+  return (
+    <div className="min-w-60 max-w-120">
       <div className="mb-1.5 text-3xs font-semibold fg-secondary">
         Repo branches
       </div>
@@ -413,8 +388,38 @@ function RepoBranchPopover({
           </div>
         ))}
       </div>
-    </div>,
-    document.body,
+    </div>
+  );
+}
+
+/** The `contents` trigger wrapper has no box, so the card follows the label. */
+function branchLabelInsideTrigger(trigger: HTMLElement): Element | null {
+  return trigger.firstElementChild;
+}
+
+/**
+ * The multi-repo branch label's hover card: each repo's branch and base.
+ * `contents` keeps the label's own box, so it still truncates in the bar.
+ */
+function RepoBranchesHoverCard({
+  repoBranches,
+  children,
+}: {
+  repoBranches: RepoBranchInfo[];
+  children: ReactElement<TooltipTriggerProps>;
+}): JSX.Element {
+  return (
+    <RichHoverTooltip
+      triggerDisplay="contents"
+      getPlacementAnchor={branchLabelInsideTrigger}
+      elevation="menu"
+      surfacePadding="card"
+      surfaceClassName="w-max max-w-120"
+      dataTestId="pr-status-bar-repo-branches"
+      content={<RepoBranchesCard repoBranches={repoBranches} />}
+    >
+      {children}
+    </RichHoverTooltip>
   );
 }
 
@@ -653,7 +658,7 @@ function BaseBranchDropdownPortal({
                 selected={isSelected}
               >
                 <PickerMenuOptionLeading>
-                  <BranchIcon />
+                  <BranchIcon size="md" />
                 </PickerMenuOptionLeading>
                 <PickerMenuOptionContent>
                   <PickerMenuOptionLabel>{branch.name}</PickerMenuOptionLabel>
@@ -688,33 +693,21 @@ function UpdatePrBaseConfirmation({
   onDecline: () => void;
   onClose: () => void;
 }): JSX.Element {
-  return createPortal(
-    <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim"
-      onClick={(e): void => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-      role="presentation"
-    >
-      <div className="w-95 rounded-lg bg-popover p-5 shadow-xl">
-        <h3 className="mb-2 text-s font-semibold fg-primary">
-          Update PR base branch?
-        </h3>
-        <p className="mb-4 text-xs fg-secondary">
+  return (
+    <ConfirmDialog
+      title="Update PR base branch?"
+      message={
+        <>
           This worktree has an open PR. Would you also like to update the PR
           base branch to <strong>{newBaseBranch}</strong>?
-        </p>
-        <div className="flex items-center justify-end gap-2">
-          <Button variant="secondary" size="compact" onClick={onDecline}>
-            No, just locally
-          </Button>
-          <Button variant="primary" size="compact" onClick={onConfirm}>
-            Yes, update PR
-          </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </>
+      }
+      confirmLabel="Yes, update PR"
+      onConfirm={onConfirm}
+      secondaryAction={{ label: 'No, just locally', onSelect: onDecline }}
+      onCancel={onClose}
+      dataTestId="pr-status-update-pr-base-confirmation"
+    />
   );
 }
 
@@ -1223,21 +1216,12 @@ export const PrStatusBar = memo(function PrStatusBar({
     setBranchRenameRemoteConfirm(null);
   }, [projectId, worktreeId]);
   // Pill width captured when the edit begins — the input's FLOOR, so
-  // flipping into rename causes no jump; from there `field-sizing: content`
-  // grows the input with the typed name up to the 40cqw cap.
+  // flipping into rename causes no jump; from there the input grows with the
+  // typed name up to the 40cqw cap.
   const [branchEditWidth, setBranchEditWidth] = useState<number | null>(null);
   const [branchRenamePending, setBranchRenamePending] = useState(false);
-  // Escape sets this so the input's blur commit is skipped for that close.
-  const branchEditCancelledRef = useRef(false);
-
-  // Multi-repo hover popover
-  const [repoPopoverRect, setRepoPopoverRect] = useState<DOMRect | null>(null);
-  const showRepoPopover = useCallback((element: HTMLElement): void => {
-    setRepoPopoverRect(element.getBoundingClientRect());
-  }, []);
-  const hideRepoPopover = useCallback((): void => {
-    setRepoPopoverRect(null);
-  }, []);
+  // Set by the input's commit so the blur that follows keeps the edit open.
+  const branchEditCommittedRef = useRef(false);
 
   // PR base branch update confirmation
   const [pendingBaseChange, setPendingBaseChange] = useState<{
@@ -1539,7 +1523,7 @@ export const PrStatusBar = memo(function PrStatusBar({
   // can hit while aiming for the menu.
   const beginInlineBranchRename = useCallback((): void => {
     setBranchMenuOpen(false);
-    branchEditCancelledRef.current = false;
+    branchEditCommittedRef.current = false;
     setBranchRenameRemoteConfirm(null);
     setBranchEditWidth(branchMenuTriggerRef.current?.offsetWidth ?? null);
     setBranchEditValue(currentBranchRawLabel);
@@ -1574,31 +1558,33 @@ export const PrStatusBar = memo(function PrStatusBar({
     [projectId, worktreeId],
   );
 
-  const commitBranchRename = useCallback(async (): Promise<void> => {
-    if (branchRenamePending || branchRenameRemoteConfirm !== null) return;
-    const value = branchEditValue;
-    if (value === null) return;
-    const trimmed = value.trim();
-    if (trimmed === '' || trimmed === currentBranchRawLabel) {
-      setBranchEditValue(null);
-      return;
-    }
-    // Same gate as the branch dialog's rename: a pushed branch only renames
-    // after an explicit confirmation, since the old remote branch and any
-    // associated PRs survive a local rename.
-    if (hasBranchBeenPushed) {
-      setBranchRenameRemoteConfirm(trimmed);
-      return;
-    }
-    await performBranchRename(trimmed);
-  }, [
-    branchEditValue,
-    branchRenamePending,
-    branchRenameRemoteConfirm,
-    currentBranchRawLabel,
-    hasBranchBeenPushed,
-    performBranchRename,
-  ]);
+  const commitBranchRename = useCallback(
+    async (value: string): Promise<void> => {
+      if (branchRenamePending || branchRenameRemoteConfirm !== null) return;
+      const trimmed = value.trim();
+      if (trimmed === '' || trimmed === currentBranchRawLabel) {
+        setBranchEditValue(null);
+        return;
+      }
+      // The input shows the committed name while it renames or asks.
+      setBranchEditValue(value);
+      // Same gate as the branch dialog's rename: a pushed branch only renames
+      // after an explicit confirmation, since the old remote branch and any
+      // associated PRs survive a local rename.
+      if (hasBranchBeenPushed) {
+        setBranchRenameRemoteConfirm(trimmed);
+        return;
+      }
+      await performBranchRename(trimmed);
+    },
+    [
+      branchRenamePending,
+      branchRenameRemoteConfirm,
+      currentBranchRawLabel,
+      hasBranchBeenPushed,
+      performBranchRename,
+    ],
+  );
 
   const handleCopyBranch = useCallback((): void => {
     void copyBranch(currentBranchRawLabel);
@@ -2416,20 +2402,20 @@ export const PrStatusBar = memo(function PrStatusBar({
           {/* Current branch: click opens the branch actions menu;
               double-click flips into inline rename (single-repo). */}
           {branchEditValue !== null ? (
-            <span className="relative inline-flex">
-              <input
+            // 40cqw of the bar is the ceiling: past that the text scrolls,
+            // mirroring how the read-only label truncates rather than
+            // starving its neighbours.
+            <span className="electron-no-drag relative inline-flex max-w-[40cqw]">
+              <InlineTextInput
                 data-testid="pr-status-bar-branch-rename-input"
-                // `field-sizing: content` lets the input GROW with what is
-                // typed instead of scrolling inside a frozen box. The width
-                // captured from the pill becomes the floor (so entering edit
-                // mode causes no jump), and 40cqw of the bar is the ceiling —
-                // past that the text scrolls, mirroring how the read-only
-                // label truncates rather than starving its neighbours.
-                //
-                // The inset is the 8px of the pill less the hairline border, so
-                // the text keeps the exact position it had in the read-only
-                // label and entering edit mode causes no horizontal jump.
-                className="electron-no-drag focus-ring -ml-1.5 h-7 max-w-[40cqw] rounded-md border bg-base px-[calc(var(--spacing)*2-var(--border-hairline))] text-s font-normal fg-primary field-sizing-content"
+                // Grows with what is typed. The pill's width is the floor, so
+                // entering edit mode causes no jump, and its 8px inset keeps
+                // the text where the read-only label had it.
+                grow
+                // The pill's 13px type, not the 14px row edit, so the name
+                // keeps its size when editing starts.
+                size="inherit"
+                className="-ml-1.5"
                 style={
                   branchEditWidth !== null
                     ? { minWidth: `${branchEditWidth}px` }
@@ -2445,68 +2431,55 @@ export const PrStatusBar = memo(function PrStatusBar({
                 spellCheck={false}
                 aria-label="Rename branch"
                 onFocus={(e): void => e.currentTarget.select()}
-                onChange={(e): void => setBranchEditValue(e.target.value)}
-                onKeyDown={(e): void => {
-                  if (e.key === 'Enter') {
-                    e.currentTarget.blur();
-                  } else if (e.key === 'Escape') {
-                    branchEditCancelledRef.current = true;
-                    // Abandon any pending remote confirmation too: leaving
-                    // it set would make the `commitBranchRename` guard
-                    // swallow every later rename, and re-arming would seed
-                    // the popover with this abandoned name.
-                    setBranchRenameRemoteConfirm(null);
+                onCommit={(next): void => {
+                  branchEditCommittedRef.current = true;
+                  void commitBranchRename(next);
+                }}
+                onCancel={(): void => {
+                  // Abandon any pending remote confirmation too: leaving it
+                  // set would make the `commitBranchRename` guard swallow
+                  // every later rename, and re-arming would seed the popover
+                  // with this abandoned name.
+                  setBranchRenameRemoteConfirm(null);
+                  setBranchEditValue(null);
+                }}
+                onBlur={(): void => {
+                  // Leaving with the name unchanged ends the edit; a changed
+                  // name went through `onCommit` (which may hold the edit open
+                  // for the pushed-branch confirmation).
+                  if (branchEditCommittedRef.current) {
+                    branchEditCommittedRef.current = false;
+                    return;
+                  }
+                  if (branchRenameRemoteConfirm === null) {
                     setBranchEditValue(null);
                   }
                 }}
-                onBlur={(): void => {
-                  if (branchEditCancelledRef.current) {
-                    branchEditCancelledRef.current = false;
-                    return;
-                  }
-                  void commitBranchRename();
-                }}
               />
               {branchRenameRemoteConfirm !== null && (
-                <div
-                  data-testid="pr-status-bar-branch-rename-remote-confirm"
-                  className="electron-no-drag absolute left-0 top-full z-dropdown mt-1.5 w-70 rounded-md bg-quaternary p-3 text-xs shadow-xl"
-                >
-                  <p className="fg-secondary">
-                    This branch has already been pushed to remote. Renaming will
-                    only change the local branch name — the old remote branch
-                    and any associated PRs will still exist.
-                  </p>
-                  <div className="mt-2 flex justify-end gap-1.5">
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      onClick={(): void => {
-                        setBranchRenameRemoteConfirm(null);
-                        setBranchEditValue(null);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      size="compact"
-                      onClick={(): void => {
-                        // Belt and braces with the input's readOnly freeze:
-                        // commit whatever the input SHOWS, never a stale
-                        // snapshot.
-                        void performBranchRename(
-                          branchEditValue?.trim() !== ''
-                            ? (branchEditValue?.trim() ??
-                                branchRenameRemoteConfirm)
-                            : branchRenameRemoteConfirm,
-                        );
-                      }}
-                    >
-                      Rename anyway
-                    </Button>
-                  </div>
-                </div>
+                <ConfirmDialog
+                  title="Rename pushed branch?"
+                  message="This branch has already been pushed to remote. Renaming will only change the local branch name — the old remote branch and any associated PRs will still exist."
+                  confirmLabel="Rename anyway"
+                  dataTestId="pr-status-bar-branch-rename-remote-confirm"
+                  // The input this opened from leaves with the edit, so focus
+                  // returns to the branch pill that replaces it.
+                  restoreFocusRef={branchMenuTriggerRef}
+                  onCancel={(): void => {
+                    setBranchRenameRemoteConfirm(null);
+                    setBranchEditValue(null);
+                  }}
+                  onConfirm={(): void => {
+                    // Belt and braces with the input's readOnly freeze:
+                    // commit whatever the input SHOWS, never a stale
+                    // snapshot.
+                    void performBranchRename(
+                      branchEditValue?.trim() !== ''
+                        ? (branchEditValue?.trim() ?? branchRenameRemoteConfirm)
+                        : branchRenameRemoteConfirm,
+                    );
+                  }}
+                />
               )}
             </span>
           ) : (
@@ -2552,14 +2525,14 @@ export const PrStatusBar = memo(function PrStatusBar({
                   className="pointer-events-none absolute bottom-0 h-0 w-0"
                   style={{ left: branchMenuAnchorX }}
                 />
-                {hasMultipleBranches ? (
-                  <span
-                    className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
-                    onMouseEnter={(e): void => showRepoPopover(e.currentTarget)}
-                    onMouseLeave={hideRepoPopover}
-                  >
-                    {currentBranchDisplay}
-                  </span>
+                {hasMultipleBranches && repoBranches ? (
+                  <RepoBranchesHoverCard repoBranches={repoBranches}>
+                    <span
+                      className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
+                    >
+                      {currentBranchDisplay}
+                    </span>
+                  </RepoBranchesHoverCard>
                 ) : (
                   <span
                     className={`${POSTHOG_REPLAY_MASK_CLASS} ${BRANCH_LABEL}`}
@@ -2641,7 +2614,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                   onClick={branchChange.openPicker}
                 >
                   <DropdownMenuItemIcon>
-                    <BranchIcon />
+                    <BranchIcon size="md" />
                   </DropdownMenuItemIcon>
                   Change branch
                 </DropdownMenuItem>
@@ -2729,14 +2702,14 @@ export const PrStatusBar = memo(function PrStatusBar({
               {/* Base branch */}
               {isMultiRepo ? (
                 // Multi-repo: readonly text with hover popover
-                hasMultipleBases ? (
-                  <span
-                    className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} cursor-default fg-secondary`}
-                    onMouseEnter={(e): void => showRepoPopover(e.currentTarget)}
-                    onMouseLeave={hideRepoPopover}
-                  >
-                    {baseBranchDisplay}
-                  </span>
+                hasMultipleBases && repoBranches ? (
+                  <RepoBranchesHoverCard repoBranches={repoBranches}>
+                    <span
+                      className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} cursor-default fg-secondary`}
+                    >
+                      {baseBranchDisplay}
+                    </span>
+                  </RepoBranchesHoverCard>
                 ) : (
                   <span
                     className={`${BRANCH_LABEL} ${BASE_BRANCH_ITEM} fg-secondary`}
@@ -2784,14 +2757,6 @@ export const PrStatusBar = memo(function PrStatusBar({
             </span>
           )}
         </div>
-
-        {/* ---- Multi-repo popover ---- */}
-        {repoPopoverRect && repoBranches && (
-          <RepoBranchPopover
-            anchorRect={repoPopoverRect}
-            repoBranches={repoBranches}
-          />
-        )}
 
         {/* ---- Base branch dropdown (single-repo) ---- */}
         {baseBranchDropdownOpen && (

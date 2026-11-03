@@ -8,7 +8,12 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { isDefaultCoworkWorkspaceId } from '@canopy/protocol/ui-labels';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import {
+  overridePickedFolder,
+  seedPickedParentFixture,
+} from './seeders/seedPickedParentFixture.mjs';
 import {
   closeCanopy,
   launchCanopy,
@@ -90,6 +95,86 @@ function readWorkspaces(userDataDir) {
 
 const DISCOVER_CHANNEL = 'external-projects:discover';
 const IMPORT_CHANNEL = 'external-projects:import';
+
+test('CAN-5487 picks a parent and imports only the chosen nested repository', async () => {
+  const fixture = seedPickedParentFixture();
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can5487-first-run-'));
+  seedPreferences(userDataDir, []);
+  let launch;
+  let restoreDialog;
+  try {
+    launch = await launchCanopy({ userDataDir, env: fixture.env });
+    restoreDialog = await overridePickedFolder(
+      launch.electronApp,
+      fixture.parent,
+    );
+    const window = await launch.electronApp.firstWindow();
+    const page = window.getByTestId('first-run-import-page');
+    await page.getByTestId('first-run-import-choose-folder').click();
+    await expect(page.getByTestId('first-run-import-projects')).toContainText(
+      'Found 3 repositories in AndroidStudioProjects',
+    );
+    const rows = page.locator('[data-testid^="first-run-import-row-"]');
+    await expect(rows).toHaveCount(4);
+    expect(
+      await rows.evaluateAll((entries) =>
+        entries.map((entry) => entry.getAttribute('data-testid')),
+      ),
+    ).toEqual([
+      ...fixture.repositories.map(({ id }) => `first-run-import-row-${id}`),
+      `first-run-import-row-${fixture.parentId}`,
+    ]);
+    const parent = page.locator(`#first-run-${fixture.parentId}`);
+    for (const { id } of fixture.repositories) {
+      await expect(page.locator(`#first-run-${id}`)).not.toBeChecked();
+      await expect(
+        page.getByTestId(`first-run-import-row-${id}`),
+      ).toContainText('Code repository');
+    }
+    await expect(parent).not.toBeChecked();
+    await expect(parent).toBeEnabled();
+    await expect(
+      page.getByTestId(`first-run-import-row-${fixture.parentId}`),
+    ).toContainText('Add AndroidStudioProjects as a plain folder');
+    await expect(
+      page.getByTestId(`first-run-import-row-${fixture.parentId}`),
+    ).toContainText('Plain folder');
+    const submit = page.getByTestId('first-run-import-submit');
+    await expect(submit).toBeDisabled();
+    await expect(submit).toHaveText('Select a project to import');
+    const pantry = fixture.repositories.find(
+      ({ name }) => name === 'pantry-android',
+    );
+    await parent.check();
+    await page.locator(`#first-run-${pantry.id}`).check();
+    await expect(parent).not.toBeChecked();
+    await parent.check();
+    await expect(page.locator(`#first-run-${pantry.id}`)).not.toBeChecked();
+    await page.locator('#first-run-select-all').check();
+    await expect(parent).not.toBeChecked();
+    for (const { id } of fixture.repositories)
+      await expect(page.locator(`#first-run-${id}`)).toBeChecked();
+    await page.locator('#first-run-select-all').uncheck();
+    await page.locator(`#first-run-${pantry.id}`).check();
+    await submit.click();
+    await expect(page).toHaveCount(0, { timeout: 120_000 });
+    const workspaces = readWorkspaces(userDataDir).filter(
+      ({ id }) => !isDefaultCoworkWorkspaceId(id),
+    );
+    expect(workspaces.map(({ name }) => name)).toEqual(['pantry-android']);
+    expect(workspaces[0].type).toBe('single-repo');
+  } finally {
+    try {
+      if (restoreDialog) await restoreDialog();
+    } finally {
+      try {
+        if (launch) await closeCanopy(launch.electronApp, launch.userDataDir);
+      } finally {
+        fixture.cleanup();
+      }
+    }
+  }
+});
 
 // The window's real size: Electron pages report no Playwright viewport.
 function viewport(window) {

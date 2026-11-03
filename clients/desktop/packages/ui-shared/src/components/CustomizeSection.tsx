@@ -9,6 +9,7 @@ export interface CustomizeSectionProps {
   /** Trailing heading controls (Update all, pipeline filters). */
   readonly actions?: ReactNode;
   readonly children: ReactNode;
+  readonly footnote?: ReactNode;
 }
 
 /** One headed band of the Customize page: heading, hairline, then content. */
@@ -18,6 +19,7 @@ export function CustomizeSection({
   count,
   actions,
   children,
+  footnote,
 }: CustomizeSectionProps): JSX.Element {
   const headingId = `${domId}-heading`;
   return (
@@ -45,6 +47,13 @@ export function CustomizeSection({
         {actions}
       </div>
       {children}
+      {footnote && (
+        <div className="pt-3">
+          <p data-testid={`${domId}-footnote`} className="text-xs fg-tertiary">
+            {footnote}
+          </p>
+        </div>
+      )}
     </section>
   );
 }

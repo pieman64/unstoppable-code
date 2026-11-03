@@ -238,4 +238,27 @@ describe('openShareInstall', () => {
     });
     expect(state.heldShareInstall).toBeUndefined();
   });
+
+  it('keeps the exact installed destination when a newer review is held', () => {
+    const store = useNavigationStore.getState();
+    store.openShareInstall(first, 'deep-link');
+    store.setShareInstallBusy(true);
+    const target = { sourceId: 'custom:app', skillName: 'wanted-copy' };
+    store.openShareInstall(second, 'in-app', target);
+    target.skillName = 'later-selection';
+    expect(useNavigationStore.getState().heldShareInstall?.skillTarget).toEqual(
+      {
+        sourceId: 'custom:app',
+        skillName: 'wanted-copy',
+      },
+    );
+    store.setShareInstallBusy(false);
+    expect(useNavigationStore.getState().pendingShareInstall).toEqual({
+      link: second,
+      origin: 'in-app',
+      skillTarget: { sourceId: 'custom:app', skillName: 'wanted-copy' },
+    });
+    store.consumeShareInstall();
+    expect(useNavigationStore.getState().pendingShareInstall).toBeUndefined();
+  });
 });

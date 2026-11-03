@@ -32,9 +32,9 @@ const OFFSETS = {
     Number.parseFloat(element.style.height),
 } as const;
 
-function Moving({ box }: { box: Box }): JSX.Element {
+function Moving({ box, snap }: { box: Box; snap?: boolean }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
-  useFlipBox(ref, SLIDE);
+  useFlipBox(ref, { ...SLIDE, snap });
   return <div ref={ref} data-testid="moving" style={{ ...box }} />;
 }
 
@@ -233,6 +233,28 @@ describe('useFlipBox', () => {
       if (original) Object.defineProperty(window, 'ResizeObserver', original);
       else Reflect.deleteProperty(window, 'ResizeObserver');
     }
+  });
+
+  it('lands without motion and stops a slide in flight when asked to snap', () => {
+    const cancel = jest.fn();
+    animate.mockReturnValue({ cancel });
+    act(() =>
+      root.render(<Moving box={{ left: 0, top: 0, width: 40, height: 20 }} />),
+    );
+    act(() =>
+      root.render(
+        <Moving box={{ left: 100, top: 0, width: 40, height: 20 }} />,
+      ),
+    );
+    expect(animate).toHaveBeenCalledTimes(1);
+
+    act(() =>
+      root.render(
+        <Moving snap box={{ left: 120, top: 0, width: 60, height: 20 }} />,
+      ),
+    );
+    expect(cancel).toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledTimes(1);
   });
 
   it('jumps without motion when reduced motion is asked for', () => {

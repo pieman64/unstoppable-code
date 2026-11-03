@@ -63,7 +63,7 @@ function typeValue(value: string): void {
 }
 
 describe('RenameDialog', () => {
-  it('takes the compact confirmation shape with a capsule field and Enter to submit', () => {
+  it('takes the compact confirmation shape with a rounded field and Enter to submit', () => {
     const props = dialog();
     render(<RenameDialog {...props} />);
     const card = document.querySelector('[role="dialog"]');
@@ -72,7 +72,8 @@ describe('RenameDialog', () => {
     expect(card?.querySelector('[aria-label="Close"]')).toBeNull();
     expect(card?.querySelector('.border-b')).toBeNull();
     // The field rests on the neutral edge and focuses to the neutral halo.
-    expect(input().className).toContain('rounded-full');
+    // Fields are rounded rectangles; buttons stay capsules.
+    expect(input().className).toContain('rounded-row');
     expect(input().className).toContain('focus-visible:shadow-field-focus');
     expect(input().className).not.toContain('focus-ring');
     expect(button('rename-cancel').className).toContain('rounded-full');
@@ -216,7 +217,8 @@ describe('RenameDialog', () => {
       expect(input().value).toBe('Bug fix');
       expect(input().getAttribute('aria-invalid')).toBe('true');
       const describedBy = input().getAttribute('aria-describedby') ?? '';
-      expect(describedBy.split(' ')).toContain(message?.id);
+      // The FieldError around the message carries the id the field points at.
+      expect(describedBy.split(' ')).toContain(message?.closest('[id]')?.id);
       expect(describedBy.split(' ')).toHaveLength(2);
       // Under the field, before the helper and the buttons.
       expect(

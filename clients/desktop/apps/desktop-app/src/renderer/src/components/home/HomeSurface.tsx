@@ -1,5 +1,5 @@
 import { getPlanModeHintStore } from '@/lib/planModeHint';
-import { ComposerTipArbiterProvider } from '@canopy/ui-shared/components';
+import { ComposerTipArbiterProvider, Chip } from '@canopy/ui-shared/components';
 import {
   isPlanModeReadOnly,
   isGenuinePlanModeUse,
@@ -59,7 +59,6 @@ import {
   CloseMediumIcon,
   ScheduleIcon,
   ChevronDownMediumIcon,
-  CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ComposerDrawer,
@@ -1382,7 +1381,6 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               <Notice
                 data-testid="home-composer-error"
                 intent="destructive"
-                role="alert"
                 title="Couldn’t send"
                 className="pointer-events-auto mb-3"
                 actions={
@@ -1512,35 +1510,16 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
 
               {mode === 'chat' && scheduledSendDraft && (
                 <div className="px-4 pt-2">
-                  <div className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-fg-info/30 bg-info-subtle py-1 pl-2 pr-1 text-2xs fg-info">
-                    <span
-                      data-testid="home-scheduled-send-pill"
-                      className="flex min-w-0 items-center gap-1.5"
-                    >
-                      <ScheduleIcon
-                        width={13}
-                        height={13}
-                        className="shrink-0"
-                      />
-                      <span className="truncate">
-                        Scheduled send{' '}
-                        {new Date(scheduledSendDraft.runAt).toLocaleString()}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setScheduledSendDraft(null)}
-                      aria-label="Clear scheduled send"
-                      data-testid="home-scheduled-send-pill-clear"
-                      className="focus-ring shrink-0 rounded-sm p-0.5 fg-info transition-colors hover:bg-info-subtle"
-                    >
-                      <AppCatalogCloseIcon
-                        aria-hidden="true"
-                        width="12"
-                        height="12"
-                      />
-                    </button>
-                  </div>
+                  <Chip
+                    icon={ScheduleIcon}
+                    onRemove={() => setScheduledSendDraft(null)}
+                    removeLabel="Clear scheduled send"
+                    data-testid="home-scheduled-send-pill"
+                    removeTestId="home-scheduled-send-pill-clear"
+                  >
+                    Scheduled send{' '}
+                    {new Date(scheduledSendDraft.runAt).toLocaleString()}
+                  </Chip>
                 </div>
               )}
 

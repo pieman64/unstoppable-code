@@ -114,8 +114,21 @@ function isTopmostFocusTrap(doc: Document, trapId: number): boolean {
  * button (Cancel and Escape close it). `confirm-wide` is the same card at
  * 400px, for a footer with three buttons. Both override `maxWidth`,
  * `headerBorder`, `headerSpacing` and `showCloseButton`.
+ *
+ * `page` is a whole page opened over the app (Settings, project settings, a
+ * run or skill detail): the card fills the window inside a margin of scrim,
+ * keeps the dialog radius and header, and traps focus by default, so Escape,
+ * focus and motion match every other dialog. It overrides `maxWidth` and the
+ * default `maxHeight`; a body with its own panes passes
+ * `scrollableBody={false}`.
  */
-export type DialogModalVariant = 'default' | 'confirm' | 'confirm-wide';
+export type DialogModalVariant =
+  | 'default'
+  | 'confirm'
+  | 'confirm-wide'
+  | 'page';
+
+export type DialogInset = 'section' | 'flush';
 
 interface DialogModalProps {
   onClose: () => void;
@@ -183,6 +196,18 @@ interface DialogModalProps {
    * stylesheet order rather than by the caller.
    */
   headerSpacing?: 'default' | 'tight';
+  /**
+   * The dialog owns its insets (docs/design/layout.md#page-column-and-dialog-body).
+   * Header, body and footer line up 24px (`section`) from the sides.
+   *
+   * - `'section'` (the default): the dialog also pads the body, 24px below the
+   *   header's divider and on every side, and spaces the body's direct
+   *   children 16px (`group`) apart. Callers pass blocks, never padding.
+   * - `'flush'`: the body is left to the caller, for a body that lays itself
+   *   out (a tab bar, a full-bleed list, a bordered footer, its own
+   *   scroller). Its content aligns at 24px itself.
+   */
+  inset?: DialogInset;
   /** Stable test ID placed on the dialog card element */
   dataTestId?: string;
   /** Optional actions rendered at the right end of the subtitle row */
@@ -217,7 +242,7 @@ interface DialogModalProps {
    * Move focus into the dialog on mount and keep it there while open, then
    * restore it on close.
    *
-   * OPT-IN, defaulting to off. The card has always carried `aria-modal="true"`
+   * OPT-IN, defaulting to off (on for `variant="page"`). The card has always carried `aria-modal="true"`
    * while doing no focus management at all, so opening one left focus wherever
    * it was — on `<body>` if the activating control unmounted — and Tab walked
    * the page behind an overlay that claims to be modal. Every consumer would
@@ -311,6 +336,7 @@ export function DialogModal({
   headerBorder = true,
   closeButtonDisabled = false,
   headerSpacing = 'default',
+  inset = 'section',
   dataTestId,
   headerActions,
   topRightActions,
@@ -323,18 +349,36 @@ export function DialogModal({
   closeOnEscape = closeOnBackdrop,
   ownerDocument,
   portalContainer,
-  trapFocus = false,
+  trapFocus: trapFocusProp,
   initialFocus = 'control',
   initialFocusRef,
   restoreFocusRef,
   restoreFocusWhen,
 }: DialogModalProps): JSX.Element {
   const id = titleId ?? 'dialog-modal-title';
-  const confirmShape = variant !== 'default';
+  const pageShape = variant === 'page';
+  const trapFocus = trapFocusProp ?? pageShape;
+  const confirmShape = variant === 'confirm' || variant === 'confirm-wide';
   const borderClass = headerBorder && !confirmShape ? 'border-b' : '';
+  // Both insets put the header and footer at 24px; only `section` pads the body.
+  const owned = inset === 'section';
+  const headerBottomClass = headerSpacing === 'tight' ? 'pb-2' : 'pb-4';
   const headerPadClass = confirmShape
-    ? 'px-5 pt-4.5'
-    : `p-5 ${headerSpacing === 'tight' ? 'pb-2' : 'pb-4'}`;
+    ? 'px-6 pt-6'
+    : `px-6 pt-6 ${headerBottomClass}`;
+  // The owned body: 24px sides, 24px below a header divider (the header's
+  // own bottom inset is the gap without one), blocks 16px apart. Above a
+  // footer the body keeps 4px under its last control so the scroll edge
+  // never clips its focus ring; without one it ends on the 24px inset.
+  // The body always grows into the card, so a fixed-height dialog's
+  // `flex-1` / `h-full` children get a height. Inside the dialog's scroller
+  // it keeps its content height and scrolls; a body the caller lays out
+  // itself (`scrollableBody={false}`) may also shrink, so its own scroller
+  // keeps a definite height.
+  const ownedBodyClass = `flex ${scrollableBody ? 'flex-1 ' : 'min-h-0 flex-1 '}flex-col gap-4 px-6 ${
+    headerBorder && !confirmShape ? 'pt-6' : ''
+  } ${footer ? 'pb-1' : 'pb-6'}`;
+  const footerPadClass = 'px-6 pb-6 pt-4';
   const titleClass = confirmShape
     ? 'text-m font-medium text-balance fg-primary'
     : 'text-lg font-semibold fg-primary';
@@ -343,22 +387,38 @@ export function DialogModal({
       ? 'max-w-95'
       : variant === 'confirm-wide'
         ? 'max-w-100'
-        : maxWidthClasses[maxWidth];
+        : pageShape
+          ? 'max-w-none'
+          : maxWidthClasses[maxWidth];
   const renderCloseButton = showCloseButton && !confirmShape;
   // Both derived strings reproduce today's values for every non-`'full'`
   // width, so existing callers are byte-identical.
-  const overlayPadClass = maxWidth === 'full' ? 'p-0 sm:p-4' : 'p-4';
+  const overlayPadClass = pageShape
+    ? 'p-4 sm:p-6'
+    : maxWidth === 'full'
+      ? 'p-0 sm:p-4'
+      : 'p-4';
   const placementClass =
     placement === 'top'
       ? `items-start ${TOP_PLACEMENT_PADDING_CLASS}`
       : 'items-center';
   const resolvedMaxHeight =
     maxHeight ??
-    (placement === 'top' ? TOP_PLACEMENT_MAX_HEIGHT : 'min(80vh, 85dvh)');
+    (pageShape
+      ? '100%'
+      : placement === 'top'
+        ? TOP_PLACEMENT_MAX_HEIGHT
+        : 'min(80vh, 85dvh)');
   const radiusClass =
-    maxWidth === 'full' ? 'rounded-none sm:rounded-2xl' : 'rounded-2xl';
+    maxWidth === 'full' && !pageShape
+      ? 'rounded-none sm:rounded-2xl'
+      : 'rounded-2xl';
   // Full-bleed on a phone means the height as well as the width.
-  const heightClass = maxWidth === 'full' ? 'h-full sm:h-auto' : '';
+  const heightClass = pageShape
+    ? 'h-full'
+    : maxWidth === 'full'
+      ? 'h-full sm:h-auto'
+      : '';
   const cardRef = useRef<HTMLDivElement | null>(null);
   const focusTrapIdRef = useRef<number | null>(null);
   if (focusTrapIdRef.current === null) {
@@ -453,6 +513,17 @@ export function DialogModal({
         }
         return;
       }
+      // A dialog that does not trap (a report or follow-up opened over a
+      // page) draws beside this card at the body. Tab inside it belongs to
+      // that dialog; pulling it back here would put focus behind it.
+      const otherDialog = active?.closest('[role="dialog"][aria-modal="true"]');
+      if (
+        otherDialog &&
+        otherDialog !== card &&
+        !card.contains(otherDialog) &&
+        !otherDialog.contains(card)
+      )
+        return;
       // The card itself is not a Tab stop, so Tab from it enters the controls
       // the same way Tab from behind the dialog does.
       const inside =
@@ -549,8 +620,17 @@ export function DialogModal({
           <div
             // Above a footer the body keeps 4px under its last control, so
             // the scroll edge never clips that control's edge or focus ring.
-            className={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain ${footer ? 'pb-1' : ''}`}
+            className={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain ${footer && !owned ? 'pb-1' : ''}`}
+            data-dialog-body=""
           >
+            {owned ? (
+              <div className={ownedBodyClass}>{children}</div>
+            ) : (
+              children
+            )}
+          </div>
+        ) : owned ? (
+          <div className={ownedBodyClass} data-dialog-body="">
             {children}
           </div>
         ) : (
@@ -559,7 +639,7 @@ export function DialogModal({
         {footer ? (
           <div
             data-dialog-footer=""
-            className="flex shrink-0 items-center justify-end gap-2 px-5 pb-4 pt-3.5"
+            className={`flex shrink-0 items-center justify-end gap-2 ${footerPadClass}`}
           >
             {footer}
           </div>

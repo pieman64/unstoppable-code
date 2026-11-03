@@ -92,12 +92,6 @@ export function isClaudeTerminalBackedChatTab(
   );
 }
 
-export function clearQueuedForSetupFlag(tab: ChatTab): ChatTab {
-  const nextTab = { ...tab };
-  delete nextTab.queuedForSetup;
-  return nextTab;
-}
-
 export function isEditableChatTab(tab: ChatTab | undefined): tab is ChatTab {
   return tab !== undefined && tab.kind !== 'file' && !tab.readOnly;
 }
@@ -267,9 +261,22 @@ export function selectMessagesForForkOrBranch(
   );
   if (userIdx < 0) return null;
 
-  // Steering and async answers fold into the running turn; only a new turn ends the cut.
+  const promptIds = new Set(
+    source.messages.filter(isUserTurnBoundary).map((message) => message.id),
+  );
+  // Steering and async answers stay in this reply. An autonomous execution
+  // starts another reply even when no person sends a new prompt.
   for (let i = userIdx + 1; i < source.messages.length; i++) {
-    if (isUserTurnBoundary(source.messages[i])) {
+    const message = source.messages[i];
+    const block = message.blocks[0];
+    const startsAutonomousReply =
+      block?.type === 'turn_timer' &&
+      block.turnId !== undefined &&
+      block.spawnedBy !== undefined &&
+      (block.userMessageId === undefined ||
+        !promptIds.has(block.userMessageId) ||
+        block.spawnedBy.toolsLoaded === true);
+    if (isUserTurnBoundary(message) || startsAutonomousReply) {
       return {
         messagesToClone: source.messages.slice(0, i),
         truncated: true,
@@ -497,9 +504,6 @@ export function toQueuedDispatchOptions(
         }
       : {}),
     ...(options.agentSent ? { agentSent: options.agentSent } : {}),
-    ...(options.onDispatchStarted
-      ? { onDispatchStarted: options.onDispatchStarted }
-      : {}),
     ...(includeDispatchAcceptance && options.onDispatchAccepted
       ? { onDispatchAccepted: options.onDispatchAccepted }
       : {}),

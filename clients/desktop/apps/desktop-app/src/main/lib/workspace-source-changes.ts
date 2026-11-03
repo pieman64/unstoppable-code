@@ -28,6 +28,7 @@ import type {
 import { applyProjectSourceChangesToWorktree } from './project-source-change-apply';
 import { validateId } from './validation';
 import { applyWorkspaceSourceChangesToWorktree } from './workspace-source-change-apply';
+import { w5LifecycleReceiptCaller, type W5WireCall } from './w5-wire-call';
 
 export {
   WorkspaceSourceChangesRefusedError,
@@ -48,8 +49,10 @@ interface SourceChangesHost<Event> {
  * worktree and can add or remove repositories; a single-repo project's in
  * its only checkout.
  */
-export type WorkspaceSourceChangesRequest = W5CompositionOptions &
-  (
+export type WorkspaceSourceChangesRequest = W5CompositionOptions & {
+  /** A registered wire call's receipt scope and admission (W7b-4). */
+  wireCall?: W5WireCall;
+} & (
     | ({
         kind: 'workspace';
         /** `workspace:apply-source-changes`. */
@@ -127,44 +130,51 @@ export async function applySourceChanges(
       'invalid-request',
       'Standalone source-change revision or retry options cannot join a parent commit',
     );
-  return withStorageAdmission(
-    [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
-    () =>
-      runW5BoundaryOperation<
-        WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
-      >(
-        {
-          operation: 'core.workspace.sourceChanges.apply',
-          caller: 'desktop-host:workspace-source-changes',
-          idempotencyKey: request.idempotencyKey,
-          parameters: {
-            kind: request.kind,
-            source: request.source,
-            request: request.request,
-          },
-          recheckAtOutcome: true,
-          isPreEffectRefusal: (error) =>
-            error instanceof WorkspaceSourceChangesRefusedError ||
-            error instanceof W5RevisionConflictError ||
-            error instanceof W5FileWriteRefusedError,
-        },
-        (outcome) =>
-          decodeW5CompositionOutcome(
-            request.kind === 'workspace'
-              ? workspaceOutcomeSchema
-              : projectOutcomeSchema,
-            outcome,
-          ),
-        async (commit, attempt, complete) => {
-          commit.expectedRevisions = request.expectedRevisions;
-          await checkW5CompositionRevisions(commit);
-          return applySourceChangesAdmitted(request, {
-            commit,
-            beforeEffects: attempt?.beforeEffects,
-            complete,
-          });
-        },
+  return runW5BoundaryOperation<
+    WorkspaceApplySourceChangesResponse | ProjectApplySourceChangesResponse
+  >(
+    {
+      operation: 'core.workspace.sourceChanges.apply',
+      caller: w5LifecycleReceiptCaller(
+        'workspace-source-changes',
+        request.wireCall,
       ),
+      idempotencyKey: request.idempotencyKey,
+      admit: request.wireCall?.admit,
+      // Admission may ask the organization over the network, so the storage
+      // hold starts at the reservation: an ownership change never waits on it.
+      hold: (run) =>
+        withStorageAdmission(
+          [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
+          run,
+        ),
+      parameters: {
+        kind: request.kind,
+        source: request.source,
+        request: request.request,
+      },
+      recheckAtOutcome: true,
+      isPreEffectRefusal: (error) =>
+        error instanceof WorkspaceSourceChangesRefusedError ||
+        error instanceof W5RevisionConflictError ||
+        error instanceof W5FileWriteRefusedError,
+    },
+    (outcome) =>
+      decodeW5CompositionOutcome(
+        request.kind === 'workspace'
+          ? workspaceOutcomeSchema
+          : projectOutcomeSchema,
+        outcome,
+      ),
+    async (commit, attempt, complete) => {
+      commit.expectedRevisions = request.expectedRevisions;
+      await checkW5CompositionRevisions(commit);
+      return applySourceChangesAdmitted(request, {
+        commit,
+        beforeEffects: attempt?.beforeEffects,
+        complete,
+      });
+    },
   );
 }
 

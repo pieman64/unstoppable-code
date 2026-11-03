@@ -5,6 +5,8 @@ import {
   withShareStage,
 } from '../sharing/share-operation-result';
 import type {
+  ApplyCollectionUpdateRequest,
+  DuplicateLocalCollectionRequest,
   AnalyzeCollectionCapabilityPackageRequest,
   CommitCollectionCapabilityPackageRequest,
   CollectionConfig,
@@ -122,6 +124,22 @@ export async function inspectSharedCollectionImport(
 }
 
 export function registerCollectionHandlers(): void {
+  registerIpcHandler(
+    COLLECTIONS_CHANNELS.DUPLICATE_COLLECTION,
+    async (_event, request: DuplicateLocalCollectionRequest) => {
+      const { duplicateLocalCollection } =
+        await import('./collection-mutations');
+      return duplicateLocalCollection(request);
+    },
+  );
+  registerIpcHandler(
+    COLLECTIONS_CHANNELS.APPLY_SHARED_UPDATE,
+    async (_event, request: ApplyCollectionUpdateRequest) => {
+      const { applyCollectionUpdate } = await import('./collection-mutations');
+      return applyCollectionUpdate(request);
+    },
+  );
+
   registerIpcHandler(COLLECTIONS_CHANNELS.LOAD_INDEX, async () => {
     const index = await readCollectionIndex();
     return index.collections;
@@ -371,7 +389,6 @@ export function registerCollectionHandlers(): void {
           ownedInitial = initial;
         }
         const collection = { collection: initial };
-        let finalizationStarted = false;
         let savedCollection: CollectionConfig | undefined;
         const installed = await installSubjectCapabilityPackage({
           owner: { kind: 'collection', localId: initial.id },
@@ -403,7 +420,6 @@ export function registerCollectionHandlers(): void {
                 skillName: skill.localName,
               });
             }
-            finalizationStarted = true;
             const nextCollection = {
               ...collection.collection,
               skills: Array.from(skills.values()),
@@ -420,8 +436,10 @@ export function registerCollectionHandlers(): void {
           rollbackFinalization: async () => {
             if (request.createCollection && ownedWrite) {
               await rollbackNewCollectionInstall(ownedWrite, ownedInitial);
-            } else if (finalizationStarted) {
-              await saveCollectionConfig(collection.collection);
+            } else if (savedCollection) {
+              await saveCollectionConfig(collection.collection, undefined, {
+                expectedRevision: savedCollection.revision,
+              });
             }
           },
         });

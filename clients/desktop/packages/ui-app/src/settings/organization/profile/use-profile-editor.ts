@@ -9,7 +9,11 @@ import {
   type UpdateProfileResponse,
 } from '@canopy/protocol/settings/account';
 import { useSettingsClient } from '../../host';
-import { useSettingsErrorCopy, type KnownSettingsError } from '../../errors';
+import {
+  useSettingsErrorCopy,
+  type KnownSettingsError,
+  type SettingsFailure,
+} from '../../errors';
 
 const INVALID_FILE_ERROR = 'Choose a PNG, JPEG, or GIF image up to 5 MB.';
 
@@ -111,7 +115,7 @@ export interface UseProfileEditorResult {
   /** True while any upload/commit/name request is in flight. */
   busy: boolean;
   /** Last user-facing error, or `null`. */
-  error: string | null;
+  error: SettingsFailure | null;
   /** Clear the current error (e.g. when reopening an editor). */
   clearError: () => void;
   /**
@@ -140,7 +144,7 @@ export function useProfileEditor(
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy('settings.profile.identity');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   // Flatten the target into primitive deps so the callbacks can be
   // statically dependency-checked (a `null` org/user id means the self routes).
@@ -159,11 +163,11 @@ export function useProfileEditor(
       }
       const mimeType = file.type;
       if (!isAllowedAvatarMimeType(mimeType) || file.size <= 0) {
-        setError(INVALID_FILE_ERROR);
+        setError({ copy: INVALID_FILE_ERROR });
         return null;
       }
       if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
-        setError(INVALID_FILE_ERROR);
+        setError({ copy: INVALID_FILE_ERROR });
         return null;
       }
 
@@ -178,7 +182,7 @@ export function useProfileEditor(
         );
       } catch (err: unknown) {
         setError(
-          errorCopy.actionCopy(err, {
+          errorCopy.actionFailure(err, {
             action: 'upload the photo',
             known: UPLOAD_AVATAR_KNOWN_ERRORS,
           }),
@@ -205,7 +209,7 @@ export function useProfileEditor(
         );
         if (!isUpdateProfileResponse(body)) {
           setError(
-            errorCopy.actionCopy(new Error('Invalid profile response'), {
+            errorCopy.actionFailure(new Error('Invalid profile response'), {
               action: patchAction(payload),
             }),
           );
@@ -213,7 +217,9 @@ export function useProfileEditor(
         }
         return body;
       } catch (err: unknown) {
-        setError(errorCopy.actionCopy(err, { action: patchAction(payload) }));
+        setError(
+          errorCopy.actionFailure(err, { action: patchAction(payload) }),
+        );
         return null;
       } finally {
         setBusy(false);

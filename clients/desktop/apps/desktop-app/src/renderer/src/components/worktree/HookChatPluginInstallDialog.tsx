@@ -1,5 +1,6 @@
 import { Button } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
+import { Checkbox } from '@canopy/ui-shared/components';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
 import { normalizeGitHubRepoRef } from '@canopy/desktop-shared/plugin-refs';
 import { DialogModal } from '../shared';
@@ -345,7 +346,7 @@ export function HookChatPluginInstallDialog({
       maxWidth="2xl"
       closeOnBackdrop={!installing}
     >
-      <div className="flex flex-col gap-4 p-5 pt-3 text-s fg-primary">
+      <div className="flex flex-col gap-4 text-s fg-primary">
         <p className="text-xs fg-secondary">
           The chat hook actions on this worktree reference shareable skills and
           marketplace plugins that aren&apos;t installed locally yet. Install
@@ -364,12 +365,11 @@ export function HookChatPluginInstallDialog({
                     key={item.key}
                     className="flex items-start gap-3 p-3 text-xs"
                   >
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={isSelected}
                       disabled={installing || status.state === 'success'}
                       onChange={(): void => toggleSelected(item.key)}
-                      className="mt-1"
+                      className="mt-0.5"
                       aria-label={`Install ${item.displayName}`}
                     />
                     <div className="min-w-0 flex-1">

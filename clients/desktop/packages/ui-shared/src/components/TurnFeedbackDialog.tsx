@@ -6,6 +6,7 @@ import {
 } from '@canopy/protocol/turn-feedback';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
+import { TextArea } from './Field';
 
 const REASON_LABELS: Record<TurnFeedbackReason, string> = {
   'incorrect-or-didnt-work': "Incorrect or didn't work",
@@ -70,7 +71,7 @@ export function TurnFeedbackDialog({
       headerBorder={false}
       dataTestId="turn-feedback-dialog"
     >
-      <div className="flex flex-col gap-3 px-5 pb-5">
+      <div className="flex flex-col gap-3">
         {/*
           A toggle group, not a radio group: clicking the selected chip clears
           it. ARIA radios cannot be deselected and form a single tab stop with
@@ -113,7 +114,7 @@ export function TurnFeedbackDialog({
           adds height without adding meaning. `aria-label` keeps the accessible
           name once the placeholder disappears on the first keystroke.
         */}
-        <textarea
+        <TextArea
           id="turn-feedback-comment"
           ref={commentRef}
           data-testid="turn-feedback-comment"
@@ -125,7 +126,6 @@ export function TurnFeedbackDialog({
           }}
           rows={3}
           maxLength={MAX_TURN_FEEDBACK_COMMENT_LENGTH}
-          className="focus-ring w-full resize-none rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-secondary"
         />
 
         <div className="flex items-center justify-end gap-2 pt-1">

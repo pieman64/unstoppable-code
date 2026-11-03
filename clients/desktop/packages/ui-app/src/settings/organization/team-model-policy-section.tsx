@@ -13,8 +13,12 @@ import {
   Button,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  Notice,
   SettingsFormSkeleton,
+  SettingsRowsRow,
+  ToggleSwitch,
   Tooltip,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import type {
@@ -29,7 +33,7 @@ import {
   SettingsLink,
   useSettingsClient,
 } from '../host';
-import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import { useSettingsErrorCopy, useSettingsLoadFailure } from '../errors';
 import { ORGANIZATION_LAPSED_ERROR } from './organization-known-errors';
 import {
   fetchOrgModelCatalog,
@@ -39,6 +43,7 @@ import {
   updateEnforceMemberModelPolicy,
   type OrgModelCatalogEntry,
 } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 const MODEL_POLICY_ERROR_SCOPE = 'settings.organization.model-policy';
 
@@ -103,7 +108,7 @@ function ModelPolicyCard({
 }: TeamModelPolicySectionProps): JSX.Element {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(MODEL_POLICY_ERROR_SCOPE);
-  const loadErrorCopy = useSettingsLoadErrorCopy(MODEL_POLICY_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(MODEL_POLICY_ERROR_SCOPE);
   const orgId = detail.id;
 
   const [enforcing, setEnforcing] = useState<boolean | null>(null);
@@ -111,8 +116,8 @@ function ModelPolicyCard({
   const [reviewed, setReviewed] = useState<ReadonlySet<string>>(new Set());
   const [catalog, setCatalog] = useState<readonly OrgModelCatalogEntry[]>([]);
   const [catalogReady, setCatalogReady] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [savingMaster, setSavingMaster] = useState(false);
   const [savingModelId, setSavingModelId] = useState<string | null>(null);
   const [savingReviewAll, setSavingReviewAll] = useState(false);
@@ -134,7 +139,8 @@ function ModelPolicyCard({
    * Held apart from `error` on purpose: a save clears `error`, and an
    * unresolved plan-read failure must not be erased by the first toggle.
    */
-  const [entitlementError, setEntitlementError] = useState<string | null>(null);
+  const [entitlementError, setEntitlementError] =
+    useState<SettingsFailure | null>(null);
 
   /**
    * The configuration the SERVER last confirmed, which is what the next PATCH
@@ -190,7 +196,7 @@ function ModelPolicyCard({
           setCatalogReady(true);
         }
       } catch (err) {
-        if (!cancelled) setLoadError(errorCopy.loadCopy(err));
+        if (!cancelled) setLoadError(errorCopy.loadFailure(err));
       }
     })();
     return (): void => {
@@ -213,7 +219,7 @@ function ModelPolicyCard({
         // Leaves `entitled` null — unknown, not "entitled". The PATCH route
         // capability-gates server-side either way, so this only decides what
         // the card is allowed to CLAIM, never what the org actually gets.
-        if (!cancelled) setEntitlementError(errorCopy.loadCopy(err));
+        if (!cancelled) setEntitlementError(errorCopy.loadFailure(err));
       }
     })();
     return (): void => {
@@ -259,7 +265,7 @@ function ModelPolicyCard({
 
   const reportError = (err: unknown): void => {
     setError(
-      errorCopy.actionCopy(err, {
+      errorCopy.actionFailure(err, {
         action: 'update the model policy',
         known: [ORGANIZATION_LAPSED_ERROR],
       }),
@@ -425,14 +431,24 @@ function ModelPolicyCard({
         </div>
       </div>
       <div className={SETTINGS_CARD_GROUP_CLASS}>
-        <ErrorBanner className="mt-3" error={error} />
-        <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
+        <ErrorBanner
+          className="mt-3"
+          error={loadError?.copy}
+          details={loadError?.details}
+          onRetry={retryLoad}
+        />
         {/* Its own banner: a save clears `error` and must not take an
               unresolved plan-read failure with it. */}
         <ErrorBanner
           className="mt-3"
           // One load banner: both share the same copy and Retry.
-          error={loadError === null ? entitlementError : null}
+          error={loadError === null ? entitlementError?.copy : null}
+          details={loadError === null ? entitlementError?.details : undefined}
           onRetry={retryLoad}
         />
 
@@ -444,51 +460,42 @@ function ModelPolicyCard({
           </div>
         ) : entitled === true || relaxOnly ? (
           <>
-            <label className="mt-4 flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={enforcing}
-                disabled={saving}
-                data-testid="enforce-member-model-policy-checkbox"
-                onChange={(event) => handleMasterChange(event.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded"
+            <div className="mt-4">
+              <SettingsRowsRow
+                label="Enforce member model access policy"
+                description="Members can only use the models you choose from an enabled policy."
+                control={
+                  <ToggleSwitch
+                    label="Enforce member model access policy"
+                    checked={enforcing}
+                    disabled={saving}
+                    dataTestId="enforce-member-model-policy-checkbox"
+                    onChange={handleMasterChange}
+                  />
+                }
               />
-              <span className="min-w-0">
-                <span className="block text-s font-medium fg-primary">
-                  Enforce member model access policy
-                </span>
-                <span className="block text-xs fg-secondary">
-                  Members can only use the models you choose from an enabled
-                  policy.
-                </span>
-              </span>
-            </label>
+            </div>
             {relaxOnly ? (
-              <div
-                className="mt-3 flex items-start gap-2 rounded-lg bg-warning-subtle px-3 py-2"
+              <Notice
+                intent="attention"
+                icon={<Lock size={14} />}
+                className="mt-3"
                 data-testid="model-policy-relax-only-note"
               >
-                <Lock
-                  size={14}
-                  aria-hidden="true"
-                  className="mt-0.5 shrink-0 fg-warning"
-                />
-                <p className="text-xs fg-secondary">
-                  Your plan no longer includes a model policy, but the one you
-                  set is still in force for your members, and models released
-                  since your last save are blocked too. From here you can turn
-                  enforcement off or allow models it blocks. To block a model
-                  again, or to turn enforcement back on later, you&apos;ll need
-                  the capability back.{' '}
-                  <SettingsLink
-                    href={billingHref}
-                    data-testid="model-policy-relax-only-upgrade"
-                    className="underline fg-accent"
-                  >
-                    {upgradeText}
-                  </SettingsLink>
-                </p>
-              </div>
+                Your plan no longer includes a model policy, but the one you set
+                is still in force for your members, and models released since
+                your last save are blocked too. From here you can turn
+                enforcement off or allow models it blocks. To block a model
+                again, or to turn enforcement back on later, you&apos;ll need
+                the capability back.{' '}
+                <SettingsLink
+                  href={billingHref}
+                  data-testid="model-policy-relax-only-upgrade"
+                  className="underline fg-accent"
+                >
+                  {upgradeText}
+                </SettingsLink>
+              </Notice>
             ) : null}
           </>
         ) : (
@@ -591,11 +598,11 @@ function ModelPolicyCard({
                 />
               ))}
               {visible.length === 0 ? (
-                <li
-                  className="px-4 py-6 text-center text-xs fg-secondary"
-                  data-testid="model-policy-empty"
-                >
-                  No models are available to configure yet.
+                <li className="px-4">
+                  <EmptyStateRow
+                    testId="model-policy-empty"
+                    title="No models are available to configure yet."
+                  />
                 </li>
               ) : null}
             </ul>
@@ -634,6 +641,8 @@ function ModelPolicyCard({
             {confirmReviewAll && pendingReviewIds.length > 0 ? (
               <SettingsConfirmDialog
                 dataTestId="model-policy-review-all-dialog"
+                errorMessage={error?.copy}
+                errorDetails={error?.details}
                 title={
                   pendingReviewIds.length === 1
                     ? 'Mark 1 model as reviewed?'
@@ -657,15 +666,6 @@ function ModelPolicyCard({
                         ? 'New models that ship later stay blocked until you review them too. Your plan no longer lets you block a model, though, so only do this if every model in the catalog is fine for your members.'
                         : 'You can still block any model afterwards, and new models that ship later stay blocked until you review them too.'}
                     </p>
-                    {error !== null ? (
-                      <p
-                        role="alert"
-                        data-testid="model-policy-review-all-error"
-                        className="fg-destructive"
-                      >
-                        {error}
-                      </p>
-                    ) : null}
                   </div>
                 }
               />

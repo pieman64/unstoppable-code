@@ -36,6 +36,7 @@ import { subscribeWorktreeLifecycleChanges } from './worktree-lifecycle-signals'
 import { WorktreeRecordRefusedError } from './worktree-repair';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
 import { sendToWindow } from './window-send';
+import { workspaceStorageUnavailable } from './workspace-storage-availability';
 
 // Main's composition of the core-runtime branch observer (CAN-4899): the
 // observer owns watch policy; this module supplies desktop paths, Git reads,
@@ -126,10 +127,12 @@ async function collectWorktreeCheckouts(
 async function listCheckouts(
   dispatcher: DesktopCanopyDispatcher,
 ): Promise<BranchCheckoutListing<DesktopBranchCheckout>> {
-  const { legacyResult } = await dispatcher.queryWorktreeListForLegacyIpc(
-    {},
-    { caller: LIST_CALLER },
-  );
+  const { legacyResult, legacyAuthority } =
+    await dispatcher.queryWorktreeListForLegacyIpc({}, { caller: LIST_CALLER });
+  // Per-workspace faults use preservedWorkspaceIds without blocking healthy enrollment.
+  if (legacyAuthority?.indexAuthority === 'unreadable') {
+    throw workspaceStorageUnavailable();
+  }
   if (Array.isArray(legacyResult))
     throw new Error('Unscoped worktree projection was not captured.');
   const checkouts: DesktopBranchCheckout[] = [];
@@ -154,9 +157,10 @@ async function listCheckouts(
   return {
     checkouts,
     pendingWorktrees,
-    preservedWorkspaceIds: new Set(
-      getSidebarItemsPreserveWorkspaceIds(legacyResult),
-    ),
+    preservedWorkspaceIds: new Set([
+      ...getSidebarItemsPreserveWorkspaceIds(legacyResult),
+      ...(legacyAuthority?.worktreePreserveWorkspaceIds ?? []),
+    ]),
   };
 }
 

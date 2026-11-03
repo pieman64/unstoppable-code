@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
+import {
+  chooseSettingsOption,
+  settingsOptionValues,
+} from './helpers/settingsSelect.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { selectWorkspaceContext } from './workspaceContextMenu.mjs';
@@ -444,9 +448,10 @@ test('install wizard: binds a project and persists an enabled copy with provenan
     await expect(
       window.getByTestId('install-automation-submit-reason'),
     ).toHaveText('Choose a project to continue');
-    await window
-      .getByTestId('install-automation-workspace')
-      .selectOption(WORKSPACE_ID);
+    await chooseSettingsOption(
+      window.getByTestId('install-automation-workspace'),
+      WORKSPACE_ID,
+    );
     await expect(
       window.getByTestId('install-automation-submit-reason'),
     ).toHaveCount(0);
@@ -515,9 +520,10 @@ test('install wizard: binds a Cowork project for a portable prompt', async () =>
     await expect(
       window.getByTestId('install-shared-automation-modal'),
     ).toBeVisible();
-    await window
-      .getByTestId('install-automation-cowork-project')
-      .selectOption(WORKSPACE_ID);
+    await chooseSettingsOption(
+      window.getByTestId('install-automation-cowork-project'),
+      WORKSPACE_ID,
+    );
     await window.getByTestId('install-automation-submit').click();
     await expect(
       window.getByTestId('install-shared-automation-modal'),
@@ -577,9 +583,10 @@ test('install wizard: installs a share with file references without a confirmati
 
     const modal = window.getByTestId('install-shared-automation-modal');
     await expect(modal).toBeVisible();
-    await modal
-      .getByTestId('install-automation-cowork-project')
-      .selectOption(WORKSPACE_ID);
+    await chooseSettingsOption(
+      modal.getByTestId('install-automation-cowork-project'),
+      WORKSPACE_ID,
+    );
     // CAN-3710: clicking Install is the confirmation; no file opt-in gates it.
     await expect(
       modal.getByTestId('install-automation-confirm-files'),
@@ -644,9 +651,10 @@ test('install wizard: reviews, materializes, and runs a packaged capability', as
     await expect(
       modal.getByTestId('capability-package-included-resources'),
     ).toHaveCount(0);
-    await modal
-      .getByTestId('install-automation-cowork-project')
-      .selectOption(WORKSPACE_ID);
+    await chooseSettingsOption(
+      modal.getByTestId('install-automation-cowork-project'),
+      WORKSPACE_ID,
+    );
     await modal.getByTestId('install-automation-submit').click();
     await expect(modal).toBeHidden();
 
@@ -820,7 +828,7 @@ test('install wizard: dismissals and a failed install write nothing, and a doubl
     for (const dismiss of dismissals) {
       await injectFixture(window, coworkFixtureDocument());
       await expect(modal).toBeVisible();
-      await picker.selectOption(WORKSPACE_ID);
+      await chooseSettingsOption(picker, WORKSPACE_ID);
       await dismiss();
       await expect(modal).toHaveCount(0);
       expect(readPersistedActivitiesIfAny(userDataDir)).toEqual([]);
@@ -831,14 +839,14 @@ test('install wizard: dismissals and a failed install write nothing, and a doubl
     // stays open with the error, and nothing is persisted.
     await injectFixture(window, coworkFixtureDocument());
     await expect(modal).toBeVisible();
-    await picker.selectOption('doomed-cowork');
+    await chooseSettingsOption(picker, 'doomed-cowork');
     await window.evaluate(() =>
       window.api.deleteWorkspace({ workspaceId: 'doomed-cowork' }),
     );
     await submit.click();
     await expect(window.getByTestId('install-automation-error')).toBeVisible();
     await expect(modal).toBeVisible();
-    await expect(picker).toHaveValue('');
+    await expect(picker).not.toHaveAttribute('data-value');
     expect(readPersistedActivitiesIfAny(userDataDir)).toEqual([]);
     await window.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
@@ -846,7 +854,7 @@ test('install wizard: dismissals and a failed install write nothing, and a doubl
     // A double click on Install and enable creates exactly one copy.
     await injectFixture(window, coworkFixtureDocument());
     await expect(modal).toBeVisible();
-    await picker.selectOption(WORKSPACE_ID);
+    await chooseSettingsOption(picker, WORKSPACE_ID);
     await expect(submit).toBeEnabled();
     await submit.dblclick();
     await expect(modal).toHaveCount(0);
@@ -899,10 +907,10 @@ test('update wizard: copy picker retargets the update to the chosen stale copy',
     );
     const picker = window.getByTestId('install-automation-copy');
     await expect(picker).toBeVisible();
-    await expect(picker.locator('option')).toHaveCount(2);
+    await expect.poll(() => settingsOptionValues(picker)).toHaveLength(2);
 
     // Retarget to the second copy; its bindings prefill so submit is live.
-    await picker.selectOption('copy-second');
+    await chooseSettingsOption(picker, 'copy-second');
     await expect(window.getByTestId('install-automation-submit')).toBeEnabled();
     await window.getByTestId('install-automation-submit').click();
     await expect(
@@ -971,9 +979,10 @@ for (const approve of [true, false]) {
         await toggle.check();
         await expect(command).not.toHaveAttribute('readonly', '');
       }
-      await window
-        .getByTestId('install-automation-cowork-project')
-        .selectOption(WORKSPACE_ID);
+      await chooseSettingsOption(
+        window.getByTestId('install-automation-cowork-project'),
+        WORKSPACE_ID,
+      );
       await window.getByTestId('install-automation-submit').click();
       await expect(
         window.getByTestId('install-shared-automation-modal'),
@@ -1253,7 +1262,7 @@ test('CAN-3734: a missing compatible project offers creation without losing the 
       window.getByTestId('install-shared-automation-modal'),
     ).toBeVisible();
     const createdPicker = window.getByTestId('install-automation-workspace');
-    await expect(createdPicker).not.toHaveValue('');
+    await expect(createdPicker).toHaveAttribute('data-value', /.+/);
     await window.getByTestId('install-automation-submit').click();
     await expect(
       window.getByTestId('install-shared-automation-modal'),
@@ -1306,13 +1315,13 @@ test('CAN-3734: narrowed pipeline survives install and reload and main rejects a
       { id: REMOTE_ID, contentHash: NEW_HASH, document },
     );
     const picker = window.getByTestId('install-automation-workspace');
-    await expect(picker.locator('option[value="seeded-cowork"]')).toHaveCount(
-      1,
-    );
-    await expect(
-      picker.locator('option[value="demo-ts-pnpm-vite"]'),
-    ).toHaveCount(0);
-    await picker.selectOption('seeded-cowork');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .toContain('seeded-cowork');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .not.toContain('demo-ts-pnpm-vite');
+    await chooseSettingsOption(picker, 'seeded-cowork');
     await window.getByTestId('install-automation-submit').click();
     await expect(
       window.getByTestId('install-shared-automation-modal'),
@@ -1350,12 +1359,12 @@ test('CAN-3734: narrowed pipeline survives install and reload and main rejects a
         ),
       { id: REMOTE_ID, contentHash: 'd'.repeat(64), document: updatedDocument },
     );
-    await expect(
-      picker.locator('option[value="demo-ts-pnpm-vite"]'),
-    ).toHaveCount(1);
-    await expect(picker.locator('option[value="seeded-cowork"]')).toHaveCount(
-      0,
-    );
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .toContain('demo-ts-pnpm-vite');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .not.toContain('seeded-cowork');
     await expect(
       window.getByTestId('install-automation-submit'),
     ).toBeDisabled();
@@ -1366,7 +1375,7 @@ test('CAN-3734: narrowed pipeline survives install and reload and main rejects a
     expect(readPersistedActivities(userDataDir)[0].targetRequirement).toEqual({
       contexts: ['cowork'],
     });
-    await picker.selectOption('demo-ts-pnpm-vite');
+    await chooseSettingsOption(picker, 'demo-ts-pnpm-vite');
     await window.getByTestId('install-automation-submit').click();
     await expect(
       window.getByTestId('install-shared-automation-modal'),
@@ -1433,10 +1442,10 @@ test('CAN-3734: a republished legacy code prompt requires Cowork re-selection an
       readPersistedActivities(userDataDir)[0].installedFrom.contentHash,
     ).toBe(OLD_HASH);
     const picker = window.getByTestId('install-automation-cowork-project');
-    await expect(
-      picker.locator('option[value="demo-ts-pnpm-vite"]'),
-    ).toHaveCount(0);
-    await picker.selectOption('seeded-cowork');
+    await expect
+      .poll(() => settingsOptionValues(picker))
+      .not.toContain('demo-ts-pnpm-vite');
+    await chooseSettingsOption(picker, 'seeded-cowork');
     await window.getByTestId('install-automation-submit').click();
     await expect(modal).toBeHidden();
     expect(readPersistedActivities(userDataDir)[0]).toMatchObject({
@@ -1534,9 +1543,10 @@ test('CAN-4550: a v6 pipeline share for an existing task requires a task before 
     // No task picker until a project is chosen; then it asks for a task.
     await expect(modal.getByTestId('install-automation-task')).toHaveCount(0);
     await expect(submit).toBeDisabled();
-    await modal
-      .getByTestId('install-automation-workspace')
-      .selectOption('demo-ts-pnpm-vite');
+    await chooseSettingsOption(
+      modal.getByTestId('install-automation-workspace'),
+      'demo-ts-pnpm-vite',
+    );
     const task = modal.getByTestId('install-automation-task');
     await expect(task).toBeVisible();
     await expect(submit).toBeDisabled();

@@ -315,7 +315,7 @@ for (const fault of ['probe-failed', 'locked']) {
       expect(readEnvironmentRecord(userDataDir)).toBe(savedRecord);
 
       const retry = page.getByTestId('secure-storage-retry');
-      await expect(retry).toHaveText('Retry');
+      await expect(retry).toHaveText('Try again');
       await restore();
       await retry.click();
       await expect(page.getByTestId('secure-storage-notice')).toHaveCount(0);
@@ -370,7 +370,7 @@ test('CAN-3220 failed environment encryption preserves unsaved values and Retry 
     await selectAndExpectFixtureEnvironment(window);
 
     const retry = page.getByTestId('secure-storage-retry');
-    await expect(retry).toHaveText('Retry');
+    await expect(retry).toHaveText('Try again');
     await restore();
     await retry.click();
     await expect(window.getByTestId('environments-save-status')).toHaveText(

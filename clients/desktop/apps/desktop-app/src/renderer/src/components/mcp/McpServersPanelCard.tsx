@@ -11,7 +11,7 @@ import {
   type CollapsedIconColor,
   useActivitySectionChrome,
 } from '@/components/shared/panel-section';
-import { CanopyLogo } from '@/components/CanopyLogo';
+import { BrandLogo } from '@/components/BrandLogo';
 import { McpServerDialog } from '@/components/pages/McpServersTab';
 import { brandText } from '@/lib/brand';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -130,7 +130,7 @@ export function McpServersPanelCard({
           proxyUpdatingKey={proxyUpdatingKey}
           showProxyToggle={showProxyToggle}
           brandAppName={brandText.appName}
-          proxyLogo={<CanopyLogo width={14} height={14} />}
+          proxyLogo={<BrandLogo width={14} height={14} />}
           // The body narrows callbacks to its structural item type, so the
           // wrapper re-looks-up the full DetectedMcpServerInfo by key. A miss
           // can only happen if the list re-rendered between click and

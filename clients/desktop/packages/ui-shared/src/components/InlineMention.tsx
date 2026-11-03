@@ -17,31 +17,54 @@ export interface InlineMentionProps extends Omit<
   icon: InlineMentionIcon;
   children: ReactNode;
   /**
-   * Makes the pill a button that opens what it mentions, with the hover and
-   * focus treatment. Without it the pill is a plain, non-interactive span.
+   * Makes the pill a button that opens what it mentions, with the accent
+   * tint and focus treatment. Without it the pill is a plain, neutral span.
    */
   onClick?: MouseEventHandler<HTMLButtonElement>;
 }
 
-// The glyph geometry is written in em on purpose: a mention pill sits inside
-// running text at whatever size that text has (a bubble, a heading, a code
-// span), so its icon, its gap, and its baseline nudge follow the font rather
-// than the spacing scale. eslint.design.mjs allows these values in this file
-// alone; every mention renders through this component.
-const SHELL_CLASS =
-  '-mx-0.5 inline-flex items-center gap-[0.125em] rounded-sm px-0.5 align-[-0.08em] fg-accent';
-// Keyboard focus gets the same underline cue as hover, beside the focus ring.
-const INTERACTIVE_CLASS =
-  'focus-ring cursor-pointer transition-colors hover:bg-accent-subtle hover:underline focus-visible:underline';
-const GLYPH_SLOT_CLASS =
-  'inline-flex h-[1em] w-[1em] shrink-0 items-center justify-center';
-const GLYPH_CLASS = 'h-[0.9em] w-[0.9em] shrink-0';
+// The chip geometry is written in em on purpose: a chip sits inside running
+// text at whatever size that text has (a bubble, a heading, a table cell), so
+// its label, icon, padding, and baseline nudge follow the font rather than the
+// spacing scale. eslint.design.mjs allows these values in this file alone;
+// every inline chip takes its classes from here.
+//
+// The label is 6/7 of the surrounding text (12px in 14px prose). Matching
+// baselines leaves a smaller label visibly low, so the chip is raised to
+// centre its label and icon on the surrounding cap height, and its padding
+// leans to the top so the tinted box is centred too. Measured in Inter
+// 14/22: icon and label within 0.1px of the surrounding cap middle.
+//
+// The chip never grows past its line: a long label (a path, an issue title)
+// wraps inside the chip or truncates instead of running out of the column.
+// The icon sits flush against the label, so the two never break apart.
+const CHIP_SHAPE_CLASS =
+  'inline-block max-w-full rounded-sm pt-[0.125em] pr-[0.5em] pb-[0.042em] pl-[0.417em] align-[0.0625em] text-[0.857em] leading-[1.5] no-underline';
 
 /**
- * The inline pill for an `@` mention inside a message: a file path, a plugin,
+ * A chip that opens what it names: accent ink on the accent tint. Links,
+ * pull requests, issues, and files in prose share it.
+ */
+export const INLINE_CHIP_CLASS = `${CHIP_SHAPE_CLASS} focus-ring cursor-pointer bg-accent-subtle fg-accent transition-colors hover:bg-accent-subtle/80`;
+
+/**
+ * A mention token in the composer: the accent chip's look without its
+ * pointer and hover, since the editor owns clicks and selection there.
+ */
+export const INLINE_TOKEN_CHIP_CLASS = `${CHIP_SHAPE_CLASS} bg-accent-subtle fg-accent`;
+
+/** A chip that names something without opening it: neutral fill. */
+export const INLINE_STATIC_CHIP_CLASS = `${CHIP_SHAPE_CLASS} bg-muted fg-primary`;
+
+/** The glyph before a chip's label: one label-height square on its centre. */
+export const INLINE_CHIP_ICON_CLASS =
+  'mr-[0.333em] inline-block h-[1em] w-[1em] shrink-0 align-[-0.133em]';
+
+/**
+ * The inline chip for an `@` mention inside a message: a file path, a plugin,
  * or any other target with an icon and a label. The desktop's
- * `FilePathMention` and `PluginMention` render through it so the two pills
- * cannot drift apart.
+ * `FilePathMention` and `PluginMention` render through it, and reference
+ * chips share its classes, so the chips cannot drift apart.
  */
 export function InlineMention({
   icon: Icon,
@@ -51,17 +74,15 @@ export function InlineMention({
 }: InlineMentionProps): JSX.Element {
   const content = (
     <>
-      <span className={GLYPH_SLOT_CLASS}>
-        <Icon className={GLYPH_CLASS} />
-      </span>
-      <span>{children}</span>
+      <Icon className={INLINE_CHIP_ICON_CLASS} />
+      {children}
     </>
   );
   if (onClick) {
     return (
       <button
         type="button"
-        className={`${SHELL_CLASS} ${INTERACTIVE_CLASS}`}
+        className={INLINE_CHIP_CLASS}
         onClick={onClick}
         {...rest}
       >
@@ -70,7 +91,7 @@ export function InlineMention({
     );
   }
   return (
-    <span className={SHELL_CLASS} {...rest}>
+    <span className={INLINE_STATIC_CHIP_CLASS} {...rest}>
       {content}
     </span>
   );

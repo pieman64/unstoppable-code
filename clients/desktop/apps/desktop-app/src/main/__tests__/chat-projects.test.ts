@@ -37,6 +37,11 @@ jest.mock('../lib/paths', () => ({
     (workspaceId: string) =>
       `/mock/workspaces/${workspaceId}/work-entries.json`,
   ),
+  // The locks of a Cowork settings decision (W7b-1c).
+  getWorkspaceIndexFilePath: jest.fn(() => '/mock/workspaces/index.json'),
+  getWorkspaceWorktreesFilePath: jest.fn(
+    (workspaceId: string) => `/mock/workspaces/${workspaceId}/worktrees.json`,
+  ),
 }));
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
@@ -63,6 +68,10 @@ jest.mock('../lib/cowork-migration-map', () => ({
 }));
 jest.mock('../lib/validation', () => ({
   validateId: jest.fn(),
+  // Cowork settings saves classify their refusals with it (W7b-1c).
+  IdentifierValidationError:
+    jest.requireActual<typeof ValidationModule>('../lib/validation')
+      .IdentifierValidationError,
 }));
 jest.mock('../lib/desktop-telemetry', () => ({
   recordStandaloneProjectCrudTelemetry: jest.fn(),
@@ -248,6 +257,7 @@ jest.mock('../lib/sidebar-items', () => ({
 
 import { lstat, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import type * as FsUtils from '../lib/fs-utils';
+import type * as ValidationModule from '../lib/validation';
 import type {
   ChatProjectData,
   CoworkSidebarItem,
@@ -272,6 +282,8 @@ import {
 } from '../lib/sidebar-items';
 import { registerIpcHandler } from '../ipc/register';
 import { registerChatProjectHandlers } from '../ipc/chat-projects';
+import { createWorkspaceLifecycleTestDispatcher } from './fixtures/workspace-lifecycle-dispatcher';
+import { TEST_IPC_CALLER } from './fixtures/workspace-metadata-dispatcher';
 import { deleteWorkspace } from '../lib/workspace-deletion';
 import { recordStandaloneProjectCrudTelemetry } from '../lib/desktop-telemetry';
 import { validateId } from '../lib/validation';
@@ -397,7 +409,11 @@ describe('chat project IPC handlers (cowork-workspace-backed)', () => {
       status: 'unavailable',
     });
     mockedListWorkspaceTemplateShares.mockResolvedValue({ shares: [] });
-    registerChatProjectHandlers();
+    registerChatProjectHandlers({
+      // Chat project delete projects core.workspace.delete (W7b-2a).
+      dispatcher: createWorkspaceLifecycleTestDispatcher(),
+      resolveCaller: () => TEST_IPC_CALLER,
+    });
   });
 
   it('forwards shared template authorship to the backend reader', async () => {

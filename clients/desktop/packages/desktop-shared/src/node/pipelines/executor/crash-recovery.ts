@@ -34,7 +34,7 @@ export async function recoverOrphanedPipelineExecutions(
       if (
         !state ||
         !['pending', 'running'].includes(state.status) ||
-        !isKnownOrphanedExecution(state)
+        !(await isKnownOrphanedExecution(state))
       ) {
         recovered.set(id, state);
         return state;

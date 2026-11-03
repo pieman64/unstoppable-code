@@ -1,3 +1,8 @@
+import { W5AuthorityUnreachableError } from '@canopy/core-runtime/node/w5/file-store';
+import {
+  allowsW5ProjectionOnlyRead,
+  runW5FallbackRead,
+} from './w5-fallback-read';
 import { isUtf8 } from 'node:buffer';
 import type {
   W5CommitRequest,
@@ -6,14 +11,17 @@ import type {
 import {
   createW5CommitLogFileStore as createCoreW5CommitLogFileStore,
   type W5CommitLogFileStore,
+  type W5CommitLogHostPort,
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+import { recordW5Work } from '@canopy/desktop-shared/node/work-counters';
 import { admitW5Storage } from './w5-storage';
 import { currentW5CommitScope, type W5CommitOptions } from './w5-commit-scope';
 import { logMainProcessWarn } from './main-process-logging';
+import { markE2eStartup } from './e2e-startup-marks';
 import { admitStorageWrite } from '@canopy/desktop-shared/node/lib/storage-admission';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
-import type { W5CommitLogHost } from '../w5-commit-log/commit-log-host';
 import { readWorkspaceIndex } from '@canopy/core-runtime/node';
+import { countingW5HostPort, w5RecordFileClass } from './w5-work-counters';
 import {
   isW5CaptureWorkspaceId,
   type W5CaptureRequest,
@@ -29,6 +37,7 @@ import {
   type W5ReadViewUncapturedReason,
 } from './w5-read-view';
 import { nodeW5FileStore, type W5FileStore } from './w5-file-store';
+import { W5DaemonHandoffError } from './w5-handoff-store';
 import { noteW5CommitScopeOpened } from './w5-pre-effect-retry';
 
 export {
@@ -43,25 +52,39 @@ export {
  * admission. Each binding resolves at call time, so test spies still intercept.
  */
 export function createW5CommitLogFileStore(
-  getHost: () => W5CommitLogHost | Promise<W5CommitLogHost>,
+  getHost: () => W5CommitLogHostPort | Promise<W5CommitLogHostPort>,
 ): W5CommitLogFileStore {
   return createCoreW5CommitLogFileStore({
     getHost,
     warn: (message, context) => logMainProcessWarn(message, context),
-    readFile: (filePath) => nodeW5FileStore.read(filePath),
+    readFile: (filePath) => {
+      recordW5Work('read.backend.direct');
+      return nodeW5FileStore.read(filePath);
+    },
     admit: (targets, operation) => admitW5Storage(targets, operation),
     admitWrite: (target, write) => admitStorageWrite(target, write),
   });
 }
 
+let firstReadServed = false;
+
+/** E2E startup mark for the first W5 read either store served. */
+function noteW5ReadServed(): void {
+  if (firstReadServed) return;
+  firstReadServed = true;
+  markE2eStartup('w5FirstReadServed');
+}
+
+// Over the counted view of the app's host (one per host, sharing its queue).
 const productionStore = createW5CommitLogFileStore(
-  async (): Promise<W5CommitLogHost> => {
+  async (): Promise<W5CommitLogHostPort> => {
     const { getW5CommitLogHost } =
       await import('../w5-commit-log/commit-log-host');
-    return getW5CommitLogHost();
+    return countingW5HostPort(getW5CommitLogHost());
   },
 );
 let testStore: W5FileStore | undefined;
+let installedStore: W5CommitLogFileStore | undefined;
 
 /** Explicit test injection; production never falls back to direct writes. */
 export function __setDesktopW5FileStoreForTests(
@@ -70,21 +93,36 @@ export function __setDesktopW5FileStoreForTests(
   testStore = store;
 }
 
+/**
+ * TRANSITIONAL (CAN-5543, GB12): the production slot the flip launch fills
+ * before any W5 call, replacing the in-process store for the process's life.
+ * Remove at W15 with the in-process store.
+ */
+export function installDesktopW5FileStore(store: W5CommitLogFileStore): void {
+  installedStore = store;
+}
+
+const currentStore = (): W5FileStore =>
+  testStore ?? installedStore ?? productionStore;
+
 export const desktopW5FileStore: W5FileStore = {
-  read: (path) => {
+  read: async (path) => {
     const captured = readFromW5ReadView(path);
-    return captured
-      ? Promise.resolve(captured)
-      : (testStore ?? productionStore).read(path);
+    recordW5Work(
+      `read.${w5RecordFileClass(path)}.${captured ? 'view' : 'store'}`,
+    );
+    const read = await (captured ?? currentStore().read(path));
+    if (read.state !== 'unreadable') noteW5ReadServed();
+    return read;
+  },
+  remove: async (path, storage, removal) => {
+    assertOutsideW5ReadView();
+    await currentStore().remove(path, storage, removal);
   },
   replace: async (path, contents, storage, replacement) => {
     assertOutsideW5ReadView();
-    await (testStore ?? productionStore).replace(
-      path,
-      contents,
-      storage,
-      replacement,
-    );
+    recordW5Work(`replace.${w5RecordFileClass(path)}`);
+    await currentStore().replace(path, contents, storage, replacement);
   },
 };
 
@@ -107,11 +145,12 @@ export async function withW5Commit<T>(
   assertOutsideW5ReadView();
   // A scope's work may run effects, so an enclosing unit never reruns it.
   noteW5CommitScopeOpened();
-  const store = testStore ?? productionStore;
+  const store = currentStore();
   return isCommitLogStore(store) ? store.withCommit(options, work) : work();
 }
 
 function captureRefusal(error: unknown): W5ReadViewUncapturedReason {
+  if (error instanceof W5DaemonHandoffError) return 'handoff-degraded';
   if (
     error instanceof W5CommitRefusedError &&
     error.reason === 'invalid-state'
@@ -131,6 +170,15 @@ function captureRefusal(error: unknown): W5ReadViewUncapturedReason {
 
 const loggedLiveReasons = new Set<W5ReadViewUncapturedReason>();
 
+/** Runs `work` in an uncaptured view, counted by its reason. */
+function runUncaptured<T>(
+  reason: W5ReadViewUncapturedReason,
+  work: (view: W5ReadViewOutcome) => Promise<T>,
+): Promise<T> {
+  recordW5Work(`readView.uncaptured.${reason}`);
+  return runInW5UncapturedView(reason, work);
+}
+
 /** A query the capture cannot serve reads live, recorded in its outcome and logged once. */
 function runLive<T>(
   reason: W5ReadViewUncapturedReason,
@@ -140,7 +188,7 @@ function runLive<T>(
     loggedLiveReasons.add(reason);
     logMainProcessWarn('W5 query reads are not captured', { reason });
   }
-  return runInW5UncapturedView(reason, work);
+  return runUncaptured(reason, work);
 }
 
 /**
@@ -156,11 +204,13 @@ export async function runW5ReadView<T>(
   request: W5CaptureRequest,
   work: (view: W5ReadViewOutcome) => Promise<T>,
 ): Promise<T> {
-  if (currentW5CommitScope())
+  if (currentW5CommitScope()) {
+    recordW5Work('readView.uncaptured.mutation-scope');
     return work({ status: 'uncaptured', reason: 'mutation-scope' });
-  const store = testStore ?? productionStore;
+  }
+  const store = currentStore();
   if (!isCommitLogStore(store) || !store.capture)
-    return runInW5UncapturedView('direct-store', work);
+    return runUncaptured('direct-store', work);
   if (
     !request.files.every(
       (file) =>
@@ -172,16 +222,22 @@ export async function runW5ReadView<T>(
   try {
     captured = await store.capture(request);
   } catch (error) {
+    if (error instanceof W5AuthorityUnreachableError) {
+      if (allowsW5ProjectionOnlyRead()) return runW5FallbackRead(work);
+      return runInW5UncapturedView('capture-failed', work, error);
+    }
     const reason = captureRefusal(error);
     if (!failsW5ReadsClosed(reason)) return runLive(reason, work);
     logMainProcessWarn('W5 query capture failed; its reads fail closed', {
       reason,
       error: error instanceof Error ? error.message : String(error),
     });
-    return runInW5UncapturedView(reason, work);
+    return runUncaptured(reason, work);
   }
   const skipped = discoverySkippedReads(captured.capture);
   if (skipped) return runLive(skipped, work);
+  recordW5Work('readView.captured');
+  noteW5ReadServed();
   return runInW5CapturedView(captured.capture, captured.root, work);
 }
 
@@ -225,7 +281,7 @@ function discoverySkippedReads(
 export function readW5Revisions(
   resources: readonly W5Resource[],
 ): Promise<NonNullable<W5CommitRequest['expectedRevisions']>> {
-  const store = testStore ?? productionStore;
+  const store = currentStore();
   if (!isCommitLogStore(store))
     throw new Error('Revision reads require the W5 commit log store');
   return store.readRevisions(resources);
@@ -239,7 +295,7 @@ export function getW5ReceiptStore(): Pick<
   | 'releaseReservation'
   | 'markReservationRecoveryRequired'
 > {
-  const store = testStore ?? productionStore;
+  const store = currentStore();
   if (!isCommitLogStore(store))
     throw new Error('Keyed changes require the W5 commit log store');
   return store;
@@ -247,6 +303,6 @@ export function getW5ReceiptStore(): Pick<
 
 /** Only explicitly injected legacy test stores bypass identity reservations. */
 export function getW5IdentityStore(): W5CommitLogFileStore | undefined {
-  const store = testStore ?? productionStore;
+  const store = currentStore();
   return isCommitLogStore(store) ? store : undefined;
 }

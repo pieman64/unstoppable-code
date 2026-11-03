@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import {
   Button,
+  ErrorBanner,
   InvoicesTable,
   type InvoicesTableInvoice,
 } from '@canopy/ui-shared/components';
@@ -125,11 +126,7 @@ export function InvoicesSection({
           renderLink={(props) => <SettingsLink {...props} />}
         />
       </div>
-      {error && (
-        <p className="mt-2 text-s fg-destructive" role="alert">
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="mt-2" error={error} />
       {nextCursor !== null && (
         <Button
           size="compact"

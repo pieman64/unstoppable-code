@@ -26,6 +26,7 @@ import type * as ProjectBotPortModule from '../../agent-actions/desktop-project-
 import type { PipelineProjectBotOptions } from '../../agent-actions/desktop-project-bot-port';
 import type * as ProjectOwnerModule from '../../lib/project-owner';
 import type * as CoworkWorkEntriesModule from '../../lib/cowork-work-entries';
+import type * as WorkspacePersistenceModule from '../../lib/workspace-persistence';
 import { automationDispatchRequestFields } from '../../agent-messaging/automation-dispatch';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -84,6 +85,11 @@ const mockAssignGroup = jest.fn<Promise<void>, [object]>();
 interface CreateWorktreeOptions {
   workspaceId: string;
   onGitReady?: (payload: object) => void;
+  onGitSetupSettled?: (payload: {
+    projectId: string;
+    worktreeId: string;
+    outcome: 'ready' | 'cancelled' | 'failed';
+  }) => void;
 }
 const mockCreateWorktree = jest.fn<Promise<object>, [CreateWorktreeOptions]>();
 const mockArchiveWorktree = jest.fn<Promise<object>, [object]>();
@@ -407,6 +413,14 @@ beforeEach(async () => {
   mockContextsEnabled = false;
   mockCursorAvailable = true;
   jest.clearAllMocks();
+  jest
+    .spyOn(
+      jest.requireActual<typeof WorkspacePersistenceModule>(
+        '../../lib/workspace-persistence',
+      ),
+      'readWorkspaceWorktreesDetailed',
+    )
+    .mockResolvedValue({ authority: 'ok', worktrees: [] });
   initAgentModels([]);
   mockSendWorktree.mockImplementation((request) =>
     Promise.resolve({ ok: true, chatId: request.chatId ?? 'starter-chat' }),
@@ -429,6 +443,11 @@ beforeEach(async () => {
       worktreeId: 'worktree-new',
       branchName: 'worktree-new',
     });
+    options.onGitSetupSettled?.({
+      projectId: options.workspaceId,
+      worktreeId: 'worktree-new',
+      outcome: 'ready',
+    });
     return Promise.resolve({
       id: 'worktree-new',
       branchName: 'worktree-new',
@@ -449,6 +468,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  jest.restoreAllMocks();
   await rm(mockDir, { recursive: true, force: true });
 });
 

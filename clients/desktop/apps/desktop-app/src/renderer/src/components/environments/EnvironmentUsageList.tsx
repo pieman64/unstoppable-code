@@ -238,6 +238,7 @@ function renderRow(row: UsageRow, callbacks: RowCallbacks): ReactNode {
               />
             ) : (
               <BranchIcon
+                size="md"
                 className="shrink-0 fg-secondary"
                 data-testid="environment-usage-workspace-icon-code"
               />

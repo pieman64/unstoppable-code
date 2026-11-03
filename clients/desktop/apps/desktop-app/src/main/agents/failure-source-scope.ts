@@ -54,9 +54,15 @@ export function readFailureSourceScope(source: unknown): FailureSourceScope {
 
 /** Copy the scope of the provider event a notice was derived from onto it. */
 export function withFailureSourceScope<T>(notice: T, source: unknown): T {
-  return isRecord(notice)
-    ? { ...notice, ...readFailureSourceScope(source) }
-    : notice;
+  if (!isRecord(notice)) return notice;
+  const turnId = isRecord(source)
+    ? readNonEmptyString(source, 'canopy_turn_user_message_id')
+    : undefined;
+  return {
+    ...notice,
+    ...readFailureSourceScope(source),
+    ...(turnId ? { canopy_turn_user_message_id: turnId } : {}),
+  };
 }
 
 /**

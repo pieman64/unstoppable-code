@@ -69,7 +69,7 @@ export interface BackgroundTrayRunDag {
 
 /**
  * A run the chat follows, as the drawer lists it: a pipeline run, or a
- * GitHub Actions run or pull request a watcher follows (desktop only, D1b).
+ * GitHub Actions run or pull request a watcher follows (D1b), including its Portal projection.
  */
 export interface BackgroundTrayRun {
   /** The host's key for the run: its receipts' dedupe key. */
@@ -557,7 +557,9 @@ export function RunRow({
           </span>
         )}
         {run.note !== undefined && (
-          <span className="fg-tertiary">{` · ${run.note}`}</span>
+          <span
+            className={`${REPLAY_BLOCK_CLASS} fg-tertiary`}
+          >{` · ${run.note}`}</span>
         )}
       </p>
     ) : current !== null ? (
@@ -655,7 +657,7 @@ export function RunRow({
                 onClick={(): void => handler(run.id)}
               >
                 {action.suffix === 'stop' ? (
-                  <StopFilledIcon width={10} height={10} exactSize />
+                  <StopFilledIcon size="xs" />
                 ) : (
                   <ChevronRightIcon size={14} />
                 )}

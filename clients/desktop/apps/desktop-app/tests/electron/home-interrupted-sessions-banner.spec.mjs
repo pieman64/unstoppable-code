@@ -1195,6 +1195,82 @@ test.describe('home interrupted sessions banner', () => {
     }
   });
 
+  test('lines the section ••• up with the row × and shows it only while the section is hovered or focused', async () => {
+    const userDataDir = seed([
+      registryEntry(CHATS[0], 'usage_limit'),
+      registryEntry(CHATS[2], 'app_shutdown'),
+    ]);
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      const homePage = await openHome(window, app);
+      const section = homePage.getByTestId('home-resume-card');
+      const banner = section.getByTestId('home-interrupted-sessions-banner');
+      await expect(banner).toBeVisible({ timeout: 15_000 });
+      const more = section.getByTestId('home-section-more-continue');
+      const dismiss = banner.getByTestId('home-interrupted-sessions-dismiss');
+      const opacity = (locator) =>
+        locator.evaluate((node) => {
+          let value = 1;
+          for (let el = node; el; el = el.parentElement) {
+            value *= Number(getComputedStyle(el).opacity);
+          }
+          return value;
+        });
+      // A corner of the page, outside every section.
+      const parkPointer = async () => {
+        const box = await homePage.boundingBox();
+        if (!box) throw new Error('Home has no box');
+        await window.mouse.move(box.x + 12, box.y + 12);
+      };
+
+      // Outside the section, the ••• is hidden; anywhere inside it shows.
+      await parkPointer();
+      await expect.poll(() => opacity(more)).toBe(0);
+      await banner.hover();
+      await expect.poll(() => opacity(more)).toBe(1);
+
+      // The × ends as far from the pill's end as from its top and bottom,
+      // and the ••• stacks in that same column.
+      const pill = await banner.boundingBox();
+      const close = await dismiss.boundingBox();
+      const menu = await more.boundingBox();
+      if (!pill || !close || !menu) throw new Error('Missing geometry');
+      const top = close.y - pill.y;
+      const bottom = pill.y + pill.height - (close.y + close.height);
+      const right = pill.x + pill.width - (close.x + close.width);
+      expect(Math.abs(top - bottom)).toBeLessThanOrEqual(1);
+      expect(Math.abs(right - top)).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(menu.x + menu.width - (close.x + close.width)),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(menu.x + menu.width / 2 - (close.x + close.width / 2)),
+      ).toBeLessThanOrEqual(1);
+
+      // Keyboard: focus inside the section shows it without the pointer.
+      await parkPointer();
+      await expect.poll(() => opacity(more)).toBe(0);
+      await banner.getByTestId('home-interrupted-sessions-resume').focus();
+      await expect.poll(() => opacity(more)).toBe(1);
+      await more.focus();
+      await window.keyboard.press('Enter');
+      await expect(
+        window.getByTestId('home-section-menu-continue'),
+      ).toBeVisible();
+      // The open menu keeps it shown after the pointer and focus leave.
+      await parkPointer();
+      await expect.poll(() => opacity(more)).toBe(1);
+      await window.keyboard.press('Escape');
+      await expect(
+        window.getByTestId('home-section-menu-continue'),
+      ).toBeHidden();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('does not render when nothing is interrupted', async () => {
     const userDataDir = seed([]);
     const { electronApp } = await launchCanopy({ userDataDir });

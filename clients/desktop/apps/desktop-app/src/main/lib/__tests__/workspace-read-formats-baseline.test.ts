@@ -81,6 +81,7 @@ describe('CAN-4201 desktop read format baseline', () => {
           activitySectionOrder: undefined,
         },
       ],
+      unreadableRowIds: ['future'],
     });
     await repo.update(({ entries }) => ({ result: undefined, entries }));
     expect(JSON.parse(memory.files.get('index') ?? '')).toEqual({

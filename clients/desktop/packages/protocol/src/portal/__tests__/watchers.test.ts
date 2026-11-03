@@ -34,6 +34,53 @@ describe('Portal chat watcher contract', () => {
     expect(portal.parsePortalWatcher({ ...entity, chatId: '' })).toBeNull();
   });
 
+  it('accepts sanitized GitHub progress and completed watchers, rejecting unsafe links', () => {
+    const githubProgress = {
+      runs: [
+        {
+          repository: 'acme/api',
+          runId: '101',
+          runAttempt: 1,
+          htmlUrl: 'https://github.com/acme/api/actions/runs/101',
+          state: { kind: 'terminal', conclusion: 'success' },
+          observedAt: '2026-11-01T12:00:00Z',
+          jobs: [
+            {
+              jobId: '5',
+              name: 'Build',
+              status: 'completed',
+              conclusion: 'success',
+              htmlUrl: 'https://github.com/acme/api/actions/runs/101/job/5',
+            },
+          ],
+          retryState: 'private',
+        },
+      ],
+    };
+    const parsed = portal.parsePortalWatcher({
+      ...entity,
+      status: 'fired',
+      githubProgress,
+    });
+    expect(parsed?.githubProgress?.runs[0].state).toEqual({
+      kind: 'terminal',
+      conclusion: 'success',
+    });
+    expect(JSON.stringify(parsed)).not.toContain('retryState');
+    for (const htmlUrl of [
+      'javascript:alert(1)',
+      'https://evil.test/run',
+      'https://github.com/acme/api/actions/runs/101?token=secret',
+    ]) {
+      expect(
+        portal.parsePortalWatcher({
+          ...entity,
+          githubProgress: { runs: [{ ...githubProgress.runs[0], htmlUrl }] },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it('requires an explicit boolean notification choice', () => {
     expect(
       portal.PortalWatcherDeletePayloadSchema.safeParse({

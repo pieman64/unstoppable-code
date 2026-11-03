@@ -120,7 +120,7 @@ describe('CostLegend', () => {
     );
   });
 
-  it('uses one row per part with primary labels and right-aligned shares', () => {
+  it('lists one value row per part with its swatch, amount and share', () => {
     act(() =>
       root.render(
         <CostLegend
@@ -133,10 +133,11 @@ describe('CostLegend', () => {
     );
 
     const legend = byTestId('list-legend');
-    expect(legend.className).toContain('flex-col');
-    expect(legend.querySelector('dt')?.className).toContain('fg-primary');
-    expect(legend.querySelectorAll('dd')[1]?.className).toContain('w-12');
-    expect(legend.querySelectorAll('dd')[1]?.className).toContain('text-right');
+    expect(legend.getAttribute('data-surface')).toBe('list');
+    expect(legend.querySelector('dl')).toBeNull();
+    expect(legend.children).toHaveLength(2);
+    expect(legend.children[0]?.textContent).toBe('Chat turns$3.0075%');
+    expect(legend.children[1]?.textContent).toBe('Subagents$1.0025%');
     expect(legend.querySelectorAll('[aria-hidden="true"]')).toHaveLength(2);
   });
 });

@@ -2,26 +2,47 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
+  pipelineDefinitionError,
+  PipelineDefinitionSourceError,
+} from '@canopy/core-runtime/node/pipeline';
+import {
+  PIPELINE_DEFINITION_LIST_MAX_LIMIT,
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
+  type CanopyWorkspaceScope,
   type PipelineDefinition,
+  type PipelineDefinitionListParams,
+  type PipelineDefinitionSource,
+  type PipelineDefinitionSummary,
 } from '@canopy/protocol/canopy-core';
 import type {
   IPCResult,
   Pipeline,
+  PipelineData,
   PipelineInfo,
 } from '@canopy/desktop-shared/types/pipeline';
+import {
+  getStoredPipelineIndexEntry,
+  listStoredPipelines,
+} from '@canopy/desktop-shared/pipelines/store';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
+import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
+import { withPipelineEnablementCommit } from '../pipelines/pipeline-enablement-commit';
+import {
+  withPipelinePresentation,
+  type PipelinePresentation,
+} from '../pipelines/pipeline-definition-presentation';
+import { buildSharedPipelineInfo } from '../pipelines/shared-pipeline-info';
 import { getDesktopCanopyRuntime } from './desktop-runtime-access';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 /*
- * The `core.pipeline.definition.upsert` and `delete` projection shared by the
- * `pipelines:save` and `pipelines:delete` IPC handlers and the agent
- * pipeline actions. Each caller keeps its legacy result shape and records
- * the owner and agent author of what it wrote; core validates, refuses
- * stale revisions and read-only sources, and runs the store's effects.
+ * The `core.pipeline.definition.*` projection shared by the pipeline IPC
+ * handlers, the Portal and the agent pipeline actions. Each caller keeps its
+ * legacy result shape and records the owner and agent author of what it
+ * wrote; core resolves, validates and lists definitions, refuses stale
+ * revisions and read-only sources, and runs the store's effects.
  */
 
 /** Electron main writing on behalf of the desktop window. */
@@ -30,7 +51,16 @@ export const PIPELINE_DEFINITION_DESKTOP_CALLER: CanopyCallerDescriptor = {
   clientInstanceId: 'electron-main-pipeline-definitions',
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
   interfaceKind: 'desktop',
-  grants: [PIPELINE_GRANTS.write],
+  grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
+};
+
+/** The Portal reading definitions for a paired browser. */
+export const PIPELINE_DEFINITION_PORTAL_CALLER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-main-portal',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'portal',
+  grants: [PIPELINE_GRANTS.read],
 };
 
 /** An agent pipeline action through the injected Canopy tools. */
@@ -39,7 +69,7 @@ export const PIPELINE_DEFINITION_AGENT_CALLER: CanopyCallerDescriptor = {
   clientInstanceId: 'electron-main-agent-actions',
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
   interfaceKind: 'mcp',
-  grants: [PIPELINE_GRANTS.write],
+  grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
 };
 
 export interface UserPipelineWrite {
@@ -57,8 +87,8 @@ export interface UserPipelineWrite {
   enabled?: boolean;
 }
 
-/** The message a legacy caller showed for a failed write. */
-function pipelineWriteErrorMessage(error: unknown): string {
+/** The message a legacy caller showed for a failed read or write. */
+export function pipelineWriteErrorMessage(error: unknown): string {
   if (error instanceof CanopyOperationError) return error.payload.message;
   return error instanceof Error ? error.message : String(error);
 }
@@ -197,4 +227,267 @@ export async function deleteUserPipeline(
   } catch (error) {
     return { success: false, error: pipelineWriteErrorMessage(error) };
   }
+}
+
+/** Every definition a list names, across its pages. */
+export async function listPipelineDefinitions(
+  params: Omit<PipelineDefinitionListParams, 'cursor' | 'limit' | '_meta'>,
+  caller: CanopyCallerDescriptor,
+): Promise<{
+  items: PipelineDefinitionSummary[];
+  unavailableSources: PipelineDefinitionSource[];
+}> {
+  const items: PipelineDefinitionSummary[] = [];
+  let unavailableSources: PipelineDefinitionSource[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await getDesktopCanopyRuntime().query(
+      'core.pipeline.definition.list',
+      {
+        ...params,
+        limit: PIPELINE_DEFINITION_LIST_MAX_LIMIT,
+        ...(cursor === undefined ? {} : { cursor }),
+      },
+      { caller },
+    );
+    items.push(...page.items);
+    unavailableSources = page.unavailableSources;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return { items, unavailableSources };
+}
+
+export async function getPipelineDefinition(
+  definitionId: string,
+  scope: CanopyWorkspaceScope,
+  caller: CanopyCallerDescriptor,
+): Promise<PipelineDefinition> {
+  return (
+    await getDesktopCanopyRuntime().query(
+      'core.pipeline.definition.get',
+      { definitionId, scope },
+      { caller },
+    )
+  ).definition;
+}
+
+/**
+ * Copies any readable definition through core as a new user pipeline and
+ * answers with the store's row for it.
+ */
+export async function duplicatePipelineDefinition(
+  sourceDefinitionId: string,
+  options: {
+    scope?: CanopyWorkspaceScope;
+    name?: string;
+    /** The source checksum the caller checked; a changed source is refused. */
+    expectedChecksum?: string;
+  },
+  caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
+): Promise<IPCResult<PipelineInfo>> {
+  const idempotencyKey = randomUUID();
+  try {
+    // The copy's provenance step reuses what its source read presented.
+    const { definition } = await withPipelinePresentation(() =>
+      getDesktopCanopyRuntime().instruction(
+        'core.pipeline.definition.duplicate',
+        {
+          sourceDefinitionId,
+          scope: options.scope ?? {},
+          ...(options.name === undefined ? {} : { name: options.name }),
+          ...(options.expectedChecksum === undefined
+            ? {}
+            : { expectedChecksum: options.expectedChecksum }),
+          _meta: { idempotencyKey },
+        },
+        { caller, metadata: { idempotencyKey } },
+      ),
+    );
+    const stored = getStoredPipelineBySource('user', definition.definitionId);
+    if (!stored.success || !stored.data)
+      return {
+        success: false,
+        error: stored.error ?? 'Failed to read the copied workflow',
+      };
+    return { success: true, data: stored.data.info };
+  } catch (error) {
+    return { success: false, error: pipelineWriteErrorMessage(error) };
+  }
+}
+
+/**
+ * Records through core whether a definition of any source is enabled, and
+ * answers with the preferences that write committed.
+ */
+export async function setPipelineDefinitionEnabled(
+  definitionId: string,
+  enabled: boolean,
+  caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
+): Promise<PreferencesData | undefined> {
+  const idempotencyKey = randomUUID();
+  return withPipelineEnablementCommit(async () => {
+    await getDesktopCanopyRuntime().instruction(
+      'core.pipeline.definition.setEnabled',
+      { definitionId, enabled, _meta: { idempotencyKey } },
+      { caller, metadata: { idempotencyKey } },
+    );
+  });
+}
+
+/** What core lists, as the desktop's rows, in core's order. */
+export interface DesktopPipelineListing {
+  rows: PipelineInfo[];
+  /** Optional sources that could not be read; their rows are missing. */
+  unavailableSources: PipelineDefinitionSource[];
+  /** Why each unavailable source failed, when its read said. */
+  sourceFailures: Partial<Record<PipelineDefinitionSource, unknown>>;
+}
+
+/**
+ * Lists definitions through core and answers with the desktop's legacy
+ * rows. Core decides which definitions are listed and in what order; a
+ * row's display details come from the store's index or, for catalog,
+ * share and project rows, from the source read that listed them.
+ */
+export async function listDesktopPipelines(
+  params: Omit<PipelineDefinitionListParams, 'cursor' | 'limit' | '_meta'>,
+  caller: CanopyCallerDescriptor,
+): Promise<DesktopPipelineListing> {
+  return withPipelinePresentation(async (presentation) => {
+    const listed = await listPipelineDefinitions(params, caller);
+    const stored = new Map<string, PipelineInfo>();
+    if (
+      listed.items.some(
+        (item) => item.source === 'bundled' || item.source === 'user',
+      )
+    )
+      for (const row of listStoredPipelines().data ?? [])
+        stored.set(`${row.source}\0${row.id}`, row);
+    return {
+      rows: listed.items.flatMap((item) => {
+        const row = listedRow(item, stored, presentation);
+        return row ? [row] : [];
+      }),
+      unavailableSources: listed.unavailableSources,
+      sourceFailures: Object.fromEntries(
+        listed.unavailableSources.map((source) => [
+          source,
+          presentation.sourceFailure(source),
+        ]),
+      ),
+    };
+  });
+}
+
+function listedRow(
+  item: PipelineDefinitionSummary,
+  stored: ReadonlyMap<string, PipelineInfo>,
+  presentation: PipelinePresentation,
+): PipelineInfo | undefined {
+  if (item.source === 'bundled' || item.source === 'user')
+    return stored.get(`${item.source}\0${item.definitionId}`);
+  const presented = presentation.pipeline(
+    'listed',
+    item.source,
+    item.definitionId,
+  );
+  if (presented?.kind === 'info') return presented.info;
+  if (presented?.kind === 'shared')
+    return buildSharedPipelineInfo({ pipeline: presented.pipeline });
+  return undefined;
+}
+
+/**
+ * Reads one definition through core and answers with the desktop's legacy
+ * data: the document core resolved, parsed, with the store's index entry or
+ * the source read's catalog, share or project details. Throws core's error.
+ */
+export async function readDesktopPipeline(
+  definitionId: string,
+  scope: CanopyWorkspaceScope,
+  caller: CanopyCallerDescriptor,
+): Promise<PipelineData> {
+  return (await readDesktopPipelineSnapshot(definitionId, scope, caller)).data;
+}
+
+/** {@link readDesktopPipeline}, with the checksum of the document core read. */
+export function readDesktopPipelineSnapshot(
+  definitionId: string,
+  scope: CanopyWorkspaceScope,
+  caller: CanopyCallerDescriptor,
+): Promise<{ data: PipelineData; checksum: string }> {
+  return withPipelinePresentation(async (presentation) => {
+    const definition = await getPipelineDefinition(definitionId, scope, caller);
+    return {
+      data: desktopPipelineData(definition, presentation),
+      checksum: definition.checksum,
+    };
+  });
+}
+
+function desktopPipelineData(
+  definition: PipelineDefinition,
+  presentation: PipelinePresentation,
+): PipelineData {
+  const { definitionId } = definition;
+  const content = parsePipelineText(definition.document);
+  if (definition.source === 'bundled' || definition.source === 'user') {
+    const entry = getStoredPipelineIndexEntry(definitionId, definition.source);
+    if (entry)
+      return {
+        info: {
+          ...entry,
+          // The revision is the document's own, never a later save's: a
+          // caller sends it back as the write's precondition.
+          ...(definition.source === 'user'
+            ? { revision: definition.revision }
+            : {}),
+          scopes: entry.scopes ?? definition.executionScopes,
+          source: definition.source,
+          readonly: definition.source === 'bundled',
+        },
+        content,
+        rawContent: definition.document,
+      };
+  }
+  const presented = presentation.pipeline(
+    'read',
+    definition.source,
+    definitionId,
+  );
+  if (presented?.kind === 'data') return { ...presented.data, content };
+  if (presented?.kind === 'info') return { info: presented.info, content };
+  if (presented?.kind === 'shared')
+    return {
+      info: buildSharedPipelineInfo({
+        pipeline: presented.pipeline,
+        scopes: definition.executionScopes,
+      }),
+      content,
+    };
+  throw pipelineDefinitionError(
+    'core.pipeline.sourceUnavailable',
+    `Workflow unavailable: ${definitionId}`,
+  );
+}
+
+/** Whether core found no definition under the id it was asked for. */
+export function isPipelineDefinitionNotFound(error: unknown): boolean {
+  return (
+    error instanceof CanopyOperationError &&
+    error.payload.code === 'core.pipeline.definitionNotFound'
+  );
+}
+
+/**
+ * The source's own failure behind a core read error, which legacy callers
+ * classify (an account error, an HTTP status), or an error with core's
+ * message when core refused the read itself.
+ */
+export function pipelineSourceFailure(error: unknown): unknown {
+  if (!(error instanceof CanopyOperationError)) return error;
+  const cause = error.runtimeCause;
+  if (cause instanceof PipelineDefinitionSourceError)
+    return cause.sourceCause ?? new Error(cause.message);
+  return cause instanceof Error ? cause : new Error(error.payload.message);
 }

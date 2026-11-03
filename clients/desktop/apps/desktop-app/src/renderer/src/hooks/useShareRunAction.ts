@@ -158,7 +158,7 @@ export function useShareRunAction(
               .setSharedRun(projectId, worktreeId, target.chatId, undefined);
           } catch {
             throw new Error(
-              'Session share was revoked, but its local status could not be cleared. Retry to finish cleaning up.',
+              'Session share was revoked, but its local status could not be cleared. Try again to finish cleaning up.',
             );
           }
           pendingCanonicalCleanupRef.current = null;
@@ -192,7 +192,7 @@ export function useShareRunAction(
             await unshareRun(projectId, worktreeId, target.chatId);
           } catch {
             throw new Error(
-              'Session shared, but its local status could not be saved or revoked. Retry sharing to restore local control.',
+              'Session shared, but its local status could not be saved or revoked. Try sharing again to restore local control.',
             );
           }
           setTarget((current) => {
@@ -217,7 +217,7 @@ export function useShareRunAction(
                 chatId: target.chatId,
               };
               throw new Error(
-                'Session share was revoked, but its local status could not be cleared. Retry to finish cleaning up.',
+                'Session share was revoked, but its local status could not be cleared. Try again to finish cleaning up.',
               );
             }
           }

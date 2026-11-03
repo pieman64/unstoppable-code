@@ -1295,7 +1295,7 @@ describe('LedgerEntryOpenArea and history', () => {
       />,
     );
     const alert = byTestId('ledger-entry-open-error');
-    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.querySelector('[role="alert"]')).not.toBeNull();
     const text = container.textContent ?? '';
     expect(text.indexOf('Change notice')).toBeLessThan(
       text.indexOf('Closed explanation'),

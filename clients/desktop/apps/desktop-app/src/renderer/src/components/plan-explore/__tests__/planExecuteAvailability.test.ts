@@ -95,20 +95,42 @@ describe('selectPlanRevisionInProgress (CAN-5431)', () => {
 
 describe('planExecuteAvailability', () => {
   const claudePlan: Pick<TrackedPlanData, 'source'> = { source: 'claude' };
+  const idle = {
+    revising: false,
+    dispatchInFlight: false,
+    status: { kind: 'pending' as const },
+  };
 
   it('keeps an existing restriction without the revising title', () => {
     expect(
-      planExecuteAvailability({ source: 'cursor' }, { revising: true }),
+      planExecuteAvailability(
+        { source: 'cursor' },
+        { ...idle, revising: true },
+      ),
     ).toEqual({ executeDisabled: true });
   });
 
   it('disables Execute with the revising title while revising', () => {
-    expect(planExecuteAvailability(claudePlan, { revising: true })).toEqual({
+    expect(
+      planExecuteAvailability(claudePlan, { ...idle, revising: true }),
+    ).toEqual({
       executeDisabled: true,
       executeTitle: PLAN_REVISING_EXECUTE_TITLE,
     });
-    expect(planExecuteAvailability(claudePlan, { revising: false })).toEqual({
+    expect(planExecuteAvailability(claudePlan, idle)).toEqual({
       executeDisabled: false,
     });
+  });
+
+  it('disables Execute while a dispatch is in flight or implementing', () => {
+    expect(
+      planExecuteAvailability(claudePlan, { ...idle, dispatchInFlight: true }),
+    ).toEqual({ executeDisabled: true });
+    expect(
+      planExecuteAvailability(claudePlan, {
+        ...idle,
+        status: { kind: 'implementing' },
+      }),
+    ).toEqual({ executeDisabled: true });
   });
 });

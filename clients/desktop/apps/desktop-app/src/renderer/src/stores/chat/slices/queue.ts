@@ -6,19 +6,13 @@ import { blockedPersistenceKeys } from '../persistence';
 import { isTerminalBackedInterfaceMode } from '@canopy/desktop-shared/types';
 import { useClaudeTerminalStore } from '@/stores/claudeTerminalStore';
 import { attachmentMetasFromPaths } from '../attachments';
-import {
-  cancelProvisionalFirstSendQueue,
-  resumeQueuedProvisionalFirstSend,
-} from '../provisional-first-send';
+import { cancelProvisionalFirstSendQueue } from '../provisional-first-send';
 import { type ChatTab, type QueuedChatMessage } from '../types';
 import {
   clearWorktreeHydrationState,
-  recordWorktreeChatTouch,
   removeWorktreeRuntimeState,
   scheduleIdleChatUnload,
 } from '../hydration';
-import { clearQueuedForSetupFlag } from '../tab-utils';
-import { emitSetupQueueDispatch } from '../setup-queue-dispatch';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatQueueSlice } from '../state';
 
@@ -160,9 +154,7 @@ export const createQueueSlice: StateCreator<
     if (!context) return;
     const { selection: sel, key, chatId, activeTab } = context;
     const targetMessage = activeTab?.queuedMessages[index];
-    if (!activeTab || !targetMessage || activeTab.queuedForSetup === true) {
-      return;
-    }
+    if (!activeTab || !targetMessage) return;
 
     if (targetMessage.queuedHookQueueId) {
       void window.api.chat
@@ -680,113 +672,6 @@ export const createQueueSlice: StateCreator<
         () => applyLocalEdit(true),
         () => applyLocalEdit(false),
       );
-  },
-
-  flushPendingChatsForWorktree: (projectId, worktreeId): void => {
-    const key = `${projectId}/${worktreeId}`;
-    const wc = get().worktreeChats[key];
-    if (!wc) return;
-    recordWorktreeChatTouch(key);
-
-    const flushable = wc.tabs.filter(
-      (tab) =>
-        tab.queuedForSetup === true &&
-        tab.status === 'idle' &&
-        tab.queuedMessages.length > 0,
-    );
-    if (flushable.length === 0) {
-      // Still clear the marker even when there are no messages — e.g. the
-      // queue was cancelled before git-ready arrived.
-      const hasStaleMarker = wc.tabs.some((t) => t.queuedForSetup === true);
-      if (hasStaleMarker) {
-        set((state) => {
-          const currentWc = state.worktreeChats[key];
-          if (!currentWc) return state;
-          const updatedTabs = currentWc.tabs.map((t) =>
-            t.queuedForSetup ? clearQueuedForSetupFlag(t) : t,
-          );
-          return {
-            worktreeChats: {
-              ...state.worktreeChats,
-              [key]: { ...currentWc, tabs: updatedTabs },
-            },
-          };
-        });
-      }
-      return;
-    }
-
-    // Take the first message off each queued-for-setup tab and dispatch via
-    // sendMessage with an explicit target. The post-streaming drain at the
-    // bottom of handleChatEvent picks up the rest naturally.
-    type TabSendContext = {
-      tabId: string;
-      message: QueuedChatMessage;
-    };
-    const dispatches: TabSendContext[] = [];
-
-    set((state) => {
-      const currentWc = state.worktreeChats[key];
-      if (!currentWc) return state;
-      const updatedTabs = currentWc.tabs.map((t) => {
-        if (
-          t.queuedForSetup !== true ||
-          t.status !== 'idle' ||
-          t.queuedMessages.length === 0
-        ) {
-          // Clear the marker if the status changed but there's no work left.
-          if (t.queuedForSetup) {
-            return clearQueuedForSetupFlag(t);
-          }
-          return t;
-        }
-        const [first, ...rest] = t.queuedMessages;
-        dispatches.push({ tabId: t.id, message: first });
-        const restoredAttachments = attachmentMetasFromPaths(
-          first.attachmentPaths,
-          first.attachmentPromptContexts,
-        );
-        return {
-          ...resumeQueuedProvisionalFirstSend(
-            clearQueuedForSetupFlag(t),
-            first,
-          ),
-          queuedMessages: rest,
-          pendingAttachments: restoredAttachments,
-        };
-      });
-      return {
-        worktreeChats: {
-          ...state.worktreeChats,
-          [key]: { ...currentWc, tabs: updatedTabs },
-        },
-      };
-    });
-
-    for (const { tabId, message } of dispatches) {
-      void get().sendMessage(
-        message.text,
-        message.fileReferences,
-        {
-          projectId,
-          worktreeId,
-          chatId: tabId,
-        },
-        undefined,
-        {
-          ...message.dispatchOptions,
-          onDispatchStarted: (): void => {
-            emitSetupQueueDispatch({
-              projectId,
-              worktreeId,
-              chatId: tabId,
-              count: 1,
-            });
-            message.dispatchOptions?.onDispatchStarted?.();
-          },
-        },
-      );
-    }
   },
 
   dropWorktreeQueuedState: (projectId, worktreeId): void => {

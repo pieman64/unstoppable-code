@@ -84,12 +84,18 @@ describe('LinearReferencePreview enrichment modes', () => {
     expect(
       container.querySelectorAll('[data-testid="linear-reference"]'),
     ).toHaveLength(2);
-    expect(container.querySelector('svg')).toBeNull();
-    expect(
-      container.querySelector(
-        '[data-testid="linear-reference-title-placeholder"]',
-      ),
-    ).toBeNull();
+    // Hover keeps the author's text but still marks each chip with its icon.
+    for (const chip of Array.from(
+      container.querySelectorAll('[data-testid="linear-reference"]'),
+    )) {
+      expect(chip.querySelectorAll('svg')).toHaveLength(1);
+      expect(chip.className).toContain('bg-accent-subtle');
+      expect(
+        chip.querySelector(
+          '[data-testid="linear-reference-title-placeholder"]',
+        ),
+      ).toBeNull();
+    }
     render(supported, query, 'off');
     expect(container.textContent).toBe('See CAN-1 and the ticket');
     expect(container.querySelector('[role="link"]')).toBeNull();
@@ -604,9 +610,15 @@ describe('LinearReferencePreview inline titles', () => {
       'https://linear.app/acme/issue/CAN-2',
     );
     expect(custom.textContent).toBe('the ticket');
+    // The title sits inside the accent chip, after the icon and identifier.
+    for (const reference of [bare, rawUrl, custom]) {
+      expect(reference.className).toContain('bg-accent-subtle');
+      expect(reference.querySelectorAll('svg')).toHaveLength(1);
+    }
     const title = bare.querySelector('[data-testid="linear-reference-title"]');
     expect(title?.className).toContain('truncate');
-    expect(title?.className).toContain('max-w-[min(40ch,100%)]');
+    expect(title?.className).toContain('max-w-[40ch]');
+    expect(title?.parentElement?.className).toContain('max-w-full');
     // One whole text node keeps copy and the accessible name on the full title.
     expect(title?.childNodes).toHaveLength(1);
     expect(title?.firstChild?.nodeType).toBe(Node.TEXT_NODE);
@@ -691,7 +703,7 @@ describe('LinearReferencePreview inline titles', () => {
       expect(placeholder?.getAttribute('aria-hidden')).toBe('true');
       expect(placeholder?.textContent).toBe('');
       expect(placeholder?.className).toContain('select-none');
-      expect(placeholder?.className).toContain('w-[min(36ch,100%)]');
+      expect(placeholder?.className).toContain('w-[36ch] max-w-full');
       // Waiting on visibility is not a read: the bar stays still.
       expect(placeholder?.hasAttribute('data-active')).toBe(false);
     }

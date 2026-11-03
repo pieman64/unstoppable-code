@@ -39,6 +39,17 @@ describe('local Collection catalog contract', () => {
     };
     expect(JSON.parse(JSON.stringify(entry))).toEqual(entry);
 
+    const added: CollectionIndexEntry = {
+      ...entry,
+      id: 'col-2',
+      sharedSource: {
+        remoteId: 'remote-1',
+        contentHash: 'hash-1',
+        fromPublicShare: true,
+      },
+    };
+    expect(JSON.parse(JSON.stringify(added))).toEqual(added);
+
     const config: CollectionConfig = {
       id: 'col-1',
       name: 'Review pack',

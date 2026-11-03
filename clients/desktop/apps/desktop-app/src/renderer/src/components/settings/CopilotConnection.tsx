@@ -4,6 +4,7 @@ import {
   Button,
   CopyButton,
   ProviderStatusDot,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import type { CopilotConnectionStatus } from '@canopy/desktop-shared/types';
 import { extractIpcErrorMessage } from '@/lib/errors';
@@ -20,12 +21,16 @@ interface CopilotConnectionProps {
   readonly placement?: 'row' | 'section';
 }
 
+/** A path or an OS error code (ENOENT, EACCES, ...) marks text as raw. */
+const RAW_FAILURE_TEXT = /[\\/]|\bE[A-Z]{3,}\b/;
+
 export function CopilotConnection({
   placement = 'section',
 }: CopilotConnectionProps = {}): JSX.Element | null {
   const [status, setStatus] = useState<CopilotConnectionStatus>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorDetails, setErrorDetails] = useState<string>();
   const mounted = useRef(true);
   const operation = useRef(false);
   // A cancelled setup rejects with an abort; that is the user's choice, not a
@@ -83,6 +88,7 @@ export function CopilotConnection({
     cancelRequested.current = false;
     setBusy(true);
     setError(undefined);
+    setErrorDetails(undefined);
     try {
       await api[kind]();
       const next = await api.status();
@@ -90,12 +96,16 @@ export function CopilotConnection({
       emitPreferencesUpdated(preferences);
       if (mounted.current) setStatus(next);
     } catch (reason) {
-      if (mounted.current && !cancelRequested.current)
-        setError(
-          reason instanceof Error
-            ? extractIpcErrorMessage(reason)
-            : 'Copilot setup failed. Try again.',
-        );
+      if (mounted.current && !cancelRequested.current) {
+        // Main writes its own sentences (a declined sign-in, a blocking
+        // policy). Raw text with a path or an OS code is never shown:
+        // our sentence leads and Copy details carries it.
+        const message =
+          reason instanceof Error ? extractIpcErrorMessage(reason) : '';
+        const ours = message !== '' && !RAW_FAILURE_TEXT.test(message);
+        setError(ours ? message : 'Copilot setup failed. Try again.');
+        setErrorDetails(ours || message === '' ? undefined : message);
+      }
     } finally {
       operation.current = false;
       if (mounted.current) setBusy(false);
@@ -127,7 +137,7 @@ export function CopilotConnection({
       dataTestId="copilot-connection"
       label={
         <span className="inline-flex items-center gap-2">
-          <GitHubIcon size={16} className="shrink-0 fg-primary" aria-hidden />
+          <GitHubIcon size="md" className="shrink-0 fg-primary" aria-hidden />
           GitHub Copilot
           {/* No dot until the first status read answers: "Checking setup…"
               is neither connected nor disconnected. */}
@@ -253,15 +263,12 @@ export function CopilotConnection({
           out first.
         </p>
       )}
-      {error && (
-        <p
-          role="alert"
-          className="text-xs fg-destructive"
-          data-testid="copilot-connection-error"
-        >
-          {error}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={error}
+        testId="copilot-connection-error"
+        {...(errorDetails ? { details: errorDetails } : {})}
+      />
     </SettingsRow>
   );
   if (placement === 'row') return row;

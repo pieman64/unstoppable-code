@@ -4,6 +4,7 @@ import {
   type CorePipelineDefinitionHost,
   type PipelineDefinitionService,
 } from '@canopy/core-runtime/node/pipeline';
+import { createPipelineDefinitionReplayStore } from '../pipelines/pipeline-definition-replay-store';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
 
 let desktopService: Promise<PipelineDefinitionService> | undefined;
@@ -12,6 +13,7 @@ let desktopService: Promise<PipelineDefinitionService> | undefined;
 // sidebar modules, which import back into the runtime.
 export const desktopPipelineDefinitionHost: CorePipelineDefinitionHost = {
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  replays: createPipelineDefinitionReplayStore(),
   load: () => {
     desktopService ??=
       import('../pipelines/core-pipeline-definition-sources').then((module) =>

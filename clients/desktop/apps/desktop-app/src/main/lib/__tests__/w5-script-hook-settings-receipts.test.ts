@@ -7,6 +7,7 @@ import {
 } from '@canopy/desktop-shared/node/w5-commit-log';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -57,6 +58,15 @@ jest.mock('../workspace-context-service', () => ({
 }));
 
 import { W5CommitLogHost } from '../../w5-commit-log/commit-log-host';
+import {
+  DESKTOP_SCRIPT_CALLER,
+  scriptDefinitionsDispatcher,
+} from '../../__tests__/helpers/script-definitions-dispatcher';
+import {
+  mergeWorkspaceScriptCommands,
+  saveWorkspaceRepoScripts,
+  saveWorkspaceScripts,
+} from '../script-definition-saves';
 import { notifyPortalStructureChanged } from '../../portal/portal-event-bus';
 import {
   createW5CommitLogFileStore,
@@ -756,6 +766,79 @@ it('a keyed definition change replays its outcome and refuses the key for anothe
   await set(' eslint . ');
   expect(manifest().scripts).toEqual({ setup: 'npm ci' });
   await expect(set('prettier')).rejects.toMatchObject({ reason: 'key-reused' });
+});
+
+it('the save projections change only the edited scripts through keyed upsert and delete (CAN-5369)', async () => {
+  writeFileSync(
+    join(root, 'a', 'workspace.json'),
+    JSON.stringify({
+      version: 1,
+      type: 'multi-repo',
+      repos: [
+        {
+          id: 'api',
+          name: 'api',
+          repoPath: join(dir, 'repo'),
+          scripts: { setup: 'old' },
+        },
+      ],
+      scripts: {
+        setup: { command: 'npm ci', timeoutSeconds: 60 },
+        launch: 'npm run dev',
+      },
+    }),
+  );
+  const dispatcher = scriptDefinitionsDispatcher();
+  const reserve = jest.spyOn(host, 'reserve');
+  await mergeWorkspaceScriptCommands(dispatcher, DESKTOP_SCRIPT_CALLER, {
+    workspaceId: 'a',
+    commands: { setup: 'pnpm i', launch: '' },
+  });
+  expect(manifest().scripts).toEqual({
+    setup: { command: 'pnpm i', timeoutSeconds: 60 },
+  });
+  await saveWorkspaceRepoScripts(dispatcher, DESKTOP_SCRIPT_CALLER, {
+    workspaceId: 'a',
+    repos: [
+      { repoId: 'api', scripts: { setup: 'new' } },
+      { repoId: 'gone', scripts: { setup: 'x' } },
+    ],
+  });
+  expect(manifest().repos).toEqual([
+    expect.objectContaining({ id: 'api', scripts: { setup: 'new' } }),
+  ]);
+  // One keyed commit per changed script, and none for an unchanged save.
+  expect(reserve).toHaveBeenCalledTimes(3);
+  await saveWorkspaceScripts(dispatcher, DESKTOP_SCRIPT_CALLER, {
+    workspaceId: 'a',
+    scripts: { setup: { command: 'pnpm i', timeoutSeconds: 60 } },
+  });
+  expect(reserve).toHaveBeenCalledTimes(3);
+  expect(await revision('scripts')).toBe(3);
+});
+
+it('a save projection never creates a manifest and releases its key (CAN-5369)', async () => {
+  const reserve = jest.spyOn(host, 'reserve');
+  await expect(
+    saveWorkspaceScripts(scriptDefinitionsDispatcher(), DESKTOP_SCRIPT_CALLER, {
+      workspaceId: 'missing',
+      scripts: { setup: 'npm ci' },
+    }),
+  ).rejects.toThrow(/settings could not be read/);
+  const receipt = reserve.mock.calls[0]?.[0].receipt;
+  if (receipt)
+    expect(await host.lookupReceipt(receipt)).toMatchObject({ status: 'none' });
+  expect(existsSync(join(root, 'missing'))).toBe(false);
+});
+
+it('a save that clears scripts of a missing manifest is still refused (CAN-5369)', async () => {
+  await expect(
+    saveWorkspaceScripts(scriptDefinitionsDispatcher(), DESKTOP_SCRIPT_CALLER, {
+      workspaceId: 'missing',
+      scripts: {},
+    }),
+  ).rejects.toThrow(/settings could not be read/);
+  expect(existsSync(join(root, 'missing'))).toBe(false);
 });
 
 it('a keyed hooks change to an unknown repository refuses and releases the key', async () => {

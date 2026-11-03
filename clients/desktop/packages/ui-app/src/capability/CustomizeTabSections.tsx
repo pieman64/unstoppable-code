@@ -1,3 +1,4 @@
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
 import {
   type ComponentType,
@@ -17,10 +18,10 @@ import {
   CustomizeInstalledRow,
   CustomizeInstalledUnavailable,
   CustomizeSection,
+  Tooltip,
   InstalledItemStatusControl,
   InstalledItemStatusPicker,
   Button,
-  Tooltip,
   InstalledItemStatusUnavailable,
   Notice,
   NoticeButton,
@@ -31,13 +32,15 @@ import {
   type CustomizeRowMenuItem,
   type PluginsEntryStatusBinding,
   type McpServerLogoProps,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import { DownloadIcon } from '@canopy/ui-shared/icons';
 import { displayVersion } from '@canopy/ui-shared/lib/display-version';
 import {
   CUSTOM_SKILL_EDIT_UNAVAILABLE_REASON,
   INSTALLED_ITEM_STATUS_DESCRIPTION_LINE,
-  alwaysAvailableReason,
+  createdByViewer,
+  formatDateOrEmpty,
   bundledSkillStatusReason,
   installedItemTargetKey,
   isBundledSkill,
@@ -66,6 +69,7 @@ import {
   type CustomizeInventoryState,
   type CustomizeSectionId,
   type CustomizeSectionModel,
+  type CustomizeUpdateKind,
   type InstalledStatusMembership,
   type InstalledStatusSnapshot,
 } from './customizeSections';
@@ -98,8 +102,8 @@ export interface CustomizeTabSectionsProps {
   /** Catalog-wide loading; renders the shared list skeleton. */
   readonly loading?: boolean;
   readonly ownershipAvailable?: boolean;
-  /** Kinds whose update the host can perform. Omitted: no Updates section. */
-  readonly supportedUpdateKinds?: readonly ('skill' | 'automation')[];
+  /** Kinds whose Updates the host surfaces. Omitted: no Updates section. */
+  readonly supportedUpdateKinds?: readonly CustomizeUpdateKind[];
   readonly pipelineFilters?: PipelineFilterValues;
   readonly pipelineCategory?: string | null;
   readonly suggestedNames?: readonly string[];
@@ -131,11 +135,19 @@ export interface CustomizeTabSectionsProps {
   readonly onInstalledExpandedChange?: (expanded: boolean) => void;
   readonly onShareEntry?: (entry: UnifiedPluginEntry) => void;
   readonly McpServerLogoComponent?: ComponentType<McpServerLogoProps>;
-  readonly showPipelineSources?: boolean;
   /** Opens a Browse group's full category page. */
   readonly onExpandBrowseGroup?: (groupId: string) => void;
   /** Browse heading controls, such as the Workflows pipeline filters. */
   readonly browseActions?: ReactNode;
+  readonly installedActions?: ReactNode;
+  readonly onCreateCollection?: () => void;
+  readonly onEditCollection?: (entry: UnifiedPluginEntry) => void;
+  readonly onDuplicateCollection?: (entry: UnifiedPluginEntry) => void;
+  readonly collectionUpdateSummaries?: ReadonlyMap<string, string>;
+  /** A surfaced update can be read-only without disabling other kinds. */
+  readonly updateDisabledReason?: (
+    entry: UnifiedPluginEntry,
+  ) => string | undefined;
 
   readonly installedUnavailable?: CustomizeInstalledUnavailableCopy;
   readonly onRetryInventory?: () => void;
@@ -154,7 +166,10 @@ export interface CustomizeTabSectionsProps {
   readonly onEditEntry?: (entry: UnifiedPluginEntry) => void;
   /** Extension slots for sibling features; nothing renders when omitted. */
   readonly renderStatus?: (entry: UnifiedPluginEntry) => ReactNode;
-  readonly renderSharedActions?: (entry: UnifiedPluginEntry) => ReactNode;
+  readonly renderSharedActions?: (
+    entry: UnifiedPluginEntry,
+    renderRow: (item: CustomizeRowMenuItem) => ReactNode,
+  ) => ReactNode;
   /**
    * Run, on/off, Run now, Edit, View runs and Delete… on workflow rows
    * (CAN-4845). Omitted, workflow rows show no controls of their own.
@@ -285,9 +300,14 @@ export function CustomizeTabSections(
     onInstalledExpandedChange,
     onShareEntry,
     McpServerLogoComponent,
-    showPipelineSources,
     onExpandBrowseGroup,
     browseActions,
+    installedActions,
+    onCreateCollection,
+    onEditCollection,
+    onDuplicateCollection,
+    collectionUpdateSummaries,
+    updateDisabledReason,
     installedUnavailable = DEFAULT_UNAVAILABLE,
     onRetryInventory,
     onUpdateEntry,
@@ -473,7 +493,12 @@ export function CustomizeTabSections(
     async (
       entry: UnifiedPluginEntry,
     ): Promise<CustomizeUpdateFailure | null> => {
-      if (!onUpdateEntry || inFlight.current.has(entry.id)) return null;
+      if (
+        !onUpdateEntry ||
+        updateDisabledReason?.(entry) ||
+        inFlight.current.has(entry.id)
+      )
+        return null;
       inFlight.current.add(entry.id);
       setBusyIds(new Set(inFlight.current));
       try {
@@ -486,7 +511,7 @@ export function CustomizeTabSections(
         setBusyIds(new Set(inFlight.current));
       }
     },
-    [onUpdateEntry],
+    [onUpdateEntry, updateDisabledReason],
   );
 
   const updateOne = useCallback(
@@ -605,12 +630,15 @@ export function CustomizeTabSections(
     onInstalledExpandedChange,
   ]);
 
-  if (loading) return <PluginsDiscoveryListLoading />;
-
-  const updateIds = new Set(
+  // Preserve the bound callbacks when filtering leaves update membership unchanged.
+  const updateIdKey = (
     model.sections
       .find((section) => section.id === 'updates')
-      ?.entries.map((entry) => entry.id) ?? [],
+      ?.entries.map((entry) => entry.id) ?? []
+  ).join('\0');
+  const updateIds = useMemo(
+    () => new Set(updateIdKey ? updateIdKey.split('\0') : []),
+    [updateIdKey],
   );
 
   /**
@@ -620,196 +648,277 @@ export function CustomizeTabSections(
    * other row with pending sign-ins (an integration card with one expired
    * connection beside a working one) connects itself.
    */
-  function signInTarget(
-    entry: UnifiedPluginEntry,
-  ): UnifiedPluginEntry | undefined {
-    if (entry.state === 'needs-auth') return entry;
-    if ((entry.pendingSignIns ?? 0) === 0) return undefined;
-    for (const row of entry.bundledServerRows ?? []) {
-      const server = entries.find((candidate) => candidate.id === row.entryId);
-      // A server that keeps its own row prompts there, not here.
-      if (
-        server &&
-        bundledServerStandsBehindPlugin(server) &&
-        (server.pendingSignIns ?? 0) > 0
-      )
-        return server;
-    }
-    return entry;
-  }
+  const signInTarget = useCallback(
+    function signInTarget(
+      entry: UnifiedPluginEntry,
+    ): UnifiedPluginEntry | undefined {
+      if (entry.state === 'needs-auth') return entry;
+      if ((entry.pendingSignIns ?? 0) === 0) return undefined;
+      for (const row of entry.bundledServerRows ?? []) {
+        const server = entries.find(
+          (candidate) => candidate.id === row.entryId,
+        );
+        // A server that keeps its own row prompts there, not here.
+        if (
+          server &&
+          bundledServerStandsBehindPlugin(server) &&
+          (server.pendingSignIns ?? 0) > 0
+        )
+          return server;
+      }
+      return entry;
+    },
+    [entries],
+  );
 
-  function menuItems(
-    entry: UnifiedPluginEntry,
-    sectionId: CustomizeSectionId,
-    connect: (() => void) | undefined,
-  ): CustomizeRowMenuItem[] {
-    const items: CustomizeRowMenuItem[] = [];
-    if (connect)
-      items.push({
-        id: 'connect',
-        label: 'Connect',
-        onSelect: connect,
-      });
-    items.push({
-      id: 'details',
-      label: 'Open details',
-      onSelect: () => onSelectEntry(entry),
-    });
-    const bundledBy = entry.bundledBy;
-    if (bundledBy && onOpenEntryId)
-      items.push({
-        id: 'open-plugin',
-        label: `Open the ${bundledBy.name} plugin`,
-        onSelect: () => onOpenEntryId(bundledBy.entryId),
-      });
-    const workflow =
-      workflowActions && entry.workflow ? workflowActions : undefined;
-    if (updateIds.has(entry.id) && onUpdateEntry)
-      items.push({
-        id: 'update',
-        label: updateMenuLabel(entry.latestVersion),
-        disabled: batchRunning || busyIds.has(entry.id),
-        onSelect: () => void updateOne(entry),
-      });
-    // A bundled skill follows its plugin: it is never updated, shared or
-    // removed on its own (CAN-4844).
-    if (isBundledSkill(entry)) return items;
-    const availability = workflow
-      ? customizeWorkflowAvailability(entry, workflow)
-      : undefined;
-    const workflowBusy = workflowBusyIds.has(entry.id);
-    if (workflow && availability) {
-      items.push(
-        {
-          id: 'edit',
-          label: WORKFLOW_ROW_MENU_LABELS.edit,
-          disabled: !availability.edit.available,
-          disabledReason: availability.edit.reason,
-          onSelect: () => workflow.onEdit?.(entry),
-        },
-        {
-          id: 'view-runs',
-          label: WORKFLOW_ROW_MENU_LABELS.viewRuns,
-          disabled: !availability.viewRuns.available,
-          disabledReason: availability.viewRuns.reason,
-          onSelect: () => workflow.onViewRuns?.(entry),
-        },
-      );
-      if (entry.kind === 'automation')
+  const removalMenuItem = useCallback(
+    function removalMenuItem(
+      entry: UnifiedPluginEntry,
+    ): CustomizeRowMenuItem | null {
+      if (!entryStatus?.onUninstall) return null;
+      const state = entryStatus.states[entry.id];
+      if (state?.kind !== 'ready') return null;
+      const { item } = state;
+      const target = item.uninstallTarget;
+      if (!item.removable || target === undefined) return null;
+      return {
+        id: 'remove',
+        label: removalMenuLabel(entry),
+        destructive: true,
+        disabled: entryStatus.pendingKeys.has(installedItemTargetKey(target)),
+        onSelect: () =>
+          setRemoval({
+            entry,
+            target,
+            description: item.uninstallDescription,
+            scope: removalScope,
+          }),
+      };
+    },
+    [entryStatus, removalScope],
+  );
+
+  const menuItems = useCallback(
+    function menuItems(
+      entry: UnifiedPluginEntry,
+      sectionId: CustomizeSectionId,
+      connect: (() => void) | undefined,
+    ): CustomizeRowMenuItem[] {
+      const items: CustomizeRowMenuItem[] = [];
+      if (connect)
         items.push({
-          id: 'run-now',
-          label: WORKFLOW_ROW_MENU_LABELS.runNow,
-          disabled: workflowBusy || !availability.runNow.available,
-          disabledReason: availability.runNow.reason,
+          id: 'connect',
+          label: 'Connect',
+          onSelect: connect,
+        });
+      items.push({
+        id: 'details',
+        label: 'Open details',
+        onSelect: () => onSelectEntry(entry),
+      });
+      if (onOpenEntryId)
+        for (const requirement of entry.requirements ?? []) {
+          items.push({
+            id: `requirement-${requirement.key}`,
+            label: `Open ${requirement.name}`,
+            onSelect: () => onOpenEntryId(requirement.entryId),
+          });
+        }
+      const bundledBy = entry.bundledBy;
+      if (bundledBy && onOpenEntryId)
+        items.push({
+          id: 'open-plugin',
+          label: `Open the ${bundledBy.name} plugin`,
+          onSelect: () => onOpenEntryId(bundledBy.entryId),
+        });
+      const workflow =
+        workflowActions && entry.workflow ? workflowActions : undefined;
+      const localCollection = entry.ref.type === 'local-collection';
+      const createdCollection = localCollection && createdByViewer(entry);
+      if (
+        localCollection &&
+        createdCollection &&
+        onEditCollection &&
+        sectionId === 'installed'
+      )
+        items.push({
+          id: 'edit',
+          label: 'Edit',
+          onSelect: () => onEditCollection(entry),
+        });
+      if (
+        updateIds.has(entry.id) &&
+        (onUpdateEntry || updateDisabledReason?.(entry))
+      )
+        items.push({
+          id: 'update',
+          label: updateMenuLabel(entry.latestVersion),
+          disabled:
+            batchRunning ||
+            busyIds.has(entry.id) ||
+            !!updateDisabledReason?.(entry),
+          disabledReason:
+            updateDisabledReason?.(entry) ??
+            (localCollection
+              ? 'Updating replaces the items in this collection with the shared version. Resources you already use are kept.'
+              : undefined),
+          onSelect: () => void updateOne(entry),
+        });
+      if (
+        localCollection &&
+        !createdCollection &&
+        onDuplicateCollection &&
+        sectionId === 'installed'
+      )
+        items.push({
+          id: 'duplicate',
+          label: 'Duplicate to edit',
+          onSelect: () => onDuplicateCollection(entry),
+        });
+      // A bundled skill follows its plugin: it is never updated, shared or
+      // removed on its own (CAN-4844).
+      if (isBundledSkill(entry)) return items;
+      const availability = workflow
+        ? customizeWorkflowAvailability(entry, workflow)
+        : undefined;
+      const workflowBusy = workflowBusyIds.has(entry.id);
+      if (workflow && availability) {
+        items.push(
+          {
+            id: 'edit',
+            label: WORKFLOW_ROW_MENU_LABELS.edit,
+            disabled: !availability.edit.available,
+            disabledReason: availability.edit.reason,
+            onSelect: () => workflow.onEdit?.(entry),
+          },
+          {
+            id: 'view-runs',
+            label: WORKFLOW_ROW_MENU_LABELS.viewRuns,
+            disabled: !availability.viewRuns.available,
+            disabledReason: availability.viewRuns.reason,
+            onSelect: () => workflow.onViewRuns?.(entry),
+          },
+        );
+        if (entry.kind === 'automation')
+          items.push({
+            id: 'run-now',
+            label: WORKFLOW_ROW_MENU_LABELS.runNow,
+            disabled: workflowBusy || !availability.runNow.available,
+            disabledReason: availability.runNow.reason,
+            onSelect: () => {
+              const onRunNow = workflow.onRunNow;
+              if (!onRunNow) return;
+              void runWorkflowAction(
+                entry,
+                () => onRunNow(entry),
+                `Couldn't start ${entry.name}`,
+              );
+            },
+          });
+      }
+      const share = entryShareStates?.get(entry.id);
+      if (share && onShareEntry)
+        items.push({
+          id: 'share',
+          label: 'Share…',
+          disabled: share.status === 'blocked',
+          disabledReason: share.status === 'blocked' ? share.reason : undefined,
+          onSelect: () => onShareEntry(entry),
+        });
+      if (
+        sectionId === 'installed' &&
+        entry.kind === 'skill' &&
+        entry.ref.type === 'skill' &&
+        entry.custom === true
+      )
+        items.push({
+          id: 'edit',
+          label: 'Edit',
+          disabled: !canEditCustomSkill,
+          disabledReason: canEditCustomSkill
+            ? undefined
+            : CUSTOM_SKILL_EDIT_UNAVAILABLE_REASON,
           onSelect: () => {
-            const onRunNow = workflow.onRunNow;
-            if (!onRunNow) return;
-            void runWorkflowAction(
-              entry,
-              () => onRunNow(entry),
-              `Couldn't start ${entry.name}`,
-            );
+            if (canEditCustomSkill) onEditEntry?.(entry);
           },
         });
-    }
-    const share = entryShareStates?.get(entry.id);
-    if (share && onShareEntry)
-      items.push({
-        id: 'share',
-        label: 'Share…',
-        disabled: share.status === 'blocked',
-        disabledReason: share.status === 'blocked' ? share.reason : undefined,
-        onSelect: () => onShareEntry(entry),
-      });
-    if (
-      sectionId === 'installed' &&
-      entry.kind === 'skill' &&
-      entry.ref.type === 'skill' &&
-      entry.custom === true
-    )
-      items.push({
-        id: 'edit',
-        label: 'Edit',
-        disabled: !canEditCustomSkill,
-        disabledReason: canEditCustomSkill
-          ? undefined
-          : CUSTOM_SKILL_EDIT_UNAVAILABLE_REASON,
-        onSelect: () => {
-          if (canEditCustomSkill) onEditEntry?.(entry);
-        },
-      });
-    if (workflow && availability)
-      items.push({
-        id: 'delete',
-        label: WORKFLOW_ROW_MENU_LABELS.delete,
-        destructive: true,
-        disabled: workflowBusy || !availability.delete.available,
-        disabledReason: availability.delete.reason,
-        onSelect: () => setDeleteTarget(entry),
-      });
-    const removalItem =
-      !workflow && sectionId !== 'shared-by-me' ? removalMenuItem(entry) : null;
-    if (removalItem) items.push(removalItem);
-    return items;
-  }
+      if (workflow && availability)
+        items.push({
+          id: 'delete',
+          label: WORKFLOW_ROW_MENU_LABELS.delete,
+          destructive: true,
+          disabled: workflowBusy || !availability.delete.available,
+          disabledReason: availability.delete.reason,
+          onSelect: () => setDeleteTarget(entry),
+        });
+      const removalItem =
+        !workflow && sectionId !== 'shared-by-me'
+          ? removalMenuItem(entry)
+          : null;
+      if (removalItem) items.push(removalItem);
+      return items;
+    },
+    [
+      onSelectEntry,
+      onOpenEntryId,
+      workflowActions,
+      onEditCollection,
+      updateIds,
+      onUpdateEntry,
+      updateDisabledReason,
+      batchRunning,
+      busyIds,
+      updateOne,
+      onDuplicateCollection,
+      workflowBusyIds,
+      runWorkflowAction,
+      entryShareStates,
+      onShareEntry,
+      canEditCustomSkill,
+      onEditEntry,
+      removalMenuItem,
+    ],
+  );
 
-  function renderWorkflowControls(entry: UnifiedPluginEntry): ReactNode {
-    if (!workflowActions || !entry.workflow) return null;
-    const availability = customizeWorkflowAvailability(entry, workflowActions);
-    const enabled = entry.workflow.enabled;
-    return (
-      <CustomizeWorkflowRowControls
-        entry={entry}
-        availability={availability}
-        busy={workflowBusyIds.has(entry.id)}
-        onRun={() => {
-          const onRun = workflowActions.onRun;
-          if (!onRun || !availability.run.available) return;
-          void runWorkflowAction(
-            entry,
-            () => onRun(entry),
-            `Couldn't start ${entry.name}`,
-          );
-        }}
-        onToggle={() => {
-          const onSetEnabled = workflowActions.onSetEnabled;
-          if (!onSetEnabled || enabled === undefined) return;
-          // The switch never flips locally; it re-renders from `entries`.
-          void runWorkflowAction(
-            entry,
-            () => onSetEnabled(entry, !enabled),
-            `Couldn't turn ${enabled ? 'off' : 'on'} ${entry.name}`,
-          );
-        }}
-      />
-    );
-  }
+  const renderWorkflowControls = useCallback(
+    function renderWorkflowControls(entry: UnifiedPluginEntry): ReactNode {
+      if (!workflowActions || !entry.workflow) return null;
+      const availability = customizeWorkflowAvailability(
+        entry,
+        workflowActions,
+      );
+      const enabled = entry.workflow.enabled;
+      return (
+        <CustomizeWorkflowRowControls
+          entry={entry}
+          availability={availability}
+          busy={workflowBusyIds.has(entry.id)}
+          onRun={() => {
+            const onRun = workflowActions.onRun;
+            if (!onRun || !availability.run.available) return;
+            void runWorkflowAction(
+              entry,
+              () => onRun(entry),
+              `Couldn't start ${entry.name}`,
+            );
+          }}
+          onToggle={() => {
+            const onSetEnabled = workflowActions.onSetEnabled;
+            if (!onSetEnabled || enabled === undefined) return;
+            // The switch never flips locally; it re-renders from `entries`.
+            void runWorkflowAction(
+              entry,
+              () => onSetEnabled(entry, !enabled),
+              `Couldn't turn ${enabled ? 'off' : 'on'} ${entry.name}`,
+            );
+          }}
+        />
+      );
+    },
+    [workflowActions, workflowBusyIds, runWorkflowAction],
+  );
 
   // Only a ready, removable status with a target offers removal (CAN-4840).
-  function removalMenuItem(
-    entry: UnifiedPluginEntry,
-  ): CustomizeRowMenuItem | null {
-    if (!entryStatus?.onUninstall) return null;
-    const state = entryStatus.states[entry.id];
-    if (state?.kind !== 'ready') return null;
-    const { item } = state;
-    const target = item.uninstallTarget;
-    if (!item.removable || target === undefined) return null;
-    return {
-      id: 'remove',
-      label: removalMenuLabel(entry),
-      destructive: true,
-      disabled: entryStatus.pendingKeys.has(installedItemTargetKey(target)),
-      onSelect: () =>
-        setRemoval({
-          entry,
-          target,
-          description: item.uninstallDescription,
-          scope: removalScope,
-        }),
-    };
-  }
-
   function renderRemovalDialog(): ReactNode {
     const onUninstall = entryStatus?.onUninstall;
     if (!activeRemoval || !onUninstall) return null;
@@ -818,7 +927,11 @@ export function CustomizeTabSections(
     return (
       <UninstallConfirmDialog
         title={removalConfirmTitle(entry)}
-        message={description ?? `This removes ${entry.name}.`}
+        message={
+          entry.kind === 'collection'
+            ? 'This removes the collection grouping. Skills, plugins and MCP servers you already use are kept.'
+            : (description ?? `This removes ${entry.name}.`)
+        }
         confirmLabel={verb}
         busyLabel={removalBusyLabel(verb)}
         fallbackErrorMessage={removalFallbackError(verb)}
@@ -840,142 +953,225 @@ export function CustomizeTabSections(
     );
   }
 
-  function renderRow(
-    entry: UnifiedPluginEntry,
-    section: CustomizeSectionModel,
-  ): ReactNode {
-    const signIn = onConnectEntry ? signInTarget(entry) : undefined;
-    const connect =
-      onConnectEntry && signIn ? (): void => onConnectEntry(signIn) : undefined;
-    const statusState = entryStatus?.states[entry.id];
-    // A row with a connection badge already shows its one status; a
-    // read-only Unavailable beside "Connected" would contradict it. The
-    // section's unavailable notice explains the missing desktop (CAN-4261).
-    // A never-checked connection shows no badge, so it keeps the status.
-    const showsConnectionBadge =
-      entry.connection !== undefined && entry.connection.status !== 'unknown';
-    const showStatusControl =
-      statusState !== undefined &&
-      !(statusState.kind === 'read-only' && showsConnectionBadge);
-    // Dimming follows the live status, its plugin's for a bundled skill.
-    const dimmingState = entryStatus?.states[statusEntryIdOf(entry)];
-    return (
-      <CustomizeInstalledRow
-        entry={entry}
-        sectionId={section.id}
-        selected={entry.id === selectedEntryId}
-        showEntryType={section.showEntryTypes}
-        onSelect={onSelectEntry}
-        href={hrefForEntry?.(entry)}
-        menuItems={menuItems(entry, section.id, connect)}
-        status={
-          isBundledSkill(entry) ? (
-            <span
-              data-testid="customize-row-status-slot"
-              className="flex w-36 shrink-0 justify-end"
-            >
-              {dimmingState?.kind === 'ready' &&
-              dimmingState.item.status !== null ? (
-                <InstalledItemStatusPicker
-                  itemName={entry.name}
-                  status={dimmingState.item.status}
-                  disabledReason={bundledSkillStatusReason(
-                    entry.bundledBy.name,
-                  )}
-                  testId={`plugins-entry-status-${entry.id}`}
-                />
-              ) : dimmingState?.kind === 'loading' && entryStatus ? (
-                <InstalledItemStatusControl
-                  itemName={entry.name}
-                  state={dimmingState}
-                  pendingKeys={entryStatus.pendingKeys}
-                  testId={`plugins-entry-status-${entry.id}`}
-                />
-              ) : (
-                <InstalledItemStatusUnavailable
-                  itemName={entry.name}
-                  reason={bundledSkillStatusReason(entry.bundledBy.name)}
-                  testId={`plugins-entry-status-${entry.id}-unavailable`}
-                />
-              )}
-            </span>
-          ) : (
-            (renderStatus?.(entry) ??
-            renderWorkflowControls(entry) ??
-            (entryStatus &&
-              (showStatusControl ||
-                (statusState === undefined &&
-                  alwaysAvailableReason(entry) !== undefined)) && (
-                // Only a row that shows a status keeps the aligned slot; an empty
-                // one would squeeze the name in a half-width column.
+  const renderUpdateAction = useCallback(
+    function renderUpdateAction(entry: UnifiedPluginEntry): ReactNode {
+      const updating = busyIds.has(entry.id);
+      const version = displayVersion(entry.latestVersion);
+      const reason = updateDisabledReason?.(entry);
+      const explanation =
+        reason ??
+        (entry.ref.type === 'local-collection'
+          ? 'Updating replaces the items in this collection with the shared version. Resources you already use are kept.'
+          : undefined);
+      const summary = collectionUpdateSummaries?.get(entry.id);
+      const date = formatDateOrEmpty(entry.sharedSource?.updatedAt);
+      const updateTooltip = [
+        summary ?? (version ? `Update to ${version}` : 'Update available'),
+        date,
+        reason ?? 'Click to update',
+        reason ? undefined : explanation,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+      return (
+        <Tooltip
+          label={<span className={REPLAY_BLOCK_CLASS}>{updateTooltip}</span>}
+          contentClassName="max-w-sm whitespace-normal break-words"
+        >
+          <Button
+            iconOnly
+            size="sm"
+            variant="ghost-quiet"
+            data-testid={`customize-update-${entry.id}`}
+            aria-label={`Update ${entry.name}`}
+            disabled={updating || batchRunning || !!reason}
+            aria-disabled={!!reason || undefined}
+            aria-description={explanation}
+            aria-busy={updating}
+            onClick={() => void updateOne(entry)}
+          >
+            <DownloadIcon width={14} height={14} aria-hidden="true" />
+          </Button>
+        </Tooltip>
+      );
+    },
+    [
+      busyIds,
+      updateDisabledReason,
+      collectionUpdateSummaries,
+      batchRunning,
+      updateOne,
+    ],
+  );
+
+  const renderRow = useCallback(
+    function renderRow(
+      entry: UnifiedPluginEntry,
+      section: Pick<CustomizeSectionModel, 'id' | 'showEntryTypes'>,
+    ): ReactNode {
+      const signIn = onConnectEntry ? signInTarget(entry) : undefined;
+      const connect =
+        onConnectEntry && signIn
+          ? (): void => onConnectEntry(signIn)
+          : undefined;
+      const statusState =
+        entryStatus?.states[entry.installedEntryId ?? entry.id];
+      // A row with a connection badge already shows its one status; a
+      // read-only Unavailable beside "Connected" would contradict it. The
+      // section's unavailable notice explains the missing desktop (CAN-4261).
+      // A never-checked connection shows no badge, so it keeps the status.
+      const showsConnectionBadge =
+        entry.connection !== undefined && entry.connection.status !== 'unknown';
+      const showStatusControl =
+        statusState !== undefined &&
+        !(statusState.kind === 'read-only' && showsConnectionBadge);
+      const collection = entry.kind === 'collection';
+      const installed =
+        entry.state !== 'available' ||
+        entry.installedEntryId !== undefined ||
+        statusState?.kind === 'ready' ||
+        statusState?.kind === 'fixed' ||
+        entry.installedVia !== undefined ||
+        entry.bundledBy !== undefined;
+      const updateEntry = entries.find(
+        (candidate) =>
+          candidate.id === (entry.installedEntryId ?? entry.id) &&
+          updateIds.has(candidate.id),
+      );
+      const updateReason = updateDisabledReason?.(entry);
+      // Dimming follows the live status, its plugin's for a bundled skill.
+      const dimmingState = entryStatus?.states[statusEntryIdOf(entry)];
+      const row = (unshareItem?: CustomizeRowMenuItem): ReactNode => (
+        <CustomizeInstalledRow
+          entry={entry}
+          sectionId={section.id}
+          primaryTestId={
+            section.id === 'browse' ? `plugins-entry-${entry.id}` : undefined
+          }
+          menuTestId={
+            section.id === 'browse'
+              ? `plugins-entry-menu-${entry.id}`
+              : undefined
+          }
+          selected={entry.id === selectedEntryId}
+          showEntryType={section.showEntryTypes}
+          onSelect={onSelectEntry}
+          href={hrefForEntry?.(entry)}
+          menuItems={[
+            ...menuItems(entry, section.id, connect),
+            ...(unshareItem ? [unshareItem] : []),
+          ]}
+          status={
+            isBundledSkill(entry) ? (
+              <span
+                data-testid="customize-row-status-slot"
+                className="flex w-36 shrink-0 justify-end"
+              >
+                {dimmingState?.kind === 'ready' &&
+                dimmingState.item.status !== null ? (
+                  <InstalledItemStatusPicker
+                    itemName={entry.name}
+                    status={dimmingState.item.status}
+                    disabledReason={bundledSkillStatusReason(
+                      entry.bundledBy.name,
+                    )}
+                    testId={`plugins-entry-status-${entry.id}`}
+                  />
+                ) : dimmingState?.kind === 'loading' && entryStatus ? (
+                  <InstalledItemStatusControl
+                    itemName={entry.name}
+                    state={dimmingState}
+                    pendingKeys={entryStatus.pendingKeys}
+                    testId={`plugins-entry-status-${entry.id}`}
+                  />
+                ) : (
+                  <InstalledItemStatusUnavailable
+                    itemName={entry.name}
+                    reason={bundledSkillStatusReason(entry.bundledBy.name)}
+                    testId={`plugins-entry-status-${entry.id}-unavailable`}
+                  />
+                )}
+              </span>
+            ) : section.id === 'browse' && !installed && onAddEntry ? (
+              <span className="flex w-36 shrink-0 justify-end">
+                <Button
+                  size="compact"
+                  type="button"
+                  data-testid={`plugins-entry-add-${entry.id}`}
+                  aria-label={`${collection ? 'Add' : 'Install'} ${entry.name}`}
+                  onClick={() => onAddEntry(entry)}
+                >
+                  {collection ? 'Add' : 'Install'}
+                </Button>
+              </span>
+            ) : (
+              (renderStatus?.(entry) ??
+              renderWorkflowControls(entry) ??
+              (entryStatus && showStatusControl ? (
                 <span
                   data-testid="customize-row-status-slot"
                   className="flex w-36 shrink-0 justify-end"
                 >
-                  {showStatusControl ? (
-                    <InstalledItemStatusControl
-                      itemName={entry.name}
-                      state={statusState}
-                      pendingKeys={entryStatus.pendingKeys}
-                      onSetStatus={entryStatus.onSetStatus}
-                      onError={entryStatus.onError}
-                      testId={`plugins-entry-status-${entry.id}`}
-                    />
-                  ) : statusState === undefined &&
-                    alwaysAvailableReason(entry) !== undefined ? (
-                    <InstalledItemStatusPicker
-                      itemName={entry.name}
-                      status="available"
-                      disabledReason={alwaysAvailableReason(entry)}
-                      testId={`plugins-entry-status-${entry.id}`}
-                    />
-                  ) : null}
+                  <InstalledItemStatusControl
+                    itemName={entry.name}
+                    state={statusState}
+                    pendingKeys={entryStatus.pendingKeys}
+                    onSetStatus={entryStatus.onSetStatus}
+                    onError={entryStatus.onError}
+                    testId={`plugins-entry-status-${entry.id}`}
+                  />
                 </span>
-              )))
-          )
-        }
-        McpServerLogoComponent={McpServerLogoComponent}
-        onConnect={connect}
-        connectName={signIn?.name}
-        // Dimming follows the live status, not the filter snapshot.
-        dimmed={
-          section.id === 'installed' &&
-          dimmingState?.kind === 'ready' &&
-          dimmingState.item.status === 'disabled'
-        }
-        actions={
-          (section.id === 'updates' || section.id === 'installed') &&
-          updateIds.has(entry.id) &&
-          onUpdateEntry
-            ? renderUpdateAction(entry)
-            : section.id === 'shared-by-me'
-              ? renderSharedActions?.(entry)
-              : undefined
-        }
-      />
-    );
-  }
-
-  function renderUpdateAction(entry: UnifiedPluginEntry): ReactNode {
-    const updating = busyIds.has(entry.id);
-    const version = displayVersion(entry.latestVersion);
-    return (
-      <Tooltip label={version ? `Update to ${version}` : 'Update available'}>
-        <Button
-          iconOnly
-          size="sm"
-          variant="ghost-quiet"
-          data-testid={`customize-update-${entry.id}`}
-          aria-label={`Update ${entry.name}`}
-          disabled={updating || batchRunning}
-          aria-busy={updating}
-          onClick={() => void updateOne(entry)}
-        >
-          <DownloadIcon width={14} height={14} aria-hidden="true" />
-        </Button>
-      </Tooltip>
-    );
-  }
+              ) : undefined))
+            )
+          }
+          McpServerLogoComponent={McpServerLogoComponent}
+          onConnect={connect}
+          connectName={signIn?.name}
+          // Dimming follows the live status, not the filter snapshot.
+          dimmed={
+            section.id === 'installed' &&
+            dimmingState?.kind === 'ready' &&
+            dimmingState.item.status === 'disabled'
+          }
+          actions={
+            section.id === 'browse' &&
+            installed &&
+            (updateEntry || (collection && entry.updateAvailable)) &&
+            (onUpdateEntry || updateReason)
+              ? renderUpdateAction(updateEntry ?? entry)
+              : (section.id === 'updates' && (onUpdateEntry || updateReason)) ||
+                  (section.id === 'installed' &&
+                    updateIds.has(entry.id) &&
+                    onUpdateEntry)
+                ? renderUpdateAction(entry)
+                : undefined
+          }
+        />
+      );
+      return section.id === 'shared-by-me'
+        ? (renderSharedActions?.(entry, row) ?? row())
+        : row();
+    },
+    [
+      onConnectEntry,
+      signInTarget,
+      entryStatus,
+      entries,
+      updateIds,
+      updateDisabledReason,
+      selectedEntryId,
+      onSelectEntry,
+      hrefForEntry,
+      menuItems,
+      onAddEntry,
+      renderStatus,
+      renderWorkflowControls,
+      McpServerLogoComponent,
+      onUpdateEntry,
+      renderUpdateAction,
+      renderSharedActions,
+    ],
+  );
 
   function renderInstalled(section: CustomizeSectionModel): ReactNode {
     const state = section.inventoryState ?? 'ready';
@@ -993,19 +1189,24 @@ export function CustomizeTabSections(
               {INSTALLED_ITEM_STATUS_DESCRIPTION_LINE}
             </p>
           )}
-        {state === 'ready' && section.entries.length === 0 && (
-          <p
-            className="mt-3 text-s fg-secondary"
-            data-testid="customize-installed-empty"
-          >
-            {statusFilter
-              ? // A search narrows the filter too; its own copy says why.
-                searchActive
-                ? searchEmptyMessage
-                : installedStatusFilterEmptyText(statusFilter)
-              : 'Nothing is installed yet. Browse below to add an item.'}
-          </p>
-        )}
+        {state === 'ready' &&
+          section.entries.length === 0 &&
+          (emptyState && !searchActive && !statusFilter ? (
+            emptyState
+          ) : (
+            <EmptyStateRow
+              testId="customize-installed-empty"
+              title={
+                statusFilter
+                  ? searchActive
+                    ? searchEmptyMessage
+                    : installedStatusFilterEmptyText(statusFilter)
+                  : tab === 'collection'
+                    ? 'No collections yet. Add a collection to group items you use together.'
+                    : 'Nothing is installed yet. Browse below to add an item.'
+              }
+            />
+          ))}
         {section.entries.length > 0 && (
           <CustomizeInstalledList
             sectionId={section.id}
@@ -1027,6 +1228,7 @@ export function CustomizeTabSections(
           </p>
         )}
         {section.footnote &&
+          tab !== 'collection' &&
           state === 'ready' &&
           section.entries.length > 0 && (
             <p
@@ -1072,7 +1274,22 @@ export function CustomizeTabSections(
     );
   }
 
+  const renderBrowseEntry = useCallback(
+    (entry: UnifiedPluginEntry): ReactNode =>
+      renderRow(entry, { id: 'browse', showEntryTypes: tab === 'all' }),
+    [renderRow, tab],
+  );
+
   function renderBrowse(section: CustomizeSectionModel): ReactNode {
+    if (tab === 'collection') {
+      return (
+        <CustomizeInstalledList
+          sectionId={section.id}
+          entries={section.entries}
+          renderRow={(entry) => renderRow(entry, section)}
+        />
+      );
+    }
     const sections: PluginsDiscoverySection[] = section.groups
       ? section.groups.map((group) =>
           groupSection(group, section.showEntryTypes, onExpandBrowseGroup),
@@ -1086,9 +1303,11 @@ export function CustomizeTabSections(
           },
         ];
     return (
-      <div className="mt-3">
+      <div className={section.groups ? 'pt-1' : 'pt-3'}>
         <PluginsDiscoveryList
+          nested={section.groups !== undefined}
           sections={sections}
+          renderEntry={renderBrowseEntry}
           selectedEntryId={selectedEntryId}
           onSelectEntry={onSelectEntry}
           onAddEntry={onAddEntry}
@@ -1102,14 +1321,14 @@ export function CustomizeTabSections(
               : searchEmptyMessage
           }
           McpServerLogoComponent={McpServerLogoComponent}
-          showPipelineSources={showPipelineSources}
           hrefForEntry={hrefForEntry}
-          installedAction="label"
           entryStatus={entryStatus}
         />
       </div>
     );
   }
+
+  if (loading) return <PluginsDiscoveryListLoading />;
 
   const remainingBrowseActions =
     tab === 'workflow' &&
@@ -1175,6 +1394,7 @@ export function CustomizeTabSections(
               ? undefined
               : section.count
           }
+          footnote={tab === 'collection' ? section.footnote : undefined}
           actions={
             section.id === 'updates' && model.showUpdateAll && onUpdateEntry ? (
               <Button
@@ -1187,6 +1407,21 @@ export function CustomizeTabSections(
               >
                 {batchRunning ? 'Updating…' : 'Update all'}
               </Button>
+            ) : section.id === 'installed' ? (
+              <div className="flex items-center gap-2">
+                {installedActions}
+                {tab === 'collection' && onCreateCollection && (
+                  <Button
+                    size="compact"
+                    type="button"
+                    data-testid="customize-add-collection"
+                    onClick={onCreateCollection}
+                    variant="secondary"
+                  >
+                    Add collection
+                  </Button>
+                )}
+              </div>
             ) : section.id === 'browse' && tab === 'workflow' ? (
               browseActions
             ) : undefined

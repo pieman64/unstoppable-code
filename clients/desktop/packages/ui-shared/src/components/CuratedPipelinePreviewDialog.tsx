@@ -28,7 +28,7 @@ export function CuratedPipelinePreviewDialog({
       maxWidth="3xl"
       dataTestId="curated-pipeline-preview-dialog"
     >
-      <div className="px-5 pb-5">
+      <div className="">
         {breadcrumbs}
         <CuratedPipelineCatalog {...catalog} rows={[]} />
       </div>

@@ -6,6 +6,7 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Notice } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -23,13 +24,11 @@ import {
   resolveSelectedStep,
   type SelectedStepRef,
 } from '@/lib/pipelineAttemptTimeline';
+import { Badge, StatusGlyph } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '../../shared/loading/spinners/LoadingSpinner';
 import { AnsiOutput } from '../AnsiOutput';
 import { PipelineTimer } from '../PipelineTimer';
-import {
-  getPipelineJobStatusBadgeClassName,
-  getPipelineJobStatusDotClassName,
-} from '../utils';
+import { pipelineStatusBadge, pipelineStatusGlyphState } from '../utils';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { TerminalModeBanner } from './TerminalModeBanner';
 import { KeyValueTable, TimingSummaryGrid } from './PipelineStepDetailParts';
@@ -225,11 +224,9 @@ function InlineMatrixJobSummary({
             key={id}
             className="flex items-center gap-2 rounded px-1.5 py-0.5"
           >
-            <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(
-                result.status,
-              )}`}
-              aria-hidden="true"
+            <StatusGlyph
+              state={pipelineStatusGlyphState(result.status)}
+              size={12}
             />
             <span className="min-w-0 flex-1 truncate text-2xs fg-primary/80">
               {definition.name}
@@ -411,17 +408,11 @@ export function PipelineExecutionInlineDetail({
   return (
     <div className="ml-2 border-l-2 border-line-accent pl-3">
       {state?.error && (
-        <div
-          className="mb-2 rounded-lg border border-fg-destructive-strong/30 bg-destructive-subtle px-3 py-2"
-          role="alert"
-        >
-          <div className="mb-0.5 text-2xs font-medium fg-destructive-strong">
-            Execution error
-          </div>
-          <div className="whitespace-pre-wrap break-words font-mono text-2xs fg-destructive-strong">
+        <Notice intent="destructive" title="Execution error" className="mb-2">
+          <span className="whitespace-pre-wrap break-words font-mono">
             {state.error}
-          </div>
-        </div>
+          </span>
+        </Notice>
       )}
       {!state ? (
         <div className="flex min-h-30 items-center justify-center text-s fg-secondary">
@@ -469,19 +460,19 @@ export function PipelineExecutionInlineDetail({
                               {jobId}
                             </div>
                           </div>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getPipelineJobStatusBadgeClassName(
+                          <Badge
+                            {...pipelineStatusBadge(
                               group?.status ?? jobResult?.status ?? 'pending',
-                            )}`}
+                            )}
                           >
                             {group?.status ?? jobResult?.status ?? 'pending'}
-                          </span>
+                          </Badge>
                         </div>
 
                         <div className="mb-3 flex flex-wrap gap-2 text-2xs fg-secondary">
                           {jobDef.max_retries > 0 && (
                             <span>
-                              Retry {jobResult?.retry_count ?? 0}/
+                              Retries {jobResult?.retry_count ?? 0}/
                               {jobDef.max_retries}
                             </span>
                           )}
@@ -630,11 +621,13 @@ export function PipelineExecutionInlineDetail({
                                               Error
                                             </span>
                                           )}
-                                          <span
-                                            className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getPipelineJobStatusBadgeClassName(stepResult?.status ?? 'pending')}`}
+                                          <Badge
+                                            {...pipelineStatusBadge(
+                                              stepResult?.status ?? 'pending',
+                                            )}
                                           >
                                             {stepResult?.status ?? 'pending'}
-                                          </span>
+                                          </Badge>
                                         </div>
                                       </button>
                                       {isSelected && (

@@ -99,6 +99,12 @@ test('Files settings: collapsible sections and the Labels editor', async () => {
     await matcherStop.check();
     await expect(matcherStop).toBeChecked();
     await matcherStop.uncheck();
+    // The caption is the switch's label: clicking it flips the switch.
+    await seededMatcher
+      .getByText("Don't keep matching", { exact: true })
+      .click();
+    await expect(matcherStop).toBeChecked();
+    await matcherStop.uncheck();
 
     // Custom matchers can be added to seeded buckets (with validation:
     // submitting an empty pattern via Enter surfaces the inline error).

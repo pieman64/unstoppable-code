@@ -5,7 +5,13 @@ import {
   listCapabilityPackageExecutablePaths,
 } from '@canopy/protocol/pipelines';
 import { useId, useState, type JSX, type ReactNode } from 'react';
-import { Button, RichHoverTooltip } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  Button,
+  Checkbox,
+  RichHoverTooltip,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import { QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import {
   formatPipelinePackageExecutableFiles,
@@ -101,8 +107,6 @@ function AnalysisFailureReason({
   );
 }
 
-const BADGE_CLASS =
-  'inline-flex items-center rounded-md px-1.5 py-0.5 text-3xs font-medium';
 const DISCLOSURE_CLASS =
   'focus-ring rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline';
 
@@ -823,13 +827,12 @@ function DependencyRow({
         {required ? (
           <span aria-hidden="true" className="h-4 w-4 shrink-0" />
         ) : (
-          <input
-            type="checkbox"
+          <Checkbox
             checked={checked}
             disabled={disabled}
             onChange={onToggle}
             aria-label={`Include ${resource.displayName}`}
-            className="mt-0.5 h-4 w-4 shrink-0 rounded"
+            className="mt-0.5"
           />
         )}
         <div className="min-w-0 flex-1 space-y-1">
@@ -837,16 +840,8 @@ function DependencyRow({
             <span className="text-s font-medium fg-primary">
               {resource.displayName}
             </span>
-            <span
-              className={`${BADGE_CLASS} bg-fg-primary/[0.06] fg-secondary`}
-            >
-              {pipelinePackageKindLabel(resource.kind)}
-            </span>
-            {badge && (
-              <span className={`${BADGE_CLASS} bg-warning-subtle fg-warning`}>
-                {badge}
-              </span>
-            )}
+            <Badge>{pipelinePackageKindLabel(resource.kind)}</Badge>
+            {badge && <Badge tone="warning">{badge}</Badge>}
           </div>
           <p className="text-xs fg-secondary">
             {resource.sourceLabel} ·{' '}
@@ -991,8 +986,7 @@ function PackagedPipelineList({
                 data-included={shipped ? 'true' : 'false'}
               >
                 {choosable ? (
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={selectedPipelineKeys.includes(pipeline.key)}
                     disabled={disabled}
                     onChange={(): void => {
@@ -1000,7 +994,7 @@ function PackagedPipelineList({
                     }}
                     aria-label={`Include ${pipeline.name}`}
                     data-testid={`${testIdPrefix}-dependencies-pipeline-toggle-${pipeline.key}`}
-                    className="mt-0.5 h-4 w-4 shrink-0 rounded"
+                    className="mt-0.5"
                   />
                 ) : anyChoosable ? (
                   <span aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -1024,23 +1018,22 @@ function PackagedPipelineList({
         </ul>
       )}
       {pipelineAdd !== undefined && addable.length > 0 && (
-        <select
-          value=""
+        // An action menu: nothing stays chosen, the placeholder always shows.
+        <SettingsSelect
+          value={null}
+          placeholder={ADD_PIPELINE_PLACEHOLDER}
+          width="fill"
           disabled={disabled || adding}
-          onChange={(event): void => {
-            add(event.target.value);
+          onValueChange={(value): void => {
+            add(value);
           }}
           aria-label={ADD_PIPELINE_LABEL}
           data-testid={`${testIdPrefix}-dependencies-pipeline-add`}
-          className="focus-ring w-full rounded-md border bg-base px-2 py-1.5 text-xs fg-primary disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <option value="">{ADD_PIPELINE_PLACEHOLDER}</option>
-          {addable.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.name}
-            </option>
-          ))}
-        </select>
+          options={addable.map((option) => ({
+            value: option.id,
+            label: option.name,
+          }))}
+        />
       )}
       {addError !== null && (
         <p
@@ -1087,11 +1080,7 @@ function WithheldFileList({
             <span className="min-w-0 break-all fg-primary">
               {withheldFileLabel(file)}
             </span>
-            <span
-              className={`${BADGE_CLASS} bg-fg-primary/[0.06] fg-secondary`}
-            >
-              {WITHHELD_REASON_LABELS[file.reason]}
-            </span>
+            <Badge>{WITHHELD_REASON_LABELS[file.reason]}</Badge>
           </li>
         ))}
       </ul>
@@ -1136,16 +1125,10 @@ function RecipientSetupList({
                 <span className="text-s fg-primary">
                   {requirement.displayName}
                 </span>
-                <span
-                  className={`${BADGE_CLASS} bg-fg-primary/[0.06] fg-secondary`}
-                >
+                <Badge>
                   {pipelinePackageRequirementKindLabel(requirement.kind)}
-                </span>
-                {requirement.required && (
-                  <span className={`${BADGE_CLASS} bg-accent-subtle fg-accent`}>
-                    Required
-                  </span>
-                )}
+                </Badge>
+                {requirement.required && <Badge>Required</Badge>}
               </div>
               <p className="mt-0.5 text-xs fg-secondary">
                 {requirement.setupHint}

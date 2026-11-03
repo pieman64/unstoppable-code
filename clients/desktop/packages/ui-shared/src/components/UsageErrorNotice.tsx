@@ -183,7 +183,7 @@ export function UsageErrorNotice({
                     onClick={onRetry}
                     disabled={retrying || (isRateLimited && waitingForRetry)}
                   >
-                    {retrying ? 'Retrying…' : 'Try again'}
+                    {retrying ? 'Trying again…' : 'Try again'}
                   </NoticeButton>
                 )}
               </>

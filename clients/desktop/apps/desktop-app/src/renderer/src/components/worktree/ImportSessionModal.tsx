@@ -11,7 +11,15 @@ import type {
   ChatSessionImportRepoSummary,
   SessionCloudExportSummary,
 } from '@canopy/desktop-shared/types';
-import { BusyLabel, Button, Notice } from '@canopy/ui-shared/components';
+import {
+  BusyLabel,
+  Button,
+  ChoiceField,
+  Fact,
+  FactList,
+  Notice,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { DialogModal } from '../shared';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
@@ -313,7 +321,7 @@ export function ImportSessionModal({
       closeOnBackdrop={!isBusy}
       dataTestId="import-session-modal"
     >
-      <div className="max-h-[75vh] space-y-4 overflow-y-auto px-5 py-4 text-s fg-primary">
+      <div className="max-h-[75vh] space-y-4 overflow-y-auto text-s fg-primary">
         <Notice intent="attention" role="none" title="Exports are not redacted">
           They hold the full transcript and uncommitted repository changes, are
           private to your account, and leave out unpushed commits.
@@ -321,19 +329,13 @@ export function ImportSessionModal({
 
         {phase === 'list' && (
           <div className="space-y-3" data-testid="import-session-cloud-list">
-            <label className="block space-y-1.5">
-              <span className="text-xs font-medium fg-secondary">
-                Search exports
-              </span>
-              <input
-                type="search"
-                value={search}
-                onChange={(event): void => setSearch(event.target.value)}
-                placeholder="Search by session title"
-                data-testid="import-session-cloud-search"
-                className="focus-ring w-full rounded-lg border bg-card px-3 py-2 text-s fg-primary placeholder:fg-secondary"
-              />
-            </label>
+            <SearchField
+              value={search}
+              onValueChange={setSearch}
+              aria-label="Search exports"
+              placeholder="Search by session title"
+              data-testid="import-session-cloud-search"
+            />
 
             {isLoadingList ? (
               <div className="flex items-center justify-center gap-2 py-10 text-s fg-secondary">
@@ -427,24 +429,21 @@ export function ImportSessionModal({
                 <div className="text-s font-medium break-words">
                   {inspection.manifestSummary.title}
                 </div>
-                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs fg-secondary">
-                  <dt>Provider</dt>
-                  <dd className="fg-primary">
+                <FactList columnGap="3" rowGap="1" labelTone="secondary">
+                  <Fact label="Provider">
                     {formatProvider(inspection.manifestSummary.provider)}
-                  </dd>
-                  <dt>Exported</dt>
-                  <dd className="fg-primary">
+                  </Fact>
+                  <Fact label="Exported">
                     {formatDateTime(inspection.manifestSummary.exportedAt)}
-                  </dd>
-                  <dt>Project</dt>
-                  <dd className="fg-primary">
+                  </Fact>
+                  <Fact label="Project">
                     {inspection.manifestSummary.workspaceType === 'multi-repo'
                       ? 'Multi-repo'
                       : inspection.manifestSummary.workspaceType === 'cowork'
                         ? 'Cowork'
                         : 'Single-repo'}
-                  </dd>
-                </dl>
+                  </Fact>
+                </FactList>
                 <RepoSummaryList repos={inspection.manifestSummary.repos} />
               </section>
 
@@ -562,18 +561,14 @@ export function ImportSessionModal({
                   (capability) =>
                     capability.status === 'missing' && capability.installable,
                 ) && (
-                  <label className="flex items-center gap-2 text-xs fg-primary">
-                    <input
-                      type="checkbox"
-                      checked={installMissingCapabilities}
-                      onChange={(event) =>
-                        setInstallMissingCapabilities(event.target.checked)
-                      }
-                      data-testid="import-session-install-missing"
-                      className="h-4 w-4 rounded"
-                    />
-                    Install missing plugins with the session
-                  </label>
+                  <ChoiceField
+                    checked={installMissingCapabilities}
+                    onChange={(event) =>
+                      setInstallMissingCapabilities(event.target.checked)
+                    }
+                    data-testid="import-session-install-missing"
+                    label="Install missing plugins with the session"
+                  />
                 )}
                 <p className="text-xs fg-secondary">
                   Missing setup is reported but does not block import.

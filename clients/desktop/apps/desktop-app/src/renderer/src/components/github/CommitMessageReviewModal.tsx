@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/shallow';
 import { useGitHubStore } from '@/stores/githubStore';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
+import { FormField, TextArea } from '@canopy/ui-shared/components';
 
 interface CommitMessageReviewModalProps {
   projectId: string;
@@ -77,6 +78,7 @@ export const CommitMessageReviewModal = memo(function CommitMessageReviewModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={handleCancel}
       title="Review commit messages"
       subtitle={
@@ -86,23 +88,33 @@ export const CommitMessageReviewModal = memo(function CommitMessageReviewModal({
       }
       maxWidth="xl"
     >
-      <div className="flex flex-col gap-4 overflow-y-auto p-5">
+      <div className="flex flex-col gap-4 overflow-y-auto p-6">
         {pendingEntry.repos.map((repo, index) => (
           <div
             key={repo.repoId ?? repo.repoName}
             className="flex flex-col gap-1.5"
           >
-            {isMultiRepo && (
-              <label className="text-xs font-medium fg-secondary">
-                {repo.repoName}
-              </label>
+            {isMultiRepo ? (
+              <FormField label={repo.repoName}>
+                {(control) => (
+                  <TextArea
+                    {...control}
+                    rows={4}
+                    value={editedMessages[index] ?? repo.message}
+                    onChange={(e) => handleMessageChange(index, e.target.value)}
+                    placeholder="Enter commit message…"
+                  />
+                )}
+              </FormField>
+            ) : (
+              <TextArea
+                aria-label="Commit message"
+                rows={4}
+                value={editedMessages[index] ?? repo.message}
+                onChange={(e) => handleMessageChange(index, e.target.value)}
+                placeholder="Enter commit message…"
+              />
             )}
-            <textarea
-              className="min-h-25 w-full resize-y rounded-md border bg-secondary/50 px-3 py-2 text-s fg-primary placeholder:fg-secondary focus:border-line-accent focus:outline-none focus:ring-1 focus:ring-line-accent"
-              value={editedMessages[index] ?? repo.message}
-              onChange={(e) => handleMessageChange(index, e.target.value)}
-              placeholder="Enter commit message…"
-            />
           </div>
         ))}
       </div>

@@ -63,23 +63,29 @@ describe('HookActionEditor Codex speed', () => {
     });
   }
 
-  function shellSelect(platform: string): HTMLSelectElement {
+  function shellTrigger(platform: string): HTMLElement {
     const element = container.querySelector(
-      `select[aria-label="Command action ${platform} shell"]`,
+      `[role="combobox"][aria-label="Command action ${platform} shell"]`,
     );
-    expect(element).not.toBeNull();
-    if (!(element instanceof HTMLSelectElement)) {
+    if (!(element instanceof HTMLElement)) {
       throw new Error(`Missing ${platform} shell selector`);
     }
     return element;
   }
 
+  function openShellOptions(platform: string): HTMLElement[] {
+    act(() => shellTrigger(platform).click());
+    return Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="option"]'),
+    );
+  }
+
   function changeShell(platform: string, value: string): void {
-    act(() => {
-      const element = shellSelect(platform);
-      element.value = value;
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    const option = openShellOptions(platform).find(
+      (element) => element.dataset.value === value,
+    );
+    if (!option) throw new Error(`Missing ${platform} option ${value}`);
+    act(() => option.click());
   }
 
   it('edits Linux command shells without changing Windows or Mac overrides', async () => {
@@ -93,17 +99,18 @@ describe('HookActionEditor Codex speed', () => {
         },
       ],
     });
-    expect(shellSelect('Linux').value).toBe('zsh');
+    expect(shellTrigger('Linux').dataset.value).toBe('zsh');
     expect(
-      Array.from(shellSelect('Linux').options, ({ value, text }) => [
-        value,
-        text,
+      openShellOptions('Linux').map((option) => [
+        option.dataset.value,
+        option.textContent,
       ]),
     ).toEqual([
       ['', 'Default (Bash)'],
       ['bash', 'bash'],
       ['zsh', 'zsh'],
     ]);
+    act(() => shellTrigger('Linux').click());
     changeShell('Linux', 'bash');
     expect(latest['pr:create']?.[0]).toMatchObject({
       shell: { windows: 'cmd', mac: 'bash', linux: 'bash' },
@@ -133,7 +140,7 @@ describe('HookActionEditor Codex speed', () => {
         { uiId: 'command-hook', type: 'command', command: 'echo hook' },
       ],
     });
-    expect(shellSelect('Linux').value).toBe('');
+    expect(shellTrigger('Linux').dataset.value).toBe('');
     expect(latest['pr:create']?.[0]).not.toHaveProperty('shell');
     changeShell('Linux', 'zsh');
     expect(latest['pr:create']?.[0]).toMatchObject({ shell: { linux: 'zsh' } });

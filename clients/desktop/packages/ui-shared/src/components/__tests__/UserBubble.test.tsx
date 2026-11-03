@@ -110,7 +110,7 @@ describe('UserBubble', () => {
     expect(html).not.toContain('user-bubble-timestamp');
   });
 
-  it('renders the copy and revert actions with the same badge chrome as the leading indicator', () => {
+  it('renders the copy and revert actions on the same surface as the leading indicator', () => {
     const container = document.createElement('div');
     container.innerHTML = renderToStaticMarkup(
       <UserBubble
@@ -122,12 +122,17 @@ describe('UserBubble', () => {
       </UserBubble>,
     );
 
-    // Size differs by role (compact indicator vs. pointer-sized actions);
-    // the surface, shape, and elevation must not. The badges overlap a bubble
-    // on the same quaternary surface, so they carry the house hairline ring to
-    // stay legible against it in dark mode.
-    const badgeChrome =
-      'flex items-center justify-center rounded-full bg-quaternary fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-secondary';
+    // The leading indicator is a badge; the two actions are the 28px
+    // secondary icon Button. Size and ink differ by role; the round shape,
+    // quaternary surface, elevation and house hairline ring (legible over the
+    // bubble in dark mode) must not.
+    const sharedSurface = [
+      'rounded-full',
+      'bg-quaternary',
+      'shadow-sm',
+      'ring-[length:var(--border-hairline)]',
+      'ring-line-secondary',
+    ];
     const leading = container.querySelector(
       '[data-testid="demo-leading"]',
     )?.parentElement;
@@ -140,8 +145,20 @@ describe('UserBubble', () => {
 
     for (const element of [leading, revert, copy]) {
       expect(element).not.toBeNull();
-      expect(element?.getAttribute('class')).toContain(badgeChrome);
+      const classes = (element?.getAttribute('class') ?? '').split(/\s+/);
+      for (const token of sharedSurface) {
+        expect(classes).toContain(token);
+      }
     }
+    // Both actions use one recipe, so they cannot drift apart.
+    expect(revert?.getAttribute('class')).toBe(copy?.getAttribute('class'));
+    // On a coarse pointer each Button's hit area reaches 8px past its sides,
+    // so the cluster spaces them 16px apart: the two 44px targets meet
+    // without overlapping, and a tap near Revert never runs Copy.
+    const cluster = container.querySelector('[data-bubble-actions]');
+    expect(cluster?.getAttribute('class')?.split(/\s+/)).toContain(
+      'pointer-coarse:gap-4',
+    );
   });
 
   /**
@@ -303,10 +320,14 @@ describe('UserBubble', () => {
      *
      * Each badge is `h-7 w-7` (28px) with `gap-1` (4px), and the cluster is
      * inset `right-1` (4px): one badge needs 32px of clearance, two need 64px,
-     * plus 4px of breathing room.
+     * plus 4px of breathing room. On a coarse pointer the gap is `gap-4`
+     * (16px), so two badges need 76px plus the same 4px.
      */
     it('reserves clearance for the in-bubble cluster on phone', () => {
       expect(classOf(renderAt('phone'), SURFACE)).toContain('pr-17');
+      expect(classOf(renderAt('phone'), SURFACE)).toContain(
+        'pointer-coarse:pr-20',
+      );
       expect(
         classOf(renderAt('phone', { onRevert: false }), SURFACE),
       ).toContain('pr-9');

@@ -10,28 +10,36 @@ import type {
   CursorConnectionStatus,
 } from '@canopy/desktop-shared/types';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
-import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ProviderStatusDot,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { GrokUnifyHint } from './GrokUnifyHint';
 import { ProviderCarryoverNote } from './ProviderCarryoverNote';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
 /**
- * Only app-authored messages reach the alert. Anything carrying a filesystem
- * path or an OS error code (ENOENT, EACCES, ...) falls back to generic copy.
+ * Only app-authored messages reach the banner. Anything carrying a filesystem
+ * path or an OS error code (ENOENT, EACCES, ...) falls back to our sentence,
+ * and the raw text goes to Copy details instead (docs/ux-writing.md).
  */
 function describeConnectionFailure(
   cause: unknown,
   fallback = 'Could not connect Cursor. Try again.',
-): string {
-  const message =
+): { message: string; details: string } {
+  const raw =
     cause instanceof Error
       ? cause.message.replace(
           /^Error invoking remote method '[^']+': (Error: )?/,
           '',
         )
       : '';
-  return message && !/[\\/]|\bE[A-Z]{3,}\b/.test(message) ? message : fallback;
+  if (raw && !/[\\/]|\bE[A-Z]{3,}\b/.test(raw)) {
+    return { message: raw, details: '' };
+  }
+  return { message: fallback, details: raw };
 }
 
 interface CursorConnectionProps {
@@ -75,6 +83,7 @@ export function CursorConnection({
   // affordance re-arms the probe effect itself.
   const [accountAttempt, setAccountAttempt] = useState(0);
   const [error, setError] = useState('');
+  const [errorDetails, setErrorDetails] = useState('');
   const connected = Boolean(status?.enabled && status.installed);
   const inProgress = connecting || changingAccount;
   const active = useRef(false);
@@ -152,6 +161,7 @@ export function CursorConnection({
     setBusy(true);
     setConnecting(true);
     setError('');
+    setErrorDetails('');
     try {
       const next = await api.connect();
       if (mounted.current) setStatus(next);
@@ -160,8 +170,11 @@ export function CursorConnection({
     } catch (cause) {
       if (mounted.current) {
         // An intentional Cancel rejects the connect call; that is not a failure.
-        if (!cancelRequested.current)
-          setError(describeConnectionFailure(cause));
+        if (!cancelRequested.current) {
+          const failure = describeConnectionFailure(cause);
+          setError(failure.message);
+          setErrorDetails(failure.details);
+        }
         const next = await api.status().catch(() => null);
         if (mounted.current && next) setStatus(next);
       }
@@ -181,6 +194,7 @@ export function CursorConnection({
     setBusy(true);
     setChangingAccount(true);
     setError('');
+    setErrorDetails('');
     try {
       const next = await api.changeAccount(intent);
       if (mounted.current) setStatus(next);
@@ -189,13 +203,14 @@ export function CursorConnection({
       if (mounted.current) {
         // Cancel is not a failure, but sign-out already happened: re-read the
         // account so the panel offers sign-in instead of claiming one.
-        if (!cancelRequested.current)
-          setError(
-            describeConnectionFailure(
-              cause,
-              'Could not change the Cursor account. Try again.',
-            ),
+        if (!cancelRequested.current) {
+          const failure = describeConnectionFailure(
+            cause,
+            'Could not change the Cursor account. Try again.',
           );
+          setError(failure.message);
+          setErrorDetails(failure.details);
+        }
         // A sign-out may already have happened, so stop naming the old
         // account immediately; clearing both re-arms the probe effect, which
         // owns the re-read. A second explicit read here would only race it.
@@ -228,6 +243,7 @@ export function CursorConnection({
     active.current = true;
     setBusy(true);
     setError('');
+    setErrorDetails('');
     try {
       await api.disconnect();
       const next = await api.status();
@@ -410,8 +426,8 @@ export function CursorConnection({
       label={
         <span className="inline-flex items-center gap-2">
           <CursorIcon
+            size="md"
             data-testid="cursor-connection-logo"
-            size={16}
             className="shrink-0 fg-primary"
             aria-hidden
           />
@@ -503,11 +519,11 @@ export function CursorConnection({
           <p>{downloadSize}Your Cursor plan and usage limits apply</p>
         </div>
       )}
-      {error && (
-        <p role="alert" className="text-xs fg-destructive">
-          {error}
-        </p>
-      )}
+      <ErrorBanner
+        error={error}
+        className=""
+        {...(errorDetails ? { details: errorDetails } : {})}
+      />
       {/* Grok's plans reach this app through a Cursor sign-in, so its hint
           shows wherever, and only where, Cursor can be connected. */}
       <GrokUnifyHint />

@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, type JSX, type RefObject } from 'react';
 import {
-  SearchIcon as AppCatalogSearchIcon,
   ChevronTopMediumIcon as AppCatalogChevronTopMediumIcon,
   ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '../icons/AppIcons';
 import { Button } from './Button';
+import { SearchField } from './SearchField';
 
 export interface SearchBarProps {
   query: string;
@@ -26,16 +26,6 @@ export interface SearchBarProps {
   label?: string;
   /** Input placeholder; defaults to `Search…`. */
   placeholder?: string;
-}
-
-function SearchIcon(): JSX.Element {
-  return (
-    <AppCatalogSearchIcon
-      width="14"
-      height="14"
-      className="shrink-0 fg-secondary"
-    />
-  );
 }
 
 function ChevronUpIcon(): JSX.Element {
@@ -97,39 +87,24 @@ export function SearchBar({
       className={`flex items-center gap-1.5 ${className}`}
       data-testid="content-search-bar"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-md border bg-base/80 px-2 py-1">
-        <SearchIcon />
-        <input
-          ref={inputRef}
-          aria-label={label}
-          data-search-bar
-          type="text"
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={placeholder}
-          autoFocus={autoFocus}
-          className="min-w-0 flex-1 bg-transparent text-xs fg-primary outline-none placeholder:fg-secondary"
-        />
-        {query.length > 0 && (
-          <button
-            type="button"
-            onClick={() => onQueryChange('')}
-            className="shrink-0 rounded-sm p-0.5 fg-secondary transition-colors hover:fg-primary"
-            aria-label="Clear search"
-          >
-            <CloseIcon />
-          </button>
-        )}
-        {hasQuery && (
-          <span
-            className="shrink-0 text-3xs tabular-nums fg-secondary"
-            aria-live="polite"
-          >
-            {counterText}
-          </span>
-        )}
-      </div>
+      {/* A find bar: the text field keeps its textbox role, and Escape
+          belongs to the host (it closes the bar), not to clearing. */}
+      <SearchField
+        ref={inputRef}
+        inputType="text"
+        aria-label={label}
+        data-search-bar
+        value={query}
+        onValueChange={onQueryChange}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        clearOnEscape={false}
+        count={
+          hasQuery ? <span aria-live="polite">{counterText}</span> : undefined
+        }
+        className="flex-1"
+      />
       <Button
         variant="ghost"
         size="compact"

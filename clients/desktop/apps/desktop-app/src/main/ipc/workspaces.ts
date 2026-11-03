@@ -6,7 +6,24 @@ import { mkdir, rm } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import {
+  projectedWorkspaceMetadataCommands,
+  type ProjectedWorkspaceMetadataCommands,
+} from '../canopy-runtime/workspace-metadata-dispatch';
+import {
+  projectedWorkspaceLifecycleCommands,
+  type ProjectedWorkspaceLifecycleCommands,
+} from '../canopy-runtime/workspace-lifecycle-dispatch';
+import {
+  projectedSourceCompositionCommands,
+  type ProjectedSourceCompositionCommands,
+} from '../canopy-runtime/source-composition-dispatch';
+import { inferCloneRepoName } from '../lib/git-clone-progress';
 import type { DesktopIpcCallerResolver } from './file-tree';
+import {
+  projectedWorkspaceGuardedCommands,
+  type ProjectedWorkspaceGuardedCommands,
+} from '../canopy-runtime/workspace-guarded-dispatch';
 import {
   IPC_CHANNELS,
   type AddWorkspaceFromFolderCheck,
@@ -109,12 +126,11 @@ import { assertNotSplitLocked } from '../services/split-lock-service';
 import { WORKTREE_LIST_STORAGE, withStorageAdmission } from '../lib/w5-storage';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
 import { reconcileWorktreeRecovery } from '../lib/worktree-repair';
+import { settleWorktreeGitSetup } from '../lib/worktree-git-setup';
 import { getOrgMemberMultiRepoSync } from '../lib/org-member-multi-repo-sync-deps';
 import { resolveProjectStartPage } from '../lib/project-start-page';
 import { assertStartPageFeatureEnabled } from '../lib/start-page-feature-flag';
-import { updateWorkspaceMetadata } from '../lib/workspace-metadata';
 import { convertWorkspaceType } from '../lib/workspace-type-conversion';
-import { updateWorkspaceRetention } from '../lib/workspace-retention';
 import { saveDefaultPluginsAndVisibility } from '../lib/workspace-default-plugins-save';
 import { readWorkspaceRepoOrThrow } from '../lib/workspace-script-config';
 import { setWorkspacePrivateMemory } from '../memory/local/private-memory-setting';
@@ -124,7 +140,7 @@ import { registerIpcHandler } from './register';
 import { archiveWorktree } from '../lib/worktree-archive';
 import { withTypedArchiveRefusal } from '../lib/worktree-discard';
 import { readWorkspaceScriptCommands } from '../lib/script-source-info';
-import { updateWorkspaceScripts } from '../lib/workspace-script-hook-settings';
+import { mergeWorkspaceScriptCommands } from '../lib/script-definition-saves';
 import { triggerDiscovery } from './worktree-discovery';
 import { readPreferencesFile } from './preferences';
 import {
@@ -152,7 +168,7 @@ import {
 import { readWorkspaceDriftSummary } from '../lib/workspace-drift';
 import { applySourceChanges } from '../lib/workspace-source-changes';
 import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
-import { computeWorkspaceReadinessIssues } from '../lib/workspace-readiness';
+import { computeWorkspaceReadinessAudit } from '../lib/workspace-readiness';
 import {
   initializeWorkspaceSourceRepo,
   repairWorkspaceRootWorktree,
@@ -192,10 +208,6 @@ import {
   createSplitTemporaryWorkspaceDestructiveApproval,
 } from '../lib/split-temporary-workspace-approval';
 import { addRepoCheckoutToWorktree } from '../lib/workspace-repo-mutators';
-import {
-  addWorkspaceRepository,
-  removeWorkspaceRepository,
-} from '../lib/workspace-repositories';
 import { createWorktreeFromSelection } from '../lib/worktree-creation';
 import { resolveWorktreeCreationSelection } from '../lib/worktree-creation-selection';
 import {
@@ -354,6 +366,34 @@ export function registerWorkspaceHandlers(
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
+  const metadataCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedWorkspaceMetadataCommands =>
+    projectedWorkspaceMetadataCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
+  const lifecycleCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedWorkspaceLifecycleCommands =>
+    projectedWorkspaceLifecycleCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
+  const guardedCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedWorkspaceGuardedCommands =>
+    projectedWorkspaceGuardedCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
+  const sourceCompositionCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedSourceCompositionCommands =>
+    projectedSourceCompositionCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
   registerIpcHandler(
     IPC_CHANNELS.workspaceCheckAddFromFolder,
     async (
@@ -366,13 +406,17 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceAddFromFolder,
     async (
-      _event,
+      event,
       request: AddWorkspaceFromFolderRequest,
     ): Promise<SidebarItem & ScriptActionsAddMetadata> => {
-      const { workspace, scriptActionsOperationId } = await createWorkspace({
-        source: 'folder',
-        variant: { kind: 'local-folder', folderPath: request.repoPath },
-      });
+      const { workspace, scriptActionsOperationId } = await lifecycleCommands(
+        event,
+      ).importFolder(request.repoPath, () =>
+        createWorkspace({
+          source: 'folder',
+          variant: { kind: 'local-folder', folderPath: request.repoPath },
+        }),
+      );
       return { ...workspace, scriptActionsOperationId };
     },
   );
@@ -380,24 +424,31 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceAddFromRemote,
     async (
-      _event,
+      event,
       request: AddWorkspaceFromRemoteRequest,
     ): Promise<SidebarItem & ScriptActionsAddMetadata> => {
       const { jobId } = request;
       const remoteUrl = normalizeRepositoryCloneUrl(request.remoteUrl);
       if (jobId !== undefined) validateId(jobId, 'jobId');
+      const commands = lifecycleCommands(event);
       const clone = async (
         progress?: AddWorkspaceFromRemoteProgress,
       ): Promise<SidebarItem & ScriptActionsAddMetadata> => {
-        const { workspace, scriptActionsOperationId } = await createWorkspace({
-          source: 'remote',
-          variant: {
-            kind: 'remote-clone',
-            remoteUrl,
-            destinationDir: request.destinationDir,
-            ...(progress ? { progress } : {}),
-          },
-        });
+        // The wire names what the clone names itself; the request runs as is.
+        const { workspace, scriptActionsOperationId } =
+          await commands.importRemote(
+            { remoteUrl, name: inferCloneRepoName(remoteUrl) },
+            () =>
+              createWorkspace({
+                source: 'remote',
+                variant: {
+                  kind: 'remote-clone',
+                  remoteUrl,
+                  destinationDir: request.destinationDir,
+                  ...(progress ? { progress } : {}),
+                },
+              }),
+          );
         return { ...workspace, scriptActionsOperationId };
       };
       // Typed outside the job so job snapshots keep the plain clone error.
@@ -433,13 +484,19 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceCreateNew,
     async (
-      _event,
+      event,
       request: CreateNewWorkspaceRequest,
     ): Promise<SidebarItem & ScriptActionsAddMetadata> => {
-      const { workspace, scriptActionsOperationId } = await createWorkspace({
-        source: 'new_single_repo',
-        variant: { kind: 'new-single-repo', name: request.name },
-      });
+      const { workspace, scriptActionsOperationId } = await lifecycleCommands(
+        event,
+      ).createWorkspace(
+        { name: request.name, workspaceKind: 'single_repo' },
+        () =>
+          createWorkspace({
+            source: 'new_single_repo',
+            variant: { kind: 'new-single-repo', name: request.name },
+          }),
+      );
       return { ...workspace, scriptActionsOperationId };
     },
   );
@@ -448,15 +505,21 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceCreate,
     async (
-      _event,
+      event,
       request: CreateNewWorkspaceRequest,
     ): Promise<MultiRepoSidebarItem & ScriptActionsAddMetadata> => {
       // Created and indexed in one commit; the renderer no longer completes
       // the create with projects:save (CAN-3799 D11).
-      const { workspace, scriptActionsOperationId } = await createWorkspace({
-        source: 'new_multi_repo',
-        variant: { kind: 'new-multi-repo', name: request.name },
-      });
+      const { workspace, scriptActionsOperationId } = await lifecycleCommands(
+        event,
+      ).createWorkspace(
+        { name: request.name, workspaceKind: 'multi_repo' },
+        () =>
+          createWorkspace({
+            source: 'new_multi_repo',
+            variant: { kind: 'new-multi-repo', name: request.name },
+          }),
+      );
       if (workspace.type !== 'multi-repo') {
         throw new Error(
           'Created project was persisted with an unexpected type',
@@ -557,15 +620,22 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceInitGit,
     async (
-      _event,
+      event,
       request: WorkspaceInitGitRequest,
     ): Promise<WorkspaceInitGitResponse> => {
       validateId(request.workspaceId, 'workspaceId');
-      return initializeWorkspaceSourceRepo({
-        workspaceId: request.workspaceId,
-        repoName: request.repoName,
-        source: 'workspace_settings',
-      });
+      return sourceCompositionCommands(event).initializeSourceRepo(
+        {
+          workspaceId: request.workspaceId,
+          ...(request.repoName !== undefined && { repoName: request.repoName }),
+        },
+        () =>
+          initializeWorkspaceSourceRepo({
+            workspaceId: request.workspaceId,
+            repoName: request.repoName,
+            source: 'workspace_settings',
+          }),
+      );
     },
   );
 
@@ -611,22 +681,20 @@ export function registerWorkspaceHandlers(
       if (request.worktreeId !== undefined) {
         validateId(request.worktreeId, 'worktreeId');
       }
-      return {
-        issues: await computeWorkspaceReadinessIssues(
-          request.workspaceId,
-          request.worktreeId,
-        ),
-      };
+      return computeWorkspaceReadinessAudit(
+        request.workspaceId,
+        request.worktreeId,
+      );
     },
   );
 
   registerIpcHandler<[SetWorkspaceArchiveRetentionRequest], void>(
     IPC_CHANNELS.workspaceSetArchiveRetention,
     async (
-      _event,
+      event,
       request: SetWorkspaceArchiveRetentionRequest,
     ): Promise<void> => {
-      await updateWorkspaceRetention({
+      await guardedCommands(event).updateRetention({
         workspaceId: request.workspaceId,
         patch: {
           archiveRetentionDays: request.archiveRetentionDays,
@@ -644,10 +712,10 @@ export function registerWorkspaceHandlers(
 
   registerIpcHandler<[SetWorkspaceStartPageRequest], void>(
     IPC_CHANNELS.workspaceSetStartPage,
-    async (_event, request): Promise<void> => {
+    async (event, request): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
       assertStartPageFeatureEnabled();
-      await updateWorkspaceMetadata({
+      await metadataCommands(event).updateMetadata({
         workspaceId: request.workspaceId,
         patch: {
           // Omitted clears the local override; null explicitly disables it.
@@ -663,18 +731,21 @@ export function registerWorkspaceHandlers(
 
   registerIpcHandler<[SetWorkspacePrivateMemoryRequest], SidebarItem>(
     IPC_CHANNELS.workspaceSetPrivateMemory,
-    async (_event, request): Promise<SidebarItem> => {
+    async (event, request): Promise<SidebarItem> => {
       validateId(request.workspaceId, 'workspaceId');
       if (request.worktreeId !== undefined)
         validateId(request.worktreeId, 'worktreeId');
       if (typeof request.privateMemory !== 'boolean') {
         throw new Error('Private memory must be a boolean');
       }
-      const item = await setWorkspacePrivateMemory({
-        projectId: request.workspaceId,
-        worktreeId: request.worktreeId ?? request.workspaceId,
-        privateMemory: request.privateMemory,
-      });
+      const item = await setWorkspacePrivateMemory(
+        {
+          projectId: request.workspaceId,
+          worktreeId: request.worktreeId ?? request.workspaceId,
+          privateMemory: request.privateMemory,
+        },
+        (update) => metadataCommands(event).updatePrivateMemory(update),
+      );
       sendToAllWindows(IPC_CHANNELS.workspacePrivateMemoryChanged, item.id);
       return item;
     },
@@ -716,7 +787,7 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceApplySourceChanges,
     async (
-      _event,
+      event,
       request: WorkspaceApplySourceChangesRequest,
     ): Promise<WorkspaceApplySourceChangesResponse> => {
       validateId(request.workspaceId, 'workspaceId');
@@ -727,27 +798,31 @@ export function registerWorkspaceHandlers(
         validateId(request.target.worktreeId, 'worktreeId');
       }
 
-      const response = await getOrgMemberMultiRepoSync().applySourceChanges(
-        request.workspaceId,
-        request,
-        () =>
-          applySourceChanges({
-            kind: 'workspace',
-            source: 'workspace_settings',
-            request,
-            getWindow,
-            onApplied: (event) => {
-              const window = getWindow();
-              if (!window) {
-                return;
-              }
-              sendToWindow(
-                window,
-                IPC_CHANNELS.workspaceSourceChangesApplied,
-                event,
-              );
-            },
-          }),
+      const response = await sourceCompositionCommands(
+        event,
+      ).applySourceChanges(request.workspaceId, request, () =>
+        getOrgMemberMultiRepoSync().applySourceChanges(
+          request.workspaceId,
+          request,
+          () =>
+            applySourceChanges({
+              kind: 'workspace',
+              source: 'workspace_settings',
+              request,
+              getWindow,
+              onApplied: (event) => {
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(
+                  window,
+                  IPC_CHANNELS.workspaceSourceChangesApplied,
+                  event,
+                );
+              },
+            }),
+        ),
       );
       requestRefresh(request.workspaceId, true);
       recordWorkspaceCrudTelemetry({
@@ -773,16 +848,27 @@ export function registerWorkspaceHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.workspaceConvertType,
-    async (_event, request: ConvertWorkspaceTypeRequest): Promise<void> => {
+    async (event, request: ConvertWorkspaceTypeRequest): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
 
-      await convertWorkspaceType({
-        workspaceId: request.workspaceId,
-        targetType:
-          request.targetType === 'multi-repo' ? 'multi-repo' : 'single-repo',
-        claudeMdMode: request.claudeMdMode,
-        source: 'workspace_settings',
-      });
+      const targetType =
+        request.targetType === 'multi-repo' ? 'multi-repo' : 'single-repo';
+      await sourceCompositionCommands(event).convertType(
+        {
+          workspaceId: request.workspaceId,
+          targetType,
+          ...(request.claudeMdMode !== undefined && {
+            claudeMdMode: request.claudeMdMode,
+          }),
+        },
+        () =>
+          convertWorkspaceType({
+            workspaceId: request.workspaceId,
+            targetType,
+            claudeMdMode: request.claudeMdMode,
+            source: 'workspace_settings',
+          }),
+      );
       recordWorkspaceCrudTelemetry({
         action: 'convert',
         workspaceId: request.workspaceId,
@@ -968,7 +1054,7 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspacePromoteTemporary,
     async (
-      _event,
+      event,
       request: PromoteTemporaryWorkspaceRequest,
     ): Promise<MultiRepoSidebarItem> => {
       validateId(request.workspaceId, 'workspaceId');
@@ -978,7 +1064,10 @@ export function registerWorkspaceHandlers(
       ) {
         throw new Error('PromoteTemporaryWorkspaceRequest.name is required');
       }
-      const workspace = await promoteTemporaryWorkspace(request);
+      const workspace = await sourceCompositionCommands(event).promote(
+        { workspaceId: request.workspaceId, name: request.name },
+        () => promoteTemporaryWorkspace(request),
+      );
       recordWorkspaceCrudTelemetry({
         action: 'promote',
         workspaceId: request.workspaceId,
@@ -1094,7 +1183,7 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceAddRepo,
     async (
-      _event,
+      event,
       request: AddRepoToWorkspaceRequest,
     ): Promise<AddRepoToWorkspaceResponse> => {
       validateId(request.workspaceId, 'workspaceId');
@@ -1102,6 +1191,8 @@ export function registerWorkspaceHandlers(
         throw new Error('repoPath must be an absolute path');
       }
 
+      // Resolved before the organization sync, so an untrusted sender changes nothing.
+      const commands = metadataCommands(event);
       // An organization's multi-repo project takes only the organization's
       // repositories, and the organization follows the change (CAN-3546).
       let scriptActionsOperationId: string | undefined;
@@ -1112,7 +1203,7 @@ export function registerWorkspaceHandlers(
           // `addToSourceControl` is deprecated and ignored: a repository
           // enters `canopy.json` through `workspace:apply-source-changes`.
           async () => {
-            const added = await addWorkspaceRepository({
+            const added = await commands.addRepository({
               workspaceId: request.workspaceId,
               source: 'workspace_settings',
               repository: { repoPath: request.repoPath },
@@ -1134,15 +1225,16 @@ export function registerWorkspaceHandlers(
   // ---- Remove repo from workspace (config-only; worktree cleanup is user-driven) ----
   registerIpcHandler(
     IPC_CHANNELS.workspaceRemoveRepo,
-    async (_event, request: RemoveRepoFromWorkspaceRequest): Promise<void> => {
+    async (event, request: RemoveRepoFromWorkspaceRequest): Promise<void> => {
       validateId(request.workspaceId, 'workspaceId');
       validateId(request.repoId, 'repoId');
 
+      const commands = metadataCommands(event);
       await getOrgMemberMultiRepoSync().removeRepo(
         request.workspaceId,
         request.repoId,
         async (): Promise<void> => {
-          await removeWorkspaceRepository({
+          await commands.removeRepository({
             workspaceId: request.workspaceId,
             repoId: request.repoId,
             source: 'workspace_settings',
@@ -1161,7 +1253,7 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceCreateWorktree,
     async (
-      _event,
+      event,
       request: CreateWorkspaceWorktreeRequest,
     ): Promise<CreateWorkspaceWorktreeResponse> => {
       validateId(request.workspaceId, 'workspaceId');
@@ -1174,48 +1266,61 @@ export function registerWorkspaceHandlers(
       }
 
       const response = (
-        await createWorktreeFromSelection({
-          workspaceId: request.workspaceId,
-          workspaceKind: 'multi-repo',
-          ...resolveWorktreeCreationSelection(
-            {
-              baseWorktreeId: request.baseWorktreeId,
-              baseBranch,
-              existingBranch: request.existingBranch,
-              branchName: request.branchName,
-              suggestedBranch: request.suggestedBranch,
-            },
-            'multi-repo',
-          ),
-          sidebarItemGroupId: request.sidebarItemGroupId,
-          existingWorktreeIds: request.existingWorktreeIds,
-          startPostCreateSetup: true,
-          startWorkspacePostCreateSetup: startWorkspaceWorktreePostCreateSetup,
-          getWindow,
-          deferGitSetup: true,
-          onGitReady: (payload): void => {
-            refreshCachedDiffStats(payload.projectId, payload.worktreeId);
-            const window = getWindow();
-            if (!window) {
-              return;
-            }
-            sendToWindow(window, IPC_CHANNELS.worktreeGitReady, payload);
+        await lifecycleCommands(event).createWorktree(
+          {
+            workspaceId: request.workspaceId,
+            branchName: request.branchName,
+            existingBranch: request.existingBranch,
+            suggestedBranch: request.suggestedBranch,
+            baseBranch,
+            baseWorktreeId: request.baseWorktreeId,
+            sidebarItemGroupId: request.sidebarItemGroupId,
           },
-          onGitFailed: (payload): void => {
-            const window = getWindow();
-            if (!window) {
-              return;
-            }
-            sendToWindow(window, IPC_CHANNELS.worktreeGitFailed, payload);
-          },
-          onNeedsRepair: (payload): void => {
-            const window = getWindow();
-            if (!window) {
-              return;
-            }
-            sendToWindow(window, IPC_CHANNELS.worktreeNeedsRepair, payload);
-          },
-        })
+          () =>
+            createWorktreeFromSelection({
+              workspaceId: request.workspaceId,
+              workspaceKind: 'multi-repo',
+              ...resolveWorktreeCreationSelection(
+                {
+                  baseWorktreeId: request.baseWorktreeId,
+                  baseBranch,
+                  existingBranch: request.existingBranch,
+                  branchName: request.branchName,
+                  suggestedBranch: request.suggestedBranch,
+                },
+                'multi-repo',
+              ),
+              sidebarItemGroupId: request.sidebarItemGroupId,
+              existingWorktreeIds: request.existingWorktreeIds,
+              startPostCreateSetup: true,
+              startWorkspacePostCreateSetup:
+                startWorkspaceWorktreePostCreateSetup,
+              getWindow,
+              deferGitSetup: true,
+              onGitReady: (payload): void => {
+                refreshCachedDiffStats(payload.projectId, payload.worktreeId);
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(window, IPC_CHANNELS.worktreeGitReady, payload);
+              },
+              onGitFailed: (payload): void => {
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(window, IPC_CHANNELS.worktreeGitFailed, payload);
+              },
+              onNeedsRepair: (payload): void => {
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(window, IPC_CHANNELS.worktreeNeedsRepair, payload);
+              },
+            }),
+        )
       ).response;
       recordWorktreeCrudTelemetry({
         action: 'create',
@@ -1434,6 +1539,14 @@ export function registerWorkspaceHandlers(
           sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitReady, readyEvent);
         }
 
+        // A deferred create that stopped at needs-repair left its Git setup
+        // pending; this repair is its outcome, so sends held for the setup
+        // dispatch now.
+        settleWorktreeGitSetup(
+          request.workspaceId,
+          request.worktreeId,
+          'ready',
+        );
         triggerDiscovery(request.workspaceId, request.worktreeId, getWindow);
         recordWorktreeCrudTelemetry({
           action: 'repair',
@@ -1547,7 +1660,7 @@ export function registerWorkspaceHandlers(
   registerIpcHandler(
     IPC_CHANNELS.workspaceArchiveWorktree,
     async (
-      _event,
+      event,
       request: ArchiveWorkspaceWorktreeRequest,
     ): Promise<ArchiveWorktreeResponse> => {
       validateId(request.workspaceId, 'workspaceId');
@@ -1577,22 +1690,25 @@ export function registerWorkspaceHandlers(
         }
       }
 
+      const lifecycle = lifecycleCommands(event);
       const response = await withTypedArchiveRefusal(request, () =>
-        archiveWorktree({
-          workspaceId: request.workspaceId,
-          worktreeId: request.worktreeId,
-          source: 'multi_repo',
-          expectedKind: 'multi-repo',
-          expectedCreatedAt: request.expectedCreatedAt,
-          expectedBranchName: request.expectedBranchName,
-          deleteBranch: request.deleteBranch,
-          lockAfterArchive: request.lockAfterArchive,
-          deleteWithoutRetentionIfMissing:
-            request.deleteWithoutRetentionIfMissing,
-          remainingWorktreeOrder: request.remainingWorktreeOrder,
-          expectedRemainingWorktreeOrder:
-            request.expectedRemainingWorktreeOrder,
-        }),
+        lifecycle.archiveWorktree(request, () =>
+          archiveWorktree({
+            workspaceId: request.workspaceId,
+            worktreeId: request.worktreeId,
+            source: 'multi_repo',
+            expectedKind: 'multi-repo',
+            expectedCreatedAt: request.expectedCreatedAt,
+            expectedBranchName: request.expectedBranchName,
+            deleteBranch: request.deleteBranch,
+            lockAfterArchive: request.lockAfterArchive,
+            deleteWithoutRetentionIfMissing:
+              request.deleteWithoutRetentionIfMissing,
+            remainingWorktreeOrder: request.remainingWorktreeOrder,
+            expectedRemainingWorktreeOrder:
+              request.expectedRemainingWorktreeOrder,
+          }),
+        ),
       );
       if (!response.refusal)
         removeCachedWorktreeDiffStats(request.workspaceId, request.worktreeId);
@@ -1603,7 +1719,7 @@ export function registerWorkspaceHandlers(
   // ---- Delete workspace (remove persisted directory) ----
   registerIpcHandler(
     IPC_CHANNELS.workspaceDelete,
-    async (_event, request: DeleteWorkspaceRequest): Promise<void> => {
+    async (event, request: DeleteWorkspaceRequest): Promise<void> => {
       if (request.supersedeInterruptedDeletion !== undefined)
         validateId(
           request.supersedeInterruptedDeletion,
@@ -1612,10 +1728,14 @@ export function registerWorkspaceHandlers(
       // Shared with the browser Remote Control portal adapter
       // (`portal.workspace.delete`) so the two surfaces tear a workspace down
       // identically (cowork detach/delete vs. persisted-dir removal).
-      await deleteWorkspaceById(
-        request.workspaceId,
-        'multi_repo_workspace_delete',
-        { supersedeInterruptedDeletion: request.supersedeInterruptedDeletion },
+      await lifecycleCommands(event).deleteWorkspace(request, () =>
+        deleteWorkspaceById(
+          request.workspaceId,
+          'multi_repo_workspace_delete',
+          {
+            supersedeInterruptedDeletion: request.supersedeInterruptedDeletion,
+          },
+        ),
       );
       removeCachedWorkspaceDiffStats(request.workspaceId);
     },
@@ -1663,22 +1783,25 @@ export function registerWorkspaceHandlers(
   );
   registerIpcHandler(
     IPC_CHANNELS.workspaceMergeScripts,
-    async (_event, request: MergeWorkspaceScriptsRequest): Promise<void> => {
-      validateId(request.workspaceId, 'workspaceId');
-      await updateWorkspaceScripts({
-        workspaceId: request.workspaceId,
-        change: { kind: 'merge-commands', commands: request.commands },
-        source: 'desktop',
-      });
-    },
+    async (event, request: MergeWorkspaceScriptsRequest): Promise<void> =>
+      mergeWorkspaceScriptCommands(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        request,
+      ),
   );
 
   // ---- Save default plugin selections ----
   registerIpcHandler(
     IPC_CHANNELS.workspaceSaveDefaultPlugins,
-    async (_event, request: SaveDefaultPluginsRequest): Promise<void> => {
+    async (event, request: SaveDefaultPluginsRequest): Promise<void> => {
       validateId(request.projectId, 'project id');
-      await saveDefaultPluginsAndVisibility(request, 'workspace_settings');
+      const commands = guardedCommands(event);
+      await saveDefaultPluginsAndVisibility(
+        request,
+        'workspace_settings',
+        (update) => commands.updatePlugins(update),
+      );
     },
   );
 }

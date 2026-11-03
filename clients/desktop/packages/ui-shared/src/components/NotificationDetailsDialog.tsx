@@ -66,7 +66,7 @@ export function NotificationDetailsDialog({
       dataTestId={dataTestId}
       trapFocus={trapFocus}
     >
-      <div className="flex flex-1 flex-col overflow-hidden p-5 pt-3">
+      <div className="flex flex-1 flex-col overflow-hidden">
         {leading}
         <div
           data-testid={

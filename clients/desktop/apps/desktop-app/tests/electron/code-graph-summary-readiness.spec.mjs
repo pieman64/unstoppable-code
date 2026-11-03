@@ -228,9 +228,29 @@ function readDialogLayout(dialog) {
         );
       }
     }
-    for (const row of root.querySelectorAll('dl > div')) {
-      const term = row.querySelector('dt')?.getBoundingClientRect();
-      const value = row.querySelector('dd')?.getBoundingClientRect();
+    // Fact rows (a label and value pair) and Settings rows (a label and the
+    // value on the trailing edge, as the health totals render).
+    const pairs = [
+      ...[...root.querySelectorAll('dl > div')].map((row) => ({
+        termElement: row.querySelector('dt'),
+        valueElement: row.querySelector('dd'),
+      })),
+      ...[...root.querySelectorAll('[data-settings-row-label]')].map(
+        (label) => {
+          const line = label.closest('.min-h-10');
+          return {
+            termElement: label,
+            valueElement:
+              line && !line.lastElementChild?.contains(label)
+                ? line.lastElementChild
+                : null,
+          };
+        },
+      ),
+    ];
+    for (const { termElement, valueElement } of pairs) {
+      const term = termElement?.getBoundingClientRect();
+      const value = valueElement?.getBoundingClientRect();
       if (
         term &&
         value &&
@@ -239,9 +259,7 @@ function readDialogLayout(dialog) {
         term.bottom > value.top + tolerance &&
         term.top < value.bottom - tolerance
       ) {
-        problems.push(
-          `"${row.querySelector('dt')?.textContent}" overlaps value`,
-        );
+        problems.push(`"${termElement?.textContent}" overlaps value`);
       }
     }
     return {

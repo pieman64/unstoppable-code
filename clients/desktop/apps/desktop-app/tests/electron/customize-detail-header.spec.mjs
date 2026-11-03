@@ -212,8 +212,12 @@ async function expectSharedHeader(window, title) {
   await expect(heading).toHaveCount(1);
   if (title) await expect(heading).toHaveText(title);
   // No outlined Name/Description card and no second title in the body.
+  // The frontmatter card labels its facts with the literal keys.
   await expect(
-    window.getByText('Name:', { exact: true }).filter({ visible: true }),
+    window
+      .locator('dt')
+      .getByText('name', { exact: true })
+      .filter({ visible: true }),
   ).toHaveCount(0);
   await expect(window.getByTestId('plugins-entry-detail-back')).toHaveCount(0);
   // At most three visible actions beside one ⋯ menu, and no second ⋯

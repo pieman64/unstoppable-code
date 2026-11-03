@@ -5,15 +5,12 @@ import {
   CanopyRequestMetadataSchema,
   CanopyWorkspaceScopeSchema,
 } from '../../common';
+import {
+  PIPELINE_DEFINITION_SOURCES,
+  PipelineRunOwnerSchema,
+} from '../../pipeline-values';
 
-export const PIPELINE_DEFINITION_SOURCES = [
-  'bundled',
-  'user',
-  'curated',
-  'workspace',
-  'project',
-  'shared',
-] as const;
+export { PIPELINE_DEFINITION_SOURCES, PipelineRunOwnerSchema };
 
 export const PIPELINE_DEFINITION_FORMATS = ['yaml', 'json'] as const;
 
@@ -120,6 +117,12 @@ export const PipelineDefinitionListResultSchema = z.looseObject({
 export const PipelineDefinitionGetParamsSchema = z.strictObject({
   definitionId: id,
   scope: CanopyWorkspaceScopeSchema.optional(),
+  /**
+   * Read the definition as this run owner may use it, instead of through the
+   * selected navigation context. Only callers holding
+   * `core.pipeline.ownerRead` may send it.
+   */
+  owner: PipelineRunOwnerSchema.optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
@@ -187,6 +190,41 @@ export const PipelineDefinitionDeleteResultSchema = z.looseObject({
   revision: z.number().int().min(0),
 });
 
+/**
+ * A copy of any readable definition as a new user definition, under an id
+ * core assigns.
+ */
+export const PipelineDefinitionDuplicateParamsSchema = z.strictObject({
+  sourceDefinitionId: id,
+  /** Resolves a project source; the copy itself is unscoped. */
+  scope: CanopyWorkspaceScopeSchema,
+  /** The copy's name; omitted names it after its source with " (Copy)". */
+  name: z.string().min(1).optional(),
+  /**
+   * The source checksum the caller checked; a source that changed since is
+   * refused with `revisionConflict` rather than copied.
+   */
+  expectedChecksum: id.optional(),
+  _meta: PipelineDefinitionKeyedRequestMetadataSchema,
+});
+
+export const PipelineDefinitionDuplicateResultSchema = z.looseObject({
+  definition: PipelineDefinitionSchema,
+  sourceDefinitionId: id,
+});
+
+/** Records whether a definition of any source, read-only ones included, is enabled. */
+export const PipelineDefinitionSetEnabledParamsSchema = z.strictObject({
+  definitionId: id,
+  enabled: z.boolean(),
+  _meta: PipelineDefinitionKeyedRequestMetadataSchema,
+});
+
+export const PipelineDefinitionSetEnabledResultSchema = z.looseObject({
+  definitionId: id,
+  enabled: z.boolean(),
+});
+
 export type PipelineDefinitionSource = z.output<
   typeof PipelineDefinitionSourceSchema
 >;
@@ -232,4 +270,16 @@ export type PipelineDefinitionDeleteParams = z.output<
 >;
 export type PipelineDefinitionDeleteResult = z.output<
   typeof PipelineDefinitionDeleteResultSchema
+>;
+export type PipelineDefinitionDuplicateParams = z.output<
+  typeof PipelineDefinitionDuplicateParamsSchema
+>;
+export type PipelineDefinitionDuplicateResult = z.output<
+  typeof PipelineDefinitionDuplicateResultSchema
+>;
+export type PipelineDefinitionSetEnabledParams = z.output<
+  typeof PipelineDefinitionSetEnabledParamsSchema
+>;
+export type PipelineDefinitionSetEnabledResult = z.output<
+  typeof PipelineDefinitionSetEnabledResultSchema
 >;

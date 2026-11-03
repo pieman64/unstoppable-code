@@ -16,6 +16,12 @@ export interface W5SingleDecisionInput<Source extends string> {
   parameters: () => unknown;
   /** Admitted at operation entry, before any receipt lookup or reservation. */
   storage?: readonly W5StorageTarget[];
+  /**
+   * Admission that a keyed attempt runs under its reservation, after `admit`
+   * and before `execute`, so same-key attempts never run it concurrently, as
+   * redeeming a one-time reference needs. A thrown `Error` releases the key.
+   */
+  reservedAdmit?: () => Promise<void>;
 }
 
 export type W5SingleDecisionOperation<Source extends string> = <A, T>(
@@ -37,6 +43,16 @@ export interface W5SingleDecisionBindings<Source extends string> {
   caller: (source: Source) => string;
   /** Host-owned typed refusals, checked after the boundary's and the store's. */
   isHostRefusal: (error: unknown) => boolean;
+  /**
+   * A hosted unit's bounded retry of a stale-file refusal: each attempt runs
+   * `admit`, `reservedAdmit` and `execute` again from a fresh read. A keyed
+   * run retries under its one reservation, so its key is never released
+   * between attempts. Absent, as on desktop, a refusal is returned at once.
+   */
+  retryStaleDecision?: <T>(
+    operation: string,
+    attempt: () => Promise<T>,
+  ) => Promise<T>;
 }
 
 /**
@@ -49,7 +65,10 @@ export interface W5SingleDecisionBindings<Source extends string> {
  * one decision. That decision is the only effect, so it is not signalled
  * through `beforeDecision`: a refusal before or at it (the boundary's own, a
  * stale file or revision, a host refusal) releases the key, and any other
- * failure leaves it recovery-required.
+ * failure leaves it recovery-required. An optional `reservedAdmit` runs
+ * between the reservation and `execute`; its errors release the key. With
+ * `retryStaleDecision`, a keyed retry's `admit` runs under the reservation
+ * too, and its errors release the key as they would before one.
  */
 export function createW5SingleDecisionOperation<Source extends string>(
   bindings: W5SingleDecisionBindings<Source>,
@@ -72,9 +91,19 @@ export function createW5SingleDecisionOperation<Source extends string>(
     ) => Promise<T>,
   ): Promise<T> {
     const { operation, idempotencyKey } = input;
+    const retry = bindings.retryStaleDecision;
     const run = async (): Promise<T> => {
-      if (idempotencyKey === undefined)
-        return execute(await admit(), { operation }, (result) => result);
+      if (idempotencyKey === undefined) {
+        if (retry)
+          return retry(operation, async () => {
+            const admitted = await admit();
+            if (input.reservedAdmit) await input.reservedAdmit();
+            return execute(admitted, { operation }, (result) => result);
+          });
+        const admitted = await admit();
+        if (input.reservedAdmit) await input.reservedAdmit();
+        return execute(admitted, { operation }, (result) => result);
+      }
       let admission: { admitted: A } | undefined;
       return bindings.runKeyed(
         {
@@ -88,18 +117,45 @@ export function createW5SingleDecisionOperation<Source extends string>(
           isPreEffectRefusal: isPreDecisionRefusal,
         },
         decode,
-        ({ receipt, reservationId }) => {
+        ({ receipt, reservationId }, attempt) => {
           if (!admission)
             throw new Error('A keyed single-decision change was not admitted');
-          return execute(
-            admission.admitted,
-            { operation, receipt, reservationId },
-            (result) => {
-              const outcome = decode(result);
-              setW5CommitOutcome(outcome);
-              return outcome;
-            },
-          );
+          const decide = (admitted: A): Promise<T> =>
+            execute(
+              admitted,
+              { operation, receipt, reservationId },
+              (result) => {
+                const outcome = decode(result);
+                setW5CommitOutcome(outcome);
+                return outcome;
+              },
+            );
+          // Read-only admission under the reservation: its errors release it.
+          const refused = (error: unknown): never => {
+            throw error instanceof Error
+              ? attempt.validationError(error)
+              : error;
+          };
+          const once = (admitted: A): Promise<T> => {
+            const { reservedAdmit } = input;
+            if (!reservedAdmit) return decide(admitted);
+            return reservedAdmit().then(() => decide(admitted), refused);
+          };
+          if (!retry) return once(admission.admitted);
+          let first: { admitted: A } | undefined = admission;
+          return retry(operation, async () => {
+            let admitted: A;
+            if (first) admitted = first.admitted;
+            else {
+              try {
+                admitted = await admit();
+              } catch (error) {
+                return refused(error);
+              }
+            }
+            first = undefined;
+            return once(admitted);
+          });
         },
       );
     };

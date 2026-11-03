@@ -30,6 +30,7 @@ import {
   closeModelPicker,
   openModelBillingMenu,
 } from './modelPickerBilling.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
 const WORKTREE_ID = 'demo-main';
@@ -1120,9 +1121,10 @@ test.describe('Codex context continuity without synthetic homes', () => {
         .filter({ hasText: 'Plugins' });
       await expect(dialog).toBeVisible();
       await dialog.getByPlaceholder('Search by name…').fill(SKILL_NAME);
-      await dialog
-        .getByRole('combobox', { name: 'Kind filter' })
-        .selectOption('skill');
+      await chooseSettingsOption(
+        dialog.getByRole('combobox', { name: 'Kind filter' }),
+        'skill',
+      );
       const skill = dialog.getByRole('checkbox', {
         name: `Select ${SKILL_NAME}`,
       });
@@ -1206,9 +1208,10 @@ test.describe('Codex context continuity without synthetic homes', () => {
         .locator('[role="dialog"]')
         .filter({ hasText: 'Plugins' });
       await dialog.getByPlaceholder('Search by name…').fill(SKILL_NAME);
-      await dialog
-        .getByRole('combobox', { name: 'Kind filter' })
-        .selectOption('skill');
+      await chooseSettingsOption(
+        dialog.getByRole('combobox', { name: 'Kind filter' }),
+        'skill',
+      );
       await dialog
         .getByRole('checkbox', { name: `Select ${SKILL_NAME}` })
         .check();
@@ -1303,9 +1306,10 @@ test.describe('Codex context continuity without synthetic homes', () => {
       await dialog
         .getByPlaceholder('Search by name…')
         .fill('Deferred Reload Fixture');
-      await dialog
-        .getByRole('combobox', { name: 'Kind filter' })
-        .selectOption('mcp');
+      await chooseSettingsOption(
+        dialog.getByRole('combobox', { name: 'Kind filter' }),
+        'mcp',
+      );
       await dialog
         .getByRole('checkbox', { name: 'Select Deferred Reload Fixture' })
         .check();
@@ -2537,9 +2541,10 @@ test.describe('Codex context continuity without synthetic homes', () => {
         .filter({ hasText: 'Plugins' });
       await expect(dialog).toBeVisible();
       await dialog.getByPlaceholder('Search by name…').fill(SKILL_NAME);
-      await dialog
-        .getByRole('combobox', { name: 'Kind filter' })
-        .selectOption('skill');
+      await chooseSettingsOption(
+        dialog.getByRole('combobox', { name: 'Kind filter' }),
+        'skill',
+      );
       const skill = dialog.getByRole('checkbox', {
         name: `Select ${SKILL_NAME}`,
       });

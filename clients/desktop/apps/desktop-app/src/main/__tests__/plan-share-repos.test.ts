@@ -17,6 +17,7 @@ jest.mock('../lib/worktree-repo-entries', () => ({
 }));
 
 import { SINGLE_REPO_USAGE_REPO_ID } from '@canopy/desktop-shared/types';
+import { CoreWorkspaceRepositorySchema } from '@canopy/protocol/canopy-core/core';
 import {
   getCurrentBranch,
   getRemoteDefaultBranch,
@@ -81,6 +82,26 @@ describe('plan share repo snapshots', () => {
     expect(sanitizeRemoteUrl('C:repo.git')).toBeNull();
     expect(sanitizeRemoteUrl('C:\\Users\\example\\repo.git')).toBeNull();
     expect(sanitizeRemoteUrl('\\\\server\\share\\repo.git')).toBeNull();
+  });
+
+  // The protocol pattern copies this sanitizer; a drift would make a
+  // sanitized remote fail the repository result.
+  it.each([
+    'https://user:token@github.com/acme/repo.git?x=1#y',
+    'http://example.com:8080',
+    'ssh://git@github.com:22/acme/repo.git',
+    'git+ssh://git@github.com/acme/repo',
+    'ssh://[::1]/repo',
+    'https://bücher.example/repo',
+    'https://github.com/acme/a b',
+    'git@github.com:acme/repo.git',
+  ])('returns %j in the core repository manifestUrl form', (remote) => {
+    const sanitized = sanitizeRemoteUrl(remote);
+    expect(sanitized).not.toBeNull();
+    expect(
+      CoreWorkspaceRepositorySchema.shape.manifestUrl.safeParse(sanitized)
+        .success,
+    ).toBe(true);
   });
 
   it('builds a single-repo snapshot without leaking local paths', async () => {

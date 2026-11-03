@@ -286,7 +286,7 @@ export function CloudDigestSettings(): JSX.Element | null {
                 onClick={handleRetry}
                 data-testid="cloud-digests-retry"
               >
-                Retry
+                Try again
               </NoticeButton>
             ) : undefined
           }

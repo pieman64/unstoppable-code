@@ -259,12 +259,12 @@ describe('SharedAutomationPreview', () => {
     );
   });
 
-  /** The `dd` that follows the `dt` labeled `label`. */
+  /** The value of the Settings row labeled `label`. */
   function definition(label: string): HTMLElement {
-    const term = Array.from(document.querySelectorAll('dt')).find(
-      (dt) => dt.textContent === label,
-    );
-    const value = term?.nextElementSibling;
+    const term = Array.from(
+      document.querySelectorAll('[data-settings-row-label]'),
+    ).find((row) => row.textContent === label);
+    const value = term?.parentElement?.nextElementSibling;
     if (!(value instanceof HTMLElement)) throw new Error(`Missing ${label}`);
     return value;
   }

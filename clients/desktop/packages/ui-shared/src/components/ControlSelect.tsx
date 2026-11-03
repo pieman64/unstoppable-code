@@ -1,6 +1,10 @@
 import { forwardRef, type JSX, type SelectHTMLAttributes } from 'react';
 import { ChevronDownIcon } from '../icons/AppIcons';
-import { SECONDARY_SURFACE_CLASS } from '../lib/row-chips';
+import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
+import {
+  DROPDOWN_INVALID_CLASS,
+  DROPDOWN_TRIGGER_INTERACTION_CLASS,
+} from './Button';
 
 export interface ControlSelectProps extends Omit<
   SelectHTMLAttributes<HTMLSelectElement>,
@@ -12,22 +16,20 @@ export interface ControlSelectProps extends Omit<
    * the width.
    */
   readonly fill?: boolean;
-  /** Settings controls use the same capsule geometry as compact buttons. */
-  readonly shape?: 'rounded' | 'capsule';
   /** Host-owned replay marker; it never changes the control's visual styling. */
   readonly replayPrivacy?: { readonly blockClassName: string };
 }
 
 /**
- * A dropdown on the house secondary control surface: the same 28px rounded
- * rectangle and 13px label as `Button size="control"` and the header
- * `Open in`, with an app chevron. It stays a native `<select>`, so the
+ * A dropdown on the house secondary control surface: the 28px rounded
+ * rectangle every dropdown takes (fields and dropdowns are rectangles, only
+ * buttons are capsules; 2026-10-30), with a 13px label and an app chevron. It stays a native `<select>`, so the
  * menu is the platform's own and keyboard and screen-reader behavior come
  * for free.
  */
 export const ControlSelect = forwardRef<HTMLSelectElement, ControlSelectProps>(
   function ControlSelect(
-    { fill = false, shape = 'rounded', replayPrivacy, ...props },
+    { fill = false, replayPrivacy, ...props },
     ref,
   ): JSX.Element {
     return (
@@ -39,12 +41,12 @@ export const ControlSelect = forwardRef<HTMLSelectElement, ControlSelectProps>(
         <select
           ref={ref}
           {...props}
-          className={`focus-ring h-7 ${fill ? 'w-full' : 'max-w-64'} cursor-pointer appearance-none truncate ${shape === 'capsule' ? 'rounded-full pl-3 pr-9' : 'rounded-md pl-2.5 pr-7'} text-xs font-medium fg-primary disabled:cursor-not-allowed disabled:opacity-60 ${SECONDARY_SURFACE_CLASS} ${replayPrivacy?.blockClassName ?? ''}`}
+          className={`focus-ring h-7 ${fill ? 'w-full' : 'max-w-64'} cursor-pointer appearance-none truncate rounded-row pl-2.5 pr-7 text-xs font-medium fg-primary disabled:cursor-not-allowed disabled:opacity-60 ${SECONDARY_SURFACE_SHELL_CLASS} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${DROPDOWN_INVALID_CLASS} transition-[opacity,transform,scale] ${replayPrivacy?.blockClassName ?? ''}`}
         />
         <ChevronDownIcon
           size={12}
           aria-hidden="true"
-          className={`pointer-events-none absolute ${shape === 'capsule' ? 'right-3' : 'right-2'} top-1/2 -translate-y-1/2 fg-tertiary`}
+          className={`pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 fg-tertiary`}
         />
       </span>
     );

@@ -354,6 +354,7 @@ export const CHAT_COMMAND_ROUTES: Partial<
   'chat.activate_tab': route('core.chat.update'),
   'chat.reorder_tabs': route('core.chat.update'),
   'chat.patch_tab_settings': route('core.chat.update'),
+  'chat.reject_plan_implementation_delivery': route('core.chat.update'),
   'chat.set_model': route('core.chat.update'),
   'chat.set_approval_mode': route('core.chat.update'),
   'chat.mark_read': route('core.chat.update'),

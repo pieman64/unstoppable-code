@@ -191,15 +191,13 @@ function FeedTargetFields({
       ? { disabledReason: 'Save or cancel this draft before moving it.' }
       : {};
   return (
+    // Each picker is a button named by its heading through `labelId`
+    // (aria-labelledby), so the headings are plain text, not <label>s.
     <div data-testid="ledger-feed-target" className="flex flex-col gap-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <label
-          id={`${id}-project-label`}
-          htmlFor={`${id}-project`}
-          className="text-xs fg-secondary"
-        >
+        <span id={`${id}-project-label`} className="text-xs fg-secondary">
           Project
-        </label>
+        </span>
         <LedgerTargetPicker
           id={`${id}-project`}
           labelId={`${id}-project-label`}
@@ -215,13 +213,9 @@ function FeedTargetFields({
         />
       </div>
       <div className="flex min-w-0 flex-col gap-1">
-        <label
-          id={`${id}-task-label`}
-          htmlFor={`${id}-task`}
-          className="text-xs fg-secondary"
-        >
+        <span id={`${id}-task-label`} className="text-xs fg-secondary">
           Task
-        </label>
+        </span>
         <LedgerTargetPicker
           id={`${id}-task`}
           labelId={`${id}-task-label`}
@@ -244,13 +238,9 @@ function FeedTargetFields({
         />
       </div>
       <div className="flex min-w-0 flex-col gap-1">
-        <label
-          id={`${id}-owner`}
-          htmlFor={`${id}-owner-picker`}
-          className="text-xs fg-secondary"
-        >
+        <span id={`${id}-owner`} className="text-xs fg-secondary">
           Owner
-        </label>
+        </span>
         <LedgerDraftOwnerPicker
           labelId={`${id}-owner`}
           draft={draft}

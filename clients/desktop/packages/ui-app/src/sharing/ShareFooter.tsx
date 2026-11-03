@@ -53,7 +53,7 @@ export function ShareFooter({
 }: ShareFooterProps): JSX.Element {
   return (
     <div
-      className="flex items-center gap-2 border-t px-5 py-3"
+      className="flex items-center gap-2 border-t px-6 py-3"
       data-testid={`${testIdPrefix}-footer`}
     >
       <div className="flex min-w-0 flex-1 items-center">{leading}</div>

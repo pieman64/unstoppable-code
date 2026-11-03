@@ -9,6 +9,7 @@ import {
 import type { BrowserJavaScriptDialog } from '@canopy/desktop-shared/types/browser';
 import { Button } from '@/components/shared/Button';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { ErrorBanner, TextInput } from '@canopy/ui-shared/components';
 
 interface BrowserJavaScriptDialogModalProps {
   browserId: string;
@@ -151,21 +152,16 @@ export function BrowserJavaScriptDialogModal({
             {message}
           </p>
           {dialog.type === 'prompt' && (
-            <input
+            <TextInput
               ref={inputRef}
               type="text"
               value={promptText}
               disabled={submitting}
               aria-label="Response"
-              className="focus-ring h-9 w-full rounded-md border bg-base px-3 text-s fg-primary disabled:opacity-60"
               onChange={(event): void => setPromptText(event.target.value)}
             />
           )}
-          {error && (
-            <p role="alert" className="text-xs fg-destructive">
-              {error}
-            </p>
-          )}
+          <ErrorBanner error={error} className="" />
         </div>
         <div className="flex justify-end gap-2 border-t px-5 py-3">
           {showCancel && (

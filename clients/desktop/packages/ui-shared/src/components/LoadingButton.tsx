@@ -1,6 +1,12 @@
 import type { ButtonHTMLAttributes, JSX, ReactNode } from 'react';
 import { SHARE_LANDER_BUTTON_CLASS_NAME } from '../lib/share-lander';
-import { buttonClassName, type ButtonSize, type ButtonVariant } from './Button';
+import {
+  buttonClassName,
+  isAriaDisabled,
+  swallowUnavailableClick,
+  type ButtonSize,
+  type ButtonVariant,
+} from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
 
 /**
@@ -66,7 +72,11 @@ function plainText(label: ReactNode): string | null {
  * A text label is drawn by CSS from an attribute, so it adds no text to the
  * DOM: queries and the button's text content see the showing label alone.
  */
-function ReservedLabel({ label }: { readonly label: ReactNode }): JSX.Element {
+export function ReservedLabel({
+  label,
+}: {
+  readonly label: ReactNode;
+}): JSX.Element {
   const text = plainText(label);
   if (text !== null) {
     return (
@@ -97,7 +107,9 @@ function ReservedLabel({ label }: { readonly label: ReactNode }): JSX.Element {
  * The spinner is `decorative`, because a descendant `aria-label` folds into the
  * accessible name the button computes from its contents; without it a busy
  * button announces as "Loading Adding…". `aria-busy` carries that signal
- * instead, and the button disables so the work cannot be started twice.
+ * instead. A busy button is `aria-disabled`, not `disabled`, so keyboard focus
+ * stays on it while the work runs, and its click (or its form's submit) does
+ * nothing, so the work cannot be started twice.
  */
 export function LoadingButton({
   loading = false,
@@ -120,44 +132,88 @@ export function LoadingButton({
   } else {
     resolvedClassName = buttonClassName({ variant, size, className });
   }
-  const layerClassName = LAYER_CLASS_NAMES[presentation];
   return (
     <button
       {...buttonProps}
       type={type}
       className={resolvedClassName}
-      disabled={disabled || loading}
+      disabled={disabled}
+      aria-disabled={loading || buttonProps['aria-disabled']}
       aria-busy={loading}
+      onClick={
+        loading || isAriaDisabled(buttonProps['aria-disabled'])
+          ? swallowUnavailableClick
+          : buttonProps.onClick
+      }
     >
-      <span className="grid min-w-0">
-        <span
-          aria-hidden={loading ? true : undefined}
-          className={`${layerClassName} ${loading ? 'invisible' : ''}`}
-          data-busy-layer="rest"
-        >
-          {loading ? <ReservedLabel label={children} /> : children}
-        </span>
-        <span
-          aria-hidden={loading ? undefined : true}
-          className={`${layerClassName} ${loading ? '' : 'invisible'}`}
-          data-busy-layer="busy"
-        >
-          {loading ? (
-            <LoadingSpinner
-              className="shrink-0"
-              dataTestId={spinnerTestId}
-              decorative
-            />
-          ) : (
-            <span className={SPINNER_SPACER_CLASS_NAME} />
-          )}
-          {loading ? (
-            (loadingLabel ?? children)
-          ) : (
-            <ReservedLabel label={loadingLabel ?? children} />
-          )}
-        </span>
-      </span>
+      <BusyLayers
+        busy={loading}
+        busyLabel={loadingLabel}
+        spinnerTestId={spinnerTestId}
+        presentation={presentation}
+      >
+        {children}
+      </BusyLayers>
     </button>
+  );
+}
+
+/**
+ * The inside of a button that can turn busy: the resting label and the busy
+ * one (spinner plus `busyLabel`) on top of each other in one grid cell, so
+ * the button is as wide as the wider of them from the first render. Only
+ * the showing layer is exposed to assistive technology. `LoadingButton` and
+ * a busy-capable `NoticeButton` draw their labels through it; the button
+ * itself still sets `aria-busy` and `disabled`.
+ */
+export function BusyLayers({
+  busy,
+  busyLabel,
+  leading,
+  spinnerTestId,
+  presentation = 'app',
+  children,
+}: {
+  readonly busy: boolean;
+  /** Label while busy. Defaults to the resting label. */
+  readonly busyLabel?: ReactNode;
+  /** A glyph before the resting label; the spinner takes its place. */
+  readonly leading?: ReactNode;
+  readonly spinnerTestId?: string;
+  readonly presentation?: LoadingButtonPresentation;
+  readonly children: ReactNode;
+}): JSX.Element {
+  const layerClassName = LAYER_CLASS_NAMES[presentation];
+  return (
+    <span className="grid min-w-0">
+      <span
+        aria-hidden={busy ? true : undefined}
+        className={`${layerClassName} ${busy ? 'invisible' : ''}`}
+        data-busy-layer="rest"
+      >
+        {leading}
+        {busy ? <ReservedLabel label={children} /> : children}
+      </span>
+      <span
+        aria-hidden={busy ? undefined : true}
+        className={`${layerClassName} ${busy ? '' : 'invisible'}`}
+        data-busy-layer="busy"
+      >
+        {busy ? (
+          <LoadingSpinner
+            className="shrink-0"
+            dataTestId={spinnerTestId}
+            decorative
+          />
+        ) : (
+          <span className={SPINNER_SPACER_CLASS_NAME} />
+        )}
+        {busy ? (
+          (busyLabel ?? children)
+        ) : (
+          <ReservedLabel label={busyLabel ?? children} />
+        )}
+      </span>
+    </span>
   );
 }

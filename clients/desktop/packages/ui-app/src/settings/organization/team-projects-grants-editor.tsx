@@ -1,7 +1,13 @@
 'use client';
 
 import type { Dispatch, SetStateAction, JSX } from 'react';
-import { Button, Notice, SettingsSelect } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ChoiceField,
+  FormField,
+  Notice,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import {
   ORG_PROJECT_LIMITS,
   type OrgProjectGrant,
@@ -143,26 +149,23 @@ export function TeamProjectsGrantsEditor({
               </div>
               {/* The everyone grant is never listed by default: members add it themselves. */}
               {!everyone && (
-                <label className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={grant.defaultListed}
-                    disabled={disabled}
-                    onChange={(event): void =>
-                      setGrants((current) =>
-                        current.map((entry) =>
-                          principalKey(entry.principal) === key
-                            ? {
-                                ...entry,
-                                defaultListed: event.target.checked,
-                              }
-                            : entry,
-                        ),
-                      )
-                    }
-                  />
-                  Listed by default
-                </label>
+                <ChoiceField
+                  label="Listed by default"
+                  checked={grant.defaultListed}
+                  disabled={disabled}
+                  onChange={(event): void =>
+                    setGrants((current) =>
+                      current.map((entry) =>
+                        principalKey(entry.principal) === key
+                          ? {
+                              ...entry,
+                              defaultListed: event.target.checked,
+                            }
+                          : entry,
+                      ),
+                    )
+                  }
+                />
               )}
               <Button
                 size="compact"
@@ -184,53 +187,58 @@ export function TeamProjectsGrantsEditor({
         })}
       </ul>
       <div className="grid gap-3 sm:grid-cols-2">
-        <label>
-          Add member
-          <SettingsSelect
-            aria-label="Add member"
-            width="fill"
-            replayPrivacy={{ blockClassName }}
-            value={null}
-            placeholder="Choose a member"
-            disabled={addDisabled}
-            onValueChange={(value): void => {
-              if (value === ORGANIZATION_OPTION) add({ type: 'organization' });
-              else if (value) add({ type: 'user', userId: value });
-            }}
-            options={[
-              ...(keys.has(principalKey({ type: 'organization' }))
-                ? []
-                : [
-                    {
-                      value: ORGANIZATION_OPTION,
-                      label: principalName({ type: 'organization' }, detail),
-                    },
-                  ]),
-              ...detail.members
-                .filter((member) => !keys.has(`user:${member.id}`))
-                .map((member) => ({
-                  value: member.id,
-                  label: member.name || member.email,
-                })),
-            ]}
-          />
-        </label>
-        <label>
-          Add team
-          <SettingsSelect
-            aria-label="Add team"
-            width="fill"
-            value={null}
-            placeholder="Choose a team"
-            disabled={addDisabled}
-            onValueChange={(value): void => {
-              if (value) add({ type: 'team', teamId: value });
-            }}
-            options={detail.subTeams
-              .filter((team) => !keys.has(`team:${team.id}`))
-              .map((team) => ({ value: team.id, label: team.name }))}
-          />
-        </label>
+        <FormField label="Add member">
+          {(control) => (
+            <SettingsSelect
+              {...control}
+              aria-label="Add member"
+              width="fill"
+              replayPrivacy={{ blockClassName }}
+              value={null}
+              placeholder="Choose a member"
+              disabled={addDisabled}
+              onValueChange={(value): void => {
+                if (value === ORGANIZATION_OPTION)
+                  add({ type: 'organization' });
+                else if (value) add({ type: 'user', userId: value });
+              }}
+              options={[
+                ...(keys.has(principalKey({ type: 'organization' }))
+                  ? []
+                  : [
+                      {
+                        value: ORGANIZATION_OPTION,
+                        label: principalName({ type: 'organization' }, detail),
+                      },
+                    ]),
+                ...detail.members
+                  .filter((member) => !keys.has(`user:${member.id}`))
+                  .map((member) => ({
+                    value: member.id,
+                    label: member.name || member.email,
+                  })),
+              ]}
+            />
+          )}
+        </FormField>
+        <FormField label="Add team">
+          {(control) => (
+            <SettingsSelect
+              {...control}
+              aria-label="Add team"
+              width="fill"
+              value={null}
+              placeholder="Choose a team"
+              disabled={addDisabled}
+              onValueChange={(value): void => {
+                if (value) add({ type: 'team', teamId: value });
+              }}
+              options={detail.subTeams
+                .filter((team) => !keys.has(`team:${team.id}`))
+                .map((team) => ({ value: team.id, label: team.name }))}
+            />
+          )}
+        </FormField>
       </div>
       {grants.length >= ORG_PROJECT_LIMITS.grantsPerProject && (
         <Notice>Each project can have up to 500 grants.</Notice>

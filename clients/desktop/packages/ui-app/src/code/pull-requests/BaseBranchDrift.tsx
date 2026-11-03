@@ -88,6 +88,7 @@ export function AlignBaseBranchConfirmation({
 }: AlignBaseBranchConfirmationProps): JSX.Element {
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Align base branch with PR?"
       maxWidth="sm"
@@ -96,7 +97,7 @@ export function AlignBaseBranchConfirmation({
       closeOnEscape={!pending}
       showCloseButton={!pending}
     >
-      <div className="flex flex-col gap-3 p-5 text-s fg-primary">
+      <div className="flex flex-col gap-3 p-6 text-s fg-primary">
         <p className="fg-secondary">
           Update the locally tracked base branch to match the open pull request?
           This changes the worktree metadata and does not modify the PR.

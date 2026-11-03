@@ -21,13 +21,14 @@ export function ExportSessionConfirmationModal({
 
   return (
     <DialogModal
+      inset="flush"
       title="Secure session snapshot export"
       ownerDocument={ownerDocument}
       onClose={onCancel}
       maxWidth="md"
       dataTestId="export-session-confirmation-modal"
     >
-      <div className="space-y-3 px-5 py-4 text-s fg-secondary">
+      <div className="space-y-3 px-6 py-4 text-s fg-secondary">
         <p>
           Create a private, account-scoped snapshot that can be imported from
           another device signed in to the same {brandText.appName} Cloud
@@ -43,7 +44,7 @@ export function ExportSessionConfirmationModal({
           the snapshot.
         </p>
       </div>
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         <Button variant="outline" size="lg" onClick={onCancel}>
           Cancel
         </Button>

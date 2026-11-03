@@ -68,13 +68,14 @@ export function PrMergeWarningDialog({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={isSubmitting ? (): void => undefined : onClose}
       title="Unresolved comments"
       maxWidth="md"
       closeOnBackdrop={!isSubmitting}
       dataTestId="pr-merge-warning-modal"
     >
-      <div className="flex flex-col gap-3 p-5 text-s fg-primary">
+      <div className="flex flex-col gap-3 p-6 text-s fg-primary">
         <p>
           This pull request has{' '}
           <span className="font-semibold">{unresolvedText}</span>. You can

@@ -1,10 +1,11 @@
+import { createDesktopObservabilityHost } from './host';
 import { ObservabilityService } from './service';
 
 let service: ObservabilityService | null = null;
 
 export function getObservabilityService(): ObservabilityService {
   if (!service) {
-    service = new ObservabilityService();
+    service = new ObservabilityService(createDesktopObservabilityHost());
   }
   return service;
 }

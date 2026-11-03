@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, type JSX, type ReactNode } from 'react';
+import { useMemo, type JSX } from 'react';
 import type {
   LedgerActorLabel,
   LedgerAuthorDetails,
@@ -19,12 +19,14 @@ import {
 import { HistoryIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
+import { ErrorBanner } from '../StatusBlocks';
 import {
   ledgerAttributedActorName,
   type LedgerEntryRowAttribution,
 } from './ledger-entry-attribution';
 import type { LedgerOpenEntry } from './ledger-entry-slots';
 import { LedgerActorNameText } from './LedgerEntryParts';
+import { Fact, FactList } from '../FactList';
 
 /** One change to an entry, ready to show in its thread. */
 export interface LedgerActivityItem {
@@ -162,26 +164,6 @@ const AUTHOR_DETAIL_LABELS: ReadonlyArray<
   ['mode', 'Mode'],
 ];
 
-interface DetailRowProps {
-  readonly label: string;
-  readonly children: ReactNode;
-  readonly testId?: string;
-}
-
-function DetailRow({ label, children, testId }: DetailRowProps): JSX.Element {
-  return (
-    <div className="flex min-w-0 gap-3 text-xs">
-      <dt className="w-24 shrink-0 fg-tertiary">{label}</dt>
-      <dd
-        data-testid={testId}
-        className="min-w-0 flex-1 break-words fg-secondary"
-      >
-        {children}
-      </dd>
-    </div>
-  );
-}
-
 export interface LedgerEntryDetailsProps {
   readonly entry: LedgerEntrySearchItem;
   readonly view: LedgerViewEntry | null;
@@ -222,8 +204,8 @@ export function LedgerEntryDetails({
       aria-label="Details"
       className="flex min-w-0 flex-col gap-1.5"
     >
-      <dl className="flex flex-col gap-1">
-        <DetailRow label="Added by">
+      <FactList labelWidth="6rem" columnGap="3" rowGap="1">
+        <Fact valueTone="secondary" label="Added by">
           <LedgerActorNameText
             kind={detailEntry.author.kind}
             localUser={attribution?.kind !== 'teammate'}
@@ -233,16 +215,20 @@ export function LedgerEntryDetails({
               attribution,
             )}
           />
-        </DetailRow>
-        <DetailRow label="Owner" testId="ledger-entry-detail-owner">
+        </Fact>
+        <Fact
+          valueTone="secondary"
+          label="Owner"
+          dataTestId="ledger-entry-detail-owner"
+        >
           <LedgerActorNameText
             kind={detailEntry.owner.kind}
             name={ownerName}
             localUser={attribution?.kind !== 'teammate'}
           />
-        </DetailRow>
+        </Fact>
         {view !== null && (
-          <DetailRow label="Source">
+          <Fact valueTone="secondary" label="Source">
             <div className="flex flex-col gap-1.5">
               <p>
                 {ledgerSourceDescription(view.entry.entry.origin, view.source)}
@@ -285,23 +271,23 @@ export function LedgerEntryDetails({
                 </details>
               )}
             </div>
-          </DetailRow>
+          </Fact>
         )}
-        <DetailRow label="Recorded">
+        <Fact valueTone="secondary" label="Recorded">
           {formatLedgerDateTime(detailEntry.createdAt)}
-        </DetailRow>
+        </Fact>
         {detailEntry.updatedAt !== detailEntry.createdAt && (
-          <DetailRow label="Updated">
+          <Fact valueTone="secondary" label="Updated">
             {formatLedgerDateTime(detailEntry.updatedAt)}
-          </DetailRow>
+          </Fact>
         )}
         {authorDetailRows.map(({ label, value }) => (
-          <DetailRow key={label} label={label}>
+          <Fact valueTone="secondary" key={label} label={label}>
             {value}
-          </DetailRow>
+          </Fact>
         ))}
         {syncState !== undefined && (
-          <DetailRow label="Sync">
+          <Fact valueTone="secondary" label="Sync">
             <span
               data-testid="ledger-entry-detail-sync"
               data-sync-state={syncState}
@@ -311,15 +297,15 @@ export function LedgerEntryDetails({
             >
               {LEDGER_SYNC_STATE_LABELS[syncState]}
             </span>
-          </DetailRow>
+          </Fact>
         )}
-        <DetailRow label="Revision">
+        <Fact valueTone="secondary" label="Revision">
           <span className="tabular-nums">{detailEntry.revision}</span>
-        </DetailRow>
-        <DetailRow label="Entry ID">
+        </Fact>
+        <Fact valueTone="secondary" label="Entry ID">
           <span className="font-mono text-2xs">{detailEntry.entryId}</span>
-        </DetailRow>
-      </dl>
+        </Fact>
+      </FactList>
       {onShowCorrectedEntry !== undefined &&
         detailEntry.supersedesEntryId !== undefined && (
           <Button
@@ -372,17 +358,11 @@ export function LedgerEntryOpenArea({
     <div className="flex flex-col gap-3">
       {open.notice}
       {open.closedExplanation}
-      {open.openError !== undefined &&
-        open.openError !== null &&
-        open.openError.length > 0 && (
-          <p
-            data-testid="ledger-entry-open-error"
-            role="alert"
-            className="text-2xs fg-destructive"
-          >
-            {open.openError}
-          </p>
-        )}
+      <ErrorBanner
+        className=""
+        error={open.openError}
+        testId="ledger-entry-open-error"
+      />
       {open.readState}
       {showActivity && (
         <>

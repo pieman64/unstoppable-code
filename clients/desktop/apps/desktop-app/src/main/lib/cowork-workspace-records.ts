@@ -85,7 +85,7 @@ function admitId(id: string): void {
   }
 }
 function authoritative(snapshot: WorkspaceIndexSnapshot): void {
-  admitCoworkIndex(snapshot.authority);
+  admitCoworkIndex(snapshot.authority, snapshot.unserved);
 }
 function inIndex<T>(
   change: (
@@ -268,6 +268,15 @@ export function admitCoworkSettingsChange(
     starterPrompts: req.starterPrompts,
     startPage: req.startPage,
   };
+}
+
+/**
+ * Admits a whole `chat-project:update` save before any of its owner parts
+ * writes, so a refusal still leaves every part unwritten (W7b-1c).
+ */
+export function admitCoworkSaveRequest(req: UpdateChatProjectRequest): void {
+  admitId(req.projectId);
+  admitSettings(req);
 }
 
 /** The Auto Delete baseline: every Work Entry's recency, stamped before staging. */

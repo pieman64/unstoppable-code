@@ -12,17 +12,13 @@ import {
   useCleanChatLook,
   type StepTense,
 } from '../chat-look';
-import {
-  containsTensedVerb,
-  hasTensedStepLabel,
-  isAskUserQuestionToolName,
-  readableToolInput,
-} from './tool-display';
+import { isAskUserQuestionToolName, readableToolInput } from './tool-display';
 import {
   TOOL_APPROVAL_WAITING_LABEL,
   useToolApprovalWait,
 } from './tool-approval-wait';
 import { STEP_ROW_BODY_CLASS, StepRow } from './StepRow';
+import { StatusLabel } from '../StatusLabel';
 import {
   classifyToolDenial,
   stripHookErrorPrefix,
@@ -129,12 +125,14 @@ export function ToolCallResultSection({
   return (
     <>
       <div
-        className={`border-t px-2.5 py-1 text-3xs font-medium ${
-          result.kind === 'error' && !clean ? 'fg-destructive' : 'fg-secondary'
-        }`}
+        className="border-t px-2.5 py-1 text-3xs font-medium fg-secondary"
         data-testid="tool-call-result-heading"
       >
-        {toolCallResultHeading(result)}
+        {result.kind === 'error' && !clean ? (
+          <StatusLabel>{toolCallResultHeading(result)}</StatusLabel>
+        ) : (
+          toolCallResultHeading(result)
+        )}
       </div>
       {children ?? (
         <pre
@@ -358,15 +356,6 @@ export function ToolCallCard({
     ) : (
       renderedIcon
     );
-  // The label on screen may carry the verb even when a host passes it
-  // ready-made without the input (large-output steps). Only failed and
-  // waiting rows ask, so a running row never resolves its label twice.
-  // A waiting row needs a verb actually present in its label; the default
-  // raw tool name still needs the secondary approval note.
-  const labelTensed =
-    (isError || isWaiting) &&
-    (containsTensedVerb(label) ||
-      (isError && hasTensedStepLabel(toolName, input ?? '')));
   // Clean chat look: the shared step row, with readable details when opened.
   const clean = useCleanChatLook();
   if (clean) {
@@ -379,6 +368,7 @@ export function ToolCallCard({
         data-tool-name={toolName}
         data-tool-status={resolvedStatus}
         data-tool-interruption={interruption?.reason}
+        data-chat-disclosure=""
         data-tool-approval={isWaiting ? 'waiting' : undefined}
       >
         <StepTenseProvider
@@ -393,7 +383,7 @@ export function ToolCallCard({
                 <span data-testid="tool-call-blocked">
                   {toolDenialDetail(denial)}
                 </span>
-              ) : isWaiting && !labelTensed ? (
+              ) : isWaiting ? (
                 // A label without a verb ("Fetch", an app tool) still says
                 // why it is not running.
                 <span data-testid="tool-call-waiting">
@@ -404,14 +394,14 @@ export function ToolCallCard({
               )
             }
             running={isPending}
-            failed={isError && !labelTensed}
+            failed={isError}
             expandable
             isOpen={isOpen}
             onToggle={(): void => setIsOpen((prev) => !prev)}
           />
         </StepTenseProvider>
         {isOpen && (
-          <div className={STEP_ROW_BODY_CLASS}>
+          <div className={STEP_ROW_BODY_CLASS} data-chat-reveal-body="">
             {expandedSlot ?? (
               <div className="space-y-1">
                 {shownInput != null && shownInput.length > 0 && (
@@ -488,12 +478,9 @@ export function ToolCallCard({
         {isError && denial == null && (
           // In words, and kept while hovered: the icon's error tint swaps to
           // +/− on hover, so it can't be the row's only signal.
-          <span
-            className="flex-shrink-0 fg-destructive"
-            data-testid="tool-call-error"
-          >
+          <StatusLabel className="flex-shrink-0" data-testid="tool-call-error">
             error
-          </span>
+          </StatusLabel>
         )}
         {interruptionDetail != null && (
           <span className="flex-shrink-0 fg-tertiary">

@@ -49,10 +49,13 @@ function commandsForSource(commands, source) {
   return commands.filter((entry) => entry.source === source);
 }
 
+// Tracked totals come from `--numstat`; `--shortstat` is only the rename and
+// copy fallback.
 function worktreeStatsCommands(commands) {
   return commands.filter(
     (entry) =>
       entry.command.startsWith('status --porcelain') ||
+      entry.command.includes(' --numstat') ||
       entry.command.includes(' --shortstat') ||
       entry.command.startsWith('ls-files --others --exclude-standard'),
   );
@@ -114,9 +117,9 @@ test('explicit stats Git commands retain attribution while session snapshots sta
     const targetedCommands = readAttributedCommands(commandLogPath);
     const targeted = commandsForSource(targetedCommands, 'renderer-targeted');
     expect(targeted.length).toBeGreaterThan(0);
-    expect(
-      targeted.some((entry) => entry.command.includes(' --shortstat')),
-    ).toBe(true);
+    expect(targeted.some((entry) => entry.command.includes(' --numstat'))).toBe(
+      true,
+    );
     expect(
       targeted.some((entry) => entry.command.startsWith('rev-parse ')),
     ).toBe(true);

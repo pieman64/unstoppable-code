@@ -1,11 +1,11 @@
-import type { DelegationStatisticsEvent } from '../usage-tab-aggregation';
 import {
   computeCountsTimeseries,
   computeTabSummary,
   computeMetricsView,
+  normalizeAuditEntry,
   toDelegationStatisticsEvent,
-} from '../usage-tab-aggregation';
-import { normalizeAuditEntry } from '../audit-entry-parser';
+  type DelegationStatisticsEvent,
+} from '@canopy/core-runtime/observability';
 
 const NOW = Date.parse('2026-10-08T12:00:00Z');
 // A delegation is separate spend, not a completed parent chat turn.

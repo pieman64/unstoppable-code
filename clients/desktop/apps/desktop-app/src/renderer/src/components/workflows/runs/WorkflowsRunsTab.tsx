@@ -1,7 +1,14 @@
-import { type JSX } from 'react';
+import { useCallback, useMemo, type JSX } from 'react';
+import {
+  EMPTY_WORKFLOW_LIBRARY_FILTERS,
+  selectRunsLibraryPreview,
+  type WorkflowLibraryRow,
+  type WorkflowsRunsLibraryPreview,
+} from '@canopy/ui-app/workflows';
 import { Notice } from '@canopy/ui-shared/components';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkflowsViewStore } from '@/stores/workflowsViewStore';
+import type { WorkflowLibraryData } from '../library/useWorkflowLibraryRows';
 import type { WorkflowRunFeed } from './useWorkflowRunFeed';
 import { useWorkflowRunRowActions, WorkflowRunsList } from './WorkflowRunsList';
 
@@ -11,6 +18,8 @@ export interface WorkflowsRunsTabProps {
   /** Starts a run; absent when the Library has nothing to run. */
   readonly onRunWorkflow?: () => void;
   readonly onNewWorkflow?: () => void;
+  /** The Library's rows, previewed while there are no runs (CAN-4311). */
+  readonly library?: Pick<WorkflowLibraryData, 'rows' | 'targets'>;
 }
 
 /**
@@ -22,16 +31,54 @@ export function WorkflowsRunsTab({
   feed,
   onRunWorkflow,
   onNewWorkflow,
+  library,
 }: WorkflowsRunsTabProps): JSX.Element {
   const query = useWorkflowsViewStore((state) => state.runsQuery);
   const filters = useWorkflowsViewStore((state) => state.runsFilters);
   const setQuery = useWorkflowsViewStore((state) => state.setRunsQuery);
   const setFilters = useWorkflowsViewStore((state) => state.setRunsFilters);
+  const librarySort = useWorkflowsViewStore((state) => state.librarySort);
   const rowActions = useWorkflowRunRowActions(feed);
 
   // Older pages hold automation runs only.
   const hasMore =
     feed.hasMore && (filters.kind === null || filters.kind === 'automation');
+
+  const targets = library?.targets;
+  const openLibraryRow = useCallback(
+    (row: WorkflowLibraryRow): void => {
+      // A local pipeline is revealed: the Library clears its filters, pages
+      // to the row and marks it. Anything else is found by its name.
+      const target = targets?.get(row.key);
+      if (target?.kind === 'pipeline' && target.pipeline.source !== 'project') {
+        useNavigationStore
+          .getState()
+          .openPipelineReveal({ pipelineId: target.pipeline.id });
+        return;
+      }
+      useWorkflowsViewStore.getState().setLibraryFilters({
+        ...EMPTY_WORKFLOW_LIBRARY_FILTERS,
+        query: row.name,
+      });
+      useNavigationStore.getState().navigate('workflows-library');
+    },
+    [targets],
+  );
+  const libraryRows = library?.rows;
+  const libraryPreview = useMemo(
+    (): WorkflowsRunsLibraryPreview | undefined =>
+      libraryRows === undefined
+        ? undefined
+        : {
+            rows: selectRunsLibraryPreview(libraryRows, librarySort),
+            onOpenRow: openLibraryRow,
+            onSeeLibrary: (): void => {
+              useWorkflowsViewStore.getState().clearLibraryFilters();
+              useNavigationStore.getState().navigate('workflows-library');
+            },
+          },
+    [libraryRows, librarySort, openLibraryRow],
+  );
 
   return (
     <div
@@ -63,6 +110,7 @@ export function WorkflowsRunsTab({
         onBrowseMarketplace={(): void =>
           useNavigationStore.getState().navigate('plugins')
         }
+        libraryPreview={libraryPreview}
       />
       {feed.loadMoreFailed && (
         <Notice intent="attention" data-testid="workflows-runs-load-more-error">

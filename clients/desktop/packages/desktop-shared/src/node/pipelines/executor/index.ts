@@ -69,6 +69,11 @@ export {
   retryPipelineExecution,
 } from './pipeline-executor';
 export {
+  configurePipelineOwnerFence,
+  type PipelineOwnerInspection,
+  type PipelineOwnerInspector,
+} from './owner-fence';
+export {
   defaultTargetForExecution,
   inferExecutionScope,
   resolvePipelineTarget,

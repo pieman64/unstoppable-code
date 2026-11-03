@@ -82,11 +82,11 @@ test('custom and plugin-bundled skill rows on the Customize Skills tab', async (
     await expect(installed).toBeVisible();
 
     // ------------------------------------------------------------------
-    // Custom skill: avatar badge, updated metadata, Edit, Delete…
+    // Custom skill: avatar badge, creator and edited tooltip, Edit, Delete…
     // ------------------------------------------------------------------
     await expect(
       installed.getByTestId(`customize-row-subtitle-${CUSTOM_ID}`),
-    ).toHaveText(/^Updated\s\d+[smhd] ago$/);
+    ).toHaveText('You');
     await expect(
       installed.getByTestId(`customize-row-custom-${CUSTOM_ID}`),
     ).toHaveAttribute('aria-label', 'Custom skill');
@@ -98,7 +98,7 @@ test('custom and plugin-bundled skill rows on the Customize Skills tab', async (
     ).toHaveCount(0);
     const creator = installed.getByTestId(`customize-row-creator-${CUSTOM_ID}`);
     await expect(creator).toHaveCount(0);
-    const edited = installed.getByTestId(`customize-row-edited-${CUSTOM_ID}`);
+    const edited = installed.getByTestId(`customize-row-source-${CUSTOM_ID}`);
     await edited.hover();
     await expect(window.getByRole('tooltip')).toContainText('2026');
     const badge = installed.getByTestId(`customize-row-custom-${CUSTOM_ID}`);
@@ -120,7 +120,7 @@ test('custom and plugin-bundled skill rows on the Customize Skills tab', async (
     expect(badgeGeometry).toEqual({
       width: '16px',
       height: '16px',
-      glyphWidth: '10px',
+      glyphWidth: '12px',
       bottom: '-4px',
       right: '-4px',
       wrapperOverflow: 'visible',

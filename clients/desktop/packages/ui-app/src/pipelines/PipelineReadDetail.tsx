@@ -5,6 +5,7 @@ import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal'
 import { PipelineIcon } from '@canopy/ui-shared';
 import { Button } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { EmptyStateRow } from '@canopy/ui-shared/components';
 
 export interface PipelineReadDetailProps {
   definition: PortalPipelineDefinitionViewModel;
@@ -159,8 +160,8 @@ export function PipelineReadDetail({
                 </div>
                 <ol className="space-y-1.5 p-2">
                   {job.steps.length === 0 && (
-                    <li className="py-4 text-center text-xs fg-secondary">
-                      No steps yet
+                    <li>
+                      <EmptyStateRow title="No steps yet" />
                     </li>
                   )}
                   {job.steps.map((step) => (

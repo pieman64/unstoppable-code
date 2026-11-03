@@ -1,7 +1,8 @@
 import { useId, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
-import { Button } from './Button';
-import { Radio } from './Choice';
+import { ChoiceField } from './Choice';
+import { Notice, NoticeButton } from './Notice';
+import { TRY_AGAIN_LABEL } from './useRetry';
 import { Select, type SelectOption } from './Field';
 
 /**
@@ -33,7 +34,10 @@ export const AUTOMATION_PIPELINE_PROJECT_FOLDER_HELPER =
   'Runs in the project folder without creating a task.';
 export const AUTOMATION_PIPELINE_TASK_LOADING = 'Loading tasks…';
 export const AUTOMATION_PIPELINE_TASK_LOAD_ERROR =
-  'Could not load tasks. Try again.';
+  'Couldn’t load tasks. Try again.';
+/** The same failure beside its own Try again button. */
+export const AUTOMATION_PIPELINE_TASK_LOAD_ERROR_BESIDE_RETRY =
+  'Couldn’t load tasks.';
 export const AUTOMATION_PIPELINE_TASK_STALE =
   'This task is no longer available. Choose another task.';
 
@@ -126,23 +130,25 @@ export function AutomationPipelineTaskField({
         </p>
       )}
       {tasks.status === 'error' && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center gap-2 text-xs fg-secondary"
+        <Notice
+          intent="destructive"
           data-testid={`${testIdPrefix}-task-error`}
+          actions={
+            onRetryTasks ? (
+              <NoticeButton
+                disabled={disabled}
+                onClick={onRetryTasks}
+                data-testid={`${testIdPrefix}-task-retry`}
+              >
+                {TRY_AGAIN_LABEL}
+              </NoticeButton>
+            ) : undefined
+          }
         >
-          <span>{AUTOMATION_PIPELINE_TASK_LOAD_ERROR}</span>
-          {onRetryTasks && (
-            <Button
-              variant="secondary"
-              disabled={disabled}
-              onClick={onRetryTasks}
-              data-testid={`${testIdPrefix}-task-retry`}
-            >
-              Retry
-            </Button>
-          )}
-        </div>
+          {onRetryTasks
+            ? AUTOMATION_PIPELINE_TASK_LOAD_ERROR_BESIDE_RETRY
+            : AUTOMATION_PIPELINE_TASK_LOAD_ERROR}
+        </Notice>
       )}
       {tasks.status === 'unavailable' && (
         <p
@@ -209,20 +215,17 @@ export function AutomationPipelineTargetFields({
       >
         <span id={runInLabelId}>Run in</span>
         {options.map((option) => (
-          <label
+          <ChoiceField
             key={option.value}
-            className="flex cursor-pointer items-center gap-2 text-s fg-primary"
-          >
-            <Radio
-              name={`${runInLabelId}-run-in`}
-              value={option.value}
-              checked={value === option.value}
-              disabled={disabled}
-              onChange={(): void => onChange(option.value)}
-              data-testid={`${testIdPrefix}-pipeline-run-in-${option.value}`}
-            />
-            <span>{option.label}</span>
-          </label>
+            kind="radio"
+            label={option.label}
+            name={`${runInLabelId}-run-in`}
+            value={option.value}
+            checked={value === option.value}
+            disabled={disabled}
+            onChange={(): void => onChange(option.value)}
+            data-testid={`${testIdPrefix}-pipeline-run-in-${option.value}`}
+          />
         ))}
         {value === 'project' && (
           <p

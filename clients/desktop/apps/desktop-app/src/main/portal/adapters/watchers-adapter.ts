@@ -1,3 +1,8 @@
+import {
+  githubWorkflowDefinitionTiers,
+  githubWorkflowJobTiers,
+} from '@canopy/ui-shared/lib/github-workflow-display';
+import { latestGitHubRunObservation } from '@canopy/protocol/agent-artifacts';
 import type {
   AppAdvisorWatcherDestination,
   AppAdvisorWatcherSummary,
@@ -17,6 +22,8 @@ import {
 } from '@canopy/desktop-shared/lib/watcher-display';
 import {
   PortalWatcherDeletePayloadSchema,
+  PortalGitHubRunProgressSchema,
+  PortalGitHubPullRequestProgressSchema,
   type PortalWatcherEntity,
   worktreeScopedParentLocalId,
 } from '@canopy/protocol/portal';
@@ -53,11 +60,59 @@ export function projectPortalWatchers(
 ): PortalWatcherEntity[] {
   const rows = new Map<string, PortalWatcherEntity>();
   for (const destination of destinations) {
-    for (const watcher of watchersForSubscriberDestination(
-      watchers,
-      destination,
-    )) {
-      if (watcher.status !== 'active' && watcher.status !== 'delivery_failed')
+    for (const watcher of watchers) {
+      if (
+        watcher.destination.projectId !== destination.projectId ||
+        watcher.destination.worktreeId !== destination.worktreeId ||
+        watcher.destination.chatId !== destination.chatId
+      )
+        continue;
+      const githubRun =
+        watcher.trigger === 'github_workflow_runs_changed' &&
+        watcher.target.kind === 'github_workflow_runs';
+      const githubPr =
+        watcher.trigger === 'github_pull_requests_changed' &&
+        watcher.target.kind === 'github_pull_requests';
+      const runs = githubRun
+        ? (watcher.githubProgress?.runs ?? []).slice(0, 20).flatMap((run) => {
+            const tiers = run.definition?.jobs.length
+              ? githubWorkflowDefinitionTiers(run.definition, run.jobs ?? [])
+                  .tiers
+              : githubWorkflowJobTiers(run.jobs ?? []);
+            const tierByJob = new Map(
+              tiers.flatMap((ids, tier) =>
+                ids.map((id) => [id, tier] as const),
+              ),
+            );
+            const parsed = PortalGitHubRunProgressSchema.safeParse({
+              ...run,
+              observedAt: latestGitHubRunObservation(run),
+              tiers,
+              jobs: run.jobs?.map((job) => ({
+                ...job,
+                tier: tierByJob.get(job.jobId) ?? 0,
+              })),
+            });
+            return parsed.success ? [parsed.data] : [];
+          })
+        : [];
+      const pullRequests = githubPr
+        ? (watcher.githubPullRequestProgress?.pullRequests ?? [])
+            .slice(0, 20)
+            .flatMap((pr) => {
+              const parsed =
+                PortalGitHubPullRequestProgressSchema.safeParse(pr);
+              return parsed.success ? [parsed.data] : [];
+            })
+        : [];
+      const completedGitHub =
+        (watcher.status === 'firing' || watcher.status === 'fired') &&
+        (runs.length > 0 || pullRequests.length > 0);
+      if (
+        !completedGitHub &&
+        watcher.status !== 'active' &&
+        watcher.status !== 'delivery_failed'
+      )
         continue;
       const target = watcherTargetDisplay(watcher.target);
       const github = githubWatcherTargetDisplay(watcher.target);
@@ -68,7 +123,11 @@ export function projectPortalWatchers(
         chatId: destination.chatId,
         trigger: watcher.trigger,
         targetKind: watcher.target.kind,
-        status: watcher.status,
+        status: watcher.status === 'firing' ? 'active' : watcher.status,
+        ...(runs.length ? { githubProgress: { runs } } : {}),
+        ...(pullRequests.length
+          ? { githubPullRequestProgress: { pullRequests } }
+          : {}),
         createdAt: watcher.createdAt,
         ...(watcher.followUpInstruction === undefined
           ? {}
@@ -133,8 +192,18 @@ export async function listPortalWatcherEntities(
 ): Promise<PortalEntityEnvelope[]> {
   const emission = capturePortalEmissionContext();
   const watchers = destinations.length
-    ? await getAppAdvisorWatcherService().list()
+    ? [...(await getAppAdvisorWatcherService().list())]
     : [];
+  if (destinations.length) {
+    const completed = await getAppAdvisorWatcherService().listCompleted();
+    watchers.push(
+      ...completed.filter(
+        (row) =>
+          row.trigger === 'github_workflow_runs_changed' ||
+          row.trigger === 'github_pull_requests_changed',
+      ),
+    );
+  }
   const rows = projectPortalWatchers(watchers, destinations);
   if (emission && isPortalEmissionContextCurrent(emission)) {
     for (const destination of destinations) {

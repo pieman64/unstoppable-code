@@ -1,6 +1,7 @@
 import { type JSX, type ReactNode } from 'react';
 import { Button } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons';
+import { ToggleSwitch } from '@canopy/ui-shared/components';
 import { CalendarViewPicker } from './CalendarViewPicker';
 import type { CalendarView } from './calendarPreferences';
 
@@ -70,18 +71,16 @@ export function CalendarToolbar({
         {title}
       </h2>
       {filters}
-      <label
-        className="flex cursor-pointer items-center gap-1.5 text-xs fg-secondary select-none"
-        data-testid="automations-calendar-show-disabled"
-      >
-        <input
-          type="checkbox"
+      <div className="flex items-center gap-1.5 text-xs fg-secondary">
+        <ToggleSwitch
+          size="sm"
+          label="Include off"
           checked={showDisabled}
-          onChange={(event): void => onToggleShowDisabled(event.target.checked)}
-          className="h-3.5 w-3.5 accent-accent"
+          onChange={onToggleShowDisabled}
+          dataTestId="automations-calendar-show-disabled"
         />
-        <span>Include off</span>
-      </label>
+        <span aria-hidden="true">Include off</span>
+      </div>
       <CalendarViewPicker
         calendarView={calendarView}
         onChange={onCalendarViewChange}

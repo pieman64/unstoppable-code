@@ -14,14 +14,29 @@ import { OverviewSectionHeader } from '@canopy/ui-app';
 import { Button, LoadingSpinner } from '@/components/shared';
 import { RefreshSpinner } from '@/components/shared/loading/spinners/RefreshSpinner';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import {
+  useWorkspaceReadinessLaunchReconciliation,
+  useWorkspaceReadinessMissingChats,
+} from '@/hooks/useWorkspaceReadinessLaunchReconciliation';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { workspaceReadinessIssueKey } from '@/lib/workspaceReadinessIssueKey';
 import {
   launchWorkspaceReadinessFix,
   navigateToWorkspaceReadinessChat,
 } from '@/lib/workspaceReadinessLauncher';
+import {
+  launchedReadinessFixesForTarget,
+  launchedReadinessFixKey,
+} from '@/lib/workspaceReadinessLaunches';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  pruneResolvedWorkspaceReadinessLaunches,
+  selectWorkspaceReadinessLaunch,
+  snapshotWorkspaceReadinessLaunches,
+  useWorkspaceReadinessLaunchStore,
+} from '@/stores/workspaceReadinessLaunchStore';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { ErrorBanner, StatusLabel } from '@canopy/ui-shared/components';
 
 const READINESS_PARALLELISM = 4;
 
@@ -32,14 +47,10 @@ interface WorkspaceReadinessOverviewProps {
   hasHydratedProjects: boolean;
 }
 
-interface LaunchedReadinessChat {
-  worktreeId: string;
-  chatId: string;
-}
-
 interface WorkspaceReadinessResult {
   workspaceId: string;
   issues?: WorkspaceReadinessIssue[];
+  complete?: boolean;
   failed?: true;
 }
 
@@ -59,7 +70,11 @@ async function readWithConcurrency(
           const response = await window.api.getWorkspaceReadiness({
             workspaceId: workspace.id,
           });
-          results.push({ workspaceId: workspace.id, issues: response.issues });
+          results.push({
+            workspaceId: workspace.id,
+            issues: response.issues,
+            complete: response.complete,
+          });
         } catch {
           results.push({ workspaceId: workspace.id, failed: true });
         }
@@ -165,19 +180,27 @@ export function WorkspaceReadinessOverview({
   );
   const [launchError, setLaunchError] = useState<string | null>(null);
   /**
-   * Readiness chats launched from this surface, keyed the same way as
-   * `launchingKey`. In-memory only: unmounting the Overview drops the
-   * "View conversation" affordance even while the agent is still working.
+   * Launched readiness fixes, shared with Home and workspace settings and
+   * persisted across restarts. The Overview audits each reference checkout,
+   * so only reference-target launches apply here.
    */
-  const [launchedChats, setLaunchedChats] = useState<
-    Record<string, LaunchedReadinessChat>
-  >({});
+  const launchRecords = useWorkspaceReadinessLaunchStore(
+    (state) => state.records,
+  );
+  const missingChats = useWorkspaceReadinessMissingChats(launchRecords);
+  useWorkspaceReadinessLaunchReconciliation();
   const generationRef = useRef(0);
 
   const refresh = useCallback(async (): Promise<void> => {
     const workspaces = currentWorkspacesRef.current;
     const generation = generationRef.current + 1;
     generationRef.current = generation;
+    const launchSnapshots = new Map(
+      workspaces.map((workspace) => [
+        workspace.id,
+        snapshotWorkspaceReadinessLaunches(workspace.id, undefined),
+      ]),
+    );
     const activeIds = new Set(workspaces.map((workspace) => workspace.id));
     setIssuesByWorkspace((current) =>
       Object.fromEntries(
@@ -195,6 +218,15 @@ export function WorkspaceReadinessOverview({
 
     const results = await readWithConcurrency(workspaces);
     if (generationRef.current !== generation) return;
+    for (const result of results) {
+      if (result.issues) {
+        pruneResolvedWorkspaceReadinessLaunches(
+          launchSnapshots.get(result.workspaceId) ?? [],
+          result.issues,
+          result.complete,
+        );
+      }
+    }
 
     setIssuesByWorkspace((current) => {
       const next = { ...current };
@@ -236,6 +268,10 @@ export function WorkspaceReadinessOverview({
     retryingWorkspaceIdsRef.current.add(workspace.id);
     setRetryingWorkspaceIds((current) => new Set(current).add(workspace.id));
     const generation = generationRef.current;
+    const launchSnapshot = snapshotWorkspaceReadinessLaunches(
+      workspace.id,
+      undefined,
+    );
     try {
       const response = await window.api.getWorkspaceReadiness({
         workspaceId: workspace.id,
@@ -248,6 +284,11 @@ export function WorkspaceReadinessOverview({
       ) {
         return;
       }
+      pruneResolvedWorkspaceReadinessLaunches(
+        launchSnapshot,
+        response.issues,
+        response.complete,
+      );
       setIssuesByWorkspace((current) => ({
         ...current,
         [workspace.id]: response.issues,
@@ -288,23 +329,17 @@ export function WorkspaceReadinessOverview({
   ): Promise<void> => {
     if (launchingKey !== null) return;
     const key = `${workspaceId}:${workspaceReadinessIssueKey(issue)}`;
-    if (launchedChats[key]) return;
     setLaunchingKey(key);
     setLaunchError(null);
     // The Overview stays put so the user can fire several recommendations in a
-    // row; the launched chat is reachable afterwards via "View conversation".
+    // row; the launch record turns the row into "View conversation".
     const result = await launchWorkspaceReadinessFix(
       workspaceId,
       issue,
       undefined,
       { navigateToChat: false },
     );
-    if (result.ok) {
-      setLaunchedChats((current) => ({
-        ...current,
-        [key]: { worktreeId: result.worktreeId, chatId: result.chatId },
-      }));
-    } else {
+    if (!result.ok) {
       setLaunchError(result.message);
     }
     setLaunchingKey(null);
@@ -336,7 +371,13 @@ export function WorkspaceReadinessOverview({
     issueCount: totalIssueCount,
     failedWorkspaceCount: failedWorkspaceIds.size,
     launching: launchingKey !== null,
-    launchedChatCount: Object.keys(launchedChats).length,
+    launchedChatCount: codeWorkspaces.reduce(
+      (total, workspace) =>
+        total +
+        launchedReadinessFixesForTarget(launchRecords, workspace.id, undefined)
+          .length,
+      0,
+    ),
     errorVisible: launchError !== null,
   });
 
@@ -440,12 +481,14 @@ export function WorkspaceReadinessOverview({
                       <WorkspaceCell workspaceName={workspaceName} />
                       <td className="px-3 py-2.5 align-top">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-xs fg-destructive">
-                            Couldn’t check{' '}
-                            <span className={POSTHOG_REPLAY_MASK_CLASS}>
-                              {workspaceName}
-                            </span>
-                            .
+                          <p className="text-xs">
+                            <StatusLabel>
+                              Couldn’t check{' '}
+                              <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                                {workspaceName}
+                              </span>
+                              .
+                            </StatusLabel>
                           </p>
                           <div className="flex flex-wrap items-center gap-1">
                             <WorkspaceSettingsButton
@@ -457,8 +500,8 @@ export function WorkspaceReadinessOverview({
                               variant="ghost"
                               aria-label={
                                 retryingWorkspaceIds.has(workspace.id)
-                                  ? `Retrying readiness check for ${workspaceName}`
-                                  : `Retry readiness check for ${workspaceName}`
+                                  ? `Trying again for ${workspaceName}`
+                                  : `Try again for ${workspaceName}`
                               }
                               aria-busy={retryingWorkspaceIds.has(workspace.id)}
                               disabled={
@@ -468,8 +511,8 @@ export function WorkspaceReadinessOverview({
                               onClick={() => void retry(workspace)}
                             >
                               {retryingWorkspaceIds.has(workspace.id)
-                                ? 'Retrying…'
-                                : 'Retry'}
+                                ? 'Trying again…'
+                                : 'Try again'}
                             </Button>
                           </div>
                         </div>
@@ -482,7 +525,18 @@ export function WorkspaceReadinessOverview({
                 return issues.map((issue, issueIndex) => {
                   const key = `${workspace.id}:${workspaceReadinessIssueKey(issue)}`;
                   const isLaunching = launchingKey === key;
-                  const launched = launchedChats[key];
+                  const launched = selectWorkspaceReadinessLaunch(
+                    { records: launchRecords },
+                    workspace.id,
+                    undefined,
+                    workspaceReadinessIssueKey(issue),
+                  );
+                  const chatMissing =
+                    launched !== undefined &&
+                    missingChats.includes(launchedReadinessFixKey(launched));
+                  const viewLabel = chatMissing
+                    ? 'Open worktree'
+                    : 'View conversation';
                   return (
                     <tr key={key} className="border-t first:border-t-0">
                       {issueIndex === 0 && (
@@ -502,6 +556,11 @@ export function WorkspaceReadinessOverview({
                                 ? issue.message
                                 : issue.repoName}
                             </div>
+                            {chatMissing && (
+                              <div className="text-3xs fg-secondary">
+                                Conversation unavailable
+                              </div>
+                            )}
                           </div>
                           <div className="flex flex-wrap items-center gap-1">
                             {issueIndex === 0 && (
@@ -514,7 +573,7 @@ export function WorkspaceReadinessOverview({
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                aria-label={`View conversation for ${issue.title} in ${workspaceName}`}
+                                aria-label={`${viewLabel} for ${issue.title} in ${workspaceName}`}
                                 onClick={() =>
                                   void navigateToWorkspaceReadinessChat(
                                     workspace.id,
@@ -523,7 +582,7 @@ export function WorkspaceReadinessOverview({
                                   )
                                 }
                               >
-                                View conversation
+                                {viewLabel}
                               </Button>
                             ) : (
                               <Button
@@ -557,9 +616,7 @@ export function WorkspaceReadinessOverview({
         </div>
       </div>
 
-      {launchError && (
-        <p className="mt-3 text-xs fg-destructive">{launchError}</p>
-      )}
+      <ErrorBanner error={launchError} className="mt-3" />
     </section>
   );
 }

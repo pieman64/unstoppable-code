@@ -32,8 +32,13 @@ import {
 import { ChatIcon, PipelineIcon, PlanModeIcon } from '@canopy/ui-shared/icons';
 import {
   Button,
+  DialogFormField,
+  ErrorBanner,
+  SearchField,
   SegmentedControl,
   type SegmentedControlOption,
+  TextArea,
+  TextInput,
   WordBoundaryTruncatedText,
 } from '@canopy/ui-shared/components';
 import { WorkspaceDropdown } from '../shared/WorkspaceDropdown';
@@ -223,13 +228,12 @@ function LinearSearch({
 
   return (
     <div className="space-y-2">
-      <input
-        type="text"
+      <SearchField
         value={query}
-        onChange={(event) => onQueryChange(event.target.value)}
+        onValueChange={onQueryChange}
+        aria-label="Search Linear"
         placeholder="Search Linear by id or title…"
         data-testid="create-task-linear-search"
-        className="focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s"
       />
       {dropdownContent && (
         <div className="max-h-64 overflow-y-auto rounded-lg border bg-base">
@@ -313,12 +317,7 @@ function PrPreview({
   }
   if (error) {
     return (
-      <p
-        data-testid="create-from-pr-error"
-        className="rounded-lg border bg-base px-3 py-2 text-xs fg-destructive"
-      >
-        {error}
-      </p>
+      <ErrorBanner error={error} className="" testId="create-from-pr-error" />
     );
   }
   if (!pr) {
@@ -639,6 +638,7 @@ export function CreateTaskModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Create task"
       subtitle="Describe the task and choose how to start work"
@@ -646,7 +646,7 @@ export function CreateTaskModal({
       maxWidth="lg"
       dataTestId="create-task-modal"
     >
-      <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4 text-s">
+      <div className="flex-1 space-y-4 overflow-y-auto px-6 py-4 text-s">
         {eligibleWorkspaces.length === 0 ? (
           <div className="rounded-lg border border-dashed bg-secondary/10 p-4 text-s fg-secondary">
             No eligible projects available. Add a single-repo project or attach
@@ -681,7 +681,7 @@ export function CreateTaskModal({
 
             {mode !== 'new' && mode !== 'linear' && (
               <div className="space-y-2">
-                <input
+                <TextInput
                   type="text"
                   value={referenceQuery}
                   onChange={(event) =>
@@ -690,7 +690,6 @@ export function CreateTaskModal({
                   placeholder="Paste a branch, PR link/#, or Linear issue…"
                   data-testid="create-from-reference-input"
                   aria-label="Branch, PR, or Linear reference"
-                  className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 text-s"
                 />
                 {mode === 'branch' &&
                   (selectedBranch ? (
@@ -760,26 +759,28 @@ export function CreateTaskModal({
               </div>
             )}
 
-            <label className="block">
-              <span className="mb-1.5 block text-xs fg-secondary">
-                {mode === 'new'
+            <DialogFormField
+              label={
+                mode === 'new'
                   ? 'Task description'
-                  : 'Task description (optional)'}
-              </span>
-              <textarea
+                  : 'Task description (optional)'
+              }
+              htmlFor="create-task-text"
+            >
+              <TextArea
+                id="create-task-text"
                 value={taskText}
                 onChange={(event) => setTaskText(event.target.value)}
                 placeholder="Describe the task in natural language…"
                 rows={mode === 'new' ? 6 : 3}
                 data-testid="create-task-text"
-                className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 text-sm"
               />
-            </label>
+            </DialogFormField>
           </>
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+      <div className="flex items-center justify-end gap-2 border-t px-6 py-3">
         <Button size="compact" onClick={onClose}>
           Cancel
         </Button>

@@ -5,6 +5,7 @@ import {
   ConfirmDialog,
   DialogModal,
   LoadingSpinner,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { useMemoryReportStore } from '@/stores/memoryReportStore';
@@ -97,7 +98,7 @@ export function MemoryReportOverlay(): JSX.Element | null {
           onClose={dismiss}
         >
           <div
-            className="flex flex-col gap-4 px-5 pb-5 pt-4"
+            className="flex flex-col gap-4"
             data-testid={`memory-report-${flow.phase}`}
             aria-busy={flow.phase === 'generating'}
           >
@@ -112,16 +113,14 @@ export function MemoryReportOverlay(): JSX.Element | null {
                 </p>
                 <p className="fg-secondary">{SHARING_NOTE}</p>
                 {flow.revealFailed ? (
-                  <p className="fg-destructive" role="alert">
-                    Couldn&apos;t open the folder. The report may have been
-                    moved or deleted.
-                  </p>
+                  <ErrorBanner
+                    className=""
+                    error="Couldn't open the folder. The report may have been moved or deleted."
+                  />
                 ) : null}
               </div>
             ) : (
-              <p className="text-s fg-destructive" role="alert">
-                {FAILURE_COPY[flow.reason]}
-              </p>
+              <ErrorBanner className="" error={FAILURE_COPY[flow.reason]} />
             )}
             {settled ? (
               <div className="flex items-center justify-end gap-2">

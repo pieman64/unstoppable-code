@@ -1,4 +1,5 @@
 import { memo, useEffect, useState, type JSX } from 'react';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import {
   CheckCircle2,
   MessageSquare,
@@ -19,7 +20,7 @@ import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { findOrganizationName } from '@/lib/organizationName';
 import { openAccountOrganizationPage } from '@/lib/navigation/settings-destinations';
 import { isSettingsRouteId } from '@canopy/protocol/settings';
-import { Tooltip } from '@canopy/ui-shared';
+import { TextArea, Tooltip } from '@canopy/ui-shared';
 import { Button } from '@canopy/ui-shared/components';
 
 interface MemoryUsedDialogProps {
@@ -218,14 +219,14 @@ function FactFeedbackControls({
             Submitting…
           </span>
         ) : null}
-        {status === 'error' ? (
-          <span className="fg-destructive">Couldn’t submit. Try again.</span>
-        ) : null}
       </div>
+      {status === 'error' ? (
+        <ErrorBanner error="Couldn’t submit. Try again." className="" />
+      ) : null}
       {commentOpen ? (
         <div className="flex items-end gap-2">
-          <textarea
-            className="focus-ring min-h-14 flex-1 resize-y rounded-md border bg-base p-2 text-s fg-primary"
+          <TextArea
+            className="flex-1"
             placeholder="What's wrong (or right) about this memory?"
             aria-label="Feedback comment for this memory"
             data-testid="memory-feedback-comment-input"
@@ -330,7 +331,7 @@ function MemoryUsedDialogImpl({
       maxWidth="lg"
       dataTestId="memory-used-dialog"
     >
-      <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto px-5 pb-5">
+      <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto">
         <p className="text-s fg-secondary" data-testid="memory-used-intro">
           {organizationName === null ? (
             'Suggestions from past organization sessions'

@@ -1,17 +1,18 @@
 import { useFocused, useSelected, type RenderElementProps } from 'slate-react';
 import type { JSX } from 'react';
+import { INLINE_TOKEN_CHIP_CLASS } from '@canopy/ui-shared/components';
 
 function getFilename(displayPath: string): string {
   const parts = displayPath.split('/');
   return parts[parts.length - 1] || displayPath;
 }
 
+// The same chip as a mention in a sent message; the selected token gets an
+// accent hairline so it reads as selected inside the editor.
 function pillClasses(selected = false, focused = false): string {
-  return `inline-flex max-w-full items-center rounded-md border px-1.5 py-0.5 font-mono text-xs ${
-    selected && focused
-      ? 'border-line-accent/60 bg-accent-subtle fg-accent'
-      : 'border-line-accent/30 bg-accent-subtle fg-accent'
-  }`;
+  return selected && focused
+    ? `${INLINE_TOKEN_CHIP_CLASS} ring-[length:var(--border-hairline)] ring-line-accent`
+    : INLINE_TOKEN_CHIP_CLASS;
 }
 
 export function FileReferencePillElement({

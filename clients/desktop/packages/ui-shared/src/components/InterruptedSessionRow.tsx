@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { ChoiceField } from './Choice';
 
 const LAYOUT_CLASS = {
   /** A selectable row in the resume dialog. */
@@ -16,14 +17,26 @@ const INDENT_CLASS = {
   worktree: 'ml-12',
 } as const;
 
+/** The checkbox that selects a row in the resume dialog. */
+export interface InterruptedSessionRowSelection {
+  readonly id: string;
+  readonly checked: boolean;
+  readonly disabled?: boolean;
+  readonly onChange: () => void;
+  /** Usually the metadata line (`metadataId`). */
+  readonly describedBy?: string;
+  readonly testId?: string;
+}
+
 export interface InterruptedSessionRowProps {
   /** User-authored chat or pipeline title. */
   title: string;
   /**
-   * Renders the title as a `<label>` for this control id, so the title names
-   * the leading checkbox without wrapping the row or its trailing controls.
+   * Selects the row: a checkbox whose label is the title line, so clicking
+   * the title toggles it, without wrapping the row or its trailing
+   * controls. Takes the place of `leading`.
    */
-  titleFor?: string;
+  selection?: InterruptedSessionRowSelection;
   /** Lets a trailing control reference the title through `aria-describedby`. */
   titleId?: string;
   /** Mask the user-authored title in session replays. */
@@ -59,7 +72,7 @@ export interface InterruptedSessionRowProps {
  */
 export function InterruptedSessionRow({
   title,
-  titleFor,
+  selection,
   titleId,
   replayMaskTitle = false,
   context,
@@ -86,46 +99,53 @@ export function InterruptedSessionRow({
       data-testid={testId}
       className={`flex items-start ${LAYOUT_CLASS[layout]} ${INDENT_CLASS[indent]}`}
     >
-      {leading}
+      {selection ? null : leading}
       <div className="min-w-0 flex-1">
-        {titleFor ? (
-          <label
-            id={titleId}
-            htmlFor={titleFor}
-            title={titleTooltip}
-            className={titleClass}
-          >
-            {title}
-          </label>
+        {selection ? (
+          <ChoiceField
+            id={selection.id}
+            checked={selection.checked}
+            disabled={selection.disabled}
+            onChange={selection.onChange}
+            aria-describedby={selection.describedBy}
+            data-testid={selection.testId}
+            label={
+              <span id={titleId} title={titleTooltip} className={titleClass}>
+                {title}
+              </span>
+            }
+          />
         ) : (
           <p id={titleId} title={titleTooltip} className={titleClass}>
             {title}
           </p>
         )}
-        {context ? (
-          <p
-            className={`truncate text-xs fg-secondary ${replayMaskContext ? REPLAY_MASK_CLASS : ''}`}
-          >
-            {context}
-          </p>
-        ) : null}
-        {metadata ? (
-          <p
-            id={metadataId}
-            data-testid={metadataTestId}
-            className="text-xs fg-secondary"
-          >
-            {metadata}
-          </p>
-        ) : null}
-        {secondaryMetadata ? (
-          <p
-            className={`break-words text-xs fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
-          >
-            {secondaryMetadata}
-          </p>
-        ) : null}
-        {children}
+        <div className={selection ? 'pl-6' : undefined}>
+          {context ? (
+            <p
+              className={`truncate text-xs fg-secondary ${replayMaskContext ? REPLAY_MASK_CLASS : ''}`}
+            >
+              {context}
+            </p>
+          ) : null}
+          {metadata ? (
+            <p
+              id={metadataId}
+              data-testid={metadataTestId}
+              className="text-xs fg-secondary"
+            >
+              {metadata}
+            </p>
+          ) : null}
+          {secondaryMetadata ? (
+            <p
+              className={`break-words text-xs fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
+            >
+              {secondaryMetadata}
+            </p>
+          ) : null}
+          {children}
+        </div>
       </div>
       {trailing}
     </Element>

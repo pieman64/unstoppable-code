@@ -11,7 +11,6 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import {
   foldWorktreeMenuIntoMore,
   getWorktreeDeleteLabels,
@@ -116,7 +115,10 @@ import {
   TerminalStatusPopover,
   RunBadgePopover,
   ActionMenuRowStyle,
-  DropdownMenuSurface,
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+  FLOATING_MENU_GAP,
+  type FloatingMenuPlacement,
   WorktreeActionMenuItems,
   type WorktreeMenuItem,
   type PipelineStatusPopoverEntry,
@@ -124,10 +126,7 @@ import {
   type RunBadgeRow,
   type ChatPreviewRow,
 } from '@canopy/ui-shared/components';
-import {
-  suppressNextClick,
-  OPERATIONAL_STATUS_COLORS,
-} from '@canopy/ui-shared/lib';
+import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
 import { useSuspendSidebarHovers } from '@/hooks/useSuspendSidebarHovers';
 import {
   ArchiveBoxIcon,
@@ -178,7 +177,7 @@ import {
   buildToolApprovalPreviewRows,
 } from './worktreeRowPreviewRows';
 import {
-  placeContextMenuAtPoint,
+  CONTEXT_MENU_POINTER_OFFSET,
   Tooltip,
   useContextMenuPlacement,
 } from '@canopy/ui-shared';
@@ -1810,7 +1809,7 @@ function WorktreeItemContent({
       items.push({
         key: 'create-branch',
         label: 'Branch from',
-        icon: <BranchIcon />,
+        icon: <BranchIcon size="md" />,
         onSelect: (): void => onCreateBranchWorktree(worktree.id),
         testId: automationId('worktree-actions-menu-create-branch'),
       });
@@ -1891,153 +1890,27 @@ function WorktreeItemContent({
     return earlyAccess ? foldWorktreeMenuIntoMore(items) : items;
   };
   useSuspendSidebarHovers(actionsMenuOpen);
-  const [actionsMenuPosition, setActionsMenuPosition] = useState<{
-    top: number;
-    right: number;
-  } | null>(null);
   const actionsMenuTriggerRef = useRef<HTMLButtonElement>(null);
-  const actionsMenuRef = useRef<HTMLDivElement>(null);
+  const actionsMenuPointAnchorRef = useRef<HTMLSpanElement>(null);
   /** Right-click origin; null anchors the menu to the ••• button instead. */
   const [actionsMenuAnchorPoint, setActionsMenuAnchorPoint] = useState<{
     x: number;
     y: number;
   } | null>(null);
-
-  const updateActionsMenuPosition = useCallback((): void => {
-    const VIEWPORT_PADDING = 8;
-    const GAP = 4;
-    // Early access: a right-click opens the menu at the pointer, flipping
-    // where it would not fit (`placeContextMenuAtPoint`).
-    if (actionsMenuAnchorPoint && contextMenuPlacement === 'cursor') {
-      const menu = actionsMenuRef.current;
-      if (!menu) return;
-      const menuWidth = menu.offsetWidth;
-      const { left, top } = placeContextMenuAtPoint({
-        x: actionsMenuAnchorPoint.x,
-        y: actionsMenuAnchorPoint.y,
-        menuWidth,
-        menuHeight: menu.offsetHeight,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-      });
-      const right = window.innerWidth - left - menuWidth;
-      setActionsMenuPosition((previous) =>
-        previous && previous.top === top && previous.right === right
-          ? previous
-          : { top, right },
-      );
-      return;
-    }
-    let triggerRect: { top: number; bottom: number; right: number };
-    if (actionsMenuAnchorPoint) {
-      triggerRect = {
-        top: actionsMenuAnchorPoint.y,
-        bottom: actionsMenuAnchorPoint.y,
-        right: actionsMenuAnchorPoint.x,
-      };
-    } else {
-      const trigger = actionsMenuTriggerRef.current;
-      if (!trigger) {
-        return;
-      }
-      triggerRect = trigger.getBoundingClientRect();
-    }
-    const menuHeight = actionsMenuRef.current?.offsetHeight ?? 0;
-    const spaceBelow =
-      window.innerHeight - triggerRect.bottom - VIEWPORT_PADDING;
-    const spaceAbove = triggerRect.top - VIEWPORT_PADDING;
-    // Flip up only when the menu has been measured (menuHeight > 0) AND it
-    // doesn't fit below AND it does fit above. Falls through to "drop down" on
-    // the first render before the menu has measurable dimensions.
-    const flipUp =
-      menuHeight > 0 && menuHeight > spaceBelow && menuHeight <= spaceAbove;
-    const unclampedTop = flipUp
-      ? triggerRect.top - menuHeight - GAP
-      : triggerRect.bottom + GAP;
-    // Clamp vertically once measured, so a menu that fits neither fully
-    // below nor fully above still stays entirely on-screen.
-    const top =
-      menuHeight > 0
-        ? Math.min(
-            Math.max(VIEWPORT_PADDING, unclampedTop),
-            Math.max(
-              VIEWPORT_PADDING,
-              window.innerHeight - menuHeight - VIEWPORT_PADDING,
-            ),
-          )
-        : unclampedTop;
-    // Clamp horizontally so the menu is always fully visible: the right
-    // offset may not push the menu's LEFT edge past the viewport padding
-    // (left edge = innerWidth - right - menuWidth). Falls through unclamped
-    // on the first render before the menu has measurable width.
-    const menuWidth = actionsMenuRef.current?.offsetWidth ?? 0;
-    const maxRight =
-      menuWidth > 0
-        ? window.innerWidth - menuWidth - VIEWPORT_PADDING
-        : Number.POSITIVE_INFINITY;
-    const right = Math.max(
-      VIEWPORT_PADDING,
-      Math.min(window.innerWidth - triggerRect.right, maxRight),
-    );
-    setActionsMenuPosition((previous) => {
-      if (previous && previous.top === top && previous.right === right) {
-        return previous;
-      }
-      return { top, right };
-    });
-  }, [actionsMenuAnchorPoint, contextMenuPlacement]);
-
-  useEffect(() => {
-    if (!actionsMenuOpen) {
-      setActionsMenuPosition(null);
-      setActionsMenuAnchorPoint(null);
-      return;
-    }
-    updateActionsMenuPosition();
-    function handleMouseDown(event: globalThis.MouseEvent): void {
-      const target = event.target as Node | null;
-      if (!target) {
-        return;
-      }
-      if (
-        actionsMenuTriggerRef.current?.contains(target) ||
-        actionsMenuRef.current?.contains(target) ||
-        // A submenu (More, under early access) is its own floating layer
-        // outside the menu; a press inside it picks a row, not dismisses.
-        (target instanceof Element &&
-          target.closest('[data-floating-menu-nested="true"]') !== null)
-      ) {
-        return;
-      }
-      // The press only dismisses — swallow the click it completes so the
-      // element under the pointer is not activated.
-      suppressNextClick(document);
-      setActionsMenuOpen(false);
-    }
-    function handleKeyDown(event: globalThis.KeyboardEvent): void {
-      if (event.key === 'Escape') {
-        setActionsMenuOpen(false);
-      }
-    }
-    function handleReposition(): void {
-      updateActionsMenuPosition();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('resize', handleReposition);
-    window.addEventListener('scroll', handleReposition, {
-      capture: true,
-      passive: true,
-    });
-    return (): void => {
-      document.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('resize', handleReposition);
-      window.removeEventListener('scroll', handleReposition, {
-        capture: true,
-      });
-    };
-  }, [actionsMenuOpen, updateActionsMenuPosition]);
+  // Early access opens a right-click menu beside the pointer; otherwise the
+  // menu hangs from the pointer as it hangs from the ••• button.
+  const pointerMenuBesideCursor =
+    actionsMenuAnchorPoint !== null && contextMenuPlacement === 'cursor';
+  const actionsMenuPlacement: FloatingMenuPlacement = pointerMenuBesideCursor
+    ? 'bottom-left'
+    : 'bottom-right';
+  const actionsMenuGap = pointerMenuBesideCursor
+    ? CONTEXT_MENU_POINTER_OFFSET
+    : FLOATING_MENU_GAP;
+  const handleActionsMenuOpenChange = useCallback((next: boolean): void => {
+    setActionsMenuOpen(next);
+    if (!next) setActionsMenuAnchorPoint(null);
+  }, []);
 
   const isListMode = displayMode === 'list';
   const isSortable = !sortableDisabled;
@@ -2366,38 +2239,52 @@ function WorktreeItemContent({
           aria-haspopup="menu"
           aria-expanded={actionsMenuOpen}
         />
-        {actionsMenuOpen &&
-          createPortal(
-            <DropdownMenuSurface
-              ref={actionsMenuRef}
-              data-testid={automationId('worktree-actions-menu')}
-              onClick={(e) => e.stopPropagation()}
-              style={
-                actionsMenuPosition
-                  ? {
-                      position: 'fixed',
-                      top: actionsMenuPosition.top,
-                      right: actionsMenuPosition.right,
-                    }
-                  : { position: 'fixed', visibility: 'hidden' }
-              }
-              className="z-dropdown min-w-45"
-            >
-              {/* Quieter rows (small text, tertiary icons) where menus open
-                  at the pointer (early access). */}
-              <ActionMenuRowStyle>
-                <WorktreeActionMenuItems
-                  items={buildActionsMenuItems()}
-                  onSelect={(item): void => {
-                    if (item.disabled || !item.onSelect) return;
-                    setActionsMenuOpen(false);
-                    item.onSelect();
-                  }}
-                />
-              </ActionMenuRowStyle>
-            </DropdownMenuSurface>,
-            document.body,
-          )}
+        {actionsMenuOpen && actionsMenuAnchorPoint && (
+          <FloatingMenuPointAnchor
+            ref={actionsMenuPointAnchorRef}
+            x={actionsMenuAnchorPoint.x}
+            y={actionsMenuAnchorPoint.y}
+            ownerDocument={document}
+          />
+        )}
+        <FloatingMenu
+          open={actionsMenuOpen}
+          onOpenChange={handleActionsMenuOpenChange}
+          anchorRef={
+            actionsMenuAnchorPoint
+              ? actionsMenuPointAnchorRef
+              : actionsMenuTriggerRef
+          }
+          returnFocusRef={actionsMenuTriggerRef}
+          anchorPoint={actionsMenuAnchorPoint ?? undefined}
+          // A right-click menu closes on a window resize or blur, appears at
+          // once and leaves focus put, like a native context menu.
+          closeOnWindowChange={actionsMenuAnchorPoint !== null}
+          motion={actionsMenuAnchorPoint ? 'none' : 'enter'}
+          focusOnOpen={actionsMenuAnchorPoint === null}
+          placement={actionsMenuPlacement}
+          gap={actionsMenuGap}
+          interaction="menu"
+          // Rows close the menu themselves.
+          closeOnSelect={false}
+          data-testid={automationId('worktree-actions-menu')}
+          // The menu is portaled; keep its clicks off the row underneath.
+          onClick={(e) => e.stopPropagation()}
+          className="min-w-45"
+        >
+          {/* Quieter rows (small text, tertiary icons) where menus open
+              at the pointer (early access). */}
+          <ActionMenuRowStyle>
+            <WorktreeActionMenuItems
+              items={buildActionsMenuItems()}
+              onSelect={(item): void => {
+                if (item.disabled || !item.onSelect) return;
+                handleActionsMenuOpenChange(false);
+                item.onSelect();
+              }}
+            />
+          </ActionMenuRowStyle>
+        </FloatingMenu>
       </span>
     </WorktreeRowActionChip>
   );

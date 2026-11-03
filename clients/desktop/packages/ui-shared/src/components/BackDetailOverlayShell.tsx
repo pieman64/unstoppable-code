@@ -1,15 +1,14 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { BackIcon as AppCatalogBackIcon } from '../icons/AppIcons';
-import { Button } from './Button';
+import { DialogModal } from './DialogModal';
 
-const CONTENT_CLASS = 'flex-1 overflow-y-auto px-5 pb-5';
+const CONTENT_CLASS = 'px-6 pb-6';
 
 /**
- * Full-screen scrim + centered dialog card with a back button, used by the
- * plugins-surface detail overlays. Ported from the desktop `components/pages`
- * original — class names and markup match it exactly so tests/selectors and
- * visual diffs are unchanged.
+ * The plugins surface's detail dialog (an MCP server, a skill): the shared
+ * dialog with the item's name, an optional badge beside it, and its details
+ * below. Closing it (the close button, Escape or the scrim) goes back to the
+ * list it opened from.
  */
 export function BackDetailOverlayShell({
   title,
@@ -27,51 +26,38 @@ export function BackDetailOverlayShell({
   /**
    * Mark only the scrolling content area with the session-replay block class,
    * for a body that is file content (such as a SKILL.md file). The header,
-   * back button, and title stay recorded.
+   * close button, and title stay recorded.
    */
   blockContentFromReplay?: boolean;
 }): JSX.Element {
   return (
-    <div
-      className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      onClick={onBack}
+    <DialogModal
+      onClose={onBack}
+      title={
+        badge ? (
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate">{title}</span>
+            {badge}
+          </span>
+        ) : (
+          title
+        )
+      }
+      titleId={titleId}
+      maxWidth="2xl"
+      headerBorder={false}
+      inset="flush"
+      trapFocus
     >
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="w-full max-w-2xl max-h-[80vh] flex flex-col rounded-2xl bg-card shadow-xl"
-        onClick={(event) => event.stopPropagation()}
+        className={
+          blockContentFromReplay
+            ? `${REPLAY_BLOCK_CLASS} ${CONTENT_CLASS}`
+            : CONTENT_CLASS
+        }
       >
-        <div className="flex items-center gap-2 px-5 pt-5 pb-3">
-          <Button
-            variant="ghost"
-            size="compact"
-            iconOnly
-            onClick={onBack}
-            aria-label="Back"
-          >
-            <AppCatalogBackIcon width="16" height="16" />
-          </Button>
-          <h2
-            id={titleId}
-            className="text-lg font-semibold fg-primary truncate"
-          >
-            {title}
-          </h2>
-          {badge}
-        </div>
-
-        <div
-          className={
-            blockContentFromReplay
-              ? `${REPLAY_BLOCK_CLASS} ${CONTENT_CLASS}`
-              : CONTENT_CLASS
-          }
-        >
-          {children}
-        </div>
+        {children}
       </div>
-    </div>
+    </DialogModal>
   );
 }

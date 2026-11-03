@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,7 +11,6 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
@@ -37,13 +37,25 @@ import {
   ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
   CheckIcon as AppCatalogCheckIcon,
   Copy as AppCatalogCopy,
-  CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { useCodeGraphExperimentEnabled } from '@/hooks/useCodeGraphExperimentEnabled';
 import { useCodeGraphBuildStore } from '@/stores/codeGraphBuildStore';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
-import { LoadingIndicator } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogModal,
+  FieldError,
+  Notice,
+  NoticeButton,
+  TabBar,
+  TextInput,
+} from '@canopy/ui-shared/components';
+import {
+  EmptyState,
+  Fact,
+  FactList,
+  InlineTextSkeleton,
+} from '@canopy/ui-shared/components';
 import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
 
 type BranchInfoTab = 'details' | 'pipelines' | 'code-graph';
@@ -154,7 +166,7 @@ function WorktreeHealthAlert({
           </span>
           <NoticeButton variant="primary" onClick={onRetry} disabled={retrying}>
             {retrying && <LoadingSpinner />}
-            <span>{retrying ? 'Retrying' : 'Retry health check'}</span>
+            <span>{retrying ? 'Trying again' : 'Try again'}</span>
           </NoticeButton>
         </>
       }
@@ -235,6 +247,12 @@ function ProjectPipelineList({
   );
 }
 
+const BRANCH_INFO_TAB_LABELS: Readonly<Record<BranchInfoTab, string>> = {
+  details: 'Details',
+  pipelines: 'Workflows',
+  'code-graph': 'Code Graph',
+};
+
 function BranchInfoTabs({
   active,
   onChange,
@@ -248,73 +266,69 @@ function BranchInfoTabs({
     ? ['details', 'pipelines', 'code-graph']
     : ['details', 'pipelines'];
   return (
-    <div className="canopy-tab-list mb-3 flex gap-1" role="tablist">
-      {tabs.map((tab) => (
-        <button
-          key={tab}
-          type="button"
-          role="tab"
-          aria-selected={active === tab}
-          onClick={() => onChange(tab)}
-          className={`canopy-tab-trigger px-3 py-1.5 text-xs font-medium transition-colors ${
-            active === tab ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-          }`}
-        >
-          {tab === 'details' ? (
-            'Details'
-          ) : tab === 'pipelines' ? (
-            'Workflows'
-          ) : (
-            <span className="inline-flex items-center gap-1">
-              <GraphIcon width={12} height={12} />
-              Code Graph
-            </span>
-          )}
-        </button>
-      ))}
-    </div>
+    <TabBar
+      items={tabs.map((tab) => ({
+        id: tab,
+        label: BRANCH_INFO_TAB_LABELS[tab],
+        icon:
+          tab === 'code-graph' ? (
+            <GraphIcon width={12} height={12} />
+          ) : undefined,
+      }))}
+      value={active}
+      onChange={(next): void => onChange(next)}
+      label="Branch details"
+      density="compact"
+      className="mb-3"
+    />
   );
 }
 
-interface DirectoryInfoRowProps {
+interface DirectoryFactProps {
   worktreeDirectory: string | null;
   worktreeDirectoryStatus: WorktreeDirectoryStatus;
-  className?: string;
+  placement: 'mt-3' | 'mb-2';
 }
 
-function DirectoryInfoRow({
+/**
+ * The worktree's directory as one fact, its Copy button right after the path
+ * (design call 7A, 2026-10-31). The path keeps its end visible: it truncates
+ * from the start.
+ */
+function DirectoryFact({
   worktreeDirectory,
   worktreeDirectoryStatus,
-  className,
-}: DirectoryInfoRowProps): JSX.Element {
+  placement,
+}: DirectoryFactProps): JSX.Element {
   return (
-    <div className={`rounded-lg border px-3 py-2 ${className ?? ''}`}>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-3xs font-medium fg-secondary">Directory</span>
-        {worktreeDirectory && (
-          <CopyButton
-            value={worktreeDirectory}
-            ariaLabel="Copy worktree directory"
-            title="Copy worktree directory"
-          />
-        )}
-      </div>
-      <p
-        className="mt-1 truncate font-mono text-xs fg-secondary"
-        style={{
-          direction: 'rtl',
-          textAlign: 'left',
-        }}
-        title={worktreeDirectory ?? undefined}
-      >
-        {worktreeDirectory ? (
-          `‎${worktreeDirectory}`
-        ) : worktreeDirectoryStatus === 'error' ? (
-          'Unavailable'
-        ) : (
-          <LoadingIndicator text="Loading…" />
-        )}
-      </p>
+    <div className={placement}>
+      <FactList columnGap="3" labelTone="secondary">
+        <Fact label="Directory" fit="row" dataTestId="worktree-directory-fact">
+          <span
+            className="min-w-0 truncate font-mono"
+            style={{
+              direction: 'rtl',
+              textAlign: 'left',
+            }}
+            title={worktreeDirectory ?? undefined}
+          >
+            {worktreeDirectory ? (
+              `\u200e${worktreeDirectory}`
+            ) : worktreeDirectoryStatus === 'error' ? (
+              'Unavailable'
+            ) : (
+              <InlineTextSkeleton className="w-48" />
+            )}
+          </span>
+          {worktreeDirectory && (
+            <CopyButton
+              value={worktreeDirectory}
+              ariaLabel="Copy worktree directory"
+              title="Copy worktree directory"
+            />
+          )}
+        </Fact>
+      </FactList>
     </div>
   );
 }
@@ -398,11 +412,15 @@ function BranchRenameForm({
   warningConfirmLabel,
   onWarningConfirm,
 }: BranchRenameFormProps): JSX.Element {
+  const errorId = useId();
   return (
     <div>
       <div className="flex items-center gap-1.5">
-        <input
+        <TextInput
           ref={inputRef}
+          density="compact"
+          mono
+          className="min-w-0 flex-1"
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -414,8 +432,9 @@ function BranchRenameForm({
             }
           }}
           disabled={loading}
-          className="min-w-0 flex-1 rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none focus:border-line-accent disabled:opacity-60"
           aria-label={ariaLabel}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
         />
         <Button
           variant="primary"
@@ -429,6 +448,11 @@ function BranchRenameForm({
           Cancel
         </Button>
       </div>
+      {error && (
+        <div className="mt-1.5">
+          <FieldError id={errorId}>{error}</FieldError>
+        </div>
+      )}
       {confirmRemote && (
         <RemoteRenameWarning
           message={warningMessage}
@@ -438,7 +462,6 @@ function BranchRenameForm({
           onConfirm={onWarningConfirm}
         />
       )}
-      {error && <p className="mt-1.5 text-xs fg-destructive">{error}</p>}
     </div>
   );
 }
@@ -673,65 +696,60 @@ function RepoBranchRow({
 interface BranchInfoModalFrameProps {
   /** DOM id used for `aria-labelledby` on the dialog. */
   titleId: string;
-  /** Tailwind max-w class. Single-repo uses max-w-md; multi-repo uses max-w-xl. */
-  maxWidthClass: 'max-w-md' | 'max-w-xl';
-  /** Header content (title + optional inline action). */
-  header: ReactNode;
-  /** Whether keyboard Escape should defer to the rename cancel handler first. */
+  title: string;
+  /** Single-repo uses `md`; multi-repo uses `xl`. */
+  maxWidth: 'md' | 'xl';
+  /** Header actions beside the close button. */
+  headerActions?: ReactNode;
+  /** Whether Escape cancels an open rename instead of closing the dialog. */
   escapeFirstClosesRename: boolean;
   onCancelRename: () => void;
+  /** Closes the dialog and drops any open rename. */
   onClose: () => void;
   children: ReactNode;
 }
 
+/**
+ * The branch info dialog is the shared `DialogModal`, so it portals out of the
+ * sidebar's backdrop-filter containing block and takes Escape, the backdrop
+ * and the close button like every dialog. While a branch rename is open,
+ * Escape cancels the rename first.
+ */
 function BranchInfoModalFrame({
-  titleId: _titleId,
-  maxWidthClass,
-  header,
+  titleId,
+  title,
+  maxWidth,
+  headerActions,
   escapeFirstClosesRename,
   onCancelRename,
   onClose,
   children,
 }: BranchInfoModalFrameProps): JSX.Element {
-  const overlay = (
-    <div
-      data-canopy-browser-native-overlay="true"
-      className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClose();
-        onCancelRename();
-      }}
+  return (
+    <DialogModal
+      onClose={onClose}
+      title={title}
+      titleId={titleId}
+      maxWidth={maxWidth}
+      headerBorder={false}
+      inset="flush"
+      topRightActions={headerActions}
     >
       {/* Git error output is blocked. */}
       <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={_titleId}
-        className={`w-full ${maxWidthClass} rounded-2xl bg-card p-5 shadow-xl`}
-        onClick={(e) => e.stopPropagation()}
+        className="px-6 pb-6"
         onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            if (escapeFirstClosesRename) {
-              onCancelRename();
-            } else {
-              onClose();
-            }
+          if (e.key === 'Escape' && escapeFirstClosesRename) {
+            // The dialog's own Escape skips a handled event.
+            e.preventDefault();
+            onCancelRename();
           }
         }}
       >
-        {header}
         {children}
       </div>
-    </div>
+    </DialogModal>
   );
-
-  // The dialog is commonly opened from a worktree row inside the sidebar.
-  // Portal it out of the sidebar's backdrop-filter containing block so fixed
-  // positioning always resolves against the full app window.
-  return typeof document !== 'undefined' && document.body
-    ? createPortal(overlay, document.body)
-    : overlay;
 }
 
 export interface WorktreeBranchInfoDialogPendingRename {
@@ -1326,33 +1344,16 @@ export function WorktreeBranchInfoDialog({
 
   if (!isMultiRepo) {
     const titleId = `branch-info-${worktree.id}`;
-    const header = (
-      <div className="flex items-center justify-between">
-        <h2 id={titleId} className="text-m font-semibold fg-primary">
-          Branch info
-        </h2>
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          onClick={handleClose}
-          aria-label="Close"
-        >
-          <AppCatalogCloseIcon size={14} />
-        </Button>
-      </div>
-    );
-
     return (
       <BranchInfoModalFrame
         titleId={titleId}
-        maxWidthClass="max-w-md"
-        header={header}
+        title="Branch info"
+        maxWidth="md"
         escapeFirstClosesRename={renamingBranch !== null}
         onCancelRename={cancelRename}
-        onClose={onClose}
+        onClose={handleClose}
       >
-        <div className="mt-3">
+        <div>
           <BranchInfoTabs
             active={effectiveBranchInfoTab}
             onChange={setBranchInfoTab}
@@ -1379,10 +1380,10 @@ export function WorktreeBranchInfoDialog({
                 onRetry={handleRetryHealthCheck}
               />
             )}
-            <DirectoryInfoRow
+            <DirectoryFact
               worktreeDirectory={worktreeDirectory}
               worktreeDirectoryStatus={worktreeDirectoryStatus}
-              className="mb-2"
+              placement="mb-2"
             />
             {renamingBranch === 'single' ? (
               <BranchRenameForm
@@ -1506,57 +1507,41 @@ export function WorktreeBranchInfoDialog({
 
   // Multi-repo modal
   const titleId = `repo-branches-${worktree.id}`;
-  const header = (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-1.5">
-        <h2 id={titleId} className="text-m font-semibold fg-primary">
-          Repo branches
-        </h2>
-        {renamingBranch !== 'all' && (
-          <Tooltip label="Rename all branches">
-            <Button
-              variant="ghost"
-              size="compact"
-              iconOnly
-              disabled={branchMutationsDisabled}
-              onClick={() => {
-                cancelRename();
-                startRename(
-                  'all',
-                  repoBranches && repoBranches.length > 0
-                    ? repoBranches[0].branch
-                    : worktree.branchName,
-                );
-              }}
-              aria-label="Rename all branches"
-            >
-              <AppCatalogPencilIcon size={14} />
-            </Button>
-          </Tooltip>
-        )}
-      </div>
-      <Button
-        variant="ghost"
-        size="compact"
-        iconOnly
-        onClick={handleClose}
-        aria-label="Close"
-      >
-        <AppCatalogCloseIcon size={14} />
-      </Button>
-    </div>
-  );
+  const renameAllAction =
+    renamingBranch !== 'all' ? (
+      <Tooltip label="Rename all branches">
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
+          disabled={branchMutationsDisabled}
+          onClick={() => {
+            cancelRename();
+            startRename(
+              'all',
+              repoBranches && repoBranches.length > 0
+                ? repoBranches[0].branch
+                : worktree.branchName,
+            );
+          }}
+          aria-label="Rename all branches"
+        >
+          <AppCatalogPencilIcon size={14} />
+        </Button>
+      </Tooltip>
+    ) : undefined;
 
   return (
     <BranchInfoModalFrame
       titleId={titleId}
-      maxWidthClass="max-w-xl"
-      header={header}
+      title="Repo branches"
+      maxWidth="xl"
+      headerActions={renameAllAction}
       escapeFirstClosesRename={renamingBranch !== null}
       onCancelRename={cancelRename}
-      onClose={onClose}
+      onClose={handleClose}
     >
-      <div className="mt-3">
+      <div>
         <BranchInfoTabs
           active={effectiveBranchInfoTab}
           onChange={setBranchInfoTab}
@@ -1583,10 +1568,10 @@ export function WorktreeBranchInfoDialog({
               onRetry={handleRetryHealthCheck}
             />
           )}
-          <DirectoryInfoRow
+          <DirectoryFact
             worktreeDirectory={worktreeDirectory}
             worktreeDirectoryStatus={worktreeDirectoryStatus}
-            className="mt-3"
+            placement="mt-3"
           />
           {renamingBranch === 'all' && (
             <div className="mt-3">
@@ -1621,17 +1606,14 @@ export function WorktreeBranchInfoDialog({
           <div className="mt-3 max-h-[60vh] space-y-2 overflow-y-auto">
             {/* Missing repos — in config but not on disk */}
             {missingRepos.map((repo) => (
-              <div
+              <Notice
                 key={repo.id}
-                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2"
-              >
-                <span className="shrink-0 text-s font-medium fg-primary">
-                  {repo.name}
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="text-xs fg-primary">Not in worktree</span>
-                  <Button
-                    size="compact"
+                intent="attention"
+                role="none"
+                title={repo.name}
+                actions={
+                  <NoticeButton
+                    variant="primary"
                     disabled={addingRepoId === repo.id}
                     onClick={async (e) => {
                       e.stopPropagation();
@@ -1639,27 +1621,22 @@ export function WorktreeBranchInfoDialog({
                     }}
                   >
                     {addingRepoId === repo.id ? 'Adding…' : 'Add'}
-                  </Button>
-                </span>
-              </div>
+                  </NoticeButton>
+                }
+              >
+                Not in worktree
+              </Notice>
             ))}
 
             {/* Stale repos — on disk but removed from config */}
             {staleRepos.map((rb) => (
-              <div
+              <Notice
                 key={rb.repoId}
-                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2"
-              >
-                <span className="shrink-0 text-s font-medium fg-primary">
-                  {rb.repoName}
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="text-xs fg-primary">
-                    Removed from project
-                  </span>
-                  <Button
-                    variant="warning"
-                    size="compact"
+                intent="attention"
+                role="none"
+                title={rb.repoName}
+                actions={
+                  <NoticeButton
                     disabled={removingRepoId === rb.repoId}
                     onClick={async (e) => {
                       e.stopPropagation();
@@ -1667,34 +1644,32 @@ export function WorktreeBranchInfoDialog({
                     }}
                   >
                     {removingRepoId === rb.repoId ? 'Removing…' : 'Remove'}
-                  </Button>
-                </span>
-              </div>
+                  </NoticeButton>
+                }
+              >
+                Removed from project
+              </Notice>
             ))}
 
             {/* Broken repos — present on disk but failed health checks */}
             {brokenRepoIssues.map((issue) => (
-              <div
+              <Notice
                 key={issue.repoId}
-                className="rounded-lg border border-line-attention/40 bg-warning-subtle px-3 py-2"
+                intent="attention"
+                role="none"
+                title={`${issue.repoName}: branch info unavailable`}
+                detail={
+                  issue.gitError ? (
+                    <span
+                      className={`${POSTHOG_REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words font-mono text-2xs`}
+                    >
+                      {issue.gitError}
+                    </span>
+                  ) : undefined
+                }
               >
-                <div className="flex min-w-0 items-center justify-between gap-2">
-                  <span className="shrink-0 text-s font-medium fg-primary">
-                    {issue.repoName}
-                  </span>
-                  <span className="text-xs fg-primary">
-                    Branch info unavailable
-                  </span>
-                </div>
-                <p className="mt-1 text-xs fg-primary">{issue.message}</p>
-                {issue.gitError && (
-                  <p
-                    className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 whitespace-pre-wrap break-words font-mono text-2xs fg-secondary`}
-                  >
-                    {issue.gitError}
-                  </p>
-                )}
-              </div>
+                {issue.message}
+              </Notice>
             ))}
 
             {/* Normal repos — exist both in config and on disk */}
@@ -1783,9 +1758,7 @@ export function WorktreeBranchInfoDialog({
               : missingRepos.length === 0 &&
                 staleRepos.length === 0 &&
                 brokenRepoIssues.length === 0 && (
-                  <p className="text-s fg-secondary">
-                    No branch information available yet.
-                  </p>
+                  <EmptyState title="No branch information available yet." />
                 )}
           </div>
         </>

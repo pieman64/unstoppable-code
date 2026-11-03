@@ -279,6 +279,7 @@ export function SharedContainerLinkLandingModal({
 
   return (
     <DialogModal
+      inset="flush"
       title={title}
       {...(subtitle ? { subtitle } : {})}
       maxWidth="md"
@@ -286,8 +287,8 @@ export function SharedContainerLinkLandingModal({
       closeOnBackdrop={!opening}
       dataTestId={TEST_ID}
     >
-      <div className="px-5 py-4">{body}</div>
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="px-6 py-4">{body}</div>
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         {primary ?? (
           <Button
             variant="ghost"

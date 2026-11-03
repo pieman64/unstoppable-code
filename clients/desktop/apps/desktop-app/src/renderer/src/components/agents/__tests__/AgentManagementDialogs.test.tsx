@@ -576,7 +576,7 @@ describe('AgentModelModal validation', () => {
   it('requires a name', () => {
     renderModal(null);
     submit();
-    expect(byTestId('agent-model-name-error')?.textContent).toBe(
+    expect(byTestId('agent-model-name-field-error')?.textContent).toBe(
       'Name is required.',
     );
   });
@@ -586,7 +586,7 @@ describe('AgentModelModal validation', () => {
     setValue(byTestId('agent-model-name') as HTMLInputElement, 'Existing');
     selectBaseModel(BASE_MODEL);
     submit();
-    expect(byTestId('agent-model-name-error')?.textContent).toBe(
+    expect(byTestId('agent-model-name-field-error')?.textContent).toBe(
       'An agent with this name already exists.',
     );
   });
@@ -626,7 +626,7 @@ describe('AgentModelModal validation', () => {
       'x'.repeat(64 * 1024 + 1),
     );
     submit();
-    expect(byTestId('agent-model-instructions-error')?.textContent).toBe(
+    expect(byTestId('agent-model-instructions-field-error')?.textContent).toBe(
       'Instructions are too long.',
     );
   });
@@ -716,8 +716,8 @@ describe('AgentModelModal validation', () => {
       onSave,
     );
     expect(
-      (byTestId('agent-model-base-default') as HTMLInputElement).checked,
-    ).toBe(true);
+      byTestId('agent-model-base-default')?.getAttribute('aria-checked'),
+    ).toBe('true');
 
     click(byTestId('agent-model-base-specific'));
     submit();
@@ -732,13 +732,28 @@ describe('AgentModelModal validation', () => {
     expect(request?.pluginSelections.collectionIds).toEqual(['collection-a']);
   });
 
+  it('keeps the chosen base model when the selected Specific model row is pressed again', async () => {
+    const onSave = jest
+      .fn<Promise<void>, [SaveAgentModelRequest]>()
+      .mockResolvedValue(undefined);
+    renderModal(agentDef({ baseModel: CODEX_BASE_MODEL }), onSave);
+    expect(
+      byTestId('agent-model-base-specific')?.getAttribute('aria-checked'),
+    ).toBe('true');
+
+    click(byTestId('agent-model-base-specific'));
+    await clickAsync(byTestId('agent-model-submit'));
+
+    expect(onSave.mock.calls[0]?.[0]?.baseModel).toBe(CODEX_BASE_MODEL);
+  });
+
   it('rejects invalid model id suffixes', () => {
     renderModal(null);
     setValue(byTestId('agent-model-name') as HTMLInputElement, 'Fresh Agent');
     setValue(byTestId('agent-model-id') as HTMLInputElement, 'fresh_');
     selectBaseModel(BASE_MODEL);
     submit();
-    expect(byTestId('agent-model-id-error')?.textContent).toBe(
+    expect(byTestId('agent-model-id-field-error')?.textContent).toBe(
       'Model ID can only contain lowercase letters, numbers, and single underscores.',
     );
   });
@@ -749,7 +764,7 @@ describe('AgentModelModal validation', () => {
     setValue(byTestId('agent-model-id') as HTMLInputElement, 'existing');
     selectBaseModel(BASE_MODEL);
     submit();
-    expect(byTestId('agent-model-id-error')?.textContent).toBe(
+    expect(byTestId('agent-model-id-field-error')?.textContent).toBe(
       'An agent with this model ID already exists.',
     );
   });

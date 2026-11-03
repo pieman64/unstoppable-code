@@ -1,6 +1,5 @@
 import {
   appendFileSync,
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,10 +18,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import {
-  assertHeldLocalQueue,
-  launchQueuedSetupHandoff,
-} from './seeders/queuedSetupHandoff.mjs';
+import { writeSlowGitShim as writeSharedSlowGitShim } from './slowGitShim.mjs';
 
 // Queued-worktree send UX under REALISTIC git latency. The plain fixtures'
 // `git worktree add` completes in milliseconds, which hid every regression in
@@ -39,13 +35,16 @@ import {
 //      resolving the workspace through the full sidebar read, whose
 //      script/hook baseline resolution serializes through the repo-shadow
 //      per-repo lock (`getBaselineReadPath` → `ensureRepoShadow`).
-//   2. The first populated chat frame shows the user's message as a QUEUED
-//      bubble, with the setup reason, while git setup runs. No setup
-//      annotation is added to the transcript (CAN-4981).
-//   3. Once git setup completes, the queued message dispatches on its own
-//      and still leaves no setup annotation behind.
-// The pending-turn status from `TurnWorkHeader` (`TURN_STARTING_LABEL`).
-const TURN_STARTING_LABEL = 'Starting…';
+//   2. The first populated chat frame shows the user's message as SENT, with
+//      the shared setup status ("Setting up this chat's copy of …" and a
+//      ticking clock) in its turn's starting slot, while main holds the send
+//      for git setup. The composer offers Stop. No queued bubble and no setup
+//      annotation (CAN-4981).
+//   3. Once git setup completes, the same status reads "Starting…" and the
+//      held message dispatches on its own, leaving no setup copy behind.
+// The setup status from `TurnWorkHeader`, in the starting turn's slot.
+const SETUP_STATUS =
+  '[data-testid="turn-starting-status"][data-turn-header="setup"]';
 const GIT_SLEEP_SECONDS = 8;
 // Source-backed multi-repo setup performs more pre-checks before the actual
 // worktree-add than the single-repo path. Keep the worktree add pending long
@@ -57,28 +56,11 @@ const MULTI_REPO_GIT_SLEEP_SECONDS = 30;
 // the response path; the generous margin below it absorbs CI slowness.
 const MAX_TRANSITION_MS = 6_000;
 
-function writeSlowGitShim(
-  userDataDir,
-  {
-    worktreeSleepSeconds = GIT_SLEEP_SECONDS,
-    shadowFetchSleepSeconds = 0,
-    shadowFetchMarkerPath = '',
-    shadowFetchCompletedMarkerPath = '',
-  } = {},
-) {
-  const shimPath = path.join(userDataDir, 'git-slow-shim.sh');
-  const shadowFetchHook = shadowFetchMarkerPath
-    ? `touch '${shadowFetchMarkerPath}'; `
-    : '';
-  const shadowFetchCompletedHook = shadowFetchCompletedMarkerPath
-    ? `touch '${shadowFetchCompletedMarkerPath}'; `
-    : '';
-  writeFileSync(
-    shimPath,
-    `#!/bin/sh\ncase "$*" in *"worktree add"*) sleep ${worktreeSleepSeconds};; *"fetch"*) case "$PWD" in *"/repo-shadows/"*) ${shadowFetchHook}sleep ${shadowFetchSleepSeconds}; ${shadowFetchCompletedHook};; esac;; esac\nexec /usr/bin/git "$@"\n`,
-  );
-  chmodSync(shimPath, 0o755);
-  return shimPath;
+function writeSlowGitShim(userDataDir, options = {}) {
+  return writeSharedSlowGitShim(userDataDir, {
+    worktreeSleepSeconds: GIT_SLEEP_SECONDS,
+    ...options,
+  });
 }
 
 function seedStaleRepoShadow(userDataDir, repoPath) {
@@ -112,21 +94,14 @@ function seedStaleRepoShadow(userDataDir, repoPath) {
 
 /**
  * Drives a Home-composer chat-mode send to the "New worktree" target and
- * asserts the fast-transition + queued-state stages. Returns the chat panel
+ * asserts the fast-transition + setup-hold stages. Returns the chat panel
  * locator and task text so callers can assert their own terminal stage
- * (normal dispatch at git-ready, or the needs-repair detour). Desktop always
- * queues in compact rows; `compact` swaps the queue landmark check for the
- * row's one-axis geometry and no-Send-now checks.
+ * (normal dispatch at git-ready, or the needs-repair detour).
  */
-async function sendAndAssertQueuedState(
+async function sendAndAssertSetupState(
   window,
   workspaceName,
-  {
-    assertQueuedFrame = true,
-    expectedClock = 'elapsed',
-    compact = false,
-    workspaceId,
-  } = {},
+  { assertSetupFrame = true, workspaceId } = {},
 ) {
   const app = new CanopyAppDriver(window);
   await app.waitForShell({ timeout: 30_000 });
@@ -146,10 +121,9 @@ async function sendAndAssertQueuedState(
   await homePage.getByTestId('home-composer-editor').click();
   await homePage.getByTestId('home-composer-editor').fill(taskText);
 
-  // Record every chat frame from the send onward: the queued bubble must be
-  // the first thing the chat shows, with no "Starting…" turn before it
-  // (CAN-4981).
-  await window.evaluate((startingLabel) => {
+  // Record every chat frame from the send onward: the sent prompt and its
+  // setup status are what the chat shows, never a queued bubble.
+  await window.evaluate((setupStatus) => {
     const seen = [];
     const record = () => {
       const chat = document.querySelector('[data-testid="panel-content-chat"]');
@@ -159,11 +133,8 @@ async function sendAndAssertQueuedState(
         chat.querySelector('[data-testid="queued-message-bubble"]')
       )
         seen.push('queued');
-      if (
-        !seen.includes('starting') &&
-        chat.textContent?.includes(startingLabel)
-      )
-        seen.push('starting');
+      if (!seen.includes('setup') && chat.querySelector(setupStatus))
+        seen.push('setup');
     };
     const observer = new MutationObserver(record);
     observer.observe(document.body, {
@@ -172,7 +143,7 @@ async function sendAndAssertQueuedState(
       characterData: true,
     });
     window.__homeSetupSendFrames = { seen, stop: () => observer.disconnect() };
-  }, TURN_STARTING_LABEL);
+  }, SETUP_STATUS);
 
   const sentAt = Date.now();
   await homePage.getByTestId('home-send-button').click();
@@ -224,79 +195,36 @@ async function sendAndAssertQueuedState(
     timeout: 15_000,
   });
 
-  if (assertQueuedFrame) {
-    // Stage 2: queued-state chat frame. With git sleeping for several more
-    // seconds these must all be present together — if a regression makes the
-    // create path block until git finishes, the message processes immediately
-    // instead and the QUEUED chip/reason never render.
+  if (assertSetupFrame) {
+    // Stage 2: the held send. With git sleeping for several more seconds
+    // these must all be present together; if a regression makes the create
+    // path block until git finishes, the setup status never renders.
     await expect(panel.getByText(taskText).first()).toBeVisible({
       timeout: 15_000,
     });
-    if (!compact) {
-      await expect(
-        panel.getByRole('list', { name: 'Queued messages' }),
-      ).toBeVisible({ timeout: 15_000 });
-    }
-    const setupReason = panel
-      .getByTestId('queued-message-setup-reason')
-      .first();
-    await expect(setupReason).toBeVisible({ timeout: 15_000 });
-    // The reason explains the setup in plain words and promises the send
-    // (CAN-5032). This project has no earlier setup on this renderer, so the
-    // clock shows elapsed time, and it keeps counting.
-    await expect(setupReason).toContainText("Setting up this chat's copy of");
-    await expect(setupReason).toContainText(
-      "Your message will send automatically when it's ready.",
+    const status = panel.locator(SETUP_STATUS);
+    await expect(status).toBeVisible({ timeout: 15_000 });
+    await expect(status.getByRole('status')).toHaveText(
+      `Setting up this chat's copy of ${workspaceName}`,
     );
-    const clock = setupReason.getByTestId('queued-message-setup-clock');
-    await expect(clock).toHaveAttribute('data-clock-kind', expectedClock);
-    // Desktop always queues in compact rows, which never mount the bubble's
-    // setup quote. The quote itself is covered by the bubble gallery in
-    // message-bubble-states and by web chat-queued-setup-wait.
-    await expect(panel.getByTestId('queued-message-setup-quote')).toHaveCount(
-      0,
-    );
-    if (compact) {
-      // The row's text, the status's spinner, words and clock, and its
-      // actions all sit on the row's one axis. A setup-queued row has no
-      // turn to interrupt, so it offers no Send now (CAN-5031).
-      const row = panel.getByTestId('queued-message-bubble').first();
-      await expect(row.getByTestId('queued-message-interrupt')).toHaveCount(0);
-      const centerY = async (locator) => {
-        const box = await locator.boundingBox();
-        expect(box).not.toBeNull();
-        return box.y + box.height / 2;
-      };
-      const rowCenter = await centerY(row);
-      for (const part of [
-        row.getByTestId('queued-message-preview'),
-        setupReason,
-        setupReason.locator(':scope > :first-child'),
-        clock,
-        row.getByTestId('queued-message-more'),
-      ]) {
-        expect(Math.abs((await centerY(part)) - rowCenter)).toBeLessThanOrEqual(
-          0.5,
-        );
-      }
-    }
+    const clock = status.locator('[data-turn-setup-clock]');
+    await expect(clock).toHaveAttribute('aria-hidden', 'true');
     const firstReading = await clock.textContent();
     await expect
       .poll(() => clock.textContent(), { timeout: 7_000 })
       .not.toBe(firstReading);
-    // The queued bubble explains the wait; the transcript carries no setup
-    // annotation (CAN-4981).
+    // The held turn is running as far as the composer is concerned.
+    await expect(panel.getByTestId('chat-stop-generation')).toBeVisible();
+    await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(0);
     await expect(
       panel.getByText('Chat initiated before project setup'),
     ).toHaveCount(0);
-    // Setup is still running, so the chat has only ever shown the queued
-    // bubble: never a starting turn that the queue then replaced.
     const seenFrames = await window.evaluate(() => {
       const frames = window.__homeSetupSendFrames;
       frames?.stop();
       return frames?.seen ?? [];
     });
-    expect(seenFrames).toEqual(['queued']);
+    expect(seenFrames).toEqual(['setup']);
   }
   await window.evaluate(() => window.__homeSetupSendFrames?.stop());
 
@@ -305,27 +233,22 @@ async function sendAndAssertQueuedState(
 
 /**
  * Drives a Home-composer chat-mode send to the "New worktree" target and
- * asserts the queued-worktree UX stages in order. Returns after the queued
- * message has dispatched.
+ * asserts the setup-hold UX stages in order. Returns after the held message
+ * has dispatched.
  */
-async function assertQueuedHomeSend(window, workspaceName, options) {
-  const { panel, taskText } = await sendAndAssertQueuedState(
+async function assertHeldHomeSend(window, workspaceName, options) {
+  const { panel, taskText } = await sendAndAssertSetupState(
     window,
     workspaceName,
     options,
   );
 
-  // Stage 3: automatic dispatch at git-ready — the queued state clears while
-  // the message text stays in the transcript.
-  await expect(panel.getByTestId('queued-message-setup-reason')).toHaveCount(
-    0,
-    { timeout: 120_000 },
-  );
-  // The actual dispatch is announced politely; the region clears after four
-  // seconds, so this runs right after the reason leaves.
-  await expect(window.getByTestId('queued-message-announcer')).toHaveText(
-    'Sending your message.',
-  );
+  // Stage 3: automatic dispatch at git-ready. The setup status leaves (the
+  // same node reads "Starting…" until the reply) while the message text stays
+  // in the transcript.
+  await expect(panel.locator(SETUP_STATUS)).toHaveCount(0, {
+    timeout: 120_000,
+  });
   await expect(panel).toBeVisible();
   await expect(panel.getByText(taskText).first()).toBeVisible();
   await expect(
@@ -338,104 +261,24 @@ async function assertEventuallyDispatchedHomeSend(
   workspaceName,
   shadowFetchCompletedMarkerPath,
 ) {
-  const { panel, taskText } = await sendAndAssertQueuedState(
+  const { panel, taskText } = await sendAndAssertSetupState(
     window,
     workspaceName,
   );
 
-  // The refresh remains inside its delayed fetch throughout both the queued
+  // The refresh remains inside its delayed fetch throughout both the held
   // frame and automatic dispatch; message visibility alone cannot distinguish
   // those lifecycle stages.
   expect(existsSync(shadowFetchCompletedMarkerPath)).toBe(false);
-  await expect(panel.getByTestId('queued-message-setup-reason')).toHaveCount(
-    0,
-    { timeout: 60_000 },
-  );
+  await expect(panel.locator(SETUP_STATUS)).toHaveCount(0, {
+    timeout: 60_000,
+  });
   expect(existsSync(shadowFetchCompletedMarkerPath)).toBe(false);
   await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(0);
   await expect(panel.getByText(taskText).first()).toBeVisible();
 }
 
-async function recoveryAction(harness, name = 'Interrupt') {
-  await harness.followUp().getByTestId('queued-message-more').click();
-  return harness.window
-    .getByTestId('queued-message-more-menu')
-    .getByRole('menuitem', { name, exact: true });
-}
-
 test.describe('home composer send with slow git worktree add', () => {
-  test('CAN-5031: deadline alone reveals recovery for an uncertain local dispatch', async () => {
-    test.setTimeout(90_000);
-    const harness = await launchQueuedSetupHandoff();
-    try {
-      await assertHeldLocalQueue(harness);
-      await expect(await recoveryAction(harness, 'Retry')).toBeVisible({
-        timeout: 20_000,
-      });
-      expect((await harness.requests()).map((request) => request.text)).toEqual(
-        [harness.first],
-      );
-    } finally {
-      await harness.close();
-    }
-  });
-
-  test('CAN-5031: local Interrupt dispatches the follow-up after streaming starts', async () => {
-    test.setTimeout(120_000);
-    const harness = await launchQueuedSetupHandoff();
-    try {
-      await assertHeldLocalQueue(harness);
-      await harness.release();
-      // The foreground receipt can precede the provider's request. Wait for
-      // that request so cancelling actually interrupts the first mock step.
-      await expect
-        .poll(harness.providerRequests, { timeout: 30_000 })
-        .toBeGreaterThanOrEqual(1);
-      const interrupt = await recoveryAction(harness);
-      await expect(interrupt).toBeVisible({ timeout: 30_000 });
-      await interrupt.click();
-      await expect(
-        harness.panel.getByText('Second prompt completed.', { exact: true }),
-      ).toBeVisible({ timeout: 90_000 });
-      expect((await harness.requests()).map((request) => request.text)).toEqual(
-        [harness.first, harness.second],
-      );
-      await expect(harness.followUp()).toHaveCount(0);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  for (const colorMode of ['light', 'dark']) {
-    test(`CAN-5031: setup follow-up waits for dispatch acknowledgement (${colorMode})`, async () => {
-      test.setTimeout(180_000);
-      const harness = await launchQueuedSetupHandoff({ colorMode });
-      try {
-        await assertHeldLocalQueue(harness);
-        await harness.release();
-        await expect(await recoveryAction(harness)).toBeVisible({
-          timeout: 30_000,
-        });
-        await expect(
-          harness.panel.getByText('First prompt completed.', { exact: true }),
-        ).toBeVisible({ timeout: 90_000 });
-        await expect(
-          harness.panel.getByText('Second prompt completed.', { exact: true }),
-        ).toBeVisible({ timeout: 90_000 });
-        await expect(harness.followUp()).toHaveCount(0);
-        expect(
-          (await harness.requests()).map((request) => request.text),
-        ).toEqual([harness.first, harness.second]);
-        const ids = (await harness.requests()).map(
-          (request) => request.userMessageId,
-        );
-        expect(new Set(ids).size).toBe(2);
-      } finally {
-        await harness.close();
-      }
-    });
-  }
-
   test('the model picker stays usable inside a chat while git setup is pending', async () => {
     test.setTimeout(180_000);
     const userDataDir = mkdtempSync(
@@ -456,7 +299,7 @@ test.describe('home composer send with slow git worktree add', () => {
     });
     try {
       const window = await electronApp.firstWindow();
-      const { panel } = await sendAndAssertQueuedState(
+      const { panel } = await sendAndAssertSetupState(
         window,
         'TypeScript pnpm Vite',
       );
@@ -472,9 +315,7 @@ test.describe('home composer send with slow git worktree add', () => {
       const chosen = await option.getAttribute('data-model-id');
       expect(chosen).toBeTruthy();
       await option.click();
-      await expect(
-        panel.getByTestId('queued-message-setup-reason').first(),
-      ).toBeVisible();
+      await expect(panel.locator(SETUP_STATUS)).toBeVisible();
       await picker.click();
       await expect(
         window
@@ -510,7 +351,7 @@ test.describe('home composer send with slow git worktree add', () => {
 
     try {
       const window = await electronApp.firstWindow();
-      await sendAndAssertQueuedState(window, 'TypeScript pnpm Vite');
+      await sendAndAssertSetupState(window, 'TypeScript pnpm Vite');
       const row = window.getByTestId('worktree-row');
       await expect(row).toHaveCount(1);
       await row.hover();
@@ -537,7 +378,7 @@ test.describe('home composer send with slow git worktree add', () => {
     }
   });
 
-  test('single-repo: immediate transition, queued bubble, auto-dispatch', async () => {
+  test('single-repo: immediate transition, held send with setup status, auto-dispatch', async () => {
     test.setTimeout(180_000);
 
     const userDataDir = mkdtempSync(
@@ -556,71 +397,145 @@ test.describe('home composer send with slow git worktree add', () => {
 
     try {
       const window = await electronApp.firstWindow();
-      await assertQueuedHomeSend(window, 'TypeScript pnpm Vite');
+      await assertHeldHomeSend(window, 'TypeScript pnpm Vite');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
 
-  test('setup history is per project, reused in compact rows, and expires before dispatch', async () => {
-    test.setTimeout(240_000);
+  test('a follow-up during setup is an ordinary queued row, locked behind the held turn', async () => {
+    test.setTimeout(180_000);
     const userDataDir = mkdtempSync(
-      path.join(os.tmpdir(), 'can-5032-history-'),
+      path.join(os.tmpdir(), 'canopy-slow-git-follow-up-'),
     );
     seedDemoWorkspaces({
       userDataDir,
-      apps: ['ts-pnpm-vite', 'go-cli'],
+      apps: ['ts-pnpm-vite'],
       createWorktrees: false,
     });
-    const shim = writeSlowGitShim(userDataDir);
     const { electronApp } = await launchCanopy({
       userDataDir,
-      env: { CANOPY_GIT_EXECUTABLE: shim },
+      env: {
+        CANOPY_GIT_EXECUTABLE: writeSlowGitShim(userDataDir, {
+          worktreeSleepSeconds: 30,
+        }),
+      },
     });
     try {
       const window = await electronApp.firstWindow();
-      await assertQueuedHomeSend(window, 'TypeScript pnpm Vite', {
-        workspaceId: 'demo-ts-pnpm-vite',
-      });
-      // The next setup outlasts the real sample just recorded by git-ready.
-      writeSlowGitShim(userDataDir, { worktreeSleepSeconds: 20 });
-
-      const { panel } = await sendAndAssertQueuedState(
+      const { panel } = await sendAndAssertSetupState(
         window,
         'TypeScript pnpm Vite',
-        { expectedClock: 'remaining', compact: true },
       );
-      await panel
-        .getByRole('textbox')
-        .last()
-        .fill('Follow up after setup finishes.');
+      const followUp = 'Follow up after setup finishes.';
+      await panel.getByRole('textbox').last().fill(followUp);
       await panel.getByRole('textbox').last().press('Enter');
-      await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(2);
-      const clock = panel.getByTestId('queued-message-setup-clock').first();
-      await expect(clock).toHaveAttribute('data-clock-kind', 'elapsed', {
-        timeout: 18_000,
-      });
-      await expect(
-        panel.getByTestId('queued-message-setup-reason'),
-      ).toHaveCount(0, { timeout: 120_000 });
-      await expect(window.getByTestId('queued-message-announcer')).toHaveText(
-        'Sending your message.',
-      );
-      await expect(
-        panel
-          .getByText('Follow up after setup finishes.', { exact: true })
-          .first(),
-      ).toBeVisible();
-      await assertQueuedHomeSend(window, 'Go CLI', {
-        workspaceId: 'demo-go-cli',
-        compact: true,
-      });
+      const row = panel.getByTestId('queued-message-bubble');
+      await expect(row).toHaveCount(1, { timeout: 15_000 });
+      await expect(row).toContainText(followUp);
+      // The status line is the only setup explanation; the row has none.
+      await expect(row).not.toContainText('Setting up');
+      await expect(panel.locator(SETUP_STATUS)).toHaveCount(1);
+      // Nothing may run ahead of the held turn: main projects the row
+      // `forceLocked`, so Interrupt, Run now and Steer stay hidden. Edit and
+      // Clear still work.
+      await row.hover();
+      await expect(row.getByTestId('queued-message-interrupt')).toHaveCount(0);
+      await expect(row.getByTestId('queued-message-run-now')).toHaveCount(0);
+      await expect(row.getByTestId('queued-message-steer')).toHaveCount(0);
+      await expect(row.getByTestId('queued-message-more')).toBeVisible();
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
 
-  test('single-repo: queued send dispatches during an offline-slow base refresh', async () => {
+  test('a failed git setup ends the held turn and the follow-up queued behind it', async () => {
+    test.setTimeout(180_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-slow-git-failed-'),
+    );
+    seedDemoWorkspaces({
+      userDataDir,
+      apps: ['ts-pnpm-vite'],
+      createWorktrees: false,
+    });
+    const { electronApp } = await launchCanopy({
+      userDataDir,
+      env: {
+        CANOPY_GIT_EXECUTABLE: writeSlowGitShim(userDataDir, {
+          worktreeSleepSeconds: 20,
+          worktreeExitCode: 128,
+        }),
+      },
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      const { panel, taskText } = await sendAndAssertSetupState(
+        window,
+        'TypeScript pnpm Vite',
+      );
+      const followUp = 'Follow up that never runs.';
+      await panel.getByRole('textbox').last().fill(followUp);
+      await panel.getByRole('textbox').last().press('Enter');
+      await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(1, {
+        timeout: 15_000,
+      });
+
+      // The setup status leaves with the held turn, which ends failed. Main
+      // ends the follow-up in the same commit: it leaves the queue and stays
+      // in the transcript as its own failed turn, so its text is not lost.
+      // The composer offers Send again.
+      await expect(panel.locator(SETUP_STATUS)).toHaveCount(0, {
+        timeout: 60_000,
+      });
+      await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(0);
+      await expect(panel.getByText(/^Failed after /)).toHaveCount(2);
+      await expect(panel.getByText(taskText).first()).toBeVisible();
+      await expect(panel.getByText(followUp).first()).toBeVisible();
+      await expect(panel.getByTestId('chat-stop-generation')).toHaveCount(0);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('Stop during setup ends the held turn before it reaches the agent', async () => {
+    test.setTimeout(180_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-slow-git-stop-'),
+    );
+    seedDemoWorkspaces({
+      userDataDir,
+      apps: ['ts-pnpm-vite'],
+      createWorktrees: false,
+    });
+    const { electronApp } = await launchCanopy({
+      userDataDir,
+      env: {
+        CANOPY_GIT_EXECUTABLE: writeSlowGitShim(userDataDir, {
+          worktreeSleepSeconds: 30,
+        }),
+      },
+    });
+    try {
+      const window = await electronApp.firstWindow();
+      const { panel, taskText } = await sendAndAssertSetupState(
+        window,
+        'TypeScript pnpm Vite',
+      );
+      await panel.getByTestId('chat-stop-generation').click();
+      await expect(panel.locator(SETUP_STATUS)).toHaveCount(0, {
+        timeout: 15_000,
+      });
+      await expect(panel.getByTestId('chat-stop-generation')).toHaveCount(0, {
+        timeout: 15_000,
+      });
+      await expect(panel.getByText(taskText).first()).toBeVisible();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('single-repo: held send dispatches during an offline-slow base refresh', async () => {
     test.setTimeout(180_000);
     const userDataDir = mkdtempSync(
       path.join(os.tmpdir(), 'canopy-home-slow-base-refresh-'),
@@ -676,7 +591,7 @@ test.describe('home composer send with slow git worktree add', () => {
     }
   });
 
-  test('source-backed multi-repo: immediate transition, queued bubble, auto-dispatch', async () => {
+  test('source-backed multi-repo: immediate transition, held send, auto-dispatch', async () => {
     test.setTimeout(240_000);
 
     const userDataDir = mkdtempSync(
@@ -733,21 +648,21 @@ test.describe('home composer send with slow git worktree add', () => {
 
     try {
       const window = await electronApp.firstWindow();
-      await assertQueuedHomeSend(window, 'Multi Repo Fullstack');
+      await assertHeldHomeSend(window, 'Multi Repo Fullstack');
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }
   });
 
-  test('needs-repair detour: the queued message survives the repair and auto-dispatches', async () => {
+  test('needs-repair detour: the held message survives the repair and auto-dispatches', async () => {
     test.setTimeout(240_000);
 
     // The RAW multi-repo fixture (no root patch) fails workspace-root
     // validation (`.gitignore` lacks `repos/`), so deferred Phase B ends in
-    // the async needs-repair rollback instead of git-ready. The queued
-    // message must ride through: rollback keeps the chat state, the repair
-    // modal repairs the same worktree id, and the flush after repair sends
-    // the message with no user re-entry.
+    // the async needs-repair rollback instead of git-ready. The held message
+    // must ride through: needs-repair keeps the git setup pending, so main's
+    // hold survives; the repair modal repairs the same worktree id, and the
+    // repair's ready outcome releases the send with no user re-entry.
     const userDataDir = mkdtempSync(
       path.join(os.tmpdir(), 'canopy-home-slow-git-repair-'),
     );
@@ -768,15 +683,15 @@ test.describe('home composer send with slow git worktree add', () => {
 
     try {
       const window = await electronApp.firstWindow();
-      const { panel, taskText } = await sendAndAssertQueuedState(
+      const { panel, taskText } = await sendAndAssertSetupState(
         window,
         'Multi Repo Fullstack',
         {
           // The invalid source root can emit needs-repair before the renderer
-          // paints the transient queued frame. The source-backed happy-path
+          // paints the transient setup frame. The source-backed happy-path
           // case above owns that intermediate-state assertion; this case owns
           // the durability contract across rollback + repair.
-          assertQueuedFrame: false,
+          assertSetupFrame: false,
         },
       );
 
@@ -798,16 +713,16 @@ test.describe('home composer send with slow git worktree add', () => {
 
       await window.getByRole('button', { name: 'Repair worktree' }).click();
 
-      // Repair recreates the same worktree id, re-selects it, and flushes the
-      // kept-alive queue: the message text lands in the real transcript with
-      // the queued state cleared — the user never had to resend.
+      // Repair recreates the same worktree id, re-selects it, and main
+      // releases the held send: the message stays in the transcript and the
+      // setup status clears. The user never had to resend.
       await expect(panel).toBeVisible({ timeout: 60_000 });
       await expect(panel.getByText(taskText).first()).toBeVisible({
         timeout: 120_000,
       });
-      await expect(
-        panel.getByTestId('queued-message-setup-reason'),
-      ).toHaveCount(0, { timeout: 120_000 });
+      await expect(panel.locator(SETUP_STATUS)).toHaveCount(0, {
+        timeout: 120_000,
+      });
       await expect(panel.getByTestId('queued-message-bubble')).toHaveCount(0);
       await expect(
         panel.getByText('Chat initiated before project setup'),

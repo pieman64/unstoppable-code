@@ -147,4 +147,69 @@ describe('SplitWorkspaceModal', () => {
       worktreeId: WORKTREE_ID,
     });
   });
+
+  it("lists a counter's items in the shared hover card", async () => {
+    useChatStore.setState({
+      flushWorktreeTabs: jest.fn(() => Promise.resolve()),
+    });
+    const withChats: SplitTemporaryWorkspacePreviewResponse = {
+      ...preview,
+      root: {
+        ...preview.root,
+        chats: {
+          count: 3,
+          entries: [
+            { title: 'Open chat' },
+            { title: 'Old chat', archived: true },
+          ],
+        },
+      },
+    };
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        previewSplitTemporaryWorkspace: jest.fn(() =>
+          Promise.resolve(withChats),
+        ),
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <SplitWorkspaceModal
+          workspaceId={WORKSPACE_ID}
+          worktreeId={WORKTREE_ID}
+          onClose={jest.fn()}
+        />,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const counter = container.querySelector(
+      '[data-testid="split-workspace-modal-root-chats"]',
+    );
+    expect(counter?.textContent).toContain('3');
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+
+    await act(async () => {
+      counter?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    });
+
+    const card = document.body.querySelector('[role="tooltip"]');
+    expect(card).not.toBeNull();
+    expect(container.contains(card)).toBe(false);
+    expect(card?.textContent).toContain('Chats');
+    expect(card?.textContent).toContain('Open chat');
+    expect(card?.textContent).toContain('Old chat');
+    expect(card?.textContent).toContain('1 more…');
+    expect(
+      card?.querySelectorAll(
+        '[data-testid="split-workspace-modal-tooltip-archived"]',
+      ),
+    ).toHaveLength(1);
+  });
 });

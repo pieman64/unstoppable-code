@@ -266,6 +266,69 @@ describe('ToastStack', () => {
     expect(onOverflowChange).toHaveBeenLastCalledWith(true);
   });
 
+  it('measures the clamp once per card, not on every re-render', async () => {
+    const observers: Element[][] = [];
+    // Base UI observes the card too; count only the clamp's observers.
+    const clampObservers = (): number =>
+      observers.filter((targets) =>
+        targets.some((target) => target.classList.contains('line-clamp-3')),
+      ).length;
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      private readonly targets: Element[] = [];
+      constructor() {
+        observers.push(this.targets);
+      }
+      observe(target: Element): void {
+        this.targets.push(target);
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+    const onOverflowChange = jest.fn<void, [boolean]>();
+    // Hosts wrap the message in a fresh element on every render.
+    const renderMessage = (message: string): void =>
+      act(() =>
+        root.render(
+          <ToastStack
+            toasts={[toast('a', { message })]}
+            placement="top-right"
+            onClose={onClose}
+            renderToast={(item): JSX.Element => (
+              <ToastStackDescription onOverflowChange={onOverflowChange}>
+                <span>{item.message}</span>
+              </ToastStackDescription>
+            )}
+          />,
+        ),
+      );
+    try {
+      renderMessage('Short');
+      expect(clampObservers()).toBe(1);
+      expect(onOverflowChange).toHaveBeenLastCalledWith(false);
+
+      renderMessage('Short');
+      renderMessage('Short');
+      expect(clampObservers()).toBe(1);
+
+      // New text still re-measures: a clamp at its three lines does not
+      // change size when more text arrives, so a resize alone would miss it.
+      const restore = mockClampOverflow();
+      try {
+        renderMessage('A much longer message that runs past three lines');
+        await act(async () => {
+          await Promise.resolve();
+        });
+      } finally {
+        restore();
+      }
+      expect(onOverflowChange).toHaveBeenLastCalledWith(true);
+      expect(clampObservers()).toBe(1);
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+
   it('grows away from the screen edge it is pinned to', () => {
     render([toast('a')], 'top-left');
     expect(

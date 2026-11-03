@@ -274,6 +274,25 @@ describe('createServiceContainer startup', () => {
       { name: 'a', status: 'pass', message: 'probe' },
     ]);
   });
+
+  it("carries a health hook's typed reason beside its message", async () => {
+    const container = create([
+      svc('a', {
+        required: false,
+        health: () => ({
+          name: 'a',
+          status: 'warn',
+          message: 'probe',
+          reason: 'held',
+        }),
+      }),
+    ]);
+    await container.start();
+    expect(container.health()).toEqual({
+      state: 'degraded',
+      checks: [{ name: 'a', status: 'warn', message: 'probe', reason: 'held' }],
+    });
+  });
 });
 
 describe('createServiceContainer shutdown', () => {

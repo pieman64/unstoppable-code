@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
-import { Button } from '@/components/shared/Button';
+import { ErrorState } from '@canopy/ui-shared/components';
 
 interface ChartErrorBoundaryProps {
   children: ReactNode;
@@ -51,22 +51,13 @@ export class ChartErrorBoundary extends Component<
 
     if (error) {
       return (
-        <div
-          className="flex flex-col items-center justify-center gap-3 rounded border border-line-destructive/30 bg-destructive/5 px-4 text-center"
-          role="alert"
-          style={{ minHeight }}
-        >
-          <div>
-            <div className="text-s font-medium fg-destructive">
-              {label} could not be rendered.
-            </div>
-            <div className="mt-1 max-w-xl text-xs fg-secondary">
-              {error.message || error.name || 'Unknown chart error'}
-            </div>
-          </div>
-          <Button variant="primary" onClick={this.handleRetry}>
-            Reload chart
-          </Button>
+        // The crash details are logged in componentDidCatch.
+        <div className="flex flex-col justify-center" style={{ minHeight }}>
+          <ErrorState
+            space="panel"
+            message={`${label} could not be rendered.`}
+            onRetry={this.handleRetry}
+          />
         </div>
       );
     }

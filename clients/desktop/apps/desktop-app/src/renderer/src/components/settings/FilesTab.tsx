@@ -480,7 +480,7 @@ function DoNotIndexLists({
               onClick={() => onRemoveCustomGlob(row.id)}
               aria-label={`Remove ${row.pattern}`}
             >
-              <TrashIcon size={14} />
+              <TrashIcon size="sm" />
             </Button>
           }
         />

@@ -277,10 +277,268 @@ test('failed readiness masks the project name while keeping recovery readable', 
     await expect(message).not.toHaveClass(/ph-mask/);
     await expect(
       window.getByRole('button', {
-        name: `Retry readiness check for ${WORKSPACE_NAME}`,
+        name: `Try again for ${WORKSPACE_NAME}`,
         exact: true,
       }),
     ).toBeEnabled();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+/** Advanced Home rows wait for every basic step, including GitHub sign-in. */
+async function installGitHubSignedIn(electronApp) {
+  await electronApp.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('settings:github-cli-status');
+    ipcMain.handle('settings:github-cli-status', () => ({
+      authenticated: true,
+      username: 'onboarding-fixture',
+      error: null,
+      tokenSource: 'gh',
+      envOverride: false,
+      envOverrideName: null,
+      hasCredentialStoreLogin: true,
+    }));
+  });
+}
+
+/** Records fix sends without running an agent. */
+async function installSendRecorder(electronApp) {
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__readinessSends = 0;
+    ipcMain.removeHandler('chat:send-message');
+    ipcMain.handle('chat:send-message', () => {
+      globalThis.__readinessSends += 1;
+      return {};
+    });
+  });
+}
+
+function readinessSends(electronApp) {
+  return electronApp.evaluate(() => globalThis.__readinessSends);
+}
+
+async function worktreeCount(window) {
+  return window.evaluate(async () => {
+    const file = await window.api.loadProjects();
+    return file.items.reduce(
+      (total, item) =>
+        total + (item.type === 'cowork' ? 0 : item.worktrees.length),
+      0,
+    );
+  });
+}
+
+// CAN-5500: launching a Home fix navigates away before the send settles, and
+// the audit reads the reference checkout while the fix lives in its worktree.
+// Home must link the launched chat instead of offering another full run.
+test('a launched readiness fix stays linked from Home across reload and relaunch', async () => {
+  test.setTimeout(300_000);
+  const userDataDir = seedWelcomeChecklist();
+  const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const repoPath = seeded.workspaces[0].repoPath;
+  rmSync(path.join(repoPath, 'CLAUDE.md'), { force: true });
+  rmSync(path.join(repoPath, 'AGENTS.md'), { force: true });
+  const launchOptions = {
+    userDataDir,
+    viewportSize: { width: 1400, height: 1000 },
+  };
+  const instructionsFix =
+    '[data-testid="home-readiness-fix-configure-agent-instructions"]';
+  const instructionsLink =
+    '[data-testid="home-readiness-launched-configure-agent-instructions"]';
+
+  let sends = 0;
+  let initialWorktrees = 0;
+  let electronApp;
+  try {
+    ({ electronApp } = await launchCanopy(launchOptions));
+    let window = await electronApp.firstWindow();
+    let app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await installGitHubSignedIn(electronApp);
+    await installSendRecorder(electronApp);
+    await window.reload();
+    await app.waitForShell({ timeout: 30_000 });
+    initialWorktrees = await worktreeCount(window);
+
+    await window.getByTestId('sidebar-create-task').click();
+    let home = window.getByTestId('page-home');
+    await expect(home.locator(instructionsFix)).toBeEnabled();
+    const otherFixIds = await home
+      .locator('[data-testid^="home-readiness-fix-"]')
+      .evaluateAll((rows) =>
+        rows
+          .map((row) => row.getAttribute('data-testid'))
+          .filter(
+            (id) => id !== 'home-readiness-fix-configure-agent-instructions',
+          ),
+      );
+    expect(otherFixIds.length).toBeGreaterThan(0);
+    await home.locator(instructionsFix).click();
+    await expect.poll(() => readinessSends(electronApp)).toBe(1);
+    await expect.poll(() => worktreeCount(window)).toBe(initialWorktrees + 1);
+    const destination = await window.evaluate(() => {
+      const saved = JSON.parse(
+        localStorage.getItem('canopy.workspaceReadiness.launchedFixes.v1'),
+      );
+      return saved.records.find(
+        (record) => record.issueCode === 'configure-agent-instructions',
+      );
+    });
+    expect(destination?.worktreeId).toBeTruthy();
+    expect(destination?.chatId).toBeTruthy();
+
+    const expectLinkedHome = async () => {
+      await window.getByTestId('sidebar-create-task').click();
+      home = window.getByTestId('page-home');
+      const link = home.locator(instructionsLink);
+      await expect(link).toBeVisible();
+      await expect(link).toContainText('Agent instructions');
+      await expect(link).toContainText('Open chat');
+      await expect(home.locator(instructionsFix)).toHaveCount(0);
+      for (const id of otherFixIds) {
+        await expect(home.getByTestId(id)).toBeEnabled();
+      }
+      return link;
+    };
+
+    let link = await expectLinkedHome();
+    // The stub accepts the send but main never starts the turn, so the chat
+    // keeps its pending turn: active work, never a claimed success.
+    await expect(link).toHaveAttribute('data-status', 'in-progress');
+    await expect(link).toContainText('in progress on');
+
+    await window.reload();
+    await app.waitForShell({ timeout: 30_000 });
+    link = await expectLinkedHome();
+
+    sends += await readinessSends(electronApp);
+    await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+    electronApp = undefined;
+
+    ({ electronApp } = await launchCanopy(launchOptions));
+    window = await electronApp.firstWindow();
+    app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await installGitHubSignedIn(electronApp);
+    await installSendRecorder(electronApp);
+    await window.reload();
+    await app.waitForShell({ timeout: 30_000 });
+    link = await expectLinkedHome();
+
+    await link.click();
+    await expect(window.getByTestId('panel-content-chat')).toBeVisible();
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${destination.chatId}`),
+    ).toHaveAttribute('aria-selected', 'true');
+    await expect(
+      window.locator(
+        `[data-sidebar-selected-item] [data-testid="worktree-row"][data-project-id="${destination.workspaceId}"][data-worktree-id="${destination.worktreeId}"]`,
+      ),
+    ).toBeVisible();
+    expect(await worktreeCount(window)).toBe(initialWorktrees + 1);
+    sends += await readinessSends(electronApp);
+    expect(sends).toBe(1);
+
+    // Resolving the issue at the audited checkout retires the link too.
+    writeFileSync(
+      path.join(repoPath, 'AGENTS.md'),
+      '# Repository guidance\nUse npm test.\n',
+    );
+    await window.reload();
+    await app.waitForShell({ timeout: 30_000 });
+    await window.getByTestId('sidebar-create-task').click();
+    home = window.getByTestId('page-home');
+    await expect(
+      home.locator('[data-testid^="home-readiness-fix-"]').first(),
+    ).toBeVisible();
+    await expect(home.locator(instructionsFix)).toHaveCount(0);
+    await expect(home.locator(instructionsLink)).toHaveCount(0);
+    for (const id of otherFixIds) {
+      await expect(home.getByTestId(id)).toBeEnabled();
+    }
+  } finally {
+    if (electronApp) await closeCanopy(electronApp, userDataDir);
+    else rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test('missing readiness conversations explain recovery in Overview and settings', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir } = await launchCanopy({
+    seedDemoWorkspaces: true,
+    demoWorkspaceApps: ['ts-pnpm-vite'],
+  });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await installSendRecorder(electronApp);
+    const destination = await window.evaluate(async () => {
+      const file = await window.api.loadProjects();
+      const workspace = file.items.find((item) => item.type !== 'cowork');
+      const worktree = workspace.worktrees[0];
+      const audit = await window.api.getWorkspaceReadiness({
+        workspaceId: workspace.id,
+      });
+      const issue = audit.issues.find((entry) => entry.fixPrompt !== null);
+      const record = {
+        workspaceId: workspace.id,
+        issueKey: `${issue.repoId ?? issue.repoName}:${issue.code}`,
+        issueCode: issue.code,
+        worktreeId: worktree.id,
+        chatId: 'missing-readiness-chat',
+        launchedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(
+        'canopy.workspaceReadiness.launchedFixes.v1',
+        JSON.stringify({
+          version: 1,
+          records: [record],
+        }),
+      );
+      return { ...record, title: issue.title };
+    });
+    const initialWorktrees = await worktreeCount(window);
+    await window.reload();
+    await app.waitForShell({ timeout: 30_000 });
+    const worktreeRow = window.locator(
+      `[data-testid="worktree-row"][data-project-id="${destination.workspaceId}"][data-worktree-id="${destination.worktreeId}"]`,
+    );
+    await worktreeRow.click();
+    await expect(window.getByTestId('panel-content-chat')).toBeVisible();
+    await app.openOverviewPage();
+    const row = window
+      .getByTestId('workspace-readiness-overview')
+      .getByRole('row')
+      .filter({ hasText: destination.title });
+    await expect(row).toContainText('Conversation unavailable');
+    await row.getByRole('button', { name: /^Open worktree for/ }).click();
+    await expect(window.getByTestId('panel-content-chat')).toBeVisible();
+    await expect(
+      window.locator(
+        `[data-sidebar-selected-item] [data-testid="worktree-row"][data-project-id="${destination.workspaceId}"][data-worktree-id="${destination.worktreeId}"]`,
+      ),
+    ).toBeVisible();
+
+    const sidebar = window.getByTestId('app-sidebar');
+    await sidebar
+      .getByRole('button', { name: `Collapse ${WORKSPACE_NAME}` })
+      .hover();
+    await sidebar
+      .locator(`button[aria-label="Settings for ${WORKSPACE_NAME}"]:visible`)
+      .click();
+    const recommendations = window
+      .getByRole('dialog', { name: WORKSPACE_NAME })
+      .getByTestId('workspace-readiness-recommendations');
+    await expect(recommendations).toContainText('Conversation unavailable');
+    await recommendations
+      .getByRole('button', { name: 'Open worktree', exact: true })
+      .click();
+    await expect(window.getByTestId('panel-content-chat')).toBeVisible();
+    expect(await worktreeCount(window)).toBe(initialWorktrees);
+    expect(await readinessSends(electronApp)).toBe(0);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

@@ -132,7 +132,7 @@ describe('SharedContainerSidebarSection', () => {
     const retry = query('shared-container-list-retry');
     expect(message?.textContent).toBe('Could not load shared containers.');
     expect(retry?.tagName).toBe('BUTTON');
-    expect(retry?.getAttribute('aria-label')).toBe('Retry');
+    expect(retry?.getAttribute('aria-label')).toBe('Try again');
     expect(retry?.querySelector('svg')).not.toBeNull();
     expect(retry?.textContent).toBe('');
     // Copy first, control last: the control is the row's trailing column.
@@ -163,7 +163,7 @@ describe('SharedContainerSidebarSection', () => {
     });
 
     const retry = query('shared-container-list-retry');
-    expect(retry?.getAttribute('aria-label')).toBe('Retry');
+    expect(retry?.getAttribute('aria-label')).toBe('Try again');
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     expect(query('shared-container-list-message')?.textContent).toBe(
       'Loading shared containers…',

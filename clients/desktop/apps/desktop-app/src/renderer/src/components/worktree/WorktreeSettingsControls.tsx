@@ -1,5 +1,6 @@
 import {
   Button,
+  RichHoverTooltip,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -82,37 +83,23 @@ export function SourceLocalToggle({
   );
 }
 
-interface SettingsHelpTooltipProps {
-  /** DOM `id` so an adjacent button can reference it via `aria-describedby`. */
-  tooltipId: string;
-}
-
 /**
- * Help-icon hover-tooltip rendered next to the worktree dropdown in both the
- * project- and workspace-settings modals. Copy is identical between the two
- * call sites; only the DOM `id` differs.
+ * Help text for the worktree dropdown in both the project- and
+ * workspace-settings modals, shown on hover or focus of the help icon.
  */
-export function SettingsHelpTooltip({
-  tooltipId,
-}: SettingsHelpTooltipProps): JSX.Element {
-  return (
-    <div
-      id={tooltipId}
-      role="tooltip"
-      className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 w-72 rounded-md bg-popover p-3 opacity-0 shadow-tooltip transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-    >
-      <p className="text-xs fg-primary">
-        Project configuration can be source controlled or overridden locally.
-        Local overrides always take priority.
-      </p>
-      <p className="mt-2 text-xs fg-secondary">
-        Select a worktree to view and edit the configuration present in that
-        worktree. The default branch is used as a reference only and any source
-        controlled edits must be applied via a worktree.
-      </p>
-    </div>
-  );
-}
+const SETTINGS_HELP_CONTENT: ReactNode = (
+  <>
+    <p className="text-xs fg-primary">
+      Project configuration can be source controlled or overridden locally.
+      Local overrides always take priority.
+    </p>
+    <p className="mt-2 text-xs fg-secondary">
+      Select a worktree to view and edit the configuration present in that
+      worktree. The default branch is used as a reference only and any source
+      controlled edits must be applied via a worktree.
+    </p>
+  </>
+);
 
 interface SaveLocalButtonProps {
   /** Disabled while a save IPC is in-flight or while a worktree apply is
@@ -308,7 +295,7 @@ export function SourceWorktreePicker({
             selected={!selectedWorktreeId}
           >
             <PickerMenuOptionLeading>
-              <BranchIcon />
+              <BranchIcon size="md" />
             </PickerMenuOptionLeading>
             <PickerMenuOptionContent>
               <PickerMenuOptionLabel>Default branch</PickerMenuOptionLabel>
@@ -328,7 +315,7 @@ export function SourceWorktreePicker({
               selected={selectedWorktreeId === worktree.id}
             >
               <PickerMenuOptionLeading>
-                <BranchIcon />
+                <BranchIcon size="md" />
               </PickerMenuOptionLeading>
               <PickerMenuOptionContent>
                 <PickerMenuOptionLabel>
@@ -345,18 +332,20 @@ export function SourceWorktreePicker({
           ))}
         </FloatingPickerMenu>
       </div>
-      {/* Help icon with tooltip */}
-      <div className="group relative">
+      <RichHoverTooltip
+        id={helpTooltipId}
+        content={SETTINGS_HELP_CONTENT}
+        surfacePadding="card"
+        surfaceClassName="w-72"
+      >
         <button
           type="button"
           aria-label="Project configuration help"
-          aria-describedby={helpTooltipId}
           className="fg-secondary"
         >
           <AppCatalogQuestionMarkIcon width="14" height="14" />
         </button>
-        <SettingsHelpTooltip tooltipId={helpTooltipId} />
-      </div>
+      </RichHoverTooltip>
     </div>
   );
 }
@@ -456,7 +445,7 @@ export function AddToWorktreeActionControls({
               }}
             >
               <PickerMenuOptionLeading>
-                <BranchIcon />
+                <BranchIcon size="md" />
               </PickerMenuOptionLeading>
               <PickerMenuOptionContent>
                 <PickerMenuOptionLabel>{wt.branchName}</PickerMenuOptionLabel>

@@ -180,7 +180,7 @@ export function OllamaModelCard({
     <SettingsRow
       label={
         <span className="flex min-w-0 items-center gap-2.5">
-          <OllamaIcon size={14} className="shrink-0 fg-secondary" aria-hidden />
+          <OllamaIcon size="sm" className="shrink-0 fg-secondary" aria-hidden />
           <span className="truncate">{displayName}</span>
         </span>
       }

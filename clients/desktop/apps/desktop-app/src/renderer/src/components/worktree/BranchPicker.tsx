@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, FloatingMenu } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
@@ -8,6 +8,7 @@ import {
   type JSX,
   type KeyboardEvent,
 } from 'react';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import type { BranchEntry } from '@canopy/desktop-shared/types';
 import {
   collapseBranchDuplicates,
@@ -18,9 +19,15 @@ import {
 import { resolveBranchPickerBaseSelection } from './branch-picker-base-selection';
 import { Tooltip } from '@canopy/ui-shared';
 import {
+  FormField,
+  SearchField,
+  TextInput,
+} from '@canopy/ui-shared/components';
+import {
   PlusIcon as AppCatalogPlusIcon,
   ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { Badge } from '@canopy/ui-shared/components';
 
 interface BranchPickerProps {
   projectId: string;
@@ -62,6 +69,7 @@ export function BranchPicker({
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const newBranchInputRef = useRef<HTMLInputElement>(null);
+  const baseBranchInputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Fetch branches on mount
@@ -227,21 +235,11 @@ export function BranchPicker({
           <span className="min-w-0 flex-1 truncate font-mono">
             {branch.name}
           </span>
-          {branch.isCurrent && (
-            <span className="shrink-0 rounded bg-accent-subtle px-1.5 py-0.5 text-3xs font-medium fg-accent">
-              current
-            </span>
-          )}
+          {branch.isCurrent && <Badge>current</Badge>}
           {branch.isUsedByWorktree && !branch.isCurrent && (
-            <span className="shrink-0 rounded bg-warning-subtle px-1.5 py-0.5 text-3xs font-medium fg-warning">
-              in use
-            </span>
+            <Badge tone="warning">in use</Badge>
           )}
-          {provenanceBadge && (
-            <span className="shrink-0 rounded bg-fg-primary/5 px-1.5 py-0.5 text-3xs fg-secondary">
-              {provenanceBadge}
-            </span>
-          )}
+          {provenanceBadge && <Badge>{provenanceBadge}</Badge>}
           {isSwitching && (
             <span className="shrink-0 text-3xs fg-secondary">switching…</span>
           )}
@@ -256,22 +254,13 @@ export function BranchPicker({
         <>
           {/* Search input */}
           <div className="border-b p-2">
-            <input
+            <SearchField
               ref={searchInputRef}
-              type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                if (e.key === 'Escape') {
-                  if (search) {
-                    setSearch('');
-                  } else {
-                    onClose();
-                  }
-                }
-              }}
+              onValueChange={setSearch}
+              onEscapeEmpty={onClose}
+              aria-label="Search branches"
               placeholder={`Search branches (on ${currentBranch})…`}
-              className="w-full rounded border bg-fg-primary/5 px-2 py-1 text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent"
             />
           </div>
 
@@ -311,7 +300,7 @@ export function BranchPicker({
           {/* Error display */}
           {error && (
             <div className="border-t px-2 py-1.5">
-              <p className="text-xs fg-destructive">{error}</p>
+              <ErrorBanner error={error} className="" />
             </div>
           )}
 
@@ -354,97 +343,116 @@ export function BranchPicker({
 
           {/* Branch name input */}
           <div className="space-y-2">
-            <div>
-              <label className="mb-1 block text-3xs font-medium fg-secondary">
-                Branch name
-              </label>
-              <input
-                ref={newBranchInputRef}
-                type="text"
-                value={newBranchName}
-                onChange={(e) => {
-                  setNewBranchName(e.target.value);
-                  setCreateError(null);
-                }}
-                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                  if (e.key === 'Enter') {
-                    void handleCreate();
-                  } else if (e.key === 'Escape') {
-                    setView('list');
+            <FormField label="Branch name" error={createError}>
+              {(control) => (
+                <TextInput
+                  {...control}
+                  ref={newBranchInputRef}
+                  density="compact"
+                  mono
+                  type="text"
+                  value={newBranchName}
+                  onChange={(e) => {
+                    setNewBranchName(e.target.value);
                     setCreateError(null);
-                  }
-                }}
-                placeholder="feature/my-branch"
-                disabled={creating}
-                className="w-full rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent disabled:opacity-60"
-              />
-            </div>
+                  }}
+                  onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                    if (e.key === 'Enter') {
+                      void handleCreate();
+                    } else if (e.key === 'Escape') {
+                      setView('list');
+                      setCreateError(null);
+                    }
+                  }}
+                  placeholder="feature/my-branch"
+                  disabled={creating}
+                />
+              )}
+            </FormField>
 
             {/* Base branch input */}
             <div className="relative">
-              <label className="mb-1 block text-3xs font-medium fg-secondary">
-                From base branch
-              </label>
-              <input
-                type="text"
-                value={newBaseBranch}
-                onChange={(e) => {
-                  const nextBaseSelection = resolveBranchPickerBaseSelection(
-                    branches,
-                    e.target.value,
-                    null,
-                  );
-                  setNewBaseBranch(nextBaseSelection.name);
-                  setNewBaseBranchIsRemote(nextBaseSelection.isRemote);
-                  setShowBasePicker(true);
-                }}
-                onFocus={() => setShowBasePicker(true)}
-                onBlur={() => {
-                  // Delay to allow click on picker item
-                  setTimeout(() => setShowBasePicker(false), 150);
-                }}
-                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                  if (e.key === 'Escape') {
-                    setShowBasePicker(false);
-                  }
-                }}
-                disabled={creating}
-                className="w-full rounded border bg-fg-primary/5 px-2 py-1 font-mono text-xs fg-primary outline-none placeholder:fg-secondary focus:border-line-accent disabled:opacity-60"
-              />
-              {showBasePicker && baseFilteredBranches.length > 0 && (
-                <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-40 overflow-y-auto rounded bg-card shadow-lg">
-                  {baseFilteredBranches.map((b) => {
-                    const provenanceBadge = getBranchProvenanceBadge(b);
-                    return (
-                      <button
-                        key={`base-${b.isRemote ? 'remote' : 'local'}-${b.name}`}
-                        type="button"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setNewBaseBranch(b.name);
-                          setNewBaseBranchIsRemote(b.hasRemoteRef);
-                          setShowBasePicker(false);
-                        }}
-                        className="flex w-full items-center gap-2 px-2 py-1 text-left text-xs fg-primary hover:bg-fg-primary/5"
-                      >
-                        <span className="min-w-0 flex-1 truncate font-mono">
-                          {b.name}
+              <FormField label="From base branch">
+                {(control) => (
+                  <TextInput
+                    {...control}
+                    ref={baseBranchInputRef}
+                    density="compact"
+                    mono
+                    type="text"
+                    value={newBaseBranch}
+                    onChange={(e) => {
+                      const nextBaseSelection =
+                        resolveBranchPickerBaseSelection(
+                          branches,
+                          e.target.value,
+                          null,
+                        );
+                      setNewBaseBranch(nextBaseSelection.name);
+                      setNewBaseBranchIsRemote(nextBaseSelection.isRemote);
+                      setShowBasePicker(true);
+                    }}
+                    onFocus={() => setShowBasePicker(true)}
+                    onBlur={() => {
+                      // Delay to allow click on picker item
+                      setTimeout(() => setShowBasePicker(false), 150);
+                    }}
+                    onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                      if (e.key === 'Escape') {
+                        setShowBasePicker(false);
+                      }
+                    }}
+                    disabled={creating}
+                  />
+                )}
+              </FormField>
+              {/* Suggestions while typing: focus stays in the field, and the
+                  shared menu layer places and dismisses the list. */}
+              <FloatingMenu
+                open={showBasePicker && baseFilteredBranches.length > 0}
+                onOpenChange={setShowBasePicker}
+                anchorRef={baseBranchInputRef}
+                interaction="manual"
+                openOnArrowKeys={false}
+                // Any press outside closes the suggestions and still does
+                // what it says: Create, Cancel, the other field, or the
+                // dialog around the picker (its Close, tabs and rows).
+                outsidePressSwallowsClick={false}
+                heightLimit={160}
+                role="listbox"
+                aria-label="Base branches"
+                className="w-[var(--floating-menu-anchor-width)] overflow-y-auto"
+              >
+                {baseFilteredBranches.map((b) => {
+                  const provenanceBadge = getBranchProvenanceBadge(b);
+                  return (
+                    <button
+                      key={`base-${b.isRemote ? 'remote' : 'local'}-${b.name}`}
+                      type="button"
+                      role="option"
+                      aria-selected={b.name === newBaseBranch}
+                      tabIndex={-1}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setNewBaseBranch(b.name);
+                        setNewBaseBranchIsRemote(b.hasRemoteRef);
+                        setShowBasePicker(false);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs fg-primary hover:bg-fg-primary/5"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono">
+                        {b.name}
+                      </span>
+                      {provenanceBadge && (
+                        <span className="shrink-0 text-3xs fg-secondary">
+                          {provenanceBadge}
                         </span>
-                        {provenanceBadge && (
-                          <span className="shrink-0 text-3xs fg-secondary">
-                            {provenanceBadge}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                      )}
+                    </button>
+                  );
+                })}
+              </FloatingMenu>
             </div>
-
-            {createError && (
-              <p className="text-xs fg-destructive">{createError}</p>
-            )}
 
             <div className="flex justify-end gap-1.5">
               <Button

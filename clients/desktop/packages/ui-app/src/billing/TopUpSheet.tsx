@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -17,8 +18,13 @@ import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import {
   Button,
   buttonClassName,
+  DialogFormField,
   DialogModal,
+  ErrorBanner,
   MODEL_LIBRARY_UNLOCK_COPY,
+  TextInput,
+  ValueRow,
+  ValueRows,
 } from '@canopy/ui-shared/components';
 import { formatCredits } from '@canopy/ui-shared/lib';
 import type { BillingClient } from '@canopy/app-core';
@@ -246,6 +252,7 @@ export function TopUpSheet({
   });
   const [value, setValue] = useState(String(intent?.amountUsd ?? 20));
   const customRef = useRef<HTMLInputElement | null>(null);
+  const amountId = useId();
   const tid = (suffix: string): string => `${testIdPrefix}${suffix}`;
 
   useEffect(() => {
@@ -340,6 +347,7 @@ export function TopUpSheet({
 
   return (
     <DialogModal
+      inset="flush"
       title={unlock ? MODEL_LIBRARY_UNLOCK_COPY.title : 'Buy AI credits'}
       subtitle={
         unlock
@@ -369,7 +377,7 @@ export function TopUpSheet({
           />
         </div>
       ) : outcome !== null ? (
-        <div className="flex flex-col gap-4 p-5">
+        <div className="flex flex-col gap-4 p-6">
           <p
             className="text-s fg-primary"
             role="status"
@@ -377,11 +385,7 @@ export function TopUpSheet({
           >
             {outcome}
           </p>
-          {state.error ? (
-            <p role="alert" className="text-xs fg-destructive">
-              {state.error}
-            </p>
-          ) : null}
+          <ErrorBanner className="" error={state.error} />
           <div className="flex items-center justify-end gap-2">
             {state.status === 'processing' ||
             state.status === 'credits_delayed' ||
@@ -415,7 +419,7 @@ export function TopUpSheet({
           </div>
         </div>
       ) : (
-        <div className="flex flex-col gap-4 p-5">
+        <div className="flex flex-col gap-4 p-6">
           <div
             className="flex flex-wrap gap-2"
             role="group"
@@ -458,74 +462,61 @@ export function TopUpSheet({
               Custom
             </button>
           </div>
-          <label className="flex flex-col gap-1 text-s">
-            <span className="fg-secondary">Amount (USD)</span>
-            <div className="flex items-center rounded-md border px-3 py-2">
-              <span className="mr-1 fg-secondary">$</span>
-              <input
-                ref={customRef}
-                type="number"
-                min={AI_CREDIT_TOP_UP_MIN_USD}
-                max={AI_CREDIT_TOP_UP_MAX_USD}
-                step="0.01"
-                inputMode="decimal"
-                value={value}
-                disabled={working}
-                onChange={(e) => setValue(e.target.value)}
-                className="w-full bg-transparent fg-primary outline-none"
-              />
-            </div>
-          </label>
-          {state.error ? (
-            <p className="text-xs fg-destructive" role="alert">
-              {state.error}
-            </p>
-          ) : state.status === 'needs_card' ? (
-            <p className="text-xs fg-destructive" role="alert">
-              {TOP_UP_ERROR}
-            </p>
-          ) : null}
-          <dl
-            className="flex flex-col gap-1 rounded-md border bg-secondary/40 px-3 py-2 text-s"
-            data-testid={tid('credits-top-up-breakdown')}
-          >
-            <div className="flex items-center justify-between">
-              <dt className="fg-secondary">Credits</dt>
-              <dd className="fg-primary">
-                {breakdown
+          <DialogFormField label="Amount (USD)" htmlFor={amountId}>
+            <TextInput
+              ref={customRef}
+              id={amountId}
+              density="settings"
+              leading="$"
+              type="number"
+              min={AI_CREDIT_TOP_UP_MIN_USD}
+              max={AI_CREDIT_TOP_UP_MAX_USD}
+              step="0.01"
+              inputMode="decimal"
+              value={value}
+              disabled={working}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </DialogFormField>
+          <ErrorBanner
+            className=""
+            error={
+              state.error ||
+              (state.status === 'needs_card' ? TOP_UP_ERROR : null)
+            }
+          />
+          <ValueRows dataTestId={tid('credits-top-up-breakdown')}>
+            <ValueRow
+              label="Credits"
+              value={
+                breakdown
                   ? formatUsd(breakdown.baseCents / 100)
-                  : BREAKDOWN_PLACEHOLDER}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between">
-              <dt className="fg-secondary">Service fee ({feePercent}%)</dt>
-              <dd className="fg-primary">
-                {breakdown
+                  : BREAKDOWN_PLACEHOLDER
+              }
+            />
+            <ValueRow
+              label={`Service fee (${feePercent}%)`}
+              value={
+                breakdown
                   ? formatUsd(breakdown.feeCents / 100)
-                  : BREAKDOWN_PLACEHOLDER}
-              </dd>
-            </div>
-            <div className="mt-1 flex items-center justify-between border-t pt-1 font-medium">
-              <dt className="fg-primary">Total charged</dt>
-              <dd
-                className="fg-primary"
-                data-testid={tid('credits-top-up-total')}
-              >
-                {total ?? BREAKDOWN_PLACEHOLDER}
-              </dd>
-            </div>
-            <div className="mt-1 flex items-center justify-between border-t pt-1">
-              <dt className="fg-secondary">You&apos;ll receive</dt>
-              <dd
-                className="fg-primary"
-                data-testid={tid('credits-top-up-estimate')}
-              >
-                {estimatedCredits !== null
+                  : BREAKDOWN_PLACEHOLDER
+              }
+            />
+            <ValueRow
+              label="Total charged"
+              value={total ?? BREAKDOWN_PLACEHOLDER}
+              valueTestId={tid('credits-top-up-total')}
+            />
+            <ValueRow
+              label="You'll receive"
+              value={
+                estimatedCredits !== null
                   ? `~${formatCredits(estimatedCredits)} credits`
-                  : BREAKDOWN_PLACEHOLDER}
-              </dd>
-            </div>
-          </dl>
+                  : BREAKDOWN_PLACEHOLDER
+              }
+              valueTestId={tid('credits-top-up-estimate')}
+            />
+          </ValueRows>
           <div className="flex items-center justify-end gap-2">
             <Button
               type="button"

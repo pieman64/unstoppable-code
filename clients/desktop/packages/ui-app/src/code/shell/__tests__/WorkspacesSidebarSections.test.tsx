@@ -1021,7 +1021,8 @@ describe('WorkspacesSidebarSections', () => {
       expect(menu).not.toBeNull();
       expect(menu?.textContent).toContain('Archive');
       expect(menu?.style.top).toBe(`${222 + 4}px`);
-      expect(menu?.style.right).toBe(`${window.innerWidth - 111}px`);
+      // Its right edge sits at the pointer (jsdom lays out no width).
+      expect(menu?.style.left).toBe('111px');
     });
 
     it('leaves the native browser menu alone when the row has no menu', () => {

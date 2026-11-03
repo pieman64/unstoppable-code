@@ -637,7 +637,7 @@ describe('SessionBreakdownView', () => {
         byTestId(
           renderer?.container ?? document,
           'session-breakdown-top-tools',
-        ).querySelectorAll('dt'),
+        ).querySelectorAll('[data-settings-row-label]'),
       ).map((term) => term.textContent);
 
     renderer = createCostRenderer();

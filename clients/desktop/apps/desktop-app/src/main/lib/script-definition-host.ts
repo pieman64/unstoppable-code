@@ -23,8 +23,14 @@ import {
 } from './script-resolver';
 import { readAllSidebarItems } from './sidebar-items';
 import { WorkspaceRepoNotFoundError } from './source-layer-resolution';
-import { W5RevisionConflictError } from './w5-commit-log-file-store';
-import { readWorkspaceConfig } from './workspace-persistence';
+import {
+  getW5IdentityStore,
+  W5RevisionConflictError,
+} from './w5-commit-log-file-store';
+import {
+  readWorkspaceConfigDetailed,
+  WorkspaceConfigUnreadableError,
+} from './workspace-persistence';
 import {
   ScriptHookSettingsRefusedError,
   updateWorkspaceScripts,
@@ -146,24 +152,36 @@ export const desktopScriptDefinitionsHost: CoreScriptDefinitionsHost = {
     }
   },
   async readLocal(target) {
-    switch (target.kind) {
-      case 'project':
-        return (await readSingleRepoProject(target.workspaceId)).scripts;
-      case 'workspace-root':
-        return (await readWorkspaceConfig(target.workspaceId)).scripts;
-      case 'workspace-repo': {
-        const config = await readWorkspaceConfig(target.workspaceId);
-        const repo = config.repos.find(
-          (candidate) => candidate.id === target.repoId,
-        );
-        if (!repo)
-          throw new ScriptHookSettingsRefusedError(
-            'not-found',
-            `Repo ${target.repoId} not found in project ${target.workspaceId}`,
-          );
-        return repo.scripts;
-      }
-    }
+    if (target.kind === 'project')
+      return (await readSingleRepoProject(target.workspaceId)).scripts;
+    // The settings writer refuses a manifest it can't read, so a read that
+    // plans a change refuses it too instead of reporting no settings.
+    const { config, authority } = await readWorkspaceConfigDetailed(
+      target.workspaceId,
+    );
+    if (authority !== 'ok')
+      throw new ScriptHookSettingsRefusedError(
+        'configuration-unavailable',
+        new WorkspaceConfigUnreadableError().message,
+      );
+    if (target.kind === 'workspace-root') return config.scripts;
+    const repo = config.repos.find(
+      (candidate) => candidate.id === target.repoId,
+    );
+    if (!repo)
+      throw new ScriptHookSettingsRefusedError(
+        'not-found',
+        `Repo ${target.repoId} not found in project ${target.workspaceId}`,
+      );
+    return repo.scripts;
+  },
+  async localRevision(target) {
+    // Only legacy test stores keep no revisions.
+    const [current] =
+      (await getW5IdentityStore()?.readRevisions([
+        { kind: 'workspace', workspaceId: target.workspaceId },
+      ])) ?? [];
+    return current?.revision;
   },
   async inspect(target, name) {
     switch (target.kind) {

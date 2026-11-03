@@ -13,6 +13,7 @@ import type {
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
 import {
+  chatBannerKey,
   useAiCreditsBannerStore,
   useAiCreditsRoutingActive,
   useVisibleUsageLimitBanner,
@@ -42,7 +43,15 @@ import {
   type GetAiCreditsHandoffState,
 } from './GetAiCreditsCta';
 import { aiCreditsHandoffCopy } from './aiCreditsHandoffCopy';
-import { useChatTargetAiCreditsScope } from '@/lib/aiCreditsScope';
+import {
+  useAiCreditsWalletKey,
+  useChatTargetAiCreditsScope,
+} from '@/lib/aiCreditsScope';
+import {
+  endAiCreditsHandoff,
+  selectAiCreditsHandoff,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
 import {
   clearAiCreditsArrivalForChat,
   markAiCreditsArrivalRouted,
@@ -201,8 +210,30 @@ export function AiCreditsUsageLimitBanner({
     null,
   );
   const [savingMode, setSavingMode] = useState(false);
-  // The purchase CTA's browser hand-off, described in the message (CAN-5162).
-  const [handoff, setHandoff] = useState<GetAiCreditsHandoffState | null>(null);
+  // The purchase CTA's controls for the retained hand-off, with the chat they
+  // were reported in (CAN-5162, CAN-5534).
+  const [handoff, setHandoff] = useState<{
+    readonly state: GetAiCreditsHandoffState;
+    readonly chatKey: string | null;
+  } | null>(null);
+  // The browser checkout pending in this chat's purchase scope, from this
+  // chat or a sibling (CAN-5534). It outlives this banner, so the message is
+  // derived from it rather than from the CTA's report.
+  const walletKey = useAiCreditsWalletKey(target);
+  const pendingHandoff = useAiCreditsHandoffStore((s) =>
+    selectAiCreditsHandoff(s, walletKey),
+  );
+  const chatKey = target ? chatBannerKey(target) : null;
+  const chatKeyRef = useRef(chatKey);
+  chatKeyRef.current = chatKey;
+  const reportHandoff = useCallback(
+    (state: GetAiCreditsHandoffState | null): void => {
+      setHandoff(
+        state === null ? null : { state, chatKey: chatKeyRef.current },
+      );
+    },
+    [],
+  );
   const useCreditsNowScopeId = useId();
   const alwaysUseCreditsScopeId = useId();
   // Continue on the credits model (CAN-4900). A result that lands after the
@@ -325,26 +356,31 @@ export function AiCreditsUsageLimitBanner({
     showContactAdmin,
     showPurchase,
   } = resolveAiCreditsCoverage(availability);
-  // The purchase CTA stays mounted while its browser hand-off runs. A coverage
-  // re-read (an account change on return from the browser) must not drop the
-  // hand-off: the CTA records the arrival that routes this chat (CAN-5159).
-  // An organization that now needs its admin ends the purchase here.
-  const showPricing = showPurchase || (handoff !== null && !showContactAdmin);
-  useEffect(() => {
-    setHandoff(null);
-  }, [creditsScope, bannerVisible]);
-  // A hand-off ends with its CTA; one reported before an unmount never lingers.
-  useEffect(() => {
-    if (!showPricing) setHandoff(null);
-  }, [showPricing]);
+  // The purchase CTA stays mounted while a retained hand-off is pending in
+  // this scope. A coverage re-read (an account change on return from the
+  // browser) must not drop it: the CTA records the arrival that routes the
+  // originating chat (CAN-5159). An organization that now needs its admin
+  // hides the purchase here; the record itself stays.
+  const showPricing =
+    showPurchase || (pendingHandoff !== null && !showContactAdmin);
+  // Controls bound to this record and this chat; a report from another chat
+  // or an earlier record is ignored until the CTA reports again.
+  const handoffControls =
+    showPricing &&
+    pendingHandoff !== null &&
+    handoff !== null &&
+    handoff.state.handoffId === pendingHandoff.id &&
+    handoff.chatKey === chatKey
+      ? handoff.state
+      : null;
   // That account change also supersedes the CTA's automatic check, so once
   // this banner's own read finds the credits, the CTA checks again: once per
   // landing, after any check already running. A covered check ends the
   // hand-off, so it is never asked twice.
-  const handoffCheckAgain = handoff?.onCheckAgain;
-  const handoffChecking = handoff?.checking === true;
+  const handoffCheckAgain = handoffControls?.onCheckAgain;
+  const handoffChecking = handoffControls?.checking === true;
   const creditsLandedMidHandoff =
-    handoff !== null && coverageSettled && canSwitchAndResume;
+    handoffControls !== null && coverageSettled && canSwitchAndResume;
   const checkedLandingRef = useRef(false);
   useEffect(() => {
     if (!creditsLandedMidHandoff) {
@@ -413,7 +449,7 @@ export function AiCreditsUsageLimitBanner({
     canSwitchAndResume &&
     routingMode === 'off' &&
     !billsCredits &&
-    handoff === null;
+    pendingHandoff === null;
   // The gate (CAN-4900): the message names the model wherever credits would
   // otherwise be offered or sold, and the switch shows wherever this surface
   // can make it. `'unknown'` shows neither.
@@ -445,6 +481,20 @@ export function AiCreditsUsageLimitBanner({
 
   const dismiss = (): void => {
     clearArrival();
+    // Only the notice that started the purchase ends it (CAN-5534); a sibling
+    // chat's notice dismisses just itself.
+    if (
+      walletKey !== null &&
+      pendingHandoff !== null &&
+      pendingHandoff.origin === 'usage-limit' &&
+      pendingHandoff.originChatKey === chatBannerKey(target)
+    ) {
+      endAiCreditsHandoff(
+        walletKey,
+        pendingHandoff.id,
+        pendingHandoff.accountGeneration,
+      );
+    }
     dismissUsageLimit(target, banner.dismissKey);
   };
 
@@ -561,8 +611,8 @@ export function AiCreditsUsageLimitBanner({
     : resetsLabel
       ? `Do you want to use ${creditsNoun} to keep going?`
       : `Do you want to use ${creditsNoun} until your quota resets?`;
-  // Read only while the purchase CTA is rendered, so it cannot outlive it.
-  const visibleHandoff = showPricing ? handoff : null;
+  // Shown only while the purchase CTA is rendered, so it cannot outlive it.
+  const visibleHandoff = showPricing ? pendingHandoff : null;
   const handoffCopy =
     visibleHandoff !== null
       ? aiCreditsHandoffCopy(visibleHandoff.feedback)
@@ -647,7 +697,10 @@ export function AiCreditsUsageLimitBanner({
   // last (CAN-5159). Answers to the question, a hand-off, and three or more
   // buttons move to their own row, left-aligned with the message, so the
   // copy keeps the full width.
-  const showReopenBilling = visibleHandoff?.onReopenBilling !== undefined;
+  // Shown for the whole hand-off except after a failed check; disabled until
+  // the CTA reports controls for this chat.
+  const showReopenBilling =
+    visibleHandoff !== null && visibleHandoff.feedback !== 'check-failed';
   const actionCount =
     (showOffer && perChatAction ? 1 : 0) +
     (showOffer ? 1 : 0) +
@@ -737,12 +790,15 @@ export function AiCreditsUsageLimitBanner({
           {usageLimitModelSwitchActionLabel(switchTargetLabel)}
         </NoticeButton>
       )}
-      {showReopenBilling && visibleHandoff?.onReopenBilling && (
+      {showReopenBilling && (
         <NoticeButton
           variant="secondary"
-          onClick={visibleHandoff.onReopenBilling}
-          busy={visibleHandoff.reopenPending}
-          disabled={visibleHandoff.reopenDisabled}
+          onClick={(): void => handoffControls?.onReopenBilling?.()}
+          busy={handoffControls?.reopenPending === true}
+          disabled={
+            handoffControls?.onReopenBilling === undefined ||
+            handoffControls.reopenDisabled
+          }
           // Keep focus where it was (often the composer), like the CTA.
           onMouseDown={(e): void => e.preventDefault()}
           data-testid="chat-input-usage-limit-reopen-billing"
@@ -772,9 +828,10 @@ export function AiCreditsUsageLimitBanner({
           onCovered={refreshCoverage}
           buttonClassName={PRIMARY_BUTTON_CLASS}
           handoffLayout="compact"
-          onHandoffChange={setHandoff}
+          onHandoffChange={reportHandoff}
           billingDestination="browser"
           confirmArrival="usage-limit"
+          persistHandoffFor={target}
           dataTestId="chat-input-usage-limit-view-plans"
         />
       )}

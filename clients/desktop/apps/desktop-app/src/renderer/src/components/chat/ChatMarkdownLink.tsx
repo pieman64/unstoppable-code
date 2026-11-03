@@ -6,6 +6,7 @@ import {
   type ComponentPropsWithoutRef,
   type JSX,
 } from 'react';
+import { TRANSCRIPT_LINK_CLASS } from '@canopy/ui-shared/components';
 import { parseFileLinkLineSuffix } from '@canopy/ui-shared/lib/file-link-line-suffix';
 import { useChatStore } from '@/stores/chatStore';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
@@ -39,7 +40,12 @@ export function ChatMarkdownLink({
   if (typeof href !== 'string') return <span>{children}</span>;
   if (/^(https?:|mailto:)/i.test(href))
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer">
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={TRANSCRIPT_LINK_CLASS}
+      >
         {children}
       </a>
     );
@@ -140,7 +146,7 @@ export function ChatMarkdownLink({
       <button
         type="button"
         data-testid="chat-local-file-link"
-        className="focus-ring cursor-pointer fg-accent underline decoration-accent/40 underline-offset-2 hover:decoration-accent"
+        className={`focus-ring cursor-pointer ${TRANSCRIPT_LINK_CLASS}`}
         disabled={opening}
         title={href}
         data-file-link-line={

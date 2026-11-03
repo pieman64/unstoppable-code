@@ -5,6 +5,7 @@ import {
   type WorktreeDiscarded,
 } from '@canopy/ui-app/worktree-discard';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
+import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { finishWorktreeArchive } from './finishWorktreeArchive';
@@ -28,6 +29,7 @@ export function DesktopWorktreeDiscardHost(): JSX.Element {
       worktreeId,
       warnings,
       removedTemporaryWorkspaceId,
+      retainedArchive,
     }: WorktreeDiscarded): void => {
       for (const warning of warnings) {
         useGitHubStore.getState().addToast(warning, 'warning', undefined, {
@@ -35,6 +37,13 @@ export function DesktopWorktreeDiscardHost(): JSX.Element {
           projectId: workspaceId,
           worktreeId,
         });
+      }
+      // CAN-5338: no row was listed; the archived item goes as a deletion's does.
+      if (retainedArchive) {
+        void useArchivedContainersStore
+          .getState()
+          .settleDeleted(workspaceId, worktreeId);
+        return;
       }
       // As performArchive does, drop a temporary project left empty.
       void useProjectsStore

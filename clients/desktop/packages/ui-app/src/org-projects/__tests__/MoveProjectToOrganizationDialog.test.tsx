@@ -7,6 +7,11 @@ import {
   moveProjectToOrganizationErrorMessage,
   type MoveProjectToOrganizationDialogProps,
 } from '../MoveProjectToOrganizationDialog';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '../../settings/__tests__/helpers/settings-select';
 
 Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 
@@ -64,12 +69,15 @@ describe('MoveProjectToOrganizationDialog', () => {
     return document.body.querySelector<T>(`[data-testid="${id}"]`);
   }
 
-  function select(): HTMLSelectElement {
-    const element = byTestId<HTMLSelectElement>(
-      'move-project-to-organization-select',
+  function select(): HTMLButtonElement {
+    return settingsSelectTrigger(
+      document.body,
+      '[data-testid="move-project-to-organization-select"]',
     );
-    if (!element) throw new Error('select missing');
-    return element;
+  }
+
+  function selectedValue(): string {
+    return settingsSelectValue(select());
   }
 
   function moveButton(): HTMLButtonElement {
@@ -81,17 +89,13 @@ describe('MoveProjectToOrganizationDialog', () => {
   }
 
   function pick(id: string): void {
-    act(() => {
-      const element = select();
-      element.value = id;
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    chooseSettingsOptionSync(select(), id);
   }
 
   it('preselects the only organization and shows the one-way warning', () => {
     const onMove = jest.fn();
     render({ onMove });
-    expect(select().value).toBe(ACME.id);
+    expect(selectedValue()).toBe(ACME.id);
     expect(
       byTestId('move-project-to-organization-dialog')?.textContent,
     ).toContain(
@@ -105,13 +109,23 @@ describe('MoveProjectToOrganizationDialog', () => {
   it('starts on the placeholder with several organizations and keeps Move disabled until a pick', () => {
     const onMove = jest.fn();
     render({ organizations: [ACME, GLOBEX], onMove });
-    expect(select().value).toBe('');
+    expect(selectedValue()).toBe('');
     expect(select().textContent).toContain('Choose an organization');
     expect(moveButton().disabled).toBe(true);
     pick(GLOBEX.id);
     expect(moveButton().disabled).toBe(false);
     act(() => moveButton().click());
     expect(onMove).toHaveBeenCalledWith(GLOBEX.id);
+  });
+
+  it('focuses the organization dropdown on open when the viewer must pick', () => {
+    render({ organizations: [ACME, GLOBEX] });
+    expect(document.activeElement).toBe(select());
+  });
+
+  it('focuses Move on open when the only organization is preselected', () => {
+    render();
+    expect(document.activeElement).toBe(moveButton());
   });
 
   it('disables every control while busy and blocks Escape', () => {
@@ -151,7 +165,7 @@ describe('MoveProjectToOrganizationDialog', () => {
     expect(byTestId('move-project-to-organization-error')).toBeNull();
     pick(ACME.id);
     const alert = byTestId('move-project-to-organization-error');
-    expect(alert?.getAttribute('role')).toBe('alert');
+    expect(alert?.querySelector('[role="alert"]')).toBeTruthy();
     expect(alert?.textContent).toBe(
       "Couldn't move canopy. You've reached Acme's limit for private projects.",
     );
@@ -163,17 +177,17 @@ describe('MoveProjectToOrganizationDialog', () => {
     render({ organizations: [ACME, GLOBEX] });
     pick(GLOBEX.id);
     render({ organizations: [ACME, { id: 'org-initech', name: 'Initech' }] });
-    expect(select().value).toBe('');
+    expect(selectedValue()).toBe('');
     expect(moveButton().disabled).toBe(true);
     render({ organizations: [ACME] });
-    expect(select().value).toBe(ACME.id);
+    expect(selectedValue()).toBe(ACME.id);
   });
 
   it('clears the sole-organization pick when another organization appears', () => {
     render({ organizations: [ACME] });
-    expect(select().value).toBe(ACME.id);
+    expect(selectedValue()).toBe(ACME.id);
     render({ organizations: [ACME, GLOBEX] });
-    expect(select().value).toBe('');
+    expect(selectedValue()).toBe('');
     expect(moveButton().disabled).toBe(true);
   });
 
@@ -181,7 +195,7 @@ describe('MoveProjectToOrganizationDialog', () => {
     render({ organizations: [ACME] });
     pick(ACME.id);
     render({ organizations: [ACME, GLOBEX] });
-    expect(select().value).toBe(ACME.id);
+    expect(selectedValue()).toBe(ACME.id);
     expect(moveButton().disabled).toBe(false);
   });
 

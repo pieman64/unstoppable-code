@@ -12,11 +12,14 @@ const readComponent = (name: string): string =>
   readFileSync(join(__dirname, '..', name), 'utf-8');
 
 describe('sidebar-owned worktree modals', () => {
-  it('portals Branch Info to the app document body', () => {
+  // The shared DialogModal portals Branch Info to the document body with the
+  // browser-native overlay marker; WorktreeBranchInfoDialog.replay.test.tsx
+  // mounts it and asserts both.
+  it('renders Branch Info through the shared DialogModal', () => {
     const source = readComponent('WorktreeBranchInfoDialog.tsx');
 
-    expect(source).toContain('createPortal(overlay, document.body)');
-    expect(source).toContain('data-canopy-browser-native-overlay="true"');
+    expect(source).toMatch(/<DialogModal\b/);
+    expect(source).not.toContain('createPortal');
   });
 
   // The confirmation itself portals through the shared DialogModal; its

@@ -1,7 +1,7 @@
 import {
   presentedMessages,
   presentedQueueMessages,
-  setupQueuedFirstSend,
+  withStartingTurnTimer,
 } from '@/stores/chat/optimistic-presentation';
 import {
   startingTurnUserMessageId,
@@ -26,6 +26,7 @@ import type {
   ChatTabPluginSelections,
   PluginSelectionTombstones,
   ChatTabUsage,
+  ChatRuntimeState,
   LlmProviderUsageLimitBannerState,
   StaleSessionInfo,
   ThinkingLevel,
@@ -71,11 +72,6 @@ export interface ActiveTranscriptView {
   agentUsage?: Record<string, AgentUsage>;
   turnDiffs?: Record<string, TurnDiffData>;
   memoryByMessageId?: ChatTab['memoryByMessageId'];
-  /**
-   * Mirrors `ChatTab.queuedForSetup`. When true, the queued messages are
-   * waiting on two-phase worktree creation (`setupPhase === 'git-pending'`).
-   */
-  queuedForSetup?: boolean;
   /** Index of the queued message currently being edited inline, if any. */
   editingQueuedMessageIndex?: number;
   editingQueuedMessageFocusAllowed?: boolean;
@@ -231,29 +227,56 @@ interface ActiveComposerProjectionOptions {
   includeActiveAgentStep?: boolean;
 }
 
-export function toActiveTranscriptView(tab: ChatTab): ActiveTranscriptView {
+/**
+ * The chat's transcript as the list renders it. `runtime` is the chat's
+ * canonical runtime: a turn it reports `starting` (one main holds for its
+ * worktree's setup, or a Portal or agent send) shows the starting status
+ * even when this renderer minted no provisional send for it. A provisional
+ * send for the same message id is the same turn and keeps its presentation.
+ */
+export function toActiveTranscriptView(
+  tab: ChatTab,
+  runtime?: Pick<ChatRuntimeState, 'status' | 'activeTurn'>,
+): ActiveTranscriptView {
+  const provisionalStartingId = tab.provisionalFirstSend
+    ? startingTurnUserMessageId(tab)
+    : undefined;
+  const canonicalStarting =
+    provisionalStartingId === undefined &&
+    tab.status !== 'error' &&
+    runtime?.status === 'starting'
+      ? runtime.activeTurn
+      : undefined;
+  const presented = presentedMessages(tab);
+  const messages = canonicalStarting
+    ? withStartingTurnTimer(presented, canonicalStarting)
+    : presented;
+  const canonicalStartingId =
+    canonicalStarting &&
+    messages.some((message) => message.id === canonicalStarting.userMessageId)
+      ? canonicalStarting.userMessageId
+      : undefined;
   return {
     transcript: tab.transcript,
     transcriptLoaded: tab.transcriptLoaded,
     transcriptWindow: tab.transcriptWindow,
     id: tab.id,
-    messages: presentedMessages(tab),
+    messages,
     pendingTurnTimerId:
       tab.status !== 'error' ? tab.pendingTurn?.timerMessage.id : undefined,
-    ...(tab.provisionalFirstSend
-      ? {
-          startingTurnUserMessageId: startingTurnUserMessageId(tab),
-          startingTurnPresentationKey: tab.provisionalFirstSend.userMessageId,
-        }
-      : {}),
+    ...(canonicalStartingId
+      ? { startingTurnUserMessageId: canonicalStartingId }
+      : tab.provisionalFirstSend
+        ? {
+            startingTurnUserMessageId: provisionalStartingId,
+            startingTurnPresentationKey: tab.provisionalFirstSend.userMessageId,
+          }
+        : {}),
     queuedMessages: presentedQueueMessages(tab),
     ...(tab.agentUsage ? { agentUsage: tab.agentUsage } : {}),
     ...(tab.turnDiffs ? { turnDiffs: tab.turnDiffs } : {}),
     ...(tab.memoryByMessageId
       ? { memoryByMessageId: tab.memoryByMessageId }
-      : {}),
-    ...(tab.queuedForSetup || setupQueuedFirstSend(tab)
-      ? { queuedForSetup: true }
       : {}),
     pendingQueuedMessageEditId: tab.pendingQueuedMessageEditId,
     ...(tab.editingQueuedMessageIndex !== undefined

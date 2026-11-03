@@ -1,4 +1,10 @@
 import { requestAutomationProjectCreation } from '@/stores/automationInstallContinuationStore';
+import {
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+  SettingsRowsValue,
+} from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useRef, useState } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
 import {
@@ -23,7 +29,10 @@ import {
   staleCopiesOf,
 } from '@/lib/automationShareRelationship';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
-import { LoadingPlaceholder } from '../shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { AutomationUpdateModal } from './AutomationUpdateModal';
 import { InstallSharedAutomationModal } from './InstallSharedAutomationModal';
@@ -182,7 +191,7 @@ export function AutomationCatalogDetail({
           intent="destructive"
           title="Couldn't load the update."
           data-testid="automation-catalog-update-error"
-          actions={<NoticeButton onClick={openUpdate}>Retry</NoticeButton>}
+          actions={<NoticeButton onClick={openUpdate}>Try again</NoticeButton>}
         >
           {update.error}
         </Notice>
@@ -196,20 +205,28 @@ export function AutomationCatalogDetail({
         {summary}
       </p>
 
-      <dl className="grid gap-4 border-t pt-4 text-s sm:grid-cols-2">
-        <div>
-          <dt className="text-xs fg-secondary">Trigger</dt>
-          <dd className="fg-primary" data-testid="automation-catalog-trigger">
-            {describeTrigger(activity)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs fg-secondary">Status</dt>
-          <dd className="fg-primary" data-testid="automation-catalog-status">
-            {activity.enabled ? 'Enabled' : 'Disabled'}
-          </dd>
-        </div>
-      </dl>
+      <SettingsRowsSection title="Details">
+        <SettingsRowsGroup>
+          <SettingsRowsRow
+            fact
+            label="Trigger"
+            control={
+              <SettingsRowsValue dataTestId="automation-catalog-trigger">
+                {describeTrigger(activity)}
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Status"
+            control={
+              <SettingsRowsValue dataTestId="automation-catalog-status">
+                {activity.enabled ? 'Enabled' : 'Disabled'}
+              </SettingsRowsValue>
+            }
+          />
+        </SettingsRowsGroup>
+      </SettingsRowsSection>
 
       {update.pending && (
         <AutomationUpdateModal update={update.pending} onClose={update.clear} />
@@ -406,7 +423,7 @@ export function SharedAutomationMarketplaceDetail({
         data-testid="automation-source-error"
         actions={
           <NoticeButton onClick={() => setReloadKey((value) => value + 1)}>
-            Retry
+            Try again
           </NoticeButton>
         }
       >
@@ -415,7 +432,11 @@ export function SharedAutomationMarketplaceDetail({
     );
   }
   if (!detail) {
-    return <LoadingPlaceholder label="Loading automation…" space="section" />;
+    return (
+      <DelayedLoadingPlaceholder slowNote="Still loading automation…">
+        <CenteredLoadingSpinner className="my-8" />
+      </DelayedLoadingPlaceholder>
+    );
   }
 
   return (
@@ -505,14 +526,18 @@ export function CuratedAutomationMarketplaceDetail({
         intent="destructive"
         title="Couldn't load this automation."
         data-testid="automation-source-error"
-        actions={<NoticeButton onClick={onRetry}>Retry</NoticeButton>}
+        actions={<NoticeButton onClick={onRetry}>Try again</NoticeButton>}
       >
         {error}
       </Notice>
     );
   }
   if (!detail || loading) {
-    return <LoadingPlaceholder label="Loading automation…" space="section" />;
+    return (
+      <DelayedLoadingPlaceholder slowNote="Still loading automation…">
+        <CenteredLoadingSpinner className="my-8" />
+      </DelayedLoadingPlaceholder>
+    );
   }
 
   const schedule =
@@ -569,14 +594,19 @@ export function CuratedAutomationMarketplaceDetail({
         <p className="text-sm fg-secondary">{detail.shortDescription}</p>
       )}
 
-      <dl className="grid gap-4 border-t pt-4 text-s sm:grid-cols-2">
-        <div>
-          <dt className="text-xs fg-secondary">Schedule</dt>
-          <dd className="fg-primary" data-testid="curated-automation-schedule">
-            {schedule}
-          </dd>
-        </div>
-      </dl>
+      <SettingsRowsSection title="Details">
+        <SettingsRowsGroup>
+          <SettingsRowsRow
+            fact
+            label="Schedule"
+            control={
+              <SettingsRowsValue dataTestId="curated-automation-schedule">
+                {schedule}
+              </SettingsRowsValue>
+            }
+          />
+        </SettingsRowsGroup>
+      </SettingsRowsSection>
 
       <AutomationDefinitionSummary automation={detail.automation} />
 

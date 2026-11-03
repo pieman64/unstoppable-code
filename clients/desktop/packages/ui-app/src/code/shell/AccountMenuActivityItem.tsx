@@ -93,7 +93,7 @@ export function SidebarStatisticsMenuItem({
       data-testid="account-context-statistics-row"
     >
       <DropdownMenuItemIcon>
-        <BarChart3 />
+        <BarChart3 size="xl" />
       </DropdownMenuItemIcon>
       Statistics
     </DropdownMenuItem>
@@ -121,7 +121,7 @@ export function SidebarInviteTeamMenuItem({
       }
     >
       <DropdownMenuItemIcon>
-        <UserPlus />
+        <UserPlus size="xl" />
       </DropdownMenuItemIcon>
       Invite your team
     </DropdownMenuItem>
@@ -144,7 +144,7 @@ export function SidebarCreateOrganizationMenuItem({
       data-testid="sidebar-context-create-organization"
     >
       <DropdownMenuItemIcon>
-        <Plus />
+        <Plus size="xl" />
       </DropdownMenuItemIcon>
       Create an organization
     </DropdownMenuItem>

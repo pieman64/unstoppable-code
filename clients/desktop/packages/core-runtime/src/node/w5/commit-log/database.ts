@@ -6,9 +6,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { W5CommitLogError } from './errors';
 
 /** The schema this build writes; a newer database is never opened. */
-export const W5_COMMIT_LOG_SCHEMA_VERSION = 2;
+export const W5_COMMIT_LOG_SCHEMA_VERSION = 3;
 
-const SCHEMA = [
+const SCHEMA_V2 = [
   `CREATE TABLE w5_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -71,6 +71,159 @@ const SCHEMA = [
   `CREATE UNIQUE INDEX w5_reservations_by_key
     ON w5_reservations (caller, operation, idempotency_key)
     WHERE idempotency_key IS NOT NULL`,
+];
+
+/** Not exactly 64 bytes of lowercase hex: links to nothing, not even itself. */
+const malformed = (column: string): string =>
+  `(${column} IS NOT NULL AND (length(CAST(${column} AS BLOB)) != 64 OR ltrim(${column}, '0123456789abcdef') != ''))`;
+
+/** A file row's key as SQL expressions, such as `NEW.path`. */
+interface FileRowKey {
+  path: string;
+  commitId: string;
+}
+
+/**
+ * The nearest row of the same path on one side of `row`, ignoring `skip`.
+ * INDEXED BY: the primary key would walk every other path's rows instead.
+ */
+function neighbour(
+  alias: string,
+  row: FileRowKey,
+  side: 'before' | 'after',
+  skip?: FileRowKey,
+): string {
+  const ignored = skip
+    ? ` AND NOT (${alias}.path = ${skip.path} AND ${alias}.commit_id = ${skip.commitId})`
+    : '';
+  return `FROM w5_commit_files ${alias} INDEXED BY w5_commit_files_by_path
+    WHERE ${alias}.path = ${row.path}
+    AND ${alias}.commit_id ${side === 'before' ? '<' : '>'} ${row.commitId}${ignored}
+    ORDER BY ${alias}.commit_id ${side === 'before' ? 'DESC' : 'ASC'} LIMIT 1`;
+}
+
+interface Predecessor {
+  exists: string;
+  image: string;
+}
+
+function predecessorOf(row: FileRowKey, skip?: FileRowKey): Predecessor {
+  const from = neighbour('p', row, 'before', skip);
+  return {
+    exists: `EXISTS (SELECT 1 ${from})`,
+    image: `(SELECT p.new_fingerprint ${from})`,
+  };
+}
+
+/** 1 when a row breaks the chain from `predecessor`, exactly as schema 2's window query counted it. */
+function chainBreak(
+  row: { previous: string; image: string },
+  predecessor: Predecessor,
+): string {
+  return `(CASE WHEN ${malformed(row.previous)} OR ${malformed(row.image)} THEN 1
+    WHEN NOT ${predecessor.exists} THEN 0
+    ELSE ${row.previous} IS NOT ${predecessor.image} END)`;
+}
+
+const SUCCESSOR = {
+  previous: 's.previous_fingerprint',
+  image: 's.new_fingerprint',
+};
+
+/** `expression` over the row after `row` (alias `s`), or 0 without one. */
+function successor(
+  expression: string,
+  row: FileRowKey,
+  skip?: FileRowKey,
+): string {
+  return `COALESCE((SELECT ${expression} ${neighbour('s', row, 'after', skip)}), 0)`;
+}
+
+const NEW_ROW = { path: 'NEW.path', commitId: 'NEW.commit_id' };
+const OLD_ROW = { path: 'OLD.path', commitId: 'OLD.commit_id' };
+
+/** Account for NEW, already in the table, between its neighbours. */
+function chainInsert(): string {
+  const before = predecessorOf(NEW_ROW);
+  const row = {
+    previous: 'NEW.previous_fingerprint',
+    image: 'NEW.new_fingerprint',
+  };
+  const relinked = `${chainBreak(SUCCESSOR, { exists: '1', image: row.image })} - ${chainBreak(SUCCESSOR, before)}`;
+  const change = `${chainBreak(row, before)} + ${successor(relinked, NEW_ROW)}`;
+  // Not an upsert: SQLite checks the CHECK constraints of its VALUES row
+  // even when it updates instead, and `change` may be negative.
+  return `UPDATE w5_file_chains SET decisions = decisions + 1,
+      starts_absent = CASE WHEN ${before.exists} THEN starts_absent ELSE ${row.previous} IS NULL END,
+      discontinuities = discontinuities + ${change}
+    WHERE path = NEW.path;
+    INSERT INTO w5_file_chains (path, decisions, starts_absent, discontinuities)
+      SELECT NEW.path, 1, ${row.previous} IS NULL, ${change}
+      WHERE NOT EXISTS (SELECT 1 FROM w5_file_chains WHERE path = NEW.path);`;
+}
+
+/** Account for OLD, no longer in the table (nor `skip`, its replacement). */
+function chainDelete(skip?: FileRowKey): string {
+  const before = predecessorOf(OLD_ROW, skip);
+  const row = {
+    previous: 'OLD.previous_fingerprint',
+    image: 'OLD.new_fingerprint',
+  };
+  const relinked = `${chainBreak(SUCCESSOR, before)} - ${chainBreak(SUCCESSOR, { exists: '1', image: row.image })}`;
+  return `DELETE FROM w5_file_chains WHERE path = OLD.path AND decisions = 1;
+    UPDATE w5_file_chains SET decisions = decisions - 1,
+      starts_absent = CASE WHEN ${before.exists} THEN starts_absent
+        ELSE ${successor('s.previous_fingerprint IS NULL', OLD_ROW, skip)} END,
+      discontinuities = discontinuities - ${chainBreak(row, before)} + ${successor(relinked, OLD_ROW, skip)}
+    WHERE path = OLD.path;`;
+}
+
+/**
+ * Schema 3 (CAN-5563): capture reads a per-path chain summary and a
+ * retained-commit count instead of scanning history. Triggers keep both in
+ * the transaction of every write to the rows they summarize, in O(log n).
+ */
+const SCHEMA_V3_TABLES = [
+  `CREATE TABLE w5_file_chains (
+    path TEXT PRIMARY KEY,
+    decisions INTEGER NOT NULL CHECK (decisions > 0),
+    starts_absent INTEGER NOT NULL CHECK (starts_absent IN (0, 1)),
+    discontinuities INTEGER NOT NULL CHECK (discontinuities BETWEEN 0 AND decisions)
+  ) STRICT`,
+  `CREATE TABLE w5_commit_totals (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    retained INTEGER NOT NULL CHECK (retained >= 0)
+  ) STRICT`,
+];
+
+const SCHEMA_V3_BACKFILL = [
+  `INSERT INTO w5_file_chains (path, decisions, starts_absent, discontinuities)
+    SELECT path, COUNT(*), MAX(position = 1 AND previous IS NULL), SUM(CASE
+      WHEN ${malformed('previous')} OR ${malformed('image')} THEN 1
+      WHEN position = 1 THEN 0
+      ELSE previous IS NOT before END)
+    FROM (SELECT path, previous_fingerprint AS previous, new_fingerprint AS image,
+      LAG(new_fingerprint) OVER chain AS before,
+      ROW_NUMBER() OVER chain AS position
+      FROM w5_commit_files WINDOW chain AS (PARTITION BY path ORDER BY commit_id))
+    GROUP BY path`,
+  `INSERT INTO w5_commit_totals (singleton, retained)
+    SELECT 1, COUNT(*) FROM w5_commits`,
+];
+
+const SCHEMA_V3_TRIGGERS = [
+  `CREATE TRIGGER w5_file_chains_insert AFTER INSERT ON w5_commit_files
+    BEGIN ${chainInsert()} END`,
+  `CREATE TRIGGER w5_file_chains_delete AFTER DELETE ON w5_commit_files
+    BEGIN ${chainDelete()} END`,
+  // Only tests rewrite these columns; a rewrite is a delete and an insert.
+  `CREATE TRIGGER w5_file_chains_update
+    AFTER UPDATE OF commit_id, path, previous_fingerprint, new_fingerprint ON w5_commit_files
+    BEGIN ${chainDelete(NEW_ROW)} ${chainInsert()} END`,
+  `CREATE TRIGGER w5_commit_totals_insert AFTER INSERT ON w5_commits
+    BEGIN UPDATE w5_commit_totals SET retained = retained + 1; END`,
+  `CREATE TRIGGER w5_commit_totals_delete AFTER DELETE ON w5_commits
+    BEGIN UPDATE w5_commit_totals SET retained = retained - 1; END`,
 ];
 
 function closeQuietly(db: DatabaseSync): void {
@@ -139,10 +292,20 @@ function migrateV1(db: DatabaseSync, migratedAt: string): void {
     WHERE state = 'applied' AND outcome_expired = 0`);
 }
 
+/** Summarize existing history once with schema 2's own window query. */
+function migrateV2(db: DatabaseSync): void {
+  for (const statement of [
+    ...SCHEMA_V3_TABLES,
+    ...SCHEMA_V3_BACKFILL,
+    ...SCHEMA_V3_TRIGGERS,
+  ])
+    db.exec(statement);
+}
+
 function migrate(db: DatabaseSync, migratedAt: string): void {
   const version = readSchemaVersion(db);
   if (version === W5_COMMIT_LOG_SCHEMA_VERSION) return;
-  if (version !== null && version !== 1) {
+  if (version !== null && version !== 1 && version !== 2) {
     throw new W5CommitLogError(
       'UNSUPPORTED_SCHEMA',
       `The W5 commit log has schema ${String(version)}; this build reads ${String(W5_COMMIT_LOG_SCHEMA_VERSION)}.`,
@@ -150,11 +313,10 @@ function migrate(db: DatabaseSync, migratedAt: string): void {
   }
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (version === 1) {
-      migrateV1(db, migratedAt);
-    } else {
-      for (const statement of SCHEMA) db.exec(statement);
-    }
+    if (version === 1) migrateV1(db, migratedAt);
+    else if (version === null)
+      for (const statement of SCHEMA_V2) db.exec(statement);
+    migrateV2(db);
     db.prepare(
       `INSERT INTO w5_meta (key, value) VALUES ('schema_version', ?)
        ON CONFLICT (key) DO UPDATE SET value = excluded.value`,

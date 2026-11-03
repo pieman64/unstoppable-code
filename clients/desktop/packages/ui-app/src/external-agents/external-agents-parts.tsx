@@ -20,8 +20,10 @@ import {
   Notice,
   NoticeButton,
   Radio,
+  SettingsRowsRow,
   StatusPill,
   ToggleSwitch,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   ChevronLeftMediumIcon,
@@ -136,33 +138,20 @@ export function SettingsRow({
   readonly testId?: string;
   readonly pendingActionId?: string;
 }): JSX.Element {
-  const labelClassName = 'block text-s font-medium fg-primary';
   return (
     <div
-      className="flex min-w-0 flex-col gap-3"
+      className="min-w-0"
       data-testid={testId}
       data-pending-action-id={pendingActionId}
     >
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 sm:gap-6">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          {htmlFor ? (
-            <label htmlFor={htmlFor} className={labelClassName}>
-              {label}
-            </label>
-          ) : (
-            <div className={labelClassName}>{label}</div>
-          )}
-          {description ? (
-            <div className="text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {control ? (
-          <div className="flex shrink-0 items-center gap-2">{control}</div>
-        ) : null}
-      </div>
-      {children}
+      <SettingsRowsRow
+        label={label}
+        description={description}
+        control={control}
+        htmlFor={htmlFor}
+      >
+        {children}
+      </SettingsRowsRow>
     </div>
   );
 }
@@ -281,14 +270,13 @@ export function ChoiceRow({
     );
 
   return (
-    <div className="flex min-h-7 min-w-0 items-center justify-between gap-3 py-3 sm:gap-6">
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <label htmlFor={id} className="block text-s font-medium fg-primary">
-          {label}
-        </label>
-        <div className="text-xs text-pretty fg-secondary">{description}</div>
-      </div>
-      {input}
+    <div className="min-w-0 py-2">
+      <SettingsRowsRow
+        label={label}
+        description={description}
+        htmlFor={id}
+        control={input}
+      />
     </div>
   );
 }
@@ -805,12 +793,10 @@ export function ActivityList({
   return (
     <SettingsGroup>
       {items.length === 0 ? (
-        <div
-          data-testid="external-agent-activity-empty"
-          className="text-s fg-secondary"
-        >
-          Nothing yet.
-        </div>
+        <EmptyStateRow
+          testId="external-agent-activity-empty"
+          title="Nothing yet."
+        />
       ) : (
         items.map((item, index) => {
           const targets = activityTargetsLine(item.targets);
@@ -1199,9 +1185,13 @@ export function HostAccessChoices({
         )}
       </div>
       {missing ? (
-        <div role="alert" data-testid={`${idPrefix}-hosts-required`}>
-          <Notice intent="attention">{HOSTS_REQUIRED_MESSAGE}</Notice>
-        </div>
+        <Notice
+          intent="attention"
+          role="alert"
+          data-testid={`${idPrefix}-hosts-required`}
+        >
+          {HOSTS_REQUIRED_MESSAGE}
+        </Notice>
       ) : null}
     </div>
   );

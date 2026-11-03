@@ -30,7 +30,7 @@ export function SecureStorageNotice({
             disabled={retrying}
             onClick={onRetry}
           >
-            {retrying ? 'Retrying…' : 'Retry'}
+            {retrying ? 'Trying again…' : 'Try again'}
           </NoticeButton>
         ) : undefined
       }

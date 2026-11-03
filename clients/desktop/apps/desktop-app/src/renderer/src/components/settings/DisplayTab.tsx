@@ -31,6 +31,7 @@ import {
   AppearanceSelect,
   Button,
   SettingsSelect,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
@@ -153,7 +154,7 @@ const CHAT_ENRICHMENT_MODE_META: Record<
   replace: {
     label: 'Replace',
     description:
-      'Show titles and icons in chat, with previews on hover or focus.',
+      'Show links with icons, IDs and Linear titles, with previews on hover or focus.',
   },
   hover: {
     label: 'Hover',
@@ -339,11 +340,14 @@ function ChatEnrichmentSection(): JSX.Element {
                 />
               }
             >
-              {failed[provider] ? (
-                <p role="alert" className="text-xs fg-destructive">
-                  Could not save this setting. Try again.
-                </p>
-              ) : null}
+              <ErrorBanner
+                className=""
+                error={
+                  failed[provider]
+                    ? 'Could not save this setting. Try again.'
+                    : null
+                }
+              />
             </SettingsRow>
           );
         })}
@@ -634,11 +638,7 @@ export function DisplayTab(): JSX.Element {
               />
             }
           >
-            {workspaceLayoutSaveError && (
-              <p role="alert" className="text-xs fg-destructive">
-                {workspaceLayoutSaveError}
-              </p>
-            )}
+            <ErrorBanner error={workspaceLayoutSaveError} className="" />
           </SettingsRow>
           <SettingsRow
             label="Scrollbars"

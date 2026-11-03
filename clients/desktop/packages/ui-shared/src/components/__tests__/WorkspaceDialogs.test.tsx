@@ -280,4 +280,81 @@ describe('shared project and worktree dialogs', () => {
     expect(pipeline?.disabled).toBe(true);
     expect(pipeline?.textContent).toContain('Running');
   });
+
+  it('keeps a scrim click on a worktree dialog from reaching the row, and closes on Escape', () => {
+    const onRowClick = jest.fn();
+    const onClose = jest.fn();
+    act(() => {
+      root.render(
+        <div onClick={onRowClick}>
+          <WorktreeInfoDialog
+            mode="label"
+            branch="main"
+            worktreeId="wt-1"
+            onSaveLabel={jest.fn()}
+            onClose={onClose}
+            testIds={{ dialog: 'label-dialog', labelInput: 'label-input' }}
+          />
+        </div>,
+      );
+    });
+    const dialog = document.querySelector('[data-testid="label-dialog"]');
+    expect(dialog?.getAttribute('role')).toBe('dialog');
+    expect(container.contains(dialog)).toBe(false);
+    // The field takes focus when the dialog opens.
+    expect(document.activeElement?.getAttribute('data-testid')).toBe(
+      'label-input',
+    );
+    const scrim = dialog?.parentElement;
+    act(() => scrim?.click());
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onRowClick).not.toHaveBeenCalled();
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a pipeline dialog open while the dispatch runs', async () => {
+    let finish: () => void = () => undefined;
+    const onRun = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onClose = jest.fn();
+    act(() => {
+      root.render(
+        <PipelinePickerDialog
+          entries={[{ id: 'pipeline-1', name: 'Release' }]}
+          onRun={onRun}
+          onClose={onClose}
+          testIds={{ dialog: 'picker', entry: () => 'pipeline' }}
+        />,
+      );
+    });
+    expect(
+      document.querySelector('[data-testid="picker"]')?.getAttribute('role'),
+    ).toBe('dialog');
+    act(() =>
+      document
+        .querySelector<HTMLButtonElement>('[data-testid="pipeline"]')
+        ?.click(),
+    );
+    expect(onRun).toHaveBeenCalledWith('pipeline-1');
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

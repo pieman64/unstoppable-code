@@ -1,4 +1,10 @@
-import type { JSX, ReactNode } from 'react';
+import type { JSX } from 'react';
+import {
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+  SettingsRowsValue,
+} from '@canopy/ui-shared/components';
 import type { SharedAgentSummary } from '@canopy/desktop-shared/types/agent-models';
 import type { DeepLinkShareOpenEvent } from '@canopy/desktop-shared/types';
 import type { SharedPluginSummary } from '@canopy/protocol/plugins';
@@ -56,21 +62,6 @@ function InstallAction({
   );
 }
 
-function DetailFact({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <div className="flex gap-3 text-s">
-      <dt className="w-28 shrink-0 fg-secondary">{label}</dt>
-      <dd className="min-w-0 fg-primary">{children}</dd>
-    </div>
-  );
-}
-
 export interface SharedAgentMarketplaceDetailProps {
   agent: SharedAgentSummary;
 }
@@ -91,13 +82,15 @@ export function SharedAgentMarketplaceDetail({
         testId="shared-agent-detail-add"
       />
       {agent.instructionsPreview.trim() !== '' && (
-        <dl className="space-y-2">
-          <DetailFact label="Instructions">
-            <span className="whitespace-pre-wrap">
-              {agent.instructionsPreview}
-            </span>
-          </DetailFact>
-        </dl>
+        <SettingsRowsSection title="Details">
+          <SettingsRowsGroup>
+            <SettingsRowsRow fact label="Instructions">
+              <p className="whitespace-pre-wrap text-s fg-secondary">
+                {agent.instructionsPreview}
+              </p>
+            </SettingsRowsRow>
+          </SettingsRowsGroup>
+        </SettingsRowsSection>
       )}
     </div>
   );
@@ -147,11 +140,19 @@ export function SharedPluginMarketplaceDetail({
         name={plugin.name}
         testId="shared-plugin-detail-add"
       />
-      <dl className="space-y-2">
-        <DetailFact label="Source">
-          {shareablePluginSourceLabel(plugin.ref)}
-        </DetailFact>
-      </dl>
+      <SettingsRowsSection title="Details">
+        <SettingsRowsGroup>
+          <SettingsRowsRow
+            fact
+            label="Source"
+            control={
+              <SettingsRowsValue>
+                {shareablePluginSourceLabel(plugin.ref)}
+              </SettingsRowsValue>
+            }
+          />
+        </SettingsRowsGroup>
+      </SettingsRowsSection>
       <p className="text-xs fg-secondary">
         Only a reference to this plugin is shared. Adding it installs the plugin
         from its source; credentials and configuration are yours to set up.

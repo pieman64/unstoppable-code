@@ -1664,6 +1664,27 @@ describe('ChatMessageList scroll position', () => {
     view.host.remove();
   });
 
+  it('does not move the transcript to the bottom when a disclosure opens', () => {
+    const chatId = 'manual-disclosure-scroll';
+    clearChatScrollPosition(scrollTarget(chatId));
+    const view = renderList(chatId);
+    const metrics = { scrollHeight: 1000, clientHeight: 200 };
+    installScrollableMetrics(view.scroller, metrics);
+    act(() => triggerResize(view.content));
+    act(() => jest.runOnlyPendingTimers());
+    expect(view.scroller.scrollTop).toBe(800);
+    const toggle = document.createElement('button');
+    toggle.setAttribute('data-step-row', '');
+    toggle.setAttribute('aria-expanded', 'false');
+    view.content.append(toggle);
+    act(() => toggle.click());
+    metrics.scrollHeight = 1400;
+    act(() => triggerResize(view.content));
+    expect(view.scroller.scrollTop).toBe(800);
+    act(() => view.root.unmount());
+    view.host.remove();
+  });
+
   it('honors a user scroll before the previous programmatic-scroll frame settles', () => {
     const chatId = 'manual-during-scroll-frame';
     clearChatScrollPosition(scrollTarget(chatId));

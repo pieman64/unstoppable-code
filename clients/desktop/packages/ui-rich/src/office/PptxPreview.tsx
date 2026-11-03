@@ -5,7 +5,10 @@ import {
   type OfficePreviewCopy,
   type OfficePreviewRenderFailure,
 } from './office-preview-copy';
-import { LoadingPlaceholder } from '@canopy/ui-shared/components';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { useEffect, useState, type CSSProperties, type JSX } from 'react';
 import { parseOfficeDocument } from './office-parse-client';
 import { OfficePreviewBanner } from './OfficePreviewBanner';
@@ -72,7 +75,9 @@ export function PptxPreview({
           className="flex min-h-0 flex-1 items-center justify-center"
           data-testid="pptx-preview-loading"
         >
-          <LoadingPlaceholder />
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       </div>
     );

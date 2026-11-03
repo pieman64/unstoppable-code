@@ -414,6 +414,10 @@ export function ToastStackDescription({
   useEffect(() => {
     onOverflowChangeRef.current = onOverflowChange;
   });
+  // Measured once per card: hosts hand in a fresh message element on every
+  // render, so keying this on `children` rebuilt the observers and forced a
+  // layout read each time the stack updated. A resize re-measures, and so
+  // does new text, which a clamp already at three lines would not resize for.
   useEffect(() => {
     const element = clampRef.current;
     if (element === null || onOverflowChangeRef.current === undefined) return;
@@ -424,11 +428,23 @@ export function ToastStackDescription({
       );
     };
     report();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(report);
-    observer.observe(element);
-    return (): void => observer.disconnect();
-  }, [children]);
+    const resize =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(report);
+    resize?.observe(element);
+    const text =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(report);
+    text?.observe(element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    return (): void => {
+      resize?.disconnect();
+      text?.disconnect();
+    };
+  }, []);
   return (
     <Toast.Description render={<span />}>
       <span ref={clampRef} className="line-clamp-3">
@@ -554,11 +570,14 @@ export function ToastStackActivatableCard({
       data-testid="toast-card"
       data-toast-type={toastType}
       // Inset: the card clips its content, so an outside ring would be cut.
-      className={`rounded-2xl ${clickable ? 'cursor-pointer has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-line-focus' : ''}`}
+      // Only the hidden open button rings the card; Dismiss and the actions
+      // draw their own ring, so the card stays plain while they have focus.
+      className={`rounded-2xl ${clickable ? 'cursor-pointer has-[[data-toast-open]:focus-visible]:outline-2 has-[[data-toast-open]:focus-visible]:-outline-offset-2 has-[[data-toast-open]:focus-visible]:outline-line-focus' : ''}`}
     >
       {clickable && (
         <button
           type="button"
+          data-toast-open=""
           aria-label={activateLabel}
           className="sr-only pointer-events-none"
           onClick={(e): void => {

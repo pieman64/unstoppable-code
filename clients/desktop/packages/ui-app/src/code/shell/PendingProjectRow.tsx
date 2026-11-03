@@ -83,12 +83,12 @@ export function PendingProjectRow({
               <button
                 type="button"
                 disabled={project.retrying === true}
-                aria-label={`Retry ${project.name}`}
+                aria-label={`Try again for ${project.name}`}
                 data-testid={`sidebar-pending-project-retry-${project.id}`}
                 className={ACTION_CLASS}
                 onClick={project.onRetry}
               >
-                Retry
+                Try again
               </button>
             )}
             {project.onDismiss && (

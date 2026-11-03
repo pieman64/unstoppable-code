@@ -24,8 +24,12 @@ import {
   shareInstallEntityNoun,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { hasMarkdownDescriptionText } from '@canopy/ui-shared/lib/markdown-plain-text';
-import { ErrorBanner, LoadingPlaceholder } from '../shared';
+import { ErrorBanner } from '../shared';
 import { Button } from '../shared/Button';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { SkillPublisherProvenance } from '@canopy/ui-shared/components/SkillPublisherProvenance';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
 import {
@@ -170,7 +174,11 @@ export function MarketplaceSkillDetailBody({
         className={`${POSTHOG_REPLAY_BLOCK_CLASS} flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain px-5 py-4`}
       >
         {state.phase === 'loading' && (
-          <LoadingPlaceholder label={`Loading shared ${entity}…`} />
+          <DelayedLoadingPlaceholder
+            slowNote={`Still loading shared ${entity}…`}
+          >
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         )}
         {state.phase === 'error' && (
           <div data-testid="deep-link-share-error" className="space-y-2">

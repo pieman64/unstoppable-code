@@ -5,10 +5,8 @@ import {
   useRef,
   useState,
   type ComponentType,
-  type CSSProperties,
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
-  type RefObject,
 } from 'react';
 import type {
   ResourceGroupId,
@@ -29,12 +27,12 @@ import {
   type ResourceDiagnosticsSortColumn,
   type ResourceDiagnosticsSortState,
 } from './sortState';
+import { OverlayScrollArea, RailIconButton } from '@canopy/ui-shared';
 import {
-  DropdownMenuSurface,
-  OverlayScrollArea,
-  RailIconButton,
-} from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+  Button,
+  ErrorBanner,
+  EmptyStateRow,
+} from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   ChatIcon,
@@ -54,12 +52,6 @@ interface ResourceDiagnosticsPopoverProps {
   error: string | null;
   onClose: () => void;
   loading?: boolean;
-  /** Ref to the panel element, used by the caller to anchor and size it. */
-  panelRef?: RefObject<HTMLDivElement | null>;
-  /** Positioning supplied by the caller; the panel does not position itself. */
-  style?: CSSProperties;
-  /** Whether the caller has placed the panel; starts the entry motion. */
-  positioned?: boolean;
 }
 
 const GROUP_LABELS: Record<ResourceGroupId, string> = {
@@ -564,14 +556,15 @@ function deriveRowDetails(
   );
 }
 
+/**
+ * The Resources panel's contents. `ResourceDiagnosticsPill` hosts it in the
+ * shared `Popover`, which owns the surface, placement and dismissal.
+ */
 export function ResourceDiagnosticsPopover({
   snapshot,
   error,
   onClose,
   loading = false,
-  panelRef,
-  style,
-  positioned = true,
 }: ResourceDiagnosticsPopoverProps): JSX.Element {
   const openSettings = useNavigationStore((s) => s.openSettings);
   const navigate = useNavigationStore((s) => s.navigate);
@@ -612,16 +605,6 @@ export function ResourceDiagnosticsPopover({
     setSort({ column, direction: column === 'name' ? 'asc' : 'desc' });
   }
 
-  useEffect(() => {
-    function handleKey(event: KeyboardEvent): void {
-      if (event.key === 'Escape') onClose();
-    }
-    window.addEventListener('keydown', handleKey);
-    return (): void => {
-      window.removeEventListener('keydown', handleKey);
-    };
-  }, [onClose]);
-
   function handleOpenPerformanceSettings(): void {
     openSettings('performance');
     onClose();
@@ -655,160 +638,144 @@ export function ResourceDiagnosticsPopover({
     setHeaderHeight(headerRef.current?.offsetHeight ?? 0);
   }, [hasRows]);
 
+  // Portaled over titlebar/sidebar drag rects; app-region ignores z-order,
+  // so the controls' container opts out.
   return (
-    <DropdownMenuSurface
-      ref={panelRef}
-      role="dialog"
-      aria-label="Resources"
-      padding="readout"
-      data-testid="resource-diagnostics-popover"
-      data-positioned={positioned ? 'true' : 'false'}
-      style={style}
-      className="canopy-floating-menu w-80"
+    <div
+      className="electron-no-drag flex flex-col gap-2"
+      data-testid="resource-diagnostics-popover-content"
     >
-      {/* Portaled over titlebar/sidebar drag rects; app-region ignores
-          z-order, so the controls' container opts out. */}
-      <div
-        className="electron-no-drag flex flex-col gap-2"
-        data-testid="resource-diagnostics-popover-content"
-      >
-        <div className="flex shrink-0 items-center gap-3">
-          <h3 className="min-w-0 flex-1 truncate text-s font-normal fg-primary">
-            Resources
-          </h3>
-          {snapshot && (
-            <span
-              className="flex gap-2 text-xs tabular-nums fg-tertiary"
-              data-testid="resource-diagnostics-popover-totals"
-            >
-              <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
-              <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
-            </span>
-          )}
-          <RailIconButton
-            icon={SettingsIcon}
-            hoverSurface
-            aria-label="Open performance settings"
-            tooltipLabel="Performance settings"
-            data-testid="resource-diagnostics-popover-settings"
-            onClick={handleOpenPerformanceSettings}
-            // The glyph, not the button, meets the 12px content inset.
-            className="-my-1 -mr-1"
-          />
-        </div>
-
-        <OverlayScrollArea
-          className="min-h-0"
-          viewportClassName="max-h-80 overflow-x-hidden"
-          viewportProps={{
-            'data-testid': 'resource-diagnostics-popover-scroll',
-          }}
-          edgeFadeSize={16}
-          // Rows fade as they pass under the sticky header, not the header.
-          edgeFadeTopInset={headerHeight}
-        >
-          {loading && (
-            <p className="text-xs fg-tertiary">Measuring resources…</p>
-          )}
-
-          {!loading && !snapshot && error && (
-            <p className="text-xs fg-destructive">
-              Resource metrics unavailable
-            </p>
-          )}
-
-          {!loading && !snapshot && !error && (
-            <p className="text-xs fg-tertiary">No resource samples yet.</p>
-          )}
-
-          {snapshot && (
-            <>
-              {error && (
-                <p
-                  className="mb-2 text-xs fg-destructive"
-                  data-testid="resource-diagnostics-popover-error"
-                >
-                  Resource metrics unavailable
-                </p>
-              )}
-
-              {rows.length === 0 ? (
-                <p className="text-xs fg-tertiary">No resource samples yet.</p>
-              ) : (
-                <table className="w-full table-fixed text-xs">
-                  <colgroup>
-                    <col className="w-5" />
-                    <col />
-                    <col className="w-12" />
-                    <col className="w-20" />
-                  </colgroup>
-                  <thead
-                    ref={headerRef}
-                    className="sticky top-0 z-1 bg-quaternary"
-                  >
-                    <tr>
-                      <th aria-hidden="true" className="pb-1" />
-                      <SortHeader
-                        label="Name"
-                        column="name"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="start"
-                      />
-                      <SortHeader
-                        label="CPU"
-                        column="cpu"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="end"
-                      />
-                      <SortHeader
-                        label="Memory"
-                        column="memory"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="end"
-                      />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => (
-                      <ResourceRow
-                        key={row.id}
-                        row={row}
-                        expanded={expanded.has(row.id)}
-                        onToggle={toggleExpanded}
-                        onNavigate={handleNavigateToWorktree}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </>
-          )}
-        </OverlayScrollArea>
-
+      <div className="flex shrink-0 items-center gap-3">
+        <h3 className="min-w-0 flex-1 truncate text-s font-normal fg-primary">
+          Resources
+        </h3>
         {snapshot && (
-          <div
-            className="flex shrink-0 items-center gap-3 border-t border-subtle pt-2 text-xs"
-            data-testid="resource-diagnostics-popover-app-totals"
+          <span
+            className="flex gap-2 text-xs tabular-nums fg-tertiary"
+            data-testid="resource-diagnostics-popover-totals"
           >
-            <span className="flex w-5 shrink-0 items-center" aria-hidden="true">
-              <AppSourceIcon />
-            </span>
-            <span className="min-w-0 flex-1 truncate fg-secondary">
-              App processes
-            </span>
-            <span className="flex gap-2 tabular-nums fg-secondary">
-              <span>{formatCpuPercent(appManagedTotals.cpuPercent)}% CPU</span>
-              <span>{formatMemoryBytes(appManagedTotals.memoryRssBytes)}</span>
-            </span>
-          </div>
+            <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
+            <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
+          </span>
+        )}
+        <RailIconButton
+          icon={SettingsIcon}
+          hoverSurface
+          aria-label="Open performance settings"
+          tooltipLabel="Performance settings"
+          data-testid="resource-diagnostics-popover-settings"
+          onClick={handleOpenPerformanceSettings}
+          // The glyph, not the button, meets the 12px content inset.
+          className="-my-1 -mr-1"
+        />
+      </div>
+
+      <OverlayScrollArea
+        className="min-h-0"
+        viewportClassName="max-h-80 overflow-x-hidden"
+        viewportProps={{
+          'data-testid': 'resource-diagnostics-popover-scroll',
+        }}
+        edgeFadeSize={16}
+        // Rows fade as they pass under the sticky header, not the header.
+        edgeFadeTopInset={headerHeight}
+      >
+        {loading && <p className="text-xs fg-tertiary">Measuring resources…</p>}
+
+        {!loading && !snapshot && error && (
+          <ErrorBanner className="" error="Resource metrics unavailable" />
         )}
 
-        <MemoryReportFooter onClose={onClose} />
-      </div>
-    </DropdownMenuSurface>
+        {!loading && !snapshot && !error && (
+          <EmptyStateRow title="No resource samples yet." />
+        )}
+
+        {snapshot && (
+          <>
+            {error && (
+              <ErrorBanner
+                className="mb-2"
+                error="Resource metrics unavailable"
+                testId="resource-diagnostics-popover-error"
+              />
+            )}
+
+            {rows.length === 0 ? (
+              <EmptyStateRow title="No resource samples yet." />
+            ) : (
+              <table className="w-full table-fixed text-xs">
+                <colgroup>
+                  <col className="w-5" />
+                  <col />
+                  <col className="w-12" />
+                  <col className="w-20" />
+                </colgroup>
+                <thead
+                  ref={headerRef}
+                  className="sticky top-0 z-1 bg-quaternary"
+                >
+                  <tr>
+                    <th aria-hidden="true" className="pb-1" />
+                    <SortHeader
+                      label="Name"
+                      column="name"
+                      sort={sort}
+                      onClick={handleHeaderClick}
+                      align="start"
+                    />
+                    <SortHeader
+                      label="CPU"
+                      column="cpu"
+                      sort={sort}
+                      onClick={handleHeaderClick}
+                      align="end"
+                    />
+                    <SortHeader
+                      label="Memory"
+                      column="memory"
+                      sort={sort}
+                      onClick={handleHeaderClick}
+                      align="end"
+                    />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <ResourceRow
+                      key={row.id}
+                      row={row}
+                      expanded={expanded.has(row.id)}
+                      onToggle={toggleExpanded}
+                      onNavigate={handleNavigateToWorktree}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </OverlayScrollArea>
+
+      {snapshot && (
+        <div
+          className="flex shrink-0 items-center gap-3 border-t border-subtle pt-2 text-xs"
+          data-testid="resource-diagnostics-popover-app-totals"
+        >
+          <span className="flex w-5 shrink-0 items-center" aria-hidden="true">
+            <AppSourceIcon />
+          </span>
+          <span className="min-w-0 flex-1 truncate fg-secondary">
+            App processes
+          </span>
+          <span className="flex gap-2 tabular-nums fg-secondary">
+            <span>{formatCpuPercent(appManagedTotals.cpuPercent)}% CPU</span>
+            <span>{formatMemoryBytes(appManagedTotals.memoryRssBytes)}</span>
+          </span>
+        </div>
+      )}
+
+      <MemoryReportFooter onClose={onClose} />
+    </div>
   );
 }
 
@@ -852,45 +819,45 @@ function MemoryReportFooter({
   if (!enabled) return null;
   return (
     <div
-      className="flex shrink-0 items-center gap-2 border-t border-subtle pt-2 text-xs"
+      className="flex shrink-0 flex-col gap-2 border-t border-subtle pt-2 text-xs"
       data-testid="resource-diagnostics-popover-memory-report"
     >
-      <span
-        className={`min-w-0 flex-1 truncate ${
-          revealFailed ? 'fg-destructive' : 'fg-secondary'
-        }`}
-        role={revealFailed ? 'alert' : undefined}
-      >
-        {revealFailed ? "Couldn't open the folder" : 'Memory report'}
-      </span>
-      {lastReport ? (
+      {revealFailed && (
+        <ErrorBanner className="" error="Couldn't open the folder" />
+      )}
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate fg-secondary">
+          Memory report
+        </span>
+        {lastReport ? (
+          <Button
+            size="compact"
+            variant="secondary"
+            data-testid="resource-diagnostics-popover-open-report"
+            onClick={() => {
+              void revealReport(lastReport.reportId).then((revealed) => {
+                setRevealFailed(!revealed);
+              });
+            }}
+          >
+            Open folder
+          </Button>
+        ) : null}
         <Button
           size="compact"
           variant="secondary"
-          data-testid="resource-diagnostics-popover-open-report"
+          disabled={reportBusy}
+          data-testid="resource-diagnostics-popover-create-report"
+          // The row's label names the report, so the action can stay short.
+          aria-label="Create memory report"
           onClick={() => {
-            void revealReport(lastReport.reportId).then((revealed) => {
-              setRevealFailed(!revealed);
-            });
+            onClose();
+            void requestReport();
           }}
         >
-          Open folder
+          Create
         </Button>
-      ) : null}
-      <Button
-        size="compact"
-        variant="secondary"
-        disabled={reportBusy}
-        data-testid="resource-diagnostics-popover-create-report"
-        // The row's label names the report, so the action can stay short.
-        aria-label="Create memory report"
-        onClick={() => {
-          onClose();
-          void requestReport();
-        }}
-      >
-        Create
-      </Button>
+      </div>
     </div>
   );
 }

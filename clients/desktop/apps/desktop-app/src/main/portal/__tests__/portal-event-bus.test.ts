@@ -3,6 +3,7 @@ import { performance } from 'node:perf_hooks';
 import { buildPortalSnapshot } from '../portal-snapshot-builders';
 import { acquirePortalOverviewSnapshot } from '../portal-overview-build';
 import {
+  createCommandFailedPayload,
   capturePortalEmissionContext,
   enqueuePortalEventIfCurrent,
   invalidatePortalEmissionContexts,
@@ -963,5 +964,24 @@ describe('portal structural event bus', () => {
 
       expect(mockedRefreshCursorRuntimeAvailability).not.toHaveBeenCalled();
     });
+  });
+});
+
+it('retains coded collection-save refusals for the waited RPC path', () => {
+  const payload = createCommandFailedPayload(
+    {
+      id: 'command',
+      sequence: 1,
+      type: 'portal.collections.save',
+      payload: {},
+      createdAt: '2026-10-26T00:00:00.000Z',
+      expiresAt: null,
+    },
+    'conflict',
+    'Collection changed.',
+  );
+  expect(payload.response).toEqual({
+    code: 'conflict',
+    message: 'Collection changed.',
   });
 });

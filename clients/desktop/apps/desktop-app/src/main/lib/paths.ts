@@ -191,6 +191,11 @@ export function getOperationLedgerPath(): string {
   return join(getDataDir(), 'operations', 'operation-ledger.sqlite');
 }
 
+/** The flip launch's record of its one W5 backup (CAN-5543). */
+export function getW5FlipBackupMarkerPath(): string {
+  return join(getDataDir(), 'w5', 'flip-backup.json');
+}
+
 export function getW5DestructiveLifecycleDir(): string {
   return join(getDataDir(), 'w5', 'destructive-lifecycles');
 }
@@ -1209,6 +1214,10 @@ export function getPipelinePluginPreferencesFilePath(): string {
 
 export function getPipelineLocalMetadataFilePath(): string {
   return join(getDataDir(), 'pipeline-local-metadata.json');
+}
+
+export function getPipelineDefinitionReplaysFilePath(): string {
+  return join(getDataDir(), 'pipeline-definition-replays.json');
 }
 
 export function getPipelineExecutionPluginRuntimeDir(

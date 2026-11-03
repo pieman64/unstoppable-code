@@ -3,6 +3,7 @@ import type { SharedPipelinePublicShareInfo } from '@canopy/desktop-shared/types
 import { Button } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { resolveSharedPipelineUrl } from '@/lib/share-links';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface PipelinePublicShareRowProps {
   remoteId: string;
@@ -112,7 +113,7 @@ export function PipelinePublicShareRow({
           )}
         </>
       )}
-      {error && <span className="fg-destructive">{error}</span>}
+      <ErrorBanner className="" error={error} />
     </div>
   );
 }

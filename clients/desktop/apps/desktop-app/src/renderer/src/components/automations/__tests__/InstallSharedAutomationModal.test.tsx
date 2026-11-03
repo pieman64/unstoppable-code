@@ -161,23 +161,77 @@ function byTestId(testId: string): HTMLElement | null {
 }
 
 function setValue(element: HTMLElement | null, value: string): void {
-  if (
-    !(element instanceof HTMLInputElement) &&
-    !(element instanceof HTMLSelectElement)
-  ) {
+  if (!(element instanceof HTMLInputElement)) {
     throw new Error('expected form control');
   }
   // React reads the value through the native setter; assign via the
   // prototype so the synthetic change event observes the new value.
-  const prototype =
-    element instanceof HTMLInputElement
-      ? HTMLInputElement.prototype
-      : HTMLSelectElement.prototype;
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  );
   descriptor?.set?.call(element, value);
   act(() => {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   });
+}
+
+/**
+ * The values a shared `Select` offers, read by opening and closing its menu.
+ * A disabled trigger throws instead of reading as empty, so a test cannot
+ * pass vacuously; check `selectDisabled` for that case.
+ */
+function optionValues(testId: string): string[] {
+  const trigger = byTestId(testId);
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`Expected the ${testId} dropdown`);
+  }
+  if (trigger.disabled) {
+    throw new Error(`The ${testId} dropdown is disabled`);
+  }
+  act(() => trigger.click());
+  const values = Array.from(
+    document.querySelectorAll('[role="option"]'),
+    (option) => option.getAttribute('data-value') ?? '',
+  );
+  act(() => trigger.click());
+  return values;
+}
+
+/** Whether a shared `Select` trigger is disabled (offers nothing to pick). */
+function selectDisabled(testId: string): boolean {
+  const trigger = byTestId(testId);
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`Expected the ${testId} dropdown`);
+  }
+  return trigger.disabled;
+}
+
+/**
+ * Asserts that a shared `Select` offers no project: it is disabled and holds
+ * no choice. A disabled dropdown never opens (a browser sends no keys to a
+ * disabled button, and `Select` closes when disabled), so its would-be options
+ * are not read here; the enabled paths check what each picker offers.
+ */
+function expectNoProjectOffered(testId: string): void {
+  expect(selectDisabled(testId)).toBe(true);
+  const trigger = byTestId(testId);
+  expect(trigger?.getAttribute('data-value')).toBeNull();
+  expect(trigger?.getAttribute('aria-expanded')).not.toBe('true');
+}
+
+/** Opens a shared `Select` and chooses the option whose value is `value`. */
+function chooseOption(testId: string, value: string): void {
+  const trigger = byTestId(testId);
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`Missing dropdown ${testId}`);
+  }
+  act(() => trigger.click());
+  const option = document.querySelector<HTMLElement>(
+    `[role="option"][data-value="${value}"]`,
+  );
+  if (!option) throw new Error(`Missing option ${value} in ${testId}`);
+  act(() => option.click());
 }
 
 function pipelineDetail(): SharedAutomationDetail {
@@ -387,11 +441,10 @@ async function waitForTargets(): Promise<void> {
 async function selectTarget(testId: string, value: string): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    const select = byTestId(testId);
     if (
       byTestId('install-automation-target-checking') === null &&
-      (value === '' ||
-        select?.querySelector(`option[value="${value}"]`) != null)
+      !selectDisabled(testId) &&
+      optionValues(testId).includes(value)
     ) {
       break;
     }
@@ -399,7 +452,7 @@ async function selectTarget(testId: string, value: string): Promise<void> {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
   }
-  setValue(byTestId(testId), value);
+  chooseOption(testId, value);
 }
 
 async function submit(): Promise<void> {
@@ -607,7 +660,10 @@ describe('InstallSharedAutomationModal', () => {
     expect(
       byTestId('install-automation-shared-pipeline-blocked')?.textContent,
     ).toContain('could not be verified');
-    await selectTarget('install-automation-workspace', 'workspace-1');
+    // An unverifiable pin leaves nothing to choose a project for.
+    expect(
+      byTestId('install-automation-workspace')?.hasAttribute('disabled'),
+    ).toBe(true);
     expect(
       byTestId('install-automation-submit')?.hasAttribute('disabled'),
     ).toBe(true);
@@ -639,7 +695,7 @@ describe('InstallSharedAutomationModal', () => {
       byTestId('install-automation-submit')?.hasAttribute('disabled'),
     ).toBe(true);
 
-    setValue(picker, 'my-review');
+    chooseOption('install-automation-pipeline', 'my-review');
     await selectTarget('install-automation-workspace', 'workspace-1');
     await submit();
 
@@ -661,9 +717,9 @@ describe('InstallSharedAutomationModal', () => {
     expect(byTestId('install-automation-workspace')).toBeNull();
     const picker = byTestId('install-automation-cowork-project');
     expect(picker).not.toBeNull();
-    expect(picker?.querySelectorAll('option')).toHaveLength(2);
+    expect(optionValues('install-automation-cowork-project')).toHaveLength(1);
 
-    setValue(picker, 'cowork-1');
+    chooseOption('install-automation-cowork-project', 'cowork-1');
     await submit();
 
     expect(mockCreate).toHaveBeenCalledTimes(1);
@@ -913,12 +969,12 @@ describe('InstallSharedAutomationModal', () => {
 
     // Both stale copies are offered; the first is preselected.
     const picker = byTestId('install-automation-copy');
-    expect(picker).toBeInstanceOf(HTMLSelectElement);
-    expect(picker?.querySelectorAll('option')).toHaveLength(2);
+    expect(picker?.getAttribute('data-value')).toBe('copy-first');
+    expect(optionValues('install-automation-copy')).toHaveLength(2);
 
     // Choosing the second copy retargets the update — its id, not the
     // first match, must reach the update IPC.
-    setValue(picker, 'copy-second');
+    chooseOption('install-automation-copy', 'copy-second');
     await submit();
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
@@ -964,9 +1020,12 @@ describe('InstallSharedAutomationModal', () => {
       }),
     ]);
 
+    const trigger = byTestId('install-automation-copy');
+    act(() => trigger?.click());
     const options = Array.from(
-      byTestId('install-automation-copy')?.querySelectorAll('option') ?? [],
+      document.querySelectorAll('[role="option"]'),
     ).map((option) => option.textContent);
+    act(() => trigger?.click());
     expect(options).toEqual(['project-copy — Canopy', 'global-copy']);
   });
 
@@ -1490,7 +1549,8 @@ describe('InstallSharedAutomationModal pipeline destinations (CAN-4550)', () => 
     await waitForTargets();
 
     const picker = byTestId('install-automation-workspace');
-    expect(picker instanceof HTMLSelectElement && picker.value).toBe('');
+    expect(picker).not.toBeNull();
+    expect(picker?.hasAttribute('data-value')).toBe(false);
   });
 
   it('offers no project without a folder for a project-folder destination', async () => {
@@ -1505,13 +1565,9 @@ describe('InstallSharedAutomationModal pipeline destinations (CAN-4550)', () => 
     ]);
     await waitForTargets();
 
-    const picker = byTestId('install-automation-workspace');
-    if (!(picker instanceof HTMLSelectElement)) throw new Error('No picker');
-    expect(
-      Array.from(picker.options)
-        .map((option) => option.value)
-        .filter(Boolean),
-    ).toEqual(['workspace-1']);
+    expect(optionValues('install-automation-workspace')).toEqual([
+      'workspace-1',
+    ]);
   });
 
   it('asks for a task before installing an existing-task destination', async () => {
@@ -2002,8 +2058,10 @@ describe('InstallSharedAutomationModal bundled pipeline (CAN-3135)', () => {
     expect(blocked.textContent).toContain(
       'does not match the version the author pinned',
     );
-    await selectTarget('install-automation-workspace', 'workspace-1');
     await flush();
+    expect(
+      byTestId('install-automation-workspace')?.hasAttribute('disabled'),
+    ).toBe(true);
     expect(
       byTestId('install-automation-submit')?.hasAttribute('disabled'),
     ).toBe(true);
@@ -2323,9 +2381,7 @@ describe('InstallSharedAutomationModal install copy (CAN-3651)', () => {
     await waitForTargets();
 
     const picker = byTestId('install-automation-workspace');
-    expect(picker instanceof HTMLSelectElement && picker.value).toBe(
-      'workspace-1',
-    );
+    expect(picker?.getAttribute('data-value')).toBe('workspace-1');
     expect(byTestId('install-automation-submit-reason')).toBeNull();
     expect(
       byTestId('install-automation-submit')?.hasAttribute('disabled'),
@@ -2381,10 +2437,10 @@ describe('InstallSharedAutomationModal install copy (CAN-3651)', () => {
     await flush();
 
     expect(submitReason()).toBe('Choose a workflow to continue');
-    expect(
-      byTestId('install-automation-workspace')?.querySelectorAll('option'),
-    ).toHaveLength(1);
-    setValue(byTestId('install-automation-pipeline'), 'my-review');
+    expect(byTestId('install-automation-workspace')).not.toBeNull();
+    // No project is offered: the picker is disabled and holds none.
+    expectNoProjectOffered('install-automation-workspace');
+    chooseOption('install-automation-pipeline', 'my-review');
     await selectTarget('install-automation-workspace', 'workspace-1');
     expect(byTestId('install-automation-submit-reason')).toBeNull();
   });
@@ -2790,13 +2846,6 @@ describe('InstallSharedAutomationModal target compatibility (CAN-3734)', (): voi
     { id: 'cowork-1', name: 'Research', type: 'cowork' },
   ];
 
-  function optionValues(testId: string): string[] {
-    return Array.from(
-      byTestId(testId)?.querySelectorAll('option') ?? [],
-      (option) => option.getAttribute('value') ?? '',
-    ).filter((value) => value !== '');
-  }
-
   function mockPipelineScope(scope: unknown): void {
     mockGetPipeline.mockResolvedValue({
       success: true,
@@ -2822,7 +2871,8 @@ describe('InstallSharedAutomationModal target compatibility (CAN-3734)', (): voi
       mixedWorkspaces,
     );
     await flush();
-    expect(optionValues('install-automation-workspace')).toEqual([]);
+    // No project is offered: the picker is disabled and holds none.
+    expectNoProjectOffered('install-automation-workspace');
     expect(byTestId('install-automation-target-blocked')).not.toBeNull();
   });
 
@@ -2890,7 +2940,8 @@ describe('InstallSharedAutomationModal target compatibility (CAN-3734)', (): voi
     expect(
       byTestId('install-automation-target-blocked')?.textContent,
     ).toContain('no compatible automation target');
-    expect(optionValues('install-automation-workspace')).toEqual([]);
+    // No project is offered: the picker is disabled and holds none.
+    expectNoProjectOffered('install-automation-workspace');
     expect(
       byTestId('install-automation-submit')?.hasAttribute('disabled'),
     ).toBe(true);
@@ -3100,9 +3151,9 @@ it('discards a late pipeline resolution from an obsolete document revision', asy
   );
   renderModal();
   await flush();
-  expect(
-    byTestId('install-automation-workspace')?.querySelectorAll('option'),
-  ).toHaveLength(1);
+  expect(byTestId('install-automation-workspace')).not.toBeNull();
+  // No project is offered: the picker is disabled and holds none.
+  expectNoProjectOffered('install-automation-workspace');
   mockGetPipeline.mockResolvedValue({
     success: true,
     data: {
@@ -3134,9 +3185,8 @@ it('discards a late pipeline resolution from an obsolete document revision', asy
   expect(byTestId('install-automation-target-blocked')?.textContent).toContain(
     'no compatible',
   );
-  expect(
-    byTestId('install-automation-workspace')?.querySelectorAll('option'),
-  ).toHaveLength(1);
+  expect(byTestId('install-automation-workspace')).not.toBeNull();
+  expectNoProjectOffered('install-automation-workspace');
 });
 
 it('verifies a project replacement separately for each candidate project', async () => {
@@ -3195,15 +3245,9 @@ it('verifies a project replacement separately for each candidate project', async
     { id: 'cowork-1', name: 'Research', type: 'cowork' },
   ]);
   await flush();
-  setValue(byTestId('install-automation-pipeline'), 'project-review');
+  chooseOption('install-automation-pipeline', 'project-review');
   await selectTarget('install-automation-workspace', 'workspace-1');
-  expect(
-    Array.from(
-      byTestId('install-automation-workspace')?.querySelectorAll('option') ??
-        [],
-      (o) => o.getAttribute('value'),
-    ),
-  ).toEqual(['', 'workspace-1']);
+  expect(optionValues('install-automation-workspace')).toEqual(['workspace-1']);
   await submit();
   expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({
     action: {

@@ -13,8 +13,24 @@ import {
   launchWorkspaceReadinessFix,
   navigateToWorkspaceReadinessChat,
 } from '@/lib/workspaceReadinessLauncher';
+import {
+  launchedReadinessFixesForTarget,
+  launchedReadinessFixKey,
+  type LaunchedReadinessFix,
+} from '@/lib/workspaceReadinessLaunches';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import {
+  useWorkspaceReadinessLaunchReconciliation,
+  useWorkspaceReadinessMissingChats,
+} from '@/hooks/useWorkspaceReadinessLaunchReconciliation';
+import {
+  pruneResolvedWorkspaceReadinessLaunches,
+  selectWorkspaceReadinessLaunch,
+  snapshotWorkspaceReadinessLaunches,
+  useWorkspaceReadinessLaunchStore,
+} from '@/stores/workspaceReadinessLaunchStore';
 import { Button, LoadingSpinner } from '../shared';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface WorkspaceReadinessRecommendationsProps {
   workspaceId: string;
@@ -35,11 +51,6 @@ interface WorkspaceReadinessRecommendationsProps {
 
 type LoadState = 'loading' | 'ready' | 'error';
 
-interface LaunchedReadinessChat {
-  worktreeId: string;
-  chatId: string;
-}
-
 export function WorkspaceReadinessRecommendations({
   workspaceId,
   worktreeId,
@@ -50,10 +61,15 @@ export function WorkspaceReadinessRecommendations({
   const [issues, setIssues] = useState<WorkspaceReadinessIssue[]>([]);
   const [launchingKey, setLaunchingKey] = useState<string | null>(null);
   const [launchError, setLaunchError] = useState<string | null>(null);
-  /** Chats launched from this surface, keyed like `launchingKey`. */
-  const [launchedChats, setLaunchedChats] = useState<
-    Record<string, LaunchedReadinessChat>
-  >({});
+  /**
+   * Launched readiness fixes, shared with Home and the Overview and persisted
+   * across restarts. Only launches from this surface's audit target apply.
+   */
+  const launchRecords = useWorkspaceReadinessLaunchStore(
+    (state) => state.records,
+  );
+  const missingChats = useWorkspaceReadinessMissingChats(launchRecords);
+  useWorkspaceReadinessLaunchReconciliation();
   const loadGeneration = useRef(0);
   const targetKey = `${workspaceId}:${worktreeId ?? 'reference'}`;
   const targetKeyRef = useRef(targetKey);
@@ -63,12 +79,21 @@ export function WorkspaceReadinessRecommendations({
     const generation = loadGeneration.current + 1;
     loadGeneration.current = generation;
     setLoadState('loading');
+    const launchSnapshot = snapshotWorkspaceReadinessLaunches(
+      workspaceId,
+      worktreeId,
+    );
     try {
       const response = await window.api.getWorkspaceReadiness({
         workspaceId,
         worktreeId,
       });
       if (loadGeneration.current !== generation) return;
+      pruneResolvedWorkspaceReadinessLaunches(
+        launchSnapshot,
+        response.issues,
+        response.complete,
+      );
       setIssues(response.issues);
       setLoadState('ready');
     } catch {
@@ -103,11 +128,10 @@ export function WorkspaceReadinessRecommendations({
     if (launchingKey !== null) return;
     const launchTargetKey = targetKey;
     const key = `${launchTargetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;
-    if (launchedChats[key]) return;
     setLaunchingKey(key);
     setLaunchError(null);
     // Stay open so the remaining recommendations can be started too; the
-    // launched chat stays reachable through "View conversation".
+    // launch record turns the row into "View conversation".
     const result = await launchWorkspaceReadinessFix(
       workspaceId,
       issue,
@@ -115,18 +139,23 @@ export function WorkspaceReadinessRecommendations({
       { navigateToChat: false },
     );
     if (targetKeyRef.current !== launchTargetKey) return;
-    if (result.ok) {
-      setLaunchedChats((current) => ({
-        ...current,
-        [key]: { worktreeId: result.worktreeId, chatId: result.chatId },
-      }));
-    } else {
+    if (!result.ok) {
       setLaunchError(result.message);
     }
     setLaunchingKey(null);
   };
 
-  const handleView = async (launched: LaunchedReadinessChat): Promise<void> => {
+  const launchFor = (
+    issue: WorkspaceReadinessIssue,
+  ): LaunchedReadinessFix | undefined =>
+    selectWorkspaceReadinessLaunch(
+      { records: launchRecords },
+      workspaceId,
+      worktreeId,
+      workspaceReadinessIssueKey(issue),
+    );
+
+  const handleView = async (launched: LaunchedReadinessFix): Promise<void> => {
     // Dismiss first so the chat is not opened behind this surface.
     if (!(await onViewConversation())) return;
     await navigateToWorkspaceReadinessChat(
@@ -137,8 +166,10 @@ export function WorkspaceReadinessRecommendations({
   };
 
   const ready = loadState === 'ready' && issues.length === 0;
-  const launchedChatCount = Object.keys(launchedChats).filter((key) =>
-    key.startsWith(`${targetKey}:`),
+  const launchedChatCount = launchedReadinessFixesForTarget(
+    launchRecords,
+    workspaceId,
+    worktreeId,
   ).length;
   useCurrentUiStateReporter('workspaceReadiness.settings', {
     surface: 'settings',
@@ -179,7 +210,7 @@ export function WorkspaceReadinessRecommendations({
               <LoadingSpinner tone="secondary" />
             ) : loadState === 'error' ? (
               <Button size="compact" onClick={() => void load()}>
-                Retry
+                Try again
               </Button>
             ) : ready ? (
               <>
@@ -200,7 +231,10 @@ export function WorkspaceReadinessRecommendations({
           issues.map((issue) => {
             const key = issueKey(issue);
             const isLaunching = launchingKey === key;
-            const launched = launchedChats[key];
+            const launched = launchFor(issue);
+            const chatMissing =
+              launched !== undefined &&
+              missingChats.includes(launchedReadinessFixKey(launched));
             return (
               <div
                 key={key}
@@ -210,6 +244,7 @@ export function WorkspaceReadinessRecommendations({
                   <div className="text-s fg-primary">{issue.title}</div>
                   <div className="text-xs text-pretty fg-secondary">
                     {issue.message}
+                    {chatMissing && ' Conversation unavailable.'}
                   </div>
                 </div>
                 {issue.fixPrompt === null ? null : launched ? (
@@ -218,7 +253,7 @@ export function WorkspaceReadinessRecommendations({
                     variant="ghost"
                     onClick={() => void handleView(launched)}
                   >
-                    View conversation
+                    {chatMissing ? 'Open worktree' : 'View conversation'}
                   </Button>
                 ) : (
                   <Button
@@ -233,7 +268,7 @@ export function WorkspaceReadinessRecommendations({
               </div>
             );
           })}
-        {launchError && <p className="text-xs fg-destructive">{launchError}</p>}
+        <ErrorBanner error={launchError} className="" />
       </div>
     );
   }
@@ -274,14 +309,11 @@ export function WorkspaceReadinessRecommendations({
             </p>
           )}
           {loadState === 'error' && (
-            <div className="mt-1 flex items-center gap-2">
-              <p className="text-xs fg-destructive">
-                Couldn’t check repository readiness.
-              </p>
-              <Button size="sm" variant="ghost" onClick={() => void load()}>
-                Retry
-              </Button>
-            </div>
+            <ErrorBanner
+              error="Couldn’t check repository readiness."
+              onRetry={() => void load()}
+              className="mt-2"
+            />
           )}
         </div>
       </div>
@@ -297,7 +329,10 @@ export function WorkspaceReadinessRecommendations({
                 {repoIssues.map((issue) => {
                   const key = `${targetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;
                   const isLaunching = launchingKey === key;
-                  const launched = launchedChats[key];
+                  const launched = launchFor(issue);
+                  const chatMissing =
+                    launched !== undefined &&
+                    missingChats.includes(launchedReadinessFixKey(launched));
                   return (
                     <div
                       key={key}
@@ -309,6 +344,7 @@ export function WorkspaceReadinessRecommendations({
                         </div>
                         <div className="mt-1 text-xs fg-secondary">
                           {issue.message}
+                          {chatMissing && ' Conversation unavailable.'}
                         </div>
                       </div>
                       {issue.fixPrompt === null ? null : launched ? (
@@ -317,7 +353,7 @@ export function WorkspaceReadinessRecommendations({
                           variant="ghost"
                           onClick={() => void handleView(launched)}
                         >
-                          View conversation
+                          {chatMissing ? 'Open worktree' : 'View conversation'}
                         </Button>
                       ) : (
                         <Button
@@ -338,9 +374,7 @@ export function WorkspaceReadinessRecommendations({
         </div>
       )}
 
-      {launchError && (
-        <p className="mt-3 text-xs fg-destructive">{launchError}</p>
-      )}
+      <ErrorBanner error={launchError} className="mt-3" />
     </section>
   );
 }

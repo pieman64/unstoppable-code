@@ -16,6 +16,10 @@ export interface SettingsConfirmDialogProps {
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
   readonly dataTestId?: string;
+  /** The failed action, shown above the buttons while the dialog stays open. */
+  readonly errorMessage?: string | null;
+  /** The failure's raw reason: copied by `Copy details`, never shown. */
+  readonly errorDetails?: string;
   /**
    * Where focus goes on close when confirming destroys the control that
    * opened this dialog. See `ConfirmDialog.restoreFocusRef`.
@@ -38,6 +42,8 @@ export function SettingsConfirmDialog({
   onConfirm,
   onCancel,
   dataTestId,
+  errorMessage,
+  errorDetails,
   restoreFocusRef,
 }: SettingsConfirmDialogProps): JSX.Element {
   return (
@@ -52,6 +58,8 @@ export function SettingsConfirmDialog({
       onCancel={onCancel}
       dataTestId={dataTestId}
       cancelTestId="confirm-dialog-cancel"
+      errorMessage={errorMessage}
+      errorDetails={errorDetails}
       restoreFocusRef={restoreFocusRef}
     />
   );

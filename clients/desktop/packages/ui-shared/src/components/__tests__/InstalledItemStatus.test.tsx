@@ -138,6 +138,12 @@ function entry(overrides: Partial<UnifiedPluginEntry>): UnifiedPluginEntry {
     id: 'mkt:market/linter',
     kind: 'plugin',
     name: 'Linter',
+    origin: 'marketplace',
+    description: '',
+    categories: [],
+    components: { skills: 0, mcpServers: 0, commands: 0, agents: 0 },
+    providerSupport: { claude: true, codex: true },
+    recommended: false,
     state: 'installed',
     ref: {
       type: 'marketplace-plugin',
@@ -145,7 +151,7 @@ function entry(overrides: Partial<UnifiedPluginEntry>): UnifiedPluginEntry {
       pluginName: 'Linter',
     },
     ...overrides,
-  } as UnifiedPluginEntry;
+  };
 }
 
 describe('InstalledItemStatusPicker', () => {
@@ -587,7 +593,7 @@ describe('InstalledItemStatusControl', () => {
             notices: [
               {
                 code: 'provider_pending',
-                message: 'Retry parking.',
+                message: 'Parking is still pending.',
                 retryable: true,
               },
             ],
@@ -974,23 +980,13 @@ describe('PluginsDiscoveryList entry status', () => {
     ).parentElement;
     expect(pickerSlot?.className).toContain('w-36');
     expect(pickerSlot?.className).toContain('justify-end');
-    // A built-in workflow shows a fixed, disabled Available in the slot.
-    const builtIn = byTestId('plugins-entry-status-pipeline:builtin');
-    expect(builtIn.closest('.w-36')).not.toBeNull();
-    expect(builtIn.getAttribute('data-status')).toBe('available');
-    expect(builtIn.getAttribute('aria-disabled')).toBe('true');
-    expect(builtIn.tabIndex).toBe(0);
-    expect(describedBy(builtIn)).toBe(
-      "Built-in workflows are always available and can't be turned off.",
-    );
-    act(() => builtIn.click());
+    // CAN-4847: workflows without a binding keep their status slot empty.
+    expect(queryTestId('plugins-entry-status-pipeline:builtin')).toBeNull();
+    const pipelineRow = byTestId('customize-discovery-row-pipeline:builtin');
+    expect(pipelineRow.querySelector('.w-36')).not.toBeNull();
     expect(
-      queryTestId('plugins-entry-status-pipeline:builtin-menu'),
-    ).toBeNull();
-    expect(
-      byTestId(`plugins-connection-status-${installed.id}`).parentElement
-        ?.className,
-    ).toContain('whitespace-nowrap');
+      byTestId(`plugins-connection-status-${installed.id}`).textContent,
+    ).toBe('Connected');
   });
 });
 
@@ -1066,7 +1062,7 @@ test('a removed catalog row retains its pending-uninstall controls after restart
       notices: [
         {
           code: 'partial_removal',
-          message: 'Retry uninstall.',
+          message: 'Uninstall is still pending.',
           retryable: true,
         },
       ],

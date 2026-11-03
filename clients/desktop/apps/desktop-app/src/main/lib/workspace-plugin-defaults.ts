@@ -23,11 +23,13 @@ import {
 } from '../plugins/marketplace-plugin-ref-prune';
 import { getProjectPluginDefaultsRevision } from '../plugins/plugin-defaults-revision';
 import {
+  INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND,
   projectPluginDefaultsWritten,
   projectPluginLayerChanged,
   projectPluginLayerSettled,
   projectPluginLayerUnsettled,
   reconcileProjectPluginDefaults,
+  type ProjectPluginDefaultsReconcileBound,
 } from '../plugins/project-plugin-defaults-cache';
 import { logMainProcessWarn } from './main-process-logging';
 import { getWorkspaceConfigPath } from './paths';
@@ -48,7 +50,12 @@ import {
   outsideW5CommitScope,
   w5CommitsSettling,
 } from './w5-commit-scope';
-import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
+import { runW5DecisionOnlyUnit } from './w5-pre-effect-retry';
+import {
+  createW5SingleDecisionOperation,
+  wireW5Decode,
+  type W5WireDecisionCall,
+} from './w5-single-decision-operation';
 import { WORKSPACE_MANIFEST_STORAGE } from './w5-storage';
 import { WorkspaceConfigUnreadableError } from './workspace-manifest-repository';
 import {
@@ -149,7 +156,8 @@ export interface WorkspacePluginsUserChangeRequest
  * One workspace's prune in a marketplace removal fan-out. With the fan-out's
  * request ID, its key is derived from that ID and the workspace (A25(b)), so
  * a retried fan-out replays each workspace's saved result. Inactive: no
- * production caller supplies the ID until reconciliation is bounded (D1).
+ * production caller supplies the ID. Its reconciles are bounded (D1), but
+ * enabling it is a separate change.
  */
 export interface WorkspacePluginsPruneRequest extends Omit<
   WorkspacePluginsUpdateRequest,
@@ -224,10 +232,12 @@ function notFound(workspaceId: string): WorkspacePluginsRefusedError {
   );
 }
 
-function configurationUnavailable(): WorkspacePluginsRefusedError {
+function configurationUnavailable(
+  refusal = new WorkspaceConfigUnreadableError(),
+): WorkspacePluginsRefusedError {
   return new WorkspacePluginsRefusedError(
     'configuration-unavailable',
-    new WorkspaceConfigUnreadableError().message,
+    refusal.message,
   );
 }
 
@@ -483,7 +493,10 @@ async function pruneMarketplace(
     async (): Promise<WorkspacePluginsUpdateOutcome> => {
       const read = await manifests.read(workspaceId);
       if (read.authority === 'absent') throw notFound(workspaceId);
-      if (read.authority === 'unreadable') throw configurationUnavailable();
+      if (read.authority === 'unreadable')
+        throw configurationUnavailable(
+          new WorkspaceConfigUnreadableError(read.error),
+        );
       const document = structuredClone(read.document);
       const before = inheritedPluginLayersOf(document);
       const written = pruneMarketplacePluginRefsFromValue(
@@ -539,16 +552,29 @@ async function updatePluginsConfig(
     );
   } catch (error) {
     if (error instanceof WorkspaceConfigUnreadableError) {
-      throw configurationUnavailable();
+      throw configurationUnavailable(error);
     }
     throw error;
   }
 }
 
+const isPluginsRefusal = (error: unknown): boolean =>
+  error instanceof WorkspacePluginsRefusedError;
+
 const runPluginsDecision =
-  createW5SingleDecisionOperation<WorkspacePluginsSource>(
-    (error) => error instanceof WorkspacePluginsRefusedError,
-  );
+  createW5SingleDecisionOperation<WorkspacePluginsSource>(isPluginsRefusal);
+
+/** The runner for one call: a wire call's receipts name its principal. */
+function pluginsRunner(
+  wire: W5WireDecisionCall<never> | undefined,
+): typeof runPluginsDecision {
+  return wire
+    ? createW5SingleDecisionOperation<WorkspacePluginsSource>(
+        isPluginsRefusal,
+        wire,
+      )
+    : runPluginsDecision;
+}
 
 /**
  * The fingerprinted parameters of a keyed user change: the fields it applies,
@@ -584,47 +610,83 @@ function userChangeParameters(change: WorkspacePluginsUserChange): unknown {
 }
 
 /**
+ * A replay's rule for a removed manifest: the default selections its
+ * decision left, and the session revision when its refresh became owed.
+ */
+interface ReplayRule {
+  defaultPluginSelections: ChatTabPluginSelections | undefined;
+  revision: number;
+}
+
+/** A replay's reconcile; see {@link reconcilePluginDefaults}. */
+interface ReplayedReconcile {
+  /** Null when its own attempt owes no refresh. */
+  owed: ReplayRule | null;
+}
+
+/**
+ * What an inline reconcile owes: a plain read, or a replay's. Past its bound
+ * the background owes it instead, until a read of the manifest decides it.
+ */
+interface ReconcileHandOff {
+  /** A replay keeps its removed-manifest rule; absent, a plain reconcile. */
+  replayed?: ReplayedReconcile;
+  /** A keyed attempt's owed refresh, settled once a read decides it. */
+  owedRefresh?: { receipt: string; entry: OwedRefreshEntry };
+}
+
+/**
+ * Who reads: an inline caller with what it owes, or a background run with
+ * the unkeyed failure it settles.
+ */
+type ReconcileReader =
+  | { kind: 'inline'; handOff: ReconcileHandOff }
+  | { kind: 'background'; settling: Settles };
+
+/**
+ * `decided`: a read of the manifest, present or removed, decided it.
+ * `undecided`: an unreadable or failed read decided nothing. `exhausted`: a
+ * bounded reconcile ran out before any read decided.
+ */
+type PluginDefaultsReconcileOutcome = 'decided' | 'undecided' | 'exhausted';
+
+/**
  * Reconciles the cached project plugin layer with the manifest when the
  * manifest writer's post-commit refresh may have been dropped: the session
  * revision advances only if the layer differs from what was served, so a
  * replay repeats nothing. It never fails the caller: the cached entry is
- * dropped either way, except by a replay that finds the manifest removed.
- * Its decision found the manifest, so a deletion removed it since and
- * refreshes for the removal; the replay drops and advances only for a
- * refresh its own attempt may have dropped (`owed`) with no advance since.
+ * dropped either way, except by a replay read that finds the manifest
+ * removed. Its decision found the manifest, so a deletion removed it since
+ * and refreshes for the removal; the replay drops and advances only for a
+ * refresh its attempt may have dropped (`owed`) with no advance since.
  *
- * Resolves to whether a read of the manifest, present or removed, decided
- * it; an unreadable or failed read decides nothing.
+ * The read also decides every hand-off that joined before it loaded (see
+ * {@link composeRead}), whether the reader is inline or a background run.
  */
 async function reconcilePluginDefaults(
   workspaceId: string,
-  replayed?: {
-    owed: { outcome: WorkspacePluginsUpdateOutcome; revision: number } | null;
-  },
-): Promise<boolean> {
+  reader: ReconcileReader,
+  bound?: ProjectPluginDefaultsReconcileBound,
+): Promise<PluginDefaultsReconcileOutcome> {
   let decided = false;
+  let loadedAt = 0;
   try {
-    await reconcileProjectPluginDefaults({
+    const result = await reconcileProjectPluginDefaults({
       configPath: getWorkspaceConfigPath(workspaceId),
       workspaceId,
+      bound,
       serialize: (work) =>
         getWorkspaceManifestRepository().serialize(workspaceId, work),
       committing: () => w5CommitsSettling(getWorkspaceConfigPath(workspaceId)),
       // The read `readProjectPluginDefaults` serves.
       load: async () => {
+        const read = composeRead(workspaceId, reader);
+        loadedAt = read.loadedAt;
         const { config, authority } =
           await readWorkspaceConfigDetailed(workspaceId);
         decided = authority !== 'unreadable';
-        if (replayed && authority === 'absent') {
-          return {
-            removed: true,
-            owed: replayed.owed && {
-              defaultPluginSelections:
-                replayed.owed.outcome.defaultPluginSelections,
-              revision: replayed.owed.revision,
-            },
-          };
-        }
+        if (read.replayRules && authority === 'absent')
+          return { removed: true, owed: read.replayRules };
         return {
           defaults: {
             defaultPluginSelections: config.defaultPluginSelections,
@@ -635,6 +697,7 @@ async function reconcilePluginDefaults(
         };
       },
     });
+    if (result === 'exhausted') return 'exhausted';
   } catch (error) {
     projectPluginDefaultsWritten({
       configPath: getWorkspaceConfigPath(workspaceId),
@@ -645,9 +708,43 @@ async function reconcilePluginDefaults(
       workspaceId,
       error,
     });
-    return false;
+    return 'undecided';
   }
-  return decided;
+  if (!decided) return 'undecided';
+  settleDecided(workspaceId, reader, loadedAt);
+  return 'decided';
+}
+
+let inlineReconcileBound = INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND;
+
+export function __setInlinePluginDefaultsReconcileBoundForTests(
+  bound: ProjectPluginDefaultsReconcileBound | undefined,
+): void {
+  inlineReconcileBound =
+    bound ?? INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND;
+}
+
+/**
+ * The reconcile of a caller that waits for it (CAN-4409 D1): a keyed failure
+ * with its key still reserved, a replay, a Cowork settings decision or a W5e
+ * commit event, each holding a response or later events. It waits within
+ * {@link INLINE_PROJECT_PLUGIN_DEFAULTS_RECONCILE_BOUND}, then hands what it
+ * owes to the background and marks the layer unsettled, so chat reads serve
+ * the manifest and request a reconcile until a read decides. Resolves to
+ * whether a read decided it inline.
+ */
+async function reconcilePluginDefaultsInline(
+  workspaceId: string,
+  handOff: ReconcileHandOff,
+): Promise<boolean> {
+  const outcome = await reconcilePluginDefaults(
+    workspaceId,
+    { kind: 'inline', handOff },
+    inlineReconcileBound,
+  );
+  if (outcome === 'exhausted')
+    reconcileHandOffInBackground(workspaceId, handOff);
+  return outcome === 'decided';
 }
 
 /**
@@ -655,15 +752,16 @@ async function reconcilePluginDefaults(
  * plugin layer (`core.workspace.cowork.update`'s preset-derived defaults): a
  * failed attempt (`replayed: false`) or a replay. Its outcome carries no
  * selections, so a replay that finds the manifest removed leaves the
- * removal to its remover. Resolves to whether a read decided it.
+ * removal to its remover. Resolves to whether a read decided it within the
+ * inline bound; past it, the background decides.
  */
 export function reconcileManifestPluginDefaults(
   workspaceId: string,
   replayed: boolean,
 ): Promise<boolean> {
-  return reconcilePluginDefaults(
+  return reconcilePluginDefaultsInline(
     workspaceId,
-    replayed ? { owed: null } : undefined,
+    replayed ? { replayed: { owed: null } } : {},
   );
 }
 
@@ -671,9 +769,22 @@ export function reconcileManifestPluginDefaults(
  * Receipts of keyed attempts of this process that failed after staging and
  * whose reconcile decided nothing, so the refresh of a decision that landed
  * may still be owed, with the project revision at the failure. The cached
- * layer and revision it protects are process-local too.
+ * layer and revision it protects are process-local too. Each entry is its
+ * own object, so a late settle never clears a newer failure's entry.
  */
-const refreshPossiblyOwed = new Map<string, number>();
+interface OwedRefreshEntry {
+  since: number;
+}
+const refreshPossiblyOwed = new Map<string, OwedRefreshEntry>();
+
+/** Clears `entry` unless a newer failure of the key replaced it. */
+function settleOwedRefresh(
+  receipt: string,
+  entry: OwedRefreshEntry | undefined,
+): void {
+  if (refreshPossiblyOwed.get(receipt) === entry)
+    refreshPossiblyOwed.delete(receipt);
+}
 
 /**
  * One keyed or revision-checked change: one decision over the manifest, its
@@ -687,15 +798,23 @@ async function runKeyedPluginsChange(input: {
   /** The fingerprinted parameters, without the key or revision. */
   parameters: () => unknown;
   stage: () => Promise<WorkspacePluginsUpdateOutcome>;
+  /** The registered operation's wire call (W7b-1c). */
+  wire?: W5WireDecisionCall<WorkspacePluginsUpdateOutcome>;
 }): Promise<WorkspacePluginsUpdateOutcome> {
-  const { workspaceId, expectedRevision, idempotencyKey } = input;
+  const { workspaceId, expectedRevision, idempotencyKey, wire } = input;
   const resource: W5Resource = { kind: 'workspace', workspaceId };
+  // A wire call's receipt is its principal's, apart from the host's.
   const receipt =
     idempotencyKey === undefined
       ? undefined
-      : JSON.stringify([workspaceId, input.source, idempotencyKey]);
+      : JSON.stringify([
+          workspaceId,
+          input.source,
+          idempotencyKey,
+          ...(wire ? [wire.principalId] : []),
+        ]);
   let executed = false;
-  const outcome = await runPluginsDecision(
+  const outcome = await pluginsRunner(wire)(
     {
       operation: 'core.workspace.plugins.update',
       source: input.source,
@@ -705,7 +824,7 @@ async function runKeyedPluginsChange(input: {
     },
     // A missing or unreadable manifest is refused in the write queue.
     () => Promise.resolve(),
-    decodeOutcome,
+    wireW5Decode(decodeOutcome, wire),
     async (_admitted, options, save) => {
       executed = true;
       // A key that runs again never landed a decision before.
@@ -737,13 +856,20 @@ async function runKeyedPluginsChange(input: {
           !(error instanceof W5FileWriteRefusedError)
         ) {
           // Reads recover the commit log first, so a read that decided
-          // followed any landing of this decision.
-          const failedAt = getProjectPluginDefaultsRevision(workspaceId);
+          // followed any landing of this decision. Owed until one decides;
+          // the key stays reserved meanwhile, so no replay reads the entry.
+          const owed: OwedRefreshEntry = {
+            since: getProjectPluginDefaultsRevision(workspaceId),
+          };
+          if (receipt !== undefined) refreshPossiblyOwed.set(receipt, owed);
           if (
-            !(await reconcilePluginDefaults(workspaceId)) &&
+            (await reconcilePluginDefaultsInline(workspaceId, {
+              owedRefresh:
+                receipt === undefined ? undefined : { receipt, entry: owed },
+            })) &&
             receipt !== undefined
           )
-            refreshPossiblyOwed.set(receipt, failedAt);
+            settleOwedRefresh(receipt, owed);
         }
         throw error;
       }
@@ -752,13 +878,22 @@ async function runKeyedPluginsChange(input: {
   if (executed || receipt === undefined) return outcome;
   // A replay runs no writer, and its decision may have landed without the
   // refresh (a lost response), possibly after a read cached the old layer.
-  const owedSince = refreshPossiblyOwed.get(receipt);
+  const owed = refreshPossiblyOwed.get(receipt);
   if (
-    await reconcilePluginDefaults(workspaceId, {
-      owed: owedSince === undefined ? null : { outcome, revision: owedSince },
+    await reconcilePluginDefaultsInline(workspaceId, {
+      replayed: {
+        owed:
+          owed === undefined
+            ? null
+            : {
+                defaultPluginSelections: outcome.defaultPluginSelections,
+                revision: owed.since,
+              },
+      },
+      owedRefresh: owed && { receipt, entry: owed },
     })
   )
-    refreshPossiblyOwed.delete(receipt);
+    settleOwedRefresh(receipt, owed);
   return outcome;
 }
 
@@ -768,6 +903,7 @@ async function runKeyedPluginsChange(input: {
  */
 async function updateUserChange(
   request: WorkspacePluginsUserChangeRequest,
+  wire: W5WireDecisionCall<WorkspacePluginsUpdateOutcome> | undefined,
 ): Promise<WorkspacePluginsUpdateOutcome> {
   const { workspaceId, change, expectedRevision, idempotencyKey } = request;
   // Nothing to decide with the write: the plain manifest write, as before.
@@ -780,6 +916,7 @@ async function updateUserChange(
     expectedRevision,
     parameters: () => ({ workspaceId, change: userChangeParameters(change) }),
     stage: () => updatePluginsConfig(workspaceId, change),
+    ...(wire && { wire }),
   });
 }
 
@@ -812,10 +949,182 @@ function laterSettles(a: Settles, b: Settles): Settles {
  */
 const backgroundReconciles = new Map<string, { rerun?: Settles }>();
 
+/** A keyed hand-off's owed refresh and its replay's rule, until a read decides it. */
+interface OwedReconcileRow {
+  entry: OwedRefreshEntry;
+  joined: number;
+  rule?: ReplayRule;
+}
+
+/**
+ * What hand-offs of one workspace still owe, until a read decides them: the
+ * latest plain and replay joins, and each receipt's latest keyed join. One
+ * record per workspace, with no key: whatever joined before a deciding read
+ * loaded is decided by it (see {@link composeRead}).
+ */
+interface OwedReconciles {
+  plain?: number;
+  replay?: number;
+  rows: Map<string, OwedReconcileRow>;
+}
+
+const owedReconciles = new Map<string, OwedReconciles>();
+
+/** Hand-offs of this process so far: each join's sequence. */
+let reconcileJoins = 0;
+
+export function __pluginDefaultsHandOffsForTests(workspaceId: string): number {
+  return owedReconciles.has(workspaceId) ? 1 : 0;
+}
+
+/**
+ * The read a reconcile makes, chosen as it loads: a plain read if its reader
+ * owes one, or a plain hand-off or (in a background run) an unkeyed failure
+ * is owed; otherwise a replay's, with its own rule and each owed receipt's.
+ *
+ * One read covers every hand-off that joined before it loaded. At one
+ * revision a plain read advances whenever any replay rule would: a removed
+ * manifest reads as the empty layer, which advances for any non-empty or
+ * mixed layer served, a superset of each rule's condition. Its first advance
+ * disarms every rule owed at the earlier revision. So nothing keys the
+ * record: reordered selections, an omitted or empty field, or a revision
+ * passed since cannot split it.
+ */
+function composeRead(
+  workspaceId: string,
+  reader: ReconcileReader,
+): { loadedAt: number; replayRules: ReplayRule[] | null } {
+  const owed = owedReconciles.get(workspaceId);
+  const loadedAt = reconcileJoins;
+  const plain =
+    owed?.plain !== undefined ||
+    (reader.kind === 'inline'
+      ? !reader.handOff.replayed
+      : reader.settling !== null || unkeyedOutcomeUnknown.has(workspaceId));
+  if (plain) return { loadedAt, replayRules: null };
+  const replayRules: ReplayRule[] = [];
+  const own = reader.kind === 'inline' && reader.handOff.replayed?.owed;
+  if (own) replayRules.push(own);
+  // A settled or replaced entry owes nothing, nor does its rule.
+  for (const [receipt, row] of owed?.rows ?? [])
+    if (row.rule && refreshPossiblyOwed.get(receipt) === row.entry)
+      replayRules.push(row.rule);
+  return { loadedAt, replayRules };
+}
+
+/**
+ * After a read that decided: settles the hand-offs that joined before it
+ * loaded and, in a background run, the unkeyed failure it settles if still
+ * the latest. With neither left, the layer settles.
+ */
+function settleDecided(
+  workspaceId: string,
+  reader: ReconcileReader,
+  loadedAt: number,
+): void {
+  const owed = owedReconciles.get(workspaceId);
+  if (owed) {
+    if (owed.plain !== undefined && owed.plain <= loadedAt) delete owed.plain;
+    if (owed.replay !== undefined && owed.replay <= loadedAt)
+      delete owed.replay;
+    for (const [receipt, row] of owed.rows) {
+      if (row.joined > loadedAt) continue;
+      settleOwedRefresh(receipt, row.entry);
+      owed.rows.delete(receipt);
+    }
+    if (
+      owed.plain === undefined &&
+      owed.replay === undefined &&
+      owed.rows.size === 0
+    )
+      owedReconciles.delete(workspaceId);
+  }
+  if (
+    reader.kind === 'background' &&
+    reader.settling !== null &&
+    unkeyedOutcomeUnknown.get(workspaceId) === reader.settling
+  )
+    unkeyedOutcomeUnknown.delete(workspaceId);
+  if (
+    !owedReconciles.has(workspaceId) &&
+    !unkeyedOutcomeUnknown.has(workspaceId)
+  )
+    projectPluginLayerSettled(getWorkspaceConfigPath(workspaceId));
+}
+
+/**
+ * Chat reads skip the cached layer and request a background reconcile; one
+ * that reads the manifest also retries the hand-offs still owed.
+ */
+function markLayerUnsettled(workspaceId: string): void {
+  projectPluginLayerUnsettled(
+    getWorkspaceConfigPath(workspaceId),
+    () => reconcileInBackground(workspaceId, null),
+    () => retryHandOffs(workspaceId),
+  );
+}
+
+/**
+ * Hand-offs a read left owed (an unreadable manifest, a failed read or run)
+ * get no run of their own. A read that finds the manifest readable starts
+ * one, so neither they nor the unsettled mark outlive the fault.
+ */
+function retryHandOffs(workspaceId: string): void {
+  if (owedReconciles.has(workspaceId)) reconcileInBackground(workspaceId, null);
+}
+
+function reconcileHandOffInBackground(
+  workspaceId: string,
+  handOff: ReconcileHandOff,
+): void {
+  reconcileJoins += 1;
+  const joined = reconcileJoins;
+  const owed: OwedReconciles = owedReconciles.get(workspaceId) ?? {
+    rows: new Map<string, OwedReconcileRow>(),
+  };
+  owedReconciles.set(workspaceId, owed);
+  if (handOff.replayed) owed.replay = joined;
+  else owed.plain = joined;
+  // Settling any entry but the receipt's current one changes nothing.
+  for (const [receipt, row] of owed.rows)
+    if (refreshPossiblyOwed.get(receipt) !== row.entry)
+      owed.rows.delete(receipt);
+  const { owedRefresh } = handOff;
+  if (
+    owedRefresh &&
+    refreshPossiblyOwed.get(owedRefresh.receipt) === owedRefresh.entry
+  )
+    owed.rows.set(owedRefresh.receipt, {
+      entry: owedRefresh.entry,
+      joined,
+      rule: handOff.replayed?.owed ?? undefined,
+    });
+  markLayerUnsettled(workspaceId);
+  reconcileInBackground(workspaceId, null);
+}
+
+/**
+ * One background run: one read when anything is owed (a request made after
+ * everything settled owes none), chosen as it loads, so a run owed only
+ * replays makes no plain read, which would advance for a removal.
+ */
+async function reconcileOwed(
+  workspaceId: string,
+  settling: Settles,
+): Promise<void> {
+  if (
+    settling === null &&
+    !unkeyedOutcomeUnknown.has(workspaceId) &&
+    !owedReconciles.has(workspaceId)
+  )
+    return;
+  await reconcilePluginDefaults(workspaceId, { kind: 'background', settling });
+}
+
 /**
  * Starts the reconcile off the caller's path: it waits for other commits of
  * the manifest to finish their post-commit work, which has no time limit and
- * may be the caller's own.
+ * may be the caller's own. Each run also reconciles the pending hand-offs.
  */
 function reconcileInBackground(workspaceId: string, settles: Settles): void {
   const running = backgroundReconciles.get(workspaceId);
@@ -835,14 +1144,7 @@ function reconcileInBackground(workspaceId: string, settles: Settles): void {
         while (next !== undefined) {
           const settling = next;
           delete state.rerun;
-          if (
-            (await reconcilePluginDefaults(workspaceId)) &&
-            settling !== null &&
-            unkeyedOutcomeUnknown.get(workspaceId) === settling
-          ) {
-            unkeyedOutcomeUnknown.delete(workspaceId);
-            projectPluginLayerSettled(getWorkspaceConfigPath(workspaceId));
-          }
+          await reconcileOwed(workspaceId, settling);
           next = state.rerun;
         }
       } catch (error) {
@@ -880,6 +1182,9 @@ async function withUnkeyedOutcomeReconcile(
 ): Promise<WorkspacePluginsUpdateOutcome> {
   if (currentW5CommitScope()) return run();
   const owed = unkeyedOutcomeUnknown.get(workspaceId);
+  // A hand-off whose background read could not decide (an unreadable
+  // manifest) is retried by the next change, like an unkeyed failure.
+  const handedOff = owedReconciles.has(workspaceId);
   let outcome: WorkspacePluginsUpdateOutcome;
   try {
     outcome = await run();
@@ -888,16 +1193,15 @@ async function withUnkeyedOutcomeReconcile(
     if (unkeyed && !refusedBeforeWriting(error)) {
       unkeyedFailures += 1;
       unkeyedOutcomeUnknown.set(workspaceId, unkeyedFailures);
-      projectPluginLayerUnsettled(getWorkspaceConfigPath(workspaceId), () =>
-        reconcileInBackground(workspaceId, null),
-      );
+      markLayerUnsettled(workspaceId);
       reconcileInBackground(workspaceId, null);
     }
     throw error;
   }
   // Its manifest read recovered the commit log first, after the earlier
   // decision applied or was lost.
-  if (owed !== undefined) reconcileInBackground(workspaceId, owed);
+  if (owed !== undefined || handedOff)
+    reconcileInBackground(workspaceId, owed ?? null);
   return outcome;
 }
 
@@ -952,10 +1256,15 @@ async function updatePruneMarketplace(
  * removal stay on their own paths. An unkeyed change that fails after it may
  * have written reconciles the cached plugin layer in the background, as does
  * the next change of that workspace that succeeds (CAN-4417); the writes are
- * unchanged. The operation stays unregistered.
+ * unchanged. A keyed failure or replay reconciles inline within a bound,
+ * then hands the rest to the background (CAN-4409 D1). The renderer's
+ * settings and recommendation channels project the registered operation for
+ * their user changes, and `wire` is its wire call (W7b-1c); every other
+ * caller omits it.
  */
 export async function updateWorkspacePlugins(
   request: WorkspacePluginsUserChangeRequest,
+  wire?: W5WireDecisionCall<WorkspacePluginsUpdateOutcome>,
 ): Promise<WorkspacePluginsUpdateOutcome>;
 export async function updateWorkspacePlugins(
   request: WorkspacePluginsPruneRequest,
@@ -966,6 +1275,7 @@ export async function updateWorkspacePlugins(
 export async function updateWorkspacePlugins(
   request: WorkspacePluginsUpdateRequest &
     W5BoundaryOptions & { fanOutRequestId?: unknown },
+  wire?: W5WireDecisionCall<WorkspacePluginsUpdateOutcome>,
 ): Promise<WorkspacePluginsUpdateOutcome> {
   const { workspaceId, change, source } = request;
   validateId(workspaceId, 'workspaceId');
@@ -1010,8 +1320,12 @@ export async function updateWorkspacePlugins(
     unkeyed =
       request.idempotencyKey === undefined &&
       request.expectedRevision === undefined;
+    // Keyed or not, a refused decision wrote nothing, so it marks no
+    // unsettled state and normalizes again on the next attempt.
     run = (): Promise<WorkspacePluginsUpdateOutcome> =>
-      updateUserChange({ ...request, change });
+      runW5DecisionOnlyUnit('core.workspace.plugins.update', () =>
+        updateUserChange({ ...request, change }, wire),
+      );
   }
   const outcome = await withUnkeyedOutcomeReconcile(workspaceId, unkeyed, run);
 

@@ -1,14 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { comparePerformanceResults } from './comparison.mjs';
+import * as filesRouteModule from '../../src/main/canopy-runtime/daemon-files-route.ts';
+import * as readRouteModule from '../../src/main/canopy-runtime/daemon-read-route-guard.ts';
 import {
   admitMainInterval,
   admitRendererCompletion,
   admitTreatment,
   admitTrial,
+  armBackend,
   assertStableTreatment,
   labsTreatmentObservation,
 } from './daemon-treatment-admission.mjs';
+
+// tsx loads the TypeScript source as CommonJS, behind a default export.
+const { DAEMON_FILES_PRODUCTION_SELECTION } =
+  filesRouteModule.default ?? filesRouteModule;
+const { READ_ROUTE_TABLE } = readRouteModule.default ?? readRouteModule;
 
 const CONTEXT = 'a'.repeat(64);
 
@@ -31,15 +39,19 @@ function labs(arm, overrides = {}) {
   };
 }
 
+const FILES_OPERATIONS = ['roots', 'directory', 'file', 'search', 'link'];
+
 function routeKeys(values = {}) {
   const keys = {};
-  for (const operation of ['roots', 'directory'])
+  for (const operation of FILES_OPERATIONS)
     for (const outcome of [
       'direct',
       'daemon',
       'daemon.queries',
       'daemon.retries',
       'daemon.served',
+      'daemon.bypassed',
+      'daemon.fallback.connect_failed',
       'direct.discarded',
       'daemon.failed.internal',
     ])
@@ -51,7 +63,14 @@ function counters(invocations = {}, route = {}, extra = {}) {
   return {
     generation: 0,
     overflow: 0,
-    invocations: { roots: 0, directory: 0, ...invocations },
+    invocations: {
+      roots: 0,
+      directory: 0,
+      file: 0,
+      search: 0,
+      link: 0,
+      ...invocations,
+    },
     route: routeKeys(route),
     ...extra,
   };
@@ -476,105 +495,337 @@ test('interleaved concurrent roots and directory reads pair by request', () => {
   );
   const admitted = admitMainInterval(value);
   assert.deepEqual(admitted.reasons, []);
-  assert.deepEqual(admitted.starts, { roots: 1, directory: 2 });
+  assert.deepEqual(admitted.starts, {
+    roots: 1,
+    directory: 2,
+    file: 0,
+    search: 0,
+    link: 0,
+  });
   value.operations = ['directory'];
   assert.ok(admitMainInterval(value).reasons.includes('unexpected roots read'));
 });
 
-test('direct file reads are journaled outside the treatment in both arms', () => {
-  for (const [arm, backend] of [
-    ['on', 'daemon'],
-    ['off', 'direct'],
-  ]) {
-    const entries = [
-      read('directory', backend, 1, 'started', 6),
-      read('file', 'direct', 2, 'started', 7),
-      read('file', 'direct', 2, 'success', 8),
-      read('directory', backend, 1, 'success', 9),
-    ];
-    const value = interval(arm, { entries });
-    value.after.counters = counters(
-      { roots: 0, directory: 1, file: 1 },
-      arm === 'on'
-        ? {
-            'files.directory.daemon': 1,
-            'files.directory.daemon.served': 1,
-            'files.directory.daemon.queries': 1,
-            'files.file.direct': 1,
-          }
-        : { 'files.directory.direct': 1, 'files.file.direct': 1 },
+const servedRoute = (operation, count) => ({
+  [`files.${operation}.daemon`]: count,
+  [`files.${operation}.daemon.served`]: count,
+  [`files.${operation}.daemon.queries`]: count,
+});
+const directRoute = (operation, count) => ({
+  [`files.${operation}.direct`]: count,
+});
+
+/** `count` reads of one operation; `backend` defaults to the arm's. */
+function reads(arm, operation, { count = 2, backend, platform } = {}) {
+  const served = backend ?? (arm === 'on' ? 'daemon' : 'direct');
+  const entries = Array.from({ length: count }, (_, index) => [
+    read(operation, served, index + 1, 'started', 5 + index * 2 + 1),
+    read(operation, served, index + 1, 'success', 5 + index * 2 + 2),
+  ]).flat();
+  const value = interval(arm, { entries });
+  value.after.counters = counters(
+    { [operation]: count },
+    served === 'daemon'
+      ? servedRoute(operation, count)
+      : directRoute(operation, count),
+  );
+  value.operations = [operation];
+  value.platform = platform;
+  return value;
+}
+
+const expectReason = (reasons, reason) =>
+  assert.ok(reasons.includes(reason), `${reason}: ${reasons}`);
+
+test('file, search and link reads are measured on the arm backend', () => {
+  for (const operation of ['file', 'search', 'link'])
+    for (const [arm, platform] of [
+      ['on', 'darwin'],
+      ['on', 'linux'],
+      ['off', 'darwin'],
+      ['off', 'win32'],
+      ['off', undefined],
+    ]) {
+      const admitted = admitMainInterval(reads(arm, operation, { platform }));
+      assert.deepEqual(admitted.reasons, [], `${operation} ${arm} ${platform}`);
+      assert.equal(admitted.starts[operation], 2);
+    }
+});
+
+test('on-arm file, search and link reads that went direct, failed, fell back, ran twice or never finished are rejected', () => {
+  for (const operation of ['file', 'search', 'link']) {
+    const mutate = (arm, change, options = {}) => {
+      const value = reads(arm, operation, { platform: 'darwin', ...options });
+      change(value);
+      return admitMainInterval(value).reasons;
+    };
+    const direct = mutate('on', () => {}, { backend: 'direct' });
+    expectReason(direct, 'direct read in on arm');
+    expectReason(
+      direct,
+      `route counter files.${operation}.direct changed by 2`,
     );
-    const admitted = admitMainInterval(value);
-    assert.deepEqual(admitted.reasons, [], arm);
-    assert.deepEqual(admitted.starts, { roots: 0, directory: 1 });
+    expectReason(
+      mutate('off', () => {}, { backend: 'daemon' }),
+      'daemon read in off arm',
+    );
+    expectReason(
+      mutate('on', (v) => (v.after.route.entries[1].phase = 'failed')),
+      'read failed',
+    );
+    expectReason(
+      mutate('on', (v) => (v.after.route.entries[2].request = 1)),
+      'duplicate read start',
+    );
+    expectReason(
+      mutate(
+        'on',
+        (v) => v.after.route.entries.pop() && v.after.route.cursor.sequence--,
+      ),
+      'read without a finish',
+    );
+    expectReason(
+      mutate(
+        'on',
+        (v) =>
+          (v.after.counters.route[`files.${operation}.daemon.failed.internal`] =
+            1),
+      ),
+      `route counter files.${operation}.daemon.failed.internal changed by 1`,
+    );
+    // Unreachable daemon: the direct reader answered a daemon selection.
+    const fellBack = mutate('on', (v) => {
+      for (const entry of v.after.route.entries)
+        if (entry.phase === 'success') entry.phase = 'fallback';
+      v.after.counters = counters(
+        { [operation]: 2 },
+        {
+          [`files.${operation}.daemon`]: 2,
+          [`files.${operation}.daemon.fallback.connect_failed`]: 2,
+        },
+      );
+    });
+    expectReason(fellBack, 'read fallback');
+    expectReason(
+      fellBack,
+      `route counter files.${operation}.daemon.fallback.connect_failed changed by 2`,
+    );
   }
 });
 
-test('direct index searches are journaled outside the treatment in both arms', () => {
-  for (const [arm, backend] of [
-    ['on', 'daemon'],
-    ['off', 'direct'],
-  ]) {
-    const entries = [
-      read('roots', backend, 1, 'started', 6),
-      read('search', 'direct', 2, 'started', 7),
-      read('search', 'direct', 3, 'started', 8),
-      read('search', 'direct', 2, 'success', 9),
-      read('search', 'direct', 3, 'success', 10),
-      read('roots', backend, 1, 'success', 11),
-    ];
-    const value = interval(arm, { entries });
+test('a search walk selected while latched is rejected like a latched directory read', () => {
+  // Both journal a daemon selection ending in `fallback` and count
+  // `daemon` + `daemon.bypassed` with no query sent.
+  const latched = (operation) => {
+    const value = reads('on', operation, { platform: 'darwin' });
+    for (const entry of value.after.route.entries)
+      if (entry.phase === 'success') entry.phase = 'fallback';
     value.after.counters = counters(
-      { roots: 1, directory: 0, search: 1 },
-      arm === 'on'
-        ? {
-            'files.roots.daemon': 1,
-            'files.roots.daemon.served': 1,
-            'files.roots.daemon.queries': 1,
-            'files.search.direct': 2,
-          }
-        : { 'files.roots.direct': 1, 'files.search.direct': 2 },
+      { [operation]: 2 },
+      {
+        [`files.${operation}.daemon`]: 2,
+        [`files.${operation}.daemon.bypassed`]: 2,
+      },
     );
-    const admitted = admitMainInterval(value);
-    assert.deepEqual(admitted.reasons, [], arm);
-    assert.deepEqual(admitted.starts, { roots: 1, directory: 0 });
+    return admitMainInterval(value).reasons;
+  };
+  const search = latched('search');
+  expectReason(search, 'read fallback');
+  expectReason(
+    search,
+    'route counter files.search.daemon.bypassed changed by 2',
+  );
+  assert.deepEqual(
+    search.map((reason) => reason.replace('files.search.', 'files.*.')),
+    latched('directory').map((reason) =>
+      reason.replace('files.directory.', 'files.*.'),
+    ),
+  );
+});
+
+test('on Windows the on arm keeps file, search and link direct and roots and directory on the daemon', () => {
+  for (const operation of ['file', 'search', 'link']) {
+    assert.deepEqual(
+      admitMainInterval(
+        reads('on', operation, { backend: 'direct', platform: 'win32' }),
+      ).reasons,
+      [],
+      operation,
+    );
+    expectReason(
+      admitMainInterval(reads('on', operation, { platform: 'win32' })).reasons,
+      'daemon read in on arm',
+    );
+    // Which backend the on arm expects depends on the host; never guess it.
+    for (const platform of [undefined, 'freebsd'])
+      expectReason(
+        admitMainInterval(reads('on', operation, { platform })).reasons,
+        `${operation} read without a host platform`,
+      );
+  }
+  for (const operation of ['roots', 'directory']) {
+    assert.deepEqual(
+      admitMainInterval(reads('on', operation, { platform: 'win32' })).reasons,
+      [],
+    );
+    expectReason(
+      admitMainInterval(
+        reads('on', operation, { backend: 'direct', platform: 'win32' }),
+      ).reasons,
+      'direct read in on arm',
+    );
+  }
+  // The trial passes the host platform with its main evidence.
+  const trial = {
+    arm: 'on',
+    workload: 'query',
+    artifactSha256: 'c'.repeat(64),
+    brand: 'canopy',
+    treatment: { before: labs('on'), after: labs('on') },
+    main: reads('on', 'file', { backend: 'direct', platform: 'win32' }),
+  };
+  assert.deepEqual(admitTrial(trial).reasons, []);
+});
+
+test('undeclared file, search and link reads are unexpected in both arms', () => {
+  for (const operation of ['file', 'search', 'link'])
+    for (const arm of ['on', 'off']) {
+      const backend = arm === 'on' ? 'daemon' : 'direct';
+      const value = interval(arm, {
+        entries: [
+          read('directory', backend, 1, 'started', 6),
+          read(operation, backend, 2, 'started', 7),
+          read(operation, backend, 2, 'success', 8),
+          read('directory', backend, 1, 'success', 9),
+        ],
+      });
+      value.platform = 'darwin';
+      value.after.counters = counters(
+        { directory: 1, [operation]: 1 },
+        arm === 'on'
+          ? { ...servedRoute('directory', 1), ...servedRoute(operation, 1) }
+          : { ...directRoute('directory', 1), ...directRoute(operation, 1) },
+      );
+      // One reason per journal entry, as for roots and directory.
+      assert.deepEqual(
+        [...new Set(admitMainInterval(value).reasons)],
+        [`unexpected ${operation} read`],
+        `${operation} ${arm}`,
+      );
+      value.operations = ['directory', operation];
+      assert.deepEqual(admitMainInterval(value).reasons, []);
+    }
+});
+
+test('file and link invocations may exceed their routed reads; search pages need a call', () => {
+  for (const operation of ['file', 'link']) {
+    // Unscoped and sealed-viewer calls are invoked but never routed.
+    const extra = reads('on', operation, { platform: 'darwin' });
+    extra.after.counters.invocations[operation] = 5;
+    assert.deepEqual(admitMainInterval(extra).reasons, []);
+    const missing = reads('on', operation, { platform: 'darwin' });
+    missing.after.counters.invocations[operation] = 1;
+    expectReason(
+      admitMainInterval(missing).reasons,
+      `unexplained ${operation} invocations`,
+    );
+  }
+  for (const calls of [1, 3]) {
+    const search = reads('on', 'search', { platform: 'darwin' });
+    search.after.counters.invocations.search = calls;
+    assert.deepEqual(admitMainInterval(search).reasons, []);
+  }
+  // Every page runs inside a file-index:get call; pages without one belong
+  // to a walk that began before the interval.
+  for (const arm of ['on', 'off']) {
+    const orphaned = reads(arm, 'search', { platform: 'darwin' });
+    orphaned.after.counters.invocations.search = 0;
+    expectReason(
+      admitMainInterval(orphaned).reasons,
+      'unexplained search invocations',
+    );
   }
 });
 
-test('direct link resolutions are journaled outside the treatment in both arms', () => {
-  for (const [arm, backend] of [
-    ['on', 'daemon'],
-    ['off', 'direct'],
-  ]) {
-    const entries = [
-      read('roots', backend, 1, 'started', 6),
+test('the on-arm reads the treatment once ignored are now rejected unless the host keeps them direct', () => {
+  // The interleaved shapes admission used to journal outside the treatment.
+  const searches = (platform) => {
+    const value = interval('on', {
+      entries: [
+        read('roots', 'daemon', 1, 'started', 6),
+        read('search', 'direct', 2, 'started', 7),
+        read('search', 'direct', 3, 'started', 8),
+        read('search', 'direct', 2, 'success', 9),
+        read('search', 'direct', 3, 'success', 10),
+        read('roots', 'daemon', 1, 'success', 11),
+      ],
+    });
+    value.platform = platform;
+    value.operations = ['roots', 'search'];
+    value.after.counters = counters(
+      { roots: 1, search: 1 },
+      { ...servedRoute('roots', 1), ...directRoute('search', 2) },
+    );
+    return admitMainInterval(value);
+  };
+  const rejected = searches('darwin');
+  expectReason(rejected.reasons, 'direct read in on arm');
+  expectReason(
+    rejected.reasons,
+    'route counter files.search.direct changed by 2',
+  );
+  assert.deepEqual(searches('win32').reasons, []);
+  assert.deepEqual(searches('win32').starts, {
+    roots: 1,
+    directory: 0,
+    file: 0,
+    search: 2,
+    link: 0,
+  });
+
+  const links = interval('on', {
+    entries: [
+      read('roots', 'daemon', 1, 'started', 6),
       read('link', 'direct', 2, 'started', 7),
       read('link', 'direct', 2, 'failed', 8),
       read('file', 'direct', 3, 'started', 9),
       read('file', 'direct', 3, 'success', 10),
-      read('roots', backend, 1, 'success', 11),
-    ];
-    const value = interval(arm, { entries });
-    value.after.counters = counters(
-      { roots: 1, directory: 0, file: 1, link: 1 },
-      arm === 'on'
-        ? {
-            'files.roots.daemon': 1,
-            'files.roots.daemon.served': 1,
-            'files.roots.daemon.queries': 1,
-            'files.file.direct': 1,
-            'files.link.direct': 1,
-          }
-        : {
-            'files.roots.direct': 1,
-            'files.file.direct': 1,
-            'files.link.direct': 1,
-          },
-    );
-    const admitted = admitMainInterval(value);
-    assert.deepEqual(admitted.reasons, [], arm);
-    assert.deepEqual(admitted.starts, { roots: 1, directory: 0 });
+      read('roots', 'daemon', 1, 'success', 11),
+    ],
+  });
+  links.operations = ['roots', 'file', 'link'];
+  links.after.counters = counters(
+    { roots: 1, file: 1, link: 1 },
+    {
+      ...servedRoute('roots', 1),
+      ...directRoute('file', 1),
+      ...directRoute('link', 1),
+    },
+  );
+  for (const platform of ['darwin', 'linux']) {
+    links.platform = platform;
+    const reasons = admitMainInterval(links).reasons;
+    expectReason(reasons, 'direct read in on arm');
+    expectReason(reasons, 'read failed');
   }
+  // Direct is right on Windows, but a failed resolution is still no evidence.
+  links.platform = 'win32';
+  assert.deepEqual(admitMainInterval(links).reasons, ['read failed']);
+});
+
+test('the on-arm backends follow the production selection and the read-route table', () => {
+  for (const operation of FILES_OPERATIONS)
+    for (const platform of ['darwin', 'linux', 'win32']) {
+      const daemon =
+        DAEMON_FILES_PRODUCTION_SELECTION.has(operation) &&
+        READ_ROUTE_TABLE[`files.${operation}`][platform].kind === 'eligible';
+      assert.equal(
+        armBackend(operation, 'on', platform),
+        daemon ? 'daemon' : 'direct',
+        `${operation} ${platform}`,
+      );
+      assert.equal(armBackend(operation, 'off', platform), 'direct');
+    }
 });
 
 test('trial admission requires every component', () => {

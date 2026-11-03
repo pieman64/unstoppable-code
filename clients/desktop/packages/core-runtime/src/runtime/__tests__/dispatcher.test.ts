@@ -56,6 +56,9 @@ type WorkerQueryHandlers = Pick<
   | 'worker.git.remote.get'
   | 'worker.git.worktree.health.get'
   | 'worker.git.diff.get'
+  | 'worker.script.execution.get'
+  | 'worker.script.execution.list'
+  | 'worker.pipeline.execution.get'
 >;
 
 function handlers(
@@ -89,6 +92,15 @@ function handlers(
       throw new Error('Not exercised.');
     },
     'worker.git.diff.get': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.script.execution.get': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.script.execution.list': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.pipeline.execution.get': (): never => {
       throw new Error('Not exercised.');
     },
   };

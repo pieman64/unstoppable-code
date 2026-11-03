@@ -18,6 +18,8 @@ import { useTeamOrgShareEntryVisible } from '@/lib/share-targets';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { buildPlanReadyExecuteOptions } from '@/lib/planReadyPipelineExecuteOptions';
 import { implementTrackedPlan } from '@/lib/plans/plan-follow-up';
+import { PLAN_DISPATCH_BUSY_MESSAGE } from '@/stores/chat/plan-utils';
+import { beginPlanWorkflowDispatch } from './usePlanImplementationState';
 import { reconcileExecutedPlan } from '@/lib/plans/reconcile-tracked-plans';
 import { planLinkedExecutionIds } from '@/lib/plans/linked-executions';
 import { SHARE_PLAN_GATE_CONTEXT } from '@/lib/share-gate-context';
@@ -157,6 +159,11 @@ function usePipelineRun(
       pluginCollectionContext: PipelinePluginCollectionRunContext,
     ): Promise<void> => {
       const { projectId, worktreeId } = plan;
+      const release = beginPlanWorkflowDispatch(plan);
+      if (!release) {
+        setPipelineRunError(PLAN_DISPATCH_BUSY_MESSAGE);
+        return;
+      }
       setPipelineRunning(true);
       setPipelineRunError(null);
 
@@ -196,6 +203,7 @@ function usePipelineRun(
       } catch (error: unknown) {
         setPipelineRunError(extractIpcErrorMessage(error));
       } finally {
+        release();
         setPipelineRunning(false);
         if (succeeded) {
           setPipelineModalOpen(false);

@@ -357,6 +357,7 @@ import {
   ObservabilityService,
   resolveAuditContextWorkspaceId,
 } from '../observability/service';
+import { createDesktopObservabilityHost } from '../observability/host';
 import { getObservabilityService } from '../observability';
 import * as providerAuthState from '../auth/provider-auth-state';
 import * as nativeAccountChange from '../agents/native-account-change';
@@ -418,7 +419,7 @@ describe('Cursor account usage overview', () => {
     });
   });
   it('publishes current Cursor account allowance through the shared overview', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     mockedReadPreferencesFile.mockResolvedValue({
       ...makePreferences(30),
       cursorEnabled: true,
@@ -442,7 +443,7 @@ describe('Cursor account usage overview', () => {
   });
 
   it('deduplicates concurrent refreshes and discards an older account after disconnect', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     let finish: (value: unknown) => void = () => {};
     readCursorAccountUsageMock.mockReturnValue(
       new Promise((resolve) => {
@@ -482,7 +483,7 @@ describe('Cursor account usage overview', () => {
   });
 
   it('does not load Cursor authentication for disabled connections', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     mockedReadPreferencesFile.mockResolvedValue({
       ...makePreferences(30),
       cursorEnabled: false,
@@ -1438,7 +1439,9 @@ describe('ObservabilityService', () => {
     'round-trips an internal %s audit prompt as hidden through Portal projection',
     async (_label, startsTurn, marker) => {
       installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const privatePayload = 'Private delegated request payload';
       if (!startsTurn) startClaudeChatTurn(service, 'chat-internal');
 
@@ -1499,7 +1502,7 @@ describe('ObservabilityService', () => {
       ...makePreferences(30),
       cursorEnabled: true,
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     let resolveRead: (value: unknown) => void = () => {};
     readCursorAccountUsageMock.mockImplementation(
       () =>
@@ -1546,7 +1549,9 @@ describe('ObservabilityService', () => {
   it('normalizes and persists pipeline advisor entries with transcript index and mutable sdk session id', async () => {
     await withSystemTime('2026-05-14T00:00:00.000Z', async () => {
       const files = installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const startedAt = new Date(
         Date.now() - 12 * 60 * 60 * 1000,
       ).toISOString();
@@ -1672,7 +1677,9 @@ describe('ObservabilityService', () => {
         transcript.lines.some((line) => line.includes('agent_message')),
       ).toBe(true);
 
-      const rehydrated = new ObservabilityService();
+      const rehydrated = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       mockedReadPreferencesFile.mockResolvedValue(makePreferences(365));
       await rehydrated.start();
       const normalizedEntry = rehydrated
@@ -1738,7 +1745,7 @@ describe('ObservabilityService', () => {
       stale: false,
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = '2026-05-13T00:00:00.000Z';
     service.startObservedTask('advisor-task', {
       ...makeAuditEntry('advisor-entry', startedAt, {
@@ -1821,7 +1828,7 @@ describe('ObservabilityService', () => {
   it('does not treat empty Codex usage objects as observed usage', () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = '2026-05-13T00:00:00.000Z';
     service.startObservedTask('advisor-task', {
       ...makeAuditEntry('advisor-entry', startedAt, {
@@ -1891,7 +1898,7 @@ describe('ObservabilityService', () => {
       stale: false,
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = '2026-05-13T00:00:00.000Z';
     service.startObservedTask('org-gateway-task', {
       ...makeAuditEntry('org-gateway-entry', startedAt, {
@@ -1979,7 +1986,9 @@ describe('ObservabilityService', () => {
     ]);
 
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const startedAt = '2026-05-13T00:00:00.000Z';
       service.startObservedTask('native-additive-task', {
         ...makeAuditEntry('native-additive-entry', startedAt, {
@@ -2046,7 +2055,9 @@ describe('ObservabilityService', () => {
       mockGetOpenAiPricingForCostingSync.mockReturnValue(
         makeOpenAiPricingCacheState(),
       );
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       service.startChatTurn({
         projectId: 'proj',
@@ -2116,7 +2127,9 @@ describe('ObservabilityService', () => {
         loadedFrom: 'none',
         stale: true,
       });
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
 
       // No price list yet: the repair waits instead of marking Codex rows unpriced.
@@ -2151,7 +2164,7 @@ describe('ObservabilityService', () => {
       }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(service.loadSnapshot().retentionDays).toBe(30);
@@ -2171,7 +2184,7 @@ describe('ObservabilityService', () => {
       }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(
@@ -2193,7 +2206,7 @@ describe('ObservabilityService', () => {
       }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     service.setRetentionDays(7);
@@ -2207,7 +2220,7 @@ describe('ObservabilityService', () => {
 
   it('writes app diagnostics into app-events day files', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -2223,7 +2236,7 @@ describe('ObservabilityService', () => {
 
   it('keeps Ledger lifecycle failures in the local app-events day file', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -2244,7 +2257,7 @@ describe('ObservabilityService', () => {
 
   it('never persists or forwards a worktree or chat identifier in app-events', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     // Assembled from a wider object, the way a spread can slip identifiers
     // past the record type.
     const smuggled = {
@@ -2279,7 +2292,7 @@ describe('ObservabilityService', () => {
   });
 
   it('reports renderer process crashes to desktop instrumentation with crash context', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -2309,7 +2322,7 @@ describe('ObservabilityService', () => {
   });
 
   it('forwards only failed cloud OAuth diagnostics with privacy-safe context', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -2363,7 +2376,9 @@ describe('ObservabilityService', () => {
   it.each(['cancelled', 'replaced', 'timeout'] as const)(
     'forwards the benign cloud OAuth %s outcome as a warning operation',
     (outcome) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.recordAppDiagnostic({
         version: 1,
@@ -2402,7 +2417,7 @@ describe('ObservabilityService', () => {
   );
 
   it('forwards the cloud OAuth success stage as the attempt denominator', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -2439,7 +2454,9 @@ describe('ObservabilityService', () => {
   ])(
     'reports whether AI credits paid for a chat turn ($expected)',
     ({ aiCreditsRouted, expected }) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({
         projectId: 'proj',
@@ -2470,7 +2487,9 @@ describe('ObservabilityService', () => {
   ])(
     'reports whether AI credits paid for an agent task ($expected)',
     ({ aiCreditsRouted, expected }) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const startedAt = '2026-10-12T12:00:00.000Z';
 
       service.startObservedTask('agent-task', {
@@ -2517,7 +2536,9 @@ describe('ObservabilityService', () => {
     }
 
     it('reports why a failed turn failed and who started it', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2543,7 +2564,9 @@ describe('ObservabilityService', () => {
     });
 
     it('lets the terminal Codex failure win over an earlier usage notice', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2572,7 +2595,9 @@ describe('ObservabilityService', () => {
     });
 
     it('lets the native Codex error result win over an earlier usage notice', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2606,7 +2631,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports a Claude sub-agent failure apart from the root turn', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, provider: 'claude' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2630,7 +2657,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports a Codex sub-agent failure apart from a successful root turn', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2653,7 +2682,9 @@ describe('ObservabilityService', () => {
     it.each(['failure', 'cancelled'] as const)(
       'keeps a derived child quota notice separate from root %s',
       (outcome) => {
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         service.startChatTurn({
           ...chatTurnStart,
           sdkSessionId: 'root-thread',
@@ -2686,7 +2717,9 @@ describe('ObservabilityService', () => {
     );
 
     it('keeps a derived child auth notice separate from root cancellation', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
       service.observeChatEvent('proj', 'wt', 'chat', {
         type: 'canopy_auth_failure',
@@ -2708,7 +2741,9 @@ describe('ObservabilityService', () => {
     });
 
     it('keeps a derived Claude child auth notice separate from root cancellation', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({ ...chatTurnStart, provider: 'claude' });
       service.observeChatEvent('proj', 'wt', 'chat', {
         type: 'assistant',
@@ -2736,7 +2771,9 @@ describe('ObservabilityService', () => {
     });
 
     it('keeps root Codex failures as root evidence', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, sdkSessionId: 'root-thread' });
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -2755,7 +2792,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports other for an unrecognized failure without a detail or its text', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'portal' });
       service.completeChatTurn(
@@ -2776,7 +2815,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports setup for an unrecognized dispatch failure', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
       service.completeChatTurn(
@@ -2795,7 +2836,9 @@ describe('ObservabilityService', () => {
     });
 
     it('keeps a recognized cause for a dispatch failure', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
       service.completeChatTurn(
@@ -2820,7 +2863,9 @@ describe('ObservabilityService', () => {
 
       it('adds the latest grant status to a no_credits failure', () => {
         mockGetLastDailyCreditGrantStatus.mockReturnValue('blocked');
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
 
         service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
         service.completeChatTurn(
@@ -2839,7 +2884,9 @@ describe('ObservabilityService', () => {
 
       it('leaves it off other failures', () => {
         mockGetLastDailyCreditGrantStatus.mockReturnValue('blocked');
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
 
         service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
         service.completeChatTurn(
@@ -2857,7 +2904,9 @@ describe('ObservabilityService', () => {
       });
 
       it('leaves it off when no status is known', () => {
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
 
         service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
         service.completeChatTurn(
@@ -2875,7 +2924,9 @@ describe('ObservabilityService', () => {
     });
 
     it('omits failure properties from a successful turn', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'hook' });
       service.completeChatTurn('proj', 'wt', 'chat', 'success');
@@ -2888,7 +2939,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports an abandoned turn cause only when one was seen', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({ ...chatTurnStart, chatId: 'plain' });
       service.completeChatTurn('proj', 'wt', 'plain', 'cancelled');
@@ -2916,7 +2969,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports the analytics trigger over the initiation source', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn({
         ...chatTurnStart,
@@ -2931,7 +2986,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports unknown when no initiation source was given', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       service.startChatTurn(chatTurnStart);
       service.completeChatTurn('proj', 'wt', 'chat', 'success');
@@ -2942,7 +2999,9 @@ describe('ObservabilityService', () => {
     });
 
     it('reports an autonomous wake turn as automation', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.enableTurnStateAudit();
 
       service.startChatTurn({ ...chatTurnStart, initiationSource: 'user' });
@@ -2971,7 +3030,9 @@ describe('ObservabilityService', () => {
     });
 
     it('leaves agent task contexts without chat turn properties', () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const startedAt = '2026-10-26T12:00:00.000Z';
 
       service.startObservedTask('agent-task', {
@@ -2992,7 +3053,7 @@ describe('ObservabilityService', () => {
   });
 
   it('forwards provider access denial as a warning operation with its bounded code', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -3016,7 +3077,7 @@ describe('ObservabilityService', () => {
   });
 
   it('forwards rejected callback identities as nonterminal warning operations', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -3038,7 +3099,7 @@ describe('ObservabilityService', () => {
   });
 
   it('reports a main event-loop stall as a numeric warning operation', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -3088,7 +3149,7 @@ describe('ObservabilityService', () => {
   });
 
   it('reports critical resource pressure to desktop instrumentation as a warning operation', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordAppDiagnostic({
       version: 1,
@@ -3142,7 +3203,7 @@ describe('ObservabilityService', () => {
 
   it('writes session diagnostics into session-events day files', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordSessionDiagnostic({
       version: 1,
@@ -3206,7 +3267,7 @@ describe('ObservabilityService', () => {
     'browser_download_finished',
   ])('writes %s only to scoped session-events day files', async (kind) => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const record: SessionDiagnosticRecord = {
       version: 1,
       timestamp: '2026-04-23T12:00:00.000Z',
@@ -3235,7 +3296,7 @@ describe('ObservabilityService', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-04-23T12:00:00.000Z'));
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const dayFile =
       '/mock/observability/diagnostics/session-events/2026-04-23.jsonl';
     let emittedBytes = 0;
@@ -3322,7 +3383,7 @@ describe('ObservabilityService', () => {
       }
       return appendNow(pathArg, payloadArg);
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const flushCalls = jest.spyOn(service, 'flush');
     const record = (index: number): void => {
       service.recordSessionDiagnostic({
@@ -3365,7 +3426,7 @@ describe('ObservabilityService', () => {
   it('flushes a large diagnostic backlog in bounded batches without losing records', async () => {
     jest.useFakeTimers();
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const dayFile =
       '/mock/observability/diagnostics/session-events/2026-04-23.jsonl';
     const recordCount = 400;
@@ -3423,7 +3484,7 @@ describe('ObservabilityService', () => {
 
   it('retries a failed diagnostic append in order when another event arrives and on dispose', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const dayFile =
       '/mock/observability/diagnostics/session-events/2026-04-23.jsonl';
     const record = (index: number): void => {
@@ -3493,7 +3554,9 @@ describe('ObservabilityService', () => {
           return Promise.resolve();
         },
       );
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const record = (day: string, index: number): void => {
         const timestamp = `${day}T12:00:00.000Z`;
         if (diagnosticType === 'session') {
@@ -3582,7 +3645,9 @@ describe('ObservabilityService', () => {
           return Promise.resolve();
         },
       );
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const record = (day: string, id: string): void => {
         const timestamp = `${day}T12:00:00.000Z`;
         if (family === 'usage') {
@@ -3658,7 +3723,7 @@ describe('ObservabilityService', () => {
         files.set(filePath, `${files.get(filePath) ?? ''}${String(payload)}`);
       },
     );
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.recordUsageMetricEvent(
       makePipelineUsageEvent({
         id: 'usage-once',
@@ -3697,7 +3762,7 @@ describe('ObservabilityService', () => {
         files.set(filePath, `${files.get(filePath) ?? ''}${String(payload)}`);
       },
     );
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const record = (key: string, label: string): void => {
       service.startObservedTask(key, {
         ...makeAuditEntry('same-entry-id', '2026-04-23T12:00:00.000Z', {
@@ -3734,7 +3799,7 @@ describe('ObservabilityService', () => {
 
   it('appends a queued transcript sidecar in bounded chunks', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const key = 'bounded-sidecar';
     service.startObservedTask(key, {
       ...makeAuditEntry(key, '2026-04-23T12:00:00.000Z', {
@@ -3781,7 +3846,7 @@ describe('ObservabilityService', () => {
 
   it('exposes OpenCode accounts in snapshots without persisting their labels', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     publishOpenCodeAccounts({
       status: 'ready',
       updatedAt: '2026-10-21T23:00:00Z',
@@ -3817,7 +3882,7 @@ describe('ObservabilityService', () => {
 
   it('does not serialize a diagnostic backlog on both enqueue and flush', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const recordCount =
       process.env.CANOPY_OBSERVER_BACKLOG_MEASURE === '1' ? 2_000 : 400;
     const stringifySpy = jest.spyOn(JSON, 'stringify');
@@ -3871,7 +3936,9 @@ describe('ObservabilityService', () => {
     'queues a diagnostic with a transient %s property without synchronous serialization',
     async (shape) => {
       const files = installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const record = {
         version: 1 as const,
         timestamp: '2026-04-23T12:00:00.000Z',
@@ -3900,7 +3967,7 @@ describe('ObservabilityService', () => {
   );
 
   it('retries snapshot persistence after a failed replacement during a diagnostic flush', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     mockedRename.mockRejectedValueOnce(new Error('synthetic rename failure'));
 
     await service.flush();
@@ -3927,7 +3994,7 @@ describe('ObservabilityService', () => {
 
   it('persists changes to nested updatedAt content beside timestamp-looking text', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = new Date().toISOString();
     const label =
       'Literal "usage": { "updatedAt": "2026-01-01T00:00:00.000Z" }';
@@ -3970,7 +4037,7 @@ describe('ObservabilityService', () => {
 
   it('efficiency: leaves an unchanged snapshot untouched after a diagnostic-only flush', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.flush();
     const initialReplacements = mockedRename.mock.calls.filter(
       ([destination]) =>
@@ -3999,7 +4066,7 @@ describe('ObservabilityService', () => {
 
   it('recreates an externally removed snapshot on a diagnostic-only flush', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.flush();
     const snapshotPath = '/mock/observability/snapshot.json';
     const original = files.get(snapshotPath);
@@ -4045,7 +4112,7 @@ describe('ObservabilityService', () => {
         ctimeNs: identity,
       });
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.flush();
     const original = files.get(snapshotPath);
     if (!original) throw new Error('Missing initial snapshot');
@@ -4073,7 +4140,7 @@ describe('ObservabilityService', () => {
 
   it('retries unchanged snapshot persistence when its identity cannot be verified', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.flush();
     const initialReplacements = mockedRename.mock.calls.length;
     mockedStat.mockRejectedValueOnce(new Error('synthetic stat failure'));
@@ -4096,7 +4163,7 @@ describe('ObservabilityService', () => {
 
   it('finds Workflow Editor entries by either the stored or the current label', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = new Date().toISOString();
     // Entries persisted before the rename keep their stored label.
     service.startObservedTask(
@@ -4128,7 +4195,7 @@ describe('ObservabilityService', () => {
 
   it('preserves a Cursor audit entry through persistence and service reload', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startObservedTask(
       'cursor-task',
       makeAuditEntry('cursor-entry', new Date().toISOString(), {
@@ -4144,7 +4211,7 @@ describe('ObservabilityService', () => {
     });
     await service.flush();
     await service.dispose();
-    const reloaded = new ObservabilityService();
+    const reloaded = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await reloaded.start();
       const history = await reloaded.loadHistory({ limit: 10 });
@@ -4199,7 +4266,7 @@ describe('ObservabilityService', () => {
     );
     mockedReadPreferencesFile.mockResolvedValue(makePreferences(7));
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const history = await service.loadHistory({ limit: 10 });
@@ -4231,7 +4298,9 @@ describe('ObservabilityService', () => {
         );
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       mockedReadFile.mockClear();
       try {
@@ -4261,7 +4330,7 @@ describe('ObservabilityService', () => {
   });
 
   it('filters recent in-memory entries by history date range before merging', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startObservedTask(
       'recent-before',
       makeAuditEntry('recent-before', '2026-04-19T23:59:59.999Z'),
@@ -4292,7 +4361,7 @@ describe('ObservabilityService', () => {
       ]),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startObservedTask(
       'outside-recent',
       makeAuditEntry('outside-recent', '2026-04-22T00:00:00.000Z'),
@@ -4339,7 +4408,9 @@ describe('ObservabilityService', () => {
         return Promise.reject(new Error(`Unexpected path: ${pathArg}`));
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const history = await service.loadHistory({ limit: 10 });
 
       expect(history.entries.map((entry) => entry.id)).toEqual([
@@ -4374,7 +4445,9 @@ describe('ObservabilityService', () => {
         return Promise.reject(new Error(`Unexpected path: ${pathArg}`));
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       try {
         const history = await service.loadHistory({
@@ -4447,7 +4520,9 @@ describe('ObservabilityService', () => {
         return Promise.reject(new Error(`Unexpected path: ${pathArg}`));
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const response = await service.loadUsageTimeseries({
         startDate: '2026-04-20T00:00:00.000Z',
         endDate: '2026-04-22T00:00:00.000Z',
@@ -4485,7 +4560,9 @@ describe('ObservabilityService', () => {
 
   it('loads hourly, daily, and weekly usage timeseries buckets', async () => {
     await withSystemTime('2026-04-22T00:00:00.000Z', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       try {
         service.startObservedTask(
@@ -4562,7 +4639,7 @@ describe('ObservabilityService', () => {
   });
 
   it('returns an empty usage timeseries for an empty range', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startObservedTask(
       'outside-usage',
       makeAuditEntry('outside-usage', '2026-04-20T12:00:00.000Z'),
@@ -4593,7 +4670,9 @@ describe('ObservabilityService', () => {
         ]),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startObservedTask(
         'duplicate-entry',
         makeAuditEntry('duplicate-entry', '2026-04-20T12:00:00.000Z', {
@@ -4619,7 +4698,7 @@ describe('ObservabilityService', () => {
   });
 
   it('loads Claude live usage limits from the OAuth usage endpoint', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4660,7 +4739,7 @@ describe('ObservabilityService', () => {
       error: null,
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4684,7 +4763,7 @@ describe('ObservabilityService', () => {
       error: null,
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4706,7 +4785,7 @@ describe('ObservabilityService', () => {
       },
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4728,7 +4807,7 @@ describe('ObservabilityService', () => {
       },
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4801,7 +4880,7 @@ describe('ObservabilityService', () => {
       ),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -4878,7 +4957,7 @@ describe('ObservabilityService', () => {
       ),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const extraUsage = service
@@ -4921,7 +5000,7 @@ describe('ObservabilityService', () => {
       ),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const extraUsage = service
@@ -4953,7 +5032,7 @@ describe('ObservabilityService', () => {
       }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
 
@@ -5006,7 +5085,7 @@ describe('ObservabilityService', () => {
     permissionError.code = 'EACCES';
     mockedReadFile.mockRejectedValue(permissionError);
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5037,7 +5116,7 @@ describe('ObservabilityService', () => {
     });
     mockedReadFile.mockResolvedValue('not-json');
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5115,7 +5194,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
 
@@ -5193,7 +5272,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5233,7 +5312,7 @@ describe('ObservabilityService', () => {
       ): void => callback(new Error('PowerShell failed')),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5287,7 +5366,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5331,7 +5410,7 @@ describe('ObservabilityService', () => {
       }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshProviderUsage('claude');
       const summary = service
@@ -5354,7 +5433,7 @@ describe('ObservabilityService', () => {
   });
 
   it('omits Ollama from usage providers', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(
@@ -5387,9 +5466,15 @@ describe('ObservabilityService', () => {
           },
         ],
       });
-      const service = new ObservabilityService();
-      const disabled = new ObservabilityService();
-      const restored = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
+      const disabled = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
+      const restored = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.refreshProviderUsage('cursor');
         const retained = service.loadSnapshot().usage.accountSnapshots;
@@ -5452,7 +5537,9 @@ describe('ObservabilityService', () => {
         ),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.refreshProviderUsage('claude');
 
@@ -5474,7 +5561,9 @@ describe('ObservabilityService', () => {
         await service.dispose();
       }
 
-      const rehydrated = new ObservabilityService();
+      const rehydrated = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await rehydrated.start();
         expect(rehydrated.loadSnapshot().usage.accountSnapshots).toEqual([
@@ -5504,7 +5593,9 @@ describe('ObservabilityService', () => {
         ),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.refreshProviderUsage('claude');
         const retainedBeforeFailure =
@@ -5544,7 +5635,9 @@ describe('ObservabilityService', () => {
       const clock = installDateNowClock(Date.parse('2026-03-26T10:00:00Z'));
       nativeAccountChange.nativeAccountChangeTestSeams.reset();
       clearAllProviderQuotaReached();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const writeStarted = createDeferred<void>();
       const releaseWrite = createDeferred<void>();
@@ -5647,7 +5740,9 @@ describe('ObservabilityService', () => {
           { status: 200 },
         ),
       );
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.start();
         restored.mockClear();
@@ -5672,7 +5767,9 @@ describe('ObservabilityService', () => {
         .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
         .mockResolvedValue(true);
       fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 100));
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.start();
         restored.mockClear();
@@ -5732,7 +5829,9 @@ describe('ObservabilityService', () => {
             ? modern(100)
             : createClaudeUsageResponse(10, 100),
         );
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         try {
           await service.start();
           restored.mockClear();
@@ -5817,7 +5916,9 @@ describe('ObservabilityService', () => {
         fetchMock.mockResolvedValueOnce(
           direction === 'modern to legacy' ? modern(100) : legacy(100),
         );
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         try {
           await service.start();
           restored.mockClear();
@@ -5862,7 +5963,9 @@ describe('ObservabilityService', () => {
           { status: 200 },
         ),
       );
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.start();
         restored.mockClear();
@@ -5913,7 +6016,9 @@ describe('ObservabilityService', () => {
         .spyOn(nativeAccountChange, 'recordNativeSubscriptionRestored')
         .mockResolvedValue(true);
       fetchMock.mockResolvedValueOnce(createClaudeUsageResponse(10, 100));
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         await service.start();
         restored.mockClear();
@@ -5946,7 +6051,9 @@ describe('ObservabilityService', () => {
     });
 
     it('uses one same-account HTTP read for a burst after interactive freshness expires', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       mockedCheckClaudeAuthStatusObserved.mockClear();
@@ -5977,7 +6084,9 @@ describe('ObservabilityService', () => {
     });
 
     it('does not lose the newest publication when an auth read finishes after an older HTTP read', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       mockedCheckClaudeAuthStatusObserved.mockClear();
@@ -6032,7 +6141,9 @@ describe('ObservabilityService', () => {
     });
 
     it('skips an interactive read while the same account is still fresh', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
 
@@ -6045,7 +6156,9 @@ describe('ObservabilityService', () => {
     });
 
     it('fetches for a new login even when the previous account is fresh', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       mockedCheckClaudeAuthStatusObserved.mockResolvedValue({
@@ -6071,7 +6184,9 @@ describe('ObservabilityService', () => {
     });
 
     it('blocks all same-account triggers during a 429 cooldown and retains only that account', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const seeded = service
         .getUsageOverview()
@@ -6162,7 +6277,9 @@ describe('ObservabilityService', () => {
     });
 
     it('clears a 429 error on the first successful read after cooldown', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const clock = installDateNowClock(Date.now());
       fetchMock.mockClear();
@@ -6196,7 +6313,9 @@ describe('ObservabilityService', () => {
     });
 
     it('publishes a cold 429 retry time without inventing usage numbers', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       fetchMock.mockResolvedValueOnce(
         new Response('too many requests', {
           status: 429,
@@ -6226,7 +6345,9 @@ describe('ObservabilityService', () => {
     });
 
     it('retains same-account values on a 5xx but does not cooldown the next read', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const seeded = service
         .getUsageOverview()
@@ -6274,7 +6395,9 @@ describe('ObservabilityService', () => {
     ] as const)(
       'does not schedule a Claude turn refresh billed by %s',
       async (_label, accountKind, aiCreditsRouted, accountProxyRouted) => {
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         await service.start();
         fetchMock.mockClear();
         const billingKind = jest
@@ -6309,7 +6432,9 @@ describe('ObservabilityService', () => {
     );
 
     it('debounces ten subscription turn completions into one trailing read', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const billingKind = jest
@@ -6358,7 +6483,9 @@ describe('ObservabilityService', () => {
     });
 
     it('bounds recurring Claude turn refreshes by a five-minute max wait', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const billingKind = jest
@@ -6397,7 +6524,9 @@ describe('ObservabilityService', () => {
 
     it('allows only a matching subscription SDK rate-limit event to patch usage', async () => {
       installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const identity = jest
@@ -6477,7 +6606,9 @@ describe('ObservabilityService', () => {
     });
 
     it('ignores Claude SDK events for non-subscription, absent-basis, mismatched-account, or alias payloads', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const identity = jest
@@ -6632,7 +6763,9 @@ describe('ObservabilityService', () => {
           fetchMock.mockResolvedValueOnce(
             new Response(JSON.stringify(legacyPayload), { status: 200 }),
           );
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         await service.start();
         fetchMock.mockClear();
         const identity = jest
@@ -6779,7 +6912,9 @@ describe('ObservabilityService', () => {
     ])(
       'preserves per-field observation order for $name',
       async ({ name, info, expectedUsage, expectedReset }) => {
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         await service.start();
         fetchMock.mockClear();
         const identity = jest
@@ -6887,7 +7022,9 @@ describe('ObservabilityService', () => {
   ])(
     'retains SDK fields omitted by a later $name',
     async ({ window, expectedUsage, expectedReset }) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const identity = jest
@@ -6968,7 +7105,9 @@ describe('ObservabilityService', () => {
   ])(
     'retains an SDK-patched window omitted by the $name',
     async ({ observeBeforeRead }) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       fetchMock.mockClear();
       const identity = jest
@@ -7060,7 +7199,7 @@ describe('ObservabilityService', () => {
   );
 
   it('includes Codex account state in usage providers', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(findProviderUsage(service, 'codex')).toEqual({
@@ -7074,7 +7213,7 @@ describe('ObservabilityService', () => {
   it('keeps Claude auth state even when live usage limits cannot be fetched', async () => {
     fetchMock.mockRejectedValueOnce(new Error('usage unavailable'));
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -7121,7 +7260,7 @@ describe('ObservabilityService', () => {
       rateLimits: {},
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const summary = service
@@ -7149,7 +7288,7 @@ describe('ObservabilityService', () => {
       },
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(findProviderUsage(service, 'codex')).toMatchObject({
@@ -7169,7 +7308,7 @@ describe('ObservabilityService', () => {
       new Error('codex account authentication required to read rate limits'),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const codexUsage = findProviderUsage(service, 'codex');
@@ -7185,7 +7324,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not force authenticated invalidation during Claude usage refreshes', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     try {
       await service.refreshProviderUsage('claude');
@@ -7216,7 +7355,7 @@ describe('ObservabilityService', () => {
       rateLimits: Record<string, never>;
     }>();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readAccountMock.mockClear();
     readRateLimitsMock.mockClear();
@@ -7279,7 +7418,7 @@ describe('ObservabilityService', () => {
       rateLimits: Record<string, never>;
     }>();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readRateLimitsMock.mockClear();
     readRateLimitsMock
@@ -7310,7 +7449,7 @@ describe('ObservabilityService', () => {
   });
 
   it('merges concurrent public Claude refreshes into one usage fetch', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     fetchMock.mockClear();
     mockedCheckClaudeAuthStatusObserved.mockClear();
@@ -7335,7 +7474,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not let a post-login Claude refresh join a read that started before the login', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     const preLoginAuth =
       createDeferred<
@@ -7377,7 +7516,7 @@ describe('ObservabilityService', () => {
   });
 
   it('lets a desktop refresh supersede a Remote Control Claude read, which later requests then join', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     const preLoginAuth =
       createDeferred<
@@ -7433,7 +7572,7 @@ describe('ObservabilityService', () => {
       rateLimits: Record<string, never>;
     }>();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readRateLimitsMock.mockClear();
     readRateLimitsMock
@@ -7477,7 +7616,7 @@ describe('ObservabilityService', () => {
       rateLimits: Record<string, never>;
     }>();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readRateLimitsMock.mockClear();
     readRateLimitsMock
@@ -7509,7 +7648,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not retry Codex usage for unrelated unauthorized responses', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     jest.clearAllMocks();
 
@@ -7539,7 +7678,7 @@ describe('ObservabilityService', () => {
   });
 
   it('classifies a Codex usage-endpoint 404 as unsupported with the raw detail preserved', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     jest.clearAllMocks();
 
@@ -7562,7 +7701,7 @@ describe('ObservabilityService', () => {
   });
 
   it('retries Codex usage with a fresh monitor when account changes revoke the old token', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     jest.clearAllMocks();
 
@@ -7646,7 +7785,7 @@ describe('ObservabilityService', () => {
       rateLimits: Record<string, never>;
     }>();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     jest.clearAllMocks();
 
@@ -7705,7 +7844,7 @@ describe('ObservabilityService', () => {
       accountUpdatedListeners.push(listener);
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     jest.clearAllMocks();
 
@@ -7762,7 +7901,7 @@ describe('ObservabilityService', () => {
       hasRemainingLimits: true,
       accountLabel: 'first',
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.start();
       await service.refreshProviderUsage('copilot');
@@ -7815,7 +7954,7 @@ describe('ObservabilityService', () => {
   });
 
   it('refreshes Claude live usage after a completed provider turn', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     execFileMock.mockClear();
     fetchMock.mockClear();
@@ -7862,7 +8001,7 @@ describe('ObservabilityService', () => {
         accountEmail: 'account-a@example.com',
         planType: 'max',
       });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.startChatTurn({
       projectId: 'proj',
@@ -7903,7 +8042,7 @@ describe('ObservabilityService', () => {
         accountEmail: 'account@example.com',
         planType: 'pro',
       });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = new Date().toISOString();
 
     service.startObservedTask(
@@ -7933,7 +8072,7 @@ describe('ObservabilityService', () => {
   });
 
   it('records separate deferred reload prompts for different enabled resources', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -7975,7 +8114,7 @@ describe('ObservabilityService', () => {
   });
 
   it('labels App Advisor chat turns with an App Advisor audit target', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     service.startChatTurn({
@@ -8010,7 +8149,7 @@ describe('ObservabilityService', () => {
 
   it('labels Workflow Editor chat turns with a Workflow Editor audit target', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     service.startChatTurn({
@@ -8080,7 +8219,7 @@ describe('ObservabilityService', () => {
 
   it('carries the cowork project id in the standalone-chat link target', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const coworkWorkspaceId = 'cowork-acme-workspace';
@@ -8122,7 +8261,7 @@ describe('ObservabilityService', () => {
   });
 
   it('refreshes Codex live usage after terminal provider turns', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readAccountMock.mockClear();
     readRateLimitsMock.mockClear();
@@ -8166,7 +8305,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not refresh live usage when pipeline agent turns complete', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     execFileMock.mockClear();
     fetchMock.mockClear();
@@ -8197,7 +8336,7 @@ describe('ObservabilityService', () => {
       rateLimits: {},
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
     readAccountMock.mockClear();
     readRateLimitsMock.mockClear();
@@ -8250,7 +8389,7 @@ describe('ObservabilityService', () => {
   });
 
   it('records plan-explore chat turns under the worktree_plan_chat event type', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.startChatTurn({
       projectId: PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -8283,7 +8422,7 @@ describe('ObservabilityService', () => {
   });
 
   it('buffers split JSONL stdout records until a full line arrives', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.observePipelineOutput({
@@ -8313,7 +8452,7 @@ describe('ObservabilityService', () => {
   });
 
   it('keeps concurrent matrix job agent turns in distinct audit streams', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const childStep = (
       startedAt: string,
     ): {
@@ -8384,7 +8523,7 @@ describe('ObservabilityService', () => {
   });
 
   it('tracks each iteration separately while preserving the iteration-one key', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const iterationStep = (startedAt: string): StepResult => ({
       status: 'running' as const,
       outputs: {},
@@ -8465,7 +8604,7 @@ describe('ObservabilityService', () => {
   // row, so that phantom scores as a real agent turn and inflates the very
   // metric this change exists to fix.
   it('does not mint a phantom entry at the restarting iteration boundary', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const terminalStep = (startedAt: string): StepResult => ({
       status: 'success' as const,
       outputs: {},
@@ -8512,7 +8651,7 @@ describe('ObservabilityService', () => {
   });
 
   it('tracks iteration history nested inside a retry attempt', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const completedStep = (
       startedAt: string,
       completedAt: string,
@@ -8574,7 +8713,7 @@ describe('ObservabilityService', () => {
   });
 
   it('stores the pipeline snapshot name on pipeline agent audit entries', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     const entry = loadOnlyRecentEntry(service);
@@ -8583,7 +8722,7 @@ describe('ObservabilityService', () => {
   });
 
   it('updates pipeline provider and session id from observed Codex output', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -8624,7 +8763,7 @@ describe('ObservabilityService', () => {
   it('updates live Codex pipeline details and transcript from streamed projected events', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -8756,7 +8895,7 @@ describe('ObservabilityService', () => {
   it('records a Cursor pipeline step with provider cursor and non-zero usage from streamed patch/usage lines', () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -8845,7 +8984,7 @@ describe('ObservabilityService', () => {
 
   it('does not label an unrecognized pipeline provider as Claude', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       const state = makeRunningPipelineState();
       // Persisted execution state can come from a newer app version.
@@ -8874,7 +9013,9 @@ describe('ObservabilityService', () => {
       const kindSpy = jest
         .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
         .mockReturnValue('subscription');
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         const state = makeRunningPipelineState();
         const step: StepResult = {
@@ -8983,7 +9124,7 @@ describe('ObservabilityService', () => {
 
   it('tracks OpenCode pipeline identity, patches and reported usage', () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -9044,7 +9185,7 @@ describe('ObservabilityService', () => {
   });
 
   it('persists OpenCode assistant patches for durable transcript replay', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     installMockFilesystem();
     service.startChatTurn({
       projectId: 'proj',
@@ -9071,7 +9212,7 @@ describe('ObservabilityService', () => {
     const entry = loadOnlyRecentEntry(service);
     await service.flush();
     await service.dispose();
-    const reloaded = new ObservabilityService();
+    const reloaded = new ObservabilityService(createDesktopObservabilityHost());
     try {
       const transcript = await reloaded.loadTranscript({
         id: entry.id,
@@ -9092,7 +9233,7 @@ describe('ObservabilityService', () => {
   it('accumulates Codex token usage across structured-output retry turns', () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -9206,7 +9347,7 @@ describe('ObservabilityService', () => {
   });
 
   it('ignores Codex usage before or outside the active provider turn', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -9285,7 +9426,7 @@ describe('ObservabilityService', () => {
   });
 
   it('derives Codex audit totals from cumulative snapshots across responses and turns', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -9414,7 +9555,7 @@ describe('ObservabilityService', () => {
   });
 
   it('accumulates terminal Codex usage by turn when cumulative snapshots are unavailable', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -9452,7 +9593,7 @@ describe('ObservabilityService', () => {
   });
 
   it('uses terminal Codex usage only for turns without cumulative snapshots', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -9519,7 +9660,7 @@ describe('ObservabilityService', () => {
   });
 
   it('accepts live agent-loop stdout events in the iteration wrapper shape', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.observePipelineOutput({
@@ -9540,7 +9681,9 @@ describe('ObservabilityService', () => {
     'replays a persisted Cursor error with preceding assistant text: %s',
     async (withAssistantText) => {
       installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({
         projectId: 'proj',
         worktreeId: 'wt',
@@ -9579,7 +9722,9 @@ describe('ObservabilityService', () => {
       const entry = loadOnlyRecentEntry(service);
       await service.flush();
       await service.dispose();
-      const reloaded = new ObservabilityService();
+      const reloaded = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       try {
         const transcript = await reloaded.loadTranscript({
           id: entry.id,
@@ -9605,7 +9750,7 @@ describe('ObservabilityService', () => {
 
   it('persists live Cursor patches and terminal results for transcript replay', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -9714,7 +9859,7 @@ describe('ObservabilityService', () => {
     );
     await service.flush();
     await service.dispose();
-    const reloaded = new ObservabilityService();
+    const reloaded = new ObservabilityService(createDesktopObservabilityHost());
     try {
       const reloadedUsage = await reloaded.loadUsageMetrics(usageRequest);
       expect(reloadedUsage.chats.turnCountsByProvider?.rows).toEqual(
@@ -9793,7 +9938,7 @@ describe('ObservabilityService', () => {
 
   it('keeps one Claude audit turn open across repeated preludes and persists all later output', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     startClaudeChatTurn(service);
     const prelude = {
       type: 'result',
@@ -9911,7 +10056,7 @@ describe('ObservabilityService', () => {
 
   it('counts Cursor blocks once across empty starts, appended chunks and repeated tool updates', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10016,7 +10161,7 @@ describe('ObservabilityService', () => {
     // one at all (CAN-1814 review round 3).
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     startClaudeChatTurn(service);
     service.observeChatEvent('proj', 'wt', 'chat', {
       type: 'assistant',
@@ -10066,7 +10211,7 @@ describe('ObservabilityService', () => {
     const kindSpy = jest
       .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
       .mockReturnValue('api_key');
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       startClaudeChatTurn(service);
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -10115,7 +10260,7 @@ describe('ObservabilityService', () => {
 
   it('keeps background child transcript events on the original turn after a new root turn starts', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10198,7 +10343,7 @@ describe('ObservabilityService', () => {
 
   it('stores stream-backed delegation envelopes as locators, never accumulating child rows', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10272,7 +10417,7 @@ describe('ObservabilityService', () => {
 
   it('shares one transcript byte budget across late delegation sidecar states', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10342,7 +10487,7 @@ describe('ObservabilityService', () => {
 
   it('cannot recreate a purged worktree transcript from a late delegation event', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10409,7 +10554,7 @@ describe('ObservabilityService', () => {
   it('persists synthetic Codex startup failures for transcript replay', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10466,7 +10611,7 @@ describe('ObservabilityService', () => {
     // silently starts persisting unrelated internal chat traffic.
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     startClaudeChatTurn(service);
     service.observeChatEvent('proj', 'wt', 'chat', {
       type: 'assistant',
@@ -10500,7 +10645,7 @@ describe('ObservabilityService', () => {
   it('captures pipeline prompt records into transcript sidecars', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.observePipelineOutput({
@@ -10554,7 +10699,7 @@ describe('ObservabilityService', () => {
   it('attaches pipeline worker projected messages to the pipeline transcript sidecar', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.observePipelineOutput({
@@ -10598,7 +10743,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not recreate finalized pipeline entries when completed snapshots replay', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.observePipelineOutput({
@@ -10643,7 +10788,7 @@ describe('ObservabilityService', () => {
   });
 
   it('stores pipeline session ids from step outputs on completion', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     service.syncPipelineExecutionState({
@@ -10679,7 +10824,7 @@ describe('ObservabilityService', () => {
   });
 
   it('uses persisted pipeline gateway provenance without consulting the current catalog', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState(makeRunningPipelineState());
 
     const completedState = makeCompletedPipelineState();
@@ -10707,7 +10852,9 @@ describe('ObservabilityService', () => {
       .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
       .mockReturnValue('subscription');
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.syncPipelineExecutionState(makeRunningPipelineState());
 
       const completedState = makeCompletedPipelineState();
@@ -10738,7 +10885,9 @@ describe('ObservabilityService', () => {
       .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
       .mockReturnValue('subscription');
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startObservedTask('helper:proxy', {
         id: 'helper-proxy',
         eventType: 'local_memory_consolidation',
@@ -10774,7 +10923,7 @@ describe('ObservabilityService', () => {
   });
 
   it('uses pipeline step model config overrides for Codex service tier', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.syncPipelineExecutionState({
       ...makeRunningPipelineState(),
@@ -10815,7 +10964,7 @@ describe('ObservabilityService', () => {
         }),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = makeStartedAt(0);
     service.startObservedTask('task-1', {
       ...makeAuditEntry('task-1', startedAt),
@@ -10875,7 +11024,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10935,7 +11084,7 @@ describe('ObservabilityService', () => {
   });
 
   it('observes Claude-compatible Ollama chat events without reclassifying them as Claude', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -10983,7 +11132,7 @@ describe('ObservabilityService', () => {
 
   it('keeps the tracked Claude model when a synthetic session-limit message is observed', async () => {
     installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.startChatTurn({
       projectId: 'proj',
@@ -11051,7 +11200,9 @@ describe('ObservabilityService', () => {
   it('deducts ask-user pause time from chat turn duration statistics', async () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       service.startChatTurn({
         projectId: 'proj',
@@ -11097,7 +11248,9 @@ describe('ObservabilityService', () => {
   it('records a session diagnostic when a finalized turn duration is implausible', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const recordSessionDiagnostic = jest.spyOn(
         service,
         'recordSessionDiagnostic',
@@ -11140,7 +11293,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not record a session diagnostic for an unscoped observed task', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const recordSessionDiagnostic = jest.spyOn(
       service,
       'recordSessionDiagnostic',
@@ -11172,7 +11325,9 @@ describe('ObservabilityService', () => {
   it('does not diagnose a duration at the plausibility ceiling', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const recordSessionDiagnostic = jest.spyOn(
         service,
         'recordSessionDiagnostic',
@@ -11202,7 +11357,7 @@ describe('ObservabilityService', () => {
   });
 
   it('counts normalized and raw Codex dynamic tool calls by shared category', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -11258,7 +11413,7 @@ describe('ObservabilityService', () => {
   });
 
   it('counts Codex collab spawnAgent once and ignores control-plane collab calls', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -11314,7 +11469,7 @@ describe('ObservabilityService', () => {
   });
 
   it('attributes Codex child usage from the public chat event path without retaining prompts', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -11437,7 +11592,9 @@ describe('ObservabilityService', () => {
       stale: false,
     });
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({
         projectId: 'proj',
         worktreeId: 'wt',
@@ -11548,7 +11705,7 @@ describe('ObservabilityService', () => {
       stale: false,
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -11677,7 +11834,7 @@ describe('ObservabilityService', () => {
   });
 
   it('keeps accumulating Codex child usage after a completed chat turn reopens', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const observe = (event: Record<string, unknown>): void => {
       service.observeChatEvent('proj', 'wt', 'chat', {
         type: 'codex',
@@ -11724,7 +11881,7 @@ describe('ObservabilityService', () => {
   });
 
   it('carries idle Codex child usage into the next chat turn without replaying totals', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const observe = (event: Record<string, unknown>): void => {
       service.observeChatEvent('proj', 'wt', 'chat', {
         type: 'codex',
@@ -11801,7 +11958,7 @@ describe('ObservabilityService', () => {
   });
 
   it('keeps late Codex child events pending while a Claude turn is open', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     startClaudeChatTurn(service);
     const observe = (event: Record<string, unknown>): void => {
       service.observeChatEvent('proj', 'wt', 'chat', {
@@ -11883,7 +12040,7 @@ describe('ObservabilityService', () => {
   });
 
   it('keeps Codex child usage scoped to each open pipeline step', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.syncPipelineExecutionState({
       id: 'exec-1',
       pipeline_id: 'pipeline-1',
@@ -11966,7 +12123,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not guess a Codex child model from the parent when the child is unpriced', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12007,7 +12164,7 @@ describe('ObservabilityService', () => {
   });
 
   it('keeps Codex audit sdkSessionId pinned to the root thread', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12039,7 +12196,7 @@ describe('ObservabilityService', () => {
   });
 
   it('records local PR generation when Codex creates a PR via gh', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12083,7 +12240,7 @@ describe('ObservabilityService', () => {
   });
 
   it('records created pull requests as PR activity entries', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     service.recordCreatedPullRequest({
       projectId: 'proj',
@@ -12111,7 +12268,7 @@ describe('ObservabilityService', () => {
   });
 
   it('records local PR generation when Codex creates a PR via gh with global options', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12151,7 +12308,7 @@ describe('ObservabilityService', () => {
   });
 
   it('recognizes gh pr new as a PR creation command', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12191,7 +12348,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not record local PR generation when gh pr create is only mentioned', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12228,7 +12385,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not record local PR generation for unrelated gh subcommands', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12267,7 +12424,9 @@ describe('ObservabilityService', () => {
   it.each(['Bash', 'PowerShell'] as const)(
     'records local PR generation when Claude creates a PR via %s',
     (toolName) => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({
         projectId: 'proj',
         worktreeId: 'wt',
@@ -12325,7 +12484,7 @@ describe('ObservabilityService', () => {
   );
 
   it('does not record local PR generation from failed Claude Bash results', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12429,7 +12588,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12493,7 +12652,7 @@ describe('ObservabilityService', () => {
 
   it('creates a separate audit and sidecar when steering starts a new root turn', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12550,7 +12709,7 @@ describe('ObservabilityService', () => {
 
   it('records an in-turn steering prompt without replacing the running audit', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     startClaudeChatTurn(service);
     const originalId = loadOnlyRecentEntry(service).id;
     service.observeSteeringInput({
@@ -12580,7 +12739,7 @@ describe('ObservabilityService', () => {
 
   it('appends a session-ended task notification after the chat transcript retired', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12622,7 +12781,7 @@ describe('ObservabilityService', () => {
 
   it('drains an unawaited finalized transcript append during dispose', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12686,7 +12845,7 @@ describe('ObservabilityService', () => {
     const billingKindSpy = jest
       .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
       .mockReturnValue('subscription');
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       service.startChatTurn({
         projectId: 'proj',
@@ -12752,7 +12911,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not reopen a completed Claude chat turn for a late Claude child frame', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12792,7 +12951,7 @@ describe('ObservabilityService', () => {
 
   it('records a late Claude child frame in the finalized transcript once', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -12935,7 +13094,9 @@ describe('ObservabilityService', () => {
     }
 
     it('never reopens an entry from a raw continuation item', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       canonicalChat(service);
       completeUserTurn(service);
       service.observeChatEvent('proj', 'wt', 'chat', continuation('Raw'));
@@ -12946,7 +13107,9 @@ describe('ObservabilityService', () => {
     });
 
     it("counts a wake's output that arrives before its commit", async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const chat = canonicalChat(service);
       completeUserTurn(service);
       chat.receipt({ current: record('wake', 'autonomous') });
@@ -12978,7 +13141,9 @@ describe('ObservabilityService', () => {
     });
 
     it("records a wake's terminal result that arrives after its committed end", async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const chat = canonicalChat(service);
       completeUserTurn(service);
       chat.receipt({ current: record('wake', 'autonomous') });
@@ -13002,7 +13167,9 @@ describe('ObservabilityService', () => {
     });
 
     it('gives each wake of one coalesced commit its own entry', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const chat = canonicalChat(service);
       completeUserTurn(service);
       let lastEnded: ChatTurnRecord | undefined;
@@ -13032,7 +13199,9 @@ describe('ObservabilityService', () => {
     });
 
     it('leaves a dispatched Claude turn, which starts autonomous, to its dispatcher', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const chat = canonicalChat(service);
       completeUserTurn(service);
       service.startChatTurn({
@@ -13060,7 +13229,9 @@ describe('ObservabilityService', () => {
     });
 
     it('lets a wake with no root output give up its place', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const chat = canonicalChat(service);
       completeUserTurn(service);
       chat.receipt({ current: record('silent', 'autonomous') });
@@ -13091,7 +13262,7 @@ describe('ObservabilityService', () => {
     const billingKindSpy = jest
       .spyOn(providerAuthState, 'peekProviderBillingAccountKind')
       .mockReturnValue('api_key');
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       service.startChatTurn({
         projectId: 'proj',
@@ -13202,7 +13373,7 @@ describe('ObservabilityService', () => {
       },
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -13281,7 +13452,7 @@ describe('ObservabilityService', () => {
   it('writes chat transcript sidecars and flips hasTranscript after the first append', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -13321,7 +13492,7 @@ describe('ObservabilityService', () => {
   it('stores helper-task transcript sidecars with seeded prompt metadata', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = '2026-03-30T12:34:56.000Z';
     const entry = makeAuditEntry('helper-branch-1', startedAt, {
       eventType: 'branch_naming',
@@ -13387,7 +13558,9 @@ describe('ObservabilityService', () => {
     'reloads injected %s organization memory from the sidecar',
     async (provider) => {
       installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.startChatTurn({
         projectId: 'proj',
         worktreeId: 'wt',
@@ -13405,7 +13578,9 @@ describe('ObservabilityService', () => {
 
       const entry = loadOnlyRecentEntry(service);
       await service.dispose();
-      const reloaded = new ObservabilityService();
+      const reloaded = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const response = await reloaded.loadTranscript({
         id: entry.id,
         eventType: entry.eventType,
@@ -13426,7 +13601,7 @@ describe('ObservabilityService', () => {
   );
 
   it('persists usage metric events and includes pending events in summaries', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const event: UsageMetricEvent = {
       version: 1,
       id: 'chat-turn-completed:entry-1',
@@ -13515,7 +13690,7 @@ describe('ObservabilityService', () => {
   });
 
   it('preserves chat start metadata for completion events after started events flush', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -13555,7 +13730,7 @@ describe('ObservabilityService', () => {
   });
 
   it('finishes shutdown audit flushing even when the Claude ledger write fails', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     jest
       .spyOn(claudeCostLedger.getClaudeSessionCostLedger(), 'flush')
       .mockRejectedValueOnce(new Error('Ledger write unavailable'));
@@ -13567,7 +13742,7 @@ describe('ObservabilityService', () => {
   });
 
   it('preserves Claude session spend across teardown in the parrot regression', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const result = (total: number): void => {
       service.observeChatEvent('proj', 'wt', 'chat', {
         type: 'result',
@@ -13603,7 +13778,9 @@ describe('ObservabilityService', () => {
   it('records consecutive Claude chat costs as per-turn deltas', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13625,7 +13802,9 @@ describe('ObservabilityService', () => {
   it('starts a new Claude cost epoch on an explicit conversation reset', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13654,7 +13833,9 @@ describe('ObservabilityService', () => {
   it('starts a new Claude cost epoch when the SDK session changes without a cumulative drop', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13678,7 +13859,9 @@ describe('ObservabilityService', () => {
   it('retains completed cost segments when the SDK session changes within one turn', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13698,7 +13881,9 @@ describe('ObservabilityService', () => {
   it('recomputes repeated Claude results from one entry baseline', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13720,7 +13905,9 @@ describe('ObservabilityService', () => {
   it('retains completed cost segments when Claude resets within one turn', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13745,7 +13932,9 @@ describe('ObservabilityService', () => {
   it('preserves a Claude entry baseline when a completed turn is revived', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13779,7 +13968,9 @@ describe('ObservabilityService', () => {
   it('records zero Claude cost and zero tokens for an unchanged cumulative wakeup', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13814,7 +14005,7 @@ describe('ObservabilityService', () => {
   });
 
   it('isolates cumulative Claude cost tracking by chat identity', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     startClaudeChatTurn(service, 'chat-a');
     observeClaudeResult(service, 4, { chatId: 'chat-a' });
@@ -13835,7 +14026,9 @@ describe('ObservabilityService', () => {
   it('retains Claude session cost baselines on explicit session interruption', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13857,7 +14050,9 @@ describe('ObservabilityService', () => {
   it('preserves accrued Claude cost when an interrupted entry is revived after tracker cleanup', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13893,7 +14088,9 @@ describe('ObservabilityService', () => {
   it('retains Claude session cost baselines while another provider is used', () => {
     jest.useFakeTimers();
     try {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13937,7 +14134,9 @@ describe('ObservabilityService', () => {
     jest.useFakeTimers();
     try {
       installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
 
       jest.setSystemTime(new Date('2026-05-26T12:00:00.000Z'));
       startClaudeChatTurn(service);
@@ -13960,7 +14159,7 @@ describe('ObservabilityService', () => {
   it('records observed cost on completed chat turn usage events', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -14020,7 +14219,7 @@ describe('ObservabilityService', () => {
   it('keeps tokens but drops every dollar field for organization gateway turns', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const startedAt = '2026-05-26T11:59:00.000Z';
     service.startObservedTask(
       'chat:proj/wt/chat',
@@ -14078,7 +14277,7 @@ describe('ObservabilityService', () => {
   });
 
   it('does not publish desktop AI Credits estimates as Gateway actual savings', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -14119,7 +14318,7 @@ describe('ObservabilityService', () => {
   });
 
   it('prices a switch-induced cache miss as cache reads for the Auto benchmark', () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -14194,7 +14393,9 @@ describe('ObservabilityService', () => {
         ]),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const response = await service.loadUsageTimeseries({
         startDate: '2026-05-26T00:00:00.000Z',
         endDate: '2026-05-27T00:00:00.000Z',
@@ -14270,7 +14471,7 @@ describe('ObservabilityService', () => {
       })}\n`,
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const response = await service.loadUsageTimeseries({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14328,7 +14529,9 @@ describe('ObservabilityService', () => {
         ]),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const request: UsageTimeseriesRequest = {
         startDate: '2026-05-26T00:00:00.000Z',
         endDate: '2026-05-27T00:00:00.000Z',
@@ -14388,7 +14591,9 @@ describe('ObservabilityService', () => {
         ]),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const response = await service.loadUsageTimeseries({
         startDate: '2026-05-26T00:00:00.000Z',
         endDate: '2026-05-27T00:00:00.000Z',
@@ -14440,7 +14645,7 @@ describe('ObservabilityService', () => {
       ].join('\n') + '\n',
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const response = await service.loadUsageTimeseries({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14499,7 +14704,7 @@ describe('ObservabilityService', () => {
       return Promise.reject(new Error('ENOENT'));
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const summary = await service.loadUsageMetrics({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14584,7 +14789,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const allReposSummary = await service.loadUsageMetrics({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14667,7 +14872,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const summary = await service.loadUsageMetrics({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14717,7 +14922,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.loadUsageTabSummary({ tab: 'pipelines' });
 
     expect(mockedReaddir).not.toHaveBeenCalledWith('/mock/observability');
@@ -14778,7 +14983,9 @@ describe('ObservabilityService', () => {
         return Promise.reject(new Error('ENOENT'));
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const firstSummary = await service.loadUsageTabSummary({ tab: 'tokens' });
       const secondSummary = await service.loadUsageTabSummary({
         tab: 'tokens',
@@ -14848,7 +15055,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const summary = await service.loadUsageMetrics({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -14926,7 +15133,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const summary = await service.loadUsageMetrics({
       startDate: '2026-05-26T00:00:00.000Z',
       endDate: '2026-05-27T00:00:00.000Z',
@@ -15004,7 +15211,7 @@ describe('ObservabilityService', () => {
       );
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const view = await service.loadUsageMetricsView({
       tab: 'pipelines',
       metric: 'pipeline_runs_completed',
@@ -15032,7 +15239,9 @@ describe('ObservabilityService', () => {
 
   it('loads pipeline tab cards, count series, and duration distributions', async () => {
     await withSystemTime('2026-05-27T12:00:00.000Z', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       service.recordUsageMetricEvent(
         makePipelineUsageEvent({
           id: 'pipeline-run-started:exec-1',
@@ -15157,7 +15366,7 @@ describe('ObservabilityService', () => {
   });
 
   it('groups pipeline metrics by pipeline, project, and worktree without repo fields', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.recordUsageMetricEvent(
       makePipelineUsageEvent({
         id: 'pipeline-run-completed:deploy-1',
@@ -15254,7 +15463,7 @@ describe('ObservabilityService', () => {
   });
 
   it('omits pipeline breakdown rows that do not contribute to the selected metric', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.recordUsageMetricEvent(
       makePipelineUsageEvent({
         id: 'pipeline-run-started:started-only',
@@ -15327,7 +15536,7 @@ describe('ObservabilityService', () => {
   });
 
   it('groups pipeline trigger sources only when an explicit trigger is present', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.recordUsageMetricEvent(
       makePipelineUsageEvent({
         id: 'pipeline-run-completed:hook',
@@ -15386,7 +15595,7 @@ describe('ObservabilityService', () => {
       ].join('\n'),
     );
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const response = await service.loadTranscript({
       id: 'entry-1',
       eventType: 'worktree_chat',
@@ -15433,7 +15642,7 @@ describe('ObservabilityService', () => {
   });
 
   it('returns not_available when a transcript sidecar is missing', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
 
     await expect(
       service.loadTranscript({
@@ -15447,7 +15656,7 @@ describe('ObservabilityService', () => {
   it('writes a truncation marker when a chat transcript exceeds the byte cap', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -15499,7 +15708,7 @@ describe('ObservabilityService', () => {
   it('does not mark transcripts available when only the truncation marker is persisted', async () => {
     installMockFilesystem();
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     service.startChatTurn({
       projectId: 'proj',
       worktreeId: 'wt',
@@ -15624,7 +15833,7 @@ describe('ObservabilityService', () => {
       return Promise.resolve(contents);
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const purgePromise = service.purgeWorktreeData('proj', 'wt-1');
 
     await auditReadStarted;
@@ -15697,7 +15906,9 @@ describe('ObservabilityService', () => {
     'purges chat wait records of a canonical $kind task scope with its worktree',
     async ({ scopeFor, projectId }) => {
       const files = installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const recordFailedWait = (taskId: string): void =>
         startChatWaitOperation({
           name: 'watcher.setup',
@@ -15738,7 +15949,7 @@ describe('ObservabilityService', () => {
 
   it('drops unwritten session diagnostics of a worktree in a persisted-only purge', async () => {
     const files = installMockFilesystem();
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const recordFailedWait = (worktreeId: string): void =>
       startChatWaitOperation({
         name: 'watcher.cancel_local_scope',
@@ -15778,7 +15989,9 @@ describe('ObservabilityService', () => {
     'purges session diagnostics recorded after their worktree purge (written: $written)',
     async ({ written }) => {
       const files = installMockFilesystem();
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const late: SessionDiagnosticRecord[] = [];
       const recordFailedWait = (worktreeId: string): void =>
         startChatWaitOperation({
@@ -15888,7 +16101,7 @@ describe('ObservabilityService', () => {
       return Promise.resolve([]);
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     expect(mockedRm).toHaveBeenCalledWith(
@@ -15985,7 +16198,9 @@ describe('ObservabilityService', () => {
         return Promise.resolve(verified);
       });
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
 
       expect(deleted).not.toContain(auditPath);
@@ -16002,7 +16217,9 @@ describe('ObservabilityService', () => {
         }),
       );
 
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
 
       expect(deleted).toContain(auditPath);
@@ -16035,7 +16252,7 @@ describe('ObservabilityService', () => {
       }
     });
 
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.start();
 
     const removed = mockedRm.mock.calls.map(([pathArg]) => String(pathArg));
@@ -16105,7 +16322,9 @@ describe('ObservabilityService', () => {
     it.each(['failure', 'cancelled', 'interrupted'] as const)(
       'does not emit citation tracking for a %s turn',
       async (status) => {
-        const service = new ObservabilityService();
+        const service = new ObservabilityService(
+          createDesktopObservabilityHost(),
+        );
         await service.start();
         const loadTranscriptSpy = jest
           .spyOn(service, 'loadTranscript')
@@ -16124,7 +16343,9 @@ describe('ObservabilityService', () => {
     );
 
     it('does not emit citation tracking when the stored transcript is truncated', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       jest
         .spyOn(service, 'loadTranscript')
@@ -16140,7 +16361,9 @@ describe('ObservabilityService', () => {
 
     it('does not load the transcript when local memory is disabled', async () => {
       mockIsLocalMemoryCitationTrackingEnabled.mockResolvedValueOnce(false);
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const loadTranscriptSpy = jest
         .spyOn(service, 'loadTranscript')
@@ -16157,7 +16380,9 @@ describe('ObservabilityService', () => {
     });
 
     it('does not schedule citation tracking before the service starts', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       const loadTranscriptSpy = jest
         .spyOn(service, 'loadTranscript')
         .mockResolvedValue(makeTranscriptResponse(false));
@@ -16172,7 +16397,9 @@ describe('ObservabilityService', () => {
     });
 
     it('does not schedule citation tracking once disposal has begun', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       const loadTranscriptSpy = jest
         .spyOn(service, 'loadTranscript')
@@ -16187,7 +16414,9 @@ describe('ObservabilityService', () => {
     });
 
     it('tracks citations for a successful turn with an untruncated transcript', async () => {
-      const service = new ObservabilityService();
+      const service = new ObservabilityService(
+        createDesktopObservabilityHost(),
+      );
       await service.start();
       jest
         .spyOn(service, 'loadTranscript')
@@ -16220,7 +16449,7 @@ describe('Copilot account usage overview', () => {
     mockCopilotEnabled.mockReturnValue(false);
   });
   it('coalesces reads, clears immediately and ignores both stale successes and errors', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     let finish: (value: unknown) => void = () => {};
     mockReadCopilotUsage.mockReturnValue(
       new Promise((resolve) => {
@@ -16271,7 +16500,7 @@ describe('Copilot account usage overview', () => {
     ).toBe('new');
   });
   it('does not read authentication or quotas while disabled', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     const usageEvents = jest.fn();
     service.subscribe((event) => {
       if (event.type === 'usage') usageEvents();
@@ -16288,7 +16517,7 @@ describe('Copilot account usage overview', () => {
     expect(usageEvents).not.toHaveBeenCalled();
   });
   it('drops previous account data when a fresh read fails', async () => {
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     mockReadCopilotUsage.mockResolvedValue({
       provider: 'copilot',
       authState: 'authenticated',
@@ -16329,7 +16558,7 @@ describe('Copilot account usage overview', () => {
         },
       ],
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     await service.refreshProviderUsage('copilot');
     expect(service.getUsageOverview().providers).toContainEqual(
       expect.objectContaining({
@@ -16373,7 +16602,7 @@ describe('canonical account proxy quota projection', () => {
       status: 'success',
       rateLimits: [{ primary: { usedPercent: 42 } }],
     });
-    const service = new ObservabilityService();
+    const service = new ObservabilityService(createDesktopObservabilityHost());
     try {
       await service.refreshAccountProxyUsage({
         interactive: true,

@@ -15,6 +15,7 @@ import {
   ControlSelect,
   McpConnectionStatusBadge,
 } from '@canopy/ui-shared';
+import { ErrorBanner, Notice } from '@canopy/ui-shared/components';
 import {
   mcpAuthStatusBadgeClass,
   mcpAuthStatusLabel,
@@ -388,41 +389,50 @@ function TestResultPanel({
 }: {
   outcome: McpTestConnectionOutcome;
 }): JSX.Element {
+  const showError =
+    outcome.error !== undefined && outcome.error !== outcome.message;
+  const tools = outcome.tools ?? [];
+  const showTools = tools.length > 0;
   return (
-    <div
+    <Notice
+      intent={outcome.success ? 'positive' : 'destructive'}
       role="status"
       data-testid="mcp-health-result"
       data-success={outcome.success ? 'true' : 'false'}
-      className={`space-y-1 rounded-lg px-3 py-2 text-xs ${
-        outcome.success
-          ? 'bg-success-subtle fg-success-strong'
-          : 'bg-destructive-subtle fg-destructive'
-      }`}
+      title={outcome.success ? 'Connection succeeded' : 'Connection failed'}
+      actions={
+        outcome.responseTime !== undefined ? (
+          <span className="tabular-nums">
+            {`${Math.round(outcome.responseTime)} ms`}
+          </span>
+        ) : undefined
+      }
+      detail={
+        showError || showTools ? (
+          <>
+            {showError && (
+              <p
+                data-testid="mcp-health-result-error"
+                className={`break-words ${REPLAY_BLOCK_CLASS}`}
+              >
+                {outcome.error}
+              </p>
+            )}
+            {showTools && (
+              <p
+                data-testid="mcp-health-result-tools"
+                className={`break-words ${REPLAY_BLOCK_CLASS}`}
+              >
+                {`${tools.length} tool${tools.length === 1 ? '' : 's'}: ${tools.join(', ')}`}
+              </p>
+            )}
+          </>
+        ) : undefined
+      }
     >
-      <p className="font-medium">
-        {outcome.success ? 'Connection succeeded' : 'Connection failed'}
-        {outcome.responseTime !== undefined &&
-          ` · ${Math.round(outcome.responseTime)} ms`}
-      </p>
       {/* Server output can carry credentials; keep it out of session replay. */}
-      <p className={REPLAY_BLOCK_CLASS}>{outcome.message}</p>
-      {outcome.error !== undefined && outcome.error !== outcome.message && (
-        <p
-          data-testid="mcp-health-result-error"
-          className={`break-words ${REPLAY_BLOCK_CLASS}`}
-        >
-          {outcome.error}
-        </p>
-      )}
-      {outcome.tools !== undefined && outcome.tools.length > 0 && (
-        <p
-          data-testid="mcp-health-result-tools"
-          className={`break-words fg-secondary ${REPLAY_BLOCK_CLASS}`}
-        >
-          {`${outcome.tools.length} tool${outcome.tools.length === 1 ? '' : 's'}: ${outcome.tools.join(', ')}`}
-        </p>
-      )}
-    </div>
+      <span className={REPLAY_BLOCK_CLASS}>{outcome.message}</span>
+    </Notice>
   );
 }
 
@@ -657,15 +667,7 @@ function McpServerManagementActionsForTarget({
           })}
         </ul>
       )}
-      {error !== null && (
-        <p
-          role="alert"
-          data-testid="mcp-management-error"
-          className="text-xs fg-destructive"
-        >
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error} testId="mcp-management-error" />
       {confirmingDelete && (
         <ConfirmDialog
           title={`Delete ${serverName}?`}

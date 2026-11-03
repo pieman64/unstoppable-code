@@ -34,7 +34,10 @@ import { usePlanDiagramRevealRequest } from '@/components/plan-explore/usePlanDi
 import { usePlanFollowUpActions } from '@/components/plan-explore/usePlanFollowUpActions';
 import { usePlanPanelCommentSubmit } from '@/components/plan-explore/usePlanPanelCommentSubmit';
 import { useSharedPlanCommentPull } from '@/components/plan-explore/usePlanViewData';
-import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
 import {
   planDiagramPanelTitle,
@@ -265,7 +268,12 @@ function PlanPanelBody({
         >
           <Suspense
             fallback={
-              <LoadingPlaceholder label="Loading diagram…" className="flex-1" />
+              <DelayedLoadingPlaceholder
+                className="flex-1"
+                slowNote="Still loading diagram…"
+              >
+                <CenteredLoadingSpinner className="my-12" />
+              </DelayedLoadingPlaceholder>
             }
           >
             <PlanVisualizer

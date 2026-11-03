@@ -1,6 +1,6 @@
 import { DeferredPluginsControl } from '@canopy/ui-shared';
+import { DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   AgentProviderType,
   ChatTabPluginSelections,
@@ -14,7 +14,6 @@ import { RecommendedPluginsSettingsPanel } from '../worktree/RecommendedPluginsS
 import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
 import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { subtractPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Button } from '@canopy/ui-shared/components';
 
 interface ChatPluginsModalProps {
@@ -184,115 +183,44 @@ export function ChatPluginsModal({
     setAllowDeferredTools(deferredToolsAllowed);
   }, [deferredToolsAllowed]);
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      if (e.key === 'Escape' && !saving) onClose();
-    }
-    // Listen where the dialog renders: a popped-out composer's keys never
-    // reach the main window's document.
-    const targetDocument = ownerDocument ?? document;
-    targetDocument.addEventListener('keydown', onKeyDown);
-    return (): void => targetDocument.removeEventListener('keydown', onKeyDown);
-  }, [onClose, saving, ownerDocument]);
-
   const showRecommended = Boolean(projectId && worktreeId);
 
-  // Portaled so a transformed host, such as the Home composer shell, cannot
-  // trap the overlay in its stacking context under later page content.
-  return createPortal(
-    <div className="fixed inset-0 z-modal flex items-center justify-center bg-overlay-scrim p-4">
-      {/* The card records; `PluginSelector`'s table blocks its capability
-          rows. */}
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="flex w-full max-w-2xl flex-col rounded-xl bg-card shadow-xl"
-        style={{ maxHeight: '80vh' }}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <h2 className="text-m font-semibold fg-primary">Plugins</h2>
+  // DialogModal portals into `ownerDocument` (a popped-out composer's
+  // window), so a transformed host, such as the Home composer shell, cannot
+  // trap the overlay in its stacking context under later page content. It
+  // listens for Escape there too, and stays open while a save runs.
+  return (
+    <DialogModal
+      onClose={onClose}
+      title="Plugins"
+      maxWidth="2xl"
+      inset="flush"
+      scrollableBody={false}
+      closeOnBackdrop={!saving}
+      closeButtonDisabled={saving}
+      ownerDocument={ownerDocument}
+      footer={
+        <>
+          {showDeferredToolsToggle && (
+            <div className="mr-auto">
+              <DeferredPluginsControl
+                allowed={allowDeferredTools}
+                disabled={saving}
+                onChange={setAllowDeferredTools}
+              />
+            </div>
+          )}
           <Button
-            variant="ghost"
+            variant="secondary"
             size="compact"
-            iconOnly
             onClick={onClose}
             disabled={saving}
-            aria-label="Close"
           >
-            <AppCatalogCloseIcon width="14" height="14" />
+            Cancel
           </Button>
-        </div>
-
-        {showRecommended && projectId && (
-          <div className="max-h-[40vh] shrink-0 overflow-y-auto px-5 pt-3">
-            <RecommendedPluginsSettingsPanel
-              projectId={projectId}
-              worktreeId={worktreeId}
-              repoId={repoId}
-              hideWhenEmpty
-              onAppliedSelections={(newDefaults) => {
-                setSanitizedSelections(null);
-                if (!inheritedDefaults) {
-                  setSelections((current) =>
-                    mergeChatPluginSelections(current, newDefaults),
-                  );
-                  return;
-                }
-                // The chat inherits project defaults, so a new default shows
-                // as inherited and checked instead of joining the chat's own
-                // selection. Defaults the chat turned off stay off.
-                const previousDefaults =
-                  appliedProjectDefaults ?? inheritedDefaults.project;
-                const added = previousDefaults
-                  ? subtractPluginSelections(newDefaults, previousDefaults)
-                  : normalizePluginSelections(newDefaults);
-                setSelections((current) =>
-                  mergeChatPluginSelections(current, added),
-                );
-                setAppliedProjectDefaults(
-                  normalizePluginSelections(newDefaults),
-                );
-              }}
-            />
-          </div>
-        )}
-
-        {/* min-h-0 + flex keep PluginSelector height-constrained so its
-            internal table scrolls instead of overflowing the 80vh dialog */}
-        <div
-          data-testid="plugin-picker-region"
-          className={`flex min-h-0 flex-1 flex-col${saving ? ' pointer-events-none opacity-60' : ''}`}
-        >
-          <PluginSelector
-            selections={selections}
-            onChange={handleSelectionsChange}
-            providerScope={providerScope}
-            onSanitizedChange={handleSanitizedChange}
-            lockedSkillRefs={lockedSkillRefs}
-            lockedSelections={lockedSelections}
-            inheritedDefaults={pickerInheritedDefaults}
-          />
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between gap-3 border-t px-5 py-3">
-          {saveError && (
-            <p className="text-xs text-destructive" role="alert">
-              {saveError}
-            </p>
-          )}
-          {showDeferredToolsToggle && (
-            <DeferredPluginsControl
-              allowed={allowDeferredTools}
-              disabled={saving}
-              onChange={setAllowDeferredTools}
-            />
-          )}
           <Button
             variant="primary"
             size="compact"
-            className="ml-auto"
             onClick={() => {
               if (
                 sanitizedSelections ||
@@ -325,9 +253,61 @@ export function ChatPluginsModal({
           >
             {saving ? 'Saving…' : 'Save'}
           </Button>
+        </>
+      }
+    >
+      {/* The card records; `PluginSelector`'s table blocks its capability
+          rows. */}
+      {showRecommended && projectId && (
+        <div className="max-h-[40vh] shrink-0 overflow-y-auto px-6 pt-3">
+          <RecommendedPluginsSettingsPanel
+            projectId={projectId}
+            worktreeId={worktreeId}
+            repoId={repoId}
+            hideWhenEmpty
+            onAppliedSelections={(newDefaults) => {
+              setSanitizedSelections(null);
+              if (!inheritedDefaults) {
+                setSelections((current) =>
+                  mergeChatPluginSelections(current, newDefaults),
+                );
+                return;
+              }
+              // The chat inherits project defaults, so a new default shows
+              // as inherited and checked instead of joining the chat's own
+              // selection. Defaults the chat turned off stay off.
+              const previousDefaults =
+                appliedProjectDefaults ?? inheritedDefaults.project;
+              const added = previousDefaults
+                ? subtractPluginSelections(newDefaults, previousDefaults)
+                : normalizePluginSelections(newDefaults);
+              setSelections((current) =>
+                mergeChatPluginSelections(current, added),
+              );
+              setAppliedProjectDefaults(normalizePluginSelections(newDefaults));
+            }}
+          />
         </div>
+      )}
+
+      {/* min-h-0 + flex keep PluginSelector height-constrained so its
+        internal table scrolls instead of overflowing the 80vh dialog */}
+      <div
+        data-testid="plugin-picker-region"
+        className={`flex min-h-0 flex-1 flex-col${saving ? ' pointer-events-none opacity-60' : ''}`}
+      >
+        <PluginSelector
+          selections={selections}
+          onChange={handleSelectionsChange}
+          providerScope={providerScope}
+          onSanitizedChange={handleSanitizedChange}
+          lockedSkillRefs={lockedSkillRefs}
+          lockedSelections={lockedSelections}
+          inheritedDefaults={pickerInheritedDefaults}
+        />
       </div>
-    </div>,
-    (ownerDocument ?? document).body,
+
+      <ErrorBanner error={saveError} className="mx-6 mb-3" />
+    </DialogModal>
   );
 }

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 
-test('local Collections row offers Share in its actions menu', async ({}, testInfo) => {
+test('local Collections row offers Share in its menu', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
 
   try {
@@ -35,18 +35,12 @@ test('local Collections row offers Share in its actions menu', async ({}, testIn
       .filter({ hasText: 'Demo Collection' });
     await expect(row).toBeVisible();
 
-    await window.screenshot({
-      path: testInfo.outputPath('collections-table-with-share-icon.png'),
-      fullPage: true,
-    });
-
-    // The former per-row share icon is now the row's ⋯ menu Share item.
-    const menuTestId = (await row.getAttribute('data-testid')).replace(
-      /^customize-row-/,
-      'customize-row-menu-',
+    const entryId = (await row.getAttribute('data-testid')).replace(
+      'customize-row-',
+      '',
     );
-    await window.getByTestId(menuTestId).click();
-    const share = window.getByTestId(`${menuTestId}-share`);
+    await window.getByTestId(`customize-row-menu-${entryId}`).click();
+    const share = window.getByTestId(`customize-row-menu-${entryId}-share`);
     await expect(share).toBeVisible();
     await expect(share).toHaveAccessibleName('Share…');
     await expect(share).toBeEnabled();

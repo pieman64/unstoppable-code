@@ -120,7 +120,7 @@ export function PipelineExecutionActionBar({
           disabled={isRetrying}
         >
           <RetryIcon width={13} height={13} />
-          {isRetrying ? 'Retrying…' : 'Retry'}
+          {isRetrying ? 'Trying again…' : 'Try again'}
         </Button>
       )}
       {canRerun && (

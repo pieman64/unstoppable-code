@@ -57,10 +57,18 @@ import type {
   ReviewAnnotation,
   ReviewCommentAnchor,
 } from '@canopy/desktop-shared/types';
-import { FileChangeMetadata } from '@canopy/ui-shared/components';
+import {
+  FileChangeMetadata,
+  ErrorBanner,
+  ErrorState,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import type { FileImageSaveSupport } from '@canopy/protocol/file-image-save';
 import { desktopDiagramSaveDestination } from '@/lib/diagramSaveDestination';
-import { LoadingPlaceholder } from '@/components/shared';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
 import {
   isTurnDiffUnavailable,
@@ -892,7 +900,13 @@ function DesktopSharedFileViewerImpl({
       onRenderFailure,
       renderKind: slotKind,
     }: FileRichDocumentSlot): JSX.Element => (
-      <Suspense fallback={<LoadingPlaceholder />}>
+      <Suspense
+        fallback={
+          <DelayedLoadingPlaceholder>
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
+        }
+      >
         {slotKind === 'docx' ? (
           <LazyDocxPreview
             bytes={bytes}
@@ -1212,7 +1226,9 @@ function DesktopSharedFileViewerImpl({
         <Suspense
           fallback={
             <div className="flex min-h-0 flex-1 items-center justify-center">
-              <LoadingPlaceholder />
+              <DelayedLoadingPlaceholder>
+                <CenteredLoadingSpinner className="my-12" />
+              </DelayedLoadingPlaceholder>
             </div>
           }
         >
@@ -1385,14 +1401,13 @@ function DesktopSharedFileViewerImpl({
       </div>
     ) : null;
   const localActionErrorNotice = visibleLocalActionError ? (
-    <span
-      role="alert"
-      data-testid="file-viewer-local-action-error"
-      title={visibleLocalActionError}
-      className="mx-1 min-w-0 max-w-64 truncate text-xs fg-destructive"
-    >
-      {visibleLocalActionError}
-    </span>
+    <div className="mx-1 min-w-0 max-w-64">
+      <ErrorBanner
+        error={visibleLocalActionError}
+        className=""
+        testId="file-viewer-local-action-error"
+      />
+    </div>
   ) : null;
   const headerActions = existingDiffHeaderAction;
   // After the viewer's source toggle, ahead of the host's panel chrome.
@@ -1523,15 +1538,17 @@ function DesktopSharedFileViewerImpl({
   // and the Monaco editor, Monaco diff, and diff view each carry a block.
   if (error) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-s fg-destructive">
-        {error}
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <ErrorState space="panel" message={error} />
       </div>
     );
   }
   if (!request) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <LoadingPlaceholder />
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
@@ -1586,11 +1603,11 @@ function DesktopSharedFileViewerImpl({
                     {diffContext.source === 'turn' ? (
                       <span>Historical turn comparison</span>
                     ) : (
-                      <select
+                      <SettingsSelect
+                        width="fit"
                         aria-label="Diff source"
                         value={diffContext.source}
-                        onChange={(event): void => {
-                          const source = event.target.value;
+                        onValueChange={(source): void => {
                           if (!isSelectableDiffSource(source)) return;
                           setFileTabViewMode(
                             tabId,
@@ -1599,18 +1616,18 @@ function DesktopSharedFileViewerImpl({
                             { ...diffContext, source },
                           );
                         }}
-                        className="rounded bg-base ring-1 ring-inset ring-line-base"
-                      >
-                        {(!availableDiffSources ||
-                          availableDiffSources.includes('uncommitted')) && (
-                          <option value="uncommitted">Uncommitted</option>
-                        )}
-                        {(!availableDiffSources ||
-                          availableDiffSources.includes('committed')) && (
-                          <option value="committed">Committed</option>
-                        )}
-                        <option value="combined">All branch changes</option>
-                      </select>
+                        options={[
+                          ...(!availableDiffSources ||
+                          availableDiffSources.includes('uncommitted')
+                            ? [{ value: 'uncommitted', label: 'Uncommitted' }]
+                            : []),
+                          ...(!availableDiffSources ||
+                          availableDiffSources.includes('committed')
+                            ? [{ value: 'committed', label: 'Committed' }]
+                            : []),
+                          { value: 'combined', label: 'All branch changes' },
+                        ]}
+                      />
                     )}
                     {availableAnnotations.length > 0 &&
                       (diffContext.source === 'combined' ? (
@@ -1677,7 +1694,7 @@ function DesktopSharedFileViewerImpl({
                         variant="primary"
                         onClick={() => setDiffRevision((value) => value + 1)}
                       >
-                        Retry
+                        Try again
                       </NoticeButton>
                     }
                   >
@@ -1707,9 +1724,17 @@ function DesktopSharedFileViewerImpl({
                     }
                   />
                 ) : !snapshot ? (
-                  <LoadingPlaceholder />
+                  <DelayedLoadingPlaceholder>
+                    <CenteredLoadingSpinner className="my-12" />
+                  </DelayedLoadingPlaceholder>
                 ) : (
-                  <Suspense fallback={<LoadingPlaceholder />}>
+                  <Suspense
+                    fallback={
+                      <DelayedLoadingPlaceholder>
+                        <CenteredLoadingSpinner className="my-12" />
+                      </DelayedLoadingPlaceholder>
+                    }
+                  >
                     {snapshot.data.binary || snapshot.data.imagePreview ? (
                       <DiffMediaView
                         {...snapshot.data}

@@ -719,9 +719,7 @@ test('bordered rows highlight under the pointer', async () => {
     const lastScope = window.getByTestId(
       'pipeline-execution-scope-row-directory',
     );
-    await expect(
-      window.getByTestId('pipeline-execution-scope-directory'),
-    ).toBeDisabled();
+    await expect(lastScope).toBeDisabled();
     await lastScope.hover();
     await expect.poll(() => backgroundOf(lastScope)).not.toBe(subtle);
   } finally {

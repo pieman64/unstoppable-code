@@ -5,10 +5,12 @@ import {
   isScriptDefinition,
   isScriptInteractiveSupported,
   normalizeScriptDefinition,
+  normalizeScriptInputMap,
   normalizeScriptName,
   PROJECT_LIFECYCLE_SCRIPT_NAMES,
   type ProjectLifecycleScriptName,
   type ScriptDefinition,
+  type ScriptInputMap,
   type ScriptValue,
 } from '@canopy/protocol/scripts';
 import type {
@@ -559,4 +561,38 @@ export function resolveLocalScriptMap(
     }
   }
   return resolved;
+}
+
+/** A change to one script in a target's own settings. */
+export type CoreScriptLocalChange =
+  | { kind: 'set'; name: string; value: ScriptValue }
+  | { kind: 'remove'; name: string };
+
+/**
+ * The per-script changes that turn a target's own settings into `desired`,
+ * comparing both as the settings writer stores them. Unchanged scripts get no
+ * change, so applying the plan never touches a script the caller kept.
+ */
+export function planLocalScriptChanges(
+  current: ScriptSourceMap | undefined,
+  desired: ScriptInputMap | undefined,
+): CoreScriptLocalChange[] {
+  // Maps, so a name such as `constructor` is never mistaken for a setting.
+  const stored = new Map(
+    Object.entries(normalizeScriptInputMap(current) ?? {}),
+  );
+  const next = new Map(Object.entries(normalizeScriptInputMap(desired) ?? {}));
+  const changes: CoreScriptLocalChange[] = [];
+  for (const [name, value] of next) {
+    if (
+      !stored.has(name) ||
+      JSON.stringify(stored.get(name)) !== JSON.stringify(value)
+    ) {
+      changes.push({ kind: 'set', name, value });
+    }
+  }
+  for (const name of stored.keys()) {
+    if (!next.has(name)) changes.push({ kind: 'remove', name });
+  }
+  return changes;
 }

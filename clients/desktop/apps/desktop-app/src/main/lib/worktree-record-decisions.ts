@@ -1,13 +1,25 @@
 import type {
+  WorktreeRecordTarget,
+  WorktreeIncarnation,
+  WorkspaceAdditionDecision,
+  WorkspaceCreationDecision,
+  WorktreeCreationReservationDecision,
+  WorktreeCreationReservationPreconditions,
+  WorktreeCreationReservationOutcome,
+  ReservedWorktreeTarget,
+  WorktreeCreationPromoteDecision,
+  WorktreeCreationSetupDecision,
+  WorktreeCreationReservationRemovalDecision,
+} from '@canopy/desktop-shared/node/worktree-record-decisions';
+
+import type {
   AdhocMultiRepoTransitionSource,
   CanopyJsonRepoEntry,
   ChatTabPluginSelections,
   CoworkSidebarItem,
   CoworkWorkspaceSettings,
   DependentBaseBranchUpdate,
-  MultiRepoSidebarItem,
   SidebarItem,
-  SingleRepoSidebarItem,
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
@@ -15,12 +27,28 @@ import type {
   WorkspaceRepoData,
   WorktreeChatBadgesSummary,
   WorktreeCompatibilitySymlink,
-  WorktreeCreationIdentity,
   WorktreeData,
   WorktreeDiscovery,
   WorktreeHealthIssue,
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types';
+
+export type {
+  WorktreeRecordTarget,
+  WorktreeIncarnation,
+  WorkspaceAdditionDecision,
+  WorkspaceCreationPublishDecision,
+  WorkspaceImportPublishDecision,
+  WorkspaceCreationDecision,
+  WorkspaceSidebarWrite,
+  WorktreeCreationReservationDecision,
+  WorktreeCreationReservationPreconditions,
+  WorktreeCreationReservationOutcome,
+  ReservedWorktreeTarget,
+  WorktreeCreationPromoteDecision,
+  WorktreeCreationSetupDecision,
+  WorktreeCreationReservationRemovalDecision,
+} from '@canopy/desktop-shared/node/worktree-record-decisions';
 
 /**
  * The decisions the W5 record functions (CAN-3820, CAN-3821, CAN-3822) apply
@@ -39,11 +67,6 @@ import type {
  * caller's W5 boundary step when there is one; otherwise its writer commits
  * it on its own, as before.
  */
-
-export interface WorktreeRecordTarget {
-  workspaceId: string;
-  worktreeId: string;
-}
 
 /**
  * The caller of a badge record, which decides the merge: a chat commit
@@ -217,9 +240,8 @@ export type WorktreeListDecisionOutcome =
  * and returns the record operation's existing outcome. The in-process
  * implementation is `worktree-record-decision-port.ts`, with the list update
  * and removal, manifest and index members in
- * `workspace-record-decision-port.ts` and the ownership, Cowork and seed
- * members in `workspace-ownership-decision-port.ts`,
- * `cowork-record-decision-port.ts` and `workspace-index-seed-decision-port.ts`,
+ * `workspace-record-decision-port.ts` and the ownership and Cowork members in
+ * `workspace-ownership-decision-port.ts` and `cowork-record-decision-port.ts`,
  * the workspace-service staging members in
  * `workspace-creation-decision-port.ts`, the branch rename member in
  * `worktree-branch-rename-decision-port.ts`, the archive restore members in
@@ -327,9 +349,6 @@ export interface W5RecordDecisionPort {
     workspaceId: string,
     decision: AdoptedWorkspaceReleaseDecision,
   ): Promise<boolean>;
-  applyWorkspaceIndexSeed(
-    decision: WorkspaceIndexSeedDecision,
-  ): Promise<{ seeded: boolean }>;
   applyCoworkProvisionDecision(
     decision: CoworkProvisionDecision,
   ): Promise<CoworkProvisionOutcome>;
@@ -435,9 +454,6 @@ export interface W5RecordDecisionPort {
 // applied as an internal decision under the caller's ambient scope, as
 // before: it opens no boundary step, so outside one its writer commits it.
 // ---------------------------------------------------------------------------
-
-/** A worktree incarnation: a different `createdAt` is another worktree. */
-export type WorktreeIncarnation = Pick<WorktreeData, 'id' | 'createdAt'>;
 
 /** What a read of a list, manifest or index proved. */
 export type W5RecordReadAuthority = 'ok' | 'absent' | 'partial' | 'unreadable';
@@ -795,13 +811,6 @@ export type WorkspaceOwnershipDecisionOutcome =
   | string[]
   | OrganizationPrivateMemoryStatus;
 
-/** Publishes an empty primary index only if absent. */
-export interface WorkspaceIndexSeedDecision {
-  kind: 'index.seed';
-  /** A host path: the explicit primary data directory. */
-  primaryDataDir: string;
-}
-
 /**
  * Provisions the default Cowork workspace from the index and manifest read
  * under their queues: its manifest is decided inside the index update, and
@@ -1027,71 +1036,6 @@ export interface CoworkDiscardManifestRead {
 }
 
 // ---------------------------------------------------------------------------
-// W6a1 (CAN-4815): workspace-service staging (CAN-3806, CAN-3812, CAN-3813):
-// a find-or-create addition, and a create's or an import's publication
-//
-// D9 internal decisions: no key, client revision or receipt. Each applies
-// through the whole-sidebar writer the records used, unchanged: its index
-// merge, unreadable-project preservation and post-commit registries stay that
-// writer's, shared with Cowork deletion. A create or import commits in its
-// reserved creation boundary step, a scoped addition in its caller's step; an
-// unscoped addition commits each write on its own, as before. Admission, id
-// allocation and the effects marker stay host steps. Items carry host paths.
-// ---------------------------------------------------------------------------
-
-/**
- * Adds a find-or-create destination. A `workspace` scope writes only this
- * workspace's files and keeps every other entry, as its caller's step locks
- * only them; a `sidebar` scope rewrites the sidebar read in the workspace
- * mutation queue, keeping `preserveWorkspaceIds` as persisted.
- */
-export interface WorkspaceAdditionDecision {
-  kind: 'workspace.add';
-  item: SidebarItem;
-  scope:
-    | { kind: 'workspace' }
-    | {
-        kind: 'sidebar';
-        previousItems: SidebarItem[];
-        preserveWorkspaceIds: string[];
-      };
-}
-
-/**
- * Publishes a created or imported repository project: only the addition,
- * binding its owner and keeping every other entry.
- */
-export interface WorkspaceCreationPublishDecision {
-  kind: 'workspace.create.publish';
-  item: SidebarItem;
-}
-
-/**
- * Publishes an imported multi-repo project and its new member projects
- * together, keeping every other entry and every owner binding on disk.
- */
-export interface WorkspaceImportPublishDecision {
-  kind: 'workspace.import.publish';
-  workspace: MultiRepoSidebarItem;
-  childWorkspaces: SingleRepoSidebarItem[];
-}
-
-export type WorkspaceCreationDecision =
-  | WorkspaceCreationPublishDecision
-  | WorkspaceImportPublishDecision;
-
-/** The whole-sidebar write a W6a1 decision makes. */
-export interface WorkspaceSidebarWrite {
-  items: SidebarItem[];
-  options: {
-    preserveEmptyTemporary?: false;
-    preserveUnmentionedWorkspaceIds?: true;
-    preserveWorkspaceIds?: string[];
-    replaceOwnershipWorkspaceIds?: string[];
-  };
-}
-
-// ---------------------------------------------------------------------------
 // W6f1 (CAN-4836): the branch rename record (CAN-3820)
 //
 // The record step of `core.worktree.branch.rename`, after its Git rename. Not
@@ -1271,79 +1215,6 @@ export interface SourceChangeBindingsDecision {
   manifestRepositories: Pick<CanopyJsonRepoEntry, 'id' | 'name' | 'url'>[];
   repositoryAdds: { repoId: string; repoPath?: string }[];
   repositoryRemovals: string[];
-}
-
-// W6b (CAN-4947): worktree creation records (CAN-3810).
-// The reservation commits in `core.worktree.create`'s reservation step, under
-// its optional expected worktrees collection revision. The setup records
-// commit on their own, except a keyed needs-repair retention, which commits
-// with its receipt; a created outcome still ends with the receipt-only
-// decision. The host keeps admission, the metadata reservation, the effects
-// markers, Git, cancellation, rollback triggers and every receipt.
-
-/**
- * Leads the list with a reserved row. An id already listed is a collision and
- * writes nothing; a listed branch or checkout path is refused.
- */
-export interface WorktreeCreationReservationDecision {
-  kind: 'worktree.create.reserve';
-  /** The `git-pending` row; its checkouts carry host paths. */
-  worktree: WorktreeData;
-  sidebarItemGroupId?: string;
-}
-
-export interface WorktreeCreationReservationPreconditions {
-  /** The worktrees collection revision the reservation expects. */
-  expectedRevision?: number;
-}
-
-export interface WorktreeCreationReservationOutcome {
-  status: 'reserved' | 'collision';
-}
-
-/** A reserved row's incarnation: the setup reference of its create. */
-export interface ReservedWorktreeTarget extends WorktreeRecordTarget {
-  createdAt: string;
-}
-
-/** Records a promoted checkout's branch and base, completing its creation. */
-export type WorktreeCreationPromoteDecision =
-  | {
-      kind: 'worktree.create.promote';
-      workspaceKind: 'single-repo';
-      branchName: string;
-      /** Absent clears the row's base. */
-      trackedBaseBranch?: string;
-    }
-  | {
-      kind: 'worktree.create.promote';
-      workspaceKind: 'multi-repo';
-      branchName: string;
-      /** Absent clears the row's bases. */
-      trackedRepoBaseBranches?: Record<string, string>;
-    };
-
-/**
- * The records a create's setup makes on its reserved row. There, each refuses
- * a changed branch another row holds.
- */
-export type WorktreeCreationSetupDecision =
-  | {
-      kind: 'worktree.create.phase';
-      /** Absent keeps the recorded phase. */
-      phase?: WorktreeCreationIdentity['phase'];
-      recoveryRequired: boolean;
-      healthIssue?: WorktreeHealthIssue;
-    }
-  | { kind: 'worktree.create.branch'; branchName: string }
-  | WorktreeCreationPromoteDecision;
-
-/** Removes a reserved row's incarnation, applying the requested order. */
-export interface WorktreeCreationReservationRemovalDecision {
-  kind: 'worktree.create.reservation.remove';
-  remainingWorktreeOrder?: readonly string[];
-  /** Applies the order only when the remaining rows still read in this order. */
-  expectedRemainingWorktreeOrder?: readonly string[];
 }
 
 // W6c1 (CAN-4952): archive journal, row removal and cleanup finalization

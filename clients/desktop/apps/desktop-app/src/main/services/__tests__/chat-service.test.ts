@@ -40,6 +40,12 @@ jest.mock('../../agents/agent-default-model', () => ({
   },
 }));
 
+const mockRetainPlanImplementationDelivery = jest.fn<void, [unknown]>();
+jest.mock('../../integration/claude-terminal-session-service', () => ({
+  getClaudeTerminalSessionService: () => ({
+    retainPlanImplementationDelivery: mockRetainPlanImplementationDelivery,
+  }),
+}));
 const mockLatchFirstTaskSubmitted = jest.fn<void, []>();
 const worktreeStopContext = {
   target: {
@@ -101,6 +107,13 @@ const mockChatStateService = {
     Promise<ChatSendMessageRequest>,
     [ChatSendMessageRequest]
   >((request): Promise<ChatSendMessageRequest> => Promise.resolve(request)),
+  holdLocalSendForWorktreeSetup: jest.fn<
+    Promise<'dispatch-now' | 'held' | 'queued-behind-hold'>,
+    [ChatSendMessageRequest, () => unknown, () => Promise<void>]
+  >(async (_request, _userMessage, submit) => {
+    await submit();
+    return 'dispatch-now';
+  }),
   runWithScopeActivity: jest.fn(
     async <T>(_scope: unknown, operation: () => Promise<T>): Promise<T> =>
       operation(),
@@ -377,7 +390,10 @@ import type {
   PersistedPendingQuestion,
 } from '@canopy/desktop-shared/types';
 import { BRAND } from '@canopy/brand/current';
-import { getChatQueueService } from '../chat-queue-service';
+import {
+  dispatchQueuedChatMessage,
+  getChatQueueService,
+} from '../chat-queue-service';
 import type { PersistedHostQueuedMessage } from '@canopy/desktop-shared/types';
 import { isDelegationDeliveryActive } from '../../agents/delegation/lifecycle';
 jest.mock('../../agents/delegation/lifecycle', () => ({
@@ -426,6 +442,7 @@ import {
   setWorktreeChatWindowAccessor,
   setSpecialNativeChatDispatcher,
 } from '../chat-service';
+import { beginWorktreeGitSetup } from '../../lib/worktree-git-setup';
 import {
   PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
   persistedMessageToPortalMessage,
@@ -4308,6 +4325,183 @@ describe('worktree chat service', () => {
     }
   });
 
+  it('refuses a known oversized plan paste before handing delivery to the renderer', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Terminal chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          providerType: 'claude',
+          interfaceMode: 'auto',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 2,
+            userMessageId: 'implementation-large',
+            startedAt: '2026-05-28T11:00:00.000Z',
+          },
+        },
+      ]),
+    );
+    await expect(
+      sendWorktreeChatMessage({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'implementation-large',
+        text: 'a'.repeat(70 * 1024),
+      }),
+    ).rejects.toThrow('Terminal write exceeds maximum data size');
+    expect(mockedSendToWindowDetailed).not.toHaveBeenCalled();
+    expect(mockRetainPlanImplementationDelivery).not.toHaveBeenCalled();
+  });
+
+  it('forwards a canonically admitted plan implementation to its managed terminal without a native SDK turn', async () => {
+    mockedSendToWindowDetailed.mockImplementation(() => {
+      expect(mockRetainPlanImplementationDelivery).toHaveBeenCalledWith({
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        userMessageId: 'implementation-1',
+      });
+      return { delivered: true };
+    });
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Terminal chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          providerType: 'claude',
+          interfaceMode: 'auto',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 2,
+            userMessageId: 'implementation-1',
+            startedAt: '2026-05-28T11:00:00.000Z',
+          },
+        },
+      ]),
+    );
+    await sendWorktreeChatMessage({
+      projectId: 'workspace-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      userMessageId: 'implementation-1',
+      text: 'Implement this plan.',
+    });
+    expect(mockedSendToWindowDetailed).toHaveBeenCalledWith(
+      null,
+      IPC_CHANNELS.claudeTerminalScheduledPrompt,
+      expect.objectContaining({
+        userMessageId: 'implementation-1',
+        text: 'Implement this plan.',
+        terminalPlanImplementation: true,
+      }),
+    );
+    expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+  });
+
+  it('keeps a linked native-provider plan on native dispatch even if terminal mode metadata remains', async () => {
+    mockedReadChatTabsFile.mockResolvedValue(
+      chatTabsFile([
+        {
+          id: 'chat-1',
+          title: 'Native chat',
+          createdAt: '2026-05-28T11:00:00.000Z',
+          kind: 'chat',
+          messages: [],
+          providerType: 'codex',
+          interfaceMode: 'auto',
+          trackedPlanImplementation: {
+            planId: 'plan-1',
+            revisionNumber: 2,
+            userMessageId: 'implementation-1',
+            startedAt: '2026-05-28T11:00:00.000Z',
+          },
+        },
+      ]),
+    );
+    try {
+      await dispatchQueuedChatMessage(
+        {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'implementation-1',
+          text: 'Implement this plan.',
+          providerType: 'codex',
+          interfaceMode: 'auto',
+        },
+        'desktop',
+        false,
+      );
+      expect(mockedSendToWindowDetailed).not.toHaveBeenCalled();
+      expect(mockedDispatchWorktreeChatTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      getChatQueueService().resetForTests();
+    }
+  });
+
+  it.each(['desktop', 'portal'] as const)(
+    'routes a linked plan through the real %s queue dispatch dependency and releases its queue gate',
+    async (origin) => {
+      mockedSendToWindowDetailed.mockReturnValue({ delivered: true });
+      mockedReadChatTabsFile.mockResolvedValue(
+        chatTabsFile([
+          {
+            id: 'chat-1',
+            title: 'Terminal chat',
+            createdAt: '2026-05-28T11:00:00.000Z',
+            kind: 'chat',
+            messages: [],
+            providerType: 'claude',
+            interfaceMode: 'auto',
+            trackedPlanImplementation: {
+              planId: 'plan-1',
+              revisionNumber: 2,
+              userMessageId: 'implementation-1',
+              startedAt: '2026-05-28T11:00:00.000Z',
+            },
+          },
+        ]),
+      );
+      const terminal = jest.spyOn(getChatQueueService(), 'onTurnTerminal');
+      try {
+        await dispatchQueuedChatMessage(
+          {
+            projectId: 'workspace-1',
+            worktreeId: 'worktree-1',
+            chatId: 'chat-1',
+            userMessageId: 'implementation-1',
+            text: 'Implement this plan.',
+            providerType: 'claude',
+            interfaceMode: 'auto',
+          },
+          origin,
+          false,
+        );
+        expect(mockedSendToWindowDetailed).toHaveBeenCalledWith(
+          null,
+          IPC_CHANNELS.claudeTerminalScheduledPrompt,
+          expect.objectContaining({ userMessageId: 'implementation-1' }),
+        );
+        expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+        expect(terminal).toHaveBeenCalledWith(
+          expect.objectContaining({ userMessageId: 'implementation-1' }),
+          'complete',
+          'implementation-1',
+        );
+      } finally {
+        terminal.mockRestore();
+      }
+    },
+  );
+
   it('forwards automation sends for terminal-backed Claude tabs to the renderer terminal path', async () => {
     mockedSendToWindowDetailed.mockReturnValue({ delivered: true });
     mockedReadChatTabsFile.mockResolvedValue(
@@ -5706,6 +5900,42 @@ describe('worktree chat service', () => {
     ).not.toHaveBeenCalled();
     expect(mockChatStateService.ingestProviderEvent).not.toHaveBeenCalled();
     expect(mockedDispatchWorktreeChatTurn).not.toHaveBeenCalled();
+  });
+
+  // A send held for its worktree's Git setup commits its prompt at hold time
+  // and dispatches after the send has returned, so it is refused before the
+  // hold, while the send can still answer with the reconnect card.
+  it('refuses a send during worktree setup before it is held', async () => {
+    const settleSetup = beginWorktreeGitSetup('workspace-1', 'worktree-1');
+    mockAssertTurnAuthDependencies.mockRejectedValue(
+      new Error(
+        'Prod MCP server needs to be reconnected before this message can run.',
+      ),
+    );
+    try {
+      await expect(
+        dispatchLocalWorktreeChatMessage({
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+          userMessageId: 'message-1',
+          text: 'Look up the record',
+        }),
+      ).rejects.toThrow('Prod MCP server needs to be reconnected');
+
+      expect(
+        mockChatStateService.holdLocalSendForWorktreeSetup,
+      ).not.toHaveBeenCalled();
+      expect(mockAssertTurnAuthDependencies).toHaveBeenCalledWith({
+        target: {
+          projectId: 'workspace-1',
+          worktreeId: 'worktree-1',
+          chatId: 'chat-1',
+        },
+      });
+    } finally {
+      settleSetup('ready');
+    }
   });
 
   // The terminal branch returns BEFORE `getOrCreateSession`, forwarding the

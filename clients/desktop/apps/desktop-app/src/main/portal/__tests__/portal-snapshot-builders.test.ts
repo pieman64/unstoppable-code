@@ -1,3 +1,4 @@
+import { W5_UNREACHABLE_READ_MESSAGE } from '@canopy/core-runtime/node/w5/file-store';
 jest.mock('../../canopy-cloud/model-library-access', () => ({
   probeEntitlementsWithModelLibrary: jest.fn(),
 }));
@@ -1044,11 +1045,32 @@ describe('Portal snapshot builders standalone chat routing', () => {
     );
   });
 
-  it('returns only activity summary when no worktrees exist', async () => {
-    const built = await buildPortalSnapshot({ scope: 'worktree_actions' });
-    expect(built.snapshot.entities).toHaveLength(1);
-    expect(built.snapshot.entities[0]?.entityType).toBe('activity_summary');
-  });
+  it.each(['worktree_actions', 'worktree_chat_summaries'] as const)(
+    'preserves an authoritative empty %s snapshot',
+    async (scope) => {
+      const built = await buildPortalSnapshot({ scope });
+      expect(built.snapshot.entities).toHaveLength(1);
+      expect(built.snapshot.entities[0]?.entityType).toBe('activity_summary');
+    },
+  );
+
+  it.each([
+    { scope: 'worktree_actions' },
+    { scope: 'worktree_chat_summaries' },
+    { scope: 'overview', includeChatSummaries: true },
+  ] as const)(
+    'rejects a stale $scope inventory instead of replacing authoritative cached sections',
+    async (request) => {
+      mockedReadAllSidebarItems.mockResolvedValue({
+        version: 1,
+        stale: true,
+        items: [],
+      });
+      await expect(buildPortalSnapshot(request)).rejects.toThrow(
+        W5_UNREACHABLE_READ_MESSAGE,
+      );
+    },
+  );
 
   it('rejects instead of emitting an empty snapshot when the sidebar read fails', async () => {
     // An untargeted worktree_actions snapshot authoritatively replaces every

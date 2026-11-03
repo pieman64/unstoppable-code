@@ -23,6 +23,7 @@ import { resolveWorktreeCwd } from './resolve-worktree';
 import { validateId } from './validation';
 import { WORKTREE_LIST_STORAGE, withStorageAdmission } from './w5-storage';
 import { applyWorktreeBranchRenameDecision } from './worktree-branch-rename-decision-port';
+import { w5LifecycleReceiptCaller, type W5WireCall } from './w5-wire-call';
 import type { WorktreeBranchRenameDecision } from './worktree-record-decisions';
 
 /**
@@ -41,6 +42,8 @@ export interface WorktreeBranchRenameRequest extends W5BoundaryOptions {
    */
   repoId?: string;
   newBranchName: string;
+  /** A registered wire call's receipt scope and admission (W7b-4). */
+  wireCall?: W5WireCall;
 }
 
 /**
@@ -50,6 +53,8 @@ export interface WorktreeBranchRenameRequest extends W5BoundaryOptions {
  * branch of the checkout the ids name; a started rename is never aborted.
  */
 export interface WorktreeBranchRenameGit {
+  /** Publication after Git and metadata settle, before saving the keyed outcome. */
+  onRenamed?: () => void;
   renameCheckoutBranch(
     this: void,
     target: { workspaceId: string; worktreeId: string; repoId?: string },
@@ -128,13 +133,15 @@ export async function renameWorktreeBranch(
       validateId(repoId, 'repoId');
     }
 
-    const { expectedRevision, idempotencyKey, ...parameters } = request;
+    const { expectedRevision, idempotencyKey, wireCall, ...parameters } =
+      request;
     return runW5BoundaryOperation(
       {
         operation: 'core.worktree.branch.rename',
-        caller: `desktop-host:${request.source}`,
+        caller: w5LifecycleReceiptCaller(request.source, wireCall),
         idempotencyKey,
         parameters,
+        admit: wireCall?.admit,
         isPreEffectRefusal: (error) =>
           error instanceof WorktreeBranchRenameRefusedError ||
           error instanceof W5RevisionConflictError,
@@ -186,22 +193,34 @@ export async function renameWorktreeBranch(
           }
           return { branchName: newBranchName, worktree: recorded.worktree };
         }
-        return withW5Commit(
-          {
-            ...options,
-            locks: [
-              {
-                kind: 'list',
-                path: getWorkspaceWorktreesFilePath(workspaceId),
-              },
-            ],
-            expectedRevisions: w5ExpectedRevision(
-              { kind: 'worktree', workspaceId, worktreeId },
-              expectedRevision,
-            ),
-          },
-          stageRenamedWorktree,
-        );
+        try {
+          const outcome = await withW5Commit(
+            {
+              ...options,
+              locks: [
+                {
+                  kind: 'list',
+                  path: getWorkspaceWorktreesFilePath(workspaceId),
+                },
+              ],
+              expectedRevisions: w5ExpectedRevision(
+                { kind: 'worktree', workspaceId, worktreeId },
+                expectedRevision,
+              ),
+            },
+            stageRenamedWorktree,
+          );
+          git.onRenamed?.();
+          return outcome;
+        } catch (error) {
+          // Git succeeded even if the row disappeared before publication.
+          if (
+            error instanceof WorktreeBranchRenameRefusedError &&
+            error.reason === 'not-found'
+          )
+            git.onRenamed?.();
+          throw error;
+        }
       },
     );
   });

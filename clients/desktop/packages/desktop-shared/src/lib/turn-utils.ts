@@ -2,6 +2,8 @@ import { isPlanFileWrite } from '@canopy/agent-transcript/lib/plan-tool-input';
 import { isHistoricalDelegateWatchToolName } from './canopy-injected-tools';
 import type { ApprovalSafetyDeniedInfo } from '@canopy/protocol/approvals';
 import type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
+
+export { isUsageInitiationSource } from '@canopy/protocol/observability';
 export type { TurnSummaryCounts } from '@canopy/agent-transcript/transcript-storage';
 import type { PersistedUserMessageSource } from '@canopy/agent-transcript/types';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
@@ -23,7 +25,6 @@ import type {
   ClaudeTerminalSyncWarningBlock,
   FileReference,
   TurnDiffTreeRef,
-  UsageInitiationSource,
 } from '../types';
 import type { PersistedChatBlock } from '@canopy/agent-transcript/types';
 import {
@@ -41,24 +42,6 @@ import { getCanonicalPipelineEditorToolKey } from './pipeline-editor-tools';
 const LEGACY_TOOL_NAMESPACE = ['cano', 'py'].join('');
 const legacyMcpToolName = (name: string): string =>
   `mcp__${LEGACY_TOOL_NAMESPACE}__${name}`;
-
-const USAGE_INITIATION_SOURCES = new Set<UsageInitiationSource>([
-  'user',
-  'hook',
-  'automation',
-  'app_advisor',
-  'portal',
-  'unknown',
-]);
-
-export function isUsageInitiationSource(
-  value: unknown,
-): value is UsageInitiationSource {
-  return (
-    typeof value === 'string' &&
-    USAGE_INITIATION_SOURCES.has(value as UsageInitiationSource)
-  );
-}
 
 function isAppAdvisorWatcherToolName(toolName: string): boolean {
   const key = getCanonicalAppAdvisorToolKey(toolName);

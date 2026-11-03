@@ -3,7 +3,7 @@ import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 
-/** Appearance dropdowns keep their capsule geometry across Labs changes. */
+/** Appearance dropdowns keep their rounded-field geometry across Labs changes. */
 
 function setEarlyAccess(window, enabled) {
   return window.evaluate(
@@ -16,7 +16,7 @@ function setEarlyAccess(window, enabled) {
   );
 }
 
-test('Appearance dropdowns stay capsules across early access changes, in place', async () => {
+test('Appearance dropdowns stay rounded fields across early access changes, in place', async () => {
   const launched = await launchCanopy();
   try {
     const window = await launched.electronApp.firstWindow();
@@ -27,24 +27,24 @@ test('Appearance dropdowns stay capsules across early access changes, in place',
 
     const track = window.getByTestId('settings-color-mode-select');
     await expect(track).toBeVisible();
-    await expect(track).toHaveClass(/\brounded-full\b/);
+    await expect(track).toHaveClass(/\brounded-row\b/);
     const trackHandle = await track.elementHandle();
 
     await setEarlyAccess(window, true);
-    await expect(track).toHaveClass(/\brounded-full\b/);
-    await expect(track).not.toHaveClass(/\brounded-md\b/);
+    await expect(track).toHaveClass(/\brounded-row\b/);
+    await expect(track).not.toHaveClass(/\brounded-full\b/);
     // Same node: the page's rows were not remounted by the toggle.
     expect(await trackHandle.evaluate((node) => node.isConnected)).toBe(true);
 
     await setEarlyAccess(window, false);
-    await expect(track).toHaveClass(/\brounded-full\b/);
+    await expect(track).toHaveClass(/\brounded-row\b/);
     expect(await trackHandle.evaluate((node) => node.isConnected)).toBe(true);
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
   }
 });
 
-test('Settings dropdowns share capsules and preserve the scrollbar preference', async () => {
+test('Settings dropdowns share the rounded field and preserve the scrollbar preference', async () => {
   const launched = await launchCanopy();
   try {
     const window = await launched.electronApp.firstWindow();
@@ -53,7 +53,7 @@ test('Settings dropdowns share capsules and preserve the scrollbar preference', 
     await app.openSettings();
     await app.openSettingsSection('display');
     const scrollbars = window.getByTestId('settings-scrollbar-behavior');
-    await expect(scrollbars).toHaveClass(/\brounded-full\b/);
+    await expect(scrollbars).toHaveClass(/\brounded-row\b/);
     await chooseSettingsOption(scrollbars, 'always');
     await app.closeSettings();
     await app.openSettings();
@@ -65,7 +65,7 @@ test('Settings dropdowns share capsules and preserve the scrollbar preference', 
       .locator('button[role="combobox"]');
     expect(await selects.count()).toBeGreaterThanOrEqual(3);
     for (const select of await selects.all())
-      await expect(select).toHaveClass(/\brounded-full\b/);
+      await expect(select).toHaveClass(/\brounded-row\b/);
   } finally {
     await closeCanopy(launched.electronApp, launched.userDataDir);
   }

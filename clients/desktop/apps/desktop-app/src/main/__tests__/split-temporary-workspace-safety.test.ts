@@ -299,6 +299,7 @@ import {
   previewSplitTemporaryWorkspaceWorktree,
   splitTemporaryWorkspaceWorktree,
 } from '../lib/split-temporary-workspace';
+import { claimWorktreeGitSetup } from '../lib/worktree-git-setup';
 
 const sourceWorkspace: MultiRepoSidebarItem = {
   id: 'source',
@@ -1024,10 +1025,22 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
       onSplitWorktreeReady: (event) => readyEvents.push(event),
     });
     await executionMigrationStarted;
+    // A send into the git-pending destination waits on its Git setup.
+    const destinationSetup = claimWorktreeGitSetup(
+      'destination',
+      'destination-wt',
+    );
+    expect(destinationSetup).toBeDefined();
+    let destinationOutcome: string | undefined;
+    void destinationSetup?.then((outcome) => {
+      destinationOutcome = outcome;
+    });
 
     expect(migrateSplitPipelineExecutionsMock).toHaveBeenCalled();
     expect(updateWorkspaceWorktreesMock).toHaveBeenCalledTimes(1);
     expect(readyEvents).toEqual([]);
+    await Promise.resolve();
+    expect(destinationOutcome).toBeUndefined();
 
     if (!finishExecutionMigration) {
       throw new Error('Expected execution migration to be pending');
@@ -1066,6 +1079,7 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
         worktreeId: 'destination-wt',
       }),
     ]);
+    await expect(destinationSetup).resolves.toBe('ready');
     expect(acquireSplitDestinationWorktreeClaimMock).toHaveBeenCalledWith(
       'destination',
       'destination-wt',
@@ -1102,6 +1116,10 @@ describe('splitTemporaryWorkspaceWorktree safety', () => {
     );
     expect(finalizeSplitChatsAndPlansMigrationMock).not.toHaveBeenCalled();
     expect(archiveMultiRepoWorktreeMock).not.toHaveBeenCalled();
+    // A send held for the rolled-back destination ends instead of hanging.
+    await expect(
+      claimWorktreeGitSetup('destination', 'destination-wt'),
+    ).resolves.toEqual(expect.stringMatching(/^(cancelled|failed)$/));
   });
 
   it('retains destination reservations when checkout reversal fails', async () => {

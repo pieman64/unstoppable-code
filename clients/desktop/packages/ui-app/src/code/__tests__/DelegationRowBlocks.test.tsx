@@ -246,7 +246,7 @@ describe('bounded row block window', () => {
         firstBlockOrdinal: 0,
         streamRevisionHint: 8,
       });
-      expect(container.textContent).not.toContain('Retry');
+      expect(container.textContent).not.toContain('Try again');
     },
   );
 
@@ -281,7 +281,7 @@ describe('bounded row block window', () => {
         .slice(5)
         .map(([request]) => request.firstBlockOrdinal),
     ).toEqual([16]);
-    expect(button('Retry')).toBeDefined();
+    expect(button('Try again')).toBeDefined();
   });
 
   it('uses the first refreshed page revision for every continuation read', async () => {
@@ -631,7 +631,7 @@ describe('bounded row block window', () => {
       "Couldn't load messages in this view.",
     );
     readBlocks.mockResolvedValueOnce(result(0, { runTruncated: true }));
-    await click('Retry');
+    await click('Try again');
     expect(container.textContent).toContain(
       "Part of this agent's messages isn't shown here.",
     );

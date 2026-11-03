@@ -318,7 +318,7 @@ export function CodeGraphGenerationQueue(): JSX.Element {
                 aria-label={`Move ${entryAccessibleLabel(entry)} up`}
                 data-testid={`code-graph-queue-move-up-${entry.id}`}
               >
-                <ChevronUp size={14} />
+                <ChevronUp size="sm" />
               </Button>
               <Button
                 size="compact"
@@ -333,7 +333,7 @@ export function CodeGraphGenerationQueue(): JSX.Element {
                 aria-label={`Move ${entryAccessibleLabel(entry)} down`}
                 data-testid={`code-graph-queue-move-down-${entry.id}`}
               >
-                <ChevronDown size={14} />
+                <ChevronDown size="sm" />
               </Button>
             </div>
           </div>

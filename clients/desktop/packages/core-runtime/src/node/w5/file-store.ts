@@ -1,6 +1,7 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { W5Resource } from './commit-log';
+import type { W5CaptureFile } from './commit-log/capture-contract';
 import type { W5StorageTarget } from './storage-target';
 
 export interface W5FileReplacement {
@@ -12,11 +13,187 @@ export interface W5FileReplacement {
   backup?: { path: string; contents: string; previousRaw: string | null };
 }
 
+export type W5FileRemoval = Pick<
+  W5FileReplacement,
+  'operation' | 'advance' | 'previousRaw'
+>;
+
 /** One read of a W5 file: missing, its contents, or a read that failed. */
 export type W5FileRead =
   | { state: 'absent' }
   | { state: 'present'; raw: string }
   | { state: 'unreadable'; error?: Error };
+
+/**
+ * The two capture classes the daemon record port cannot serve, so their
+ * files read unreadable and fail closed (CAN-5498 debt, CAN-5531).
+ */
+export type W5RecordUnservedReason = 'unsupported-id' | 'limit-exceeded';
+
+const UNSERVED_SUBJECTS: Readonly<Record<W5CaptureFile['kind'], string>> = {
+  index: 'the project list',
+  'index-backup': 'the project list',
+  manifest: "this project's settings",
+  worktrees: "this project's worktree list",
+};
+
+const UNSERVED_REASONS: Readonly<Record<W5RecordUnservedReason, string>> = {
+  'unsupported-id': "The project's ID isn't supported.",
+  'limit-exceeded': "It's too large to read.",
+};
+
+/** Why a read over the daemon record port is unreadable, by class and file. */
+export class W5RecordUnservedError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
+  constructor(
+    readonly reason: W5RecordUnservedReason,
+    kind: W5CaptureFile['kind'],
+    cause?: unknown,
+  ) {
+    super(
+      `Couldn't read ${UNSERVED_SUBJECTS[kind]}. ${UNSERVED_REASONS[reason]}`,
+    );
+    this.name = 'W5RecordUnservedError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        writable: true,
+        configurable: true,
+      });
+  }
+}
+
+/**
+ * Whether a call that could not reach the W5 authority was sent: `refused`
+ * when it certainly was not (or was a query), `outcome-unknown` when an
+ * instruction was in flight as the connection dropped.
+ */
+export type W5AuthorityUnreachableCertainty = 'refused' | 'outcome-unknown';
+
+/**
+ * Why the W5 authority could not be reached (CAN-5542): no session could be
+ * opened (`connect`), the session dropped (`lost`), reconnecting is held
+ * (`held`), or the reached daemon serves no W5 records (`w5_host_unavailable`).
+ */
+export type W5AuthorityUnreachableReason =
+  | 'connect'
+  | 'lost'
+  | 'held'
+  | 'w5_host_unavailable';
+
+const UNREACHABLE_MESSAGES: Readonly<
+  Record<W5AuthorityUnreachableCertainty, string>
+> = {
+  refused:
+    "Couldn't save this change because the background service isn't running. Reconnect from the notice, then try again.",
+  'outcome-unknown':
+    'This change may not have saved. The background service stopped before it confirmed. Reconnect, check the project, then try again.',
+};
+
+/**
+ * A read-only surface's copy for an unreachable authority: the error's own
+ * message is a save's refusal, which a read must never show.
+ */
+export const W5_UNREACHABLE_READ_MESSAGE =
+  "Couldn't load this because the background service isn't running. Reconnect from the notice, then try again.";
+
+/*
+ * `w5_host_unavailable`: the service runs and answers but serves no project
+ * records, and no notice shows for it yet (GB4 plan §13 ask ii), so the copy
+ * neither says it isn't running nor points at the notice. Restarting the app
+ * is the one step that changes which service it attaches to.
+ */
+const HOSTLESS_SAVE_MESSAGE =
+  "Couldn't save this change because the background service can't save projects. Restart the app, then try again.";
+/** {@link W5_UNREACHABLE_READ_MESSAGE} for `w5_host_unavailable`. */
+export const W5_HOSTLESS_READ_MESSAGE =
+  "Couldn't load this because the background service can't load projects. Restart the app, then try again.";
+
+/** The copy a read-only surface shows for `error` instead of its message. */
+export function w5UnreachableReadMessage(
+  error: W5AuthorityUnreachableError,
+): string {
+  return error.reason === 'w5_host_unavailable' && error.certainty === 'refused'
+    ? W5_HOSTLESS_READ_MESSAGE
+    : W5_UNREACHABLE_READ_MESSAGE;
+}
+
+/**
+ * A daemon-backed W5 call that never reached a live authority, as opposed to
+ * a typed refusal from one. Never retried: a refused call stays refused until
+ * the service is back, and an unknown outcome must not be decided twice.
+ */
+export class W5AuthorityUnreachableError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
+  constructor(
+    readonly certainty: W5AuthorityUnreachableCertainty,
+    readonly reason: W5AuthorityUnreachableReason,
+    cause?: unknown,
+  ) {
+    // An instruction that may have saved says so, whatever the reason.
+    super(
+      certainty === 'refused' && reason === 'w5_host_unavailable'
+        ? HOSTLESS_SAVE_MESSAGE
+        : UNREACHABLE_MESSAGES[certainty],
+    );
+    this.name = 'W5AuthorityUnreachableError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        writable: true,
+        configurable: true,
+      });
+  }
+}
+
+/** Whether an unreadable-file refusal stops a write or answers a read. */
+export type W5UnreadableUse = 'write' | 'read';
+
+/**
+ * An unreadable-file refusal's message: `cause`'s when it names its class,
+ * except that a read never shows an unreachable authority's save copy.
+ */
+export function w5UnreadableMessage(
+  fallback: string,
+  cause: unknown,
+  use: W5UnreadableUse = 'write',
+): string {
+  if (use === 'read' && cause instanceof W5AuthorityUnreachableError)
+    return w5UnreachableReadMessage(cause);
+  return w5NamedUnreadable(cause)?.message ?? fallback;
+}
+
+/**
+ * The named reason a record read was unreadable, carried as `unserved` so
+ * refusals use its message: a class the record port can't serve (CAN-5531)
+ * or an authority it couldn't reach (CAN-5542). A read-only surface takes
+ * its copy from {@link w5UnreadableMessage} with `'read'`, never `message`.
+ */
+export type W5NamedUnreadableError =
+  | W5RecordUnservedError
+  | W5AuthorityUnreachableError;
+
+/** `error` when it names why its read was unreadable. */
+export function w5NamedUnreadable(
+  error: unknown,
+): W5NamedUnreadableError | undefined {
+  return error instanceof W5RecordUnservedError ||
+    error instanceof W5AuthorityUnreachableError
+    ? error
+    : undefined;
+}
+
+/** The authority-unreachable failure a read carries, if it carries one. */
+export function w5ReadUnreachable(
+  read: W5FileRead,
+): W5AuthorityUnreachableError | undefined {
+  return read.state === 'unreadable' &&
+    read.error instanceof W5AuthorityUnreachableError
+    ? read.error
+    : undefined;
+}
 
 /**
  * Whether a persisted-file read can prove absence: `ok` and `absent` (no
@@ -35,6 +212,11 @@ export type PersistedFileAuthority = 'ok' | 'absent' | 'unreadable';
  */
 export interface W5FileStore {
   read(filePath: string): Promise<W5FileRead>;
+  remove(
+    filePath: string,
+    storage: W5StorageTarget,
+    removal: W5FileRemoval,
+  ): Promise<void>;
   /**
    * Commits the replacement once storage admits it, then atomically installs
    * each file before resolving. Injected direct stores retain atomic replace.
@@ -80,6 +262,9 @@ export function createNodeW5FileStore(
 ): W5FileStore {
   return {
     read: (filePath: string): Promise<W5FileRead> => readNodeW5File(filePath),
+    async remove(filePath): Promise<void> {
+      await rm(filePath, { force: true });
+    },
     async replace(
       filePath: string,
       contents: string,

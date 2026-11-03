@@ -21,6 +21,7 @@ import {
   lookupInstalledSharedSkill,
   sharedSkillReceiptsEnforced,
   sharedSkillWriteFailureCode,
+  type InstalledSharedSkillTarget,
 } from '@/lib/sharedSkillImport';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { findInstalledPipelineByContent } from '@/lib/publicShareInstallState';
@@ -289,7 +290,15 @@ class InstalledStateUnverifiedError extends Error {}
 async function detectInstalled(
   snapshot: PublicShareSnapshot,
   audience?: DeepLinkShareOpenEvent['audience'],
+  skillTarget?: InstalledSharedSkillTarget,
 ): Promise<PublicShareInstalledTarget | null> {
+  if (
+    skillTarget &&
+    (snapshot.entity !== 'skill' ||
+      snapshot.scopedShare !== true ||
+      !sharedSkillReceiptsEnforced())
+  )
+    throw new InstalledStateUnverifiedError(SKILL_COPY_UNVERIFIED_MESSAGE);
   if (snapshot.entity === 'automation') {
     const { activities } = await window.api.automations.list();
     const scoped = audience === 'TEAM' || audience === 'ORGANIZATION';
@@ -319,7 +328,7 @@ async function detectInstalled(
     // CAN-5307: a team or organization skill's receipt establishes the
     // install; its hashes only decide whether an update is available.
     if (sharedSkillReceiptsEnforced()) {
-      const found = await lookupInstalledSharedSkill({
+      const lookup = {
         id: snapshot.sourceRemoteId ?? snapshot.externalId,
         rawSkill: snapshot.rawSkill,
         contentHash: snapshot.contentHash,
@@ -329,7 +338,10 @@ async function detectInstalled(
         ...(snapshot.package !== undefined
           ? { package: snapshot.package }
           : {}),
-      });
+      };
+      const found = skillTarget
+        ? await lookupInstalledSharedSkill(lookup, skillTarget)
+        : await lookupInstalledSharedSkill(lookup);
       if (found.status === 'absent') return null;
       if (found.status === 'missing-copy')
         throw new InstalledStateUnverifiedError(SKILL_COPY_MISSING_MESSAGE);
@@ -478,6 +490,8 @@ function isPackageSnapshot(snapshot: PublicShareSnapshot): snapshot is Extract<
 }
 
 export interface PublicShareLandingOptions {
+  /** Local UI destination only; never sent to the share resolver. */
+  skillTarget?: InstalledSharedSkillTarget;
   /**
    * Report the web handoff funnel (INSTALLED, TRY_NOW). Only a link that came
    * from the web belongs in that funnel; in-app installs and the Marketplace
@@ -639,9 +653,12 @@ export function usePublicShareLanding(
   );
   // Each link owns its recovery lifetime, including saved gate callbacks and
   // asynchronous account reads. A newer event supersedes older account reads.
+  const skillTargetSourceId = options?.skillTarget?.sourceId;
+  const skillTargetName = options?.skillTarget?.skillName;
   const recovery = useMemo(
     (): {
       request: typeof resolveRequest;
+      skillTarget: InstalledSharedSkillTarget | undefined;
       active: boolean;
       watching: boolean;
       identity: string | null;
@@ -649,13 +666,17 @@ export function usePublicShareLanding(
       revision: number;
     } => ({
       request: resolveRequest,
+      skillTarget:
+        skillTargetSourceId !== undefined && skillTargetName !== undefined
+          ? { sourceId: skillTargetSourceId, skillName: skillTargetName }
+          : undefined,
       active: true,
       watching: false,
       identity: null,
       read: 0,
       revision: 0,
     }),
-    [resolveRequest],
+    [resolveRequest, skillTargetSourceId, skillTargetName],
   );
   useEffect(() => {
     recovery.active = true;
@@ -818,6 +839,7 @@ export function usePublicShareLanding(
           const found = await detectInstalled(
             result.snapshot,
             recovery.request.audience,
+            recovery.skillTarget,
           );
           if (isCurrentDetection()) setInstalled(found);
         } catch (error) {
@@ -892,7 +914,11 @@ export function usePublicShareLanding(
     setVerificationError('');
     if (!deferred) setInstallError('');
     setDetecting(true);
-    void detectInstalled(reviewed, recovery.request.audience)
+    void detectInstalled(
+      reviewed,
+      recovery.request.audience,
+      recovery.skillTarget,
+    )
       .then((found): void => {
         if (isCurrent()) setInstalled(found);
       })
@@ -1403,7 +1429,11 @@ export function usePublicShareLanding(
           let verificationFailed = false;
           if (snapshot.scopedShare === true && sharedSkillReceiptsEnforced()) {
             try {
-              const reloaded = await detectInstalled(snapshot, link.audience);
+              const reloaded = await detectInstalled(
+                snapshot,
+                link.audience,
+                recovery.skillTarget,
+              );
               if (reviewGeneration !== reviewGenerationRef.current) return null;
               if (
                 reloaded?.entity !== 'skill' ||
@@ -1582,6 +1612,7 @@ export function usePublicShareLanding(
       link.audience,
       setInstalled,
       reportHandoff,
+      recovery,
     ]);
 
   // CAN-3651: an automation link opens straight into the install review,
@@ -1724,7 +1755,11 @@ export function usePublicShareLanding(
       try {
         // The offer outlives the review: its cached target alone cannot prove
         // the installed folder/package still exists or has the reviewed content.
-        const found = await detectInstalled(snapshot, link.audience);
+        const found = await detectInstalled(
+          snapshot,
+          link.audience,
+          recovery.skillTarget,
+        );
         if (
           !current ||
           installedRef.current !== target ||
@@ -1753,7 +1788,7 @@ export function usePublicShareLanding(
         insertInFlightRef.current = false;
       }
     },
-    [snapshot, link.externalId, link.audience, reportHandoff],
+    [snapshot, link.externalId, link.audience, reportHandoff, recovery],
   );
 
   // Behavioral `intent=try` (PR2b): once `installed` is known — from the
@@ -1913,7 +1948,19 @@ export function usePublicShareLanding(
         snapshot.scopedShare === true &&
         sharedSkillReceiptsEnforced()
       ) {
-        const remaining = await detectInstalled(snapshot, link.audience);
+        // Deliberately removing the requested copy returns this review to
+        // its source overview. An unexpected disappearance never clears it.
+        if (
+          installed.entity === 'skill' &&
+          recovery.skillTarget?.sourceId === installed.sourceId &&
+          recovery.skillTarget.skillName === installed.skillName
+        )
+          recovery.skillTarget = undefined;
+        const remaining = await detectInstalled(
+          snapshot,
+          link.audience,
+          recovery.skillTarget,
+        );
         if (reviewGeneration !== reviewGenerationRef.current) return false;
         setInstalled(remaining);
       } else {
@@ -1934,7 +1981,14 @@ export function usePublicShareLanding(
       uninstallInFlightRef.current = false;
       setUninstalling(false);
     }
-  }, [installed, uninstalling, setInstalled, snapshot, link.audience]);
+  }, [
+    installed,
+    uninstalling,
+    setInstalled,
+    snapshot,
+    link.audience,
+    recovery,
+  ]);
 
   const closeInstallReview = useCallback((): void => {
     setInstallReview(null);

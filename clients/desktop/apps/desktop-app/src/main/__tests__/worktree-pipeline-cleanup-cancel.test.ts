@@ -2,6 +2,7 @@ jest.mock('@electron-toolkit/utils', () => ({
   is: { dev: true },
 }));
 
+import type * as PipelineWorkerDispatchDouble from './helpers/pipeline-worker-dispatch-double';
 import type * as PipelineExecutorModule from '@canopy/desktop-shared/node/pipelines/executor/pipeline-executor';
 
 const mockCancelPipelineExecution = jest.fn();
@@ -12,6 +13,15 @@ jest.mock('../pipelines/pipeline-execution-registry', () => ({
     return mockGetActiveExecutionHandle;
   },
 }));
+// Teardown drains through the worker; the double runs the real worker host
+// without composing a desktop runtime.
+jest.mock(
+  '../pipelines/pipeline-worker-dispatch',
+  (): typeof PipelineWorkerDispatchDouble =>
+    jest.requireActual<typeof PipelineWorkerDispatchDouble>(
+      './helpers/pipeline-worker-dispatch-double',
+    ),
+);
 jest.mock(
   '@canopy/desktop-shared/node/pipelines/executor/pipeline-executor',
   () => {
@@ -56,6 +66,7 @@ import {
   cleanupWorktreePipelines,
   drainWorktreePipelines,
 } from '../pipelines/worktree-cleanup';
+import { useDrainRuntime } from './helpers/pipeline-worker-dispatch-double';
 
 function makeRuntime(dir: string): ExecutionRuntime {
   return {
@@ -102,6 +113,7 @@ describe('cleanupWorktreePipelines cancellation', () => {
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'canopy-wt-cancel-'));
+    useDrainRuntime(makeRuntime(tempDir));
     mockCancelPipelineExecution.mockReset();
     mockPersistedCancelPipelineExecution.mockReset();
     mockGetActiveExecutionHandle.mockReset();
@@ -111,6 +123,7 @@ describe('cleanupWorktreePipelines cancellation', () => {
   });
 
   afterEach(() => {
+    useDrainRuntime(null);
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -189,9 +202,10 @@ describe('cleanupWorktreePipelines cancellation', () => {
 
     await drainWorktreePipelines('project-1', 'wt-1', runtime);
 
+    // The worker cancels with its own runtime over the same executions.
     expect(mockPersistedCancelPipelineExecution).toHaveBeenCalledWith(
       'exec-untracked',
-      runtime,
+      expect.objectContaining({ executionsDir: tempDir }),
       { allowRecoveredFallback: false },
     );
   });

@@ -8,6 +8,10 @@ import {
 } from '../launcher';
 import type { CanopySpawnedDaemon } from '../launcher-ports';
 import {
+  canopyDaemonRefusal,
+  canopyDaemonRefusalError,
+} from '../daemon-refusal';
+import {
   descriptorFor,
   ScriptedDaemon,
   type ScriptedPort,
@@ -961,4 +965,239 @@ it('reports not_launcher on an already-running daemon and never recycles it', as
   ).toMatchObject({ started: false, migration: 'not_launcher' });
   expect(world.events).not.toContain('spawn');
   expect(world.events.join(' ')).not.toMatch(/terminate|commit|acquire/);
+});
+
+describe('the W5 handoff contract (GB12)', () => {
+  const W5_ARGS = ['--w5-host', 'v1'];
+  /** A pre-spawn step that logs, snapshots the claim, then runs `body`. */
+  const step = (
+    world: ScriptedDaemon,
+    body: (signal: AbortSignal) => Promise<void> = (): Promise<void> =>
+      Promise.resolve(),
+    timeoutMs = 2_000,
+  ): {
+    readonly hook: CanopyDaemonLaunchOptions<string>['beforeSpawn'];
+    readonly signals: AbortSignal[];
+    readonly held: boolean[];
+  } => {
+    const signals: AbortSignal[] = [];
+    const held: boolean[] = [];
+    return {
+      signals,
+      held,
+      hook: {
+        timeoutMs,
+        run: (signal): Promise<void> => {
+          world.events.push('beforeSpawn');
+          signals.push(signal);
+          held.push(
+            world.acquired.length > 0 && !world.freed.has(world.handle),
+          );
+          return body(signal);
+        },
+      },
+    };
+  };
+
+  it('appends --w5-host v1 only when the trusted host asks', async () => {
+    const world = new ScriptedDaemon();
+    const daemon = {
+      executable: '/private/bin/canopy',
+      args: ['daemon'],
+      w5Host: true,
+    };
+    expect(await run(launch(world, { daemon }))).toMatchObject({
+      started: true,
+    });
+    expect(world.spawns[0]?.args).toEqual([
+      'daemon',
+      '--data-root',
+      '/private/data',
+      '--runtime-mode',
+      'production',
+      ...W5_ARGS,
+    ]);
+    const plain = new ScriptedDaemon();
+    await run(launch(plain));
+    expect(plain.spawns[0]?.args).not.toContain('--w5-host');
+  });
+
+  it('runs beforeSpawn once, holding the claim, after the re-probe and before spawnDaemon', async () => {
+    const world = new ScriptedDaemon();
+    const { hook, held, signals } = step(world);
+    expect(await run(launch(world, { beforeSpawn: hook }))).toMatchObject({
+      started: true,
+    });
+    expect(world.events.slice(0, 5)).toEqual([
+      ...CLAIMED,
+      'beforeSpawn',
+      'spawn',
+    ]);
+    expect(held).toEqual([true]);
+    expect(signals[0]?.aborted).toBe(false);
+    // The child adopts the claim the step ran under.
+    expect(world.spawns[0]?.claimHandle).toBe(world.handle);
+    expect(world.count('release')).toBe(0);
+  });
+
+  it.each<[string, (world: ScriptedDaemon) => void]>([
+    ['a live daemon', (w): void => w.publish(7)],
+    [
+      'a winner published while the claim was held',
+      (w): void => {
+        w.acquisitions = ['held', 'held', 'acquired'];
+        setTimeout(() => w.publish(7), 150);
+      },
+    ],
+    [
+      'a daemon published before the claimed re-probe',
+      (w): void =>
+        void w.gates.set('acquire', () => Promise.resolve(w.publish(7))),
+    ],
+  ])('never runs beforeSpawn when attaching to %s', async (_, arrange) => {
+    const world = new ScriptedDaemon();
+    arrange(world);
+    const { hook } = step(world);
+    expect(await run(launch(world, { beforeSpawn: hook }))).toMatchObject({
+      started: false,
+    });
+    expect(world.count('beforeSpawn') + world.count('spawn')).toBe(0);
+  });
+
+  it.each<[string, () => Promise<void>, object]>([
+    [
+      'an untyped failure',
+      (): Promise<void> => Promise.reject(new Error('/private secret')),
+      { kind: 'internal', message: 'Core pre-spawn step failed.' },
+    ],
+    [
+      'a typed refusal',
+      (): Promise<void> =>
+        Promise.reject(
+          canopyDaemonRefusalError('writer_held', 'The W5 log is held.'),
+        ),
+      { kind: 'failed_precondition', details: { refusal: 'writer_held' } },
+    ],
+  ])(
+    'releases the claim and spawns nothing after %s',
+    async (_, body, error) => {
+      const world = new ScriptedDaemon();
+      const { hook } = step(world, body);
+      const outcome = await run(launch(world, { beforeSpawn: hook }));
+      expect(outcome).toMatchObject({ error });
+      expect(world.count('spawn')).toBe(0);
+      expect(world.released).toEqual([world.handle]);
+      expect(world.freed.has(world.handle)).toBe(true);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('pauses the launch deadline for its own budget, then resumes what was left', async () => {
+    const world = new ScriptedDaemon();
+    // Longer than the whole 1000 ms launch deadline; within its 2000 ms budget.
+    const { hook } = step(
+      world,
+      () => new Promise((done) => setTimeout(done, 1_500)),
+    );
+    const settled = launch(world, { beforeSpawn: hook });
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(await settled).toMatchObject({ started: true });
+    // 1000 ms less one 100 ms probe sleep: the step's 1500 ms never counted.
+    expect(world.events).toContain('attach:900');
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('fails at its own bound and keeps the claim until the late step settles', async () => {
+    const world = new ScriptedDaemon();
+    let finish = (): void => {};
+    const { hook, signals } = step(
+      world,
+      () => new Promise<void>((done) => (finish = done)),
+      300,
+    );
+    let outcome: Outcome | undefined;
+    void launch(world, { beforeSpawn: hook }).then(
+      (value) => (outcome = value),
+      (error: unknown) =>
+        (outcome = { error: toCanopyClientError(error).payload }),
+    );
+    await jest.advanceTimersByTimeAsync(300);
+    expect(outcome).toMatchObject({
+      error: {
+        kind: 'deadline_exceeded',
+        message: 'Core pre-spawn step timed out.',
+      },
+    });
+    expect(signals[0]?.aborted).toBe(true);
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(world.count('release')).toBe(0);
+    finish();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(world.released).toEqual([world.handle]);
+    expect(world.count('spawn')).toBe(0);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('stops beforeSpawn when the caller cancels', async () => {
+    const world = new ScriptedDaemon();
+    const abort = new AbortController();
+    const { hook, signals } = step(
+      world,
+      (signal) =>
+        new Promise((_done, fail) =>
+          signal.addEventListener('abort', () => fail(new Error('aborted'))),
+        ),
+    );
+    setTimeout(() => abort.abort(), 100);
+    const outcome = await run(
+      launch(world, { beforeSpawn: hook, signal: abort.signal }),
+    );
+    expect(outcome).toMatchObject({ error: { kind: 'cancelled' } });
+    expect(signals[0]?.aborted).toBe(true);
+    expect(world.count('spawn')).toBe(0);
+    expect(world.released).toEqual([world.handle]);
+  });
+
+  it.each<[string, Overrides, string]>([
+    [
+      'on Windows, which has no claim to hold',
+      { platform: 'win32' },
+      'capability_unavailable',
+    ],
+    [
+      'with a fractional budget',
+      {
+        beforeSpawn: {
+          timeoutMs: 1.5,
+          run: (): Promise<void> => Promise.resolve(),
+        },
+      },
+      'invalid_argument',
+    ],
+  ])(
+    'refuses beforeSpawn %s before any port call',
+    async (_, overrides, kind) => {
+      const world = new ScriptedDaemon();
+      const { hook } = step(world);
+      const outcome = await run(
+        launch(world, { beforeSpawn: hook, ...overrides }),
+      );
+      expect(outcome).toMatchObject({ error: { kind } });
+      expect(world.events).toEqual([]);
+    },
+  );
+
+  it('tags an exit before readiness as a typed refusal, keeping its kind', async () => {
+    const world = new ScriptedDaemon();
+    world.child = (pid): void => world.exit(pid);
+    const settled = launch(world).catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(1_000);
+    const error = await settled;
+    expect(canopyDaemonRefusal(error)).toBe('exited_before_ready');
+    expect(toCanopyClientError(error).payload).toMatchObject({
+      kind: 'unavailable',
+      message: 'Core exited before it was ready.',
+      retry: { kind: 'same_request' },
+    });
+  });
 });

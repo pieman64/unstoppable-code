@@ -10,6 +10,7 @@ import {
   Button,
   PickerTriggerChevron,
   SearchField,
+  SettingsRowsRow,
   TextInput,
 } from '@canopy/ui-shared';
 import { HAIRLINE_INSET_RING_CLASS } from '@canopy/ui-shared/lib';
@@ -163,38 +164,34 @@ export function StartPageSettingControl({
       {/* One settings row in both layouts: the label and its explanation
           leading, the 144px dropdown trailing. The card frames that row for
           a dialog of cards. */}
-      <div className="flex min-h-10 items-center justify-between gap-6">
-        <div className="min-w-0 flex-1 space-y-0.5">
-          <label
-            className="block text-s font-medium fg-primary"
-            htmlFor="start-page-choice"
+      <SettingsRowsRow
+        htmlFor="start-page-choice"
+        label={layout === 'row' ? 'Open on start' : 'Start page'}
+        description={
+          layout === 'row'
+            ? 'The first tab in each new worktree.'
+            : 'Choose what opens first in each new work area.'
+        }
+        control={
+          <Button
+            ref={choiceTriggerRef}
+            id="start-page-choice"
+            variant="secondary"
+            size="compact"
+            className="w-36"
+            onClick={() => setChoiceOpen((open) => !open)}
+            aria-haspopup="listbox"
+            aria-expanded={choiceOpen}
+            aria-controls={choiceOpen ? choiceMenuId : undefined}
+            data-testid="start-page-choice-trigger"
           >
-            {layout === 'row' ? 'Open on start' : 'Start page'}
-          </label>
-          <div className="text-xs text-pretty fg-secondary">
-            {layout === 'row'
-              ? 'The first tab in each new worktree.'
-              : 'Choose what opens first in each new work area.'}
-          </div>
-        </div>
-        <Button
-          ref={choiceTriggerRef}
-          id="start-page-choice"
-          variant="secondary"
-          size="compact"
-          className="w-36"
-          onClick={() => setChoiceOpen((open) => !open)}
-          aria-haspopup="listbox"
-          aria-expanded={choiceOpen}
-          aria-controls={choiceOpen ? choiceMenuId : undefined}
-          data-testid="start-page-choice-trigger"
-        >
-          <span className="min-w-0 flex-1 truncate text-left">
-            {CHOICE_LABELS[choice]}
-          </span>
-          <PickerTriggerChevron open={choiceOpen} variant="capsule" />
-        </Button>
-      </div>
+            <span className="min-w-0 flex-1 truncate text-left">
+              {CHOICE_LABELS[choice]}
+            </span>
+            <PickerTriggerChevron open={choiceOpen} variant="capsule" />
+          </Button>
+        }
+      />
       <FloatingPickerMenu
         id={choiceMenuId}
         open={choiceOpen}

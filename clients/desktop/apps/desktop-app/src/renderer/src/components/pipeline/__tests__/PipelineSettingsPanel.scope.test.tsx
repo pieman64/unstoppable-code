@@ -50,14 +50,18 @@ function render(pipeline: Pipeline, readonly = false): Rendered {
 function scopeCheckbox(
   container: HTMLElement,
   scope: PipelineExecutionScope,
-): HTMLInputElement {
+): HTMLButtonElement {
   const el = container.querySelector(
-    `[data-testid="pipeline-execution-scope-${scope}"]`,
+    `[data-testid="pipeline-execution-scope-row-${scope}"]`,
   );
-  if (!(el instanceof HTMLInputElement)) {
-    throw new Error(`Missing scope checkbox for ${scope}`);
+  if (!(el instanceof HTMLButtonElement)) {
+    throw new Error(`Missing scope choice for ${scope}`);
   }
   return el;
+}
+
+function isChecked(el: HTMLElement): boolean {
+  return el.getAttribute('aria-checked') === 'true';
 }
 
 describe('PipelineSettingsPanel execution scope', () => {
@@ -67,12 +71,14 @@ describe('PipelineSettingsPanel execution scope', () => {
       container.querySelector('[data-testid="pipeline-execution-scope"]')
         ?.textContent,
     ).toContain('Execution scope');
-    expect(scopeCheckbox(container, 'global')).toBeInstanceOf(HTMLInputElement);
+    expect(scopeCheckbox(container, 'global')).toBeInstanceOf(
+      HTMLButtonElement,
+    );
     expect(scopeCheckbox(container, 'directory')).toBeInstanceOf(
-      HTMLInputElement,
+      HTMLButtonElement,
     );
     expect(scopeCheckbox(container, 'worktree')).toBeInstanceOf(
-      HTMLInputElement,
+      HTMLButtonElement,
     );
     act((): void => root.unmount());
   });
@@ -104,9 +110,9 @@ describe('PipelineSettingsPanel execution scope', () => {
 
   it('defaults a missing scope to Directory selected', () => {
     const { container, root } = render(makePipeline());
-    expect(scopeCheckbox(container, 'directory').checked).toBe(true);
-    expect(scopeCheckbox(container, 'worktree').checked).toBe(false);
-    expect(scopeCheckbox(container, 'global').checked).toBe(false);
+    expect(isChecked(scopeCheckbox(container, 'directory'))).toBe(true);
+    expect(isChecked(scopeCheckbox(container, 'worktree'))).toBe(false);
+    expect(isChecked(scopeCheckbox(container, 'global'))).toBe(false);
     act((): void => root.unmount());
   });
 
@@ -141,31 +147,22 @@ function row(container: HTMLElement, testId: string): HTMLElement {
   return el;
 }
 
-describe('PipelineSettingsPanel row hover', () => {
-  // These rows are the panel's only click targets and they went flat when
-  // `hover:bg-surface-hover` was removed as a dead class (#3791): no
-  // stylesheet declared that role, so the highlight never painted. The app's
-  // row idiom is `hover:bg-subtle` (DropdownMenuItem, the sidebar rows,
-  // SidebarPageNav); `hover:bg-secondary` is the opaque button/chip hover.
-  it('highlights the enabled trigger rows', () => {
-    const { container, root } = render(makePipeline('directory'));
-    const manual = row(container, 'pipeline-trigger-row-dispatch');
-    expect(manual.classList.contains('hover:bg-subtle')).toBe(true);
-    expect(manual.classList.contains('cursor-pointer')).toBe(true);
-    act((): void => root.unmount());
-  });
-
-  it('highlights the enabled execution-scope rows', () => {
+describe('PipelineSettingsPanel choice rows', () => {
+  it('leaves the trigger and scope rows enabled when editable', () => {
     const { container, root } = render(makePipeline(['global', 'worktree']));
-    const global = row(container, 'pipeline-execution-scope-row-global');
-    expect(global.classList.contains('hover:bg-subtle')).toBe(true);
-    expect(global.classList.contains('cursor-pointer')).toBe(true);
+    expect(
+      row(container, 'pipeline-trigger-row-dispatch').hasAttribute('disabled'),
+    ).toBe(false);
+    expect(
+      row(container, 'pipeline-execution-scope-row-global').hasAttribute(
+        'disabled',
+      ),
+    ).toBe(false);
     act((): void => root.unmount());
   });
 
-  it('leaves rows that cannot be toggled without a hover highlight', () => {
-    // Readonly rows, and the last remaining scope, are not click targets, so
-    // a highlight would promise an interaction that does nothing.
+  it('disables rows that cannot be toggled', () => {
+    // Readonly rows, and the last remaining scope, are not click targets.
     const { container: readonlyContainer, root: readonlyRoot } = render(
       makePipeline(['global', 'worktree']),
       true,
@@ -174,16 +171,18 @@ describe('PipelineSettingsPanel row hover', () => {
       'pipeline-trigger-row-dispatch',
       'pipeline-execution-scope-row-global',
     ]) {
-      const el = row(readonlyContainer, testId);
-      expect(el.classList.contains('hover:bg-subtle')).toBe(false);
-      expect(el.classList.contains('opacity-70')).toBe(true);
+      expect(row(readonlyContainer, testId).hasAttribute('disabled')).toBe(
+        true,
+      );
     }
     act((): void => readonlyRoot.unmount());
 
     const { container, root } = render(makePipeline('directory'));
-    const lastScope = row(container, 'pipeline-execution-scope-row-directory');
-    expect(lastScope.classList.contains('hover:bg-subtle')).toBe(false);
-    expect(lastScope.classList.contains('opacity-70')).toBe(true);
+    expect(
+      row(container, 'pipeline-execution-scope-row-directory').hasAttribute(
+        'disabled',
+      ),
+    ).toBe(true);
     act((): void => root.unmount());
   });
 });

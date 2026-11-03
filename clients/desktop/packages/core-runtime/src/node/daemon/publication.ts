@@ -105,9 +105,11 @@ export async function publishCanopyDaemon(
   options: CanopyDaemonPublicationOptions,
 ): Promise<CanopyDaemonPublication> {
   const { platform, claims, dataRoot, heldClaim } = options;
+  // A held claim on a pipe must be the caller's own acquisition: the core
+  // daemon refuses a launcher's there before adopting it (CAN-5530).
   if (
     platform.endpoints.semantics === 'first-instance-pipe' &&
-    (options.claimHandle !== undefined || heldClaim !== undefined)
+    options.claimHandle !== undefined
   )
     throw new Error('Windows launcher claim unsupported.');
   if (options.claimHandle !== undefined && heldClaim !== undefined)

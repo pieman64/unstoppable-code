@@ -101,7 +101,7 @@ test('App Advisor project agent access can select Personal and persists across r
     await expect(noOwnersHint).toBeVisible();
 
     await personal.click();
-    await expect(personal).toHaveAttribute('aria-pressed', 'true');
+    await expect(personal).toHaveAttribute('aria-checked', 'true');
     await expect(noOwnersHint).toBeHidden();
     await expectStoredAccess(window, {
       mode: 'selected-owners',
@@ -118,7 +118,7 @@ test('App Advisor project agent access can select Personal and persists across r
       window
         .getByTestId(`${ACCESS_PREFIX}-owner-list`)
         .getByTestId(`${ACCESS_PREFIX}-owner-personal`),
-    ).toHaveAttribute('aria-pressed', 'true');
+    ).toHaveAttribute('aria-checked', 'true');
     await expectStoredAccess(window, {
       mode: 'selected-owners',
       selectedOwners: [{ kind: 'personal' }],
@@ -252,7 +252,7 @@ test('App Advisor project agent access sorts organizations and removes unavailab
     const staleOwner = ownerList.getByTestId(
       `${ACCESS_PREFIX}-owner-organization-${STALE_ORGANIZATION_ID}`,
     );
-    await expect(staleOwner).toHaveAttribute('aria-pressed', 'true');
+    await expect(staleOwner).toHaveAttribute('aria-checked', 'true');
     await expect(staleOwner).toHaveAttribute('data-unavailable', 'true');
     await expect(staleOwner).toContainText('Unavailable organization');
     await staleOwner.click();

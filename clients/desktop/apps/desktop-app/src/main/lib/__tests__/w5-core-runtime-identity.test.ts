@@ -79,7 +79,11 @@ it('re-exports the same functions and existing error constructors', () => {
   expect(DesktopCommitRefusedError).toBe(W5CommitRefusedError);
   const { nodeW5FileStore, ...fileStore } = desktopFileStore;
   expect(fileStore).toEqual(coreFileStore);
-  expect(Object.keys(nodeW5FileStore).sort()).toEqual(['read', 'replace']);
+  expect(Object.keys(nodeW5FileStore).sort()).toEqual([
+    'read',
+    'remove',
+    'replace',
+  ]);
   expect(desktopRevisionDiff).toEqual(coreRevisionDiff);
   expect(desktopCommitLogFileStore.W5FileWriteRefusedError).toBe(
     coreCommitLogFileStore.W5FileWriteRefusedError,
@@ -478,6 +482,7 @@ it('re-exports the core repositories and replica codec and binds the desktop sec
         raw === undefined ? { state: 'absent' } : { state: 'present', raw },
       );
     },
+    remove: () => Promise.reject(new Error('unused')),
     replace: () => Promise.reject(new Error('unused')),
   };
   try {

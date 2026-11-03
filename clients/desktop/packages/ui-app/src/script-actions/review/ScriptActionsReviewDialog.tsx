@@ -34,6 +34,7 @@ export function ScriptActionsReviewDialog({
   const titleId = useId();
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Review scripts"
       titleId={titleId}

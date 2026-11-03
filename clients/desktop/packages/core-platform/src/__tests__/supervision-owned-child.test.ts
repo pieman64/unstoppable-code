@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import {
+  closeSync,
   copyFileSync,
   mkdtempSync,
   readFileSync,
@@ -11,12 +12,17 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type * as Runtime from '@canopy/core-runtime';
 import {
+  createJobLauncher,
   createOwnedChildServices,
   OwnedChildError,
 } from '../supervision/owned-child';
 
-const darwin = process.platform === 'darwin';
-const darwinDescribe = darwin ? describe : describe.skip;
+const linux = process.platform === 'linux';
+// The native suite fails rather than skips on both POSIX hosts: its build in
+// beforeAll throws when the addon cannot be built.
+const posix = linux || process.platform === 'darwin';
+const posixDescribe = posix ? describe : describe.skip;
+const os: 'darwin' | 'linux' = linux ? 'linux' : 'darwin';
 const BUILD = path.resolve(
   __dirname,
   '../../../../scripts/build-owned-child.mjs',
@@ -25,6 +31,53 @@ const MODULE = path.resolve(__dirname, '../supervision/owned-child.ts');
 const ENV = { PATH: '/usr/bin:/bin' };
 // `$1` receives the descendant PID; the descendant ignores SIGTERM.
 const TREE = `trap '' TERM; /bin/sh -c 'trap "" TERM; n=0; while [ ! -f "$1" ] && [ "$n" -lt 600 ]; do /bin/sleep 0.05; n=$((n+1)); done' sh "$2" & echo $! > "$1";`;
+
+/**
+ * Test-only addon: leak() opens /dev/null without FD_CLOEXEC; subreaper()
+ * (Linux) makes the caller adopt orphans it never reaps, as a container's
+ * PID 1 or a CLI running as PID 1 does.
+ */
+const PROBE = `#include <node_api.h>
+#include <fcntl.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
+static napi_value leak(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value out;
+  napi_create_int32(env, open("/dev/null", O_RDONLY), &out);
+  return out;
+}
+static napi_value flags(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  int32_t fd = -1;
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  napi_get_value_int32(env, argv[0], &fd);
+  napi_value out;
+  napi_create_int32(env, fcntl(fd, F_GETFD), &out);
+  return out;
+}
+static napi_value subreaper(napi_env env, napi_callback_info info) {
+  (void)info;
+  napi_value out;
+#ifdef __linux__
+  napi_create_int32(env, prctl(PR_SET_CHILD_SUBREAPER, 1), &out);
+#else
+  napi_create_int32(env, -1, &out);
+#endif
+  return out;
+}
+NAPI_MODULE_INIT() {
+  napi_property_descriptor methods[] = {
+      {"leak", NULL, leak, NULL, NULL, NULL, napi_enumerable, NULL},
+      {"flags", NULL, flags, NULL, NULL, NULL, napi_enumerable, NULL},
+      {"subreaper", NULL, subreaper, NULL, NULL, NULL, napi_enumerable, NULL},
+  };
+  napi_define_properties(env, exports, 3, methods);
+  return exports;
+}
+`;
 
 let dir = '';
 let addon = '';
@@ -43,15 +96,45 @@ function present(pid: number): boolean {
   }
 }
 
-/** Independent observation; '' once the PID is gone (reaped, not a zombie). */
-function ps(pid: number, column: 'stat' | 'pgid'): string {
+/**
+ * Independent observation; '' once the PID is gone (reaped, not a zombie).
+ * `start` names one process: a reused PID has another. Linux reads /proc,
+ * which minimal images have without `ps`.
+ */
+function ps(pid: number, column: 'stat' | 'pgid' | 'start'): string {
+  if (linux) return proc(pid)[{ stat: 0, pgid: 2, start: 19 }[column]] ?? '';
   try {
-    return execFileSync('/bin/ps', ['-o', `${column}=`, '-p', String(pid)], {
-      encoding: 'utf8',
-    }).trim();
+    return execFileSync(
+      '/bin/ps',
+      ['-o', `${column === 'start' ? 'lstart' : column}=`, '-p', String(pid)],
+      { encoding: 'utf8' },
+    ).trim();
   } catch {
     return '';
   }
+}
+
+/**
+ * Linux /proc/<pid>/stat fields after the command name, in one read: state,
+ * ppid, pgrp, ... num_threads (index 17), itrealvalue, starttime (19).
+ * Empty once the PID is gone.
+ */
+function proc(pid: number): string[] {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return text.slice(text.lastIndexOf(')') + 2).split(' ');
+  } catch {
+    return [];
+  }
+}
+
+/** Linux: gone, or a zombie none of whose threads still runs. */
+function finished(pid: number): boolean {
+  const fields = proc(pid);
+  return (
+    fields.length === 0 ||
+    (/^[ZX]$/.test(fields[0] ?? '') && Number(fields[17]) <= 1)
+  );
 }
 
 async function until(check: () => boolean, ms = 3000): Promise<void> {
@@ -62,11 +145,25 @@ async function until(check: () => boolean, ms = 3000): Promise<void> {
   }
 }
 
-/** Already absent, not even a zombie: cleanup waits for the group to be reaped. */
+/** Already absent, not even a zombie: a released root is reaped. */
 function gone(pid: number): void {
   expect(ps(pid, 'stat')).toBe('');
   expect(present(pid)).toBe(false);
 }
+
+/**
+ * A stopped group member. Darwin cleanup waits for the group to be reaped;
+ * Linux cleanup ignores exited members, whose reaping is up to whichever
+ * process adopted them.
+ */
+function dead(pid: number): void {
+  if (linux) expect(finished(pid)).toBe(true);
+  else gone(pid);
+}
+
+/** Still to clean up: on Linux until it exits, on Darwin until it is reaped. */
+const lingering = (pid: number): boolean =>
+  linux ? !finished(pid) : present(pid);
 
 async function descendantOf(file: string): Promise<number> {
   let pid = 0;
@@ -83,8 +180,65 @@ async function descendantOf(file: string): Promise<number> {
   return pid;
 }
 
+let probeFile = '';
+/** Builds PROBE once per suite and returns its path. */
+function probe(): string {
+  if (probeFile) return probeFile;
+  const source = path.join(dir, 'probe.c');
+  const out = path.join(dir, 'probe.node');
+  writeFileSync(source, PROBE);
+  execFileSync(
+    linux ? '/usr/bin/cc' : '/usr/bin/clang',
+    [
+      '-std=c11',
+      '-fPIC',
+      ...(linux ? ['-shared'] : ['-bundle', '-undefined', 'dynamic_lookup']),
+      '-DNAPI_VERSION=8',
+      '-I',
+      path.resolve(path.dirname(process.execPath), '..', 'include', 'node'),
+      '-o',
+      out,
+      source,
+    ],
+    { stdio: 'pipe' },
+  );
+  probeFile = out;
+  return out;
+}
+
+/**
+ * Test-only executable: its main thread exits and a sibling thread runs until
+ * the file named by argv[1] exists, at most 30 s.
+ */
+const THREADED = `#define _POSIX_C_SOURCE 200809L
+#include <pthread.h>
+#include <time.h>
+#include <unistd.h>
+static void *run(void *file) {
+  struct timespec pause = {0, 50000000};
+  for (int n = 0; n < 600 && access(file, F_OK) != 0; n++)
+    nanosleep(&pause, NULL);
+  return NULL;
+}
+int main(int argc, char **argv) {
+  pthread_t thread;
+  if (argc < 2 || pthread_create(&thread, NULL, run, argv[1]) != 0) return 1;
+  pthread_exit(NULL);
+}
+`;
+
+function threaded(): string {
+  const source = path.join(dir, 'threaded.c');
+  const out = path.join(dir, 'threaded');
+  writeFileSync(source, THREADED);
+  execFileSync('/usr/bin/cc', ['-std=c11', '-pthread', '-o', out, source], {
+    stdio: 'pipe',
+  });
+  return out;
+}
+
 const services = (): Runtime.PlatformOwnedChildServices =>
-  createOwnedChildServices({ os: 'darwin', nativePath: addon });
+  createOwnedChildServices({ os, nativePath: addon });
 
 /** Spawns `sh -c "<TREE> <tail>"`; returns the owned root and its descendant. */
 async function tree(
@@ -127,7 +281,7 @@ function thrown(run: () => unknown): unknown {
 
 beforeAll(() => {
   dir = mkdtempSync(path.join(tmpdir(), 'owned-child-'));
-  if (!darwin) return;
+  if (!posix) return;
   // A per-suite output: parallel suites never share a build file.
   addon = path.join(dir, 'core-owned-child.node');
   execFileSync(process.execPath, [BUILD, '--out', addon], { stdio: 'pipe' });
@@ -147,7 +301,7 @@ afterEach(async () => {
     }
   });
   rawCleanups.clear();
-  await until(() => Array.from(fixtures).every((pid) => !present(pid)));
+  await until(() => Array.from(fixtures).every((pid) => !lingering(pid)));
   stops.clear();
   fixtures.clear();
 });
@@ -155,23 +309,48 @@ afterEach(async () => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('unsupported hosts', () => {
-  it('rejects every linux spawn as capability_unavailable without loading', async () => {
+  it('rejects every spawn on a host without a backend as capability_unavailable without loading', async () => {
     const dlopen = jest.spyOn(process, 'dlopen');
     try {
-      const owned = createOwnedChildServices({
+      const options: Parameters<typeof createOwnedChildServices>[0] = {
         os: 'linux',
         nativePath: '/missing.node',
-      });
-      const error = await rejection(() =>
-        owned.spawn({ executable: '/bin/true', args: [], environment: {} }),
-      );
-      expect(error).toBeInstanceOf(OwnedChildError);
-      expect(error).toEqual(typed('capability_unavailable'));
+      };
+      Object.assign(options, { os: 'freebsd' });
+      const owned = createOwnedChildServices(options);
+      const request = { executable: '/bin/true', args: [], environment: {} };
+      for (const spawned of [
+        (): Promise<unknown> => owned.spawn(request),
+        (): Promise<unknown> => owned.spawnWithChannel(request),
+      ]) {
+        const error = await rejection(spawned);
+        expect(error).toBeInstanceOf(OwnedChildError);
+        expect(error).toEqual(typed('capability_unavailable'));
+      }
       expect(dlopen).not.toHaveBeenCalled();
     } finally {
       dlopen.mockRestore();
     }
   });
+
+  it.each(['darwin', 'linux'] as const)(
+    'refuses the Windows-only job launcher on %s without loading',
+    (host) => {
+      const dlopen = jest.spyOn(process, 'dlopen');
+      try {
+        const launcher = createJobLauncher({
+          os: host,
+          nativePath: '/controlled/backend.node',
+        });
+        expect(thrown(() => launcher.ready())).toEqual(
+          typed('capability_unavailable'),
+        );
+        expect(dlopen).not.toHaveBeenCalled();
+      } finally {
+        dlopen.mockRestore();
+      }
+    },
+  );
 
   it('rejects a POSIX executable path on win32 as invalid_argument without loading', async () => {
     const dlopen = jest.spyOn(process, 'dlopen');
@@ -190,17 +369,23 @@ describe('unsupported hosts', () => {
     }
   });
 
-  it.each([
-    ['missing', '/nonexistent/core-owned-child.node'],
-    ['relative', 'core-owned-child.node'],
-    ['not an addon', '/bin/sh'],
-  ])('rejects a %s addon as capability_unavailable', async (_, nativePath) => {
-    const owned = createOwnedChildServices({ os: 'darwin', nativePath });
-    const error = await rejection(() =>
-      owned.spawn({ executable: '/bin/true', args: [], environment: {} }),
-    );
-    expect(error).toEqual(typed('capability_unavailable'));
-  });
+  it.each(
+    (['darwin', 'linux'] as const).flatMap((host) => [
+      [host, 'missing', '/nonexistent/core-owned-child.node'],
+      [host, 'relative', 'core-owned-child.node'],
+      [host, 'Windows', 'C:\\app\\core-owned-child.node'],
+      [host, 'not an addon', '/bin/sh'],
+    ]),
+  )(
+    'rejects on %s a %s addon as capability_unavailable',
+    async (host, _, nativePath) => {
+      const owned = createOwnedChildServices({ os: host, nativePath });
+      const error = await rejection(() =>
+        owned.spawn({ executable: '/bin/true', args: [], environment: {} }),
+      );
+      expect(error).toEqual(typed('capability_unavailable'));
+    },
+  );
 
   it.each([
     ['missing', 'C:\\nonexistent\\core-owned-child.node'],
@@ -224,7 +409,7 @@ describe('unsupported hosts', () => {
   );
 });
 
-darwinDescribe('darwin owned child', () => {
+posixDescribe(`${os} owned child`, () => {
   it('holds an exited root until its TERM-ignoring group is gone', async () => {
     const [child, descendant] = await tree('exit 17');
     await expect(child.exited).resolves.toEqual({ code: 17, signal: null });
@@ -245,7 +430,7 @@ darwinDescribe('darwin owned child', () => {
     expect(ps(child.pid, 'stat')).toMatch(/^Z/);
 
     await child.terminate();
-    gone(descendant);
+    dead(descendant);
     expect(ps(child.pid, 'stat')).toBe('');
     await expect(child.terminate()).resolves.toBeUndefined();
     expect(thrown(() => child.commit())).toEqual(typed('failed_precondition'));
@@ -258,7 +443,7 @@ darwinDescribe('darwin owned child', () => {
       code: null,
       signal: 'SIGKILL',
     });
-    gone(descendant);
+    dead(descendant);
     expect(ps(child.pid, 'stat')).toBe('');
   });
 
@@ -287,7 +472,7 @@ darwinDescribe('darwin owned child', () => {
     expect(thrown(() => child.commit())).toEqual(typed('failed_precondition'));
     expect(present(descendant)).toBe(true);
     await child.terminate();
-    gone(descendant);
+    dead(descendant);
     expect(ps(child.pid, 'stat')).toBe('');
   });
 
@@ -312,7 +497,7 @@ darwinDescribe('darwin owned child', () => {
     await expect(child.terminate(aborted)).rejects.toBe(aborted.reason);
     expect(present(child.pid) && present(descendant)).toBe(true);
     await child.terminate();
-    gone(descendant);
+    dead(descendant);
   });
 
   it('serializes commit against a started stop', async () => {
@@ -321,7 +506,7 @@ darwinDescribe('darwin owned child', () => {
     const second = child.terminate();
     expect(thrown(() => child.commit())).toEqual(typed('failed_precondition'));
     await Promise.all([first, second]);
-    gone(descendant);
+    dead(descendant);
     expect(ps(child.pid, 'stat')).toBe('');
   });
 
@@ -332,7 +517,7 @@ darwinDescribe('darwin owned child', () => {
     controller.abort();
     await expect(waiting).rejects.toBe(controller.signal.reason);
     await child.terminate();
-    gone(descendant);
+    dead(descendant);
     expect(ps(child.pid, 'stat')).toBe('');
   });
 
@@ -354,6 +539,186 @@ darwinDescribe('darwin owned child', () => {
     expect(env).not.toContain('HOME=');
     expect(env).not.toContain(secret);
   });
+
+  it('passes the root no descriptor above stderr', async () => {
+    // Node marks the descriptors it creates or inherits CLOEXEC, so only
+    // native code (Electron, another addon) leaves one inheritable: this probe
+    // stands in for it.
+    const native = { exports: {} };
+    process.dlopen(native, probe());
+    const call = (name: string, ...args: unknown[]): unknown => {
+      const method = get(native.exports, name);
+      if (typeof method !== 'function') throw new Error(`no probe ${name}`);
+      return Reflect.apply(method, null, args);
+    };
+    const leaked = Number(call('leak'));
+    try {
+      expect(leaked).toBeGreaterThan(2);
+      // FD_CLOEXEC is clear: a plain posix_spawn would pass it on.
+      expect(call('flags', leaked)).toBe(0);
+      const out = path.join(dir, 'fds');
+      const child = await services().spawn({
+        executable: '/bin/sh',
+        args: [
+          '-c',
+          '[ -e /dev/fd/2 ]; a=$?; [ -e "/dev/fd/$2" ]; echo "$a $?" > "$1"',
+          'sh',
+          out,
+          String(leaked),
+        ],
+        environment: ENV,
+      });
+      children.add(child);
+      await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+      // stderr is visible to the check; the leaked descriptor is not.
+      expect(readFileSync(out, 'utf8')).toBe('0 1\n');
+    } finally {
+      closeSync(leaked);
+    }
+  });
+
+  it('holds an exited root so its PID names no other process until release', async () => {
+    const stop = path.join(dir, `reuse-${Date.now()}`);
+    const child = await services().spawn({
+      executable: '/bin/sh',
+      args: ['-c', 'while [ ! -f "$1" ]; do /bin/sleep 0.05; done', 'sh', stop],
+      environment: ENV,
+    });
+    children.add(child);
+    fixtures.add(child.pid);
+    const started = ps(child.pid, 'start');
+    expect(started).not.toBe('');
+    writeFileSync(stop, '');
+    await expect(child.exited).resolves.toEqual({ code: 0, signal: null });
+    // Exited yet unreaped: the same process, not absence or a successor.
+    expect(ps(child.pid, 'stat')).toMatch(/^Z/);
+    expect(ps(child.pid, 'start')).toBe(started);
+    await child.terminate();
+    gone(child.pid);
+  });
+
+  // Linux lists the group from /proc; Darwin's listing is a kernel snapshot.
+  const linuxIt = linux ? it : it.skip;
+
+  linuxIt(
+    'stops a group whose orphans its host adopts and never reaps',
+    async () => {
+      const SUBREAPER_HOST = `
+      const [, , module, nativePath, probePath, file] = process.argv;
+      const { readFileSync } = await import('node:fs');
+      const probe = { exports: {} };
+      process.dlopen(probe, probePath);
+      if (probe.exports.subreaper() !== 0) process.exit(4);
+      const { createOwnedChildServices } = await import(module);
+      const child = await createOwnedChildServices({ os: 'linux', nativePath })
+        .spawn({ executable: '/bin/sh', args: ['-c', ${JSON.stringify(TREE)} + ' wait', 'sh', file, file + '.stop'], environment: { PATH: '/usr/bin:/bin' } });
+      const read = () => { try { return readFileSync(file, 'utf8').trim(); } catch { return ''; } };
+      while (!/^[0-9]+$/.test(read())) await new Promise((r) => setTimeout(r, 10));
+      const descendant = read();
+      process.stdout.write(child.pid + ' ' + descendant);
+      try { await child.terminate(); } catch (error) { process.stdout.write(' ' + error.code); process.exit(2); }
+      const stat = readFileSync('/proc/' + descendant + '/stat', 'utf8');
+      const [state, parent] = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      process.stdout.write(state === 'Z' && Number(parent) === process.pid ? ' adopted' : ' ' + state + ' ' + parent);
+    `;
+      const script = path.join(dir, 'subreaper.mjs');
+      const file = path.join(dir, `subreaper-${Date.now()}`);
+      writeFileSync(script, SUBREAPER_HOST);
+      const args = [script, pathToFileURL(MODULE).href, addon, probe(), file];
+      const [code, stdout] = await new Promise<[number | null, string]>(
+        (resolve) => {
+          execFile(
+            process.execPath,
+            args,
+            { env: ENV, timeout: 10_000 },
+            (error, out) =>
+              resolve([error ? Number(Reflect.get(error, 'code')) : 0, out]),
+          );
+        },
+      );
+      const [root, descendant] = stdout.split(' ').map(Number);
+      fixtures.add(root);
+      fixtures.add(descendant);
+      // The killed descendant was left a zombie of the host, yet the stop held.
+      expect([code, stdout.split(' ').slice(2).join(' ')]).toEqual([
+        0,
+        'adopted',
+      ]);
+    },
+  );
+
+  linuxIt(
+    'stops the members of an exited uncommitted root before reaping it',
+    async () => {
+      // A /proc scan can miss a process forked during it, so the group is
+      // signaled before an empty scan is trusted.
+      const module = { exports: {} };
+      process.dlopen(module, addon);
+      const native: Record<string, (...args: unknown[]) => unknown> =
+        module.exports;
+      const file = path.join(dir, `member-${Date.now()}`);
+      const spawned = native.spawn(
+        '/bin/sh',
+        ['/bin/sh', '-c', '/bin/sleep 30 & echo $! > "$1"', 'sh', file],
+        [],
+        null,
+      );
+      const handle = get(spawned, 'handle');
+      if (typeof handle !== 'object' || handle === null)
+        throw new Error('no native handle');
+      fixtures.add(Number(get(spawned, 'pid')));
+      rawCleanups.add(() => native.rollbackSync(handle));
+      const member = await descendantOf(file);
+      stops.delete(member);
+      await until(() => get(native.observe(handle), 'state') === 'exited');
+      expect(present(member)).toBe(true);
+      // No stopGroup: release alone ends the member and then reaps the root.
+      await until(() => native.release(handle) === true);
+      dead(member);
+    },
+  );
+
+  linuxIt(
+    'counts a member whose exited main thread leaves a live thread',
+    async () => {
+      // /proc lists only the thread-group leader, which turns zombie while
+      // its other threads still run.
+      const program = threaded();
+      const module = { exports: {} };
+      process.dlopen(module, addon);
+      const native: Record<string, (...args: unknown[]) => unknown> =
+        module.exports;
+      const file = path.join(dir, `threaded-${Date.now()}`);
+      const spawned = native.spawn(
+        '/bin/sh',
+        [
+          '/bin/sh',
+          '-c',
+          '"$1" "$2.stop" & echo $! > "$2"; wait',
+          'sh',
+          program,
+          file,
+        ],
+        [],
+        null,
+      );
+      const handle = get(spawned, 'handle');
+      if (typeof handle !== 'object' || handle === null)
+        throw new Error('no native handle');
+      fixtures.add(Number(get(spawned, 'pid')));
+      rawCleanups.add(() => native.rollbackSync(handle));
+      const member = await descendantOf(file);
+      // Zombie leader, one other thread.
+      await until(() => {
+        const fields = proc(member);
+        return fields[0] === 'Z' && fields[17] === '2';
+      });
+      expect(native.members(handle)).toBe(1);
+      expect(native.stopGroup(handle)).toBe(true);
+      await until(() => native.release(handle) === true);
+      dead(member);
+    },
+  );
 
   it.each<
     [
@@ -448,14 +813,19 @@ darwinDescribe('darwin owned child', () => {
 
     // Native refusal, independent of the adapter's own exit observation.
     const [native] = loads;
-    const handle = handleOf(
-      native,
-      native.spawn('/bin/sh', ['/bin/sh', '-c', 'exit 0'], [], null),
+    const handleSpawn = native.spawn(
+      '/bin/sh',
+      ['/bin/sh', '-c', 'exit 0'],
+      [],
+      null,
     );
+    const handle = handleOf(native, handleSpawn);
     await until(() => get(native.observe(handle), 'state') === 'exited');
     expect(code(() => native.commit(handle))).toBe('ERR_OWNED_CHILD_EXITED');
     // A group left with only its exited root has nothing to stop; Darwin
-    // refuses a group signal to it with EPERM rather than ESRCH.
+    // refuses a group signal to it with EPERM rather than ESRCH, and Linux
+    // signals the zombie root successfully.
+    expect(ps(Number(get(handleSpawn, 'pid')), 'stat')).toMatch(/^Z/);
     expect(native.members(handle)).toBe(0);
     expect(code(() => native.stopGroup(handle))).toBe(true);
     expect(native.rollbackSync(handle)).toBe(true);
@@ -463,9 +833,9 @@ darwinDescribe('darwin owned child', () => {
 
   describe('host exit', () => {
     const HOST = `
-      const [, , module, nativePath, file, tail, mode] = process.argv;
+      const [, , module, nativePath, file, tail, mode, os] = process.argv;
       const { createOwnedChildServices } = await import(module);
-      const child = await createOwnedChildServices({ os: 'darwin', nativePath })
+      const child = await createOwnedChildServices({ os, nativePath })
         .spawn({ executable: '/bin/sh', args: ['-c', ${JSON.stringify(TREE)} + ' ' + tail, 'sh', file, file + '.stop'], environment: { PATH: '/usr/bin:/bin' } });
       process.stdout.write(String(child.pid));
       const { readFileSync } = await import('node:fs');
@@ -492,6 +862,7 @@ darwinDescribe('darwin owned child', () => {
         file,
         tail,
         mode,
+        os,
       ];
       const [code, stdout] = await new Promise<[number | null, string]>(
         (resolve) => {
@@ -516,7 +887,7 @@ darwinDescribe('darwin owned child', () => {
     ])('rolls back an uncommitted group on %s', async (_, tail, mode, exit) => {
       const { code, root, descendant } = await host(tail, mode);
       expect(code).toBe(exit);
-      gone(descendant);
+      dead(descendant);
       gone(root);
     });
 
@@ -530,7 +901,7 @@ darwinDescribe('darwin owned child', () => {
         const stop = stops.get(descendant);
         if (!stop) throw new Error('missing fixture control');
         writeFileSync(stop, '');
-        await until(() => !present(root) && !present(descendant));
+        await until(() => !lingering(root) && !lingering(descendant));
       },
     );
   });
@@ -565,10 +936,11 @@ describe('controlled native failures', () => {
     rollbackSync(this: void): boolean;
     rollbackUndelivered(this: void): boolean;
   };
-  function backend(os: 'darwin' | 'win32' = 'darwin'): {
+  function backend(os: Runtime.PlatformOperatingSystem = 'darwin'): {
     native: jest.Mocked<ControlledNative>;
     services: ReturnType<typeof createOwnedChildServices>;
     state(next: 'running' | 'exited' | 'lost'): void;
+    dlopen: jest.SpiedFunction<typeof process.dlopen>;
   } {
     let state: 'running' | 'exited' | 'lost' = 'running';
     const native = {
@@ -586,10 +958,13 @@ describe('controlled native failures', () => {
       rollbackSync: jest.fn(() => true),
       rollbackUndelivered: jest.fn(() => true),
     };
-    jest.spyOn(process, 'dlopen').mockImplementation((module) => {
-      Object.assign(module, { exports: native });
-    });
+    const dlopen = jest
+      .spyOn(process, 'dlopen')
+      .mockImplementation((module) => {
+        Object.assign(module, { exports: native });
+      });
     return {
+      dlopen,
       native,
       services: createOwnedChildServices({
         os,
@@ -935,6 +1310,80 @@ describe('controlled native failures', () => {
         b.services.spawnWithChannel(windowsRequest),
       );
       expect(error).toEqual(typed('capability_unavailable'));
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('linux backend', () => {
+    it('passes the request, stdin and case-distinct names to the native backend', async () => {
+      const b = backend('linux');
+      const child = await b.services.spawn({
+        executable: '/controlled/canopyd',
+        args: ['--data-root', '/home/a b/data'],
+        environment: { Path: '/a', PATH: '/b' },
+        stdin: '{"claim":null}',
+      });
+      expect(b.dlopen).toHaveBeenCalledWith(
+        expect.anything(),
+        '/controlled/backend.node',
+      );
+      expect(b.native.spawn).toHaveBeenLastCalledWith(
+        '/controlled/canopyd',
+        ['/controlled/canopyd', '--data-root', '/home/a b/data'],
+        ['Path=/a', 'PATH=/b'],
+        '{"claim":null}',
+      );
+      child.commit();
+      expect(b.native.commit).toHaveBeenCalledTimes(1);
+      expect(await rejection(() => child.terminate())).toEqual(
+        typed('failed_precondition'),
+      );
+      expect(b.native.stopGroup).not.toHaveBeenCalled();
+    });
+
+    it('rolls an uncommitted root back through the group backend', async () => {
+      const b = backend('linux');
+      const child = await b.services.spawn(request);
+      const stopped = child.terminate();
+      await jest.advanceTimersByTimeAsync(20);
+      await expect(stopped).resolves.toBeUndefined();
+      expect(b.native.stopGroup).toHaveBeenCalledTimes(1);
+      expect(b.native.release).toHaveBeenCalled();
+      await expect(child.exited).resolves.toEqual({ code: 17, signal: null });
+    });
+
+    it.each<
+      [
+        string,
+        Partial<Parameters<Runtime.PlatformOwnedChildServices['spawn']>[0]>,
+      ]
+    >([
+      ['Windows executable', { executable: 'C:\\controlled\\canopyd.exe' }],
+      ['relative executable', { executable: 'canopyd' }],
+      ['oversized stdin', { stdin: 'x'.repeat(4097) }],
+      ['malformed environment', { environment: { 'A=B': 'c' } }],
+      ['NUL argument', { args: ['\0'] }],
+    ])('rejects a %s with no native call', async (_, change) => {
+      const b = backend('linux');
+      const error = await rejection(() =>
+        b.services.spawn({ ...request, ...change }),
+      );
+      expect(error).toEqual(typed('invalid_argument'));
+      expect(b.native.spawn).not.toHaveBeenCalled();
+    });
+
+    it('keeps the launcher channel Darwin-only without loading the addon', async () => {
+      const b = backend('linux');
+      Object.assign(b.native, {
+        spawnChannel: jest.fn(),
+        channelRead: jest.fn(),
+        channelWrite: jest.fn(),
+        channelPeer: jest.fn(),
+        channelClose: jest.fn(),
+      });
+      const error = await rejection(() => b.services.spawnWithChannel(request));
+      expect(error).toEqual(typed('capability_unavailable'));
+      expect(b.dlopen).not.toHaveBeenCalled();
       expect(b.native.spawn).not.toHaveBeenCalled();
     });
   });

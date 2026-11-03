@@ -11,6 +11,12 @@ interface LayoutBox {
 export interface FlipBoxOptions {
   readonly durationMs: number;
   readonly easing: string;
+  /**
+   * Take this render's box at once, without motion, stopping any slide in
+   * flight: a box that moved because its container resized, not because the
+   * user picked a new place for it.
+   */
+  readonly snap?: boolean;
 }
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
@@ -85,11 +91,12 @@ function reducedMotion(element: HTMLElement): boolean {
  *
  * Runs after every render and animates only when the layout box changed; the
  * first box an element is drawn in never animates, and neither does a resize
- * of its container between renders, which the box simply follows.
+ * of its container between renders, which the box simply follows, or a
+ * render that asks to `snap`.
  */
 export function useFlipBox(
   ref: RefObject<HTMLElement | null>,
-  { durationMs, easing }: FlipBoxOptions,
+  { durationMs, easing, snap = false }: FlipBoxOptions,
 ): void {
   const previousRef = useRef<{
     readonly element: HTMLElement;
@@ -136,10 +143,11 @@ export function useFlipBox(
       previousRef.current?.element === element ? previousRef.current.box : null;
     previousRef.current = { element, box: next };
     if (!previous || sameBox(previous, next)) return;
-    const from = drawnBoxOf(element, previous);
+    const from = snap ? next : drawnBoxOf(element, previous);
     animationRef.current?.cancel();
     animationRef.current = null;
     if (
+      snap ||
       next.width <= 0 ||
       next.height <= 0 ||
       typeof element.animate !== 'function' ||

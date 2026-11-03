@@ -1,3 +1,4 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { inspectWorktreeCreationRecovery } from './worktree-create-recovery';
 import { isProjectInstructionFileReadable } from '@canopy/desktop-shared/node/lib/project-instruction-files';
 import { getEnhancedEnv } from '../pipelines/config-paths';
@@ -7,6 +8,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
   type WorkspaceConfigFile,
+  type ReadWorkspaceReadinessResponse,
   type WorkspaceReadinessIssue,
   type WorkspaceRepoData,
 } from '@canopy/desktop-shared/types';
@@ -273,10 +275,12 @@ async function resolveTargetPath(
 async function inspectSingleRepo(
   config: WorkspaceConfigFile,
   workspaceId: string,
-  worktreeId?: string,
-  platform: NodeJS.Platform = process.platform,
+  worktreeId: string | undefined,
+  platform: NodeJS.Platform,
+  completeness: { complete: boolean },
 ): Promise<WorkspaceReadinessIssue[]> {
   if (!config.repoPath) {
+    completeness.complete = false;
     return [];
   }
   const repoPath = await resolveTargetPath(
@@ -284,6 +288,7 @@ async function inspectSingleRepo(
     worktreeId ? getWorktreeDir(workspaceId, worktreeId) : undefined,
   );
   if (!repoPath) {
+    completeness.complete = false;
     return [];
   }
   const [scripts, hooks] = await Promise.all([
@@ -319,8 +324,9 @@ async function inspectWorkspaceRepo(
   workspaceId: string,
   repo: WorkspaceRepoData,
   workspaceRootPath: string | undefined,
-  worktreeId?: string,
-  platform: NodeJS.Platform = process.platform,
+  worktreeId: string | undefined,
+  platform: NodeJS.Platform,
+  completeness: { complete: boolean },
 ): Promise<WorkspaceReadinessIssue[]> {
   const repoPath = await resolveTargetPath(
     repo.repoPath,
@@ -329,6 +335,7 @@ async function inspectWorkspaceRepo(
       : undefined,
   );
   if (!repoPath) {
+    completeness.complete = false;
     return [];
   }
   const paths = { localConfig: config, repoPath, workspaceRootPath };
@@ -378,29 +385,38 @@ async function inspectWorkspaceRoot(
  * Run the v1 code-workspace readiness audit. The checks intentionally use
  * resolved script/hook layers so source-controlled config, local overrides,
  * tombstones, and conductor fallbacks are judged exactly as the runtime sees
- * them. Filesystem checks are limited to the two root instruction paths.
+ * them. Checkout availability and the two root instruction paths establish
+ * whether the result can prove that a previously reported issue is resolved.
  */
-export async function computeWorkspaceReadinessIssues(
+export async function computeWorkspaceReadinessAudit(
   workspaceId: string,
   worktreeId?: string,
-  platform: NodeJS.Platform = process.platform,
-): Promise<WorkspaceReadinessIssue[]> {
+  platform: NodeJS.Platform = hostPlatformOperatingSystem(),
+): Promise<ReadWorkspaceReadinessResponse> {
+  const completeness = { complete: true };
   const config = await readWorkspaceConfig(workspaceId);
   void enqueueWorkspaceLocalMemoryImportBatch(workspaceId).catch(
     () => undefined,
   );
   if (config.type === 'cowork') {
-    return [];
+    return { issues: [], complete: true };
   }
   const recoveryIssues = await inspectWorktreeCreationRecovery(
     workspaceId,
     config,
   );
   if (config.type === 'single-repo') {
-    return [
+    const issues = [
       ...recoveryIssues,
-      ...(await inspectSingleRepo(config, workspaceId, worktreeId, platform)),
+      ...(await inspectSingleRepo(
+        config,
+        workspaceId,
+        worktreeId,
+        platform,
+        completeness,
+      )),
     ];
+    return { issues, complete: completeness.complete };
   }
 
   const workspaceRootPath = worktreeId
@@ -408,6 +424,14 @@ export async function computeWorkspaceReadinessIssues(
     : config.sourceRepoPath
       ? await resolveWorkspaceReferenceRepoPath(config.sourceRepoPath)
       : undefined;
+  if (config.sourceRepoPath && !workspaceRootPath)
+    completeness.complete = false;
+  if (
+    config.sourceRepoPath &&
+    workspaceRootPath &&
+    !(await pathExists(workspaceRootPath))
+  )
+    completeness.complete = false;
   const reports = await Promise.all([
     ...(config.sourceRepoPath && workspaceRootPath
       ? [inspectWorkspaceRoot(config, workspaceId, workspaceRootPath, platform)]
@@ -420,8 +444,23 @@ export async function computeWorkspaceReadinessIssues(
         workspaceRootPath,
         worktreeId,
         platform,
+        completeness,
       ),
     ),
   ]);
-  return [...recoveryIssues, ...reports.flat()];
+  return {
+    issues: [...recoveryIssues, ...reports.flat()],
+    complete: completeness.complete,
+  };
+}
+
+/** Compatibility projection for existing internal consumers of the issue array. */
+export async function computeWorkspaceReadinessIssues(
+  workspaceId: string,
+  worktreeId?: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<WorkspaceReadinessIssue[]> {
+  return (
+    await computeWorkspaceReadinessAudit(workspaceId, worktreeId, platform)
+  ).issues;
 }

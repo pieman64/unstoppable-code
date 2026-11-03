@@ -92,8 +92,48 @@ export function parseExecutionHostShellArgs(
 }
 
 export interface ExecutionHostShellOptions {
-  /** Interval for sampling the entry's heap and the resident set. */
+  /**
+   * Interval for sampling the resident set, and the longest interval between
+   * samples of the entry's heap; see {@link executionHostHeapSampleDelayMs}.
+   */
   readonly sampleIntervalMs?: number;
+}
+
+/**
+ * The allocation rate the heap sampler plans for when the entry has not been
+ * seen allocating faster, in bytes per millisecond: about 1 GiB/s, which a
+ * thread allocating small objects in a loop reaches.
+ */
+const PLANNED_HEAP_GROWTH_BYTES_PER_MS = MEBIBYTE;
+/** The shortest wait between heap samples. */
+const MIN_HEAP_SAMPLE_DELAY_MS = 10;
+
+/**
+ * How long the shell waits before its next sample of the entry's heap. A
+ * fixed interval let a fast allocator grow from below the stop to past V8's
+ * cap between two samples, so the backstop stopped it and the isolate's
+ * teardown aborted the process. Instead the shell samples at least twice in
+ * the time the entry needs to reach the stop at the faster of its last
+ * observed growth and {@link PLANNED_HEAP_GROWTH_BYTES_PER_MS}, so samples
+ * come closer together as the heap nears the stop.
+ */
+export function executionHostHeapSampleDelayMs(sample: {
+  /** Used heap at the last sample. */
+  readonly usedBytes: number;
+  /** Growth since the sample before it, in bytes per millisecond. */
+  readonly growthBytesPerMs: number;
+  readonly stopBytes: number;
+  readonly intervalMs: number;
+}): number {
+  const growth = Math.max(
+    sample.growthBytesPerMs,
+    PLANNED_HEAP_GROWTH_BYTES_PER_MS,
+  );
+  const untilStopMs = (sample.stopBytes - sample.usedBytes) / growth;
+  return Math.min(
+    sample.intervalMs,
+    Math.max(MIN_HEAP_SAMPLE_DELAY_MS, Math.floor(untilStopMs / 2)),
+  );
 }
 
 /** The heap limits the shell holds an entry to. */
@@ -169,6 +209,7 @@ export function runExecutionHostShell(
     if (finished) return;
     finished = true;
     clearInterval(sampler);
+    clearTimeout(heapSampler);
     // Every byte the entry wrote reaches the launcher before the exit, so a
     // terminal message is never lost to the shell's own exit.
     void Promise.all(outputs).then(() =>
@@ -202,29 +243,56 @@ export function runExecutionHostShell(
   let peakHeapBytes = 0;
   let peakRssBytes = 0;
   const rssLimitBytes = request.budget.rssMb * MEBIBYTE;
-  // One heap sample at a time. A sample the entry never answers stops only
-  // heap sampling; the resident set is still sampled on every tick.
-  let sampling = false;
+  const sampleIntervalMs = options.sampleIntervalMs ?? 100;
   const sampler = setInterval(() => {
     const rss = process.memoryUsage.rss();
     peakRssBytes = Math.max(peakRssBytes, rss);
     if (rss > rssLimitBytes) stop(EXECUTION_HOST_LIMIT_EXIT_CODES.rss, 'rss');
-    if (sampling) return;
-    sampling = true;
-    worker
-      .getHeapStatistics()
-      .then(
-        (heap) => {
-          peakHeapBytes = Math.max(peakHeapBytes, heap.used_heap_size);
-          if (heap.used_heap_size > heapLimits.stopBytes)
-            stop(EXECUTION_HOST_LIMIT_EXIT_CODES.heap, 'heap');
-        },
-        () => undefined,
-      )
-      .finally(() => {
-        sampling = false;
-      });
-  }, options.sampleIntervalMs ?? 100);
+  }, sampleIntervalMs);
+  // One heap sample at a time, each scheduled from the last. A sample the
+  // entry never answers stops only heap sampling; the resident set is still
+  // sampled on every tick.
+  let lastHeap = { at: performance.now(), usedBytes: 0 };
+  let heapSampler: NodeJS.Timeout | undefined;
+  const scheduleHeapSample = (delayMs: number): void => {
+    if (exitCode !== undefined || finished) return;
+    heapSampler = setTimeout(sampleHeap, delayMs);
+  };
+  const sampleHeap = (): void => {
+    worker.getHeapStatistics().then(
+      (heap) => {
+        const usedBytes = heap.used_heap_size;
+        peakHeapBytes = Math.max(peakHeapBytes, usedBytes);
+        if (usedBytes > heapLimits.stopBytes) {
+          stop(EXECUTION_HOST_LIMIT_EXIT_CODES.heap, 'heap');
+          return;
+        }
+        const at = performance.now();
+        const growthBytesPerMs =
+          (usedBytes - lastHeap.usedBytes) / Math.max(1, at - lastHeap.at);
+        lastHeap = { at, usedBytes };
+        scheduleHeapSample(
+          executionHostHeapSampleDelayMs({
+            usedBytes,
+            growthBytesPerMs,
+            stopBytes: heapLimits.stopBytes,
+            intervalMs: sampleIntervalMs,
+          }),
+        );
+      },
+      // Not running yet, or already gone; the exit ends sampling. An entry
+      // that starts allocating right after a refused sample is seen soon.
+      () => scheduleHeapSample(MIN_HEAP_SAMPLE_DELAY_MS),
+    );
+  };
+  scheduleHeapSample(
+    executionHostHeapSampleDelayMs({
+      usedBytes: 0,
+      growthBytesPerMs: 0,
+      stopBytes: heapLimits.stopBytes,
+      intervalMs: sampleIntervalMs,
+    }),
+  );
   for (const signal of ['SIGTERM', 'SIGINT'] as const)
     process.once(signal, () => stop(SIGNAL_EXIT_CODES[signal]));
 
@@ -255,6 +323,7 @@ export const EXECUTION_HOST_SHELL_USAGE_EXIT_CODE = 64;
 export function runRequestedExecutionHostShell(
   args: readonly string[],
   entries: ExecutionHostShellEntries,
+  options: ExecutionHostShellOptions = {},
 ): boolean {
   const refuse = (): true => {
     process.stderr.write('Malformed execution host request.\n');
@@ -269,6 +338,6 @@ export function runRequestedExecutionHostShell(
   }
   if (request === undefined) return false;
   if (!entries.names.includes(request.entry)) return refuse();
-  runExecutionHostShell(request, entries);
+  runExecutionHostShell(request, entries, options);
   return true;
 }

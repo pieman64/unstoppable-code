@@ -106,6 +106,7 @@ interface QueuedArrival {
   readonly arrival: AiCreditsArrival;
   readonly baseline: PersonalReading | null;
   readonly seq: number;
+  readonly ownerKey: string;
   readonly sessionGeneration: number;
 }
 
@@ -116,13 +117,21 @@ interface QueuedArrival {
 let sessionAccountKey: string | null | undefined;
 /** Bumped whenever the account session ends; fences every async result. */
 let sessionGeneration = 0;
+/** Initiation order across every chat; never reused. */
 let handoffSeq = 0;
+/**
+ * The newest initiated hand-off per purchase scope (or chat for local hosts).
+ * A retained purchase survives a hand-off in another navigation context, even
+ * for the same chat (CAN-5534).
+ */
+const latestSeqByScope = new Map<string, number>();
 /** Identifying hand-offs also need account-change fencing before a key exists. */
 const identifyingHandoffs = new Set<string>();
 /** Every hand-off recorded in this account session, dismissed or not. */
 const seenHandoffIds = new Set<string>();
 /** The visible record's sequence; a lower one can never replace it. */
 let visibleSeq = 0;
+let visibleOwnerKey: string | null = null;
 /** A record made while the account was being rechecked. At most one. */
 let queued: QueuedArrival | null = null;
 
@@ -343,16 +352,19 @@ function commitArrival(entry: QueuedArrival): boolean {
   if (sessionAccountKey !== entry.arrival.accountId) return false;
   // Initiation order survives dismissal and does not depend on which return
   // completed first. A superseded hand-off can never publish again.
-  if (entry.seq !== handoffSeq) return false;
+  if (entry.seq !== latestSeqByScope.get(entry.ownerKey)) return false;
   if (seenHandoffIds.has(entry.arrival.handoffId)) return false;
-  // A record from an older hand-off cannot replace a newer one.
+  // A record from an older hand-off cannot replace a newer one in its scope.
+  const visibleArrival = useAiCreditsArrivalStore.getState().arrival;
   if (
-    useAiCreditsArrivalStore.getState().arrival !== null &&
+    visibleArrival !== null &&
+    visibleOwnerKey === entry.ownerKey &&
     entry.seq < visibleSeq
   )
     return false;
   seenHandoffIds.add(entry.arrival.handoffId);
   visibleSeq = entry.seq;
+  visibleOwnerKey = entry.ownerKey;
   heldEvidence = null;
   useAiCreditsArrivalStore.setState({
     arrival: entry.arrival,
@@ -370,6 +382,8 @@ function commitArrival(entry: QueuedArrival): boolean {
  */
 export interface AiCreditsArrivalHandoff {
   readonly handoffId: string;
+  /** The initiating buyer, once verified in this arrival session. */
+  readonly accountKey?: string | null;
   /** Whether it can still record (not cancelled, same account session). */
   isLive(): boolean;
   /**
@@ -393,11 +407,13 @@ let handoffCounter = 0;
 /**
  * Start tracking a hand-off for a chat's work scope, reading the baseline
  * balance at once without waiting for it. Null for a scope with no chat, or
- * when this build cannot read the account.
+ * when this build cannot read the account. Store-backed hosts supply their
+ * purchase scope so independent navigation contexts cannot supersede each other.
  */
 export function beginAiCreditsArrivalHandoff(
   scope: AiCreditsScopeRequest | undefined,
   origin: AiCreditsArrivalOrigin,
+  purchaseScopeKey?: string,
 ): AiCreditsArrivalHandoff | null {
   if (
     scope?.kind !== 'work' ||
@@ -407,8 +423,10 @@ export function beginAiCreditsArrivalHandoff(
     return null;
   const workScope: WorkScope = { ...scope };
   const chatId = scope.chatId;
+  const ownerKey = purchaseScopeKey ?? arrivalChatKey(workScope);
   const generation = sessionGeneration;
   const seq = ++handoffSeq;
+  latestSeqByScope.set(ownerKey, seq);
   const handoffId = `arrival-${Date.now().toString(36)}-${++handoffCounter}`;
   let cancelled = false;
   let retained = false;
@@ -418,7 +436,9 @@ export function beginAiCreditsArrivalHandoff(
   let coveredWhileIdentifying = false;
 
   const isLive = (): boolean =>
-    !cancelled && isCurrentSession(generation) && seq === handoffSeq;
+    !cancelled &&
+    isCurrentSession(generation) &&
+    seq === latestSeqByScope.get(ownerKey);
   const record = (): boolean => {
     if (!isLive() || typeof accountId !== 'string') return false;
     cancelled = true;
@@ -426,6 +446,7 @@ export function beginAiCreditsArrivalHandoff(
       arrival: { handoffId, accountId, chatId, scope: workScope, origin },
       baseline: baseline.kind === 'known' ? baseline.reading : null,
       seq,
+      ownerKey,
       sessionGeneration: generation,
     };
     if (!useAiCreditsArrivalStore.getState().accountReady) {
@@ -491,6 +512,9 @@ export function beginAiCreditsArrivalHandoff(
 
   return {
     handoffId,
+    get accountKey(): string | null | undefined {
+      return isLive() ? accountId : undefined;
+    },
     isLive,
     markExternalOpen(): void {
       if (!isLive()) return;
@@ -582,9 +606,11 @@ export function reconcileAiCreditsArrivalAccount(
       sessionGeneration++;
       identifyingHandoffs.clear();
       seenHandoffIds.clear();
+      latestSeqByScope.clear();
       queued = null;
       heldEvidence = null;
       visibleSeq = 0;
+      visibleOwnerKey = null;
       cancelBalanceRun();
       useAiCreditsArrivalStore.setState({
         accountReady: true,
@@ -607,6 +633,10 @@ export function reconcileAiCreditsArrivalAccount(
 /** Whether an account change has anything here to reconcile. */
 export function hasAiCreditsArrivalSession(): boolean {
   return sessionAccountKey !== undefined || identifyingHandoffs.size > 0;
+}
+
+function arrivalChatKey(scope: WorkScope): string {
+  return `${scope.projectId}/${scope.worktreeId ?? ''}/${scope.chatId ?? ''}`;
 }
 
 function arrivalMatchesChat(
@@ -679,9 +709,11 @@ export function resetAiCreditsArrivalForTests(): void {
   sessionGeneration++;
   identifyingHandoffs.clear();
   seenHandoffIds.clear();
+  latestSeqByScope.clear();
   queued = null;
   heldEvidence = null;
   visibleSeq = 0;
+  visibleOwnerKey = null;
   useAiCreditsArrivalStore.setState({
     accountReady: true,
     arrival: null,

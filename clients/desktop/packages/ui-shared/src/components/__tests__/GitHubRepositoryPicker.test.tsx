@@ -117,7 +117,7 @@ describe('GitHubRepositoryPicker', () => {
     expect(input.type).toBe('text');
     expect(input.placeholder).toBe('Search your repositories');
     expect(input.value).toBe('ap');
-    expect(input.closest('label')).not.toBeNull();
+    expect(input.labels?.length).toBe(1);
     expect(list()).not.toBeNull();
   });
 
@@ -200,13 +200,13 @@ describe('GitHubRepositoryPicker', () => {
     expect(list().textContent).not.toContain('No repositories');
   });
 
-  it('shows the error with a Retry button instead of the list', () => {
+  it('shows the error with a Try again button instead of the list', () => {
     const { onRetry } = render({ error: 'GitHub is unreachable.' });
 
     expect(list().textContent).toContain('GitHub is unreachable.');
     expect(rows()).toHaveLength(0);
     const retry = list().querySelector('button');
-    expect(retry?.textContent).toBe('Retry');
+    expect(retry?.textContent).toBe('Try again');
     expect(retry?.type).toBe('button');
     act(() => retry?.click());
     expect(onRetry).toHaveBeenCalledTimes(1);
@@ -453,7 +453,7 @@ describe('GitHubRepositoryPicker cloud behavior', () => {
       expect(input.className).not.toContain('focus-ring');
       expect(input.className).not.toMatch(/\bborder\b/);
       expect(input.type).toBe('text');
-      expect(input.closest('label')?.textContent).toContain('Repository');
+      expect(input.labels?.[0]?.textContent).toContain('Repository');
     });
 
     it('turns off browser completion, correction and capitalization', () => {

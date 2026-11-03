@@ -227,6 +227,9 @@ export function toPersistedTab(tab: ChatTab): PersistedChatTab {
       ? { pendingPlanExitRequestId: tab.pendingPlanExitRequestId }
       : {}),
     ...(tab.trackedPlanId ? { trackedPlanId: tab.trackedPlanId } : {}),
+    ...(tab.trackedPlanImplementation
+      ? { trackedPlanImplementation: tab.trackedPlanImplementation }
+      : {}),
     ...(tab.trackedPlanSource
       ? { trackedPlanSource: tab.trackedPlanSource }
       : {}),
@@ -698,6 +701,10 @@ export function fromPersistedTab(
       ? { pendingPlanExitRequestId: pt.pendingPlanExitRequestId }
       : {}),
     ...(pt.trackedPlanId ? { trackedPlanId: pt.trackedPlanId } : {}),
+    // Main-owned implementation link: outcome and end time settle there.
+    ...(pt.trackedPlanImplementation
+      ? { trackedPlanImplementation: pt.trackedPlanImplementation }
+      : {}),
     ...(pt.trackedPlanSource
       ? { trackedPlanSource: pt.trackedPlanSource }
       : {}),

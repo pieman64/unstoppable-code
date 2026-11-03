@@ -44,11 +44,26 @@ describe('CuratedMcpDetail', () => {
     toolsError: '',
   };
 
+  it('omits internal catalog setup instructions from shared desktop and Portal details', () => {
+    const setupInstructions =
+      'claude mcp add --transport http datadog "https://mcp.datadoghq.com/v1/mcp?toolsets=all"';
+    const { container, root } = mount(
+      <CuratedMcpDetail
+        {...baseProps}
+        entry={{ ...curated, setupInstructions }}
+      />,
+    );
+    expect(container.textContent).toContain(curated.longDescription);
+    expect(container.textContent).toContain('search_issues');
+    expect(container.textContent).not.toContain(setupInstructions);
+    act(() => root.unmount());
+  });
+
   it.each([
     {
       name: 'loading',
       props: { toolsLoading: true, toolNames: null, toolsError: '' },
-      text: 'Loading tools',
+      text: 'Loading',
     },
     {
       name: 'loaded',
@@ -76,7 +91,7 @@ describe('CuratedMcpDetail', () => {
     act(() => root.unmount());
   });
 
-  it('inks the tools error with the destructive role', () => {
+  it('announces the tools error as an alert', () => {
     const { container, root } = mount(
       <CuratedMcpDetail
         {...baseProps}
@@ -87,8 +102,8 @@ describe('CuratedMcpDetail', () => {
     expect(
       container
         .querySelector('[data-testid="mcp-browse-tools-error"]')
-        ?.classList.contains('fg-destructive'),
-    ).toBe(true);
+        ?.querySelector('[role="alert"]')?.textContent,
+    ).toBe('Unable to load tools.');
     act(() => root.unmount());
   });
 
@@ -470,7 +485,9 @@ describe('McpServerReadDetail', () => {
       '[data-testid="mcp-server-read-config-feedback"]',
     );
     expect(message?.textContent).toBe('Save failed.');
-    expect(message?.classList.contains('fg-destructive')).toBe(true);
+    expect(message?.querySelector('.fg-destructive')?.textContent).toBe(
+      'Save failed.',
+    );
     act(() => root.unmount());
   });
 

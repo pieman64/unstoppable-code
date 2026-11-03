@@ -12,6 +12,7 @@ import type { SettingsPageProps } from '../pages/page-props';
 import { fetchMemoryFactSource } from './api';
 import { FactDetailDrawer } from './FactDetailDrawer';
 import { useMemoryErrorCopy } from './memory-error-copy';
+import type { SettingsFailure } from '../errors';
 import { memoryOrganizationId } from './memory-route';
 import {
   MemoryFactsBackLink,
@@ -22,13 +23,13 @@ import { SourceTranscriptView } from './SourceTranscriptView';
 type SelectedTranscript =
   | { status: 'ready'; transcript: ExplorerSourceTranscript | null }
   | { status: 'loading' }
-  | { status: 'error'; copy: string; retry: () => void };
+  | { status: 'error'; failure: SettingsFailure; retry: () => void };
 
 interface LoadedSource {
   readonly key: string;
   readonly result:
     | { ok: true; transcript: ExplorerSourceTranscript }
-    | { ok: false; copy: string };
+    | { ok: false; failure: SettingsFailure };
 }
 
 /**
@@ -63,7 +64,7 @@ function useSelectedTranscript(
         if (cancelled) return;
         setLoaded({
           key,
-          result: { ok: false, copy: errorCopy.loadCopy(caught) },
+          result: { ok: false, failure: errorCopy.loadFailure(caught) },
         });
       },
     );
@@ -78,7 +79,7 @@ function useSelectedTranscript(
     ? { status: 'ready', transcript: loaded.result.transcript }
     : {
         status: 'error',
-        copy: loaded.result.copy,
+        failure: loaded.result.failure,
         retry: () => setAttempt((current) => current + 1),
       };
 }
@@ -148,7 +149,8 @@ function FactSourceTranscript({
     return (
       <ErrorBanner
         className=""
-        error={selected.copy}
+        error={selected.failure.copy}
+        details={selected.failure.details}
         onRetry={selected.retry}
       />
     );

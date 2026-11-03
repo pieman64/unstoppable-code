@@ -3911,7 +3911,7 @@ async function runPendingSourceDialogCase({
               lastJobGet: lastUnrelatedJob,
               cause:
                 lastUnrelatedJob?.message ===
-                'Browser data maintenance failed. Retry cleanup before using this profile.'
+                'Browser data maintenance failed. Try again before using this profile.'
                   ? 'unresolved: the job contains only the generic maintenance failure message'
                   : lastUnrelatedJob?.message === undefined
                     ? 'unresolved: the last job has no diagnostic message'
@@ -5006,7 +5006,7 @@ async function runGraduatedPendingSourceDialogCase({
               lastJobGet: lastUnrelatedJob,
               cause:
                 lastUnrelatedJob?.message ===
-                'Browser data maintenance failed. Retry cleanup before using this profile.'
+                'Browser data maintenance failed. Try again before using this profile.'
                   ? 'unresolved: the job contains only the generic maintenance failure message'
                   : lastUnrelatedJob?.message === undefined
                     ? 'unresolved: the last job has no diagnostic message'
@@ -5510,7 +5510,7 @@ terminalCleanupTest(
         savedNamedTab,
       );
       await detail.getByTestId('browser-profile-delete').click();
-      const preview = detail.getByTestId('browser-profile-delete-preview');
+      const preview = window.getByTestId('browser-profile-delete-preview');
       await expect(preview).toContainText('1 saved tab becomes unavailable');
       await expect(preview).toContainText(
         '1 task default needs another profile',
@@ -6364,11 +6364,11 @@ test('profile data Settings measures lazily, cancels a preview, and resets while
     });
     await details.getByTestId('browser-profile-reset').click();
     await expect(
-      details.getByTestId('browser-profile-clear-preview'),
+      window.getByTestId('browser-profile-clear-preview'),
     ).toContainText('Affects 0 saved tabs');
-    await details.getByTestId('browser-profile-clear-preview').press('Escape');
+    await window.getByTestId('browser-profile-clear-preview').press('Escape');
     await expect(
-      details.getByTestId('browser-profile-clear-preview'),
+      window.getByTestId('browser-profile-clear-preview'),
     ).toHaveCount(0);
     expect(
       await window.evaluate(
@@ -6385,7 +6385,7 @@ test('profile data Settings measures lazily, cancels a preview, and resets while
       profileId: original.profileId,
       storageGeneration: original.storageGeneration,
     });
-    await details.getByTestId('browser-profile-confirm-clear').click();
+    await window.getByTestId('browser-profile-confirm-clear').click();
     checkpoint?.('confirmation-completed', {
       profileId: original.profileId,
       storageGeneration: original.storageGeneration,
@@ -7094,7 +7094,7 @@ test('loaded Task reset survives one queued-to-running metadata rename denial', 
     );
     await details.getByTestId('browser-profile-reset').click();
     await expect(
-      details.getByTestId('browser-profile-clear-preview'),
+      window.getByTestId('browser-profile-clear-preview'),
     ).toContainText('Affects 1 saved tab.');
 
     // Intercept the actual Electron Node filesystem call, below job APIs and
@@ -7213,7 +7213,7 @@ test('loaded Task reset survives one queued-to-running metadata rename denial', 
       root: path.join(userDataDir, 'browser-data-jobs', 'records'),
     });
 
-    await details.getByTestId('browser-profile-confirm-clear').click();
+    await window.getByTestId('browser-profile-confirm-clear').click();
     let terminalJob;
     await expect
       .poll(
@@ -9210,7 +9210,7 @@ test('W3 Settings remount recovers an original-generation reset job without rese
         status: 'failed',
         retryable: true,
         storageGeneration: original.storageGeneration,
-        message: expect.stringContaining('Retry cleanup'),
+        message: expect.stringContaining('Try again'),
       }),
     ]);
     expect(
@@ -9230,7 +9230,7 @@ test('W3 Settings remount recovers an original-generation reset job without rese
       .getByTestId(`browser-profile-row-${original.profileId}`)
       .click();
     await expect(window.getByTestId('browser-profile-data-job')).toContainText(
-      'Retry cleanup',
+      'Try again',
     );
     await expect(window.getByTestId('browser-profile-retry-job')).toBeVisible();
     await window.getByTestId('browser-profile-retry-job').click();
@@ -9387,7 +9387,7 @@ test('duplicate profile names stay distinguishable and the delete prompt keeps k
     const remove = settings.getByTestId('browser-profile-delete');
     await remove.focus();
     await window.keyboard.press('Enter');
-    const prompt = settings.getByTestId('browser-profile-delete-preview');
+    const prompt = window.getByTestId('browser-profile-delete-preview');
     await expect(prompt).toBeVisible();
     await expect
       .poll(() =>
@@ -9395,7 +9395,8 @@ test('duplicate profile names stay distinguishable and the delete prompt keeps k
           () => document.activeElement?.getAttribute('data-testid') ?? 'none',
         ),
       )
-      .toBe('browser-profile-delete-preview');
+      // The confirmation dialog starts on Cancel: Enter cannot delete.
+      .toBe('browser-profile-cancel-delete');
 
     await window.keyboard.press('Escape');
     await expect(prompt).toHaveCount(0);

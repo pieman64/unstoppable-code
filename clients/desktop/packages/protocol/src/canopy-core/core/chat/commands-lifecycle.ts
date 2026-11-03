@@ -1,3 +1,4 @@
+import { TrackedPlanImplementationInputSchema } from '../../chat-plan-review';
 import { z } from 'zod';
 
 // Nested core modules use ../../ for common canopy-core contracts.
@@ -117,6 +118,8 @@ const settingsPatch = z.strictObject({
   newChatStartedWatcherFiredAt: z.string().nullable().optional(),
   pendingPlanExit: json.nullable().optional(),
   pendingPlanExitRequestId: id.nullable().optional(),
+  trackedPlanImplementation:
+    TrackedPlanImplementationInputSchema.nullable().optional(),
   trackedPlanId: id.nullable().optional(),
   trackedPlanSource: z.string().nullable().optional(),
   trackedPlanReviewStatus: z.string().nullable().optional(),
@@ -128,6 +131,11 @@ const settingsPatch = z.strictObject({
 
 const createAction = z.discriminatedUnion('type', [createTab, createFileTab]);
 const updateAction = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('chat.reject_plan_implementation_delivery'),
+    chatId: id,
+    userMessageId: TrackedPlanImplementationInputSchema.shape.userMessageId,
+  }),
   z.strictObject({ type: z.literal('chat.activate_tab'), tabId: id }),
   z.strictObject({ type: z.literal('chat.reorder_tabs'), tabIds: z.array(id) }),
   z.strictObject({

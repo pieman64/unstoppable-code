@@ -80,7 +80,7 @@ export function BranchFromConfirmationModalHost(): JSX.Element | null {
       maxWidth="md"
       dataTestId="branch-from-uncommitted-warning"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5">
+      <div className="flex flex-col gap-4">
         <p className="text-s fg-secondary">
           This worktree has uncommitted changes. They will remain here and will
           not be included in the new worktree unless you commit them first.

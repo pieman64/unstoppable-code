@@ -7,6 +7,7 @@ import {
 } from '@/stores/browserStore';
 import { stageBrowserScreenshot } from '@/lib/browserChatStaging';
 import { Button, Tooltip } from '@canopy/ui-shared';
+import { EmptyState } from '@canopy/ui-shared/components';
 
 interface BrowserSnapshotsPanelProps {
   browserId: string;
@@ -32,8 +33,8 @@ export function BrowserSnapshotsPanel({
 
   if (snapshots.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center text-xs fg-secondary">
-        No snapshots yet
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <EmptyState inset="none" title="No snapshots yet" />
       </div>
     );
   }

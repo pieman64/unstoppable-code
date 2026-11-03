@@ -1,5 +1,6 @@
-import { useCallback, type JSX, type MouseEvent } from 'react';
+import { useCallback, useId, type JSX, type MouseEvent } from 'react';
 import { CheckIcon, CopyIcon } from '../icons/AppIcons';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { ButtonSize } from './Button';
 import { CopyButton } from './CopyButton';
 import { NoticeButton } from './Notice';
@@ -37,6 +38,13 @@ export interface CopyLinkButtonProps {
   onCopy?: () => void;
   /** Host clipboard writer; defaults to the browser clipboard. */
   write?: (text: string) => Promise<boolean>;
+  /**
+   * Accessible name when one surface lists several links, for example
+   * `Copy the Acme link for Deploy`. Defaults to `Copy link`; `Copied`
+   * replaces it while the confirmation shows. Custom names are blocked
+   * from replay and referenced by ID, never stored in recorded attributes.
+   */
+  ariaLabel?: string;
 }
 
 /**
@@ -49,7 +57,9 @@ function NoticeCopyLinkButton({
   dataTestId,
   onCopy,
   write,
+  ariaLabel,
 }: Omit<CopyLinkButtonProps, 'variant'>): JSX.Element {
+  const labelId = useId();
   const { copied, copy } = useCopyToClipboard({
     copiedDurationMs: COPY_LINK_CONFIRMATION_MS,
     onCopy,
@@ -72,14 +82,24 @@ function NoticeCopyLinkButton({
   );
 
   return (
-    <NoticeButton
-      icon={glyph}
-      data-testid={dataTestId}
-      onClick={handleClick}
-      {...(className !== undefined ? { className } : {})}
-    >
-      {copied ? 'Copied' : 'Copy link'}
-    </NoticeButton>
+    <>
+      <NoticeButton
+        icon={glyph}
+        data-testid={dataTestId}
+        onClick={handleClick}
+        {...(ariaLabel !== undefined && !copied
+          ? { 'aria-labelledby': labelId }
+          : {})}
+        {...(className !== undefined ? { className } : {})}
+      >
+        {copied ? 'Copied' : 'Copy link'}
+      </NoticeButton>
+      {ariaLabel !== undefined && (
+        <span id={labelId} className={`sr-only ${REPLAY_BLOCK_CLASS}`}>
+          {ariaLabel}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -99,7 +119,9 @@ export function CopyLinkButton({
   dataTestId,
   onCopy,
   write,
+  ariaLabel,
 }: CopyLinkButtonProps): JSX.Element {
+  const labelId = useId();
   if (variant === 'notice') {
     return (
       <NoticeCopyLinkButton
@@ -108,23 +130,32 @@ export function CopyLinkButton({
         {...(dataTestId !== undefined ? { dataTestId } : {})}
         {...(onCopy !== undefined ? { onCopy } : {})}
         {...(write !== undefined ? { write } : {})}
+        {...(ariaLabel !== undefined ? { ariaLabel } : {})}
       />
     );
   }
   return (
-    <CopyButton
-      value={url}
-      label="Copy link"
-      copiedLabel="Copied"
-      ariaLabel="Copy link"
-      title="Copy link"
-      variant="ghost"
-      size={size}
-      copiedDurationMs={COPY_LINK_CONFIRMATION_MS}
-      {...(className !== undefined ? { className } : {})}
-      {...(dataTestId !== undefined ? { dataTestId } : {})}
-      {...(onCopy !== undefined ? { onCopy } : {})}
-      {...(write !== undefined ? { write } : {})}
-    />
+    <>
+      <CopyButton
+        value={url}
+        label="Copy link"
+        copiedLabel="Copied"
+        ariaLabel="Copy link"
+        {...(ariaLabel !== undefined ? { ariaLabelledBy: labelId } : {})}
+        title="Copy link"
+        variant="ghost"
+        size={size}
+        copiedDurationMs={COPY_LINK_CONFIRMATION_MS}
+        {...(className !== undefined ? { className } : {})}
+        {...(dataTestId !== undefined ? { dataTestId } : {})}
+        {...(onCopy !== undefined ? { onCopy } : {})}
+        {...(write !== undefined ? { write } : {})}
+      />
+      {ariaLabel !== undefined && (
+        <span id={labelId} className={`sr-only ${REPLAY_BLOCK_CLASS}`}>
+          {ariaLabel}
+        </span>
+      )}
+    </>
   );
 }

@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as https from 'node:https';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { EventEmitter } from 'events';
 import { sanitizeName, installSkill } from '../skills/installer';
 import { isPathInside as isPathSafe } from '../lib/path-safety';
@@ -174,6 +176,8 @@ describe('installSkill', () => {
     jest.clearAllMocks();
     mockFs.existsSync.mockReturnValue(false);
     mockFs.mkdirSync.mockReturnValue(undefined);
+    mockFs.mkdtempSync.mockReturnValue('/source/dir/.install-test');
+    mockFs.renameSync.mockReturnValue(undefined);
     mockFs.rmSync.mockReturnValue(undefined);
     mockFs.writeFileSync.mockReturnValue(undefined);
   });
@@ -199,7 +203,7 @@ describe('installSkill', () => {
     expect(mockFs.writeFileSync).toHaveBeenCalledTimes(2);
   });
 
-  it('cleans existing directory before installing', async () => {
+  it('replaces an existing directory after downloading', async () => {
     mockFs.existsSync.mockReturnValue(true);
     mockHttpsGetSuccess(Buffer.from('content'));
 
@@ -540,5 +544,118 @@ describe('installSkill', () => {
         null,
       ),
     ).rejects.toThrow('stream error');
+  });
+});
+
+describe('GitHub replacement preserves installed files', () => {
+  const disk: typeof fs = jest.requireActual('fs');
+  let root: string;
+  beforeEach(() => {
+    jest.resetAllMocks();
+    root = disk.mkdtempSync(path.join(os.tmpdir(), 'can-4847-installer-'));
+    jest.mocked(fs.existsSync).mockImplementation(disk.existsSync);
+    jest.mocked(fs.mkdirSync).mockImplementation(disk.mkdirSync);
+    jest.mocked(fs.rmSync).mockImplementation(disk.rmSync);
+    jest.mocked(fs.writeFileSync).mockImplementation(disk.writeFileSync);
+    jest.mocked(fs.mkdtempSync).mockImplementation(disk.mkdtempSync);
+    jest.mocked(fs.renameSync).mockImplementation(disk.renameSync);
+    disk.mkdirSync(path.join(root, 'review'));
+    disk.writeFileSync(
+      path.join(root, 'review', 'SKILL.md'),
+      'original with local edits',
+    );
+    disk.writeFileSync(path.join(root, 'review', 'notes.txt'), 'local notes');
+  });
+  afterEach(() => disk.rmSync(root, { recursive: true, force: true }));
+
+  it('keeps the complete original directory when a later replacement download fails', async () => {
+    let downloads = 0;
+    mockHttps.get.mockImplementation((_opts: unknown, cb: unknown) => {
+      const req = new EventEmitter() as EventEmitter & {
+        setTimeout: jest.Mock;
+        destroy: jest.Mock;
+      };
+      req.setTimeout = jest.fn();
+      req.destroy = jest.fn();
+      process.nextTick(() => {
+        const res = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+        };
+        res.statusCode = ++downloads === 1 ? 200 : 503;
+        res.headers = {};
+        (cb as (res: unknown) => void)(res);
+        if (res.statusCode === 200) {
+          res.emit('data', Buffer.from('replacement'));
+          res.emit('end');
+        }
+      });
+      return req as unknown as ReturnType<typeof https.get>;
+    });
+    await expect(
+      installSkill(
+        'acme',
+        'skills',
+        'main',
+        { name: 'review', description: '', sourcePath: 'review' },
+        [
+          { path: 'review/SKILL.md', type: 'blob' },
+          { path: 'review/helper.txt', type: 'blob' },
+        ],
+        root,
+        null,
+      ),
+    ).rejects.toThrow('HTTP 503');
+    expect(
+      disk.readFileSync(path.join(root, 'review', 'SKILL.md'), 'utf8'),
+    ).toBe('original with local edits');
+    expect(
+      disk.readFileSync(path.join(root, 'review', 'notes.txt'), 'utf8'),
+    ).toBe('local notes');
+    expect(disk.readdirSync(root)).toEqual(['review']);
+  });
+
+  it('restores the complete original tree when the final directory swap fails', async () => {
+    mockHttpsGetSuccess(Buffer.from('replacement'));
+    mockFs.renameSync.mockImplementation((from, to) => {
+      if (String(from).endsWith('/next')) throw new Error('Swap failed');
+      disk.renameSync(from, to);
+    });
+    await expect(
+      installSkill(
+        'acme',
+        'skills',
+        'main',
+        { name: 'review', description: '', sourcePath: 'review' },
+        [{ path: 'review/SKILL.md', type: 'blob' }],
+        root,
+        null,
+      ),
+    ).rejects.toThrow('Swap failed');
+    expect(
+      disk.readFileSync(path.join(root, 'review', 'SKILL.md'), 'utf8'),
+    ).toBe('original with local edits');
+    expect(
+      disk.readFileSync(path.join(root, 'review', 'notes.txt'), 'utf8'),
+    ).toBe('local notes');
+    expect(disk.readdirSync(root)).toEqual(['review']);
+  });
+
+  it('replaces the entire directory only after a successful download', async () => {
+    mockHttpsGetSuccess(Buffer.from('replacement'));
+    await installSkill(
+      'acme',
+      'skills',
+      'main',
+      { name: 'review', description: '', sourcePath: 'review' },
+      [{ path: 'review/SKILL.md', type: 'blob' }],
+      root,
+      null,
+    );
+    expect(
+      disk.readFileSync(path.join(root, 'review', 'SKILL.md'), 'utf8'),
+    ).toBe('replacement');
+    expect(disk.readdirSync(path.join(root, 'review'))).toEqual(['SKILL.md']);
+    expect(disk.readdirSync(root)).toEqual(['review']);
   });
 });

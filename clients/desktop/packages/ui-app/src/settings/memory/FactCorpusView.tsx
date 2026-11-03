@@ -5,7 +5,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
   type FormEvent,
   type JSX,
 } from 'react';
@@ -25,7 +24,9 @@ import {
   SettingsListSkeleton,
   Sheet,
   buttonClassName,
+  SearchField,
   SettingsSelect,
+  TextInput,
   type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { SettingsLink, useSettingsClient } from '../host';
@@ -91,6 +92,7 @@ type FailedRead =
 
 interface FactCorpusError {
   readonly copy: string;
+  readonly details?: string;
   readonly retry: FailedRead;
 }
 
@@ -178,7 +180,7 @@ export function FactCorpusView({
       } catch (caught) {
         if (requestSequence.current === sequence) {
           setError({
-            copy: errorCopy.loadCopy(caught),
+            ...errorCopy.loadFailure(caught),
             retry: { kind: 'list' },
           });
         }
@@ -207,8 +209,7 @@ export function FactCorpusView({
     setSubmissionVersion((current) => current + 1);
   };
 
-  const onQueryChange = (event: ChangeEvent<HTMLInputElement>): void => {
-    const value = event.target.value;
+  const onQueryChange = (value: string): void => {
     setQuery(value);
     // Clearing the input immediately restores the cheap paged list without
     // requiring another submit; non-empty edits still wait for one.
@@ -224,7 +225,7 @@ export function FactCorpusView({
         setDetail(await fetchMemoryFact(client, orgId, factId));
       } catch (caught) {
         setError({
-          copy: errorCopy.loadCopy(caught),
+          ...errorCopy.loadFailure(caught),
           retry: { kind: 'fact', factId },
         });
       }
@@ -271,7 +272,7 @@ export function FactCorpusView({
       setNextCursor(payload.nextCursor);
     } catch (caught) {
       if (requestSequence.current !== sequence) return;
-      setError({ copy: errorCopy.loadCopy(caught), retry: { kind: 'more' } });
+      setError({ ...errorCopy.loadFailure(caught), retry: { kind: 'more' } });
     } finally {
       if (requestSequence.current === sequence) {
         setLoading(false);
@@ -383,13 +384,12 @@ export function FactCorpusView({
         <>
           <div className="rounded-xl border bg-card p-4">
             <form onSubmit={submitSearch} className="flex gap-2">
-              <input
-                type="search"
+              <SearchField
                 value={query}
-                onChange={onQueryChange}
+                onValueChange={onQueryChange}
                 placeholder="Search organization memory"
                 aria-label="Search organization memory"
-                className="w-full rounded-lg border bg-base px-3 py-2.5 text-s fg-primary placeholder:fg-tertiary focus:border-line-accent focus:outline-none"
+                className="min-w-0 flex-1"
               />
               <Button
                 type="submit"
@@ -415,18 +415,18 @@ export function FactCorpusView({
                 aria-label="Fact liveness"
                 options={LIVENESS_OPTIONS}
               />
-              <input
+              <TextInput
+                density="settings"
                 type="date"
                 value={from}
                 onChange={(event) => setFrom(event.target.value)}
-                className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
                 aria-label="Created from"
               />
-              <input
+              <TextInput
+                density="settings"
                 type="date"
                 value={to}
                 onChange={(event) => setTo(event.target.value)}
-                className="rounded-lg border bg-base px-3 py-2 text-s fg-primary"
                 aria-label="Created to"
               />
             </div>
@@ -436,6 +436,7 @@ export function FactCorpusView({
             <ErrorBanner
               className=""
               error={error.copy}
+              details={error.details}
               onRetry={() => retry(error.retry)}
             />
           )}

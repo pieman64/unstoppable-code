@@ -44,7 +44,7 @@ export function BaseBranchChangeConfirmationModalHost(): JSX.Element | null {
       trapFocus
       initialFocus="dialog"
     >
-      <div className="flex flex-col gap-3 px-5 pb-5 text-s fg-primary">
+      <div className="flex flex-col gap-3 text-s fg-primary">
         <p className="fg-secondary">
           {pending.repoName} has open PR #{pending.prNumber}. Would you also
           like to update its PR base branch to{' '}

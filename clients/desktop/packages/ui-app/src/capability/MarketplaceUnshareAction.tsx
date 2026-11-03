@@ -41,6 +41,7 @@ export interface MarketplaceUnshareActionProps {
   readonly dataTestId?: string;
   /** Compact row trigger; detail buttons keep their visible label. */
   readonly iconOnly?: boolean;
+  readonly renderTrigger?: (unshare: MarketplaceUnshare) => ReactNode;
 }
 
 export type UseMarketplaceUnshareOptions = Omit<
@@ -174,6 +175,7 @@ export function useMarketplaceUnshare({
 export function MarketplaceUnshareAction({
   dataTestId = 'marketplace-unshare',
   iconOnly = false,
+  renderTrigger,
   ...options
 }: MarketplaceUnshareActionProps): JSX.Element {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -184,7 +186,9 @@ export function MarketplaceUnshareAction({
   });
   return (
     <>
-      {iconOnly ? (
+      {renderTrigger ? (
+        renderTrigger(unshare)
+      ) : iconOnly ? (
         <Tooltip label={MARKETPLACE_UNSHARE_LABEL}>
           <Button
             ref={triggerRef}

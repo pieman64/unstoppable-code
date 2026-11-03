@@ -3,6 +3,7 @@
 import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
 import {
   Button,
+  EmptyState,
   PageSearchControls,
   PageSearchFilters,
   PageSearchRow,
@@ -842,18 +843,15 @@ export function WorkflowsLibraryEmptyState({
     );
   }
   return (
-    <div
-      className="flex flex-col items-center gap-2 px-6 py-16 text-center"
-      data-testid="workflows-library-empty"
-    >
-      <h2 className="text-m font-semibold fg-primary">No workflows yet</h2>
-      <p className="text-s fg-secondary">
-        Workflows you create or add show up here, whether they run on a schedule
-        or when you start them.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-        {newWorkflow}
-      </div>
-    </div>
+    <EmptyState
+      testId="workflows-library-empty"
+      title="No workflows yet"
+      subtitle="Workflows you create or add show up here, whether they run on a schedule or when you start them."
+      action={
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          {newWorkflow}
+        </div>
+      }
+    />
   );
 }

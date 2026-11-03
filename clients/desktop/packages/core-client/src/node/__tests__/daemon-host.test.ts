@@ -18,10 +18,10 @@ import {
   type CanopyDaemonMigrationLaunch,
 } from '../index';
 
-// Real files; native child ownership exists on Darwin and Windows. Windows
-// uses the prebuilt addon (CANOPY_OWNED_CHILD_ADDON, else the build:owned-child
-// default) and the identity helper: a loaded addon stays mapped, so it is never
-// built into a deleted temp directory.
+// Real files; native child ownership exists on Darwin, Linux and Windows.
+// Windows uses the prebuilt addon (CANOPY_OWNED_CHILD_ADDON, else the
+// build:owned-child default) and the identity helper: a loaded addon stays
+// mapped, so it is never built into a deleted temp directory.
 const windows = process.platform === 'win32';
 const os =
   process.platform === 'darwin' ? 'darwin' : windows ? 'win32' : 'linux';
@@ -182,6 +182,19 @@ describe('daemon host', () => {
   // Directory links need no privilege on Windows as junctions.
   const directoryLink = windows ? 'junction' : 'dir';
 
+  it('passes the W5 host switch and pre-spawn step to every launch, and neither by default', () => {
+    const beforeSpawn = {
+      timeoutMs: 60_000,
+      run: (): Promise<void> => Promise.resolve(),
+    };
+    const launch = host({ w5Host: true, beforeSpawn });
+    expect(launch.daemon).toEqual({ executable: node, w5Host: true });
+    expect(launch.beforeSpawn).toBe(beforeSpawn);
+    const plain = host();
+    expect(plain.daemon).toEqual({ executable: node });
+    expect(plain).not.toHaveProperty('beforeSpawn');
+  });
+
   it('prepares the runtime before reading, and reports only absence as null', async () => {
     const { dataRootHash, ports } = host();
     expect(dataRootHash).toBe(createHash('sha256').update(root).digest('hex'));
@@ -285,15 +298,11 @@ describe('daemon host', () => {
     },
   );
 
-  // Windows registers its own variants of the Darwin native cases (below), so
-  // neither OS reports the other's cases as skipped.
-  const darwinIt = windows
-    ? undefined
-    : process.platform === 'darwin'
-      ? it
-      : it.skip;
+  // Darwin and Linux share these native cases; Windows registers its own
+  // variants (below), so no OS reports another's cases as skipped.
+  const posixIt = windows ? undefined : it;
 
-  darwinIt?.(
+  posixIt?.(
     'hands the claim to a real child over stdin, never argv or env',
     async () => {
       const out = join(root, 'child.txt');
@@ -327,9 +336,7 @@ describe('daemon host', () => {
     await expect(
       supervisor.spawnDaemon({ ...command, executable: missing }),
     ).rejects.toMatchObject({
-      payload: {
-        kind: os === 'linux' ? 'capability_unavailable' : 'failed_precondition',
-      },
+      payload: { kind: 'failed_precondition' },
     });
     await expect(supervisor.spawnDaemon(command)).rejects.toThrow(
       CanopyClientError,
@@ -342,7 +349,7 @@ describe('daemon host', () => {
     ).rejects.toThrow(CanopyClientError);
   });
 
-  darwinIt?.(
+  posixIt?.(
     'stops a child whose startup is cancelled after spawn resolves',
     async () => {
       const controller = new AbortController();
@@ -373,7 +380,7 @@ describe('daemon host', () => {
     },
   );
 
-  darwinIt?.each([
+  posixIt?.each([
     ['obeys', 'setInterval(()=>{},1e3)'],
     ['ignores', ''],
   ])(
@@ -398,16 +405,13 @@ describe('daemon host', () => {
       await supervisor.terminateDaemon(child, signal);
       await child.exited;
       expect(performance.now() - started).toBeLessThan(5_000);
-      const alive = (): boolean => {
-        try {
-          return process.kill(pid, 0);
-        } catch {
-          return false;
-        }
-      };
-      for (let i = 0; i < 50 && alive(); i++)
+      // Inspection reports an unreaped zombie as absent: a container's
+      // non-reaping PID 1 may keep the orphaned grandchild as one on Linux.
+      const alive = async (): Promise<boolean> =>
+        (await native.supervision.inspectProcess({ pid })).state !== 'absent';
+      for (let i = 0; i < 50 && (await alive()); i++)
         await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(alive()).toBe(false);
+      expect(await alive()).toBe(false);
     },
   );
 
@@ -465,7 +469,7 @@ describe('daemon host', () => {
     });
   });
 
-  darwinIt?.(
+  posixIt?.(
     'cleans a native root that exits before its handle is delivered to the host',
     async () => {
       const pidFile = join(root, 'delayed-child.pid');

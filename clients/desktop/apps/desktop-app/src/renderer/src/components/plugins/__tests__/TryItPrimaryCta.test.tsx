@@ -5,7 +5,13 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { TryItCapability } from '@canopy/protocol/try-it';
-import { TryItPrimaryCta, type TryItPrimaryCtaProps } from '../TryItPrimaryCta';
+import { DetailMoreMenuRows } from '@canopy/ui-shared/components';
+import {
+  TryItLaunch,
+  TryItPrimaryCta,
+  type TryItPrimaryCtaProps,
+} from '../TryItPrimaryCta';
+import { tryItMenuItem } from '../tryItMenuItem';
 
 const mockStartTryItChat = jest.fn();
 jest.mock('@/lib/tryItChat', () => ({
@@ -355,5 +361,115 @@ describe('TryItPrimaryCta', () => {
     expect(request.isCurrent()).toBe(true);
     await changeAccount(signedIn);
     expect(request.isCurrent()).toBe(false);
+  });
+});
+
+describe('TryItLaunch as a menu item (CAN-5306)', () => {
+  /** Renders the menu row, and the primary CTA when `withPrimary`. */
+  async function renderLaunch(withPrimary: boolean): Promise<void> {
+    await act(async () => {
+      root.render(
+        <TryItLaunch
+          capability={capability}
+          prompt="Summarize my open Linear issues."
+          installation="installed"
+          onInstall={(): void => {}}
+        >
+          {(launch) => (
+            <>
+              {withPrimary ? launch.primary : null}
+              <DetailMoreMenuRows
+                items={[tryItMenuItem(launch)]}
+                onClose={(): void => {}}
+              />
+            </>
+          )}
+        </TryItLaunch>,
+      );
+      await Promise.resolve();
+    });
+  }
+
+  function menuItem(): HTMLButtonElement {
+    const item = container.querySelector<HTMLButtonElement>(
+      '[data-testid="skill-read-detail-try-it"]',
+    );
+    if (!item) throw new Error('Try it menu item not rendered');
+    return item;
+  }
+
+  it('launches the same request from the menu and stays disabled while pending', async () => {
+    loadAccount.mockReturnValue(new Promise(() => {}));
+    await renderLaunch(false);
+    expect(menuItem().disabled).toBe(true);
+    loadAccount.mockResolvedValue(signedOut);
+    await changeAccount(signedOut);
+    expect(menuItem().disabled).toBe(false);
+    expect(menuItem().textContent).toContain('Try it');
+    await press(menuItem());
+    expect(mockStartTryItChat).toHaveBeenCalledTimes(1);
+    expect(mockStartTryItChat).toHaveBeenCalledWith(
+      expect.objectContaining({ accountId: 'guest', capability }),
+    );
+    expect(mockAddToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one launch between the menu and the primary CTA', async () => {
+    let finish: () => void = () => {};
+    mockStartTryItChat.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    await renderLaunch(true);
+    await act(async () => {
+      menuItem().click();
+      cta().click();
+      await Promise.resolve();
+    });
+    expect(mockStartTryItChat).toHaveBeenCalledTimes(1);
+    expect(menuItem().disabled).toBe(true);
+    expect(menuItem().textContent).toContain('Opening chat…');
+    expect(cta().disabled).toBe(true);
+
+    // Moving Try it out of the primary slot keeps the launch in flight.
+    await renderLaunch(false);
+    expect(menuItem().disabled).toBe(true);
+    await renderLaunch(true);
+    expect(cta().disabled).toBe(true);
+    expect(cta().textContent).toBe('Opening chat…');
+    await act(async () => {
+      finish();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(menuItem().disabled).toBe(false);
+    expect(mockAddToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed menu launch and allows another try', async () => {
+    mockStartTryItChat.mockRejectedValueOnce(new Error('boom'));
+    await renderLaunch(false);
+    await press(menuItem());
+    expect(mockAddToast).toHaveBeenCalledWith(
+      "Couldn't open the chat. Try again.",
+      'error',
+    );
+    expect(menuItem().disabled).toBe(false);
+    await press(menuItem());
+    expect(mockStartTryItChat).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancels a menu launch quietly and permits retry', async () => {
+    const { TryItStageCancelledError } = jest.requireMock<{
+      TryItStageCancelledError: new () => Error;
+    }>('@/lib/tryItChat');
+    mockStartTryItChat.mockRejectedValueOnce(new TryItStageCancelledError());
+    await renderLaunch(false);
+    await press(menuItem());
+    expect(mockAddToast).not.toHaveBeenCalled();
+    expect(menuItem().disabled).toBe(false);
+    await press(menuItem());
+    expect(mockStartTryItChat).toHaveBeenCalledTimes(2);
   });
 });

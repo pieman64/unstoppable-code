@@ -506,15 +506,15 @@ describe('CodexTab default speed', () => {
     Reflect.deleteProperty(window, 'api');
   });
 
-  function radio(container: HTMLElement, speed: string): HTMLInputElement {
-    const input = container.querySelector<HTMLInputElement>(
+  function radio(container: HTMLElement, speed: string): HTMLButtonElement {
+    const input = container.querySelector<HTMLButtonElement>(
       `[data-testid="settings-codex-speed-default-${speed}"]`,
     );
     if (!input) throw new Error(`Missing ${speed} radio`);
     return input;
   }
 
-  it('offers Regular, Fast, and Ultra fast as one radio group', async () => {
+  it('offers Regular, Fast, and Ultra fast as one choice list', async () => {
     const rendered = await renderCodexTab();
     try {
       const group = rendered.container.querySelector(
@@ -522,12 +522,14 @@ describe('CodexTab default speed', () => {
       );
       expect(group?.getAttribute('role')).toBe('radiogroup');
       const labels = Array.from(
-        group?.querySelectorAll('input[type="radio"]') ?? [],
-      ).map((input) => input.closest('label')?.textContent);
+        group?.querySelectorAll('[role="radio"]') ?? [],
+      ).map((row) => row.textContent);
       expect(labels[0]).toBe('Regular');
       expect(labels[1]).toBe('Fast');
       expect(labels[2]).toContain('Ultra fast');
-      expect(radio(rendered.container, 'standard').checked).toBe(true);
+      expect(
+        radio(rendered.container, 'standard').getAttribute('aria-checked'),
+      ).toBe('true');
       expect(rendered.container.textContent).toContain(
         'Higher speeds may use more of your subscription allowance.',
       );
@@ -546,7 +548,9 @@ describe('CodexTab default speed', () => {
     );
     const rendered = await renderCodexTab();
     try {
-      expect(radio(rendered.container, 'fast').checked).toBe(true);
+      expect(
+        radio(rendered.container, 'fast').getAttribute('aria-checked'),
+      ).toBe('true');
       await act(async () => {
         radio(rendered.container, 'standard').click();
         await Promise.resolve();
@@ -566,9 +570,7 @@ describe('CodexTab default speed', () => {
     try {
       const ultra = radio(rendered.container, 'ultrafast');
       expect(ultra.disabled).toBe(true);
-      expect(ultra.closest('label')?.textContent).toContain(
-        "Couldn't confirm availability",
-      );
+      expect(ultra.textContent).toContain("Couldn't confirm availability");
     } finally {
       rendered.cleanup();
     }
@@ -591,9 +593,7 @@ describe('CodexTab default speed', () => {
     try {
       const ultra = radio(rendered.container, 'ultrafast');
       expect(ultra.disabled).toBe(true);
-      expect(ultra.closest('label')?.textContent).toContain(
-        "Couldn't confirm availability",
-      );
+      expect(ultra.textContent).toContain("Couldn't confirm availability");
       await act(async () => {
         ultra.click();
         await Promise.resolve();
@@ -669,8 +669,12 @@ describe('CodexTab default speed', () => {
     );
     const rendered = await renderCodexTab();
     try {
-      expect(radio(rendered.container, 'ultrafast').checked).toBe(true);
-      expect(radio(rendered.container, 'fast').checked).toBe(false);
+      expect(
+        radio(rendered.container, 'ultrafast').getAttribute('aria-checked'),
+      ).toBe('true');
+      expect(
+        radio(rendered.container, 'fast').getAttribute('aria-checked'),
+      ).toBe('false');
       expect(savePreferencesMock).not.toHaveBeenCalled();
     } finally {
       rendered.cleanup();
@@ -693,9 +697,9 @@ describe('CodexTab default speed', () => {
     const rendered = await renderCodexTab();
     try {
       expect(radio(rendered.container, 'ultrafast').disabled).toBe(true);
-      expect(
-        radio(rendered.container, 'ultrafast').closest('label')?.textContent,
-      ).toContain("Couldn't confirm availability");
+      expect(radio(rendered.container, 'ultrafast').textContent).toContain(
+        "Couldn't confirm availability",
+      );
       expect(savePreferencesMock).not.toHaveBeenCalled();
     } finally {
       rendered.cleanup();

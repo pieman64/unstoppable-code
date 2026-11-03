@@ -34,7 +34,6 @@ export function WorktreeErrorNotice(): JSX.Element | null {
         <Notice
           data-testid="worktree-error-notice"
           intent="destructive"
-          role="alert"
           onDismiss={clearWorktreeError}
           dismissLabel="Dismiss error"
           dismissTestId="worktree-error-dismiss"

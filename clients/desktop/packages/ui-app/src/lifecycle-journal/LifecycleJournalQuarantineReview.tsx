@@ -7,12 +7,14 @@ import type {
   LifecycleJournalUnreadableEntry,
 } from '@canopy/protocol/portal/lifecycle-journal';
 import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
 import { LIFECYCLE_JOURNAL_QUARANTINE_TEST_ID } from './test-ids';
 
+/** A path or name: replay-blocked, selectable, breaking anywhere. */
 function Detail({
   label,
   value,
@@ -23,15 +25,23 @@ function Detail({
   testId: string;
 }): JSX.Element {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs fg-tertiary">{label}</dt>
-      <dd
-        className={`${REPLAY_BLOCK_CLASS} text-xs font-mono break-all select-text fg-secondary`}
-        data-testid={testId}
-      >
-        {value}
-      </dd>
-    </div>
+    <Fact
+      label={label}
+      fit="break-all"
+      mono
+      valueTone="secondary"
+      dataTestId={testId}
+    >
+      <span className={`${REPLAY_BLOCK_CLASS} select-text`}>{value}</span>
+    </Fact>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <FactList layout="stacked" rowGap="2">
+      {children}
+    </FactList>
   );
 }
 
@@ -60,7 +70,7 @@ function MovedDetails({
   moved: LifecycleJournalQuarantineResult;
 }): JSX.Element {
   return (
-    <dl className="flex flex-col gap-2">
+    <DetailList>
       <Detail
         label="Moved to"
         value={moved.quarantineLocationLabel}
@@ -71,7 +81,7 @@ function MovedDetails({
         value={moved.quarantinedName}
         testId={`${LIFECYCLE_JOURNAL_QUARANTINE_TEST_ID}-moved-name`}
       />
-    </dl>
+    </DetailList>
   );
 }
 
@@ -186,13 +196,13 @@ export function LifecycleJournalQuarantineReview({
         onConfirm={() => void open()}
         onCancel={close}
       >
-        <dl className="flex flex-col gap-2">
+        <DetailList>
           <Detail
             label="Folder"
             value={inspection.locationLabel}
             testId={`${LIFECYCLE_JOURNAL_QUARANTINE_TEST_ID}-location`}
           />
-        </dl>
+        </DetailList>
       </ConfirmDialog>
     );
   if (inspection.status === 'clear')
@@ -217,7 +227,7 @@ export function LifecycleJournalQuarantineReview({
   const [entry] = inspection.entries;
   if (!entry) return null;
   const details: ReactNode = (
-    <dl className="flex flex-col gap-2">
+    <DetailList>
       <Detail
         label={entry.kind === 'directory' ? 'Folder' : 'File'}
         value={entry.name}
@@ -233,7 +243,7 @@ export function LifecycleJournalQuarantineReview({
         value={inspection.quarantineLocationLabel}
         testId={`${LIFECYCLE_JOURNAL_QUARANTINE_TEST_ID}-destination`}
       />
-    </dl>
+    </DetailList>
   );
   return (
     <ConfirmDialog

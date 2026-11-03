@@ -596,13 +596,16 @@ function identifiedPull(slice, owner, repo, number) {
   );
 }
 
-// The pull request watcher's query (`WATCHED_PULL_REQUEST_QUERY`) reads the
-// head commit; the PR status poller's query reads review threads instead.
+// One pull request's lifecycle read by number: the watcher's
+// `WATCHED_PULL_REQUEST_QUERY` or the shared `PULL_REQUEST_STATUS_QUERY`. Both
+// read the head commit; the PR status poller's query and the read model's
+// continuation pages do not, and the branch sweep and list queries read
+// `pullRequests` connections.
 function isWatchedPullRequestQuery(query) {
   return (
     typeof query === 'string' &&
-    /\bheadRefOid\b/.test(query) &&
-    !/\breviewThreads\b/.test(query)
+    /\bpullRequest\s*\(\s*number\s*:/.test(query) &&
+    /\bheadRefOid\b/.test(query)
   );
 }
 
@@ -697,13 +700,33 @@ function queueEventsField(config, before, pageSize) {
 
 const WATCHED_PULL_REQUEST_TERMINAL_AT = '2026-07-20T00:05:00Z';
 
+// The shared status query's projection fields (`PULL_REQUEST_FIELDS`), so the
+// read model's canonical detail is complete: no threads, comments or checks.
+function statusProjectionFields(number) {
+  return {
+    number,
+    updatedAt: WATCHED_PULL_REQUEST_TERMINAL_AT,
+    body: '',
+    baseRefOid: 'b'.repeat(40),
+    mergeable: 'UNKNOWN',
+    comments: { totalCount: 0 },
+    reviewThreads: {
+      totalCount: 0,
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: [],
+    },
+    commits: { nodes: [] },
+  };
+}
+
 // A GitHub-shaped `pullRequest` node whose lifecycle fields agree with `state`
 // unless the configured fields override them.
-function watchedPullRequestNode(owner, repo, number, fields) {
+function watchedPullRequestNode(owner, repo, number, fields, query) {
   const state = fields.state ?? 'OPEN';
   const merged = state === 'MERGED';
   const terminal = state !== 'OPEN';
   return {
+    ...(/\breviewThreads\b/.test(query) ? statusProjectionFields(number) : {}),
     id: `PR_watched_${number}`,
     state,
     merged,
@@ -763,7 +786,7 @@ function watchedPullRequestResponse(slice, variables, query) {
   let pullRequest = null;
   let queueErrors = [];
   if (!missing) {
-    pullRequest = watchedPullRequestNode(owner, repo, number, fields);
+    pullRequest = watchedPullRequestNode(owner, repo, number, fields, query);
     if (requestsQueueEvents(query)) {
       const queueEvents = queueEventsField(
         { queueTimeline, queueTimelineOmit, queueTimelineErrors },

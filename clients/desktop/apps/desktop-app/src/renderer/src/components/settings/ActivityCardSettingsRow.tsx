@@ -1,5 +1,5 @@
 import { useEffect, type JSX } from 'react';
-import { ToggleSwitch } from '@canopy/ui-shared/components';
+import { ToggleSwitch, ErrorBanner } from '@canopy/ui-shared/components';
 import {
   ensureLabsExperimentsSubscription,
   setLabsExperimentChoice,
@@ -45,11 +45,7 @@ export function ActivityCardSettingsRow(): JSX.Element | null {
         />
       }
     >
-      {error ? (
-        <p role="alert" className="mt-2 text-xs fg-destructive">
-          {error}
-        </p>
-      ) : null}
+      <ErrorBanner error={error} className="mt-2" />
     </SettingsRow>
   );
 }

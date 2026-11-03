@@ -14,11 +14,12 @@ import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, FORM_FIELD_LABEL_CLASS } from '@canopy/ui-shared/components';
 import {
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { Badge } from '@canopy/ui-shared/components';
 
 function slugify(input: string): string {
   return input
@@ -298,9 +299,7 @@ function CollectionItem({
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-medium fg-secondary ">
-                Defaults
-              </label>
+              <span className={FORM_FIELD_LABEL_CLASS}>Defaults</span>
               {!readonly && (
                 <Button size="compact" onClick={() => setPickerOpen(true)}>
                   Pick plugins
@@ -322,9 +321,9 @@ function CollectionItem({
                       key={entry.key}
                       className="flex items-center gap-2 rounded-md border bg-base px-2.5 py-1.5"
                     >
-                      <span className="shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none bg-accent-subtle fg-accent">
+                      <Badge>
                         {entry.ref.type === 'skill' ? 'Skill' : 'Plugin'}
-                      </span>
+                      </Badge>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-s fg-primary">
                           {display.title}
@@ -333,7 +332,7 @@ function CollectionItem({
                           {display.subtitle}
                         </div>
                       </div>
-                      <label className="flex items-center gap-1.5 text-xs fg-secondary">
+                      <div className="flex items-center gap-1.5 text-xs fg-secondary">
                         <ToggleField
                           checked={required}
                           onChange={(checked) =>
@@ -342,8 +341,8 @@ function CollectionItem({
                           disabled={readonly}
                           label="Required"
                         />
-                        <span>Required</span>
-                      </label>
+                        <span aria-hidden="true">Required</span>
+                      </div>
                       {!readonly && (
                         <Tooltip label="Remove default">
                           <Button

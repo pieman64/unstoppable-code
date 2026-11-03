@@ -1,8 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadBrand } from '../../../../../scripts/brand/load-brand.mjs';
+import { daemonName } from '../../../../../packages/protocol/src/brand.ts';
 
-export const cliName = loadBrand(process.env.CANOPY_BRAND || 'canopy').cliName;
+const brand = loadBrand(process.env.CANOPY_BRAND || 'canopy');
+export const cliName = brand.cliName;
 
 // Tiny executable/resource stand-ins for the .deb's split distribution. The
 // installer never executes package members to identify or copy them.
@@ -33,6 +35,22 @@ export async function seedLinuxCliPackage(root, version) {
       0o755,
     );
   }
+  const daemon = daemonName(brand);
+  await write(
+    path.join(resources, 'bin', daemon),
+    `fixture-daemon-${version}`,
+    0o755,
+  );
+  await write(
+    path.join(resources, 'bin', `${daemon}.identity.json`),
+    JSON.stringify({ brandId: brand.id, version }),
+  );
+  for (const file of [
+    'w5-commit-log-worker.js',
+    'node-pty/package.json',
+    'node-pty/build/Release/pty.node',
+  ])
+    await write(path.join(resources, 'bin', file), `fixture-${version}`);
   for (const file of [
     'resources/code-graph/parser.wasm',
     'resources/code-graph/query.scm',

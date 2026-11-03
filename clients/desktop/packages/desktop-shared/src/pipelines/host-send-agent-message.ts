@@ -9,7 +9,6 @@
  * Message text, file contents and paths are user data: no parse error here
  * echoes them.
  */
-import { z } from 'zod';
 import type { ChatInterfaceMode } from '@canopy/agent-transcript';
 import {
   isValidatedConfiguredPromptReferences,
@@ -20,6 +19,7 @@ import {
   normalizeShareablePluginRef,
   type ShareablePluginRef,
 } from '@canopy/protocol/plugins';
+import { WorkerPipelineChatSendRecordSchema } from '@canopy/protocol/canopy-core';
 import { isThinkingLevel, THINKING_LEVELS } from '@canopy/protocol/thinking';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import { APPROVAL_MODES, type ApprovalMode } from '../types/approvals';
@@ -483,32 +483,11 @@ export function checkSendAgentMessageReferences(
     : `${STEP} "text_references" is invalid: ${error}`;
 }
 
-const nonEmptyId = z.string().min(1).max(CHAT_ID_MAX);
-
-/** Mirrors {@link PipelineChatSendRecord}; strict, so extra keys are refused. */
-export const pipelineChatSendRecordSchema = z.strictObject({
-  version: z.literal(1),
-  address: z.union([
-    z.strictObject({
-      kind: z.literal('project'),
-      projectId: nonEmptyId,
-      taskId: nonEmptyId,
-      chatId: nonEmptyId,
-    }),
-    z.strictObject({
-      kind: z.literal('bot'),
-      botId: nonEmptyId,
-      taskId: nonEmptyId,
-      chatId: nonEmptyId,
-    }),
-  ]),
-  userMessageId: nonEmptyId,
-  queuedMessageId: nonEmptyId.optional(),
-  state: z.enum(['sent', 'queued', 'steered']),
-  chatCreated: z.boolean(),
-  acceptedAt: z.string().min(1),
-  turnId: nonEmptyId.optional(),
-});
+/**
+ * Mirrors {@link PipelineChatSendRecord}; strict, so extra keys are refused.
+ * The same schema bounds the record across the local worker boundary.
+ */
+export const pipelineChatSendRecordSchema = WorkerPipelineChatSendRecordSchema;
 
 /** Validates an adapter's record before the runner copies it; `undefined` when malformed. */
 export function parsePipelineChatSendRecord(

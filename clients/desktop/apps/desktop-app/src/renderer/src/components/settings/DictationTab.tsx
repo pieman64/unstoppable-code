@@ -13,7 +13,11 @@ import {
 import { requestRendererMicrophoneAccess } from '@/lib/voice/renderer-microphone-access';
 import { notifyVoiceDictationEnabledChanged } from '@/lib/voice/voice-dictation-pref';
 import { brandText } from '@/lib/brand';
-import { Button, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ToggleSwitch,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
   SettingsPage,
@@ -243,11 +247,7 @@ function SupportStatus({ state }: { state: SupportState }): JSX.Element {
       </span>
     );
   }
-  return (
-    <span className="fg-destructive">
-      Not available{reason ? `. ${reason}` : ''}
-    </span>
-  );
+  return <StatusLabel>Not available{reason ? `. ${reason}` : ''}</StatusLabel>;
 }
 
 function OpenSystemSettingsButton({
@@ -306,12 +306,9 @@ function MicrophoneStatusText({ state }: { state: MicState }): JSX.Element {
       );
     case 'denied':
       return (
-        <span
-          data-testid="dictation-mic-status-text"
-          className="fg-destructive"
-        >
+        <StatusLabel data-testid="dictation-mic-status-text">
           Denied. Open System Settings to allow it.
-        </span>
+        </StatusLabel>
       );
     case 'not-determined':
       return (
@@ -321,12 +318,9 @@ function MicrophoneStatusText({ state }: { state: MicState }): JSX.Element {
       );
     case 'restricted':
       return (
-        <span
-          data-testid="dictation-mic-status-text"
-          className="fg-destructive"
-        >
+        <StatusLabel data-testid="dictation-mic-status-text">
           Restricted by system policy.
-        </span>
+        </StatusLabel>
       );
     case 'unavailable':
       return (
@@ -391,12 +385,9 @@ function SpeechRecognitionStatusText({
       );
     case 'denied':
       return (
-        <span
-          data-testid="dictation-speech-status-text"
-          className="fg-destructive"
-        >
+        <StatusLabel data-testid="dictation-speech-status-text">
           Denied. Open System Settings to allow it.
-        </span>
+        </StatusLabel>
       );
     case 'not-determined':
       return (
@@ -406,12 +397,9 @@ function SpeechRecognitionStatusText({
       );
     case 'restricted':
       return (
-        <span
-          data-testid="dictation-speech-status-text"
-          className="fg-destructive"
-        >
+        <StatusLabel data-testid="dictation-speech-status-text">
           Restricted by system policy.
-        </span>
+        </StatusLabel>
       );
     case 'unavailable':
       return (

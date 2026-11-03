@@ -217,7 +217,7 @@ export function ManagedDelegationSettings({
               onClick={() => void save({ managedDelegationMode: 'off' })}
               disabled={saving}
             >
-              Retry shutdown
+              Try again
             </NoticeButton>
           }
         >

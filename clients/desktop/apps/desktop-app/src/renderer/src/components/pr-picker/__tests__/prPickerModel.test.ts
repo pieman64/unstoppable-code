@@ -1,8 +1,5 @@
 import type { PrPickerOption } from '@/stores/navigationStore';
-import {
-  getFilteredPrPickerOptions,
-  getSelectedPrPickerOption,
-} from '../prPickerModel';
+import { prPickerOptionMatches } from '../prPickerModel';
 
 function buildOption(
   repoId: string,
@@ -27,18 +24,17 @@ describe('prPickerModel', () => {
   ];
 
   it('filters options by the current query', () => {
-    expect(getFilteredPrPickerOptions(options, '  beta  ')).toEqual([
-      options[1],
-    ]);
-    expect(getFilteredPrPickerOptions(options, '#10')).toEqual([options[0]]);
+    const filter = (query: string): PrPickerOption[] =>
+      options.filter((option) => prPickerOptionMatches(option, query));
+    expect(filter('  beta  ')).toEqual([options[1]]);
+    expect(filter('#10')).toEqual([options[0]]);
   });
 
-  it('uses the latest query when resolving the enter selection', () => {
-    expect(getSelectedPrPickerOption(options, 'beta', 0)).toEqual(options[1]);
-  });
-
-  it('returns undefined when the current query has no selected match', () => {
-    expect(getSelectedPrPickerOption(options, 'missing', 0)).toBeUndefined();
-    expect(getSelectedPrPickerOption(options, 'alpha', -1)).toBeUndefined();
+  it('matches one option by repo, title, number or state', () => {
+    expect(prPickerOptionMatches(options[0], '  ALPHA ')).toBe(true);
+    expect(prPickerOptionMatches(options[0], '#10')).toBe(true);
+    expect(prPickerOptionMatches(options[0], 'open')).toBe(true);
+    expect(prPickerOptionMatches(options[0], 'beta')).toBe(false);
+    expect(prPickerOptionMatches(options[0], '   ')).toBe(true);
   });
 });

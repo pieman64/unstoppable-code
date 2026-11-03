@@ -5,7 +5,7 @@ import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import {
   AUTOMATION_PIPELINE_PROJECT_FOLDER_HELPER,
-  AUTOMATION_PIPELINE_TASK_LOAD_ERROR,
+  AUTOMATION_PIPELINE_TASK_LOAD_ERROR_BESIDE_RETRY,
   AUTOMATION_PIPELINE_TASK_LOADING,
   AUTOMATION_PIPELINE_TASK_STALE,
   AutomationPipelineTargetFields,
@@ -141,7 +141,7 @@ describe('AutomationPipelineTargetFields', (): void => {
     expect(onTaskChange).toHaveBeenCalledWith('w2');
   });
 
-  it('renders loading, error with Retry, and unavailable states', (): void => {
+  it('renders loading, error with Try again, and unavailable states', (): void => {
     render({ value: 'task', tasks: { status: 'loading' } });
     expect(byTestId('t-task-loading')?.textContent).toBe(
       AUTOMATION_PIPELINE_TASK_LOADING,
@@ -149,9 +149,11 @@ describe('AutomationPipelineTargetFields', (): void => {
 
     const onRetryTasks = jest.fn();
     render({ value: 'task', tasks: { status: 'error' }, onRetryTasks });
+    expect(byTestId('t-task-error')?.getAttribute('role')).toBe('alert');
     expect(byTestId('t-task-error')?.textContent).toContain(
-      AUTOMATION_PIPELINE_TASK_LOAD_ERROR,
+      AUTOMATION_PIPELINE_TASK_LOAD_ERROR_BESIDE_RETRY,
     );
+    expect(byTestId('t-task-retry')?.textContent).toBe('Try again');
     act(() => byTestId('t-task-retry')?.click());
     expect(onRetryTasks).toHaveBeenCalledTimes(1);
 

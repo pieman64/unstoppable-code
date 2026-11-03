@@ -8037,6 +8037,7 @@ async function runActualTwoPanelScreenshotBody(options = {}) {
     observedElectronApps = 0,
     injectedExitCalls = 0,
     recordAttempts = 0;
+  const dryRunEvidenceCaptures = [];
   let closeBoundaryRecord;
   const localTest = (name, callback) => callbacks.set(name, callback);
   localTest.setTimeout = (value) => {
@@ -8310,6 +8311,13 @@ async function runActualTwoPanelScreenshotBody(options = {}) {
       suppliedClose: boundaryOptions.close,
     }),
     closeCanopy,
+    captureDaemonDryRunEvidence: async (app) => {
+      assert.equal(app, electronApp);
+      dryRunEvidenceCaptures.push({
+        injectedExitCallsBefore: injectedExitCalls,
+      });
+      return null;
+    },
     ElectronTerminalResultError,
     observeElectronTerminalResult: (app) => {
       assert.equal(app, electronApp);
@@ -8422,6 +8430,7 @@ async function runActualTwoPanelScreenshotBody(options = {}) {
     nativeHandleDisposals,
     observedElectronApps,
     injectedExitCalls,
+    dryRunEvidenceCaptures,
     resizeDispatches,
     viewportChanges,
     child17PropertyReads,
@@ -8448,6 +8457,7 @@ test('actual two-panel source selects opt-in native close qualification and obse
   assert.equal(value.launchBoundaryMode, 'close');
   assert.equal(value.observedElectronApps, 1);
   assert.equal(value.injectedExitCalls, 0);
+  assert.deepEqual(value.dryRunEvidenceCaptures, []);
   assert.equal(value.originalCloseCalls, 1);
   assert.equal(value.pagesCloseCalls, 1);
   assert.equal(value.escaped, null);
@@ -8559,6 +8569,9 @@ test('actual two-panel source treats target125 as transport-only and tolerates o
   assert.equal(value.launchBoundaryMode, 'close');
   assert.equal(value.observedElectronApps, 1);
   assert.equal(value.injectedExitCalls, 1);
+  assert.deepEqual(value.dryRunEvidenceCaptures, [
+    { injectedExitCallsBefore: 0 },
+  ]);
   assert.equal(value.originalCloseCalls, 1);
   assert.equal(value.pagesCloseCalls, 1);
 });

@@ -3,7 +3,11 @@ import type {
   ActivityFileDiffResponse,
   ChangedFileInfo,
 } from '@canopy/desktop-shared/types';
-import { Button, ConfirmDialog } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ConfirmDialog,
+  ErrorState,
+} from '@canopy/ui-shared/components';
 import { DiffContentView } from './DiffContentView';
 
 interface RevertConfirmModalProps {
@@ -126,7 +130,7 @@ export function RevertConfirmModal({
         className={`mt-2 max-h-60 overflow-auto rounded-lg border ${previewExpanded ? '' : 'hidden'}`}
       >
         {previewError ? (
-          <p className="p-3 text-xs fg-destructive">{previewError}</p>
+          <ErrorState space="panel" message={previewError} />
         ) : (
           <DiffContentView
             oldValue={previewData?.oldValue ?? ''}

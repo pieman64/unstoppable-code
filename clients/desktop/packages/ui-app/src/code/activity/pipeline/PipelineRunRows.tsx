@@ -759,12 +759,12 @@ export function CompletedRunRow({
             )}
             {canRetry && onRetry !== undefined && (
               <ExecutionActionButton
-                label={retrying ? 'Retrying…' : 'Retry'}
+                label={retrying ? 'Trying again…' : 'Try again'}
                 icon={<RetryIcon width={13} height={13} />}
                 onClick={() => onRetry(summary.id)}
                 disabled={retrying || mutationPending}
                 dataTestId={`pipeline-run-retry-${summary.id}`}
-                ariaLabel="Retry workflow run"
+                ariaLabel="Try the workflow run again"
                 variant="warning"
               />
             )}

@@ -5,6 +5,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -17,9 +18,13 @@ import {
   DelayedLoadingPlaceholder,
   Dot,
   ErrorBanner,
+  Fact,
+  FactList,
+  FormField,
   SegmentedControl,
   SettingsChartSkeleton,
   SettingsSelect,
+  TabBar,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
 import { getTelemetryToolCategoryLabel } from '@canopy/ui-shared/lib/telemetry-tool-category';
@@ -45,7 +50,7 @@ import {
   useSettingsSearchParams,
 } from '../../host';
 import { fetchTeamUsage } from '../team-api';
-import { useSettingsLoadErrorCopy } from '../../errors';
+import { useSettingsLoadFailure } from '../../errors';
 import {
   STATISTICS_ERROR_SCOPE,
   USAGE_KNOWN_LOAD_ERRORS,
@@ -60,7 +65,6 @@ import type {
 import { categoryBarChartHeight } from './chart-layout';
 import { memberProfileHref } from '../profile-links';
 import { formatProviderLabel } from './run-display';
-import { SubTabNav } from '../SubTabNav';
 import { HeadlineCards } from './HeadlineCards';
 import { RoutingBacktestCard } from './RoutingBacktestCard';
 import { StatTable, type StatColumn, type StatColumnGroup } from './StatTable';
@@ -77,6 +81,7 @@ import {
   pivotBuckets,
   tokenBucketTotal,
 } from './format';
+import type { SettingsFailure } from '../../errors';
 
 // recharts loads with the chart chunk, after the statistics shell renders.
 const LazyStackedTimeSeriesChart = lazy(() =>
@@ -367,10 +372,10 @@ export function TeamStatisticsSection({
   const [costDim, setCostDim] = useState<'provider' | 'model'>('provider');
   const [peopleDetailed, setPeopleDetailed] = useState(false);
 
-  const loadErrorCopy = useSettingsLoadErrorCopy(STATISTICS_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(STATISTICS_ERROR_SCOPE);
   const [usage, setUsage] = useState<TeamUsageResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Bumped by Retry to fetch the usage again.
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -491,18 +496,24 @@ export function TeamStatisticsSection({
       className="flex flex-col gap-5"
       data-testid="team-statistics-section"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3">
-        <SubTabNav
-          tabs={personal ? PERSONAL_METRIC_TABS : METRIC_TABS}
-          activeTab={activeTab}
-          onSelect={(tab) =>
+      {/* Six peer views: page tabs, with the range and filter beneath. */}
+      <div className="flex flex-col gap-3">
+        <TabBar
+          items={(personal ? PERSONAL_METRIC_TABS : METRIC_TABS).map((tab) => ({
+            id: tab.key,
+            label: tab.label,
+            dataTestId: `usage-metric-tab-${tab.key}`,
+          }))}
+          value={activeTab}
+          onChange={(tab): void =>
             updateParams({ tab: tab === DEFAULT_TAB ? null : tab })
           }
-          testIdPrefix="usage-metric"
-          ariaLabel="Usage metrics"
+          label="Usage metrics"
+          scrollable
+          dataTestId="usage-metric-tabs"
         />
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-end gap-2">
           <SelectControl
             label="Range"
             value={String(rangeMs)}
@@ -541,7 +552,8 @@ export function TeamStatisticsSection({
       </div>
 
       <ErrorBanner
-        error={error}
+        error={error?.copy}
+        details={error?.details}
         onRetry={() => setReloadToken((token) => token + 1)}
       />
 
@@ -1750,24 +1762,42 @@ function SelectControl({
   stacked = false,
   selectClassName = '',
 }: SelectControlProps): JSX.Element {
+  const labelId = useId();
+  if (stacked) {
+    return (
+      <FormField label={label}>
+        {(control) => (
+          <div className="relative flex">
+            <SettingsSelect
+              {...control}
+              value={value}
+              onValueChange={onChange}
+              data-testid={testId}
+              width="fill"
+              replayPrivacy={{ blockClassName: selectClassName }}
+              options={options}
+            />
+          </div>
+        )}
+      </FormField>
+    );
+  }
+  // A toolbar filter: the name sits beside its dropdown on one line.
   return (
-    <label
-      className={`text-xs font-medium fg-secondary ${
-        stacked ? 'flex flex-col gap-1' : 'inline-flex items-center gap-1.5'
-      }`}
-    >
-      <span>{label}</span>
-      <div className={`relative ${stacked ? 'flex' : 'inline-flex'}`}>
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium fg-secondary">
+      <span id={labelId}>{label}</span>
+      <div className="relative inline-flex">
         <SettingsSelect
+          aria-labelledby={labelId}
           value={value}
           onValueChange={onChange}
           data-testid={testId}
-          width={stacked ? 'fill' : 'control'}
+          width="control"
           replayPrivacy={{ blockClassName: selectClassName }}
           options={options}
         />
       </div>
-    </label>
+    </span>
   );
 }
 
@@ -1894,16 +1924,24 @@ function AutoRoutingSavingsPanel({
   ];
   return (
     <div className="flex flex-col gap-3" data-testid="auto-routing-savings">
-      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <FactList
+        layout="stacked"
+        columns={4}
+        valueSize="large"
+        labelTone="secondary"
+        columnGap="3"
+        rowGap="3"
+      >
         {rows.map((row) => (
-          <div key={row.key} data-testid={`auto-routing-savings-${row.key}`}>
-            <dt className="text-xs font-medium fg-secondary">{row.label}</dt>
-            <dd className="mt-1 text-lg font-semibold fg-primary">
-              {row.value}
-            </dd>
-          </div>
+          <Fact
+            key={row.key}
+            label={row.label}
+            testId={`auto-routing-savings-${row.key}`}
+          >
+            {row.value}
+          </Fact>
         ))}
-      </dl>
+      </FactList>
       <p
         className="text-xs fg-secondary"
         data-testid="auto-routing-savings-basis"

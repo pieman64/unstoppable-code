@@ -197,7 +197,7 @@ export function TurnFilesSummaryView({
             aria-hidden="true"
             className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
           >
-            <FileDiff />
+            <FileDiff size="md" />
           </span>
           {singleFile ??
             (!singleOutput && (

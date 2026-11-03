@@ -264,7 +264,7 @@ jest.mock('../lib/workspace-drift', () => ({
   readWorkspaceDriftSummary: jest.fn(),
 }));
 jest.mock('../lib/workspace-readiness', () => ({
-  computeWorkspaceReadinessIssues: jest.fn(),
+  computeWorkspaceReadinessAudit: jest.fn(),
 }));
 jest.mock('../lib/workspace-source-control', () => ({
   initializeWorkspaceSourceRepo: jest.fn(),
@@ -288,8 +288,9 @@ import { registerIpcHandler } from '../ipc/register';
 import { registerWorkspaceHandlers } from '../ipc/workspaces';
 import { validateId } from '../lib/validation';
 import { readWorkspaceConfig } from '../lib/workspace-persistence';
-import { computeWorkspaceReadinessIssues } from '../lib/workspace-readiness';
+import { computeWorkspaceReadinessAudit } from '../lib/workspace-readiness';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { createWorkspaceLifecycleTestDispatcher } from './fixtures/workspace-lifecycle-dispatcher';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 const mockedReadFile = jest.mocked(readFile);
@@ -302,8 +303,8 @@ const mockedReaddir = jest.mocked(readdir);
 const mockedCleanupPersistedWorktreeData = jest.mocked(
   cleanupPersistedWorktreeData,
 );
-const mockedComputeWorkspaceReadinessIssues = jest.mocked(
-  computeWorkspaceReadinessIssues,
+const mockedComputeWorkspaceReadinessAudit = jest.mocked(
+  computeWorkspaceReadinessAudit,
 );
 const mockedValidateId = jest.mocked(validateId);
 
@@ -331,21 +332,19 @@ beforeEach(() => {
     repos: [],
     sourceRepoPath: '/repos/workspace-source',
   });
-  mockedComputeWorkspaceReadinessIssues.mockResolvedValue([]);
+  mockedComputeWorkspaceReadinessAudit.mockResolvedValue({
+    issues: [],
+    complete: true,
+  });
 
   registerWorkspaceHandlers(() => null, {
     dispatcher: {
+      ...createWorkspaceLifecycleTestDispatcher(),
       query: (
         ...args: Parameters<DesktopCanopyDispatcher['query']>
       ): Promise<never> => {
         void args;
         return Promise.reject(new Error('Unexpected dispatcher query'));
-      },
-      instruction: (
-        ...args: Parameters<DesktopCanopyDispatcher['instruction']>
-      ): Promise<never> => {
-        void args;
-        return Promise.reject(new Error('Unexpected dispatcher instruction'));
       },
       queryWorktreeListForLegacyIpc: () =>
         Promise.resolve({
@@ -354,10 +353,10 @@ beforeEach(() => {
         }),
     },
     resolveCaller: () => ({
-      principalId: 'test-user',
+      principalId: 'local-desktop-user',
       clientInstanceId: 'test-client',
       authorityId: 'local-desktop',
-      interfaceKind: 'test',
+      interfaceKind: 'desktop',
       grants: ['core.worktree.read'],
     }),
   });
@@ -410,40 +409,50 @@ beforeEach(() => {
 });
 
 describe('workspace:read-readiness', () => {
-  it('returns the dedicated readiness response for a project and worktree', async () => {
-    mockedComputeWorkspaceReadinessIssues.mockResolvedValueOnce([
-      {
-        code: 'configure-hooks',
-        title: 'Add repository hooks',
-        message: 'No effective hooks.',
-        repoName: 'app',
-        fixPrompt: 'Configure hooks.',
-      },
-    ]);
+  it.each([true, false])(
+    'returns readiness and completeness (%s) for a project and worktree',
+    async (complete) => {
+      mockedComputeWorkspaceReadinessAudit.mockResolvedValueOnce({
+        complete,
+        issues: [
+          {
+            code: 'configure-hooks',
+            title: 'Add repository hooks',
+            message: 'No effective hooks.',
+            repoName: 'app',
+            fixPrompt: 'Configure hooks.',
+          },
+        ],
+      });
 
-    await expect(
-      readinessHandler(
-        {},
-        { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
-      ),
-    ).resolves.toEqual({
-      issues: [
-        expect.objectContaining({
-          code: 'configure-hooks',
-          repoName: 'app',
-        }),
-      ],
-    });
-    expect(mockedComputeWorkspaceReadinessIssues).toHaveBeenCalledWith(
-      'workspace-1',
-      'worktree-1',
-    );
-    expect(mockedValidateId).toHaveBeenCalledWith('workspace-1', 'workspaceId');
-    expect(mockedValidateId).toHaveBeenCalledWith('worktree-1', 'worktreeId');
-  });
+      await expect(
+        readinessHandler(
+          {},
+          { workspaceId: 'workspace-1', worktreeId: 'worktree-1' },
+        ),
+      ).resolves.toEqual({
+        complete,
+        issues: [
+          expect.objectContaining({
+            code: 'configure-hooks',
+            repoName: 'app',
+          }),
+        ],
+      });
+      expect(mockedComputeWorkspaceReadinessAudit).toHaveBeenCalledWith(
+        'workspace-1',
+        'worktree-1',
+      );
+      expect(mockedValidateId).toHaveBeenCalledWith(
+        'workspace-1',
+        'workspaceId',
+      );
+      expect(mockedValidateId).toHaveBeenCalledWith('worktree-1', 'worktreeId');
+    },
+  );
 
   it('rejects instead of turning audit failures into a ready response', async () => {
-    mockedComputeWorkspaceReadinessIssues.mockRejectedValueOnce(
+    mockedComputeWorkspaceReadinessAudit.mockRejectedValueOnce(
       new Error('audit failed'),
     );
 
@@ -465,7 +474,7 @@ describe('workspace:read-readiness', () => {
         { workspaceId: 'workspace-1', worktreeId: '../outside' },
       ),
     ).rejects.toThrow('Invalid worktreeId');
-    expect(mockedComputeWorkspaceReadinessIssues).not.toHaveBeenCalled();
+    expect(mockedComputeWorkspaceReadinessAudit).not.toHaveBeenCalled();
   });
 });
 

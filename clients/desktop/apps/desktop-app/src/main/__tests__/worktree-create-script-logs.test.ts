@@ -1,3 +1,9 @@
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('node:fs/promises');
 jest.mock('../lib/animals', () => ({
   generateUniqueAnimalName: jest.fn(() => 'test-animal'),
@@ -141,6 +147,7 @@ jest.mock('../lib/workspace-persistence', () => ({
   isWorkspaceWorktreeCurrent: jest.fn(() => Promise.resolve(true)),
   readWorkspaceConfig: jest.fn(),
   readWorkspaceWorktrees: jest.fn(),
+  readWorkspaceWorktreesDetailed: jest.fn(),
   updateWorkspaceWorktree: jest.fn(() => Promise.resolve(true)),
   updateWorkspaceWorktrees: jest.fn(),
 }));
@@ -299,6 +306,7 @@ import { sendToWindow } from '../lib/window-send';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
+  readWorkspaceWorktreesDetailed,
   updateWorkspaceWorktree,
   updateWorkspaceWorktrees,
 } from '../lib/workspace-persistence';
@@ -309,6 +317,8 @@ import { isMultiRepoWorkspace } from '../lib/workspace-registry';
 import { registerIpcHandler } from '../ipc/register';
 import { registerWorktreeHandlers } from '../ipc/worktrees';
 import { unusedGitReadRuntime } from './helpers/unused-git-read-runtime';
+import { createWorkspaceLifecycleTestDispatcher } from './fixtures/workspace-lifecycle-dispatcher';
+import { TEST_IPC_CALLER } from './fixtures/workspace-metadata-dispatcher';
 
 const mockedMkdir = jest.mocked(mkdir);
 const mockedReadFile = jest.mocked(readFile);
@@ -465,6 +475,12 @@ beforeEach(() => {
   mockedReadWorkspaceWorktrees.mockImplementation(() =>
     Promise.resolve(persistedWorktrees),
   );
+  jest.mocked(readWorkspaceWorktreesDetailed).mockImplementation(() =>
+    Promise.resolve({
+      authority: 'ok',
+      worktrees: persistedWorktrees,
+    }),
+  );
   mockedUpdateWorkspaceWorktree.mockResolvedValue(true);
   mockedUpdateWorkspaceWorktrees.mockImplementation(
     async (
@@ -522,7 +538,13 @@ beforeEach(() => {
     },
   ]);
 
-  registerWorktreeHandlers(() => null, unusedGitReadRuntime());
+  // worker.git stays unwired; worktree:create projects core.worktree.create.
+  const lifecycle = createWorkspaceLifecycleTestDispatcher();
+  const unused = unusedGitReadRuntime();
+  registerWorktreeHandlers(() => null, {
+    dispatcher: { ...unused.dispatcher, ...lifecycle },
+    resolveCaller: () => TEST_IPC_CALLER,
+  });
 
   const createCall = mockedRegisterIpcHandler.mock.calls.find(
     ([channel]) => channel === 'worktree:create',

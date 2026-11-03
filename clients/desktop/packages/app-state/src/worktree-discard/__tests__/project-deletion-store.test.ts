@@ -592,3 +592,56 @@ describe('CAN-5337 project deletion discard store', () => {
     expect(store.getState().view.phase).toBe('closed');
   });
 });
+
+describe('CAN-5338 project deletion discard store, retained archives', () => {
+  it('describes with the opt-in and discards a listed archive with it, reporting it as an archive', async () => {
+    const archived = item('archived');
+    const retained: ProjectDeletionDiscardDescription['items'][number] = {
+      worktreeName: 'Archived worktree',
+      description: {
+        ...archived.description,
+        targets: [
+          {
+            kind: 'retained-archive',
+            path: '/data/ws/archived-containers/archived',
+            identity: '1:2:3',
+            identityVerified: false,
+            reason: 'source-gone',
+          },
+        ],
+      },
+    };
+    const { client, calls } = fakeClient((call) =>
+      call.name === 'workspace.delete.discard.describe'
+        ? Promise.resolve(description([item('a'), retained]))
+        : Promise.resolve(DISCARDED),
+    );
+    const store = projectDeletionDiscardStoreFor(client);
+    await expect(store.getState().open(offer())).resolves.toBe(true);
+    const reported: { worktreeId: string; retainedArchive?: true }[] = [];
+    await store.getState().confirm(({ worktreeId, retainedArchive }) =>
+      reported.push({
+        worktreeId,
+        ...(retainedArchive ? { retainedArchive } : {}),
+      }),
+    );
+
+    expect(calls[0]).toEqual({
+      name: 'workspace.delete.discard.describe',
+      args: { workspaceId: 'ws', retainedArchives: true },
+    });
+    expect(discardCalls(calls)).toEqual([
+      { workspaceId: 'ws', worktreeId: 'a', confirmation: 'token-a' },
+      {
+        workspaceId: 'ws',
+        worktreeId: 'archived',
+        confirmation: 'token-archived',
+        retainedArchives: true,
+      },
+    ]);
+    expect(reported).toEqual([
+      { worktreeId: 'a' },
+      { worktreeId: 'archived', retainedArchive: true },
+    ]);
+  });
+});

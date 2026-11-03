@@ -203,11 +203,12 @@ describe('ChatToolStepGroup live line waiting for approval (CAN-5291)', () => {
       '[data-testid="chat-tool-step-group"]',
     );
     expect(group?.getAttribute('data-tool-approval')).toBe('waiting');
-    expect(group?.textContent).toContain('Waiting to run pnpm test');
+    expect(group?.textContent).toContain('Run pnpm test');
+    expect(group?.textContent).toContain('Waiting for approval');
     expect(container.querySelector('.canopy-text-shimmer-strong')).toBeNull();
     expect(
       container.querySelector('[data-testid="chat-tool-step-waiting"]'),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it('names the wait beside a label without a verb', () => {
@@ -234,7 +235,7 @@ describe('ChatToolStepGroup live line waiting for approval (CAN-5291)', () => {
         />
       </ChatLookProvider>,
     );
-    expect(container.textContent).toContain('Running pnpm test');
+    expect(container.textContent).toContain('Run pnpm test');
     expect(
       container.querySelector('.canopy-text-shimmer-strong'),
     ).not.toBeNull();

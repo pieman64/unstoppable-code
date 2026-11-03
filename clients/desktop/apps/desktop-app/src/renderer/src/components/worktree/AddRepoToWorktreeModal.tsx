@@ -540,7 +540,7 @@ export function AddRepoToWorktreeModal({
         titleId="shared-multi-repo-title"
         maxWidth="xl"
       >
-        <div className="space-y-4 p-5">
+        <div className="space-y-4">
           <DesktopOrgSharedMultiRepoSetup
             mode="combine"
             onClose={onClose}
@@ -564,7 +564,7 @@ export function AddRepoToWorktreeModal({
       maxWidth="xl"
     >
       <div
-        className="space-y-4 p-5 pt-3 text-s"
+        className="space-y-4 text-s"
         data-testid="add-repo-to-worktree-modal"
       >
         <div className="flex items-center justify-between gap-2">
@@ -753,6 +753,21 @@ export function AddRepoToWorktreeModal({
           </div>
         )}
 
+        {errorMessage && (
+          <Notice
+            intent="destructive"
+            data-testid="add-repo-to-worktree-modal-error"
+          >
+            {/* The full message: this box has no details view. Command
+                output can name paths and branches. */}
+            <span
+              className={`${POSTHOG_REPLAY_BLOCK_CLASS} block max-h-40 overflow-y-auto whitespace-pre-wrap break-words`}
+            >
+              {errorMessage}
+            </span>
+          </Notice>
+        )}
+
         <div className="flex items-center justify-end gap-2 pt-1">
           <Button
             size="compact"
@@ -789,21 +804,6 @@ export function AddRepoToWorktreeModal({
                 : 'Join worktree'}
           </Button>
         </div>
-
-        {errorMessage && (
-          <div
-            className="rounded-md border border-line-destructive/40 bg-destructive-subtle px-3 py-2 text-xs fg-destructive"
-            data-testid="add-repo-to-worktree-modal-error"
-          >
-            {/* The full message: this box has no details view. Command
-                output can name paths and branches. */}
-            <span
-              className={`${POSTHOG_REPLAY_BLOCK_CLASS} block max-h-40 overflow-y-auto whitespace-pre-wrap break-words`}
-            >
-              {errorMessage}
-            </span>
-          </div>
-        )}
       </div>
     </DialogModal>
   );

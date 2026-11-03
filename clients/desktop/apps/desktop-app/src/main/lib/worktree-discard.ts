@@ -59,8 +59,10 @@ import {
   readArchivedContainerRecoveryJournal,
   readConfiguredWorktreeSourceCandidates,
 } from './archived-container-recovery';
+import { notifyLedgerOfArchivedContainerDeletion } from './archived-container-ledger';
 import {
   readArchivedContainerManifestIncludingExpired,
+  withArchivedContainerOperationLock,
   withArchivedWorkspaceOperationLock,
 } from './archived-containers';
 import { getGitCommonDir } from './git';
@@ -104,6 +106,12 @@ import {
   removeAbsentWorktreeRegistrations,
 } from './worktree-registration-removal';
 import {
+  executeRetainedArchiveDiscard,
+  inspectRetainedArchiveDiscard,
+  type RetainedArchivePlan,
+} from './retained-archive-discard';
+import {
+  retryDeferredTemporaryWorkspaceDeletion,
   runWithWorktreeArchiveDeletionLifecycle,
   runWorktreeDiscardTail,
 } from './worktree-service';
@@ -318,6 +326,8 @@ interface DiscardPlan {
 interface Inspection {
   description: WorktreeDiscardDescription;
   plan?: DiscardPlan;
+  /** CAN-5338: a retained archive's discard, described only on opt-in. */
+  retained?: RetainedArchivePlan;
 }
 
 class DiscardRefused extends Error {
@@ -481,6 +491,8 @@ const TARGET_REASON_PREFERENCE: Record<
   ],
   'live-checkout': ['stranded-removal-journal', 'source-gone'],
   'files-only-recovery': ['stranded-removal-journal', 'source-gone'],
+  // CAN-5338: described by `retained-archive-discard.ts`, never here.
+  'retained-archive': ['source-gone', 'archive-recovery-unverified'],
 };
 
 /** The cause a target blocks under: the most specific one present. */
@@ -534,6 +546,12 @@ interface WorktreeDiscardDescribeOptions {
    * gone, and the description's token does not cover it.
    */
   readonly ignoreInterruptedDeletion?: boolean;
+  /**
+   * CAN-5338: with no row and no unfinished journal, describe the retained
+   * archive of this id instead of refusing `not-found`. Only a caller that
+   * renders its targets opts in; without it nothing here changes.
+   */
+  readonly retainedArchives?: boolean;
 }
 
 /** The read-only description, also the discard's binding (CAN-5334 §2). */
@@ -597,6 +615,17 @@ async function inspectWorktreeDiscard(
     unfinished !== null && isWorktreeDiscardRecord(unfinished)
       ? unfinished
       : null;
+  if (!row && unfinished === null && options.retainedArchives === true) {
+    const retained = await inspectRetainedArchiveDiscard(
+      workspaceId,
+      worktreeId,
+      options,
+    );
+    return {
+      description: retained.description,
+      ...(retained.plan ? { retained: retained.plan } : {}),
+    };
+  }
   if (!row && !(interrupted && isMissingRowResume(interrupted)))
     return refuse('not-found');
   const createdAt = row?.createdAt ?? interrupted?.createdAt ?? '';
@@ -1077,7 +1106,10 @@ function bindingRefusal(
   confirmation: string,
 ): DiscardRefused | null {
   const { description } = inspection;
-  if (description.status !== 'discardable' || !inspection.plan)
+  if (
+    description.status !== 'discardable' ||
+    (!inspection.plan && !inspection.retained)
+  )
     return new DiscardRefused({
       status: 'refused',
       reason: description.refusal?.reason ?? 'no-broken-removal',
@@ -1362,7 +1394,9 @@ async function executeDiscard(
     if (list.authority !== 'ok' && list.authority !== 'absent')
       throw new W5CommitRefusedError(
         'recovery-required',
-        'The worktree list is unreadable; the discard stopped.',
+        list.unserved
+          ? `${list.unserved.message} The discard stopped.`
+          : 'The worktree list is unreadable; the discard stopped.',
         { workspaceId, worktreeId, phase: 'discard-row' },
       );
     return (
@@ -1518,13 +1552,22 @@ export async function discardWorktree(request: {
   worktreeId: string;
   confirmation: string;
   source: WorktreeDiscardSourceInterface;
+  /** CAN-5338: the confirmed description lists a retained archive. */
+  retainedArchives?: boolean;
 }): Promise<WorktreeDiscardResult> {
   const { workspaceId, worktreeId, confirmation } = request;
   validateId(workspaceId, 'workspaceId');
   validateId(worktreeId, 'worktreeId');
+  const options: WorktreeDiscardDescribeOptions =
+    request.retainedArchives === true ? { retainedArchives: true } : {};
   // Refuse before the envelope when nothing could match; a refusal inside it
   // is reported as an archive failure, so only a race reaches one there.
-  const first = await inspectWorktreeDiscard(workspaceId, worktreeId);
+  const first = await inspectWorktreeDiscard(workspaceId, worktreeId, options);
+  if (first.retained) {
+    const unbound = bindingRefusal(first, confirmation);
+    if (unbound) return unbound.result;
+    return discardRetainedArchive(workspaceId, worktreeId, confirmation);
+  }
   const early = bindingRefusal(first, confirmation) ?? admissionRefusal(first);
   if (early) return early.result;
   try {
@@ -1568,6 +1611,45 @@ export async function discardWorktree(request: {
         ? { removedTemporaryWorkspaceId: outcome.removedTemporaryWorkspaceId }
         : {}),
     };
+  } catch (error) {
+    if (error instanceof DiscardRefused) return error.result;
+    throw error;
+  }
+}
+
+/**
+ * CAN-5338: the retained archive's discard. No row, so no deletion envelope:
+ * the container operation lock (inside the workspace archive lock, the
+ * order the ordinary deletion takes) serializes it with restore, retention
+ * and the ordinary deletion. It re-describes and binds under that lock.
+ */
+async function discardRetainedArchive(
+  workspaceId: string,
+  worktreeId: string,
+  confirmation: string,
+): Promise<WorktreeDiscardResult> {
+  let committed: RetainedArchivePlan | undefined;
+  try {
+    const outcome = await withArchivedContainerOperationLock(
+      workspaceId,
+      worktreeId,
+      async () => {
+        const fresh = await inspectWorktreeDiscard(workspaceId, worktreeId, {
+          retainedArchives: true,
+        });
+        const refusal = bindingRefusal(fresh, confirmation);
+        if (refusal) throw refusal;
+        if (!fresh.retained) throw refusedWith(fresh, 'no-broken-removal');
+        const result = await executeRetainedArchiveDiscard(fresh.retained);
+        committed = fresh.retained;
+        return result;
+      },
+    );
+    if (committed) notifyLedgerOfArchivedContainerDeletion(committed.manifest);
+    await retryDeferredTemporaryWorkspaceDeletion(workspaceId).catch(
+      () => null,
+    );
+    return { status: 'discarded', ...outcome };
   } catch (error) {
     if (error instanceof DiscardRefused) return error.result;
     throw error;

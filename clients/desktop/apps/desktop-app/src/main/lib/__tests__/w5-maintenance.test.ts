@@ -21,6 +21,7 @@ import {
   type W5CommitRequest,
   type W5PendingCommit,
 } from '@canopy/desktop-shared/node/w5-commit-log';
+import { attachOrStartCanopyDaemon } from '@canopy/core-client/node';
 import {
   createCanopyStartupClaimPort,
   type CanopyStartupProcessInspection,
@@ -272,6 +273,60 @@ posix.each(['alive', 'unknown'] as const)(
       record,
     );
     expect(host.workersStarted).toBe(0);
+  },
+);
+
+// CAN-5543 (GB12): the cohort proof. The real launcher runs the flip launch's
+// pre-spawn step holding the real startup claim, so maintenance refuses until
+// the step settles, and the claim is gone once it has.
+posix(
+  'refuses claim-held while a launch runs its pre-spawn step under the startup claim',
+  async () => {
+    const before = state();
+    let refusal: unknown;
+    const step = jest.fn(async (): Promise<void> => {
+      refusal = await diagnose().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      // The flip step fails closed here, so nothing spawns.
+      throw new Error('fixture step stops the launch');
+    });
+    const spawnDaemon = jest.fn(
+      (): Promise<never> => Promise.reject(new Error('no spawn expected')),
+    );
+    const launch = attachOrStartCanopyDaemon({
+      dataRoot: dir,
+      dataRootHash: 'a'.repeat(64),
+      runtimeMode: 'dev',
+      daemon: { executable: '/fixture/core', w5Host: true },
+      beforeSpawn: { timeoutMs: 30_000, run: step },
+      platform: 'darwin',
+      ports: {
+        claim: claims(),
+        descriptor: {
+          read: (): Promise<null> => Promise.resolve(null),
+          readToken: (): Promise<never> =>
+            Promise.reject(new Error('no descriptor')),
+        },
+        supervisor: {
+          inspectProcess: (): Promise<null> => Promise.resolve(null),
+          spawnDaemon,
+          terminateDaemon: (): Promise<void> => Promise.resolve(),
+        },
+      },
+      attach: (): Promise<never> => Promise.reject(new Error('no daemon')),
+      dispose: (): void => undefined,
+    });
+    await expect(launch).rejects.toThrow();
+    expect(step).toHaveBeenCalledTimes(1);
+    expect(refusal).toMatchObject({ reason: 'claim-held' });
+    expect(spawnDaemon).not.toHaveBeenCalled();
+    expect(state()).toEqual(before);
+    expect(host.workersStarted).toBe(0);
+    released();
+    // With the step settled, maintenance runs.
+    await expect(diagnose()).resolves.toMatchObject({ mode: 'diagnose' });
   },
 );
 
@@ -1549,6 +1604,12 @@ describe('resolve decisions (RX2)', () => {
     'core.worktree.branch.rename',
     'core.workspace.composition.split',
     'core.sharedContainer.fork',
+    // The rest of W7b-4's registered keyed lifecycles (CAN-5552).
+    'core.workspace.sourceRepo.initialize',
+    'core.workspace.type.convert',
+    'core.workspace.sourceChanges.apply',
+    'core.workspace.composition.combine',
+    'core.workspace.composition.promote',
     'clone',
   ])(
     'a %s reservation refuses operation-excluded and keeps restore blocked',
@@ -1587,9 +1648,12 @@ describe('resolve decisions (RX2)', () => {
   });
 
   // A24-L(b): abandoning drops the receipt, so the key would rerun the
-  // lifecycle's Git and file effects.
+  // lifecycle's Git and file effects. W7b-2a's keyed wire commands (plan §8)
+  // are lifecycle keys too.
   posix.each([
     'core.workspace.create',
+    'core.workspace.delete',
+    'core.archive.container.restore',
     'core.worktree.archive',
     'core.workspace.composition.split',
     'core.workspace.composition.combine',

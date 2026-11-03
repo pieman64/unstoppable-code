@@ -5,6 +5,7 @@ import { ChatIcon } from '@canopy/ui-shared/icons';
 import { useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserNetworkEntry } from '@/lib/browserChatStaging';
 import { Button, SegmentedControl, Tooltip } from '@canopy/ui-shared';
+import { StatusLabel } from '@canopy/ui-shared/components';
 
 interface BrowserNetworkPanelProps {
   browserId: string;
@@ -153,16 +154,22 @@ export function BrowserNetworkPanel({
                       <span className="text-right fg-secondary/70">
                         {durationLabel(entry)}
                       </span>
-                      {details.length > 0 && (
-                        <span
-                          className={`col-start-3 col-span-2 min-w-0 break-words fg-secondary/70 ${
-                            entry.failed ? 'fg-destructive' : ''
-                          }`}
-                          title={details}
-                        >
-                          {details}
-                        </span>
-                      )}
+                      {details.length > 0 &&
+                        (entry.failed ? (
+                          <StatusLabel
+                            className="col-start-3 col-span-2 min-w-0 break-words"
+                            title={details}
+                          >
+                            {details}
+                          </StatusLabel>
+                        ) : (
+                          <span
+                            className="col-start-3 col-span-2 min-w-0 break-words fg-secondary/70"
+                            title={details}
+                          >
+                            {details}
+                          </span>
+                        ))}
                     </div>
                     <Button
                       variant="ghost-quiet"

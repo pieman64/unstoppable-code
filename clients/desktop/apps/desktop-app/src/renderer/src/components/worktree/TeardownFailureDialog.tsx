@@ -27,7 +27,7 @@ export function TeardownFailureDialog({
       titleId="teardown-failure-title"
       maxWidth="lg"
     >
-      <div className="p-5 space-y-4">
+      <div className="space-y-4">
         {error.repoName && (
           <p className="text-s fg-primary">
             Teardown script failed for repo{' '}
@@ -70,7 +70,7 @@ export function TeardownFailureDialog({
             onClick={onRetry}
             disabled={isRetrying}
           >
-            {isRetrying ? 'Retrying…' : 'Retry teardown'}
+            {isRetrying ? 'Trying again…' : 'Try again'}
           </Button>
         </div>
       </div>

@@ -6,7 +6,11 @@ import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { withoutChatSummaryTraffic } from './fixtures/codex-chat-summary-traffic.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { seedWorktreeChat } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 
@@ -273,6 +277,7 @@ test('Codex rollout history reconciles an accepted steer after a hard restart', 
     ).toBe(true);
     await expect(panel.getByTestId('chat-stop-generation')).toBeVisible();
 
+    await captureDaemonDryRunEvidence(firstElectronApp);
     const mainPid = await firstElectronApp.evaluate(() => process.pid);
     process.kill(mainPid, 'SIGKILL');
     await closeCanopy(firstElectronApp, userDataDir, { keepUserData: true });

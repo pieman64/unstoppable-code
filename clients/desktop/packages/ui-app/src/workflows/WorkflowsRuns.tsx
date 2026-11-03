@@ -10,7 +10,10 @@ import {
 } from 'react';
 import {
   Button,
+  EmptyState,
+  ListRow,
   PageSearchControls,
+  SearchEmptyState,
   PageSearchFilters,
   PageSearchRow,
   StatusGlyph,
@@ -37,6 +40,8 @@ import {
   workflowRunFiltersActive,
   type WorkflowRunFilters,
 } from './run-search';
+import type { WorkflowLibraryRow } from './workflow-library-model';
+import { WorkflowStepChain } from './WorkflowsLibrary';
 import {
   WORKFLOW_RUN_ACTION_LABELS,
   WORKFLOW_RUN_KIND_LABELS,
@@ -474,26 +479,43 @@ export function WorkflowsRunsTable({
   );
 }
 
+/** Library workflows the empty Runs page points at (CAN-4311). */
+export interface WorkflowsRunsLibraryPreview {
+  /** At most a few rows; see `selectRunsLibraryPreview`. */
+  readonly rows: readonly WorkflowLibraryRow[];
+  /** Shows the row's workflow in the Library. */
+  readonly onOpenRow: (row: WorkflowLibraryRow) => void;
+  readonly onSeeLibrary: () => void;
+}
+
 export interface WorkflowsRunsEmptyStateProps {
   /** The search and filters hide every run, rather than there being none. */
   readonly query: string;
   readonly filters: WorkflowRunFilters;
   readonly onClearFilters: () => void;
   /**
-   * Starts a run. Pass it when the Library has something to run: it is then
-   * the one action offered.
+   * Starts a run. Pass it when the Library has something to run: it then
+   * leads the actions, or follows the Library preview.
    */
   readonly onRunWorkflow?: () => void;
-  /** With nothing to run yet: create a workflow, or find one to add. */
+  /** With nothing to run yet: create a workflow. */
   readonly onNewWorkflow?: () => void;
+  /** Finds a workflow to add; offered last whenever it is passed. */
   readonly onBrowseMarketplace?: () => void;
+  /**
+   * Library workflows to preview with no runs. With rows, See your library
+   * leads the actions.
+   */
+  readonly libraryPreview?: WorkflowsRunsLibraryPreview;
 }
 
 /**
- * Runs with nothing to show: `No runs yet` with one way forward (Run a
- * workflow when there is one to run, otherwise New workflow beside Browse
- * Marketplace), or `No runs match` with Clear filters when a search or filter
- * hides them all.
+ * Runs with nothing to show: `No runs yet` with a way forward, or `No runs
+ * match` with Clear filters when a search or filter hides them all. With a
+ * Library preview, it lists a few Library workflows and leads with See your
+ * library, with Run a workflow behind it. Without one, it leads with Run a
+ * workflow when there is one to run, otherwise New workflow. Browse
+ * Customize comes last whenever the host offers it.
  */
 export function WorkflowsRunsEmptyState({
   query,
@@ -502,74 +524,173 @@ export function WorkflowsRunsEmptyState({
   onRunWorkflow,
   onNewWorkflow,
   onBrowseMarketplace,
+  libraryPreview,
 }: WorkflowsRunsEmptyStateProps): JSX.Element {
   if (workflowRunFiltersActive(query, filters)) {
     const trimmed = query.trim();
     return (
-      <div
-        className="flex flex-col items-center gap-4 px-6 py-16 text-center"
-        data-testid="workflows-runs-no-matches"
-      >
-        <p className="text-s fg-secondary">
-          {trimmed === ''
+      <SearchEmptyState
+        testId="workflows-runs-no-matches"
+        title={
+          trimmed === ''
             ? 'No runs match these filters'
-            : `No runs match "${trimmed}"`}
-        </p>
+            : `No runs match "${trimmed}"`
+        }
+        actionLabel="Clear filters"
+        onAction={onClearFilters}
+        actionTestId="workflows-runs-clear-filters"
+      />
+    );
+  }
+  const preview =
+    libraryPreview !== undefined && libraryPreview.rows.length > 0
+      ? libraryPreview
+      : undefined;
+  const actions = (
+    <WorkflowsRunsEmptyActions
+      onSeeLibrary={preview?.onSeeLibrary}
+      onRunWorkflow={onRunWorkflow}
+      onNewWorkflow={onNewWorkflow}
+      onBrowseMarketplace={onBrowseMarketplace}
+    />
+  );
+  return (
+    <EmptyState
+      testId="workflows-runs-empty"
+      title="No runs yet"
+      subtitle="Workflow runs from your library show up here."
+      action={
+        preview ? (
+          <div className="flex flex-col items-center gap-4">
+            <WorkflowsRunsLibraryPreviewList
+              rows={preview.rows}
+              onOpenRow={preview.onOpenRow}
+            />
+            {actions}
+          </div>
+        ) : (
+          actions
+        )
+      }
+    />
+  );
+}
+
+/**
+ * The previewed Library workflows: one `ListRow` each, name over its summary
+ * and source, the step chain at the end, as the Library row shows them.
+ */
+function WorkflowsRunsLibraryPreviewList({
+  rows,
+  onOpenRow,
+}: Pick<WorkflowsRunsLibraryPreview, 'rows' | 'onOpenRow'>): JSX.Element {
+  return (
+    <ul
+      className="flex w-full max-w-md flex-col"
+      aria-label="From your library"
+      data-testid="workflows-runs-library-preview"
+    >
+      {rows.map((row) => (
+        <li key={row.key}>
+          <ListRow
+            data-testid="workflows-runs-library-preview-row"
+            data-row-key={row.key}
+            onClick={(): void => onOpenRow(row)}
+            description={
+              <>
+                <span className={REPLAY_MASK_CLASS}>{row.summary}</span>
+                {row.sourceLabel ? (
+                  <>
+                    {row.summary ? ' · ' : ''}
+                    {/* A label naming a person is private as a whole: the
+                        row model does not carry the name apart from its
+                        `Shared by` copy, so the whole label is blocked. */}
+                    <span
+                      className={row.sourceIsPerson ? REPLAY_BLOCK_CLASS : ''}
+                      data-testid="workflows-runs-library-preview-source"
+                    >
+                      {row.sourceLabel}
+                    </span>
+                  </>
+                ) : null}
+              </>
+            }
+            trailing={
+              <WorkflowStepChain
+                trigger={row.triggers[0] ?? 'manual'}
+                steps={row.steps}
+              />
+            }
+          >
+            <span
+              className={REPLAY_MASK_CLASS}
+              data-testid="workflows-runs-library-preview-name"
+            >
+              {row.name}
+            </span>
+          </ListRow>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function WorkflowsRunsEmptyActions({
+  onSeeLibrary,
+  onRunWorkflow,
+  onNewWorkflow,
+  onBrowseMarketplace,
+}: Pick<
+  WorkflowsRunsEmptyStateProps,
+  'onRunWorkflow' | 'onNewWorkflow' | 'onBrowseMarketplace'
+> & {
+  /** Set with a Library preview: See your library then leads. */
+  readonly onSeeLibrary?: () => void;
+}): JSX.Element {
+  const follower = onSeeLibrary ? 'secondary' : 'primary';
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-2">
+      {onSeeLibrary ? (
+        <Button
+          variant="primary"
+          size="md"
+          data-testid="workflows-runs-empty-library"
+          onClick={onSeeLibrary}
+        >
+          See your library
+        </Button>
+      ) : null}
+      {onRunWorkflow ? (
+        <Button
+          variant={follower}
+          size="md"
+          data-testid="workflows-runs-empty-run"
+          onClick={onRunWorkflow}
+        >
+          Run a workflow
+        </Button>
+      ) : onNewWorkflow ? (
+        <Button
+          variant={follower}
+          size="md"
+          data-testid="workflows-runs-empty-new"
+          onClick={onNewWorkflow}
+        >
+          New workflow
+        </Button>
+      ) : null}
+      {/* Bundled workflows always fill the Library, so Customize stays
+          offered beside Run a workflow rather than only with nothing to run. */}
+      {onBrowseMarketplace ? (
         <Button
           variant="secondary"
           size="md"
-          data-testid="workflows-runs-clear-filters"
-          onClick={onClearFilters}
+          data-testid="workflows-runs-empty-marketplace"
+          onClick={onBrowseMarketplace}
         >
-          Clear filters
+          Browse {CUSTOMIZE_LABEL}
         </Button>
-      </div>
-    );
-  }
-  return (
-    <div
-      className="flex flex-col items-center gap-2 px-6 py-16 text-center"
-      data-testid="workflows-runs-empty"
-    >
-      <h2 className="text-m font-semibold fg-primary">No runs yet</h2>
-      <p className="text-s fg-secondary">
-        Workflow runs from your library show up here.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-        {onRunWorkflow ? (
-          <Button
-            variant="primary"
-            size="md"
-            data-testid="workflows-runs-empty-run"
-            onClick={onRunWorkflow}
-          >
-            Run a workflow
-          </Button>
-        ) : (
-          <>
-            {onNewWorkflow ? (
-              <Button
-                variant="primary"
-                size="md"
-                data-testid="workflows-runs-empty-new"
-                onClick={onNewWorkflow}
-              >
-                New workflow
-              </Button>
-            ) : null}
-            {onBrowseMarketplace ? (
-              <Button
-                variant="secondary"
-                size="md"
-                data-testid="workflows-runs-empty-marketplace"
-                onClick={onBrowseMarketplace}
-              >
-                Browse {CUSTOMIZE_LABEL}
-              </Button>
-            ) : null}
-          </>
-        )}
-      </div>
+      ) : null}
     </div>
   );
 }

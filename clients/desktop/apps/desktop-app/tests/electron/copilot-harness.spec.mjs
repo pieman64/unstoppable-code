@@ -16,7 +16,11 @@ import {
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { launchCanopy, closeCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { launchCopilotSelectionFixture } from './fixtures/copilot-selection.mjs';
 import {
   copilotProcessAlive,
@@ -1255,6 +1259,7 @@ for (const termination of ['quit', 'SIGTERM', 'SIGINT', 'SIGKILL']) {
         const logOffset = readFileSync(logPath, 'utf8').length;
         const beforeExit = readCopilotReceipts(f.userDataDir);
         receiptEvidence.beforeExit = copilotReceiptEvidence(beforeExit);
+        await captureDaemonDryRunEvidence(f.app);
         const pid = await f.app.evaluate(() => process.pid);
         const closed = f.app.waitForEvent('close');
         const terminatedAt = Date.now();
@@ -1407,6 +1412,7 @@ for (const termination of ['quit', 'SIGTERM', 'SIGINT', 'SIGKILL']) {
       expect(copilotProcessAlive(oldHeldTurn.pid)).toBe(true);
       receiptEvidence.beforeExit = copilotReceiptEvidence(beforeExit);
       receiptEvidence.oldHeldTurn = oldHeldTurn;
+      await captureDaemonDryRunEvidence(f.app);
       const pid = await f.app.evaluate(() => process.pid);
       const closed = f.app.waitForEvent('close');
       if (termination === 'quit')

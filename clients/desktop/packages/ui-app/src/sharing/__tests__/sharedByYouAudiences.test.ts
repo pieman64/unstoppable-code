@@ -1,9 +1,11 @@
 import {
   sharedByYouAudienceCount,
   sharedByYouAudiences,
+  sharedByYouScopedLink,
   type SharedByYouFacts,
   type SharedByYouPorts,
 } from '../sharedByYouAudiences';
+import { copySharedByYouScopedLink } from '../sharedByYouScopedLink';
 
 const teamOwner = {
   type: 'team',
@@ -234,5 +236,186 @@ describe('sharedByYouAudiences', () => {
     );
     expect(account?.action).toBe(available.deleteShare);
     expect(publicRow?.action).toBe(available.revokePublicLink);
+  });
+});
+
+// CAN-5452: the owner's member link, from the same facts as the account row.
+describe('sharedByYouScopedLink', () => {
+  const SHARE_ID = '3F2B8C1E-5D4A-4E6F-9A7B-1C2D3E4F5A6B';
+  const target = {
+    scheme: 'canopy',
+    kind: 'skill',
+    shareId: SHARE_ID,
+  } as const;
+
+  it('builds the organization member link with the lowercased share id', () => {
+    expect(sharedByYouScopedLink(fixtures.orgNoLink, null, target)).toEqual({
+      url: `canopy://share/skills/${SHARE_ID.toLowerCase()}?audience=ORGANIZATION`,
+      audience: 'organization',
+      audienceName: 'Acme',
+      personal: false,
+      hasPublicLink: false,
+    });
+  });
+
+  it('builds a team link that knows a public link is also active', () => {
+    expect(
+      sharedByYouScopedLink(fixtures.teamWithLink, null, target),
+    ).toMatchObject({
+      url: `canopy://share/skills/${SHARE_ID.toLowerCase()}?audience=TEAM`,
+      audience: 'team',
+      audienceName: 'Growth',
+      hasPublicLink: true,
+    });
+  });
+
+  it.each([
+    ['skill', 'skills'],
+    ['plugin', 'plugins'],
+    ['agent', 'agents'],
+    ['collection', 'collections'],
+  ] as const)('links a %s with the brand scheme', (kind, segment) => {
+    expect(
+      sharedByYouScopedLink(fixtures.orgNoLink, null, {
+        scheme: 'unstoppable-code',
+        kind,
+        shareId: SHARE_ID,
+      })?.url,
+    ).toBe(
+      `unstoppable-code://share/${segment}/${SHARE_ID.toLowerCase()}?audience=ORGANIZATION`,
+    );
+  });
+
+  it('marks a Personal organization share without dropping it', () => {
+    expect(
+      sharedByYouScopedLink(fixtures.personalOrg, 'org-personal', target),
+    ).toMatchObject({ audience: 'organization', personal: true });
+  });
+
+  it.each([
+    'privateWithLink',
+    'privateNoLink',
+    'unscopedWithStaleLink',
+    'foreign',
+    'canDeleteUnknown',
+  ])('offers no link for %s', (fixture) => {
+    const facts = fixtures[fixture];
+    if (!facts) throw new Error(`missing fixture ${fixture}`);
+    expect(sharedByYouScopedLink(facts, null, target)).toBeNull();
+  });
+
+  it('withholds copying for an invalid brand scheme', () => {
+    expect(
+      sharedByYouScopedLink(fixtures.orgNoLink, null, {
+        ...target,
+        scheme: '9invalid',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null rather than throwing for an id that is not a UUID', () => {
+    expect(
+      sharedByYouScopedLink(fixtures.orgNoLink, null, {
+        ...target,
+        shareId: 'skill-1',
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    undefined,
+    null,
+    { type: 'organization', name: 'Acme' },
+    { type: 'organization', id: '', name: 'Acme' },
+    { type: 'organization', id: 'org-1' },
+    { type: 'organization', id: 'org-1', name: '  ' },
+    { type: 'team', id: 'team-1', name: 'Growth' },
+    { type: 'user', id: 'user-1', name: 'Aaron' },
+  ] satisfies SharedByYouFacts['owner'][])(
+    'withholds both entry points for incomplete or conflicting owner facts: %j',
+    (owner) => {
+      const facts: SharedByYouFacts = {
+        canDelete: true,
+        shareScope: 'organization',
+        owner,
+      };
+      expect(sharedByYouScopedLink(facts, null, target)).toBeNull();
+      const [row] = sharedByYouAudiences(facts, null, {
+        ...ports,
+        copyLink: { target, write: jest.fn(), notify: jest.fn() },
+      });
+      expect(row).not.toHaveProperty('copyLink');
+      expect(sharedByYouAudienceCount(facts, null)).toBe(1);
+    },
+  );
+
+  it('attaches Copy link to the account row only, leaving counts alone', () => {
+    const write = jest.fn(() => Promise.resolve(true));
+    const notify = jest.fn();
+    const audiences = sharedByYouAudiences(fixtures.teamWithLink, null, {
+      ...ports,
+      copyLink: { target, write, notify },
+    });
+    expect(audiences.map((audience) => audience.id)).toEqual([
+      'account',
+      'public',
+    ]);
+    const [accountRow, publicRow] = audiences;
+    if (accountRow?.id !== 'account') throw new Error('account row missing');
+    expect(accountRow.copyLink).toEqual({
+      link: sharedByYouScopedLink(fixtures.teamWithLink, null, target),
+      port: { write, notify },
+    });
+    expect(publicRow).not.toHaveProperty('copyLink');
+    expect(sharedByYouAudienceCount(fixtures.teamWithLink, null)).toBe(2);
+  });
+
+  it('leaves the account row without Copy link when the host has no port', () => {
+    const [accountRow] = sharedByYouAudiences(fixtures.orgNoLink, null, ports);
+    expect(accountRow).not.toHaveProperty('copyLink');
+  });
+});
+
+describe('copySharedByYouScopedLink', () => {
+  const link = {
+    url: 'canopy://share/skills/3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b?audience=ORGANIZATION',
+    audience: 'organization',
+    audienceName: 'Acme',
+    personal: false,
+    hasPublicLink: false,
+  } as const;
+
+  it('notifies success once, after the write succeeds', async () => {
+    const write = jest.fn(() => Promise.resolve(true));
+    const notify = jest.fn();
+    await expect(
+      copySharedByYouScopedLink(link, { write, notify }),
+    ).resolves.toBe(true);
+    expect(write).toHaveBeenCalledWith(link.url);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({
+      tone: 'success',
+      message: 'Link copied. Only Acme members can open it.',
+      blockMessageFromReplay: true,
+    });
+  });
+
+  it('warns and resolves false when the write rejects', async () => {
+    const write = jest.fn(() => Promise.reject(new Error('denied')));
+    const notify = jest.fn();
+    await expect(
+      copySharedByYouScopedLink(link, { write, notify }),
+    ).resolves.toBe(false);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: 'warning' }),
+    );
+  });
+
+  it('posts nothing once the page moved on to another item', async () => {
+    const write = jest.fn(() => Promise.resolve(true));
+    const notify = jest.fn();
+    await copySharedByYouScopedLink(link, { write, notify }, () => false);
+    expect(notify).not.toHaveBeenCalled();
   });
 });

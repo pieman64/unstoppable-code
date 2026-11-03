@@ -45,6 +45,7 @@ import {
 } from './SkillEditWithAIButton';
 import {
   installedShareProvenance,
+  installedShareStatusFact,
   type InstalledShareProvenanceOptions,
 } from './installed-share-provenance';
 
@@ -78,14 +79,28 @@ const UPDATED_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
 });
 
+/** The first of the timestamps that parses, formatted for the header. */
+function headerDate(
+  ...timestamps: readonly (string | undefined)[]
+): string | undefined {
+  for (const timestamp of timestamps) {
+    if (!timestamp) continue;
+    const date = new Date(timestamp);
+    if (Number.isFinite(date.getTime()))
+      return UPDATED_DATE_FORMAT.format(date);
+  }
+  return undefined;
+}
+
 /**
  * The installed skill page's header on every host (CAN-4264): the list's
  * title, the frontmatter description, then where it came from, its version
  * and when it last changed. Facts the host does not know are left out.
  *
  * A receipted shared install names its source instead of `Custom`
- * (CAN-5018): its attribution, `One-time copy`, any live `Update available`,
- * the date, then `View shared skill` from `provenance.source`.
+ * (CAN-5018): its attribution, `One-time copy`, then one status fact with
+ * any live `Update available` and when the current copy was installed
+ * (CAN-5306), then `View shared skill` from `provenance.source`.
  */
 export function installedSkillDetailHeader(
   name: string,
@@ -94,6 +109,7 @@ export function installedSkillDetailHeader(
     | Pick<
         InstalledSkillInfo,
         | 'source'
+        | 'installedAt'
         | 'updatedAt'
         | 'builtIn'
         | 'custom'
@@ -112,7 +128,6 @@ export function installedSkillDetailHeader(
       ? frontmatterDescription
       : installed?.description || undefined;
   const version = content?.frontmatter.version;
-  const updated = installed ? new Date(installed.updatedAt) : null;
   const shared =
     installed && !installed.builtIn && installed.installedFromShare
       ? installedShareProvenance(installed.installedFromShare, provenance)
@@ -122,10 +137,14 @@ export function installedSkillDetailHeader(
     : installed?.custom
       ? 'Custom'
       : installed?.source;
-  const updatedFact =
-    updated && Number.isFinite(updated.getTime())
-      ? `Updated ${UPDATED_DATE_FORMAT.format(updated)}`
-      : undefined;
+  const updatedDate = headerDate(installed?.updatedAt);
+  const updatedFact = updatedDate ? `Updated ${updatedDate}` : undefined;
+  const statusFact = shared
+    ? installedShareStatusFact(
+        shared.updateAvailable,
+        headerDate(installed?.installedAt, installed?.updatedAt),
+      )
+    : null;
   return {
     title: displayName?.trim() || marketplaceTitleCase(name),
     ...(titleId ? { titleId } : {}),
@@ -136,7 +155,7 @@ export function installedSkillDetailHeader(
     meta: shared
       ? [
           ...shared.facts,
-          ...(updatedFact ? [updatedFact] : []),
+          ...(statusFact ? [statusFact] : []),
           ...(shared.sourceLink ? [shared.sourceLink] : []),
         ]
       : [source, updatedFact].filter(
@@ -147,6 +166,11 @@ export function installedSkillDetailHeader(
 
 export interface SkillReadDetailProps {
   skill: Pick<InstalledSkillInfo, 'sourceId' | 'name'>;
+  /**
+   * The side and bottom inset: 20px on a page or panel (the default), 24px in
+   * a flush dialog so the body lines up with the dialog header.
+   */
+  inset?: 'page' | 'dialog';
   header?: SkillReadDetailHeader;
   /**
    * The host page already shows this title and description above the body
@@ -185,6 +209,11 @@ export interface SkillReadDetailProps {
    * one accent action.
    */
   primaryAction?: ReactNode;
+  /**
+   * Host-owned ⋯ menu items placed first, ahead of the detail's own, such
+   * as Try it when an Update takes the primary slot (CAN-5306).
+   */
+  leadingMenuItems?: readonly DetailMoreMenuItem[];
   /**
    * Share, first in the top-right actions row beside the leading Back: the
    * host's share flow, or the reason sharing is unavailable. Omit when the
@@ -337,6 +366,7 @@ const LOADING_FILE_STATE: FileState = { loading: true, error: '', data: null };
 
 export function SkillReadDetail({
   skill,
+  inset = 'page',
   header,
   hostHeader,
   notice,
@@ -352,6 +382,7 @@ export function SkillReadDetail({
   editWithAI,
   onAdd,
   primaryAction,
+  leadingMenuItems = [],
   shareAction,
   onRemove,
   removeKind = 'remove',
@@ -487,6 +518,7 @@ export function SkillReadDetail({
     // last, and one notice sits under it where the host's own failure wins
     // over the update state.
     const menuItems: DetailMoreMenuItem[] = [
+      ...leadingMenuItems,
       ...(checkItem ? [checkItem] : []),
       ...(editWithAI ? [editWithAIMenuItem(editWithAI)] : []),
       ...(onRemove
@@ -551,21 +583,25 @@ export function SkillReadDetail({
       </>
     );
   } else {
-    // The standard action bar: [⋯ Check for updates] [Delete or Remove]
-    // [Edit with AI] [Edit] [Share] [Add]. Inside a page shell or dialog
-    // that opens action slots they render in its top right; elsewhere they
-    // share the Back row below.
+    // The standard action bar: [⋯ host items, Check for updates] [Delete or
+    // Remove] [Edit with AI] [Edit] [Share] [Primary]. Inside a page shell or
+    // dialog that opens action slots they render in its top right; elsewhere
+    // they share the Back row below.
+    const dialogMenuItems: DetailMoreMenuItem[] = [
+      ...leadingMenuItems,
+      ...(checkItem ? [checkItem] : []),
+    ];
     const actions = (onEdit ||
       editWithAI ||
       onAdd ||
       shareAction ||
       onRemove ||
-      checkItem) && (
+      dialogMenuItems.length > 0) && (
       <DetailPageActions
         secondary={
-          checkItem || onRemove || editWithAI || onEdit ? (
+          dialogMenuItems.length > 0 || onRemove || editWithAI || onEdit ? (
             <>
-              {menu(checkItem ? [checkItem] : [])}
+              {menu(dialogMenuItems)}
               {onRemove && (
                 <Button
                   type="button"
@@ -637,12 +673,14 @@ export function SkillReadDetail({
       </p>
     ) : null;
 
+  const rootClass =
+    inset === 'dialog'
+      ? 'flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6'
+      : 'flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-5';
+
   if (!isMultiFile) {
     return (
-      <div
-        data-testid="skill-read-detail"
-        className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-5"
-      >
+      <div data-testid="skill-read-detail" className={rootClass}>
         {topRow}
         {truncationNotice}
         <div className="min-w-0 flex-1 overflow-y-auto">
@@ -668,10 +706,7 @@ export function SkillReadDetail({
   }
 
   return (
-    <div
-      data-testid="skill-read-detail"
-      className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 pb-5"
-    >
+    <div data-testid="skill-read-detail" className={rootClass}>
       {topRow}
       {truncationNotice}
       {/* Under a header the name, description and version move up; an

@@ -4,6 +4,7 @@ import { ChevronRightIcon, InfoIcon } from '@canopy/ui-shared/icons';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { RefreshSpinner } from '@/components/shared/loading';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import type { TabSpec } from './tab-specs';
 import { HeadlineCardRow } from './HeadlineCardRow';
 import { MetricsChart } from './MetricsChart';
@@ -88,11 +89,7 @@ export function MetricsTab({
           )}
         </div>
       )}
-      {error && (
-        <div className="rounded-xl border bg-card/60 px-4 py-3 text-s fg-destructive">
-          {error}
-        </div>
-      )}
+      {error && <ErrorBanner error={error} className="" />}
       {summary === null ? (
         <div className="flex items-center gap-2 rounded-xl border bg-card/60 px-4 py-3 text-s fg-secondary">
           <RefreshSpinner spinning size={14} />

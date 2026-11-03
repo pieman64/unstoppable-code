@@ -17,7 +17,12 @@ import {
   validateGlobalShortcut,
   type ShortcutPlatform,
 } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
-import { Button, Kbd, ToggleSwitch } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Kbd,
+  ToggleSwitch,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { brandText } from '@/lib/brand';
 import {
@@ -370,15 +375,11 @@ export function GlobalFocusShortcutSection(): JSX.Element {
               )}
             </div>
           )}
-          {saveError !== null && (
-            <p
-              className="text-xs fg-destructive"
-              data-testid="global-focus-shortcut-error"
-              role="alert"
-            >
-              {saveError}
-            </p>
-          )}
+          <ErrorBanner
+            className=""
+            error={saveError}
+            testId="global-focus-shortcut-error"
+          />
         </SettingsRow>
       </SettingsGroup>
     </SettingsSection>

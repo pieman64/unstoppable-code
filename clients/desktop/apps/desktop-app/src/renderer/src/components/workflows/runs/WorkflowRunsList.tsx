@@ -24,6 +24,7 @@ import {
   type WorkflowRunRow,
   type WorkflowRunStarter,
   type WorkflowRunStatus,
+  type WorkflowsRunsLibraryPreview,
 } from '@canopy/ui-app/workflows';
 import { Button, ConfirmDialog } from '@canopy/ui-shared/components';
 import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
@@ -374,6 +375,8 @@ export interface WorkflowRunsListProps {
   readonly onRunWorkflow?: () => void;
   readonly onNewWorkflow?: () => void;
   readonly onBrowseMarketplace?: () => void;
+  /** Library workflows `No runs yet` previews; omit to preview none. */
+  readonly libraryPreview?: WorkflowsRunsLibraryPreview;
   /** A row to mark as selected. */
   readonly highlightKey?: string | null;
 }
@@ -403,6 +406,7 @@ export function WorkflowRunsList({
   onRunWorkflow,
   onNewWorkflow,
   onBrowseMarketplace,
+  libraryPreview,
   highlightKey,
 }: WorkflowRunsListProps): JSX.Element {
   const capabilities = useCapabilities();
@@ -456,6 +460,7 @@ export function WorkflowRunsList({
               onRunWorkflow={onRunWorkflow}
               onNewWorkflow={onNewWorkflow}
               onBrowseMarketplace={onBrowseMarketplace}
+              libraryPreview={libraryPreview}
             />
           )}
           {/* No loaded run matches, but an older one still might, also

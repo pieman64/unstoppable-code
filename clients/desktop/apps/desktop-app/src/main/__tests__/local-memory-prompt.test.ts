@@ -30,7 +30,7 @@ describe('Cowork Mermaid authoring guidance', () => {
             'Highlight nodes with classDef/class or style using only fill, stroke, color, stroke-width, stroke-dasharray and font-weight.',
           );
           expect(prompt).toContain(
-            'Use hex, rgb or named colours for colour properties, numeric widths and space-separated dash patterns, and supported font weights.',
+            'Use hex, rgb or named colours for colour properties, numeric widths, space-separated dash patterns (stroke-dasharray:5 5), and supported font weights.',
           );
           expect(prompt).toContain(
             'Avoid click/link directives, HTML, images, icons, config blocks and url() values.',

@@ -1,3 +1,4 @@
+import { TrackedPlanImplementationSchema } from '../../chat-plan-review';
 import { z } from 'zod';
 
 import {
@@ -20,6 +21,8 @@ export const CoreChatSnapshotGetParamsSchema = z.strictObject({
 });
 
 export const CoreChatTabSummarySchema = z.object({
+  trackedPlanImplementation:
+    TrackedPlanImplementationSchema.nullable().optional(),
   chatId: id,
   title: z.string(),
   kind: z.enum(['chat', 'file']),

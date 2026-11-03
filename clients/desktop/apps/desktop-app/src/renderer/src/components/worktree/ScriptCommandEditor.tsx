@@ -1,5 +1,6 @@
 import { useRef, type JSX } from 'react';
 import { SCRIPT_ENV_VISIBLE_VAR_DEFINITIONS } from '@canopy/desktop-shared/scripts';
+import { FormField, TextArea } from '@canopy/ui-shared/components';
 import {
   createScriptEnvVarInsertion,
   insertTextAtSelection,
@@ -75,20 +76,22 @@ export function ScriptCommandEditor({
 
   return (
     <div className="space-y-2">
-      <label className="block text-s">
-        <span className="mb-1.5 block text-xs fg-secondary">{label}</span>
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onSelect={rememberSelection}
-          onClick={rememberSelection}
-          onKeyUp={rememberSelection}
-          placeholder={placeholder}
-          rows={rows}
-          className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs"
-        />
-      </label>
+      <FormField label={label}>
+        {(control) => (
+          <TextArea
+            {...control}
+            mono
+            ref={textareaRef}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onSelect={rememberSelection}
+            onClick={rememberSelection}
+            onKeyUp={rememberSelection}
+            placeholder={placeholder}
+            rows={rows}
+          />
+        )}
+      </FormField>
 
       <VariableInsertDropdown
         variables={SCRIPT_ENV_VISIBLE_VAR_DEFINITIONS}

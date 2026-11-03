@@ -2877,8 +2877,9 @@ for (const {
         await expect(
           panel.getByText(fixture.integrated, { exact: true }),
         ).toHaveCount(0);
-        await expect(panel.getByTestId('turn-timer')).toHaveCount(1);
-        expect(retainedTimers(userDataDir)).toEqual([originalTimer]);
+        // The child's completion notice may already have woken the idle parent
+        // in a turn of its own (asserted below); the original turn is unchanged.
+        expect(retainedTimers(userDataDir)[0]).toEqual(originalTimer);
       }
 
       if (action?.startsWith('resume')) {

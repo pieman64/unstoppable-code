@@ -21,15 +21,18 @@ import {
 } from '@canopy/desktop-shared/types';
 import { ModelPicker } from '@/components/chat/ModelPicker';
 import { useAgentsStore } from '@/stores/agentsStore';
-import { FormField } from '@/components/pipeline/shared/FormField';
-import { TextAreaField } from '@/components/pipeline/shared/TextAreaField';
-import { SelectField } from '@/components/pipeline/shared/SelectField';
+import {
+  DialogFormField,
+  FieldError,
+  SettingsSelect,
+  TextArea,
+} from '@canopy/ui-shared/components';
 import {
   resolveEffectiveAliasPreference,
   validateEffectiveAliasPreference,
 } from '@/lib/pipelineModelAliases';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
-import { Button, SegmentedControl } from '@canopy/ui-shared/components';
+import { Badge, Button, SegmentedControl } from '@canopy/ui-shared/components';
 
 interface PipelineModelAliasEditorProps {
   alias: PipelineModelAlias;
@@ -76,6 +79,23 @@ export function PipelineModelAliasEditor({
   const currentMode: 'inline' | 'agent' | null = effective.preference
     ? effective.preference.mode
     : null;
+
+  // The field the validation message is about, so it shows under that field.
+  const errorField: 'mode' | 'base' | 'plugin' | 'agent' | null =
+    validationError === undefined
+      ? null
+      : !effective.preference
+        ? 'mode'
+        : effective.preference.mode === 'agent'
+          ? 'agent'
+          : !effective.preference.base ||
+              effective.preference.base.trim() === ''
+            ? 'base'
+            : 'plugin';
+  const errorId = `pipeline-model-alias-${alias.id}-error`;
+  const instructionsId = `pipeline-model-alias-${alias.id}-instructions`;
+  const errorFor = (field: 'base' | 'plugin' | 'agent'): string | undefined =>
+    errorField === field ? validationError : undefined;
 
   const subtitle = useMemo(() => {
     if (!effective.preference) {
@@ -181,25 +201,22 @@ export function PipelineModelAliasEditor({
               {alias.name || alias.id}
             </span>
             {effective.customized && (
-              <span
-                className="shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none bg-accent-subtle fg-accent"
+              <Badge
                 data-testid={`pipeline-model-alias-${alias.id}-customized`}
               >
                 Customized
-              </span>
+              </Badge>
             )}
             {!effective.customized && effective.source === 'default' && (
-              <span className="shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none bg-fg-primary/10 fg-secondary">
-                Workflow default
-              </span>
+              <Badge muted>Workflow default</Badge>
             )}
             {effective.required && (
-              <span
-                className="shrink-0 rounded px-1.5 py-0.5 text-3xs font-medium leading-none bg-destructive-subtle fg-destructive"
+              <Badge
+                tone="danger"
                 data-testid={`pipeline-model-alias-${alias.id}-required`}
               >
                 Required
-              </span>
+              </Badge>
             )}
           </span>
           <span className="mt-0.5 block truncate text-xs fg-secondary">
@@ -226,8 +243,12 @@ export function PipelineModelAliasEditor({
 
           {currentMode === 'inline' && (
             <div className="space-y-3">
-              <FormField label="Base model">
-                <div className="flex items-center rounded-md border bg-base px-2 py-1.5">
+              <DialogFormField
+                label="Base model"
+                error={errorFor('base')}
+                errorId={errorId}
+              >
+                <div className="flex w-full items-center rounded-md border bg-base px-2 py-1.5">
                   <ModelPicker
                     currentModel={
                       effective.preference?.mode === 'inline'
@@ -242,9 +263,11 @@ export function PipelineModelAliasEditor({
                     triggerTooltip="Model this alias resolves to"
                   />
                 </div>
-              </FormField>
-              <FormField label="Instructions">
-                <TextAreaField
+              </DialogFormField>
+              <DialogFormField label="Instructions" htmlFor={instructionsId}>
+                <TextArea
+                  id={instructionsId}
+                  mono
                   value={
                     effective.preference?.mode === 'inline'
                       ? (effective.preference.instructions ?? '')
@@ -257,19 +280,24 @@ export function PipelineModelAliasEditor({
                   placeholder="Instructions appended when this alias is used…"
                   disabled={readonly}
                 />
-              </FormField>
-              <FormField
+              </DialogFormField>
+              <DialogFormField
                 label="Plugin collection"
-                hint="Enabled in addition to any plugin_collection_id on the step."
+                description="Enabled in addition to any plugin_collection_id on the step."
+                error={errorFor('plugin')}
+                errorId={errorId}
               >
-                <SelectField
+                <SettingsSelect
+                  aria-label="Plugin collection"
+                  aria-invalid={errorFor('plugin') ? true : undefined}
+                  aria-describedby={errorFor('plugin') ? errorId : undefined}
                   value={
                     effective.preference?.mode === 'inline'
                       ? (effective.preference.plugin_collection_id ?? '')
                       : ''
                   }
-                  onChange={(e) =>
-                    updateInline({ plugin_collection_id: e.target.value })
+                  onValueChange={(next) =>
+                    updateInline({ plugin_collection_id: next })
                   }
                   options={[
                     { value: '', label: 'None' },
@@ -280,28 +308,33 @@ export function PipelineModelAliasEditor({
                   ]}
                   disabled={readonly}
                 />
-              </FormField>
+              </DialogFormField>
             </div>
           )}
 
           {currentMode === 'agent' && (
-            <FormField
+            <DialogFormField
               label="Agent"
-              hint="Uses the agent base model, instructions, and plugins at run time."
+              description="Uses the agent base model, instructions, and plugins at run time."
+              error={errorFor('agent')}
+              errorId={errorId}
             >
               {agents.length === 0 ? (
                 <p className="text-xs fg-secondary italic">
                   No local agents available
                 </p>
               ) : (
-                <SelectField
+                <SettingsSelect
+                  aria-label="Agent"
+                  aria-invalid={errorFor('agent') ? true : undefined}
+                  aria-describedby={errorFor('agent') ? errorId : undefined}
                   value={
                     effective.preference?.mode === 'agent'
                       ? effective.preference.agent_id
                       : ''
                   }
-                  onChange={(e) =>
-                    onChange({ mode: 'agent', agent_id: e.target.value })
+                  onValueChange={(next) =>
+                    onChange({ mode: 'agent', agent_id: next })
                   }
                   options={agents.map((agent) => ({
                     value: agent.id,
@@ -313,7 +346,7 @@ export function PipelineModelAliasEditor({
                   disabled={readonly}
                 />
               )}
-            </FormField>
+            </DialogFormField>
           )}
 
           {currentMode === null && (
@@ -322,13 +355,8 @@ export function PipelineModelAliasEditor({
             </p>
           )}
 
-          {validationError && (
-            <p
-              className="text-xs fg-destructive"
-              data-testid={`pipeline-model-alias-${alias.id}-error`}
-            >
-              {validationError}
-            </p>
+          {errorField === 'mode' && validationError && (
+            <FieldError id={errorId}>{validationError}</FieldError>
           )}
 
           {!readonly && effective.customized && (

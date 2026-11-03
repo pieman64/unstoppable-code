@@ -241,7 +241,7 @@ describe('PipelineExecutionDetailModal chrome', () => {
       />,
     );
     const searchInput = byTestId(
-      container,
+      document.body,
       'pipeline-step-detail-compile',
     )?.querySelector('input');
     expect(searchInput).toBeInstanceOf(HTMLInputElement);
@@ -293,7 +293,9 @@ describe('PipelineExecutionDetailModal chrome', () => {
         />
       </>,
     );
-    const dialogs = Array.from(container.querySelectorAll('[role="dialog"]'));
+    const dialogs = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
     expect(dialogs).toHaveLength(2);
     const labelIds = dialogs.map((dialog) =>
       dialog.getAttribute('aria-labelledby'),
@@ -304,7 +306,7 @@ describe('PipelineExecutionDetailModal chrome', () => {
       expect(title?.textContent).toContain('Build pipeline');
     });
     expect(
-      container.querySelector('#pipeline-execution-detail-title'),
+      document.body.querySelector('#pipeline-execution-detail-title'),
     ).toBeNull();
   });
 
@@ -364,16 +366,16 @@ describe('PipelineExecutionDetailModal chrome', () => {
     );
 
     await click(
-      byTestId(container, 'pipeline-detail-report-chat-follow-up-exec-1'),
+      byTestId(document.body, 'pipeline-detail-report-chat-follow-up-exec-1'),
     );
     expect(actions.reportChatFollowUp).toHaveBeenCalledWith('exec-1');
     expect(onClose).not.toHaveBeenCalled();
 
-    await click(byTestId(container, 'pipeline-detail-view-report-exec-1'));
+    await click(byTestId(document.body, 'pipeline-detail-view-report-exec-1'));
     expect(actions.openReport).toHaveBeenCalledWith('exec-1');
     expect(onClose).toHaveBeenCalledTimes(1);
 
-    await click(byTestId(container, 'pipeline-details-open-definition'));
+    await click(byTestId(document.body, 'pipeline-details-open-definition'));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
@@ -390,7 +392,7 @@ describe('PipelineExecutionDetailModal chrome', () => {
     await render(
       <PipelineExecutionDetailModal executionId="exec-1" onClose={onClose} />,
     );
-    await click(byTestId(container, 'pipeline-detail-view-report-exec-1'));
+    await click(byTestId(document.body, 'pipeline-detail-view-report-exec-1'));
     expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -11,7 +11,11 @@ import {
   pipelinePackageKindLabel,
   pipelinePackageRequirementKindLabel,
 } from '../lib/pipeline-package-display';
+import { ErrorBanner } from './StatusBlocks';
 import { Button } from './Button';
+import { TextInput } from './Field';
+import { SearchField } from './SearchField';
+import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 
 export interface CuratedPipelineCatalogProps {
   cloudDisplayName: string;
@@ -52,8 +56,23 @@ export interface CuratedPipelineLaunchAvailability {
   onChange: (enabled: boolean) => void;
 }
 
-const FIELD =
-  'focus-ring min-w-0 rounded-md ring-1 ring-inset ring-line-base bg-base px-3 py-2 text-sm fg-primary';
+const TRIGGER_FILTER_OPTIONS: readonly SettingsSelectOption<
+  '' | 'dispatch' | 'plan_ready' | 'task_ready'
+>[] = [
+  { value: '', label: 'All triggers' },
+  { value: 'dispatch', label: 'Manual' },
+  { value: 'plan_ready', label: 'Plan ready' },
+  { value: 'task_ready', label: 'Task ready' },
+];
+
+const SCOPE_FILTER_OPTIONS: readonly SettingsSelectOption<
+  '' | 'global' | 'directory' | 'worktree'
+>[] = [
+  { value: '', label: 'All execution scopes' },
+  { value: 'global', label: 'Global' },
+  { value: 'directory', label: 'Directory' },
+  { value: 'worktree', label: 'Worktree' },
+];
 
 export function curatedPipelineStaleMessage(cloudDisplayName: string): string {
   return `Showing saved catalog metadata. Connect to ${cloudDisplayName} to preview or add a workflow.`;
@@ -94,11 +113,7 @@ export function CuratedPipelineCatalog(
           {curatedPipelineStaleMessage(props.cloudDisplayName)}
         </p>
       )}
-      {props.error && (
-        <p role="alert" className="break-words text-sm fg-destructive">
-          {props.error}
-        </p>
-      )}
+      <ErrorBanner className="" error={props.error} />
       {selectedKey ? (
         <div
           className="min-w-0 space-y-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
@@ -113,11 +128,7 @@ export function CuratedPipelineCatalog(
               Loading workflow preview…
             </p>
           )}
-          {props.detailError && (
-            <p role="alert" className="break-words text-sm fg-destructive">
-              {props.detailError}
-            </p>
-          )}
+          <ErrorBanner className="" error={props.detailError} />
           {detail && (
             <>
               <div className="min-w-0 space-y-2">
@@ -225,11 +236,7 @@ export function CuratedPipelineCatalog(
                   {props.importDisabledReason}
                 </p>
               )}
-              {props.importError && (
-                <p role="alert" className="break-words text-sm fg-destructive">
-                  {props.importError}
-                </p>
-              )}
+              <ErrorBanner className="" error={props.importError} />
               {importedPipelineId ? (
                 <div
                   role="status"
@@ -262,66 +269,44 @@ export function CuratedPipelineCatalog(
         <>
           <div className="flex flex-wrap gap-2">
             {!props.hideSearch && (
-              <input
-                className={`${FIELD} flex-1`}
+              <SearchField
+                className="flex-1"
                 aria-label="Search workflow templates"
                 placeholder="Search workflow templates…"
                 value={query.q ?? ''}
-                onChange={(event) =>
-                  filter({ q: event.target.value || undefined })
-                }
+                onValueChange={(next) => filter({ q: next || undefined })}
+                // Escape closes the catalog, as it does from any other field.
+                clearOnEscape={false}
                 data-testid="curated-pipeline-search"
               />
             )}
-            <input
-              className={FIELD}
-              aria-label="Workflow template category"
-              placeholder="Category"
-              value={query.category ?? ''}
-              onChange={(event) =>
-                filter({ category: event.target.value || undefined })
+            <div className="w-36">
+              <TextInput
+                density="compact"
+                aria-label="Workflow template category"
+                placeholder="Category"
+                value={query.category ?? ''}
+                onChange={(event) =>
+                  filter({ category: event.target.value || undefined })
+                }
+              />
+            </div>
+            <SettingsSelect
+              aria-label="Workflow template trigger"
+              options={TRIGGER_FILTER_OPTIONS}
+              value={query.triggerType ?? ''}
+              onValueChange={(next) =>
+                filter({ triggerType: next === '' ? undefined : next })
               }
             />
-            <select
-              className={FIELD}
-              aria-label="Workflow template trigger"
-              value={query.triggerType ?? ''}
-              onChange={(event) =>
-                filter({
-                  triggerType:
-                    event.target.value === 'dispatch' ||
-                    event.target.value === 'plan_ready' ||
-                    event.target.value === 'task_ready'
-                      ? event.target.value
-                      : undefined,
-                })
-              }
-            >
-              <option value="">All triggers</option>
-              <option value="dispatch">Manual</option>
-              <option value="plan_ready">Plan ready</option>
-              <option value="task_ready">Task ready</option>
-            </select>
-            <select
-              className={FIELD}
+            <SettingsSelect
               aria-label="Workflow template scope"
+              options={SCOPE_FILTER_OPTIONS}
               value={query.scope ?? ''}
-              onChange={(event) =>
-                filter({
-                  scope:
-                    event.target.value === 'global' ||
-                    event.target.value === 'directory' ||
-                    event.target.value === 'worktree'
-                      ? event.target.value
-                      : undefined,
-                })
+              onValueChange={(next) =>
+                filter({ scope: next === '' ? undefined : next })
               }
-            >
-              <option value="">All execution scopes</option>
-              <option value="global">Global</option>
-              <option value="directory">Directory</option>
-              <option value="worktree">Worktree</option>
-            </select>
+            />
           </div>
           {props.loading && (
             <p role="status" className="text-sm fg-secondary">

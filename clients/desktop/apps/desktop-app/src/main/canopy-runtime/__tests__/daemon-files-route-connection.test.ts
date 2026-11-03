@@ -20,6 +20,7 @@ import {
   listFilesystemScopeRoots,
   readNativeRootIdentity,
 } from '@canopy/core-runtime/node';
+import { W5_RECORD_PORT_GRANTS } from '@canopy/core-runtime/node/w5/record-port';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
   type CanopyCallerDescriptor,
@@ -48,6 +49,7 @@ import {
   listFileTreeRoots,
 } from '../../services/files-service';
 import { resolveWorktreeTargetIds } from '../../lib/resolve-worktree';
+import { w5RecordPortTransport } from '../../lib/w5-daemon-record-store';
 import {
   getWorkspaceType,
   registerWorkspaceTypes,
@@ -103,12 +105,18 @@ import {
   type ElectronDaemonClient,
 } from '../electron-daemon-host';
 import {
+  createElectronDaemonHealth,
+  type ElectronDaemonHealth,
+} from '../electron-daemon-health';
+import {
   COWORK_DIR,
   controllableFlag,
+  deferred,
   FakeSender,
   FIXTURE_TYPES,
   localCaller,
   rejection,
+  untilReached,
 } from './daemon-files-route-harness';
 
 // GitHub connection reads stay off the machine's gh and secure store.
@@ -166,6 +174,18 @@ interface Fixture {
     >;
   };
   authorityId: string;
+  /** Main's background service record, fed by this connection service. */
+  health: ElectronDaemonHealth;
+  controls: ConnectionControls;
+}
+
+interface ConnectionControls {
+  /** Every client `attach` returned, in order. */
+  readonly attached: ElectronDaemonClient[];
+  /** Set: the next attaches reject, as a daemon that can't start. */
+  failAttach: (() => Error) | null;
+  /** Set: the worker holds the next roots query until `gate` resolves. */
+  hold: { reached: () => void; gate: Promise<void> } | null;
 }
 
 let fixture: Fixture | undefined;
@@ -185,6 +205,16 @@ async function start(options: {
   process.env.CANOPY_DATA_DIR = dataRoot;
   registerWorkspaceTypes(new Map(FIXTURE_TYPES));
   const served: string[] = [];
+  const controls: ConnectionControls = {
+    attached: [],
+    failAttach: null,
+    hold: null,
+  };
+  const health = createElectronDaemonHealth({
+    warn: jest.fn(),
+    info: jest.fn(),
+  });
+  health.setConsumerEnabled('files_reads', true);
   const observedPair = async (): Promise<CanopyFramedPair> => {
     const pair = await createBundledWorkerPair();
     const { server } = pair;
@@ -196,6 +226,16 @@ async function start(options: {
         const message: CanopyJsonRpcMessage =
           await server.receive(receiveOptions);
         if ('method' in message) served.push(message.method);
+        const { hold } = controls;
+        if (
+          hold &&
+          'method' in message &&
+          message.method === 'worker.filesystem.roots.list'
+        ) {
+          controls.hold = null;
+          hold.reached();
+          await hold.gate;
+        }
         return message;
       },
       openChannel: (request) => server.openChannel(request),
@@ -224,8 +264,9 @@ async function start(options: {
     createElectronDaemonConnectionService<ElectronDaemonClient>({
       enabled: true,
       authorityId,
-      attach: (signal) =>
-        connectCanopyClient({
+      attach: async (signal) => {
+        if (controls.failAttach) throw controls.failAttach();
+        const client = await connectCanopyClient({
           endpoint: {
             kind: 'socket',
             path: descriptor.endpoint.path,
@@ -238,7 +279,11 @@ async function start(options: {
           clientName: 'desktop',
           clientVersion: 'test',
           definitions: ELECTRON_DAEMON_DEFINITIONS,
-        }),
+        });
+        controls.attached.push(client);
+        return client;
+      },
+      onReachability: (event) => health.observe(event),
     });
   const flag = controllableFlag(options.flag);
   const lifetime = createElectronDaemonCallerLifetime();
@@ -256,6 +301,8 @@ async function start(options: {
     lifetime,
     direct,
     authorityId,
+    health,
+    controls,
     runtime: createDesktopRuntime({
       services: {
         listFileTreeRoots: direct.roots,
@@ -286,6 +333,10 @@ async function start(options: {
     displayDataRoot: () => dataRoot,
     workspaceType: getWorkspaceType,
     resolveWorktreeTargetIds,
+    reachability: {
+      isLatched: () => health.isLatched(),
+      noteFallback: (reason) => health.noteFallback('files_reads', reason),
+    },
     ...(options.selectable && {
       selectable: options.selectable,
       platform: 'darwin' as const,
@@ -484,6 +535,226 @@ posix('daemon Files route over the production connection', () => {
       ),
     ).toHaveLength(1);
     expect(f.direct.directory).not.toHaveBeenCalled();
+  });
+
+  /** Resolves once the health record reports the service reached. */
+  function untilReachable(f: Fixture): Promise<void> {
+    return new Promise((done) => {
+      if (f.health.getStatus().state === 'ok') return done();
+      const off = f.health.onStatusChanged((status) => {
+        if (status.state !== 'ok') return;
+        off();
+        done();
+      });
+    });
+  }
+
+  it('answers a read in-process when its connection closes under it, then serves the next through the reattached daemon, with no warning while it restarts (CAN-5541)', async () => {
+    const f = await start({ flag: true });
+    const states: string[] = [];
+    f.health.onStatusChanged(({ state }) => void states.push(state));
+    const local = sender();
+    const read = (): ReturnType<
+      DesktopCanopyDispatcher['queryFileTreeRootsForLegacyIpc']
+    > =>
+      f.runtime.queryFileTreeRootsForLegacyIpc(
+        { scope: SINGLE },
+        { caller: localCaller(local) },
+        { sender: local },
+      );
+    const first = await read();
+    resetWorkCounters();
+    const reached = deferred();
+    const gate = deferred();
+    f.controls.hold = {
+      reached: (): void => reached.resolve(),
+      gate: gate.promise,
+    };
+    const pending = read();
+    await untilReached(reached.promise, pending);
+    await f.controls.attached.at(-1)?.close();
+    gate.resolve();
+    expect((await pending).legacyResult).toEqual(first.legacyResult);
+    expect(f.direct.roots).toHaveBeenCalledTimes(1);
+    // The lease restarts the daemon: hidden while it does, then ok.
+    await untilReachable(f);
+    expect(states).toEqual(['reconnecting', 'ok']);
+    expect(f.health.isLatched()).toBe(false);
+    const next = await read();
+    expect(next.canonicalResult.catalogRevision).toBe(
+      first.canonicalResult.catalogRevision,
+    );
+    expect(f.direct.roots).toHaveBeenCalledTimes(1);
+    expect(f.controls.attached).toHaveLength(2);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 2,
+      'files.roots.daemon.queries': 2,
+      'files.roots.daemon.fallback.connection_lost': 1,
+      'files.roots.daemon.served': 1,
+    });
+  });
+
+  it('answers a read whose session another caller replaced in-process, with nothing to warn about (CAN-5541)', async () => {
+    const f = await start({ flag: true });
+    const local = sender();
+    const caller = localCaller(local);
+    const read = (): ReturnType<
+      DesktopCanopyDispatcher['queryFileTreeRootsForLegacyIpc']
+    > =>
+      f.runtime.queryFileTreeRootsForLegacyIpc(
+        { scope: SINGLE },
+        { caller },
+        { sender: local },
+      );
+    const first = await read();
+    resetWorkCounters();
+    const reached = deferred();
+    const gate = deferred();
+    f.controls.hold = {
+      reached: (): void => reached.resolve(),
+      gate: gate.promise,
+    };
+    const states: string[] = [];
+    f.health.onStatusChanged(({ state }) => void states.push(state));
+    const pending = read();
+    await untilReached(reached.promise, pending);
+    // Same client instance, another scope: the service closes the session.
+    await f.connections.get(
+      {
+        ...caller,
+        principalId: 'another-principal',
+        authorityId: f.authorityId,
+      },
+      f.lifetime.ownerFor(local),
+    );
+    gate.resolve();
+    expect((await pending).legacyResult).toEqual(first.legacyResult);
+    expect(snapshotWorkCounters().route).toMatchObject({
+      'files.roots.daemon.fallback.connection_lost': 1,
+    });
+    // The daemon stayed reachable throughout.
+    expect(states).toEqual([]);
+    expect(f.health.getStatus()).toMatchObject({ state: 'ok' });
+    expect(f.health.isLatched()).toBe(false);
+  });
+
+  it('answers reads in-process while the daemon cannot start, latched until Try again reaches it (CAN-5541)', async () => {
+    const f = await start({ flag: true });
+    const local = sender();
+    const caller = localCaller(local);
+    const read = (): ReturnType<
+      DesktopCanopyDispatcher['queryFileTreeRootsForLegacyIpc']
+    > =>
+      f.runtime.queryFileTreeRootsForLegacyIpc(
+        { scope: SINGLE },
+        { caller },
+        { sender: local },
+      );
+    resetWorkCounters();
+    f.controls.failAttach = (): Error =>
+      new Error('spawn ENOENT /private/core');
+    const expected = await listFileTreeRoots({
+      projectId: SINGLE.workspaceId,
+      worktreeId: SINGLE.worktreeId,
+    });
+    expect((await read()).legacyResult).toEqual(expected);
+    expect(f.health.getStatus()).toMatchObject({
+      state: 'unavailable',
+      reason: 'start_failed',
+    });
+    expect(f.health.isLatched()).toBe(true);
+    // Latched: the next read never asks the connection service.
+    expect((await read()).legacyResult).toEqual(expected);
+    expect(f.connectionGets).toBe(1);
+    expect(f.served).toEqual([]);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 2,
+      'files.roots.daemon.fallback.start_failed': 1,
+      'files.roots.daemon.bypassed': 1,
+    });
+    // Try again, the way the notice runs it, once the daemon can start.
+    f.controls.failAttach = null;
+    await expect(
+      f.health.retry(async () => {
+        const session = await f.connections.get(
+          { ...caller, authorityId: f.authorityId },
+          f.lifetime.ownerFor(local),
+          { reprobe: true },
+        );
+        return session.lease.state === 'active';
+      }),
+    ).resolves.toMatchObject({ state: 'ok', retry: 'idle' });
+    expect(f.health.isLatched()).toBe(false);
+    resetWorkCounters();
+    await read();
+    expect(f.direct.roots).toHaveBeenCalledTimes(2);
+    expect(snapshotWorkCounters().route).toEqual({
+      'files.roots.daemon': 1,
+      'files.roots.daemon.queries': 1,
+      'files.roots.daemon.served': 1,
+    });
+  });
+
+  it('keeps serving Files reads while its client carries the W6g record port this daemon lacks', async () => {
+    // CAN-5528: client definitions stay local, so a daemon without a W5 host
+    // accepts the connection and each record-port call is refused before the wire.
+    const f = await start({ flag: true });
+    const recordPort = (name: string): boolean =>
+      name.startsWith('core.workspaceRecords.');
+    expect(
+      Object.keys(ELECTRON_DAEMON_DEFINITIONS.queries).filter(recordPort),
+    ).toContain('core.workspaceRecords.recovery.get');
+    expect(
+      Object.keys(ELECTRON_DAEMON_DEFINITIONS.instructions).filter(recordPort),
+    ).toContain('core.workspaceRecords.commit');
+    expect(
+      f.daemon.runtime.operations.map(({ name }) => name).filter(recordPort),
+    ).toEqual([]);
+    const local = sender();
+    const read = (): ReturnType<
+      DesktopCanopyDispatcher['queryFileTreeRootsForLegacyIpc']
+    > =>
+      f.runtime.queryFileTreeRootsForLegacyIpc(
+        { scope: SINGLE },
+        { caller: localCaller(local) },
+        { sender: local },
+      );
+    const first = await read();
+    const owner = new AbortController();
+    const session = (): ReturnType<typeof f.connections.get> =>
+      f.connections.get(
+        {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'electron-main:w5-records:test',
+          authorityId: f.authorityId,
+          interfaceKind: 'desktop',
+          grants: [...W5_RECORD_PORT_GRANTS],
+        },
+        owner.signal,
+      );
+    const transport = w5RecordPortTransport(
+      async () => (await session()).client,
+    );
+    for (const call of [
+      transport.recovery(),
+      transport.listReservations(),
+      transport.releaseReservation('reservation-1'),
+    ])
+      await expect(rejection(call)).resolves.toMatchObject({
+        kind: 'capability_unavailable',
+      });
+    // The refusals leave the record port's session and the Files reads intact.
+    const held = await session();
+    expect(held.lease.state).toBe('active');
+    expect(held.client.signal.aborted).toBe(false);
+    const second = await read();
+    expect(second.canonicalResult.catalogRevision).toBe(
+      first.canonicalResult.catalogRevision,
+    );
+    expect(
+      f.served.filter((method) => method === 'worker.filesystem.roots.list'),
+    ).toHaveLength(2);
+    expect(f.direct.roots).not.toHaveBeenCalled();
   });
 
   it('makes zero daemon contact with the flag off while a daemon runs', async () => {

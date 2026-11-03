@@ -23,7 +23,10 @@ import {
   ErrorBanner,
   LoadingSpinner,
   Notice,
+  SettingsRowsSubRow,
   ToggleSwitch,
+  EmptyStateRow,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -484,8 +487,8 @@ function ScriptActionsReviewBody({
                 </Button>
               ) : null}
               {rowErrors[action.id] ? (
-                <p className="text-xs fg-destructive" role="alert">
-                  {rowErrors[action.id]}
+                <p role="alert">
+                  <StatusLabel size="xs">{rowErrors[action.id]}</StatusLabel>
                 </p>
               ) : null}
             </div>
@@ -525,11 +528,7 @@ function ScriptActionsReviewBody({
               ~/.bashrc. Files are read, never run, and each alias still needs
               your approval. Rescans include them from then on.
             </p>
-            {aliasState.error !== null ? (
-              <p className="text-xs fg-destructive" role="alert">
-                {aliasState.error}
-              </p>
-            ) : null}
+            <ErrorBanner className="" error={aliasState.error} />
             <Button
               size="compact"
               variant="secondary"
@@ -581,11 +580,11 @@ function ScriptActionsReviewBody({
         className="flex min-h-0 flex-1 flex-col"
         data-testid="script-actions-review"
       >
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-6">
           {header}
           {body}
         </div>
-        {footer ? <div className="border-t px-5 py-3">{footer}</div> : null}
+        {footer ? <div className="border-t px-6 py-3">{footer}</div> : null}
       </div>
     );
 
@@ -881,14 +880,12 @@ function ApprovedSection({
         {count > 0 ? <span className="ml-1 fg-tertiary">{count}</span> : null}
       </h4>
       {count === 0 ? (
-        <p
-          className="text-xs fg-tertiary"
-          data-testid="script-actions-approved-empty"
-        >
-          No approved scripts yet.
-        </p>
+        <EmptyStateRow
+          testId="script-actions-approved-empty"
+          title="No approved scripts yet."
+        />
       ) : (
-        groups.map((group) => (
+        groups.map((group, groupIndex) => (
           <div key={group.key} className="space-y-1">
             <p
               className={`pl-3 text-xs font-medium fg-tertiary ${REPLAY_MASK_CLASS}`}
@@ -896,7 +893,7 @@ function ApprovedSection({
               {group.label}
             </p>
             <ul className="divide-y rounded-lg border">
-              {group.actions.map((action) => (
+              {group.actions.map((action, index) => (
                 <li
                   key={action.id}
                   className="space-y-2 p-3"
@@ -935,28 +932,32 @@ function ApprovedSection({
                       disabled={busy[action.id] === true}
                       testId="script-actions-shortcut"
                     />
-                    <label className="flex items-center gap-2 text-xs fg-secondary">
-                      <ToggleSwitch
-                        checked={action.pinned}
-                        disabled={busy[action.id] === true}
-                        label={`Pin ${action.name} to the header`}
-                        onChange={(next): void => onPin(action, next)}
-                        dataTestId="script-actions-pin"
-                      />
-                      Pin to header
-                    </label>
+                    {/* The caption labels the switch, so a click on it flips it. */}
+                    <SettingsRowsSubRow
+                      label="Pin to header"
+                      htmlFor={`${headingId}-pin-${groupIndex}-${index}`}
+                      control={
+                        <ToggleSwitch
+                          id={`${headingId}-pin-${groupIndex}-${index}`}
+                          checked={action.pinned}
+                          disabled={busy[action.id] === true}
+                          label={`Pin ${action.name} to the header`}
+                          onChange={(next): void => onPin(action, next)}
+                          dataTestId="script-actions-pin"
+                        />
+                      }
+                    />
                   </div>
                   {action.shortcutConflict ? (
-                    <p
-                      className="text-xs fg-destructive"
-                      data-testid="script-actions-shortcut-conflict"
-                    >
-                      Shortcut is off. {action.shortcutConflict}
+                    <p data-testid="script-actions-shortcut-conflict">
+                      <StatusLabel size="xs">
+                        Shortcut is off. {action.shortcutConflict}
+                      </StatusLabel>
                     </p>
                   ) : null}
                   {errors[action.id] ? (
-                    <p className="text-xs fg-destructive" role="alert">
-                      {errors[action.id]}
+                    <p role="alert">
+                      <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
                     </p>
                   ) : null}
                 </li>
@@ -1020,8 +1021,8 @@ function DismissedSection({
                 </Button>
               </div>
               {errors[action.id] ? (
-                <p className="text-xs fg-destructive" role="alert">
-                  {errors[action.id]}
+                <p role="alert">
+                  <StatusLabel size="xs">{errors[action.id]}</StatusLabel>
                 </p>
               ) : null}
             </li>
@@ -1037,10 +1038,17 @@ function FeedbackLine({
 }: {
   readonly feedback: Feedback;
 }): JSX.Element {
+  if (feedback.tone === 'error') {
+    return (
+      <Notice intent="destructive" data-testid="script-actions-feedback">
+        {feedback.message}
+      </Notice>
+    );
+  }
   return (
     <p
-      className={`text-xs ${feedback.tone === 'error' ? 'fg-destructive' : 'fg-secondary'}`}
-      role={feedback.tone === 'error' ? 'alert' : 'status'}
+      className="text-xs fg-secondary"
+      role="status"
       data-testid="script-actions-feedback"
     >
       {feedback.message}

@@ -89,7 +89,7 @@ function presetIconPreview(preset: TerminalPreset): JSX.Element {
   if (preset.icon?.kind === 'character') {
     return <span className="text-base leading-none">{preset.icon.value}</span>;
   }
-  return <TerminalBorderedIcon width={18} height={18} />;
+  return <TerminalBorderedIcon size="xl" />;
 }
 
 /**
@@ -428,7 +428,7 @@ export function TerminalTab(): JSX.Element {
                 onClick={startAddPreset}
                 disabled={draft !== null || saving}
               >
-                <PlusIcon width={14} height={14} />
+                <PlusIcon size="sm" />
                 Add preset
               </Button>
             }
@@ -442,20 +442,20 @@ export function TerminalTab(): JSX.Element {
               <div className="flex min-h-8 min-w-8 shrink-0 items-center justify-center rounded-md bg-muted px-1 fg-secondary">
                 {presetIconPreview(preset)}
               </div>
-              <div className="min-w-0 flex-1 space-y-0.5">
+              <div className="min-w-0 flex-1">
                 {/* The name flips the preset's switch; the command below stays
                     selectable text. */}
-                <label
+                <SettingsRow
                   htmlFor={`terminal-preset-switch-${preset.id}`}
-                  className="block truncate text-s font-medium fg-primary"
-                >
-                  {preset.name}
-                </label>
-                <div
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} truncate font-mono text-xs fg-secondary`}
-                >
-                  {preset.command}
-                </div>
+                  label={preset.name}
+                  description={
+                    <span
+                      className={`${POSTHOG_REPLAY_BLOCK_CLASS} block truncate font-mono`}
+                    >
+                      {preset.command}
+                    </span>
+                  }
+                />
               </div>
               <Button
                 size="compact"
@@ -500,7 +500,7 @@ export function TerminalTab(): JSX.Element {
                   void persist(disabledShells, next);
                 }}
               >
-                <TrashIcon width={14} height={14} />
+                <TrashIcon size="sm" />
               </Button>
             </div>
           ))}
@@ -596,7 +596,7 @@ export function TerminalTab(): JSX.Element {
                       inputLabel="Image or SVG"
                       onChange={(event) => handleImage(event, colorMode)}
                     >
-                      <ImagePlus width={14} height={14} />
+                      <ImagePlus size="sm" />
                       Image or SVG
                     </PresetImageButton>
                   ) : null}
@@ -618,7 +618,7 @@ export function TerminalTab(): JSX.Element {
                         aria-label="Swap light and dark preset images"
                         onClick={handleSwapImages}
                       >
-                        <SyncIcon width={14} height={14} />
+                        <SyncIcon size="sm" />
                       </Button>
                     </Tooltip>
                   ) : null

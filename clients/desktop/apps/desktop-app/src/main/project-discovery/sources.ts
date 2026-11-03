@@ -13,6 +13,7 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { getWorkspaceIndexRepository } from '../lib/sidebar-items';
+import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 import { noteProjectInventoryCall } from '../observability/chat-wait-diagnostics';
 import { DiscoveryError } from './errors';
 
@@ -96,7 +97,9 @@ export async function readProjectIndexSnapshot(
   projectId: string,
 ): Promise<ProjectIndexSnapshot> {
   const index = await getWorkspaceIndexRepository().read();
-  if (index.authority === 'unreadable' || index.authority === 'partial') {
+  if (index.authority === 'unreadable')
+    throw workspaceStorageUnavailable(index.unserved);
+  if (index.authority === 'partial') {
     throw sourceReadFailed('Project inventory could not be read.');
   }
   const workspaceId = resolveCoworkWorkspaceId(projectId);
@@ -123,7 +126,7 @@ export async function readProjectInventory(): Promise<ProjectInventorySnapshot> 
   }
   const indexAuthority = authority.indexAuthority ?? authority.authority;
   if (indexAuthority === 'unreadable') {
-    throw sourceReadFailed('Project inventory could not be read.');
+    throw workspaceStorageUnavailable();
   }
   if (
     indexAuthority !== 'absent' &&

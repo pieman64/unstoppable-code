@@ -15,11 +15,17 @@ import {
 } from 'react';
 import {
   Button,
+  ChoiceList,
+  ChoiceListRow,
   DelayedLoadingPlaceholder,
   DialogModal,
+  ErrorBanner,
+  ErrorState,
   LinearProgress,
+  Notice,
   SettingsChartSkeleton,
   ThinkingSpinner,
+  CopyDetailsButton,
 } from '@canopy/ui-shared/components';
 import type {
   ModelRoutingBacktestEstimateV1,
@@ -30,7 +36,7 @@ import type {
 } from '@canopy/protocol/model-routing';
 import type { TelemetryHeadlineCard } from '@canopy/protocol/telemetry';
 import { SettingsLink, useSettingsBrand, useSettingsClient } from '../../host';
-import { useSettingsErrorCopy } from '../../errors';
+import { useSettingsErrorCopy, type SettingsFailure } from '../../errors';
 import { TeamApiError } from '../team-api';
 import { HeadlineCards } from './HeadlineCards';
 import { formatCount, formatUsd } from './format';
@@ -122,7 +128,7 @@ export function RoutingBacktestCard({
     useState<ModelRoutingBacktestLookupResponseV1 | null>(null);
   const [backtest, setBacktest] = useState<ModelRoutingBacktestV1 | null>(null);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [pollFailures, setPollFailures] = useState(0);
@@ -179,7 +185,7 @@ export function RoutingBacktestCard({
         if (ignore) return;
         setLookup(null);
         setBacktest(null);
-        setLoadError(errorCopy.loadCopy(error));
+        setLoadError(errorCopy.loadFailure(error));
       } finally {
         if (!ignore) setLoading(false);
       }
@@ -232,7 +238,7 @@ export function RoutingBacktestCard({
 
   const copy = routingBacktestCopy(subject.kind);
   const errorMessage =
-    loadError ??
+    loadError?.copy ??
     (pollStopped && isActive(backtest)
       ? 'Unable to check on the estimate.'
       : null);
@@ -267,25 +273,17 @@ export function RoutingBacktestCard({
           </DelayedLoadingPlaceholder>
         </div>
       ) : errorMessage ? (
-        <div className="flex items-center gap-3">
-          <p
-            className="text-s fg-destructive"
-            role="alert"
-            data-testid="routing-backtest-error"
-          >
-            {errorMessage}
-          </p>
-          <Button
-            size="compact"
-            onClick={() => {
-              setPollFailures(0);
-              setReloadToken((token) => token + 1);
-            }}
-            data-testid="routing-backtest-retry"
-          >
-            Try again
-          </Button>
-        </div>
+        <ErrorState
+          space="panel"
+          testId="routing-backtest-error"
+          retryTestId="routing-backtest-retry"
+          message={errorMessage}
+          details={loadError?.details}
+          onRetry={() => {
+            setPollFailures(0);
+            setReloadToken((token) => token + 1);
+          }}
+        />
       ) : backtest && isActive(backtest) ? (
         <RoutingBacktestProgress backtest={backtest} />
       ) : backtest?.status === 'succeeded' && backtest.result ? (
@@ -348,13 +346,11 @@ function RoutingBacktestStart({
     <div className="flex flex-col gap-3" data-testid="routing-backtest-start">
       <p className="text-s fg-secondary">{copy.replayIntro}</p>
       {failed?.failureCode ? (
-        <p
-          className="text-s fg-destructive"
-          role="alert"
-          data-testid="routing-backtest-failed"
-        >
-          {failureMessage(failed.failureCode)}
-        </p>
+        <ErrorBanner
+          className=""
+          testId="routing-backtest-failed"
+          error={failureMessage(failed.failureCode)}
+        />
       ) : null}
       <div className="flex flex-wrap items-center gap-3">
         {needsCredits ? (
@@ -460,7 +456,7 @@ function RoutingBacktestConfirmDialog({
     estimate.estimatedCostUsd.full !== null;
   const [mode, setMode] = useState<ModelRoutingBacktestMode>('sample');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [needsCredits, setNeedsCredits] = useState(false);
 
   const planned =
@@ -483,12 +479,11 @@ function RoutingBacktestConfirmDialog({
       setNeedsCredits(code === 'insufficient_credits');
       // The route's codes keep their own copy; anything else gets the
       // generic action copy, never the route's text.
-      setError(
-        createErrorMessage(
-          code,
-          errorCopy.actionCopy(err, { action: 'start the estimate' }),
-        ),
-      );
+      const failure = errorCopy.actionFailure(err, {
+        action: 'start the estimate',
+      });
+      const message = createErrorMessage(code, failure.copy);
+      setError(message === failure.copy ? failure : { copy: message });
       setBusy(false);
     }
   };
@@ -507,59 +502,62 @@ function RoutingBacktestConfirmDialog({
       maxWidth="md"
       dataTestId="routing-backtest-confirm"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4 text-s fg-secondary">
+      <div className="flex flex-col gap-4 text-s fg-secondary">
         <p>
           To estimate this, {brand.displayName} sends the messages from these
           conversations to the routing service. It doesn’t keep them; we save
           only the model it picks and the costs.
         </p>
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-xs font-medium fg-primary">
-            How many turns
-          </legend>
-          <label className="flex items-center gap-2">
-            <input
-              type="radio"
-              name="routing-backtest-mode"
-              checked={mode === 'sample'}
-              onChange={() => setMode('sample')}
+        <div className="flex flex-col gap-1.5">
+          <p className="text-xs font-medium fg-primary">How many turns</p>
+          <ChoiceList aria-label="How many turns" kind="radio">
+            <ChoiceListRow
+              kind="radio"
+              selected={mode === 'sample'}
+              onClick={() => setMode('sample')}
               data-testid="routing-backtest-mode-sample"
-            />
-            A sample of {formatCount(estimate.plannedTurnCount.sample)} turns
-          </label>
-          {fullAvailable ? (
-            <label className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="routing-backtest-mode"
-                checked={mode === 'full'}
-                onChange={() => setMode('full')}
+            >
+              A sample of {formatCount(estimate.plannedTurnCount.sample)} turns
+            </ChoiceListRow>
+            {fullAvailable ? (
+              <ChoiceListRow
+                kind="radio"
+                selected={mode === 'full'}
+                onClick={() => setMode('full')}
                 data-testid="routing-backtest-mode-full"
-              />
-              Every turn ({formatCount(estimate.plannedTurnCount.full ?? 0)})
-            </label>
-          ) : null}
-        </fieldset>
+              >
+                Every turn ({formatCount(estimate.plannedTurnCount.full ?? 0)})
+              </ChoiceListRow>
+            ) : null}
+          </ChoiceList>
+        </div>
         <p data-testid="routing-backtest-cost-estimate">
           Replays {formatCount(planned)} turns. About {formatUsd(cost)}, paid
           from {payer}.
         </p>
         {error ? (
-          <p
-            role="alert"
-            className="fg-destructive"
+          <Notice
+            intent="destructive"
             data-testid="routing-backtest-confirm-error"
+            actions={
+              error.details !== undefined ? (
+                <CopyDetailsButton details={error.details} />
+              ) : undefined
+            }
           >
-            {error}{' '}
+            {error.copy}
             {needsCredits ? (
-              <SettingsLink
-                href={billingHref}
-                className="fg-accent hover:underline"
-              >
-                Add AI Credits
-              </SettingsLink>
+              <>
+                {' '}
+                <SettingsLink
+                  href={billingHref}
+                  className="fg-accent hover:underline"
+                >
+                  Add AI Credits
+                </SettingsLink>
+              </>
             ) : null}
-          </p>
+          </Notice>
         ) : null}
         <div className="flex items-center justify-end gap-2">
           <Button size="compact" onClick={onCancel} disabled={busy}>

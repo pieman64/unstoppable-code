@@ -1,10 +1,25 @@
+/**
+ * @jest-environment jsdom
+ */
 import { renderToString } from 'react-dom/server';
 import { QueuedMessageBubble } from '../QueuedMessageBubble';
 import { QUEUED_MESSAGE_WAITING_REASON_COPY } from '../QueuedMessageReason';
-import {
-  BUBBLE_ACTION_BADGE_CLASS,
-  BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS,
-} from '../../bubble-badge';
+import { buttonClassName } from '../../Button';
+
+const ICON_BUTTON_CLASS = buttonClassName({
+  variant: 'secondary',
+  size: 'compact',
+  iconOnly: true,
+}).trim();
+
+function classOf(html: string, testId: string): string | undefined {
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  return container
+    .querySelector(`[data-testid="${testId}"]`)
+    ?.getAttribute('class')
+    ?.trim();
+}
 
 describe('QueuedMessageBubble', () => {
   it('does not render a reason line when the message has no reason', () => {
@@ -138,12 +153,13 @@ describe('QueuedMessageBubble', () => {
     expect(edit).toContain('aria-label="Edit queued message"');
     expect(edit).toContain('<svg');
     expect(edit).not.toContain('>Edit<');
-    expect(edit).toContain(BUBBLE_ACTION_BADGE_CLASS);
+    expect(classOf(html, 'queued-message-edit')).toBe(ICON_BUTTON_CLASS);
     const [cancel] =
       html.match(
         /<button[^>]*data-testid="queued-message-cancel"[\s\S]*?<\/button>/,
       ) ?? [];
-    expect(cancel).toContain(BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS);
+    expect(cancel).toContain('aria-label="Clear queued message"');
+    expect(classOf(html, 'queued-message-cancel')).toBe(ICON_BUTTON_CLASS);
   });
 
   it('constrains the right-aligned bubble so long unbreakable text wraps', () => {

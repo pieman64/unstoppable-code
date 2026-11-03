@@ -7,22 +7,16 @@ import {
   isSharedPipelineLocalId,
   parseSharedPipelineLocalId,
 } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
-import { IdentifierValidationError } from './identifier-validation-error';
-
+import { validateId as validateCoreId } from '@canopy/core-runtime/node/identifiers';
 export { IdentifierValidationError } from './identifier-validation-error';
 
-const SAFE_ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_MESSAGE_ANCHOR_ID_LENGTH = 256;
 
 export function validateId(
   value: unknown,
   label: string,
 ): asserts value is string {
-  if (typeof value !== 'string' || !value || !SAFE_ID_RE.test(value)) {
-    throw new IdentifierValidationError(
-      `Invalid ${label}: must be lowercase alphanumeric with hyphens`,
-    );
-  }
+  validateCoreId(value, label);
 }
 
 const LOCAL_AGENT_MODEL_ID_PREFIX = 'agent_model_';

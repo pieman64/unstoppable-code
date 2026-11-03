@@ -44,7 +44,8 @@ import {
   LedgerCorrectionBox,
   LedgerOwnerPicker,
   LedgerStatusControl,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   Notice,
   NoticeButton,
   type LedgerDensity,
@@ -570,7 +571,11 @@ export function LedgerEntryReadProblem({
 
 /** The open entry's read while it loads. */
 export function LedgerEntryReadLoading(): JSX.Element {
-  return <LoadingPlaceholder label="Loading entry…" space="compact" />;
+  return (
+    <DelayedLoadingPlaceholder slowNote="Still loading entry…">
+      <CenteredLoadingSpinner className="my-4" />
+    </DelayedLoadingPlaceholder>
+  );
 }
 
 /** Why a closed entry can't change, where its controls would be. */

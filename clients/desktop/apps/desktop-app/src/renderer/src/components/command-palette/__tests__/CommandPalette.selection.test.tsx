@@ -167,10 +167,11 @@ function setPaletteQuery(value: string): void {
 }
 
 function pressPaletteKey(key: string): void {
-  const palette = document.querySelector('[data-testid="command-palette"]');
-  if (!palette) throw new Error('palette not found');
+  // Keys reach the palette from its focused search field.
+  const input = document.querySelector('[data-testid="command-palette-input"]');
+  if (!input) throw new Error('palette input not found');
   act(() => {
-    palette.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
   });
 }
 

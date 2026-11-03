@@ -13,6 +13,7 @@ import {
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { useSettingsClient } from '../host';
 import { useSettingsErrorCopy } from '../errors';
+import type { SettingsFailure } from '../errors';
 
 const PUSH_PREFERENCES_ERROR_SCOPE = 'settings.account.push-preferences';
 
@@ -34,8 +35,8 @@ export function PushPreferencesSection(): JSX.Element {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Bumped by Retry so the load effect runs again.
   const [loadAttempt, setLoadAttempt] = useState(0);
   const mounted = useRef(true);
@@ -60,7 +61,7 @@ export function PushPreferencesSection(): JSX.Element {
         setPushEnabled(value);
         setLoadError(null);
       } catch (caught: unknown) {
-        if (active) setLoadError(errorCopy.loadCopy(caught));
+        if (active) setLoadError(errorCopy.loadFailure(caught));
       } finally {
         if (active) setLoading(false);
       }
@@ -95,7 +96,7 @@ export function PushPreferencesSection(): JSX.Element {
       if (!mounted.current) return;
       setPushEnabled(previous);
       setError(
-        errorCopy.actionCopy(caught, {
+        errorCopy.actionFailure(caught, {
           action: 'save notification settings',
         }),
       );
@@ -114,8 +115,12 @@ export function PushPreferencesSection(): JSX.Element {
       subtitle="Send alerts to devices where you are signed in, such as when an agent needs your input."
       testId="account-push-preferences"
     >
-      <ErrorBanner error={loadError} onRetry={retryLoad} />
-      <ErrorBanner error={error} />
+      <ErrorBanner
+        error={loadError?.copy}
+        details={loadError?.details}
+        onRetry={retryLoad}
+      />
+      <ErrorBanner error={error?.copy} details={error?.details} />
 
       {loading ? (
         <DelayedLoadingPlaceholder className="mt-4">

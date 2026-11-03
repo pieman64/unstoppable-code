@@ -120,8 +120,10 @@ describe('SearchField', () => {
       const field = get('[data-testid="search-field"]');
       expect(field.getAttribute('data-search-field')).toBe(size);
       expect(field.className).toContain(geometry[size]);
-      // sm and md are capsules on the field edge; lg is a borderless header.
-      expect(field.className.includes('rounded-full')).toBe(size !== 'lg');
+      // sm and md are rounded rectangles on the field edge; lg is a
+      // borderless header.
+      expect(field.className.includes('rounded-row')).toBe(size !== 'lg');
+      expect(field.className.includes('rounded-full')).toBe(false);
       expect(field.className.includes('shadow-field')).toBe(size !== 'lg');
     }
   });
@@ -174,6 +176,37 @@ describe('SearchField', () => {
     document.body.removeEventListener('keydown', outer);
   });
 
+  // Escape that dismisses an input-method candidate belongs to the input
+  // method. Safari reports it with keyCode 229 and isComposing false.
+  it('leaves an input-method Escape alone', () => {
+    const onEscapeEmpty = jest.fn();
+    render(<Fixture initial="へんかん" />);
+    act(() => {
+      input().dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          keyCode: 229,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(input().value).toBe('へんかん');
+
+    render(<Fixture key="empty" onEscapeEmpty={onEscapeEmpty} />);
+    act(() => {
+      input().dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          keyCode: 229,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(onEscapeEmpty).not.toHaveBeenCalled();
+  });
+
   it('backs out on an Escape with nothing to clear', () => {
     const onEscapeEmpty = jest.fn();
     render(<Fixture onEscapeEmpty={onEscapeEmpty} />);
@@ -213,7 +246,7 @@ describe('SearchField', () => {
     const filter = get('[data-testid="filter"]');
     expect(filter.getAttribute('data-active')).toBe('true');
     expect(filter.className).toContain('rounded-full');
-    // The 24px disc nests in the 28px capsule's 2px end inset.
+    // The 24px disc (a button, so round) nests in the 28px field's 2px end inset.
     expect(filter.className).toContain('h-6');
     expect(get('[data-testid="search-field"]').className).toContain('pr-0.5');
     expect(document.querySelector('[aria-hidden="true"].h-3\\.5')).toBeNull();

@@ -8,7 +8,11 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CopyDetailsButton,
+  TextInput,
+} from '@canopy/ui-shared/components';
 import { Camera, Pencil } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ALLOWED_AVATAR_MIME_TYPES,
@@ -18,6 +22,7 @@ import {
 import { useSettingsPrivacy } from '../../host';
 import { withPrivacyClass } from '../../account/privacy-class';
 import { MemberAvatar } from '../MemberAvatar';
+import type { SettingsFailure } from '../../errors';
 import { useProfileEditor, type ProfileEditTarget } from './use-profile-editor';
 
 const AVATAR_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
@@ -27,7 +32,7 @@ interface AvatarEditorProps {
   image: string | null;
   size?: number;
   busy: boolean;
-  error: string | null;
+  error: SettingsFailure | null;
   onPick: (file: File) => void;
   onRemove: () => void;
 }
@@ -105,9 +110,17 @@ export function AvatarEditor({
         </Button>
       )}
       {error && (
-        <p className="max-w-48 text-center text-xs fg-destructive" role="alert">
-          {error}
-        </p>
+        <>
+          <p
+            className="max-w-48 text-center text-xs fg-destructive"
+            role="alert"
+          >
+            {error.copy}
+          </p>
+          {error.details !== undefined ? (
+            <CopyDetailsButton details={error.details} />
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -116,7 +129,7 @@ export function AvatarEditor({
 interface NameEditorProps {
   name: string;
   busy: boolean;
-  error: string | null;
+  error: SettingsFailure | null;
   onSave: (name: string) => void;
   onOpen: () => void;
   /** Rendered next to the name in read mode (e.g. a role badge). */
@@ -189,9 +202,14 @@ export function NameEditor({
           <Pencil size={14} />
         </Button>
         {error && (
-          <p className="w-full text-xs fg-destructive" role="alert">
-            {error}
-          </p>
+          <>
+            <p className="w-full text-xs fg-destructive" role="alert">
+              {error.copy}
+            </p>
+            {error.details !== undefined ? (
+              <CopyDetailsButton details={error.details} />
+            ) : null}
+          </>
         )}
       </div>
     );
@@ -199,21 +217,20 @@ export function NameEditor({
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2">
-      <input
-        type="text"
-        required
-        autoFocus
-        value={draft}
-        maxLength={PROFILE_NAME_MAX_LENGTH}
-        onChange={(event) => setDraft(event.target.value)}
-        disabled={busy}
-        data-testid="profile-name-input"
-        aria-label="Display name"
-        className={withPrivacyClass(
-          'min-w-0 flex-1 rounded-md border bg-card px-2 py-1 text-xl font-semibold fg-primary disabled:opacity-50',
-          blockClassName,
-        )}
-      />
+      <div className={withPrivacyClass('min-w-0 flex-1', blockClassName)}>
+        <TextInput
+          density="compact"
+          type="text"
+          required
+          autoFocus
+          value={draft}
+          maxLength={PROFILE_NAME_MAX_LENGTH}
+          onChange={(event) => setDraft(event.target.value)}
+          disabled={busy}
+          data-testid="profile-name-input"
+          aria-label="Display name"
+        />
+      </div>
       <Button
         type="submit"
         size="compact"
@@ -231,9 +248,14 @@ export function NameEditor({
         Cancel
       </Button>
       {error && (
-        <p className="w-full text-xs fg-destructive" role="alert">
-          {error}
-        </p>
+        <>
+          <p className="w-full text-xs fg-destructive" role="alert">
+            {error.copy}
+          </p>
+          {error.details !== undefined ? (
+            <CopyDetailsButton details={error.details} />
+          ) : null}
+        </>
       )}
     </form>
   );

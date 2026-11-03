@@ -317,6 +317,52 @@ function handlerFor(channel: string): (...args: unknown[]) => unknown {
 }
 
 describe('plan review message validation', () => {
+  it('accepts an identity-only delivery refusal and rejects caller outcomes or malformed identities', () => {
+    const rejection = {
+      ...command,
+      command: {
+        type: 'chat.reject_plan_implementation_delivery',
+        chatId: 'chat-1',
+        userMessageId: 'implementation-1',
+      },
+    };
+    expect(validateChatCommandRequest(rejection)).toEqual(rejection);
+    expect(() =>
+      validateChatCommandRequest({
+        ...rejection,
+        command: { ...rejection.command, outcome: 'completed' },
+      }),
+    ).toThrow();
+    expect(() =>
+      validateChatCommandRequest({
+        ...rejection,
+        command: { ...rejection.command, userMessageId: '../other' },
+      }),
+    ).toThrow();
+  });
+
+  it('accepts implementation identity but rejects mismatches and caller terminal facts', () => {
+    const link = {
+      planId: 'plan-1',
+      revisionNumber: 2,
+      userMessageId: 'message-1',
+      startedAt: '2026-08-07T12:00:00.000Z',
+    };
+    const requestWith = (trackedPlanImplementation: unknown): unknown => ({
+      ...command,
+      command: { ...command.command, trackedPlanImplementation },
+    });
+    expect(() => validateChatCommandRequest(requestWith(link))).not.toThrow();
+    for (const invalid of [
+      null,
+      { ...link, userMessageId: 'other' },
+      { ...link, outcome: 'completed', endedAt: link.startedAt },
+      { ...link, revisionNumber: 0 },
+      { ...link, startedAt: 'invalid' },
+    ])
+      expect(() => validateChatCommandRequest(requestWith(invalid))).toThrow();
+  });
+
   it('accepts only a bounded, complete approval identity', () => {
     const approval = {
       requestId: 'review-1',

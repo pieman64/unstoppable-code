@@ -55,7 +55,7 @@ import {
 import { readSharedContainerRunEnvironment } from '../shared-containers/run-env-store';
 import { buildSharedContainerRunEnv } from '../lib/shared-container-run-env';
 
-const MAX_TERMINAL_WRITE_BYTES = 64 * 1024;
+export const MAX_TERMINAL_WRITE_BYTES = 64 * 1024;
 const MAX_TERMINAL_WRITE_RECEIPTS = 4096;
 const terminalOutputDecoders = new Map<string, StringDecoder>();
 const terminalWriteReceipts = new Map<string, true>();

@@ -5,6 +5,8 @@ import type {
   SharedSkillInstallOrigin,
   SharedSkillSummary,
 } from '@canopy/protocol';
+import { Badge, ExecutionActionButton } from '@canopy/ui-shared/components';
+import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { SHARE_ATTRIBUTION_SHARER_PREFIX } from '../sharing/share-install-copy';
 import { normalizeShareContentHash } from './share-content-hash';
@@ -14,6 +16,8 @@ export const INSTALLED_SHARE_COPY_LABEL = 'One-time copy';
 /** The source's content differs from the copy that was installed. */
 export const INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL = 'Update available';
 export const VIEW_SHARED_SKILL_LABEL = 'View shared skill';
+/** Opens the reviewed in-place replacement of a shared copy (CAN-5306). */
+const INSTALLED_SHARE_UPDATE_LABEL = 'Update';
 
 /**
  * Where the installed page's `View shared skill` goes: a host route the
@@ -44,13 +48,21 @@ export interface InstalledShareProvenanceOptions {
   readonly names?: InstalledShareDisplayNames;
   /** Only when a live read established that the source's hash changed. */
   readonly updateAvailable?: boolean;
+  /**
+   * Opens the host's reviewed replacement (CAN-5306). Only with
+   * `updateAvailable` and a review the host can open for this copy's scope;
+   * opening it never writes.
+   */
+  readonly onUpdate?: () => void;
   readonly source?: InstalledShareSource;
 }
 
 export interface InstalledShareProvenance {
-  /** From, Team, Shared by, One-time copy and Update available, in order. */
+  /** From, Team, Shared by and One-time copy, in order. */
   readonly facts: readonly ReactNode[];
-  /** Placed after the header's `Updated` date. */
+  /** Whether the status fact carries the `Update available` badge. */
+  readonly updateAvailable: boolean;
+  /** Placed after the header's status and date. */
   readonly sourceLink: ReactNode | null;
 }
 
@@ -145,11 +157,80 @@ function SourceLink({ source }: { source: InstalledShareSource }): JSX.Element {
 }
 
 /**
+ * A shared copy's one status and date fact (CAN-5306):
+ * `Update available · Installed {date}`, or either part alone. The badge is
+ * informational; the header's Update button is the action. `null` when there
+ * is neither.
+ */
+export function installedShareStatusFact(
+  updateAvailable: boolean,
+  installedDate: string | undefined,
+): JSX.Element | null {
+  if (!updateAvailable && !installedDate) return null;
+  return (
+    <span
+      key="status"
+      className="inline-flex items-center gap-1.5"
+      data-testid="installed-share-status"
+    >
+      {updateAvailable ? (
+        <Badge
+          tone="info"
+          icon={RefreshIcon}
+          data-testid="installed-share-update-available"
+        >
+          {INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL}
+        </Badge>
+      ) : null}
+      {updateAvailable && installedDate ? (
+        <span aria-hidden="true">·</span>
+      ) : null}
+      {installedDate ? `Installed ${installedDate}` : null}
+    </span>
+  );
+}
+
+/**
+ * The installed page's primary action for a shared copy whose source changed
+ * (CAN-5306): opens the host's reviewed replacement. The skill's name is in
+ * the accessible name only, so the visible label stays one word.
+ */
+export function InstalledShareUpdateButton({
+  name,
+  onUpdate,
+  disabled = false,
+}: {
+  name: string;
+  onUpdate: () => void;
+  /** Only for a host's own in-flight replacement; a review is not one. */
+  disabled?: boolean;
+}): JSX.Element {
+  const subject = name.trim();
+  return (
+    <ExecutionActionButton
+      label={INSTALLED_SHARE_UPDATE_LABEL}
+      ariaLabel={
+        subject
+          ? `${INSTALLED_SHARE_UPDATE_LABEL} ${subject}`
+          : INSTALLED_SHARE_UPDATE_LABEL
+      }
+      icon={<RefreshIcon aria-hidden="true" />}
+      variant="primary"
+      placement="detail"
+      disabled={disabled}
+      onClick={onUpdate}
+      dataTestId="installed-share-update"
+      stopKeyDownPropagation={false}
+    />
+  );
+}
+
+/**
  * Where a receipted shared install came from and how it relates to its
  * source (CAN-5018), on every host: `From {organization}`, `Team: {team}`,
- * `Shared by {person}`, `One-time copy` and, when a live check found a
- * changed source, `Update available`. Unknown names are left out. Names are
- * session-replay blocked.
+ * `Shared by {person}` and `One-time copy`. Unknown names are left out.
+ * Names are session-replay blocked. A live `Update available` joins the
+ * header's date in `installedShareStatusFact`.
  */
 export function installedShareProvenance(
   origin: SharedSkillInstallOrigin,
@@ -187,14 +268,9 @@ export function installedShareProvenance(
       {INSTALLED_SHARE_COPY_LABEL}
     </span>,
   );
-  if (options.updateAvailable)
-    facts.push(
-      <span key="update" data-testid="installed-share-update-available">
-        {INSTALLED_SHARE_UPDATE_AVAILABLE_LABEL}
-      </span>,
-    );
   return {
     facts,
+    updateAvailable: options.updateAvailable === true,
     sourceLink: options.source ? (
       <SourceLink key="source" source={options.source} />
     ) : null,

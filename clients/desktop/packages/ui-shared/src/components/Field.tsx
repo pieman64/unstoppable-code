@@ -12,6 +12,8 @@ import {
 } from 'react';
 import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
+import { useDialogFormFieldDescribedBy } from './dialog-form-field-context';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
 import {
   FloatingPickerMenu,
@@ -33,7 +35,7 @@ import {
  * - Inset: 12px across, 8px down, so a single-line field is 36px from its
  *   padding and a textarea's first line sits where single-line text does.
  *   A `compact` text input is the 28px toolbar field (the browser's address
- *   bar): 10px across, with the 8px radius of the 28px controls beside it,
+ *   bar): 10px across, with the 10px radius of the 28px fields beside it,
  *   and 13px text like the tab titles above it.
  * - Text: typed values wrap normally, because `text-wrap: pretty` re-breaks
  *   finished lines as the last one grows; placeholders never change and
@@ -48,27 +50,104 @@ import {
  */
 export const FIELD_EDGE_CLASS = 'shadow-field transition-shadow';
 
-/** The neutral field focus, for a box whose input has focus. */
+/**
+ * The neutral field focus, for a box whose input has focus. A field never
+ * fills on hover or focus: the edge and halo alone show focus.
+ */
 export const FIELD_FOCUS_WITHIN_CLASS = 'has-[input:focus]:shadow-field-focus';
 
-const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none ${FIELD_EDGE_CLASS} focus-visible:shadow-field-focus disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled`;
+/**
+ * The invalid field (`aria-invalid`): the destructive edge at rest and the
+ * destructive focus (edge + soft halo) while focused, never the grey focus
+ * halo around a red edge. For a field whose own element is focused.
+ */
+export const FIELD_INVALID_CLASS =
+  'aria-invalid:shadow-field-invalid aria-invalid:focus-visible:shadow-field-invalid-focus';
+
+/** The same for a box around an input (`TextInput` adornments). */
+const FIELD_INVALID_WITHIN_CLASS =
+  'has-[input[aria-invalid=true]]:shadow-field-invalid has-[input[aria-invalid=true]:focus]:shadow-field-invalid-focus';
+
+const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none ${FIELD_EDGE_CLASS} focus-visible:shadow-field-focus ${FIELD_INVALID_CLASS} disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled`;
 
 const FIELD_CLASS = `min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 ${FIELD_SURFACE_CLASS}`;
 
 /**
- * Field size. `default` is the 36px form field. `compact` is the 28px field
- * that sits in a toolbar row of 28px controls. `settings` uses that height
- * with the capsule shape and 12px insets of Settings actions and dropdowns.
+ * Field size. `default` is the 36px form field (12px corners). `compact` is
+ * the 28px field that sits in a toolbar row of 28px controls. `settings` is
+ * the same 28px rounded rectangle (10px `rounded-row` corners, about the
+ * 36px field's 12px scaled to 28px; 10px insets) on a Settings,
+ * account, or organization page: it keeps the value on one line. Every
+ * density marks an invalid value with the destructive edge. Fields are rounded rectangles and
+ * only buttons are capsules (design decision, 2026-10-30).
  */
 export type TextInputDensity = 'default' | 'compact' | 'settings';
 
 const TEXT_INPUT_CLASS: Record<TextInputDensity, string> = {
   default: FIELD_CLASS,
-  settings: `h-7 rounded-full px-3 py-0 pointer-coarse:h-9 ${FIELD_SURFACE_CLASS.replace('text-s ', 'text-xs ').replace('text-wrap placeholder:text-pretty', 'whitespace-nowrap placeholder:whitespace-nowrap')}`,
+  settings: `h-7 rounded-row px-2.5 py-0 pointer-coarse:h-9 ${FIELD_SURFACE_CLASS.replace('text-s ', 'text-xs ').replace('text-wrap placeholder:text-pretty', 'whitespace-nowrap placeholder:whitespace-nowrap')}`,
   // The toolbar field reads at the 13px of the tab titles and controls
   // around it, one step under a form field's 14px.
-  compact: `h-7 rounded-md px-2.5 py-0 pointer-coarse:h-9 ${FIELD_SURFACE_CLASS.replace('text-s ', 'text-xs ')}`,
+  compact: `h-7 rounded-row px-2.5 py-0 pointer-coarse:h-9 ${FIELD_SURFACE_CLASS.replace('text-s ', 'text-xs ')}`,
 };
+
+/**
+ * The box of a field with a `leading` or `trailing` adornment: the same
+ * height, corners, insets, and edge as the plain field, drawn around the
+ * adornments and a borderless input, with the neutral focus edge while the
+ * input has focus.
+ */
+const ADORNED_BOX_CLASS: Record<TextInputDensity, string> = {
+  default: `min-h-9 rounded-lg px-3 pointer-coarse:min-h-11 text-s`,
+  compact: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs`,
+  settings: `h-7 rounded-row px-2.5 pointer-coarse:h-9 text-xs whitespace-nowrap`,
+};
+
+const ADORNED_SHELL_CLASS = `flex w-full min-w-0 items-baseline gap-1.5 bg-transparent fg-primary ${FIELD_EDGE_CLASS} ${FIELD_FOCUS_WITHIN_CLASS} ${FIELD_INVALID_WITHIN_CLASS} has-[input:disabled]:cursor-not-allowed has-[input:disabled]:bg-disabled has-[input:disabled]:fg-disabled`;
+
+const ADORNED_INPUT_CLASS: Record<TextInputDensity, string> = {
+  default: 'py-2',
+  compact: 'h-full py-0',
+  settings: 'h-full py-0',
+};
+
+/**
+ * Text adornments (`@`, `days`, `$`) inherit the value's size and line and
+ * sit on its baseline (the shell aligns its items to the baseline). Icon
+ * adornments centre in the field box instead, which for a single line is the
+ * optical centre of the value, the way a button centres its icon beside its
+ * label.
+ */
+const ADORNMENT_CLASS: Record<AdornmentKind, string> = {
+  text: 'shrink-0 fg-tertiary select-none',
+  icon: 'flex shrink-0 items-center self-center fg-tertiary select-none',
+};
+
+type AdornmentKind = 'text' | 'icon';
+
+/** A string or number is text; any element is an icon. */
+function adornmentKind(node: ReactNode): AdornmentKind {
+  return typeof node === 'string' || typeof node === 'number' ? 'text' : 'icon';
+}
+
+function Adornment({
+  side,
+  children,
+}: {
+  readonly side: 'leading' | 'trailing';
+  readonly children: ReactNode;
+}): JSX.Element {
+  const kind = adornmentKind(children);
+  return (
+    <span
+      data-field-adornment={side}
+      data-field-adornment-kind={kind}
+      className={ADORNMENT_CLASS[kind]}
+    >
+      {children}
+    </span>
+  );
+}
 
 function withPlacement(base: string, className: string): string {
   return className ? `${base} ${className}` : base;
@@ -83,9 +162,21 @@ export interface TextInputProps extends InputHTMLAttributes<HTMLInputElement> {
    * its value at rest (an address bar showing only the host).
    */
   readonly align?: 'start' | 'center';
+  /**
+   * Fixed text or a glyph inside the field edge before the value (`@` before
+   * a username), in the tertiary ink like `SearchField`'s icon.
+   */
+  readonly leading?: ReactNode;
+  /** Fixed text or a glyph inside the field edge after the value (a unit). */
+  readonly trailing?: ReactNode;
 }
 
-/** Single-line text, number, date, password, email, or URL field. */
+/**
+ * Single-line text, number, date, password, email, or URL field. With
+ * `leading` or `trailing`, the field box moves to a wrapper around the
+ * adornments and the input; `ref`, `id`, and every input prop stay on the
+ * input, and `className` places the box.
+ */
 export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
   function TextInput(
     {
@@ -94,22 +185,66 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
       mono = false,
       align = 'start',
       className = '',
+      leading,
+      trailing,
+      'aria-describedby': ariaDescribedBy,
       ...props
     },
     ref,
   ): JSX.Element {
+    const describedBy = useDialogFormFieldDescribedBy(
+      props.id,
+      ariaDescribedBy,
+    );
+    if (leading !== undefined || trailing !== undefined) {
+      return (
+        <span
+          className={withPlacement(
+            `${ADORNED_SHELL_CLASS} ${ADORNED_BOX_CLASS[density]}`,
+            className,
+          )}
+          onMouseDown={(event): void => {
+            // A press on the box's padding or a text or glyph adornment
+            // focuses the input, as a press on a field's edge does; a
+            // control inside an adornment (Show password) keeps its press.
+            const target = event.target;
+            if (
+              !(target instanceof Element) ||
+              target.closest('input, button, a, select, textarea, [tabindex]')
+            ) {
+              return;
+            }
+            event.preventDefault();
+            event.currentTarget.querySelector('input')?.focus();
+          }}
+        >
+          {leading !== undefined ? (
+            <Adornment side="leading">{leading}</Adornment>
+          ) : null}
+          <input
+            ref={ref}
+            type={type}
+            className={`min-w-0 flex-1 bg-transparent outline-none placeholder:fg-tertiary disabled:cursor-not-allowed ${ADORNED_INPUT_CLASS[density]} ${align === 'center' ? 'text-center' : ''} ${mono ? 'font-mono' : ''}`}
+            aria-describedby={describedBy}
+            {...props}
+          />
+          {trailing !== undefined ? (
+            <Adornment side="trailing">{trailing}</Adornment>
+          ) : null}
+        </span>
+      );
+    }
     const base =
       align === 'center'
         ? `${TEXT_INPUT_CLASS[density]} text-center`
         : TEXT_INPUT_CLASS[density];
-    const invalid =
-      props['aria-invalid'] === true || props['aria-invalid'] === 'true';
-    const treatment = `${base} ${mono ? 'font-mono' : ''} ${density === 'settings' && invalid ? 'ring-1 ring-inset ring-line-destructive' : ''}`;
+    const treatment = mono ? `${base} font-mono` : base;
     return (
       <input
         ref={ref}
         type={type}
         className={withPlacement(treatment, className)}
+        aria-describedby={describedBy}
         {...props}
       />
     );
@@ -141,10 +276,12 @@ export function FieldError({
     <p
       id={id}
       data-testid={dataTestId}
-      className="flex items-start gap-1.5 text-xs fg-destructive text-pretty"
+      className="flex items-start gap-1 text-xs fg-destructive text-pretty"
     >
-      <span aria-hidden="true" className="flex h-4 shrink-0 items-center">
-        <WarningIcon size={14} />
+      {/* One 18px line of the 13px text, so the 12px glyph (the Badge
+          recipe: exact size, 1.5px drawn stroke) sits on the first line. */}
+      <span aria-hidden="true" className="flex h-4.5 shrink-0 items-center">
+        <WarningIcon size={12} exactSize drawnStrokeWidth={1.5} />
       </span>
       <span>{children}</span>
     </p>
@@ -163,15 +300,26 @@ export interface TextAreaProps extends TextareaHTMLAttributes<HTMLTextAreaElemen
  */
 export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
   function TextArea(
-    { rows = 2, mono = false, className = '', ...props },
+    {
+      rows = 2,
+      mono = false,
+      className = '',
+      'aria-describedby': ariaDescribedBy,
+      ...props
+    },
     ref,
   ): JSX.Element {
+    const describedBy = useDialogFormFieldDescribedBy(
+      props.id,
+      ariaDescribedBy,
+    );
     const treatment = `${FIELD_CLASS} field-resize-grip resize-y${mono ? ' font-mono' : ''}`;
     return (
       <textarea
         ref={ref}
         rows={rows}
         className={withPlacement(treatment, className)}
+        aria-describedby={describedBy}
         {...props}
       />
     );
@@ -179,6 +327,13 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
 );
 
 TextArea.displayName = 'TextArea';
+
+/**
+ * An open `Select` shows the focus edge (destructive when invalid) while
+ * focus is in its menu, like the 28px dropdowns' `DROPDOWN_INVALID_CLASS`.
+ */
+const SELECT_OPEN_EDGE_CLASS =
+  'aria-expanded:shadow-field-focus aria-invalid:aria-expanded:shadow-field-invalid-focus';
 
 export interface SelectOption {
   readonly value: string;
@@ -200,12 +355,20 @@ export interface SelectProps {
   readonly id?: string;
   readonly 'aria-label'?: string;
   readonly 'aria-labelledby'?: string;
+  /** The error and help text that describe the field (`FormField` sets it). */
+  readonly 'aria-describedby'?: string;
+  readonly 'aria-invalid'?: boolean;
   readonly 'data-testid'?: string;
   /** Placement only (width, margins, flex). */
   readonly className?: string;
 }
 
 /**
+ * The 36px dropdown, for a form whose single-line fields are the 36px
+ * `TextInput`. Everywhere else (Settings rows, dialogs with 28px fields,
+ * toolbars, filters) use the 28px `SettingsSelect`: a dropdown matches the
+ * height of the fields and buttons beside it (docs/design/forms.md).
+ *
  * Single-choice select drawn by Canopy rather than the operating system. The
  * trigger is a field (same edge, focus, inset, and app chevron as
  * `TextInput`); the menu is the shared picker (`FloatingPickerMenu` with
@@ -218,93 +381,128 @@ export interface SelectProps {
  * or an outside press close with focus back on the trigger.
  *
  * For several choices use `Checkbox` rows; there is no multiple mode.
+ *
+ * The ref is the trigger (to focus it on open). The trigger and each option
+ * carry `data-value`, so UI automation can read and choose by value as it
+ * would on a native `<select>`.
  */
-export function Select({
-  options,
-  value,
-  onValueChange,
-  placeholder = 'Choose an option',
-  disabled = false,
-  required,
-  id,
-  'aria-label': ariaLabel,
-  'aria-labelledby': ariaLabelledBy,
-  'data-testid': dataTestId,
-  className = '',
-}: SelectProps): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const listboxId = useId();
-  const chosen = options.find((option) => option.value === value);
+export const Select = forwardRef<HTMLButtonElement, SelectProps>(
+  function Select(
+    {
+      options,
+      value,
+      onValueChange,
+      placeholder = 'Choose an option',
+      disabled = false,
+      required,
+      id,
+      'aria-label': ariaLabel,
+      'aria-labelledby': ariaLabelledBy,
+      'aria-describedby': ariaDescribedBy,
+      'aria-invalid': ariaInvalid,
+      'data-testid': dataTestId,
+      className = '',
+    }: SelectProps,
+    forwardedRef,
+  ): JSX.Element {
+    const [open, setOpen] = useState(false);
+    // Disabling the field closes its menu for good: enabling it again does
+    // not pop the menu back open.
+    if (disabled && open) setOpen(false);
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
+    const listboxId = useId();
+    const generatedTriggerId = useId();
+    const triggerId = id ?? generatedTriggerId;
+    const describedBy = useDialogFormFieldDescribedBy(id, ariaDescribedBy);
+    const chosen = options.find((option) => option.value === value);
 
-  return (
-    <span className={withPlacement('relative flex w-full', className)}>
-      <button
-        ref={triggerRef}
-        id={id}
-        type="button"
-        role="combobox"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-        aria-label={ariaLabel}
-        aria-labelledby={ariaLabelledBy}
-        aria-required={required}
-        disabled={disabled}
-        data-testid={dataTestId}
-        onClick={() => setOpen((current) => !current)}
-        className={`${FIELD_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:cursor-not-allowed`}
-      >
-        <span
-          className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+    return (
+      <span className={withPlacement('relative flex w-full', className)}>
+        <button
+          ref={(element) => {
+            triggerRef.current = element;
+            if (typeof forwardedRef === 'function') forwardedRef(element);
+            else if (forwardedRef) forwardedRef.current = element;
+          }}
+          id={triggerId}
+          type="button"
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabelledBy}
+          aria-describedby={describedBy}
+          aria-invalid={ariaInvalid}
+          aria-required={required}
+          disabled={disabled}
+          data-testid={dataTestId}
+          data-value={chosen?.value}
+          onClick={() => setOpen((current) => !current)}
+          // Presses, hovers, and holds its open look like the secondary Button;
+          // the transition keeps the focus edge and adds the press (the
+          // press sets `scale`, not `transform`). Open, focus is in the menu,
+          // so the trigger keeps the focus edge itself, as SettingsSelect does.
+          className={`${FIELD_CLASS.replace('transition-shadow', 'transition-[box-shadow,transform,scale]')} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${SELECT_OPEN_EDGE_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:pointer-events-none disabled:cursor-not-allowed`}
         >
-          {chosen?.label ?? placeholder}
-        </span>
-      </button>
-      <SelectChevron />
-      <FloatingPickerMenu
-        open={open}
-        onOpenChange={setOpen}
-        anchorRef={triggerRef}
-        placement="bottom-left"
-        // A field-attached menu sits closer than a free-standing picker.
-        gap={FLOATING_MENU_GAP}
-        interaction="listbox"
-        role="listbox"
-        id={listboxId}
-        aria-label={ariaLabel}
-        aria-labelledby={ariaLabelledBy}
-        // A field-wide select opens a menu as wide as the field.
-        maximumWidth="max(20rem, var(--canopy-picker-trigger-width))"
-      >
-        {options.map((option) => {
-          const selected = option.value === value;
-          return (
-            <PickerMenuOption
-              key={option.value}
-              role="option"
-              aria-selected={selected}
-              selected={selected}
-              disabled={option.disabled}
-              onClick={() => onValueChange(option.value)}
-            >
-              <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>
-                  {option.maskInReplay ? (
-                    <span className={REPLAY_MASK_CLASS}>{option.label}</span>
-                  ) : (
-                    option.label
-                  )}
-                </PickerMenuOptionLabel>
-              </PickerMenuOptionContent>
-              <PickerMenuOptionCheck selected={selected} />
-            </PickerMenuOption>
-          );
-        })}
-      </FloatingPickerMenu>
-    </span>
-  );
-}
+          <span
+            className={`min-w-0 flex-1 truncate ${chosen ? '' : 'fg-tertiary'}${chosen?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+          >
+            {chosen?.label ?? placeholder}
+          </span>
+        </button>
+        <SelectChevron />
+        <FloatingPickerMenu
+          open={open}
+          onOpenChange={setOpen}
+          anchorRef={triggerRef}
+          placement="bottom-left"
+          // A field-attached menu sits closer than a free-standing picker.
+          gap={FLOATING_MENU_GAP}
+          interaction="listbox"
+          role="listbox"
+          id={listboxId}
+          // With no name of its own (a `FormField` names the trigger with a
+          // `<label>`), the trigger names the menu.
+          aria-label={ariaLabel}
+          aria-labelledby={
+            ariaLabelledBy ?? (ariaLabel ? undefined : triggerId)
+          }
+          // A field-wide select opens a menu as wide as the field.
+          maximumWidth="max(20rem, var(--canopy-picker-trigger-width))"
+        >
+          {options.map((option) => {
+            const selected = option.value === value;
+            return (
+              <PickerMenuOption
+                key={option.value}
+                role="option"
+                data-value={option.value}
+                aria-selected={selected}
+                selected={selected}
+                disabled={option.disabled}
+                onClick={() => onValueChange(option.value)}
+              >
+                <PickerMenuOptionContent>
+                  <PickerMenuOptionLabel>
+                    {option.maskInReplay ? (
+                      <span className={REPLAY_MASK_CLASS}>{option.label}</span>
+                    ) : (
+                      option.label
+                    )}
+                  </PickerMenuOptionLabel>
+                </PickerMenuOptionContent>
+                <PickerMenuOptionCheck selected={selected} />
+              </PickerMenuOption>
+            );
+          })}
+        </FloatingPickerMenu>
+      </span>
+    );
+  },
+);
+
+Select.displayName = 'Select';
 
 function SelectChevron(): JSX.Element {
   return (

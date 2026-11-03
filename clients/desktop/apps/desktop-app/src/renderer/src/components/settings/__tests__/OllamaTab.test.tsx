@@ -286,8 +286,8 @@ describe('OllamaTab managed installation states', () => {
       const progress = query(container, 'ollama-install-progress');
       expect(progress?.textContent).toContain('Downloading Ollama');
       expect(progress?.querySelector('[role="progressbar"]')).not.toBeNull();
-      // Mode radios disabled while installing (fieldset disabled).
-      const managedRadio = requireInput(
+      // Mode choices disabled while installing.
+      const managedRadio = requireButton(
         query(container, 'ollama-mode-managed'),
       );
       expect(managedRadio.disabled).toBe(true);
@@ -313,7 +313,7 @@ describe('OllamaTab managed installation states', () => {
       expect(progress).not.toBeNull();
       expect(progressbar?.getAttribute('aria-valuenow')).toBeNull();
       expect(
-        requireInput(query(container, 'ollama-mode-managed')).disabled,
+        requireButton(query(container, 'ollama-mode-managed')).disabled,
       ).toBe(true);
     } finally {
       cleanup();

@@ -250,7 +250,7 @@ describe('share landing failures (CAN-5222)', () => {
     expect(shareLandingRecoveryActionLabel('switch-account')).toBe(
       'Switch account',
     );
-    expect(shareLandingRecoveryActionLabel('retry')).toBe('Retry');
+    expect(shareLandingRecoveryActionLabel('retry')).toBe('Try again');
     expect(shareLandingRecoveryActionLabel('check-for-updates')).toBe(
       'Check for updates',
     );

@@ -322,7 +322,7 @@ export function TryItSignInNotice({
           setup ? (
             <SetupActions
               setup={setup}
-              label="Retry"
+              label="Try again"
               disabled={disabled}
               testId={testId}
               primaryTestId={`${testId}-retry`}

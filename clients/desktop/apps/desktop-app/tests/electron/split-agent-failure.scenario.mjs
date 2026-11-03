@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect } from '@playwright/test';
@@ -11,6 +11,24 @@ import {
 } from './seeders/index.mjs';
 import { withBundledBinaryOverridesScrubbed } from './seeders/bundledBinaryOverrides.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+
+/**
+ * The worktree a branched agent created beside the seeded source one. A
+ * failed startup closes only its chat, so that worktree stays listed.
+ */
+async function createdWorktreeId(userDataDir, scope) {
+  const created = () =>
+    JSON.parse(
+      readFileSync(
+        path.join(userDataDir, 'workspaces', scope.projectId, 'worktrees.json'),
+        'utf8',
+      ),
+    )
+      .worktrees.filter((worktree) => worktree.id !== scope.worktreeId)
+      .map((worktree) => worktree.id);
+  await expect.poll(() => created().length, { timeout: 15_000 }).toBe(1);
+  return created()[0];
+}
 
 export async function runSplitAgentFailure(options = {}) {
   const branched = options.branched === true;
@@ -141,20 +159,33 @@ export async function runSplitAgentFailure(options = {}) {
       (request) => window.api.chat.getTranscriptPage(request),
       { ...scope, chatId: sourceId },
     );
-    const firstReceiptBlock = page.messages
-      .flatMap((message) => message.blocks)
-      .find(
+    // The child's prompt commits as part of its send in both cases: a
+    // branched child's send is held in main for the new worktree's Git setup,
+    // which commits the prompt before it waits (CAN-5483). So the failure
+    // reaches the source's tool call as an error, never a success receipt.
+    const sourceBlocks = page.messages.flatMap((message) => message.blocks);
+    expect(sourceBlocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'tool_result',
+          isError: true,
+          output: expect.stringContaining(failure),
+        }),
+      ]),
+    );
+    expect(
+      sourceBlocks.some(
         (block) =>
           block.type === 'tool_result' &&
-          !block.isError &&
           block.output?.includes('"independent":true'),
-      );
+      ),
+    ).toBe(false);
     const failedScope = branched
-      ? {
-          ...scope,
-          worktreeId: JSON.parse(firstReceiptBlock.output).worktreeId,
-        }
+      ? { ...scope, worktreeId: await createdWorktreeId(userDataDir, scope) }
       : scope;
+    // The failed child, if it was ever published, was forked from the source.
+    const hasFailedChild = (tabs) =>
+      tabs.some((tab) => tab.forkedFrom?.chatId === sourceId);
     if (options.captureDir) {
       mkdirSync(options.captureDir, { recursive: true });
       if (options.stage !== 'before') {
@@ -165,9 +196,7 @@ export async function runSplitAgentFailure(options = {}) {
                 (target) => window.api.chat.getState(target),
                 failedScope,
               );
-              return state.tabsFile.tabs.some(
-                (tab) => tab.id === JSON.parse(firstReceiptBlock.output).chatId,
-              );
+              return hasFailedChild(state.tabsFile.tabs);
             },
             { timeout: 15_000 },
           )
@@ -192,12 +221,6 @@ export async function runSplitAgentFailure(options = {}) {
         });
       return;
     }
-    if (!branched)
-      expect(page.messages.flatMap((message) => message.blocks)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ type: 'tool_result', isError: true }),
-        ]),
-      );
     await app.selectWorktree(scope.worktreeId);
     await window.getByTestId(`panel-tab-panel-chat-${sourceId}`).click();
     // Selecting an empty branch can publish a new blank chat. Assert removal
@@ -210,9 +233,7 @@ export async function runSplitAgentFailure(options = {}) {
             failedScope,
           );
           return branched
-            ? state.tabsFile.tabs.some(
-                (tab) => tab.id === JSON.parse(firstReceiptBlock.output).chatId,
-              )
+            ? hasFailedChild(state.tabsFile.tabs)
             : state.tabsFile.tabs.map((tab) => tab.id);
         },
         { timeout: 15_000 },
@@ -252,7 +273,6 @@ export async function runSplitAgentFailure(options = {}) {
               (block) =>
                 block.type === 'tool_result' &&
                 !block.isError &&
-                block.output !== firstReceiptBlock?.output &&
                 block.output?.includes('"independent":true'),
             );
           if (successful) receipt = JSON.parse(successful.output);

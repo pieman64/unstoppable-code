@@ -4,7 +4,8 @@
 import { act } from 'react';
 import type React from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToString } from 'react-dom/server';
+import { renderToStaticMarkup, renderToString } from 'react-dom/server';
+import { buttonClassName } from '../Button';
 import {
   ExecutionActionButton,
   type ExecutionActionButtonVariant,
@@ -222,14 +223,15 @@ describe('ExecutionActionButton', () => {
     const cls = (/<button[^>]*class="([^"]*)"/.exec(html)?.[1] ?? '').split(
       /\s+/,
     );
-    // Detail actions sit beside Share, so they share its 28px, 12px-label
+    // Detail actions sit beside Share, so they share its 28px capsule
     // recipe rather than the 24px pipeline-row chip.
     expect(cls).toEqual(
       expect.arrayContaining([
         'h-7',
         'text-xs',
         'font-medium',
-        'px-2.5',
+        'px-3',
+        'rounded-full',
         'bg-quaternary',
         'fg-primary',
       ]),
@@ -392,4 +394,45 @@ describe('ExecutionActionButton', () => {
     act(() => root.unmount());
     container.remove();
   });
+});
+
+describe('ExecutionActionButton on a detail page', () => {
+  /** The class tokens of the rendered button. */
+  function detailTokens(variant: 'primary' | 'default'): readonly string[] {
+    const html = renderToStaticMarkup(
+      <ExecutionActionButton
+        label="Try it"
+        ariaLabel="Try it"
+        variant={variant}
+        placement="detail"
+        onClick={() => {}}
+      />,
+    );
+    const host = document.createElement('div');
+    host.innerHTML = html;
+    return (host.querySelector('button')?.className ?? '').split(/\s+/);
+  }
+
+  it.each([
+    ['primary', 'primary'],
+    ['default', 'secondary'],
+  ] as const)(
+    'draws %s as the capsule %s Button, like Share beside it',
+    (variant, buttonVariant) => {
+      const tokens = detailTokens(variant);
+      expect(tokens).toContain('rounded-full');
+      expect(tokens).not.toContain('rounded-md');
+      for (const token of buttonClassName({
+        variant: buttonVariant,
+        size: 'compact',
+      }).split(/\s+/)) {
+        if (token !== '') expect(tokens).toContain(token);
+      }
+      // Touch: the recipe's own hit area grows the 28px capsule to 44px on a
+      // coarse pointer, without growing the capsule itself.
+      expect(tokens).toContain('pointer-coarse:before:-inset-y-2');
+      expect(tokens).toContain('before:absolute');
+      expect(tokens).not.toContain('pointer-coarse:min-h-11');
+    },
+  );
 });

@@ -15,6 +15,7 @@ import {
   delegatedAgentCapabilitySourceLabel,
   delegatedAgentOmittedLabel,
 } from './delegated-agent-copy';
+import { Fact } from '../FactList';
 
 export interface DelegatedAgentCapabilitiesProps {
   summary: DelegationCapabilitySummary;
@@ -38,10 +39,18 @@ export const DelegatedAgentCapabilities = memo(
     const omittedSkipped = summary.omittedSkipped ?? 0;
     const showSkipped = skipped.length > 0 || omittedSkipped > 0;
 
+    const groups = DELEGATED_AGENT_CAPABILITY_SOURCE_ORDER.map((source) => ({
+      source,
+      items: items.filter((item): boolean => item.source === source),
+    })).filter((group): boolean => group.items.length > 0);
+    const lastGroup = groups.at(-1)?.source;
+
     return (
       <>
-        <dt>{DELEGATED_AGENT_CAPABILITIES_LABEL}</dt>
-        <dd data-testid="delegated-agent-capabilities" className="min-w-0">
+        <Fact
+          label={DELEGATED_AGENT_CAPABILITIES_LABEL}
+          dataTestId="delegated-agent-capabilities"
+        >
           <div className="flex min-w-0 items-baseline gap-x-2">
             <span className="min-w-0 break-words">
               {delegatedAgentCapabilityCountsLabel(summary)}
@@ -62,67 +71,22 @@ export const DelegatedAgentCapabilities = memo(
               {open ? 'Hide' : 'Show'}
             </button>
           </div>
-          {open ? (
-            <div id={detailsId} className="mt-1 min-w-0 space-y-1.5">
-              {DELEGATED_AGENT_CAPABILITY_SOURCE_ORDER.map(
-                (source): JSX.Element | null => {
-                  const sourceItems = items.filter(
-                    (item): boolean => item.source === source,
-                  );
-                  if (sourceItems.length === 0) return null;
-                  return (
-                    <div
-                      key={source}
-                      data-testid={`delegated-agent-capability-${source}`}
-                      className="min-w-0"
-                    >
-                      <p className="font-medium fg-primary">
-                        {delegatedAgentCapabilitySourceLabel(source)}
-                      </p>
-                      <ul className="list-none space-y-0.5 p-0">
-                        {sourceItems.map(
-                          (item, index): JSX.Element => (
-                            <li
-                              key={`${index}-${item.name}`}
-                              className="break-words"
-                            >
-                              <span>
-                                {item.name.slice(
-                                  0,
-                                  DELEGATION_CAPABILITY_LIMITS.nameCharacters,
-                                )}
-                              </span>{' '}
-                              <span className="fg-tertiary">
-                                · {delegatedAgentCapabilityKindLabel(item.kind)}
-                              </span>
-                            </li>
-                          ),
-                        )}
-                      </ul>
-                    </div>
-                  );
-                },
-              )}
-              {omittedItems > 0 ? (
-                <p className="break-words fg-tertiary">
-                  {delegatedAgentOmittedLabel(omittedItems)}
-                </p>
-              ) : null}
-              {showSkipped ? (
-                <div
-                  data-testid="delegated-agent-capability-skipped"
-                  className="min-w-0"
+        </Fact>
+        {/* Each source is one more fact in the parent list (design call 8A,
+            2026-10-31); the wrapper adds no box of its own. */}
+        {open ? (
+          <div id={detailsId} className="contents">
+            {groups.map(
+              (group): JSX.Element => (
+                <Fact
+                  key={group.source}
+                  label={delegatedAgentCapabilitySourceLabel(group.source)}
+                  testId={`delegated-agent-capability-${group.source}`}
                 >
-                  <p className="font-medium fg-primary">
-                    {DELEGATED_AGENT_CAPABILITIES_SKIPPED_LABEL}
-                  </p>
                   <ul className="list-none space-y-0.5 p-0">
-                    {skipped.map(
+                    {group.items.map(
                       (item, index): JSX.Element => (
-                        <li
-                          key={`${index}-${item.name}`}
-                          className="break-words"
-                        >
+                        <li key={`${index}-${item.name}`}>
                           <span>
                             {item.name.slice(
                               0,
@@ -132,26 +96,63 @@ export const DelegatedAgentCapabilities = memo(
                           <span className="fg-tertiary">
                             · {delegatedAgentCapabilityKindLabel(item.kind)}
                           </span>
-                          <span className="fg-tertiary">
-                            {' · '}
-                            {delegatedAgentCapabilitySkipReasonLabel(
-                              item.reason,
-                            )}
-                          </span>
                         </li>
                       ),
                     )}
-                    {omittedSkipped > 0 ? (
-                      <li className="break-words fg-tertiary">
-                        {delegatedAgentOmittedLabel(omittedSkipped)}
+                    {group.source === lastGroup && omittedItems > 0 ? (
+                      <li className="fg-tertiary">
+                        {delegatedAgentOmittedLabel(omittedItems)}
                       </li>
                     ) : null}
                   </ul>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </dd>
+                </Fact>
+              ),
+            )}
+            {groups.length === 0 && omittedItems > 0 ? (
+              // Every item was trimmed to fit: the count is all there is.
+              <Fact
+                label={DELEGATED_AGENT_CAPABILITIES_LABEL}
+                testId="delegated-agent-capability-omitted"
+                valueTone="secondary"
+              >
+                {delegatedAgentOmittedLabel(omittedItems)}
+              </Fact>
+            ) : null}
+            {showSkipped ? (
+              <Fact
+                label={DELEGATED_AGENT_CAPABILITIES_SKIPPED_LABEL}
+                testId="delegated-agent-capability-skipped"
+              >
+                <ul className="list-none space-y-0.5 p-0">
+                  {skipped.map(
+                    (item, index): JSX.Element => (
+                      <li key={`${index}-${item.name}`}>
+                        <span>
+                          {item.name.slice(
+                            0,
+                            DELEGATION_CAPABILITY_LIMITS.nameCharacters,
+                          )}
+                        </span>{' '}
+                        <span className="fg-tertiary">
+                          · {delegatedAgentCapabilityKindLabel(item.kind)}
+                        </span>
+                        <span className="fg-tertiary">
+                          {' · '}
+                          {delegatedAgentCapabilitySkipReasonLabel(item.reason)}
+                        </span>
+                      </li>
+                    ),
+                  )}
+                  {omittedSkipped > 0 ? (
+                    <li className="fg-tertiary">
+                      {delegatedAgentOmittedLabel(omittedSkipped)}
+                    </li>
+                  ) : null}
+                </ul>
+              </Fact>
+            ) : null}
+          </div>
+        ) : null}
       </>
     );
   },

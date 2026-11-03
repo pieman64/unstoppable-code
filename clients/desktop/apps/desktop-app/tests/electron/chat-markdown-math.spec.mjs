@@ -890,6 +890,12 @@ function nodePaint(diagram, nodeId, property = 'fill') {
     .first()
     .evaluate((shape, name) => getComputedStyle(shape)[name], property);
 }
+/** The single drawn flowchart edge whose id names both endpoints. */
+async function edgePaint(diagram, edgeId, property) {
+  const edge = diagram.locator(`path[id*="L_${edgeId}"]`);
+  await expect(edge).toHaveCount(1);
+  return edge.evaluate((path, name) => getComputedStyle(path)[name], property);
+}
 
 test('Created files opens the exact journey brief as a highlighted diagram', async () => {
   const { seedCreatedFiles, openCreatedFiles, CREATED_FILES_TURN } =
@@ -944,6 +950,7 @@ for (const file of [false, true]) {
       PARTIALLY_STYLED_DIAGRAM,
       REMOVED_STYLING_DIAGRAM,
       MULTILINE_LABEL_DIAGRAM,
+      DASHED_LINK_DIAGRAM,
     } = await import('./seeders/seedMarkdownMermaid.mjs');
     const markdown = [
       '# Checkout review',
@@ -953,6 +960,7 @@ for (const file of [false, true]) {
         PARTIALLY_STYLED_DIAGRAM,
         REMOVED_STYLING_DIAGRAM,
         MULTILINE_LABEL_DIAGRAM,
+        DASHED_LINK_DIAGRAM,
       ].flatMap((source) => ['```mermaid', source, '```', '']),
     ].join('\n');
     const userDataDir = seedMarkdownMermaid({ file, markdown });
@@ -968,6 +976,8 @@ for (const file of [false, true]) {
       );
       const diagrams = panel.getByTestId('markdown-mermaid');
       const brief = diagrams.nth(0);
+      // Chat opens at its end; diagrams draw once they near the viewport.
+      await brief.scrollIntoViewIfNeeded();
       await expect(brief.getByRole('img')).toBeVisible();
       for (const node of ['Promo', 'Billing', 'Review']) {
         expect(await nodePaint(brief, node)).toBe('rgb(253, 226, 226)');
@@ -1024,6 +1034,28 @@ for (const file of [false, true]) {
       );
       await expect(multiline.getByRole('status')).toHaveCount(0);
       expect(await nodePaint(multiline, 'B')).toBe('rgb(253, 226, 226)');
+
+      // CAN-5295: the comma-spelled dash pattern draws without a removal note.
+      const dashed = diagrams.nth(4);
+      await dashed.scrollIntoViewIfNeeded();
+      await expect(dashed.getByRole('img')).toBeVisible();
+      await expect
+        .poll(() => edgePaint(dashed, 'Refund_Manager', 'strokeDasharray'))
+        .toBe('5px, 5px');
+      await expect
+        .poll(() => edgePaint(dashed, 'Refund_Manager', 'stroke'))
+        .toBe('rgb(107, 114, 128)');
+      // Mermaid draws its solid edges with a zero-length dash pattern.
+      await expect
+        .poll(() => edgePaint(dashed, 'Ticket_Triage', 'strokeDasharray'))
+        .toBe('0px');
+      await expect(dashed.getByRole('status')).toHaveCount(0);
+      await chooseDiagramAction(window, dashed, 'Copy diagram text');
+      await expect
+        .poll(() =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        )
+        .toBe(DASHED_LINK_DIAGRAM);
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

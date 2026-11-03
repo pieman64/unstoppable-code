@@ -12803,7 +12803,6 @@ async function routeAction(
   originChatTabId?: string,
   signal?: AbortSignal,
   requestId?: string,
-  queueInitialMessageForSetup = false,
 ): Promise<{
   ok: boolean;
   result?: AppAdvisorJson;
@@ -14911,7 +14910,6 @@ async function routeAction(
           originChatTabId,
           signal,
           requestId,
-          created.setupPhase === 'git-pending',
         );
         return {
           ...opened,
@@ -16667,10 +16665,12 @@ async function routeAction(
         };
       }
       const issue = matchingIssues[0];
+      // Launch from the target just audited: an empty id audited the
+      // reference checkout, and launch records are keyed by audit target.
       const launched = await launchWorkspaceReadinessFix(
         action.workspaceId,
         issue,
-        action.worktreeId,
+        action.worktreeId ? action.worktreeId : undefined,
       );
       if (!launched.ok) {
         return {
@@ -17097,7 +17097,6 @@ async function routeAction(
             .getState()
             .sendMessage(initialMessage, undefined, target, undefined, {
               throwOnDispatchFailure: true,
-              queueForSetup: queueInitialMessageForSetup || undefined,
             });
         }
       }
@@ -17368,7 +17367,8 @@ async function routeAction(
     }
     case 'worktree-chat.send_message': {
       // Agent sends run in main with sender context. Only StartBranchedAgent's
-      // own "Continue" still uses the renderer setup queue for its new worktree.
+      // own "Continue" sends from here, into its new worktree, where main
+      // holds the send until the worktree's setup finishes.
       if (request.hostSend !== 'start_branched_agent')
         return {
           ok: false,
@@ -17384,13 +17384,11 @@ async function routeAction(
       if (sendMessageLockError) {
         return { ok: false, error: sendMessageLockError };
       }
-      if (action.queueForSetup) {
-        // loadTabsForTarget returns early for a concurrent new-worktree load;
-        // await canonical hydration before looking up the new chat.
-        await useChatStore
-          .getState()
-          .hydrateChatScopeRevisioned(action.projectId, action.worktreeId);
-      }
+      // loadTabsForTarget returns early for a concurrent new-worktree load;
+      // await canonical hydration before looking up the new chat.
+      await useChatStore
+        .getState()
+        .hydrateChatScopeRevisioned(action.projectId, action.worktreeId);
       useChatStore
         .getState()
         .selectWorktree(action.projectId, action.worktreeId);
@@ -17409,7 +17407,7 @@ async function routeAction(
           chatId: action.chatId,
         },
         undefined,
-        { throwOnDispatchFailure: true, queueForSetup: action.queueForSetup },
+        { throwOnDispatchFailure: true },
       );
       return { ok: true };
     }

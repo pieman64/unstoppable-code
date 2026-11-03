@@ -12,6 +12,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { EmptyState, Notice } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -960,17 +961,15 @@ export function PipelineExecutionDetail({
                   <>
                     {pauseResumeContent}
                     {state.error && (
-                      <div
-                        className="mb-4 rounded-lg border border-fg-destructive-strong/30 bg-destructive-subtle px-4 py-3"
-                        role="alert"
+                      <Notice
+                        intent="destructive"
+                        title="Execution error"
+                        className="mb-4"
                       >
-                        <div className="mb-1 text-2xs font-medium fg-destructive-strong">
-                          Execution error
-                        </div>
-                        <div className="whitespace-pre-wrap font-mono text-xs leading-relaxed fg-destructive-strong">
+                        <span className="whitespace-pre-wrap break-words font-mono">
                           {state.error}
-                        </div>
-                      </div>
+                        </span>
+                      </Notice>
                     )}
                     <PipelineSummaryView
                       state={state}
@@ -1023,9 +1022,7 @@ export function PipelineExecutionDetail({
                               archivedSource={archivedSource}
                             />
                           ) : (
-                            <div className="rounded-xl border bg-base px-4 py-6 text-center text-s fg-secondary">
-                              No report has been generated for this run yet.
-                            </div>
+                            <EmptyState title="No report has been generated for this run yet." />
                           )}
                         </div>
                       }

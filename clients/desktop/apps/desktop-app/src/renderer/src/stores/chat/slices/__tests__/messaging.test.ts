@@ -1,4 +1,9 @@
-import type { ClaudeTerminalScheduledPromptEvent } from '@canopy/desktop-shared/types';
+import * as approvalTransitions from '../approvals';
+import type {
+  ClaudeTerminalScheduledPromptEvent,
+  ChatCommandRequest,
+  ChatCommandResult,
+} from '@canopy/desktop-shared/types';
 import type { ChatState, ChatMessagingSlice } from '../../state';
 import type { ChatTab, QueuedChatMessage } from '../../types';
 import type {
@@ -8,12 +13,16 @@ import type {
 import { createMessagingSlice } from '../messaging';
 
 let mockTerminalSnapshot:
-  | { terminalId: string; turnState: 'idle'; readyForInput: true }
+  | { terminalId: string; turnState: 'idle' | 'running'; readyForInput: true }
   | undefined;
+const mockMarkAutoSendPending = jest.fn();
 
 jest.mock('../../../projectsStore', (): unknown => ({
   useProjectsStore: {
-    getState: (): { projects: never[] } => ({ projects: [] }),
+    getState: (): {
+      projects: never[];
+      enqueuePendingTaskBranchNaming: jest.Mock;
+    } => ({ projects: [], enqueuePendingTaskBranchNaming: jest.fn() }),
   },
 }));
 jest.mock('../../../pipelineRunsStore', (): unknown => ({
@@ -28,7 +37,7 @@ jest.mock('@/stores/claudeTerminalStore', (): unknown => ({
       markAutoSendPending: jest.Mock;
     } => ({
       getStateForChat: (): typeof mockTerminalSnapshot => mockTerminalSnapshot,
-      markAutoSendPending: jest.fn(),
+      markAutoSendPending: mockMarkAutoSendPending,
     }),
   },
 }));
@@ -45,6 +54,7 @@ const scope = {
   worktreeId: 'worktree-1',
 };
 const chatId = 'chat-1';
+const callbackMatcher: unknown = expect.any(Function);
 
 function makeSlice(): {
   slice: ChatMessagingSlice;
@@ -127,6 +137,259 @@ function makeRetryHarness(queuedMessages: QueuedChatMessage[] = []): {
 }
 
 describe('handleScheduledTerminalPrompt', () => {
+  it.each(['running', 'placeholder', 'older-queue'] as const)(
+    'refuses an admitted plan before a %s terminal delivery can enter a local queue',
+    async (scenario) => {
+      const previousWindowDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'window',
+      );
+      const olderQueue =
+        scenario === 'older-queue' ? [{ text: 'Older follow-up' }] : [];
+      const { slice, getState, ensureClaudeTerminal } =
+        makeRetryHarness(olderQueue);
+      const tab =
+        getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+          ?.tabs[0];
+      if (tab && scenario === 'placeholder') tab.queuedHookPlaceholder = true;
+      mockTerminalSnapshot =
+        scenario === 'older-queue'
+          ? undefined
+          : {
+              terminalId: 'terminal-1',
+              turnState: 'running',
+              readyForInput: true,
+            };
+      const terminalWrite = jest.fn();
+      const mainCommand = jest
+        .fn<Promise<ChatCommandResult>, [ChatCommandRequest]>()
+        .mockImplementation((request) =>
+          Promise.resolve({
+            commandId: request.commandId,
+            outcome: 'applied',
+            revision: 2,
+          }),
+        );
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: {
+          api: {
+            claudeTerminal: {
+              getState: jest.fn().mockResolvedValue(mockTerminalSnapshot),
+            },
+            terminal: { write: terminalWrite },
+            chat: { command: mainCommand },
+          },
+        },
+      });
+      try {
+        const event = {
+          ...scope,
+          chatId,
+          userMessageId: 'implementation-queued-race',
+          text: 'Implement.',
+          terminalPlanImplementation: true as const,
+        };
+        slice.handleScheduledTerminalPrompt(event);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(mainCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: {
+              type: 'chat.reject_plan_implementation_delivery',
+              chatId,
+              userMessageId: event.userMessageId,
+            },
+          }),
+        );
+        expect(
+          getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+            ?.tabs[0]?.queuedMessages,
+        ).toEqual(olderQueue);
+        expect(terminalWrite).not.toHaveBeenCalled();
+        expect(ensureClaudeTerminal).not.toHaveBeenCalled();
+      } finally {
+        mockTerminalSnapshot = undefined;
+        if (previousWindowDescriptor)
+          Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+        else Reflect.deleteProperty(globalThis, 'window');
+      }
+    },
+  );
+
+  it.each(['fresh', 'reaped'] as const)(
+    'launches a %s Auto terminal once with the admitted plan identity and no local queue',
+    async (scenario) => {
+      const previousWindowDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'window',
+      );
+      const { slice, getState, ensureClaudeTerminal, dispatchChatCommand } =
+        makeRetryHarness();
+      const tab =
+        getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+          ?.tabs[0];
+      if (!tab) throw new Error('Missing Auto tab');
+      tab.interfaceMode = 'auto';
+      mockTerminalSnapshot =
+        scenario === 'reaped'
+          ? {
+              terminalId: 'old-terminal',
+              turnState: 'idle',
+              readyForInput: true,
+            }
+          : undefined;
+      let finishLaunch:
+        | ((result: { lastLaunchConsumedInitialPrompt: true }) => void)
+        | undefined;
+      const launch = new Promise<{ lastLaunchConsumedInitialPrompt: true }>(
+        (resolve) => {
+          finishLaunch = resolve;
+        },
+      );
+      ensureClaudeTerminal.mockImplementationOnce(() => launch);
+      dispatchChatCommand.mockReset().mockResolvedValue('accepted');
+      mockMarkAutoSendPending.mockClear();
+      const mainCommand = jest.fn();
+      const terminalWrite = jest.fn();
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: {
+          api: {
+            claudeTerminal: {
+              getState: jest.fn().mockResolvedValue(undefined),
+            },
+            terminal: { write: terminalWrite },
+            chat: { command: mainCommand },
+          },
+        },
+      });
+      try {
+        const send = slice.sendMessage(
+          'Implement.',
+          undefined,
+          { ...scope, chatId },
+          'typed',
+          {
+            initiationSource: 'automation',
+            terminalPlanImplementation: true,
+            userMessageId: 'implementation-cold-start',
+          },
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(ensureClaudeTerminal).toHaveBeenCalledTimes(1);
+        expect(ensureClaudeTerminal).toHaveBeenCalledWith(
+          chatId,
+          scope,
+          undefined,
+          expect.stringContaining(
+            '<!-- canopy-terminal-turn:implementation-cold-start -->',
+          ),
+          { initialPromptIdempotencyKey: 'implementation-cold-start' },
+        );
+        expect(mockMarkAutoSendPending).toHaveBeenCalledWith(
+          scope.projectId,
+          scope.worktreeId,
+          chatId,
+        );
+        expect(
+          getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+            ?.tabs[0]?.queuedMessages,
+        ).toEqual([]);
+        finishLaunch?.({ lastLaunchConsumedInitialPrompt: true });
+        await send;
+        await Promise.resolve();
+        expect(dispatchChatCommand).toHaveBeenCalledWith(
+          scope,
+          expect.objectContaining({
+            type: 'chat.commit_terminal_initial_prompt',
+            userMessageId: 'implementation-cold-start',
+            text: 'Implement.',
+          }),
+          undefined,
+        );
+        expect(mainCommand).not.toHaveBeenCalled();
+        expect(terminalWrite).not.toHaveBeenCalled();
+        expect(
+          getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+            ?.tabs[0]?.queuedMessages,
+        ).toEqual([]);
+      } finally {
+        finishLaunch?.({ lastLaunchConsumedInitialPrompt: true });
+        mockTerminalSnapshot = undefined;
+        if (previousWindowDescriptor)
+          Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+        else Reflect.deleteProperty(globalThis, 'window');
+      }
+    },
+  );
+
+  it.each(['failed', 'not-consumed'] as const)(
+    'reports an initial plan launch that is %s without leaving a queued copy',
+    async (result) => {
+      const previousWindowDescriptor = Object.getOwnPropertyDescriptor(
+        globalThis,
+        'window',
+      );
+      const { slice, getState, ensureClaudeTerminal } = makeRetryHarness();
+      if (result === 'failed')
+        ensureClaudeTerminal.mockRejectedValueOnce(new Error('Launch failed'));
+      else
+        ensureClaudeTerminal.mockResolvedValueOnce({
+          lastLaunchConsumedInitialPrompt: false,
+        });
+      mockTerminalSnapshot = undefined;
+      const mainCommand = jest
+        .fn<Promise<ChatCommandResult>, [ChatCommandRequest]>()
+        .mockImplementation((request) =>
+          Promise.resolve({
+            commandId: request.commandId,
+            outcome: 'applied',
+            revision: 2,
+          }),
+        );
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: {
+          api: {
+            claudeTerminal: {
+              getState: jest.fn().mockResolvedValue(undefined),
+            },
+            chat: { command: mainCommand },
+          },
+        },
+      });
+      try {
+        slice.handleScheduledTerminalPrompt({
+          ...scope,
+          chatId,
+          userMessageId: 'implementation-launch-refused',
+          text: 'Implement.',
+          terminalPlanImplementation: true,
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(mainCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: {
+              type: 'chat.reject_plan_implementation_delivery',
+              chatId,
+              userMessageId: 'implementation-launch-refused',
+            },
+          }),
+        );
+        expect(
+          getState().worktreeChats[`${scope.projectId}/${scope.worktreeId}`]
+            ?.tabs[0]?.queuedMessages,
+        ).toEqual([]);
+      } finally {
+        mockTerminalSnapshot = undefined;
+        if (previousWindowDescriptor)
+          Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+        else Reflect.deleteProperty(globalThis, 'window');
+      }
+    },
+  );
+
   it('forwards trusted accepted-input metadata without labeling it automation', () => {
     const { slice, sendMessage } = makeSlice();
     const event: ClaudeTerminalScheduledPromptEvent = {
@@ -163,6 +426,8 @@ describe('handleScheduledTerminalPrompt', () => {
       'typed',
       {
         userMessageId: event.userMessageId,
+        onPreDispatchRejected: callbackMatcher,
+        onDispatchRejected: callbackMatcher,
         acceptedInputId: event.acceptedInputId,
         hiddenContext: event.hiddenContext,
         agentSent: event.agentSent,
@@ -191,8 +456,87 @@ describe('handleScheduledTerminalPrompt', () => {
         initiationSource: 'automation',
         automationName: 'Daily summary',
         userMessageId: event.userMessageId,
+        onPreDispatchRejected: callbackMatcher,
+        onDispatchRejected: callbackMatcher,
       },
     );
+  });
+
+  it('reports scheduled delivery refusal when an approval transition rejects before the first terminal write', async () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'window',
+    );
+    let rejectTransition: ((error: Error) => void) | undefined;
+    const transition = new Promise<void>((_resolve, reject) => {
+      rejectTransition = reject;
+    });
+    const pending = jest
+      .spyOn(approvalTransitions, 'pendingApprovalModeTransitions')
+      .mockReturnValueOnce(transition);
+    const terminalWrite = jest.fn();
+    const { slice, dispatchChatCommand, getState } = makeRetryHarness();
+    const sync =
+      getState().chatStateSync[`${scope.projectId}/${scope.worktreeId}`];
+    const mainCommand = jest
+      .fn<Promise<ChatCommandResult>, [ChatCommandRequest]>()
+      .mockImplementation((request) =>
+        Promise.resolve({
+          commandId: request.commandId,
+          outcome: 'applied',
+          revision: 2,
+        }),
+      );
+    mockTerminalSnapshot = {
+      terminalId: 'terminal-1',
+      turnState: 'idle',
+      readyForInput: true,
+    };
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        api: {
+          claudeTerminal: {
+            getState: jest.fn().mockResolvedValue(mockTerminalSnapshot),
+          },
+          terminal: { write: terminalWrite },
+          chat: { command: mainCommand },
+        },
+      },
+    });
+    try {
+      slice.handleScheduledTerminalPrompt({
+        ...scope,
+        chatId,
+        userMessageId: 'implementation-declined',
+        text: 'Implement.',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(terminalWrite).not.toHaveBeenCalled();
+      expect(dispatchChatCommand).not.toHaveBeenCalled();
+      if (sync) sync.phase = 'refreshing';
+      rejectTransition?.(new Error('Approval transition refused'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mainCommand).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ...scope,
+          command: {
+            type: 'chat.reject_plan_implementation_delivery',
+            chatId,
+            userMessageId: 'implementation-declined',
+          },
+        }),
+      );
+      expect(dispatchChatCommand).not.toHaveBeenCalled();
+      expect(terminalWrite).not.toHaveBeenCalled();
+    } finally {
+      pending.mockRestore();
+      mockTerminalSnapshot = undefined;
+      if (previousWindowDescriptor)
+        Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
   });
 
   it('keeps a trusted input queued after initial commit failure and retries by acceptedInputId', async () => {
@@ -344,6 +688,65 @@ describe('handleScheduledTerminalPrompt', () => {
       } else {
         Reflect.deleteProperty(globalThis, 'window');
       }
+    }
+  });
+
+  it('keys every scheduled plan delivery write with the admitted message identity', async () => {
+    const previousWindowDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'window',
+    );
+    const terminalWrite = jest
+      .fn<Promise<TerminalWriteDisposition>, [TerminalWriteRequest]>()
+      .mockResolvedValue('written');
+    const { slice, dispatchChatCommand } = makeRetryHarness();
+    dispatchChatCommand.mockReset().mockResolvedValue('accepted');
+    mockTerminalSnapshot = {
+      terminalId: 'terminal-1',
+      turnState: 'idle',
+      readyForInput: true,
+    };
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        api: {
+          claudeTerminal: {
+            getState: jest.fn().mockResolvedValue(mockTerminalSnapshot),
+          },
+          terminal: { write: terminalWrite },
+        },
+      },
+    });
+    jest.useFakeTimers();
+    try {
+      const send = slice.sendMessage(
+        'Implement the plan.',
+        undefined,
+        { ...scope, chatId },
+        'typed',
+        {
+          initiationSource: 'automation',
+          userMessageId: 'implementation-large',
+          terminalPlanImplementation: true,
+        },
+      );
+      await jest.advanceTimersByTimeAsync(4000);
+      await send;
+      expect(
+        terminalWrite.mock.calls.map(([request]) => request.idempotencyKey),
+      ).toEqual([
+        'implementation-large-clear-0',
+        'implementation-large-clear-1',
+        'implementation-large-clear-2',
+        'implementation-large-paste',
+        'implementation-large-submit',
+      ]);
+    } finally {
+      mockTerminalSnapshot = undefined;
+      jest.useRealTimers();
+      if (previousWindowDescriptor)
+        Object.defineProperty(globalThis, 'window', previousWindowDescriptor);
+      else Reflect.deleteProperty(globalThis, 'window');
     }
   });
 

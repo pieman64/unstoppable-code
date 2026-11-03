@@ -608,9 +608,9 @@ export function SidebarItemGroupEditor({
       }}
     >
       <div className="flex items-center gap-2 px-2 py-1">
-        <label htmlFor={inputId} className="text-s fg-secondary">
+        <span id={`${inputId}-label`} className="text-s fg-secondary">
           Group name
-        </label>
+        </span>
         <RailIconButton
           icon={CloseIcon}
           aria-label="Close group editor"
@@ -622,6 +622,7 @@ export function SidebarItemGroupEditor({
         <TextInput
           ref={inputRef}
           id={inputId}
+          aria-labelledby={`${inputId}-label`}
           value={name}
           placeholder={placeholder}
           className="w-full"

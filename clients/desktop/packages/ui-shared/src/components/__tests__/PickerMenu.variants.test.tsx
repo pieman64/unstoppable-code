@@ -32,10 +32,11 @@ describe('PickerTrigger', () => {
       expect(tokens).toContain('disabled:opacity-40');
     }
     // A disabled capsule keeps its resting secondary ink and no surface under
-    // the pointer; a disabled field keeps its transparent field surface.
+    // the pointer; a disabled field takes no pointer, like a disabled Button,
+    // so it neither hovers nor presses.
     expect(capsule).toContain('disabled:hover:bg-transparent');
     expect(capsule).toContain('disabled:hover:fg-secondary');
-    expect(field).toContain('disabled:hover:bg-transparent');
+    expect(field).toContain('disabled:pointer-events-none');
     expect(field).not.toContain('disabled:hover:bg-base');
   });
 
@@ -48,7 +49,7 @@ describe('PickerTrigger', () => {
     );
     expect(field).toContain('shadow-field');
     expect(field).toContain('focus-visible:shadow-field-focus');
-    expect(field).toContain('rounded-lg');
+    expect(field).toContain('rounded-row');
     expect(field).not.toContain('focus-ring');
     expect(field).not.toContain('border');
     expect(field).not.toContain('bg-base');

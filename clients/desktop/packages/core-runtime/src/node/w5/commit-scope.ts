@@ -29,9 +29,7 @@ export interface W5ObservedFile {
   previousRaw: string | null;
 }
 
-export interface W5StagedFile extends W5ObservedFile {
-  contents: string;
-}
+export type W5StagedFile = W5ObservedFile;
 
 export interface W5CommitScope {
   options: W5CommitOptions;

@@ -73,7 +73,7 @@ test('Code Graph settings live in their own Advanced page', async ({}, testInfo)
       .first();
     await expect(firstWorkspace).toBeVisible();
     await firstWorkspace.click();
-    await expect(firstWorkspace).toHaveAttribute('aria-pressed', 'true');
+    await expect(firstWorkspace).toHaveAttribute('aria-checked', 'true');
 
     await window.screenshot({
       path: testInfo.outputPath('code-graph-settings.png'),

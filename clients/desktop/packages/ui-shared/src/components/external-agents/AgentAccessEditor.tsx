@@ -7,6 +7,7 @@ import {
   type SegmentedControlOption,
 } from '../SegmentedControl';
 import { StatusPill } from '../StatusPill';
+import { SettingsRowsRow } from '../settings/SettingsRows';
 import { ToggleSwitch } from '../ToggleSwitch';
 import type {
   AgentAccessGroupRow,
@@ -171,36 +172,30 @@ function AgentAccessGroup({
           data-testid={`agent-access-destructive-${group.id}`}
           className="flex flex-col gap-2"
         >
-          <div className="flex items-center justify-between gap-6">
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <label
-                htmlFor={destructiveSwitchId}
-                className="block text-s font-medium fg-primary"
-              >
-                {destructive.label}
-              </label>
-              <div
-                id={destructiveNoteId}
-                data-testid={destructiveNoteId}
-                className="text-xs text-pretty fg-secondary"
-              >
+          <SettingsRowsRow
+            label={destructive.label}
+            htmlFor={destructiveSwitchId}
+            description={
+              <div id={destructiveNoteId} data-testid={destructiveNoteId}>
                 {destructive.description}
               </div>
-            </div>
-            <ToggleSwitch
-              id={destructiveSwitchId}
-              label={destructive.label}
-              checked={destructive.enabled}
-              disabled={disabled || unavailable}
-              describedBy={`${destructiveNoteId}${
-                destructive.warning === undefined
-                  ? ''
-                  : ` ${destructiveWarningId}`
-              }`}
-              dataTestId={destructiveSwitchId}
-              onChange={(next): void => onDestructiveChange(group.id, next)}
-            />
-          </div>
+            }
+            control={
+              <ToggleSwitch
+                id={destructiveSwitchId}
+                label={destructive.label}
+                checked={destructive.enabled}
+                disabled={disabled || unavailable}
+                describedBy={`${destructiveNoteId}${
+                  destructive.warning === undefined
+                    ? ''
+                    : ` ${destructiveWarningId}`
+                }`}
+                dataTestId={destructiveSwitchId}
+                onChange={(next): void => onDestructiveChange(group.id, next)}
+              />
+            }
+          />
           {destructive.warning !== undefined ? (
             <Notice
               id={destructiveWarningId}

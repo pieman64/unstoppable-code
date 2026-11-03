@@ -59,7 +59,9 @@ test('Copilot shows persisted cumulative token counts in the usage popup', async
       ['Cache write', '500'],
     ]) {
       await expect(
-        popup.getByText(label, { exact: true }).locator('..'),
+        popup
+          .locator('.min-h-10')
+          .filter({ has: window.getByText(label, { exact: true }) }),
       ).toHaveText(`${label}${value}`);
     }
     await expect(popup).not.toContainText('Response tokens');

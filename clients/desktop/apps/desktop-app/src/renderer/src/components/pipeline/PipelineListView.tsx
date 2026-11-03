@@ -31,7 +31,14 @@ import {
   type PipelineCatalogEntry,
 } from './pipeline-catalog-entry';
 import type { CuratedPipelineListQuery } from '@canopy/protocol/pipeline-catalog';
-import { Button, BusyLabel } from '@canopy/ui-shared/components';
+import {
+  Button,
+  BusyLabel,
+  EmptyState,
+  ErrorBanner,
+  SearchField,
+  SettingsSelect,
+} from '@canopy/ui-shared/components';
 import { filterCuratedPipelinesBySearch } from '@canopy/ui-shared/lib';
 import { PipelineIcon as AppCatalogPipelineIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -319,69 +326,68 @@ export function PipelineListView({
         <WorkflowsTabPanel>
           {/* Toolbar: search + filters */}
           <div className="mb-4 mt-4 flex items-center gap-2 flex-wrap">
-            <input
-              type="text"
+            <SearchField
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onValueChange={setSearch}
               placeholder="Search workflows…"
+              aria-label="Search workflows"
               data-testid="pipeline-search"
-              className="focus-ring flex-1 min-w-45 rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-secondary"
+              className="flex-1 min-w-45"
             />
-            <select
+            <SettingsSelect
+              width="fit"
               value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
+              onValueChange={setSourceFilter}
               data-testid="pipeline-source-filter"
               aria-label="Filter by source"
-              className="focus-ring rounded-lg ring-1 ring-inset ring-line-base bg-base px-2.5 py-2 text-s fg-primary"
-            >
-              <option value="all">All sources</option>
-              {PIPELINE_SOURCES.filter((source) => source !== 'curated').map(
-                (source) => (
-                  <option key={source} value={source}>
-                    {PIPELINE_SOURCE_META[source].label}
-                  </option>
-                ),
-              )}
-            </select>
-            <select
+              options={[
+                { value: 'all', label: 'All sources' },
+                ...PIPELINE_SOURCES.filter(
+                  (source) => source !== 'curated',
+                ).map((source) => ({
+                  value: source,
+                  label: PIPELINE_SOURCE_META[source].label,
+                })),
+              ]}
+            />
+            <SettingsSelect
+              width="fit"
               value={triggerFilter}
-              onChange={(e) =>
-                setTriggerFilter(parseTriggerFilter(e.target.value))
+              onValueChange={(value) =>
+                setTriggerFilter(parseTriggerFilter(value))
               }
               data-testid="pipeline-trigger-filter"
               aria-label="Filter by trigger type"
-              className="focus-ring rounded-lg border bg-base px-2.5 py-2 text-s fg-primary"
-            >
-              <option value="all">All triggers</option>
-              {TRIGGER_TYPES.map((trigger) => (
-                <option key={trigger} value={trigger}>
-                  {TRIGGER_META[trigger].label}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: 'all', label: 'All triggers' },
+                ...TRIGGER_TYPES.map((trigger) => ({
+                  value: trigger,
+                  label: TRIGGER_META[trigger].label,
+                })),
+              ]}
+            />
           </div>
 
           <div className="mb-4">
-            <select
+            <SettingsSelect
+              width="fit"
               data-testid="pipeline-scope-filter"
               aria-label="Filter by execution scope"
               value={scopeFilter}
-              onChange={(event) =>
+              onValueChange={(value) =>
                 setScopeFilter(
-                  PIPELINE_EXECUTION_SCOPES.find(
-                    (scope) => scope === event.target.value,
-                  ) ?? 'all',
+                  PIPELINE_EXECUTION_SCOPES.find((scope) => scope === value) ??
+                    'all',
                 )
               }
-              className="focus-ring rounded-lg ring-1 ring-inset ring-line-base bg-base px-2.5 py-2 text-s fg-primary"
-            >
-              <option value="all">All execution scopes</option>
-              {PIPELINE_EXECUTION_SCOPES.map((scope) => (
-                <option key={scope} value={scope}>
-                  {PIPELINE_EXECUTION_SCOPE_META[scope].label}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: 'all', label: 'All execution scopes' },
+                ...PIPELINE_EXECUTION_SCOPES.map((scope) => ({
+                  value: scope,
+                  label: PIPELINE_EXECUTION_SCOPE_META[scope].label,
+                })),
+              ]}
+            />
           </div>
           {/* Loading */}
           {loading && filtered.length === 0 && (
@@ -391,11 +397,7 @@ export function PipelineListView({
           )}
 
           {/* Error */}
-          {error && (
-            <div className="rounded-lg bg-destructive-subtle border border-line-destructive/20 px-4 py-3 mb-6">
-              <p className="text-s fg-destructive">{error}</p>
-            </div>
-          )}
+          <ErrorBanner error={error} className="mb-6" />
 
           {actionError && (
             <div className="mb-6" data-testid="pipeline-list-action-error">
@@ -488,11 +490,16 @@ export function PipelineListView({
               {showShared && (
                 <div className="mt-4" data-testid="shared-pipelines-section">
                   {cloudReady && showShared && (
+                    <ErrorBanner
+                      error={sharedState.error}
+                      className="mb-2"
+                      onRetry={() => void onSharedRefresh()}
+                    />
+                  )}
+                  {cloudReady && showShared && (
                     <div className="flex items-center justify-between gap-2">
                       {sharedState.error ? (
-                        <p className="text-xs fg-destructive">
-                          {sharedState.error}
-                        </p>
+                        <span />
                       ) : sharedState.loading &&
                         sharedState.rows.length === 0 ? (
                         <p className="text-xs fg-secondary">
@@ -543,27 +550,25 @@ export function PipelineListView({
                 allPipelines.length === 0 &&
                 !error &&
                 !sharedInitialLoading && (
-                  <div className="flex flex-col items-center justify-center py-16 text-center">
-                    <div className="w-12 h-12 rounded-xl bg-secondary flex items-center justify-center mb-4">
+                  <EmptyState
+                    icon={
                       <AppCatalogPipelineIcon
                         width="24"
                         height="24"
                         className="fg-secondary"
                       />
-                    </div>
-                    <h3 className="text-s font-medium fg-primary mb-1">
-                      No workflows yet
-                    </h3>
-                    <p className="text-xs fg-secondary mb-4">
-                      Create your first workflow to get started
-                    </p>
-                    <CreatePipelineSplitButton
-                      onStartInterview={onStartInterview}
-                      onBuildManually={onCreateNew}
-                      interviewPending={interviewPending}
-                      testIdPrefix="pipeline-empty-create-new"
-                    />
-                  </div>
+                    }
+                    title="No workflows yet"
+                    subtitle="Create your first workflow to get started"
+                    action={
+                      <CreatePipelineSplitButton
+                        onStartInterview={onStartInterview}
+                        onBuildManually={onCreateNew}
+                        interviewPending={interviewPending}
+                        testIdPrefix="pipeline-empty-create-new"
+                      />
+                    }
+                  />
                 )}
             </>
           )}

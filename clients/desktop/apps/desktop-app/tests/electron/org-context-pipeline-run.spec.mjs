@@ -167,7 +167,12 @@ function trackedPlan() {
   };
 }
 
-async function runPlanPipeline(window, source, pipelineName) {
+async function runPlanPipeline(
+  window,
+  source,
+  pipelineName,
+  { afterRun = false } = {},
+) {
   // The plan list row opens the plan's Plan panel (and reveals it once open).
   // After the first run, the card contains a linked-execution action in its
   // center. Click the title area so the second pass opens the plan itself.
@@ -176,8 +181,16 @@ async function runPlanPipeline(window, source, pipelineName) {
     .click({ position: { x: 10, y: 10 } });
   const planPanel = planDocumentPanel(window, PLAN_ID);
   await expect(planPanel).toBeVisible();
-  await planPanel.getByTestId('plan-panel-execute').click();
-  await planPanel.getByTestId('plan-panel-execute-pipeline').click();
+  // While a linked run is active or after it succeeded, Open replaces Execute
+  // and further runs live in the overflow menu.
+  if (afterRun) {
+    await expect(planPanel.getByTestId('plan-panel-open')).toBeVisible();
+    await planPanel.getByTestId('plan-panel-more').click();
+  } else {
+    await planPanel.getByTestId('plan-panel-execute').click();
+  }
+  // Either menu portals to the document body.
+  await window.getByTestId('plan-panel-execute-pipeline').click();
 
   const pipelineModal = window.getByTestId('pipeline-trigger-modal');
   const body = pipelineModal.getByTestId('pipeline-trigger-modal-body');
@@ -298,6 +311,7 @@ test('an organization can run Custom and Organization pipelines against its link
       window,
       'Shared',
       SHARED_PIPELINE_NAME,
+      { afterRun: true },
     );
     await expect(runsTitle).toHaveAttribute('aria-expanded', 'true');
 

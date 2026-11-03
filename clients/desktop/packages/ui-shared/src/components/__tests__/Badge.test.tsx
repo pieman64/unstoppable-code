@@ -57,6 +57,28 @@ describe('Badge', () => {
     expect(html.indexOf('<svg')).toBeLessThan(html.indexOf('Checks passed'));
   });
 
+  it('draws a 16px square tag at the compact size, for dense views', () => {
+    expect(
+      renderToStaticMarkup(
+        <Badge size="compact" tone="success">
+          added
+        </Badge>,
+      ),
+    ).toBe(
+      '<span data-badge-tone="success" data-badge-size="compact" class="inline-flex h-4 shrink-0 items-center gap-0.5 whitespace-nowrap rounded-sm px-1 text-3xs font-medium leading-none bg-success-subtle fg-success-strong">added</span>',
+    );
+  });
+
+  it('draws a compact leading glyph at 10px', () => {
+    const html = renderToStaticMarkup(
+      <Badge size="compact" icon={Check}>
+        PK
+      </Badge>,
+    );
+    expect(html).toMatch(/<svg[^>]*class="size-2.5 shrink-0"/);
+    expect(html).toMatch(/<svg[^>]*width="10px"/);
+  });
+
   it('appends placement classes after the tone', () => {
     expect(
       renderToStaticMarkup(<Badge className="ml-auto">Pro</Badge>),
@@ -112,6 +134,8 @@ describe('Dot', () => {
     ['unread', 'bg-fg-info'],
     ['attention', 'bg-fg-warning'],
     ['filter', 'bg-fg-quaternary'],
+    ['success', 'bg-fg-success-strong'],
+    ['danger', 'bg-fg-destructive-strong'],
   ] as const)('draws a 6px %s dot', (tone, cls) => {
     expect(renderToStaticMarkup(<Dot tone={tone} />)).toBe(
       `<span aria-hidden="true" data-dot-tone="${tone}" class="inline-block size-1.5 shrink-0 rounded-full ${cls}"></span>`,
@@ -127,4 +151,13 @@ describe('Dot with a label', () => {
       '<span role="img" aria-label="Unread work in group" data-dot-tone="unread" class="inline-block size-1.5 shrink-0 rounded-full bg-fg-info"></span>',
     );
   });
+});
+
+describe('Count beside a label with a value that is not a number', () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+    'shows 0 for %p, like the icon placement',
+    (value) => {
+      expect(renderToStaticMarkup(<Count value={value} />)).toMatch(/>0</);
+    },
+  );
 });

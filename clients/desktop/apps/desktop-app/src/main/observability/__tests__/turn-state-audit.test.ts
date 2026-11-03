@@ -5,6 +5,7 @@ import {
 import type { ChatTurnStateChange } from '../../services/chat-turn-state-handoff';
 import { installTurnStateAudit } from '../turn-state-audit';
 import { ObservabilityService } from '../service';
+import { createDesktopObservabilityHost } from '../host';
 
 const SCOPE = { projectId: 'proj', worktreeId: 'wt', chatId: 'chat' };
 
@@ -22,7 +23,7 @@ describe('turn state audit', () => {
   let service: ObservabilityService;
 
   beforeEach(() => {
-    service = new ObservabilityService();
+    service = new ObservabilityService(createDesktopObservabilityHost());
   });
 
   afterEach(async () => {

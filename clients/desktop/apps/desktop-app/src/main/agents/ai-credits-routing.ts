@@ -606,7 +606,11 @@ export async function getAiCreditsRoutingContextWithStatus(
     // and caching it would hold the credits lane at UNKNOWN for the full TTL
     // after the keychain recovers. Re-reading on the next call makes recovery
     // immediate.
-    if (degraded) {
+    // A confirmed unfunded account can receive purchased or daily credits
+    // without changing account identity. Do not retain a negative answer:
+    // the next normal Send must re-read eligibility rather than refuse the
+    // restored draft until the 30-second routing TTL expires (CAN-5348).
+    if (degraded || context?.creditsEligible === false) {
       cachedRoutingContexts.delete(cacheKey);
     } else {
       cachedRoutingContexts.set(cacheKey, {

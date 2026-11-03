@@ -1,5 +1,11 @@
 import { repositoryCloneErrorMessage } from '@canopy/protocol/portal';
-import { RepositoryCloneError } from '@canopy/ui-shared/components';
+import {
+  Fact,
+  FactList,
+  RepositoryCloneError,
+  ErrorBanner,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Button, DialogModal } from '@canopy/ui-shared';
 import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
@@ -92,11 +98,12 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
       className="flex flex-col gap-2 py-3"
     >
       <div className="flex items-center justify-between gap-4 text-s">
-        <span
-          className={`truncate font-medium ${failed ? 'fg-destructive' : 'fg-primary'}`}
-          title={job.repoName}
-        >
-          {cloneJobHeadline(job)}
+        <span className="truncate font-medium fg-primary" title={job.repoName}>
+          {failed ? (
+            <StatusLabel>{cloneJobHeadline(job)}</StatusLabel>
+          ) : (
+            cloneJobHeadline(job)
+          )}
         </span>
         {!failed && !finished && (
           <span className="shrink-0 fg-secondary">
@@ -129,25 +136,19 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
           {` · ${formatElapsed(Math.max(0, now - job.startedAt))} elapsed`}
         </p>
       )}
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
-        <dt className="fg-secondary">From</dt>
-        <dd className="truncate fg-primary" title={job.remoteUrl}>
+      <FactList columnGap="3" rowGap="0.5" labelTone="secondary">
+        <Fact label="From" fit="truncate" title={job.remoteUrl}>
           {job.remoteUrl}
-        </dd>
+        </Fact>
         {job.destinationPath && (
           <>
-            <dt className="fg-secondary">To</dt>
-            <dd className="truncate fg-primary" title={job.destinationPath}>
+            <Fact label="To" fit="truncate" title={job.destinationPath}>
               {job.destinationPath}
-            </dd>
+            </Fact>
           </>
         )}
-      </dl>
-      {error && (
-        <p role="alert" className="text-xs fg-destructive">
-          {error}
-        </p>
-      )}
+      </FactList>
+      <ErrorBanner error={error} className="" />
       {(job.cancellable || failed || finished) && (
         <div className="flex justify-end">
           {failed || finished ? (
@@ -231,6 +232,7 @@ export function CloneProgressModal(): JSX.Element | null {
   if (!open) return null;
   return (
     <DialogModal
+      inset="flush"
       title="Clone progress"
       onClose={close}
       maxWidth="lg"
@@ -244,13 +246,13 @@ export function CloneProgressModal(): JSX.Element | null {
         <ol
           aria-label="Clones"
           aria-live="polite"
-          className="max-h-[55vh] overflow-y-auto px-5 py-1"
+          className="max-h-[55vh] overflow-y-auto px-6 py-1"
         >
           {visible.map((job) => (
             <CloneJobRow key={job.id} job={job} now={now} />
           ))}
         </ol>
-        <div className="flex justify-end px-5 py-4">
+        <div className="flex justify-end px-6 py-4">
           <Button
             size="sm"
             variant="secondary"

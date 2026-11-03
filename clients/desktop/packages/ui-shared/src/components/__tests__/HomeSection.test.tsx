@@ -151,4 +151,47 @@ describe('Home setup sections', () => {
     expect(container.textContent).not.toContain('Show hidden sections');
     act(() => root.unmount());
   });
+  it('shows the ••• only while its section is hovered, focused or has the menu open', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    act(() =>
+      root.render(
+        <HomeSections>
+          <HomeSection sectionId="continue" title="Continue">
+            <button type="button">Last viewed</button>
+          </HomeSection>
+        </HomeSections>,
+      ),
+    );
+    const section = container.querySelector('section');
+    const slot = container.querySelector<HTMLElement>(
+      '[data-testid="home-section-actions-continue"]',
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-testid="home-section-more-continue"]',
+    );
+    if (!section || !slot || !trigger) throw new Error('Missing section menu');
+    // The whole section (headline and rows) is the hover group, so the
+    // pointer anywhere in it reveals the menu; at rest it is hidden.
+    expect(section.className).toContain('group/home-section');
+    expect(slot.contains(trigger)).toBe(true);
+    const classes = slot.className.split(/\s+/);
+    expect(classes).toEqual(
+      expect.arrayContaining([
+        'opacity-0',
+        'group-hover/home-section:opacity-100',
+        // Keyboard: tabbing into the section or onto the trigger shows it.
+        'group-focus-within/home-section:opacity-100',
+        // The open menu leaves the section (it portals), so the trigger's
+        // own expanded state keeps it shown.
+        'has-[[aria-expanded=true]]:opacity-100',
+        // Touch and other no-hover pointers never hide it.
+        'pointer-coarse:opacity-100',
+        '[@media(hover:none)]:opacity-100',
+      ]),
+    );
+    act(() => root.unmount());
+    container.remove();
+  });
 });

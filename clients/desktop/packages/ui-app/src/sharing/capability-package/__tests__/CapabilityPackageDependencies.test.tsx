@@ -8,6 +8,11 @@ import type {
   PipelinePackageResource,
   PipelinePackageTree,
 } from '@canopy/protocol/pipelines';
+import {
+  chooseSettingsOption,
+  settingsSelectOptionValues,
+  settingsSelectTrigger,
+} from '../../../settings/__tests__/helpers/settings-select';
 import { CapabilityPackageDependencies } from '../CapabilityPackageDependencies';
 
 (
@@ -257,21 +262,14 @@ describe('CapabilityPackageDependencies', () => {
         />,
       );
     });
-    const select = container.querySelector<HTMLSelectElement>(
+    const select = settingsSelectTrigger(
+      container,
       '[data-testid="share-automation-dependencies-pipeline-add"]',
     );
     // A required pipeline is in the share; an unticked suggestion is not.
-    expect(
-      Array.from(select?.options ?? []).map((option) => option.value),
-    ).toEqual(['', 'daily', 'worker']);
-    const choose = async (value: string): Promise<void> => {
-      await act(async () => {
-        if (!select) return;
-        select.value = value;
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-        await Promise.resolve();
-      });
-    };
+    expect(settingsSelectOptionValues(select)).toEqual(['daily', 'worker']);
+    const choose = (value: string): Promise<void> =>
+      chooseSettingsOption(select, value);
     await choose('worker');
     expect(onAdd).toHaveBeenCalledWith('worker');
     expect(

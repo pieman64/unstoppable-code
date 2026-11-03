@@ -9,6 +9,7 @@ import {
 import { brandText } from '@/lib/brand';
 import type { WindowsGitGateState } from '@/hooks/useWindowsGitRequirement';
 import { MonitorDownIcon as AppCatalogMonitorDownIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 interface InstallDesktopIconProps {
   className?: string;
@@ -370,13 +371,11 @@ export function WindowsGitRequiredScreen({
               : `No usable Git installation was found. Install Apple's Command Line Tools to use ${brandName}. macOS will open a dialog where you can choose Install and accept the license.`}
           </p>
           {state.kind === 'error' && (
-            <p
-              role="alert"
-              className="text-s fg-warning"
-              data-testid="git-gate-error"
-            >
-              {state.message}
-            </p>
+            <ErrorBanner
+              className="w-full"
+              error={state.message}
+              testId="git-gate-error"
+            />
           )}
           <div className="flex w-full flex-col gap-3">
             {waiting ? (

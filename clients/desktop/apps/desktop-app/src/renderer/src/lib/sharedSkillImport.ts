@@ -320,6 +320,12 @@ export type SharedSkillInstallLookup =
   /** The installed state could not be verified; nothing may be offered. */
   | { status: 'unverified' };
 
+/** An installed detail's local destination hint, never part of the share DTO. */
+export interface InstalledSharedSkillTarget {
+  readonly sourceId: string;
+  readonly skillName: string;
+}
+
 /**
  * The installed copy of a team or organization share. Under context
  * enforcement the install receipt establishes installation and hashes only
@@ -327,7 +333,9 @@ export type SharedSkillInstallLookup =
  * changed is still installed, with an update available, so the recipient
  * reviews an update instead of installing a duplicate.
  *
- *   - Of several receipted copies, a current one wins; otherwise the first
+ *   - An installed-detail destination selects only that receipted copy;
+ *     disappearance or unreadability never substitutes a sibling.
+ *   - Without a destination, a current copy wins; otherwise the first
  *     readable copy in local-id order. A missing copy never hides a sibling.
  *   - Without enforcement, or for a share with no receipt support, an
  *     identical copy counts, as the import reuses it; a packaged share then
@@ -341,8 +349,12 @@ export async function lookupInstalledSharedSkill(
     SharedSkillDetail,
     'id' | 'rawSkill' | 'contentHash' | 'distributionMode' | 'package'
   > & { installedCopyIds?: readonly string[] },
+  target?: InstalledSharedSkillTarget,
 ): Promise<SharedSkillInstallLookup> {
+  if (target && target.sourceId !== CUSTOM_SKILL_SOURCE_ID)
+    return { status: 'unverified' };
   if (!sharedSkillReceiptsEnforced()) {
+    if (target) return { status: 'unverified' };
     // No receipt records a package install here, so it cannot be confirmed.
     if (detail.distributionMode === 'package') return { status: 'absent' };
     const found = await findInstalledSkillByContentHash(detail.contentHash);
@@ -369,13 +381,18 @@ export async function lookupInstalledSharedSkill(
       (skill) =>
         skill.sourceId === CUSTOM_SKILL_SOURCE_ID &&
         skill.installedFromShare?.remoteId === detail.id &&
+        (target === undefined || skill.name === target.skillName) &&
         (copyIds === undefined ||
           copyIds.includes(`${skill.sourceId}/${skill.name}`)),
     );
     if (receipted.length === 0)
-      return copyIds !== undefined && copyIds.length > 0
+      // A targeted copy disappearing must not become a fresh Install or
+      // silently select another receipted alias of the same source.
+      return target
         ? { status: 'missing-copy' }
-        : { status: 'absent' };
+        : copyIds !== undefined && copyIds.length > 0
+          ? { status: 'missing-copy' }
+          : { status: 'absent' };
     const sourceContentHash = await sha256Hex(detail.rawSkill);
     if (!sourceContentHash) return { status: 'unverified' };
     let unreadable = false;

@@ -128,7 +128,7 @@ describe('PipelineExecutionDetailModal session-replay privacy', () => {
       );
     });
 
-    const card = container.querySelector('[role="dialog"]');
+    const card = document.body.querySelector('[role="dialog"]');
     const title = card?.querySelector('h2');
     expect(title).toBeTruthy();
     expect(card?.getAttribute('aria-labelledby')).toBe(title?.id);

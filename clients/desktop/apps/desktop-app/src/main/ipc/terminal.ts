@@ -288,8 +288,27 @@ export function registerTerminalHandlers(
       event,
       request,
     ): TerminalWriteDisposition | Promise<TerminalWriteDisposition> => {
-      const write = (): TerminalWriteDisposition => {
-        const disposition = writeTerminal(request);
+      const terminalService = getClaudeTerminalSessionService();
+      const refuse = (error: unknown): Promise<never> | never => {
+        const settlement = terminalService.recordPlanImplementationWriteFailure(
+          request.terminalId,
+          request.idempotencyKey,
+        );
+        if (settlement)
+          return settlement.then(() => {
+            throw error;
+          });
+        throw error;
+      };
+      const write = ():
+        | TerminalWriteDisposition
+        | Promise<TerminalWriteDisposition> => {
+        let disposition: TerminalWriteDisposition;
+        try {
+          disposition = writeTerminal(request);
+        } catch (error: unknown) {
+          return refuse(error);
+        }
         // Typing into a chat's terminal drives that chat from this window; the
         // emulator answering a program's query does not.
         const chatId = workerTerminal.get(request.terminalId)?.chatId;
@@ -301,12 +320,11 @@ export function registerTerminalHandlers(
         }
         return disposition;
       };
-      const authorization =
-        getClaudeTerminalSessionService().authorizeAgentInputTerminalWrite(
-          request.terminalId,
-          request.idempotencyKey,
-        );
-      return authorization ? authorization.then(write) : write();
+      const authorization = terminalService.authorizeAgentInputTerminalWrite(
+        request.terminalId,
+        request.idempotencyKey,
+      );
+      return authorization ? authorization.then(write, refuse) : write();
     },
   );
 

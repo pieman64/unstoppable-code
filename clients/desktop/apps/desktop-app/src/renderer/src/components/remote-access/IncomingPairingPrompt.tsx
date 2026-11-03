@@ -1,6 +1,10 @@
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useState, type JSX } from 'react';
-import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  LoadingSpinner,
+  ErrorBanner,
+} from '@canopy/ui-shared/components';
 import type { RemoteIncomingPairing } from '@canopy/desktop-shared/types';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
@@ -48,7 +52,7 @@ export function IncomingPairingPrompt({
       trapFocus
       dataTestId="remote-access-incoming-pairing"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-4">
+      <div className="flex flex-col gap-4">
         <p className="text-s fg-secondary">
           {request.name} {CONTROL_RISK_SENTENCE}. Allow it only if this code
           matches the one on {request.name}.
@@ -60,11 +64,7 @@ export function IncomingPairingPrompt({
         >
           {formatPairingCode(request.code)}
         </p>
-        {error ? (
-          <p role="alert" className="text-s fg-destructive">
-            {error}
-          </p>
-        ) : null}
+        <ErrorBanner error={error} className="" />
         <div className="flex items-center justify-end gap-2">
           <Button
             variant="outline"

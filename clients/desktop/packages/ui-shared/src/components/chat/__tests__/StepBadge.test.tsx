@@ -128,11 +128,11 @@ describe('step badges', () => {
 
     const grep = render('clean', 'detailed', <GrepRow />);
     expect(grep.match(/data-step-badge=""/g)).toHaveLength(2);
-    expect(grep).toContain('Searched for');
+    expect(grep).toContain('Search for');
 
     const bash = render('clean', 'detailed', <BashRow />);
     expect(bash.match(/data-step-badge=""/g)).toHaveLength(1);
-    expect(bash).toContain('Ran');
+    expect(bash).toContain('Run');
     expect(bash).toContain('pnpm test toolbar --repeat 2');
   });
 
@@ -187,8 +187,8 @@ describe('step badges', () => {
       return element;
     };
 
-    // A label in its own span: the span is a line that shrinks, its words
-    // truncate and its target is a badge.
+    // A label in its own span: the span is a line, its words keep their
+    // width and its target is a badge that shrinks first.
     const memory = host(
       row('canopy_search_memory', { query: 'package manager for this repo' }),
     );
@@ -198,9 +198,9 @@ describe('step badges', () => {
     expect(wrapper).toBeInstanceOf(HTMLElement);
     expect(wrapper?.className).toContain('min-w-0');
     expect(wrapper?.className).toContain('overflow-hidden');
-    expect(wrapper?.querySelector('span.truncate')?.textContent).toBe(
-      'Search memory ',
-    );
+    const words = wrapper?.querySelector('span.truncate');
+    expect(words?.textContent).toBe('Search memory ');
+    expect(words?.className).toContain('flex-shrink-0');
     expect(wrapper?.querySelector('[data-step-badge]')?.textContent).toBe(
       'package manager for this repo',
     );
@@ -225,7 +225,7 @@ describe('step badges', () => {
       expect(snippet?.className).toContain('truncate');
     }
 
-    // Recent keeps the label as it was.
+    // Recent uses the same badge line as Detailed.
     const recent = render(
       'clean',
       'recent',
@@ -240,13 +240,11 @@ describe('step badges', () => {
         }
       />,
     );
-    expect(recent).toContain(
-      '<span data-testid="chat-tool-call-search-memory-label">',
-    );
+    expect(recent).toContain('data-step-badge');
   });
 
   it.each(['recent', 'compact'] as const)(
-    'keep plain words on %s',
+    'keep the same step presentation on %s',
     (detail) => {
       for (const row of [
         <ReadRow key="r" />,
@@ -254,29 +252,24 @@ describe('step badges', () => {
         <BashRow key="b" />,
       ]) {
         const html = render('clean', detail, row);
-        expect(html).not.toContain('data-step-badge');
-        expect(html).not.toContain('<code');
+        expect(html).toBe(render('clean', 'detailed', row));
       }
     },
   );
 
-  it('size a Detailed row like a tool call card and others like a step row', () => {
-    const detailed = render(
-      'clean',
-      'detailed',
-      <StepRow step icon={<svg />} label="Read file.ts" />,
-    );
-    expect(detailed).toContain('text-xs fg-secondary');
-    expect(detailed).not.toContain('canopy-small-icon-stroke');
-    expect(detailed).toContain('h-3.5 w-3.5');
-
-    const recent = render(
-      'clean',
-      'recent',
-      <StepRow step icon={<svg />} label="Read file.ts" />,
-    );
-    expect(recent).toContain('canopy-small-icon-stroke');
-    expect(recent).toContain('text-s fg-secondary');
+  it('uses the same row typography and icon geometry at every detail level', () => {
+    for (const detail of ['detailed', 'recent', 'compact'] as const) {
+      for (const step of [true, false]) {
+        const html = render(
+          'clean',
+          detail,
+          <StepRow step={step} icon={<svg />} label="Read file.ts" />,
+        );
+        expect(html).toContain('text-s fg-secondary');
+        expect(html).not.toContain('canopy-small-icon-stroke');
+        expect(html).toContain('h-3.5 w-3.5');
+      }
+    }
 
     // The words keep their spaces, so copied and spoken text reads right.
     const text = (html: string): string => {
@@ -288,10 +281,11 @@ describe('step badges', () => {
       'Read toolbar.test.ts',
     );
     expect(text(render('clean', 'detailed', <GrepRow />))).toBe(
-      'Searched for waitForIdle in src',
+      'Search for waitForIdle in src',
     );
 
-    // Plain words and details still end in an ellipsis on a narrow row.
+    // Plain words keep their width beside a detail that shrinks first, and
+    // still end in an ellipsis when they alone outgrow a narrow row.
     const plain = render(
       'clean',
       'detailed',
@@ -307,8 +301,12 @@ describe('step badges', () => {
         detail="Find every caller of waitForIdle"
       />,
     );
-    expect(plain).toContain('<span class="min-w-0 truncate">Explore</span>');
-    expect(plain).toContain('<span class="min-w-0 truncate"> agent</span>');
+    expect(plain).toContain(
+      '<span class="max-w-full flex-shrink-0 truncate">Explore</span>',
+    );
+    expect(plain).toContain(
+      '<span class="max-w-full flex-shrink-0 truncate"> agent</span>',
+    );
     expect(plain).toMatch(
       /<span class="min-w-0 truncate fg-tertiary">Find every caller of waitForIdle<\/span>/,
     );
@@ -318,7 +316,7 @@ describe('step badges', () => {
       <StepRow step icon={<svg />} label="Thought for 3s" />,
     );
     expect(thought).toContain(
-      '<span class="min-w-0 truncate">Thought for 3s</span>',
+      '<span class="max-w-full flex-shrink-0 truncate">Thought for 3s</span>',
     );
 
     // A turn header or a run's line keeps the step row's own size.
@@ -497,8 +495,8 @@ describe('StepBadge on the page', () => {
     host.remove();
   });
 
-  it('measures again when the step finishes and its verb changes length', () => {
-    // "Reading" leaves the badge 70px; "Read" leaves it 60px, where the cut
+  it('measures again when status changes the room beside the badge', () => {
+    // A new status detail reduces room from 70px to 60px, where the cut
     // lands after a dot. The line's own size doesn't change.
     let room = 70;
     layout(60);

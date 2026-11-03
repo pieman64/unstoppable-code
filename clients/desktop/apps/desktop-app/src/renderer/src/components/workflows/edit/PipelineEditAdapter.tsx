@@ -1,6 +1,7 @@
 import {
   useCallback,
   useMemo,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -17,7 +18,12 @@ import {
   resolveWorkflowEditPlan,
   type UnsavedChangesSaveResult,
 } from '@canopy/ui-app/workflows';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  EmptyState,
+  InlineTextInput,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { pipelineStartKinds } from '@/lib/workflows/pipeline-automations';
@@ -83,31 +89,53 @@ function PipelineNameEditor({
   readonly onRename: (name: string) => void;
 }): JSX.Element {
   const [editing, setEditing] = useState(false);
+  // The name when editing began, which Escape puts back, and the last name
+  // typed since.
+  const nameBeforeEdit = useRef(name);
+  const typedName = useRef(name);
   const label = name || 'Untitled workflow';
   if (editing) {
     return (
-      <input
-        autoFocus
-        value={name}
-        aria-label="Workflow name"
-        data-testid="pipeline-editor-name-input"
-        onChange={(event): void => onRename(event.target.value)}
-        onBlur={(): void => setEditing(false)}
-        onKeyDown={(event): void => {
-          if (event.key === 'Enter' || event.key === 'Escape') {
-            setEditing(false);
-          }
-        }}
-        // No type classes: the field takes the page title's type from the
-        // header's heading, so renaming does not change its size.
-        className={`w-full min-w-0 border-b border-line-accent bg-transparent fg-primary outline-none ${REPLAY_MASK_CLASS}`}
-      />
+      // The replay mask sits on a wrapper: the field's own class is
+      // placement only.
+      <span className={`flex min-w-0 max-w-full ${REPLAY_MASK_CLASS}`}>
+        {/* Each keystroke renames, so the shell's ⌘S, which saves without
+            leaving the field, saves the typed name. Escape keeps the old
+            name. */}
+        <InlineTextInput
+          autoFocus
+          // Keeps the heading's font; the margin cancels the field's 8px
+          // inset so the name does not shift when editing starts.
+          size="inherit"
+          grow
+          className="-ml-2"
+          value={name}
+          placeholder="Untitled workflow"
+          aria-label="Workflow name"
+          data-testid="pipeline-editor-name-input"
+          onDraftChange={(next): void => {
+            typedName.current = next;
+            onRename(next);
+          }}
+          onCommit={onRename}
+          onCancel={(): void => {
+            if (typedName.current !== nameBeforeEdit.current) {
+              onRename(nameBeforeEdit.current);
+            }
+          }}
+          onBlur={(): void => setEditing(false)}
+        />
+      </span>
     );
   }
   return (
     <button
       type="button"
-      onClick={(): void => setEditing(true)}
+      onClick={(): void => {
+        nameBeforeEdit.current = name;
+        typedName.current = name;
+        setEditing(true);
+      }}
       aria-label={`Rename ${label}`}
       // Capped at the heading's width, so a long name ends in an ellipsis
       // instead of running under the save state and the actions.
@@ -405,9 +433,7 @@ export function PipelineEditAdapter({
             {...(onEditTriggers ? { onEditStarts: onEditTriggers } : {})}
           />
         ) : (
-          <p className="text-s fg-tertiary" data-testid="workflow-edit-no-runs">
-            No runs yet
-          </p>
+          <EmptyState testId="workflow-edit-no-runs" title="No runs yet" />
         )
       ) : id === 'trigger' ? (
         <PipelineTriggerSection

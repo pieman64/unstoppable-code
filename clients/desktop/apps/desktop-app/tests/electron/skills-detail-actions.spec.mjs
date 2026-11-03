@@ -537,14 +537,16 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
       'Authored locally for the edit page check.',
     );
 
-    // Validation stays inline and blocks Save.
+    // Save says which field blocks it, under that field, and saves nothing.
     await nameInput.fill('Detail_Custom');
-    await expect(
-      window.getByText(
-        'Skill name can only contain lowercase letters, numbers, and hyphens.',
-      ),
-    ).toBeVisible();
-    await expect(save).toBeDisabled();
+    const nameError = window.getByTestId('skill-editor-name-field-error');
+    await expect(nameError).toHaveCount(0);
+    await save.click();
+    await expect(nameError).toHaveText(
+      'Skill name can only contain lowercase letters, numbers, and hyphens.',
+    );
+    await expect(nameInput).toHaveAttribute('aria-invalid', 'true');
+    await expect(editorPage).toBeVisible();
 
     // Cancel discards the edit and returns to the details.
     await window.getByTestId('skill-editor-cancel').click();

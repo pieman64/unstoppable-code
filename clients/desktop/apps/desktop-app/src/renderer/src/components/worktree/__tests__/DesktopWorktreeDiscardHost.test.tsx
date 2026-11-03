@@ -22,6 +22,9 @@ const mockReconcile = jest.fn<
   [string, string, { removedTemporaryWorkspaceId?: string }?]
 >(() => Promise.resolve());
 const mockFinish = jest.fn();
+const mockSettleDeleted = jest.fn<Promise<void>, [string, string]>(() =>
+  Promise.resolve(),
+);
 const mockDiscardResults: WorktreeDiscardResult[] = [];
 
 function mockClient(): CanopyClient {
@@ -77,6 +80,13 @@ jest.mock('@/stores/githubStore', () => ({
     getState: (): { addToast: jest.Mock } => ({ addToast: jest.fn() }),
   },
 }));
+jest.mock('@/stores/archivedContainersStore', () => ({
+  useArchivedContainersStore: {
+    getState: (): { settleDeleted: typeof mockSettleDeleted } => ({
+      settleDeleted: mockSettleDeleted,
+    }),
+  },
+}));
 jest.mock('../finishWorktreeArchive', () => ({
   finishWorktreeArchive: (input: unknown): unknown => mockFinish(input),
 }));
@@ -106,6 +116,7 @@ let root: Root;
 beforeEach(() => {
   mockReconcile.mockClear();
   mockFinish.mockClear();
+  mockSettleDeleted.mockClear();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -123,7 +134,10 @@ async function flush(): Promise<void> {
     });
 }
 
-async function discard(result: WorktreeDiscardResult): Promise<void> {
+async function discard(
+  result: WorktreeDiscardResult,
+  description: WorktreeDiscardDescription = DISCARDABLE,
+): Promise<void> {
   mockDiscardResults.push(result);
   act(() => root.render(<DesktopWorktreeDiscardHost />));
   act(() =>
@@ -132,7 +146,7 @@ async function discard(result: WorktreeDiscardResult): Promise<void> {
       worktreeId: 'wt-1',
       worktreeName: 'owl',
       message: 'refused',
-      description: DISCARDABLE,
+      description,
       retry: jest.fn(),
     }),
   );
@@ -172,5 +186,31 @@ describe('DesktopWorktreeDiscardHost (CAN-5336)', () => {
       warnings: [],
     });
     expect(mockReconcile).toHaveBeenCalledWith('workspace-temp', 'wt-1', {});
+  });
+
+  it('CAN-5338 settles a discarded retained archive as a deletion does, without touching worktree rows or panels', async () => {
+    await discard(
+      {
+        status: 'discarded',
+        removed: ['retained-archive'],
+        gitCleanup: [],
+        warnings: [],
+      },
+      {
+        ...DISCARDABLE,
+        targets: [
+          {
+            kind: 'retained-archive',
+            path: '/data/workspace-temp/archived-containers/wt-1',
+            identity: '1:2:3',
+            identityVerified: false,
+            reason: 'source-gone',
+          },
+        ],
+      },
+    );
+    expect(mockSettleDeleted).toHaveBeenCalledWith('workspace-temp', 'wt-1');
+    expect(mockReconcile).not.toHaveBeenCalled();
+    expect(mockFinish).not.toHaveBeenCalled();
   });
 });

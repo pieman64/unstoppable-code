@@ -2,7 +2,7 @@ import type {
   RemoteControlDevice,
   RemoteControlHost,
 } from '@canopy/desktop-shared/types';
-import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
+import type { DotTone } from '@canopy/ui-shared/components';
 
 /**
  * Copy shared by the remote access surfaces (sidebar machine picker, Settings
@@ -60,15 +60,17 @@ export function remoteHostStatus(
   }
 }
 
-/** Dot color for a host tone; `null` when the state needs no dot. */
-export function remoteHostDotClassName(tone: RemoteHostTone): string | null {
+/**
+ * The connection Dot for a host tone: green when connected, red when it
+ * can't connect; `null` when the label alone says it (connecting, idle).
+ */
+export function remoteHostDotTone(tone: RemoteHostTone): DotTone | null {
   switch (tone) {
     case 'connected':
-      return OPERATIONAL_STATUS_COLORS.success.background;
-    case 'pending':
-      return OPERATIONAL_STATUS_COLORS.paused.background;
+      return 'success';
     case 'failed':
-      return OPERATIONAL_STATUS_COLORS.failed.background;
+      return 'danger';
+    case 'pending':
     case 'idle':
       return null;
   }

@@ -9,7 +9,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 
 function createUserDataDir() {
   return mkdtempSync(path.join(os.tmpdir(), 'canopy-prefs-e2e-'));
@@ -35,6 +39,7 @@ async function waitForPersistedPreference(filePath, predicate) {
 }
 
 async function quitElectronApp(electronApp) {
+  await captureDaemonDryRunEvidence(electronApp);
   const closed = electronApp.waitForEvent('close');
   await electronApp
     .evaluate(({ app }) => {

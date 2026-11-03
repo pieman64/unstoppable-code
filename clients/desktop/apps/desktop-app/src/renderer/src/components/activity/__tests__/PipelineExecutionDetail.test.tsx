@@ -346,7 +346,7 @@ describe('PipelineExecutionDetail', () => {
       const retry = byTestId(container, 'pipeline-detail-retry-exec-1');
       expect(retry).toBeInstanceOf(HTMLButtonElement);
       expect(retry?.hasAttribute('disabled')).toBe(true);
-      expect(retry?.textContent).toContain('Retrying…');
+      expect(retry?.textContent).toContain('Trying again…');
     });
   });
 

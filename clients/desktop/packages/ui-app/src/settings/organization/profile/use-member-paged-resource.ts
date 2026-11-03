@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSettingsClient } from '../../host';
 import { useSettingsErrorCopy } from '../../errors';
 import type { MemberPagedLoader } from './profile-api';
+import type { SettingsFailure } from '../../errors';
 
 /** Logger scope for the member profile's paged sections. */
 export const MEMBER_PROFILE_ERROR_SCOPE =
@@ -16,7 +17,7 @@ export interface MemberPagedResourceState<T> {
   /** True while a `loadMore` fetch is in flight. */
   loadingMore: boolean;
   /** Load copy for the last failed page; never server text. */
-  error: string | null;
+  error: SettingsFailure | null;
   /** True when another page is available. */
   hasMore: boolean;
   loadMore: () => Promise<void>;
@@ -49,7 +50,7 @@ export function useMemberPagedResource<T extends { id: string }>(
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const fetchingRef = useRef(false);
   // Bumped on every initial-fetch effect run. `loadMore` captures the current
   // value and discards its result if the context changed mid-flight, so a stale
@@ -79,7 +80,7 @@ export function useMemberPagedResource<T extends { id: string }>(
         }
       } catch (err: unknown) {
         if (!ignore) {
-          setError(errorCopy.loadCopy(err));
+          setError(errorCopy.loadFailure(err));
           setItems([]);
           setNextCursor(null);
         }
@@ -119,7 +120,7 @@ export function useMemberPagedResource<T extends { id: string }>(
       setNextCursor(page.nextCursor);
     } catch (err: unknown) {
       if (generationRef.current === generation) {
-        setError(errorCopy.loadCopy(err));
+        setError(errorCopy.loadFailure(err));
       }
     } finally {
       if (generationRef.current === generation) {

@@ -194,3 +194,75 @@ describe('TabContextMenu keyboard', () => {
     expect(focusedTestId()).toBe('three');
   });
 });
+
+describe('TabContextMenu dismissal', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  function renderMenu(onClose: () => void): void {
+    act(() => {
+      root.render(
+        <TabContextMenu
+          x={10}
+          y={10}
+          items={[{ key: 'one', label: 'One', icon, onSelect: jest.fn() }]}
+          onClose={onClose}
+          focusOnOpen
+        />,
+      );
+    });
+  }
+
+  it('closes on Escape, a window resize and a window blur', () => {
+    const onClose = jest.fn();
+    renderMenu(onClose);
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    act(() => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(onClose).toHaveBeenCalledTimes(2);
+    act(() => {
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns focus to what held it when the menu opened', () => {
+    const tab = document.createElement('button');
+    document.body.append(tab);
+    act(() => tab.focus());
+    renderMenu(jest.fn());
+    expect(document.activeElement).not.toBe(tab);
+    act(() => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(document.activeElement).toBe(tab);
+    tab.remove();
+  });
+});

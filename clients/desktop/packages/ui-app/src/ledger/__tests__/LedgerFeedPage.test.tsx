@@ -79,8 +79,6 @@ async function renderPage(
         store={store}
         {...(local === undefined ? {} : { local })}
         visible
-        frameHeading={(heading) => <header>{heading}</header>}
-        frameFeed={(feed) => <main>{feed}</main>}
       />,
     ),
   );
@@ -94,19 +92,17 @@ function find(testId: string): Element | null {
 }
 
 describe('LedgerFeedPage', () => {
-  it('shows the shared heading in the host frame, then the Feed', async () => {
+  it('puts the heading and the Feed in one 640px page column', async () => {
     await renderPage({ ledgerFeed: true, ledgerLocal: true }, LOCAL);
 
-    expect(container.querySelector('header h1')?.textContent).toBe(
-      LEDGER_FEED_TITLE,
-    );
+    const column = find('ledger-feed-page-column');
+    expect(column?.getAttribute('class')).toContain('max-w-176');
+    expect(column?.querySelector('h1')?.textContent).toBe(LEDGER_FEED_TITLE);
     expect(
-      container.querySelector('header [data-testid="page-header-description"]')
+      column?.querySelector('[data-testid="page-header-description"]')
         ?.textContent,
     ).toBe(LEDGER_FEED_SUBTITLE);
-    expect(
-      container.querySelector('main [data-testid="ledger-feed"]'),
-    ).not.toBe(null);
+    expect(column?.querySelector('[data-testid="ledger-feed"]')).not.toBe(null);
     expect(find('ledger-feed-add-entry')).not.toBeNull();
   });
 

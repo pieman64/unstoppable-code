@@ -42,6 +42,13 @@ import type {
   WorkerGitWriteDispatcher,
 } from '../canopy-runtime/worker-git-adapter';
 import type { DesktopIpcCallerResolver } from './file-tree';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { projectedWorkspaceLifecycleCommands } from '../canopy-runtime/workspace-lifecycle-dispatch';
+import {
+  projectedWorkspaceGuardedCommands,
+  type ProjectedWorkspaceGuardedCommands,
+} from '../canopy-runtime/workspace-guarded-dispatch';
+import { projectedSourceCompositionCommands } from '../canopy-runtime/source-composition-dispatch';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { scheduleBranchNaming } from '../lib/worktree-chat-turn';
@@ -68,7 +75,6 @@ import {
   renameWorktreeBranch,
   WorktreeBranchRenameRefusedError,
 } from '../lib/worktree-branch-rename';
-import { moveWorktree, updateWorktree } from '../lib/worktree-update';
 import { recordWorktreeCrudTelemetry } from '../lib/desktop-telemetry';
 import { nudgeCodeGraphRefreshAfterDiffStats } from '../lib/code-graph-scheduler';
 import { getForegroundWorktreeKey } from '../lib/github-poller';
@@ -143,14 +149,23 @@ const DIFF_STATS_BATCH_CONCURRENCY = 1;
 export function registerWorktreeHandlers(
   getWindow: () => BrowserWindow | null,
   runtime: {
-    dispatcher: WorkerGitDispatcher & WorkerGitWriteDispatcher;
+    dispatcher: WorkerGitDispatcher &
+      WorkerGitWriteDispatcher &
+      Pick<DesktopCanopyDispatcher, 'instruction'>;
     resolveCaller: DesktopIpcCallerResolver;
   },
 ): void {
+  const guardedCommands = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): ProjectedWorkspaceGuardedCommands =>
+    projectedWorkspaceGuardedCommands({
+      dispatcher: runtime.dispatcher,
+      caller: runtime.resolveCaller(event),
+    });
   registerIpcHandler(
     IPC_CHANNELS.worktreeCreate,
     async (
-      _event,
+      event,
       request: CreateWorktreeRequest,
     ): Promise<CreateWorktreeResponse> => {
       validateId(request.projectId, 'projectId');
@@ -160,41 +175,56 @@ export function registerWorktreeHandlers(
         validateId(request.baseWorktreeId, 'baseWorktreeId');
       }
       const response = (
-        await createWorktreeFromSelection({
-          workspaceId: request.projectId,
-          workspaceKind: 'single-repo',
-          ...resolveWorktreeCreationSelection(
-            {
-              baseWorktreeId: request.baseWorktreeId,
-              baseBranch: request.baseBranch,
-              existingBranch: request.existingBranch,
-              branchName: request.branchName,
-              suggestedBranch: request.suggestedBranch,
-            },
-            'single-repo',
-          ),
-          sidebarItemGroupId: request.sidebarItemGroupId,
-          existingWorktreeIds: request.existingWorktreeIds,
-          startPostCreateSetup: true,
-          startProjectPostCreateSetup: startProjectWorktreePostCreateSetup,
-          getWindow,
-          deferGitSetup: true,
-          onGitReady: (payload): void => {
-            refreshCachedDiffStats(payload.projectId, payload.worktreeId);
-            const window = getWindow();
-            if (!window) {
-              return;
-            }
-            sendToWindow(window, IPC_CHANNELS.worktreeGitReady, payload);
+        await projectedWorkspaceLifecycleCommands({
+          dispatcher: runtime.dispatcher,
+          caller: runtime.resolveCaller(event),
+        }).createWorktree(
+          {
+            workspaceId: request.projectId,
+            branchName: request.branchName,
+            existingBranch: request.existingBranch,
+            suggestedBranch: request.suggestedBranch,
+            baseBranch: request.baseBranch,
+            baseWorktreeId: request.baseWorktreeId,
+            sidebarItemGroupId: request.sidebarItemGroupId,
           },
-          onGitFailed: (payload): void => {
-            const window = getWindow();
-            if (!window) {
-              return;
-            }
-            sendToWindow(window, IPC_CHANNELS.worktreeGitFailed, payload);
-          },
-        })
+          () =>
+            createWorktreeFromSelection({
+              workspaceId: request.projectId,
+              workspaceKind: 'single-repo',
+              ...resolveWorktreeCreationSelection(
+                {
+                  baseWorktreeId: request.baseWorktreeId,
+                  baseBranch: request.baseBranch,
+                  existingBranch: request.existingBranch,
+                  branchName: request.branchName,
+                  suggestedBranch: request.suggestedBranch,
+                },
+                'single-repo',
+              ),
+              sidebarItemGroupId: request.sidebarItemGroupId,
+              existingWorktreeIds: request.existingWorktreeIds,
+              startPostCreateSetup: true,
+              startProjectPostCreateSetup: startProjectWorktreePostCreateSetup,
+              getWindow,
+              deferGitSetup: true,
+              onGitReady: (payload): void => {
+                refreshCachedDiffStats(payload.projectId, payload.worktreeId);
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(window, IPC_CHANNELS.worktreeGitReady, payload);
+              },
+              onGitFailed: (payload): void => {
+                const window = getWindow();
+                if (!window) {
+                  return;
+                }
+                sendToWindow(window, IPC_CHANNELS.worktreeGitFailed, payload);
+              },
+            }),
+        )
       ).response;
       recordWorktreeCrudTelemetry({
         action: 'create',
@@ -232,9 +262,9 @@ export function registerWorktreeHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetHidden,
-    async (_event, request: SetWorktreeHiddenRequest): Promise<void> => {
+    async (event, request: SetWorktreeHiddenRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
-      await updateWorktree({
+      await guardedCommands(event).updateWorktree({
         workspaceId: request.projectId,
         worktreeId: request.worktreeId,
         patch: { hidden: request.hidden },
@@ -249,8 +279,8 @@ export function registerWorktreeHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeReorder,
-    async (_event, request: ReorderWorktreesRequest): Promise<void> => {
-      await moveWorktree({
+    async (event, request: ReorderWorktreesRequest): Promise<void> => {
+      await guardedCommands(event).moveWorktree({
         workspaceId: request.workspaceId,
         activeWorktreeId: request.activeWorktreeId,
         overWorktreeId: request.overWorktreeId,
@@ -262,9 +292,9 @@ export function registerWorktreeHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetLabel,
-    async (_event, request: SetWorktreeLabelRequest): Promise<void> => {
+    async (event, request: SetWorktreeLabelRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
-      await updateWorktree({
+      await guardedCommands(event).updateWorktree({
         workspaceId: request.projectId,
         worktreeId: request.worktreeId,
         patch: { label: request.label ?? null },
@@ -279,9 +309,9 @@ export function registerWorktreeHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetPinned,
-    async (_event, request: SetWorktreePinnedRequest): Promise<void> => {
+    async (event, request: SetWorktreePinnedRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
-      await updateWorktree({
+      await guardedCommands(event).updateWorktree({
         workspaceId: request.projectId,
         worktreeId: request.worktreeId,
         patch: { pinned: request.pinned },
@@ -291,12 +321,9 @@ export function registerWorktreeHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.worktreeSetBranchGrouping,
-    async (
-      _event,
-      request: SetWorktreeBranchGroupingRequest,
-    ): Promise<void> => {
+    async (event, request: SetWorktreeBranchGroupingRequest): Promise<void> => {
       validateId(request.projectId, 'projectId');
-      await updateWorktree({
+      await guardedCommands(event).updateWorktree({
         workspaceId: request.projectId,
         worktreeId: request.worktreeId,
         patch: { branchGroupingOverride: request.override },
@@ -315,7 +342,7 @@ export function registerWorktreeHandlers(
   registerIpcHandler(
     IPC_CHANNELS.worktreeArchive,
     async (
-      _event,
+      event,
       request: ArchiveWorktreeRequest,
     ): Promise<ArchiveWorktreeResponse> => {
       validateId(request.projectId, 'projectId');
@@ -331,6 +358,11 @@ export function registerWorktreeHandlers(
         'expectedRemainingWorktreeOrder',
       );
 
+      // Resolved first, so an untrusted sender changes nothing.
+      const lifecycle = projectedWorkspaceLifecycleCommands({
+        dispatcher: runtime.dispatcher,
+        caller: runtime.resolveCaller(event),
+      });
       const response = await withTypedArchiveRefusal(
         {
           typedRefusal: request.typedRefusal,
@@ -338,22 +370,32 @@ export function registerWorktreeHandlers(
           worktreeId: request.worktreeId,
         },
         () =>
-          archiveWorktree({
-            workspaceId: request.projectId,
-            worktreeId: request.worktreeId,
-            source: 'single_repo',
-            expectedKind: 'single-repo',
-            expectedCreatedAt: request.expectedCreatedAt,
-            expectedBranchName: request.expectedBranchName,
-            deleteBranch: request.deleteBranch,
-            lockAfterArchive: request.lockAfterArchive,
-            deleteWithoutRetentionIfMissing:
-              request.deleteWithoutRetentionIfMissing,
-            remainingWorktreeOrder: request.remainingWorktreeOrder,
-            expectedRemainingWorktreeOrder:
-              request.expectedRemainingWorktreeOrder,
-            repoPath: request.repoPath,
-          }),
+          lifecycle.archiveWorktree(
+            {
+              workspaceId: request.projectId,
+              worktreeId: request.worktreeId,
+              lockAfterArchive: request.lockAfterArchive,
+              deleteWithoutRetentionIfMissing:
+                request.deleteWithoutRetentionIfMissing,
+            },
+            () =>
+              archiveWorktree({
+                workspaceId: request.projectId,
+                worktreeId: request.worktreeId,
+                source: 'single_repo',
+                expectedKind: 'single-repo',
+                expectedCreatedAt: request.expectedCreatedAt,
+                expectedBranchName: request.expectedBranchName,
+                deleteBranch: request.deleteBranch,
+                lockAfterArchive: request.lockAfterArchive,
+                deleteWithoutRetentionIfMissing:
+                  request.deleteWithoutRetentionIfMissing,
+                remainingWorktreeOrder: request.remainingWorktreeOrder,
+                expectedRemainingWorktreeOrder:
+                  request.expectedRemainingWorktreeOrder,
+                repoPath: request.repoPath,
+              }),
+          ),
       );
       if (!response.refusal)
         removeCachedWorktreeDiffStats(request.projectId, request.worktreeId);
@@ -536,17 +578,22 @@ export function registerWorktreeHandlers(
       request: RenameBranchRequest,
     ): Promise<RenameBranchResponse> => {
       validateId(request.projectId, 'projectId');
+      const target = {
+        workspaceId: request.projectId,
+        worktreeId: request.worktreeId,
+        ...(request.repoId !== undefined ? { repoId: request.repoId } : {}),
+        newBranchName: request.newBranchName,
+      };
       try {
-        await renameWorktreeBranch(
-          {
-            source: 'desktop',
-            workspaceId: request.projectId,
-            worktreeId: request.worktreeId,
-            ...(request.repoId !== undefined ? { repoId: request.repoId } : {}),
-            newBranchName: request.newBranchName,
-          },
-          worktreeBranchRenameGit(runtime.dispatcher, () =>
-            runtime.resolveCaller(event),
+        await projectedSourceCompositionCommands({
+          dispatcher: runtime.dispatcher,
+          caller: runtime.resolveCaller(event),
+        }).renameBranch(target, () =>
+          renameWorktreeBranch(
+            { source: 'desktop', ...target },
+            worktreeBranchRenameGit(runtime.dispatcher, () =>
+              runtime.resolveCaller(event),
+            ),
           ),
         );
       } catch (error) {

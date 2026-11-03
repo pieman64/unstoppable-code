@@ -99,161 +99,161 @@ const ALL_NAV_ITEMS: NavItem[] = [
   {
     key: 'canopy',
     label: 'General',
-    icon: <SettingsIcon width={16} height={16} />,
+    icon: <SettingsIcon size="sm" />,
   },
   {
     key: 'account',
     label: 'Accounts',
-    icon: <PersonIcon width={16} height={16} />,
+    icon: <PersonIcon size="sm" />,
   },
   {
     key: 'privacy',
     label: 'Privacy',
-    icon: <PrivacyIcon width={16} height={16} />,
+    icon: <PrivacyIcon size="sm" />,
   },
   {
     key: 'remote-access',
     label: 'Remote access',
     // The computer glyph of the sidebar machine picker, so both surfaces
     // read as one feature.
-    icon: <MacbookIcon width={16} height={16} />,
+    icon: <MacbookIcon size="sm" />,
   },
   {
     key: 'performance',
     label: 'Performance',
-    icon: <ResourceMonitorIcon width={16} height={16} />,
+    icon: <ResourceMonitorIcon size="sm" />,
   },
   {
     key: 'code-graph',
     label: 'Code Graph',
     // Same glyph as the code graph tool blocks in chat, so the settings page
     // reads as part of that family.
-    icon: <GraphIcon width={16} height={16} />,
+    icon: <GraphIcon size="sm" />,
   },
   {
     key: 'experiments',
     label: 'Labs',
-    icon: <ExperimentIcon width={16} height={16} />,
+    icon: <ExperimentIcon size="sm" />,
   },
   {
     key: 'shortcuts',
     label: 'Shortcuts',
-    icon: <CommandIcon width={16} height={16} />,
+    icon: <CommandIcon size="sm" />,
   },
   {
     key: 'display',
     label: 'Display',
-    icon: <BrightnessAutoIcon width={16} height={16} />,
+    icon: <BrightnessAutoIcon size="sm" />,
   },
   {
     key: 'notifications',
     label: 'Notifications',
-    icon: <Bell2Icon width={16} height={16} />,
+    icon: <Bell2Icon size="sm" />,
   },
   {
     key: 'mcp',
     label: 'MCP servers',
-    icon: <McpServerIcon width={16} height={16} />,
+    icon: <McpServerIcon size="sm" />,
   },
   {
     key: 'approvals',
     label: 'Approvals',
-    icon: <ShieldCheck width={16} height={16} />,
+    icon: <ShieldCheck size="sm" />,
   },
   {
     key: 'chat',
     label: 'Models',
-    icon: <ChatIcon width={16} height={16} />,
+    icon: <ChatIcon size="sm" />,
   },
   {
     key: 'instructions',
     label: 'Instructions',
-    icon: <NoteIcon width={16} height={16} />,
+    icon: <NoteIcon size="sm" />,
   },
   {
     key: 'memory',
     label: 'Memory',
-    icon: <CognitionIcon width={16} height={16} />,
+    icon: <CognitionIcon size="sm" />,
   },
   {
     key: 'harnesses',
     label: 'Default harness',
-    icon: <SyncIcon width={16} height={16} />,
+    icon: <SyncIcon size="sm" />,
   },
   {
     key: 'plugins',
     label: 'Plugins',
-    icon: <PluginsIcon width={16} height={16} />,
+    icon: <PluginsIcon size="sm" />,
   },
   {
     key: 'app-advisor',
     label: ORCHESTRATOR_LABEL,
-    icon: <AppAdvisorIcon width={16} height={16} />,
+    icon: <AppAdvisorIcon size="sm" />,
   },
   {
     key: 'files',
     label: 'Files',
-    icon: <FileIcon width={16} height={16} />,
+    icon: <FileIcon size="sm" />,
   },
   {
     key: 'browser',
     label: 'Browser',
-    icon: <GlobeIcon width={16} height={16} />,
+    icon: <GlobeIcon size="sm" />,
   },
   {
     key: 'terminal',
     label: 'Terminal',
-    icon: <TerminalBorderedIcon width={16} height={16} />,
+    icon: <TerminalBorderedIcon size="sm" />,
   },
   {
     key: 'environment',
     label: 'Environments',
-    icon: <CodeBracketsIcon width={16} height={16} />,
+    icon: <CodeBracketsIcon size="sm" />,
   },
   {
     key: 'plan-detection',
     label: 'Plan detection',
-    icon: <PlanModeIcon width={16} height={16} />,
+    icon: <PlanModeIcon size="sm" />,
   },
   {
     key: 'dictation',
     label: 'Dictation',
-    icon: <MicIcon width={16} height={16} />,
+    icon: <MicIcon size="sm" />,
   },
   {
     key: 'codex',
     label: 'Codex',
-    icon: <CodexIcon width={16} height={16} />,
+    icon: <CodexIcon size="md" />,
   },
   {
     key: 'claude',
     label: 'Claude',
-    icon: <ClaudeIcon width={16} height={16} />,
+    icon: <ClaudeIcon size="md" />,
   },
   {
     key: 'ollama',
     label: 'Ollama',
-    icon: <OllamaIcon width={16} height={16} />,
+    icon: <OllamaIcon size="md" />,
   },
   {
     key: 'account-proxy',
     label: 'Multi-account proxy',
-    icon: <GlobeIcon width={16} height={16} />,
+    icon: <GlobeIcon size="sm" />,
   },
   {
     key: 'git',
     label: 'Git',
-    icon: <BranchIcon width={16} height={16} />,
+    icon: <BranchIcon size="md" />,
   },
   {
     key: 'applications',
     label: 'Applications',
-    icon: <SkillIcon width={16} height={16} />,
+    icon: <SkillIcon size="sm" />,
   },
   {
     key: 'legal',
     label: 'Legal',
-    icon: <DocumentIcon width={16} height={16} />,
+    icon: <DocumentIcon size="sm" />,
   },
 ];
 

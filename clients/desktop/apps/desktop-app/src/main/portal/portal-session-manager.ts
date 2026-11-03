@@ -7,6 +7,7 @@ import { startRemotePairingTelemetry } from '../lib/desktop-telemetry';
 import { clearPortalWatcherProjection } from './adapters/watchers-adapter';
 import {
   PORTAL_CAPABILITY_CHAT_WATCHERS,
+  PORTAL_CAPABILITY_WATCHED_GITHUB_ITEMS,
   PORTAL_CAPABILITY_LIFECYCLE_JOURNAL_QUARANTINE,
 } from '@canopy/protocol/portal';
 import {
@@ -73,6 +74,8 @@ import {
   PORTAL_CAPABILITY_WORKTREE_DISCARD,
   PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD,
   PORTAL_CAPABILITY_MCP_MANAGEMENT,
+  PORTAL_CAPABILITY_COLLECTION_MUTATIONS,
+  PORTAL_CAPABILITY_COLLECTION_UPDATES,
   PORTAL_CAPABILITY_CURATED_PIPELINE_IMPORT,
   PORTAL_CAPABILITY_WORKSPACE_ITEMS,
   PORTAL_CAPABILITY_WORKTREE_ACTIONS_SCOPE,
@@ -222,6 +225,7 @@ const portalDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
 const cloudDisplayName = `${BRAND.displayName} Cloud`;
 const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_CHAT_WATCHERS]: true,
+  [PORTAL_CAPABILITY_WATCHED_GITHUB_ITEMS]: true,
   [PORTAL_CAPABILITY_LIFECYCLE_JOURNAL_QUARANTINE]: true,
   [MODEL_LIBRARY_PORTAL_CAPABILITY]: true,
   personal_organization_projects: true,
@@ -244,6 +248,9 @@ const PORTAL_SESSION_CAPABILITIES = {
   [PORTAL_CAPABILITY_WORKTREE_DISCARD]: true,
   [PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD]: true,
   [PORTAL_CAPABILITY_MCP_MANAGEMENT]: true,
+  // `portal.collections.save` (plugin-catalog-adapter, CAN-4847).
+  [PORTAL_CAPABILITY_COLLECTION_MUTATIONS]: true,
+  [PORTAL_CAPABILITY_COLLECTION_UPDATES]: true,
   [PORTAL_CAPABILITY_CURATED_PIPELINE_IMPORT]: true,
   [PORTAL_CAPABILITY_WORKSPACE_ITEMS]: true,
   [PORTAL_CAPABILITY_CHAT_ATTACHMENTS]: true,
@@ -2265,6 +2272,7 @@ async function applyPollResponse(
       sessionId: commandSessionId ?? undefined,
       chatDispatcher: chatCommandDispatcher,
       canReadAssets: canReadSession,
+      canMutateResources: canReadSession,
       canReadTranscripts: canReadSession,
       pairingCode: state.pairingCode,
       getWindow: getWindowForPortalCommands,

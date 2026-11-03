@@ -16,7 +16,13 @@ import type {
   ExternalProjectImportResponse,
   ExternalProjectProvider,
 } from '@canopy/desktop-shared/types';
-import { Button, StatusPill } from '@canopy/ui-shared/components';
+import {
+  Button,
+  Checkbox,
+  ChoiceField,
+  ErrorBanner,
+  StatusPill,
+} from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { brandText } from '@/lib/brand';
@@ -36,10 +42,25 @@ import {
 } from '@/lib/projectImportTelemetry';
 import type { ImportProjectsSource } from '@/stores/importProjectsModalStore';
 import {
-  CODE_CHAT_DESTINATION_NOTE,
   CODE_PROJECT_LABEL,
   COWORK_PROJECT_LABEL,
+  IMPORT_SAFETY_NOTE,
 } from './importProjectsCopy';
+import {
+  bulkSelection,
+  CAPPED_SCAN_NOTE,
+  conflictingIds,
+  containedRepositoriesLabel,
+  INCOMPLETE_SCAN_NOTE,
+  isBulkSelectable,
+  isCappedParent,
+  isDirectPick,
+  isCurrentSelection,
+  isUncertainPickedFolder,
+  PLAIN_FOLDER_DETAIL,
+  reconcileSelection,
+  selectAllExclusive,
+} from './pickedFolders';
 
 /**
  * Shared body of the bulk Claude/Codex project import flow (CAN-2439). The
@@ -75,6 +96,7 @@ export interface ImportProjectsPanelProps {
 interface SelectionState {
   selected: Set<string>;
   chats: Set<string>;
+  explicitlySelected: Set<string>;
 }
 
 function providerName(provider: ExternalProjectProvider): string {
@@ -91,16 +113,22 @@ function isEligible(candidate: ExternalProjectCandidate): boolean {
 function defaultSelection(
   candidates: ExternalProjectCandidate[],
 ): SelectionState {
-  const selected = new Set<string>();
+  // Repositories found in a picked folder start selected; the folder holding
+  // them, or one whose scan is uncertain, waits for an explicit choice.
+  const selected = reconcileSelection(
+    candidates.map((candidate) => candidate.id),
+    candidates,
+    (candidate) =>
+      candidate.status === 'available' && isBulkSelectable(candidate),
+  );
   const chats = new Set<string>();
   for (const candidate of candidates) {
-    if (candidate.status !== 'available') continue;
-    selected.add(candidate.id);
+    if (!selected.has(candidate.id)) continue;
     // Chats follow the row: only a selected project defaults to importing
     // them, so no row ever shows chats checked while the project is not.
     if (candidate.importableSessionCount > 0) chats.add(candidate.id);
   }
-  return { selected, chats };
+  return { selected, chats, explicitlySelected: new Set() };
 }
 
 function formatRelative(iso: string | null): string | null {
@@ -204,6 +232,7 @@ export function ImportProjectsPanel({
   const [selection, setSelection] = useState<SelectionState>({
     selected: new Set(),
     chats: new Set(),
+    explicitlySelected: new Set(),
   });
   const [customRoots, setCustomRoots] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -215,6 +244,8 @@ export function ImportProjectsPanel({
   const [pluginsError, setPluginsError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const scanRequestRef = useRef(0);
+  const acceptedCandidatesRef = useRef<ExternalProjectCandidate[] | null>(null);
+  const customRootsRef = useRef<string[]>([]);
   // Telemetry only: this opening's entry, and whether a folder was picked.
   const [entry] = useState(modalEntry);
   const pickedFolderRef = useRef(false);
@@ -253,8 +284,44 @@ export function ImportProjectsPanel({
           ...(roots.length > 0 ? { customRoots: roots } : {}),
         });
         if (!mountedRef.current || requestId !== scanRequestRef.current) return;
+        const previous = acceptedCandidatesRef.current;
+        acceptedCandidatesRef.current = response.candidates;
         setScan(response);
-        setSelection(defaultSelection(response.candidates));
+        setSelection((current) => {
+          const defaults = defaultSelection(response.candidates);
+          if (previous === null) return defaults;
+          const known = new Set(previous.map((candidate) => candidate.id));
+          const selected = reconcileSelection(
+            current.selected,
+            response.candidates,
+            (candidate) =>
+              isEligible(candidate) &&
+              (defaults.selected.has(candidate.id) ||
+                current.explicitlySelected.has(candidate.id)),
+          );
+          const chats = new Set(
+            Array.from(current.chats).filter((id) => selected.has(id)),
+          );
+          // Keep both explicit opt-ins and opt-outs. Defaults apply only to
+          // new rows, and never displace a retained manual parent selection.
+          for (const id of defaults.selected) {
+            if (
+              known.has(id) ||
+              conflictingIds(id, response.candidates).some((conflict) =>
+                selected.has(conflict),
+              )
+            )
+              continue;
+            selected.add(id);
+            if (defaults.chats.has(id)) chats.add(id);
+          }
+          const explicitlySelected = new Set(
+            Array.from(current.explicitlySelected).filter((id) =>
+              selected.has(id),
+            ),
+          );
+          return { selected, chats, explicitlySelected };
+        });
         setPhase('choose');
       } catch (scanError) {
         if (!mountedRef.current || requestId !== scanRequestRef.current) return;
@@ -286,25 +353,35 @@ export function ImportProjectsPanel({
   const candidates = useMemo(() => scan?.candidates ?? [], [scan]);
   const eligible = useMemo(() => candidates.filter(isEligible), [candidates]);
   const selectedCount = selection.selected.size;
+  // Select all skips folders holding repositories and uncertain picks.
+  const bulk = useMemo(() => bulkSelection(eligible), [eligible]);
   const allEligibleSelected =
-    eligible.length > 0 &&
-    eligible.every((candidate) => selection.selected.has(candidate.id));
+    bulk.size > 0 && Array.from(bulk).every((id) => selection.selected.has(id));
 
   const toggleSelected = (id: string): void => {
     const candidate = candidates.find((entry) => entry.id === id);
     setSelection((current) => {
       const selected = new Set(current.selected);
       const chats = new Set(current.chats);
+      const explicitlySelected = new Set(current.explicitlySelected);
       if (selected.has(id)) {
         selected.delete(id);
         chats.delete(id);
+        explicitlySelected.delete(id);
       } else {
+        // A folder and the repositories found in it are exclusive.
+        for (const conflict of conflictingIds(id, candidates)) {
+          selected.delete(conflict);
+          chats.delete(conflict);
+          explicitlySelected.delete(conflict);
+        }
         selected.add(id);
+        explicitlySelected.add(id);
         // Selecting a project opts its chats in by default, as the initial
         // selection does; the chats checkbox stays available to opt out.
         if ((candidate?.importableSessionCount ?? 0) > 0) chats.add(id);
       }
-      return { selected, chats };
+      return { selected, chats, explicitlySelected };
     });
   };
 
@@ -319,17 +396,36 @@ export function ImportProjectsPanel({
 
   const toggleAll = (): void => {
     setSelection((current) => {
-      const selected = new Set(current.selected);
-      const chats = new Set(current.chats);
       if (allEligibleSelected) {
-        for (const candidate of eligible) selected.delete(candidate.id);
-      } else {
-        for (const candidate of eligible) {
-          selected.add(candidate.id);
-          if (candidate.importableSessionCount > 0) chats.add(candidate.id);
-        }
+        const selected = new Set(current.selected);
+        for (const id of bulk) selected.delete(id);
+        return {
+          selected,
+          chats: current.chats,
+          explicitlySelected: new Set(
+            Array.from(current.explicitlySelected).filter((id) =>
+              selected.has(id),
+            ),
+          ),
+        };
       }
-      return { selected, chats };
+      const selected = selectAllExclusive(current.selected, bulk, candidates);
+      const chats = new Set(
+        Array.from(current.chats).filter((id) => selected.has(id)),
+      );
+      for (const candidate of eligible) {
+        if (bulk.has(candidate.id) && candidate.importableSessionCount > 0)
+          chats.add(candidate.id);
+      }
+      return {
+        selected,
+        chats,
+        explicitlySelected: new Set(
+          Array.from(current.explicitlySelected).filter((id) =>
+            selected.has(id),
+          ),
+        ),
+      };
     });
   };
 
@@ -337,15 +433,21 @@ export function ImportProjectsPanel({
     const folder = await window.api.externalProjects.pickFolder();
     if (!folder || !mountedRef.current) return;
     pickedFolderRef.current = true;
-    const nextRoots = customRoots.includes(folder)
-      ? customRoots
-      : [...customRoots, folder];
+    const currentRoots = customRootsRef.current;
+    const nextRoots = currentRoots.includes(folder)
+      ? currentRoots
+      : [...currentRoots, folder];
+    customRootsRef.current = nextRoots;
     setCustomRoots(nextRoots);
     await runScan(nextRoots);
   };
 
   const runImport = async (candidateIds: string[]): Promise<void> => {
     if (!scan || candidateIds.length === 0 || importing.current) return;
+    if (!isCurrentSelection(new Set(candidateIds), candidates, isEligible)) {
+      setError('Your project choices changed. Review them before importing.');
+      return;
+    }
     importing.current = true;
     const submission = captureProjectImportSubmission();
     const tracking = startProjectImportSubmission({
@@ -495,9 +597,10 @@ export function ImportProjectsPanel({
   if (phase === 'error') {
     return (
       <div className={wrapperClass} data-testid="import-projects-error">
-        <p className="text-s fg-destructive">
-          {error ?? 'Projects could not be scanned.'}
-        </p>
+        <ErrorBanner
+          className=""
+          error={error ?? 'Projects could not be scanned.'}
+        />
         <div className="flex items-center justify-end gap-2">
           <Button
             variant="ghost"
@@ -571,14 +674,11 @@ export function ImportProjectsPanel({
               : `${imported.length} projects are ready in ${brandText.appName}.`}
           {failed.length > 0 && ` ${failed.length} could not be added.`}
         </p>
-        {error && (
-          <p
-            className="text-xs fg-destructive"
-            data-testid="import-projects-follow-through-error"
-          >
-            {error}
-          </p>
-        )}
+        <ErrorBanner
+          className=""
+          error={error}
+          testId="import-projects-follow-through-error"
+        />
         <ul className="max-h-72 space-y-1 overflow-y-auto" role="list">
           {results.map((result) => {
             const detail = resultDetail(result);
@@ -660,14 +760,11 @@ export function ImportProjectsPanel({
                 Set up plugins
               </Button>
             </div>
-            {pluginsError && (
-              <p
-                className="mt-2 text-xs fg-destructive"
-                data-testid="import-projects-plugins-error"
-              >
-                {pluginsError}
-              </p>
-            )}
+            <ErrorBanner
+              className="mt-2"
+              error={pluginsError}
+              testId="import-projects-plugins-error"
+            />
           </div>
         )}
         <div className="flex items-center justify-end gap-2">
@@ -679,7 +776,7 @@ export function ImportProjectsPanel({
               }}
               data-testid="import-projects-retry"
             >
-              Retry failed
+              Try again
             </Button>
           )}
           <Button
@@ -727,29 +824,19 @@ export function ImportProjectsPanel({
           className="text-s fg-secondary"
           data-testid="import-projects-choose-note"
         >
-          {eligible.length === 1
-            ? '1 project can be added.'
-            : `${eligible.length} projects can be added.`}{' '}
-          {CODE_PROJECT_LABEL}s keep working in Git; other folders become{' '}
-          {COWORK_PROJECT_LABEL}s. Source folders stay where they are.{' '}
-          {CODE_CHAT_DESTINATION_NOTE} Nothing from the project runs until you
-          start it.
+          {IMPORT_SAFETY_NOTE}
         </p>
       )}
 
       {candidates.length > 0 && (
         <div className="flex items-center justify-between gap-2">
-          <label className="flex cursor-pointer items-center gap-2 text-s fg-secondary">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded bg-base"
-              checked={allEligibleSelected}
-              disabled={eligible.length === 0}
-              onChange={toggleAll}
-              data-testid="import-projects-select-all"
-            />
-            Select all eligible
-          </label>
+          <ChoiceField
+            label="Select all eligible"
+            checked={allEligibleSelected}
+            disabled={bulk.size === 0}
+            onChange={toggleAll}
+            data-testid="import-projects-select-all"
+          />
           <div className="flex items-center gap-2">
             <Button
               size="sm"
@@ -804,6 +891,19 @@ export function ImportProjectsPanel({
               candidate.kind === 'git'
                 ? CODE_PROJECT_LABEL
                 : COWORK_PROJECT_LABEL;
+            const pickedFolder =
+              isDirectPick(candidate) && candidate.kind === 'folder';
+            const contained = containedRepositoriesLabel(candidate);
+            const scanNotes = pickedFolder
+              ? [
+                  ...(isUncertainPickedFolder(candidate)
+                    ? [INCOMPLETE_SCAN_NOTE]
+                    : []),
+                  ...(isCappedParent(candidate, candidates)
+                    ? [CAPPED_SCAN_NOTE]
+                    : []),
+                ]
+              : [];
             return (
               <li
                 key={candidate.id}
@@ -819,9 +919,8 @@ export function ImportProjectsPanel({
                 data-kind={candidate.kind}
               >
                 <div className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4 shrink-0 rounded bg-base"
+                  <Checkbox
+                    className="mt-0.5"
                     checked={checked}
                     disabled={!eligibleRow}
                     onChange={(): void => toggleSelected(candidate.id)}
@@ -870,6 +969,14 @@ export function ImportProjectsPanel({
                     )}
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs fg-secondary">
                       <span>{kindLabel}</span>
+                      {pickedFolder && <span>{PLAIN_FOLDER_DETAIL}</span>}
+                      {pickedFolder && contained && (
+                        <span
+                          data-testid={`import-projects-row-contains-${candidate.id}`}
+                        >
+                          {contained}
+                        </span>
+                      )}
                       {candidate.sessionCount > 0 && (
                         <span>{chatCountLabel(candidate.sessionCount)}</span>
                       )}
@@ -882,18 +989,13 @@ export function ImportProjectsPanel({
                         </span>
                       )}
                       {candidate.importableSessionCount > 0 && (
-                        <label className="flex cursor-pointer items-center gap-1.5">
-                          <input
-                            type="checkbox"
-                            className="h-3.5 w-3.5 rounded bg-base"
-                            checked={selection.chats.has(candidate.id)}
-                            disabled={!checked}
-                            onChange={(): void => toggleChats(candidate.id)}
-                            data-testid={`import-projects-row-chats-${candidate.id}`}
-                          />
-                          Import{' '}
-                          {chatCountLabel(candidate.importableSessionCount)}
-                        </label>
+                        <ChoiceField
+                          label={`Import ${chatCountLabel(candidate.importableSessionCount)}`}
+                          checked={selection.chats.has(candidate.id)}
+                          disabled={!checked}
+                          onChange={(): void => toggleChats(candidate.id)}
+                          data-testid={`import-projects-row-chats-${candidate.id}`}
+                        />
                       )}
                       {candidate.statusReason && (
                         <span
@@ -904,6 +1006,11 @@ export function ImportProjectsPanel({
                         </span>
                       )}
                     </div>
+                    {scanNotes.length > 0 && (
+                      <p className="mt-0.5 text-xs fg-tertiary">
+                        {scanNotes.map((note) => `${note}.`).join(' ')}
+                      </p>
+                    )}
                   </div>
                 </div>
               </li>

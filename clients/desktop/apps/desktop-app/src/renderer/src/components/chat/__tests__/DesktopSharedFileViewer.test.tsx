@@ -1070,7 +1070,9 @@ describe('DesktopSharedFileViewer', () => {
       );
       await Promise.resolve();
     });
-    expect(host.querySelector('[data-testid="loading"]')).not.toBeNull();
+    expect(
+      host.querySelector('[data-testid="centered-loading-spinner"]'),
+    ).not.toBeNull();
     expect(getFileTreeRoots).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -2061,7 +2063,7 @@ describe('DesktopSharedFileViewer', () => {
 
     const loadingRoot = host.firstElementChild;
     expect(
-      loadingRoot?.querySelector('[data-testid="loading"]'),
+      loadingRoot?.querySelector('[data-testid="centered-loading-spinner"]'),
     ).not.toBeNull();
     expect(loadingRoot?.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(
       false,

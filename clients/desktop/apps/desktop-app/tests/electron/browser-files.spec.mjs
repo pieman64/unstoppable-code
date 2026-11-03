@@ -22,7 +22,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
-import { closeCanopy, getMainWindow, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  getMainWindow,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { listenPairedBrowserLabServers } from './mock-server/routes/browser-lab.mjs';
 import {
   chatPanelLocator,
@@ -4071,6 +4076,7 @@ async function expectInterruptedAfterRelaunch(ending) {
       writeFileSync(path.join(downloadsDir, 'notes.txt'), 'Kept by the user\n');
 
       if (ending === 'crash') {
+        await captureDaemonDryRunEvidence(electronApp);
         const mainPid = await electronApp.evaluate(() => process.pid);
         process.kill(mainPid, 'SIGKILL');
       }

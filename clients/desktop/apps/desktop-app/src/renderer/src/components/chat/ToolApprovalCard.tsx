@@ -24,6 +24,7 @@ import {
   approvalFileChangeExpansionCopy,
   ApprovalFileChangePreview,
   Button,
+  FormField,
   TextArea,
   Tooltip,
 } from '@canopy/ui-shared/components';
@@ -923,24 +924,22 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
 
       {reasonOpen && (
         <div className="mt-2">
-          <label
-            htmlFor={reasonId}
-            className="mb-1 block text-2xs font-medium fg-secondary"
-          >
-            Reason for denying
-          </label>
-          <div className={POSTHOG_REPLAY_BLOCK_CLASS}>
-            <TextArea
-              ref={reasonFieldRef}
-              id={reasonId}
-              data-testid="tool-approval-reason"
-              value={reason}
-              onChange={(e): void => setReason(e.target.value)}
-              onKeyDown={onReasonKeyDown}
-              placeholder="Included in the response to the agent…"
-              rows={2}
-            />
-          </div>
+          <FormField id={reasonId} label="Reason for denying">
+            {(control) => (
+              <div className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                <TextArea
+                  {...control}
+                  ref={reasonFieldRef}
+                  data-testid="tool-approval-reason"
+                  value={reason}
+                  onChange={(e): void => setReason(e.target.value)}
+                  onKeyDown={onReasonKeyDown}
+                  placeholder="Included in the response to the agent…"
+                  rows={2}
+                />
+              </div>
+            )}
+          </FormField>
         </div>
       )}
 

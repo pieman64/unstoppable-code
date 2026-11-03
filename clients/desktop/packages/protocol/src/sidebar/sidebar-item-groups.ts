@@ -1,13 +1,7 @@
 /** Browser-safe sidebar membership contracts; item order remains host-owned. */
-export const SIDEBAR_ITEM_GROUP_COLORS = [
-  'neutral',
-  'categorical-1',
-  'categorical-2',
-  'categorical-3',
-  'categorical-4',
-  'categorical-5',
-  'categorical-6',
-] as const;
+import { SIDEBAR_ITEM_GROUP_COLORS } from '../canopy-core/sidebar-values';
+
+export { SIDEBAR_ITEM_GROUP_COLORS };
 
 export type SidebarItemGroupColor = (typeof SIDEBAR_ITEM_GROUP_COLORS)[number];
 export const SIDEBAR_ITEM_GROUP_LIMIT = 100;

@@ -18,12 +18,12 @@
 // ---------------------------------------------------------------------------
 
 import { useState, type JSX, type ReactNode } from 'react';
+import { Button, EmptyState, Notice } from '@canopy/ui-shared';
 import {
-  Button,
-  EmptyState,
-  LoadingPlaceholder,
-  Notice,
-} from '@canopy/ui-shared';
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import {
   deriveOrgProjectPlaceholderState,
   isOrgProjectCatalogSetupSupported,
@@ -275,20 +275,20 @@ export function OrgProjectCatalogList({
             // container's top padding so rows never show above it, and a
             // short fade below it lets rows slide under it softly.
             <div className="sticky top-0 z-10 -mx-5 -mt-3 space-y-2 bg-card px-5 pt-3 pb-2 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-4 after:bg-linear-to-b after:from-card after:to-transparent">
-              <input
-                type="search"
+              <SearchField
                 value={search}
-                onChange={(event): void => setSearch(event.target.value)}
+                onValueChange={setSearch}
                 aria-label="Search projects"
                 placeholder="Search projects"
                 data-testid="add-workspace-org-catalog-search"
-                className="focus-ring w-full min-w-0 rounded-lg bg-base px-3 py-2 text-s inset-ring-1 inset-ring-line-base"
               />
               {destination}
             </div>
           )}
           {catalog === undefined && stale === false ? (
-            <LoadingPlaceholder label="Loading projects" />
+            <DelayedLoadingPlaceholder slowNote="Still loading projects…">
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           ) : projects.length === 0 && stale === false ? (
             management === undefined || error !== '' ? (
               <EmptyState
@@ -420,7 +420,9 @@ function OrgProjectCatalogSetup({
   if (management.connection === 'checking')
     return (
       <div data-testid="add-workspace-org-catalog-setup-checking">
-        <LoadingPlaceholder label="Checking GitHub connection" />
+        <DelayedLoadingPlaceholder slowNote="Still checking GitHub connection…">
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   if (management.connection === 'not-connected')

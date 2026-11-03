@@ -3,6 +3,7 @@
 import type { JSX } from 'react';
 import { TerminalIcon } from '../icons/AppIcons';
 import { Tooltip } from './Tooltip';
+import { ErrorBanner } from './StatusBlocks';
 
 /**
  * Added to the default composer shell in terminal mode (a draft starting with
@@ -34,13 +35,11 @@ export function TerminalModeLabel({
 }): JSX.Element {
   if (error !== null) {
     return (
-      <span
-        role="alert"
-        data-testid="chat-input-terminal-mode-error"
-        className="mr-1 select-none whitespace-nowrap text-s fg-destructive"
-      >
-        {error}
-      </span>
+      <ErrorBanner
+        className="mr-1"
+        error={error}
+        testId="chat-input-terminal-mode-error"
+      />
     );
   }
   const label = (

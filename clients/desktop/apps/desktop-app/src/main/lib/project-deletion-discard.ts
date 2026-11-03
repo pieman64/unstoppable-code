@@ -8,6 +8,7 @@ import type {
   WorktreeDiscardRefusal,
 } from '@canopy/protocol/portal/worktree-discard';
 import { basename, dirname, resolve } from 'node:path';
+import { readArchivedContainerManifestIncludingExpired } from './archived-containers';
 import { getArchivedContainersRootDir } from './paths';
 import { isWritableScope } from './read-only-scope';
 import { validateId } from './validation';
@@ -58,10 +59,14 @@ function refusedDescription(
   return { version: 1, workspaceId, status: 'refused', items: [] };
 }
 
-/** Its list order: the rows, then worktrees only a journal still names. */
+/**
+ * Its list order: the rows, then worktrees only a journal still names, then
+ * the retained archives whose recovery refuses the deletion (CAN-5338).
+ */
 async function readCandidates(
   workspaceId: string,
   blocking: ReadonlySet<string>,
+  blockedArchives: ReadonlySet<string>,
 ): Promise<Candidate[] | null> {
   const list = await readWorkspaceWorktreesDetailed(workspaceId, {
     persistRemovalCleanup: false,
@@ -75,15 +80,38 @@ async function readCandidates(
   for (const worktreeId of blocking)
     if (!candidates.some((candidate) => candidate.worktreeId === worktreeId))
       candidates.push({ worktreeId, blocksAdmission: true });
+  for (const worktreeId of blockedArchives) {
+    const known = candidates.find(
+      (candidate) => candidate.worktreeId === worktreeId,
+    );
+    if (known) {
+      known.blocksAdmission = true;
+      continue;
+    }
+    const manifest = await readArchivedContainerManifestIncludingExpired(
+      workspaceId,
+      worktreeId,
+    ).catch(() => null);
+    const worktreeName = manifest?.label?.trim() || manifest?.name;
+    candidates.push({
+      worktreeId,
+      ...(worktreeName ? { worktreeName } : {}),
+      blocksAdmission: true,
+    });
+  }
   return candidates;
 }
 
 /** An indexed code project whose deletion's other admission checks pass. */
 async function isDeletableBesideItsWorktrees(
   workspaceId: string,
+  blockedArchives?: Set<string>,
 ): Promise<boolean> {
   if (!(await isWorkspaceIndexed(workspaceId))) return false;
-  const kind = await assertWorkspaceDeletableBesideItsWorktrees(workspaceId);
+  const kind = await assertWorkspaceDeletableBesideItsWorktrees(
+    workspaceId,
+    blockedArchives,
+  );
   return (
     (kind === 'single-repo' || kind === 'multi-repo') &&
     (await readWorkspaceConfigDetailed(workspaceId)).authority === 'ok'
@@ -124,12 +152,14 @@ async function describeItems(
   workspaceId: string,
   candidates: readonly Candidate[],
   ignoreInterruptedDeletion: boolean,
+  retainedArchives: boolean,
 ): Promise<ProjectDeletionDiscardItem[] | null> {
   const items: ProjectDeletionDiscardItem[] = [];
   for (const candidate of candidates) {
     const description: WorktreeDiscardDescription =
       await describeWorktreeDiscard(workspaceId, candidate.worktreeId, {
         ignoreInterruptedDeletion,
+        ...(retainedArchives ? { retainedArchives } : {}),
       });
     if (description.status === 'discardable') {
       items.push({
@@ -165,31 +195,51 @@ function archiveDirectoriesDiscarded(
   for (const { description } of items)
     for (const target of description.targets)
       if (
-        target.kind === 'files-only-recovery' &&
+        (target.kind === 'files-only-recovery' ||
+          target.kind === 'retained-archive') &&
         resolve(dirname(target.path)) === root
       )
         names.add(basename(target.path));
   return names;
 }
 
+/**
+ * CAN-5338: `retainedArchives` also lists each retained archive whose
+ * recovery refuses the deletion, discarded before it like any other item.
+ * Without it, such an archive refuses the description as before.
+ */
 export async function describeProjectDeletionDiscard(
   workspaceId: string,
+  options: { retainedArchives?: boolean } = {},
 ): Promise<ProjectDeletionDiscardDescription> {
   validateId(workspaceId, 'workspaceId');
   const refused = refusedDescription(workspaceId);
   if (!isWritableScope(workspaceId)) return refused;
+  const retainedArchives = options.retainedArchives === true;
+  const blockedArchives = new Set<string>();
   try {
-    if (!(await isDeletableBesideItsWorktrees(workspaceId))) return refused;
+    if (
+      !(await isDeletableBesideItsWorktrees(
+        workspaceId,
+        retainedArchives ? blockedArchives : undefined,
+      ))
+    )
+      return refused;
     const findings = await readJournalFindings(workspaceId);
     if (!findings) return refused;
     const { interruptedDeletion } = findings;
-    const candidates = await readCandidates(workspaceId, findings.blocking);
+    const candidates = await readCandidates(
+      workspaceId,
+      findings.blocking,
+      blockedArchives,
+    );
     const items =
       candidates &&
       (await describeItems(
         workspaceId,
         candidates,
         interruptedDeletion !== undefined,
+        retainedArchives,
       ));
     if (!items || (items.length === 0 && !interruptedDeletion)) return refused;
     // The deletion would fail on another archive after these discards.

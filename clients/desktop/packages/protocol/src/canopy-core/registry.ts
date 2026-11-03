@@ -116,6 +116,8 @@ export type CanopyStreamHandlerMap<Context = unknown> = {
     params: CanopyStreamParams<Name>,
     context: Context,
     sink: {
+      /** Frames emitted but not yet taken by the consumer. */
+      buffered?(): number;
       emit(
         item: CanopyStreamItemInput<Name>,
         onCursorAssigned?: (cursor: CanopyStreamCursor) => void,

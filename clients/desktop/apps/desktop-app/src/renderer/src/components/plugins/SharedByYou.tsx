@@ -9,13 +9,17 @@ import {
   type SharedByYouFacts,
 } from '@canopy/ui-app/sharing';
 import type { MarketplaceUnshareKind } from '@canopy/ui-shared/lib/marketplace-unshare';
+import { brand } from '@/lib/brand';
+import { copyTextToClipboard } from '@/lib/clipboard';
 import { unshareMarketplaceResource } from '@/lib/marketplaceUnshare';
 import { revokeMarketplacePublicShare } from '@/lib/revokePublicShare';
+import { postShareToast } from '@/lib/share-toast';
 
 /**
  * The desktop's "Shared by you" section (CAN-4842): the owner's audiences
  * for one shared item, each removed through the existing preload methods.
- * `shareId` is the key both transports take for `kind`.
+ * `shareId` is the key both transports take for `kind`, and the id the
+ * account row's member link carries (CAN-5452).
  */
 export function SharedByYou({
   kind,
@@ -41,6 +45,11 @@ export function SharedByYou({
         revokePublicLink: {
           available: true,
           run: () => revokeMarketplacePublicShare(kind, shareId),
+        },
+        copyLink: {
+          target: { scheme: brand.internalName, kind, shareId },
+          write: copyTextToClipboard,
+          notify: postShareToast,
         },
       }),
     [facts, kind, personalOrganizationId, shareId],

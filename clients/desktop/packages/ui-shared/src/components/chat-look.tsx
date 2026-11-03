@@ -1,4 +1,14 @@
-import { createContext, useContext, type JSX, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import type { ChatDetail } from '@canopy/protocol/chat-detail';
 import { buttonClassName } from './Button';
 
@@ -9,7 +19,7 @@ import { buttonClassName } from './Button';
  *   folds the steps away once the turn is done;
  * - every step (tool call, group, thinking, helper agent, changed files) is
  *   the same quiet `StepRow`: an icon at the text's size and color and plain
- *   past-tense words ("Ran git status", "Read file.ts", "Couldn't run …");
+ *   stable action words ("Run git status", "Read file.ts") and separate outcomes;
  * - runs of steps read as words ("Ran commands, read files");
  * - work in progress shimmers its words instead of showing a spinner, and
  *   the only colors left are a diff's added and removed line counts.
@@ -92,6 +102,27 @@ export function useChatDetail(): ChatDetail {
 }
 
 /**
+ * Completed turns open folded. Detailed work also folds when it finishes
+ * on screen; Compact and Recent keep their between-reply groups in place.
+ * Collapse only on that transition so a reader can reopen a completed turn.
+ */
+export function useTurnCollapse(
+  complete: boolean,
+  clean: boolean,
+  detail: ChatDetail,
+): readonly [boolean, Dispatch<SetStateAction<boolean>>] {
+  const [collapsed, setCollapsed] = useState(complete);
+  const wasComplete = useRef(complete);
+  useEffect(() => {
+    if (!wasComplete.current && complete && (!clean || detail === 'detailed')) {
+      setCollapsed(true);
+    }
+    wasComplete.current = complete;
+  }, [complete, clean, detail]);
+  return [collapsed, setCollapsed];
+}
+
+/**
  * Whether the transcript folds the work between two replies into one line:
  * every chat detail but `detailed`.
  */
@@ -100,13 +131,12 @@ export function useGroupToolCalls(): boolean {
 }
 
 /**
- * Whether step rows lay out as badge lines: the clean look at chat detail
- * `detailed`. Recent and Compact keep plain words.
+ * Clean step rows use the same badge lines at every chat detail level.
+ * Detail controls grouping, not the presentation of an individual step.
  */
 export function useStepBadgeRows(): boolean {
   const clean = useContext(ChatLookContext) === 'clean';
-  const detail = useContext(ChatDetailContext);
-  return clean && detail === 'detailed';
+  return clean;
 }
 
 /** Set by a step row around the words of its badge line. */
@@ -166,9 +196,8 @@ export const CLASSIC_FOOTER_ICON_BUTTON_CLASS =
 
 /**
  * Whether a step is done, still running, failed, was blocked before it ran,
- * was interrupted with no recorded outcome, or is waiting for the person to
- * approve it. Clean step labels pick their verb from it: "Ran", "Running",
- * "Couldn't run", "Didn't run", "Run", "Waiting to run".
+ * or was interrupted or is waiting for approval. Status changes do not
+ * change the stable action label.
  */
 export type StepTense =
   | 'done'

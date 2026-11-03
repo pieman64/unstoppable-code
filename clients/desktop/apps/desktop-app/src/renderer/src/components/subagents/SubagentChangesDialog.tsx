@@ -5,13 +5,13 @@ import {
   Button,
   DialogModal,
   DELEGATED_AGENT_CHANGES_FAILED_LABEL,
-  DELEGATED_AGENT_CHANGES_RETRY_LABEL,
   DELEGATED_AGENT_DIFF_SHORTENED_LABEL,
   DELEGATED_AGENT_LOADING_CHANGES_LABEL,
   DELEGATED_AGENT_NO_CHANGES_LABEL,
   DELEGATED_AGENT_NO_DIFF_LABEL,
   DELEGATED_AGENT_REFRESH_CHANGES_LABEL,
   delegatedAgentChangesShownLabel,
+  ErrorState,
 } from '@canopy/ui-shared/components';
 import type { SubagentHostScope } from './subagent-scope';
 
@@ -40,7 +40,7 @@ function ChangedFiles({
   readonly onRefresh: () => void;
 }): JSX.Element {
   return (
-    <div className="flex min-h-0 flex-col gap-3 px-5 py-4">
+    <div className="flex min-h-0 flex-col gap-3 px-6 py-4">
       {changes.files.length === 0 ? (
         <p className="text-sm fg-secondary">
           {DELEGATED_AGENT_NO_CHANGES_LABEL}
@@ -131,24 +131,22 @@ export function SubagentChangesDialog({
   const retry = (): void => setRetryCount((count) => count + 1);
   return (
     <DialogModal
+      inset="flush"
       title={`Changes from ${target.title}`}
       onClose={onClose}
       maxWidth="4xl"
       dataTestId="subagent-changes-dialog"
     >
       {state.status === 'loading' ? (
-        <p className="px-5 py-4 text-sm fg-secondary" role="status">
+        <p className="px-6 py-4 text-sm fg-secondary" role="status">
           {DELEGATED_AGENT_LOADING_CHANGES_LABEL}
         </p>
       ) : state.status === 'failed' ? (
-        <div className="flex flex-col items-start gap-3 px-5 py-4" role="alert">
-          <p className="text-sm fg-destructive">
-            {DELEGATED_AGENT_CHANGES_FAILED_LABEL}
-          </p>
-          <Button size="compact" variant="secondary" onClick={retry}>
-            {DELEGATED_AGENT_CHANGES_RETRY_LABEL}
-          </Button>
-        </div>
+        <ErrorState
+          space="panel"
+          message={DELEGATED_AGENT_CHANGES_FAILED_LABEL}
+          onRetry={retry}
+        />
       ) : (
         <ChangedFiles changes={state.changes} onRefresh={retry} />
       )}

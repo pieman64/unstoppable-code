@@ -25,7 +25,11 @@ import {
   WORKTREE_BRANCH,
 } from './codexPipelineRuntime.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 import { seedStoredPipeline } from './seeders/seedStoredPipeline.mjs';
 import { showPipelineJobList } from './pipelineUi.mjs';
 import { toggleHomePipelineMode } from './homeComposerMenu.mjs';
@@ -105,6 +109,7 @@ test.describe('in-process Codex pipeline runtime', () => {
         const threadId = pipelineTurnRequests(fixture.logPath)[0].params
           .threadId;
         if (stopMode === 'crash') {
+          await captureDaemonDryRunEvidence(electronApp);
           const pid = await electronApp.evaluate(() => process.pid);
           process.kill(pid, 'SIGKILL');
           await closeCanopy(electronApp, userDataDir, {

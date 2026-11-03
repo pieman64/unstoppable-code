@@ -2357,13 +2357,26 @@ test('uncertain watcher deliveries can be dismissed durably without resending', 
         window.evaluate(() => matchMedia('(pointer: coarse)').matches),
       )
       .toBe(true);
-    const touchTarget = await dismiss.boundingBox();
-    expect(touchTarget?.width).toBeGreaterThanOrEqual(44);
-    expect(touchTarget?.height).toBeGreaterThanOrEqual(44);
-    const viewportWidth = await window.evaluate(() => window.innerWidth);
-    expect(touchTarget?.x + touchTarget?.width).toBeLessThanOrEqual(
-      viewportWidth,
-    );
+    // The Button keeps its 28px disc and grows a 44px hit area on touch, so
+    // a tap 7px outside each edge of the disc still lands on Dismiss, and the
+    // whole hit area stays inside the viewport.
+    const touchTarget = await dismiss.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const midX = box.left + box.width / 2;
+      const midY = box.top + box.height / 2;
+      const hits = [
+        [box.left - 7, midY],
+        [box.right + 7, midY],
+        [midX, box.top - 7],
+        [midX, box.bottom + 7],
+      ].map(
+        ([x, y]) =>
+          document.elementFromPoint(x, y)?.closest('button') === element,
+      );
+      return { hits, right: box.right + 8, viewportWidth: window.innerWidth };
+    });
+    expect(touchTarget.hits).toEqual([true, true, true, true]);
+    expect(touchTarget.right).toBeLessThanOrEqual(touchTarget.viewportWidth);
     await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
     await dismiss.press('Enter');
     await expect(rows).toHaveCount(2);

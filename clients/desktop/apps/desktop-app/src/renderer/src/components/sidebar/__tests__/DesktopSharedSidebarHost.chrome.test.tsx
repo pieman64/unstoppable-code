@@ -2,6 +2,11 @@
 import type { SessionViewModel } from '@canopy/app-core';
 import { CanopyClientProvider } from '@canopy/app-state';
 import { createFakeClient } from '@canopy/app-state/__tests__/fake-org-projects-client';
+import {
+  chooseSettingsOptionSync,
+  settingsSelectTrigger,
+  settingsSelectValue,
+} from '@canopy/ui-app/settings/__tests__/helpers/settings-select';
 import { act, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SidebarSurface, SidebarSurfaceProps } from '@canopy/ui-app';
@@ -1724,26 +1729,22 @@ describe('DesktopSharedSidebarHost move to organization', () => {
     act(() => {
       openMoveToOrganizationModal('personal-code');
     });
-    const select = (): HTMLSelectElement | null =>
-      document.querySelector<HTMLSelectElement>(
+    const select = (): HTMLButtonElement =>
+      settingsSelectTrigger(
+        document,
         '[data-testid="move-project-to-organization-select"]',
       );
-    const picker = select();
-    expect(picker?.value).toBe('');
+    expect(settingsSelectValue(select())).toBe('');
     expect(
       useCurrentUiStateStore.getState().slices['moveToOrganization.modal'],
     ).toEqual({ open: true, workspaceId: 'personal-code', busy: false });
-    act(() => {
-      if (picker === null) return;
-      picker.value = ACME.id;
-      picker.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(select()?.value).toBe(ACME.id);
+    chooseSettingsOptionSync(select(), ACME.id);
+    expect(settingsSelectValue(select())).toBe(ACME.id);
 
     act(() => {
       openMoveToOrganizationModal('personal-cowork');
     });
-    expect(select()?.value).toBe('');
+    expect(settingsSelectValue(select())).toBe('');
   });
 
   it('hands the Cowork row the open handler only for a movable project', async () => {

@@ -168,12 +168,12 @@ describe('MarketplaceDetailPageShell and catalog detail cores', () => {
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(onAdd).toHaveBeenCalledTimes(1);
-    // The header recipe: Launch's accent `rounded-md` 28px control for Add.
+    // The header recipe: the compact primary capsule, like Share beside it.
     const addButton = bar?.querySelector(
       '[data-testid="plugin-catalog-detail-add"]',
     );
     expect(addButton?.className).toContain('bg-accent');
-    expect(addButton?.className).toContain('rounded-md');
+    expect(addButton?.className).toContain('rounded-full');
     expect(addButton?.className).toContain('h-7');
     // The detail must not be its own scroller: every host already scrolls
     // (page root, dialog body), and a nested scroll box clips the hairline

@@ -37,8 +37,8 @@ function runtime(): {
 } {
   const adapter = createCoreOperationAdapter({ ledgerPath: () => ledgerPath });
   adapter.service.registerDomain({
-    domain: 'pipeline',
-    kinds: ['core.pipeline.run'],
+    domain: 'example',
+    kinds: ['core.example.run'],
     restartClass: 'lost',
     cancel: () => Promise.resolve('cancelled'),
   });
@@ -84,7 +84,7 @@ describe('desktop dispatcher core.operation.*', () => {
   it('lets one window observe work another started, cancel it, and find it after a restart', async () => {
     const first = runtime();
     const { operation } = await first.adapter.service.admit({
-      kind: 'core.pipeline.run',
+      kind: 'core.example.run',
       status: 'running',
       origin: { kind: 'client', sourceId: 'window-1' },
       owner: { kind: 'principal', id: 'local-desktop-user' },
@@ -142,7 +142,7 @@ describe('desktop dispatcher core.operation.*', () => {
   // CAN-4132: the builtin local worker's dispatch records come with the
   // runtime. Its worker instructions are CAN-4108's Git branch changes, the
   // entry instructions (CAN-5502; file.write and directory.create are not
-  // among them) and CAN-5517's fetch and pull.
+  // among them), CAN-5517's fetch and pull, and CAN-4143's script runs.
   it('carries the local worker execution without opening the ledger', async () => {
     const { dispatcher } = runtime();
     try {
@@ -156,6 +156,11 @@ describe('desktop dispatcher core.operation.*', () => {
         'worker.git.checkout',
         'worker.git.fetch',
         'worker.git.pull',
+        'worker.pipeline.execution.cancel',
+        'worker.pipeline.execution.start',
+        'worker.pipeline.hostRequest.respond',
+        'worker.script.execute',
+        'worker.script.execution.cancel',
       ]);
       await expect(
         dispatcher.localWorker.dispatch({

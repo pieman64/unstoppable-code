@@ -118,7 +118,7 @@ export function UsageLimitedSessionsControl({
           initialFocusRef={firstSessionRef}
           dataTestId={`${testIdPrefix}-waiting-chooser`}
         >
-          <ul className="space-y-1 p-2" aria-busy={state.kind === 'loading'}>
+          <ul className="space-y-1" aria-busy={state.kind === 'loading'}>
             {sessions.map((session, index) => (
               <li key={session.id}>
                 <button

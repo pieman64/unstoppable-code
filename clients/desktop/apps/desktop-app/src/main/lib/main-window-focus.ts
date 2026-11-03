@@ -9,6 +9,11 @@ export function setMainWindowResolver(
   resolveMainWindow = resolve;
 }
 
+/** The main window, for host effects that report progress to it. */
+export function getMainWindow(): BrowserWindow | null {
+  return resolveMainWindow();
+}
+
 export interface FocusMainWindowOptions {
   /**
    * Actively pull the window in front of the app the user is currently looking

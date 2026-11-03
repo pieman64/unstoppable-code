@@ -1054,21 +1054,36 @@ posix(
   },
 );
 
-test('Windows rejects a launcher or held claim before acquiring or binding', async () => {
+test('Windows rejects a launcher claim before acquiring or binding', async () => {
   const options = windowsHost();
   const tryAcquire = jest.spyOn(options.claims, 'tryAcquire');
   const bind = jest.spyOn(options.platform.endpoints, 'bind');
   await expect(
     publishCanopyDaemon({ ...options, claimHandle: {} }),
   ).rejects.toThrow('Windows launcher claim unsupported');
-  await expect(
-    publishCanopyDaemon({
-      ...options,
-      heldClaim: { current: {}, released: false },
-    }),
-  ).rejects.toThrow('Windows launcher claim unsupported');
   expect(tryAcquire).not.toHaveBeenCalled();
   expect(bind).not.toHaveBeenCalled();
+});
+
+// The daemon's W5 host start holds its own claim on every OS (CAN-5530).
+test('Windows publishes under a held claim and releases it once published', async () => {
+  const options = windowsHost();
+  await mkdir(join(dataRoot, 'runtime'), { mode: 0o700 });
+  const acquired = await options.claims.tryAcquire();
+  if (acquired.kind !== 'acquired') throw new Error(acquired.kind);
+  const held: CanopyDaemonHeldClaim = {
+    current: acquired.handle,
+    released: false,
+  };
+  const tryAcquire = jest.spyOn(options.claims, 'tryAcquire');
+  const bound = await publishCanopyDaemon({ ...options, heldClaim: held });
+  expect(bound.descriptor.endpoint.kind).toBe('pipe');
+  expect(tryAcquire).not.toHaveBeenCalled();
+  expect(held.released).toBe(true);
+  expect(await options.claims.identity(held.current)).toBeNull();
+  expect(await contend()).toBe('acquired');
+  await bound.close();
+  expect(await readdir(join(dataRoot, 'runtime'))).toEqual([]);
 });
 
 test('startup releases the claim when close fails and retains publication proof', async () => {

@@ -385,29 +385,6 @@ function findWorkspace(workspaceId: string): SidebarItem | undefined {
     .projects.find((candidate) => candidate.id === workspaceId);
 }
 
-function findLiveWorktree(
-  workspaceId: string,
-  worktreeId: string,
-): WorktreeData | undefined {
-  const workspace = findWorkspace(workspaceId);
-  if (!workspace || workspace.type === 'cowork') return undefined;
-  return workspace.worktrees.find((worktree) => worktree.id === worktreeId);
-}
-
-/**
- * Whether a send to this worktree will wait in the setup queue. A concurrent
- * refresh can briefly drop a just-reserved row, so its absence falls back to
- * the phase the caller last observed rather than reading as ready.
- */
-function isWorktreeSetupPending(
-  workspaceId: string,
-  worktreeId: string,
-  fallbackPhase?: WorktreeData['setupPhase'],
-): boolean {
-  const live = findLiveWorktree(workspaceId, worktreeId);
-  return (live ? live.setupPhase : fallbackPhase) === 'git-pending';
-}
-
 /**
  * Maps a Home draft's `branchTarget` (plus the selected workspace and the
  * loaded branch list) to the `task_ready` pipeline launcher's target shape
@@ -1115,17 +1092,12 @@ async function dispatchHomeSendTo(
   // retry from its failed chat (not this Home submission) is driving it.
   let firstSendAttemptId = submissionIdentity.userMessageId;
   let resumedByRetry = false;
-  // A send to a worktree that is still setting up will queue, so it is
-  // presented as that queue row rather than as a starting turn.
-  const presentFirstSend = (
-    target: HomeSendChatTarget,
-    queuedForSetup: boolean,
-  ): void => {
+  // A send to a worktree that is still setting up is held by main and
+  // starts once the setup finishes, so it is presented as a starting turn.
+  const presentFirstSend = (target: HomeSendChatTarget): void => {
     if (!firstSend) return;
     if (
-      !useChatStore
-        .getState()
-        .presentProvisionalFirstSend(target, { ...firstSend, queuedForSetup })
+      !useChatStore.getState().presentProvisionalFirstSend(target, firstSend)
     ) {
       throw new Error('Failed to prepare the first message in this chat.');
     }
@@ -1633,10 +1605,7 @@ async function dispatchHomeSendTo(
         fail('Failed to create chat tab.');
         return false;
       }
-      presentFirstSend(
-        { projectId: workspaceId, worktreeId, chatId },
-        isWorktreeSetupPending(workspaceId, worktreeId),
-      );
+      presentFirstSend({ projectId: workspaceId, worktreeId, chatId });
       if (transcriptChunkReady) {
         const chunk = await transcriptChunkReady;
         if (!chunk.ok) throw chunk.error;
@@ -2059,10 +2028,11 @@ async function dispatchHomeSendTo(
           activationFailed = true;
           return;
         }
-        presentFirstSend(
-          { projectId: workspaceId, worktreeId, chatId: starterId },
-          isWorktreeSetupPending(workspaceId, worktreeId, setupPhase),
-        );
+        presentFirstSend({
+          projectId: workspaceId,
+          worktreeId,
+          chatId: starterId,
+        });
       }
       // The Code grid restores its persisted/default layout asynchronously for
       // both pending and already-ready registrations. Finish that work while
@@ -2246,10 +2216,11 @@ async function dispatchHomeSendTo(
     }
     if (firstSend && chatId !== presentedChatId) {
       firstSendPresentation.target = null;
-      presentFirstSend(
-        { projectId: workspaceId, worktreeId: created.id, chatId },
-        isWorktreeSetupPending(workspaceId, created.id, createdSetupPhase),
-      );
+      presentFirstSend({
+        projectId: workspaceId,
+        worktreeId: created.id,
+        chatId,
+      });
     }
 
     // Staged attachments live under the `HOME_DRAFT_WORKTREE_ID` sentinel
@@ -2381,25 +2352,6 @@ async function dispatchHomeSendTo(
         selectedRepoId,
       );
 
-      // Task H3 fix 3 (live queue decision): re-read the created worktree's
-      // CURRENT `setupPhase` immediately before dispatch rather than snapshotting
-      // it right after `createWorktree` resolved. On a fast (or already-buffered
-      // `git-ready`) reservation, git setup can complete during the awaits above
-      // (`loadAllWorktreeTabs`, attachment re-import, pill rewrite); a stale
-      // post-create snapshot would have missed that and either queued a message
-      // that no longer needed queueing or vice versa. If setup already completed,
-      // immediate processing is correct; if still pending, `queueForSetup` yields
-      // the queued bubble, which explains the setup wait, in the real chat.
-      // A concurrent sidebar/workspace refresh can briefly replace the project
-      // snapshot with one that does not yet contain this just-reserved row. Do
-      // not reinterpret that absence as git-ready: the creation response is the
-      // authoritative fallback until a live row explicitly reports its phase.
-      const queueForSetup = isWorktreeSetupPending(
-        workspaceId,
-        created.id,
-        createdSetupPhase,
-      );
-
       if (submittedModel && speed !== undefined) {
         await useChatStore.getState().setSpeed(speed, target);
       }
@@ -2429,7 +2381,6 @@ async function dispatchHomeSendTo(
           target,
           undefined,
           {
-            queueForSetup: queueForSetup || undefined,
             attachmentPaths: newWorktreeAttachmentPaths,
             attachmentPromptContexts: newWorktreeAttachmentPromptContexts,
             ...firstSendDispatchOptions(),

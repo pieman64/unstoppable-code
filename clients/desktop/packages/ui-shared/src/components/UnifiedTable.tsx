@@ -5,12 +5,10 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ClaudeLogo,
@@ -28,10 +26,15 @@ import {
   type UnifiedProviderSupport,
 } from './ProviderSupportIcons';
 import { getUnifiedTableItemKey } from './unified-table-virtualization';
-import { LoadingPlaceholder } from './StatusBlocks';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { SegmentedControl } from './SegmentedControl';
 import { Badge } from './Badge';
 import { Button } from './Button';
+import { Checkbox, ChoiceField } from './Choice';
+import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
+import { SearchField } from './SearchField';
+import { FloatingMenu } from './FloatingMenu';
 import { useLoadingIndicatorStyle } from './LoadingIndicatorStyle';
 
 /**
@@ -172,47 +175,9 @@ function SourceMultiSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const [position, setPosition] = useState({ top: 0, left: 0 });
-  const updatePosition = useCallback((): void => {
-    const button = buttonRef.current;
-    if (!button) return;
-    const rect = button.getBoundingClientRect();
-    setPosition({ top: rect.bottom + 4, left: rect.left });
-  }, []);
-  useLayoutEffect(() => {
-    if (open) updatePosition();
-  }, [open, updatePosition]);
   useEffect(() => {
-    if (!open) return;
-    const handleClick = (event: MouseEvent): void => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (
-        buttonRef.current?.contains(target) ||
-        dropdownRef.current?.contains(target)
-      ) {
-        return;
-      }
-      setOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', handleClick);
-    document.addEventListener('keydown', handleKey);
-    window.addEventListener('scroll', updatePosition, true);
-    return (): void => {
-      document.removeEventListener('mousedown', handleClick);
-      document.removeEventListener('keydown', handleKey);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [open, updatePosition]);
-  useEffect(() => {
-    if (!open) return;
-    setSearch('');
-    requestAnimationFrame(() => searchRef.current?.focus());
+    if (open) setSearch('');
   }, [open]);
   const foldedSearch = search.toLowerCase();
   const filtered = useMemo(
@@ -244,74 +209,86 @@ function SourceMultiSelect({
         </span>
         <span aria-hidden>⌄</span>
       </Button>
-      {open &&
-        createPortal(
-          <div
-            ref={dropdownRef}
-            className="fixed z-dropdown w-64 rounded-lg bg-card shadow-xl"
-            style={position}
-          >
-            <div className="p-1.5 pb-0">
-              <input
-                ref={searchRef}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search sources…"
-                className="focus-ring w-full rounded-md border bg-base px-2 py-1 text-xs"
+      <FloatingMenu
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={buttonRef}
+        placement="bottom-left"
+        interaction="manual"
+        // A filter form: the search field and the checkboxes take Tab, and
+        // Escape or a press outside closes it.
+        trapFocus
+        openOnArrowKeys={false}
+        initialFocusRef={searchRef}
+        role="dialog"
+        aria-label="Sources"
+        className="w-64"
+      >
+        <div className="p-0.5 pb-0">
+          <SearchField
+            ref={searchRef}
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Search sources…"
+            aria-label="Search sources"
+            // Escape closes the dropdown, as it does from its rows.
+            clearOnEscape={false}
+          />
+        </div>
+        <div className="max-h-60 overflow-y-auto p-0.5">
+          {filtered.length === 0 && (
+            <p className="px-2 py-3 text-center text-xs fg-secondary">
+              {options.length === 0
+                ? 'No sources available'
+                : 'No matching sources'}
+            </p>
+          )}
+          {filtered.map((option) => (
+            // The row draws the inset and hover fill; the field's text
+            // toggles it.
+            <div
+              key={option.value}
+              className="rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/50"
+            >
+              <ChoiceField
+                checked={active.has(option.value)}
+                onChange={() => toggle(option.value)}
+                label={
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="shrink-0 fg-secondary">
+                      <SourceOptionIcon
+                        icon={option.icon}
+                        renderAppLogo={renderAppLogo}
+                      />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs fg-primary">
+                        {option.label}
+                      </span>
+                      {option.subtitle && (
+                        <span className="block truncate text-3xs fg-secondary">
+                          {option.subtitle}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                }
               />
             </div>
-            <div className="max-h-60 overflow-y-auto p-1.5">
-              {filtered.length === 0 && (
-                <p className="px-2 py-3 text-center text-xs fg-secondary">
-                  {options.length === 0
-                    ? 'No sources available'
-                    : 'No matching sources'}
-                </p>
-              )}
-              {filtered.map((option) => (
-                <label
-                  key={option.value}
-                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={active.has(option.value)}
-                    onChange={() => toggle(option.value)}
-                    className="shrink-0 rounded"
-                  />
-                  <span className="shrink-0 fg-secondary">
-                    <SourceOptionIcon
-                      icon={option.icon}
-                      renderAppLogo={renderAppLogo}
-                    />
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs fg-primary">
-                      {option.label}
-                    </span>
-                    {option.subtitle && (
-                      <span className="block truncate text-3xs fg-secondary">
-                        {option.subtitle}
-                      </span>
-                    )}
-                  </span>
-                </label>
-              ))}
-            </div>
-            {active.size > 0 && (
-              <div className="border-t px-2 py-1.5">
-                <Button
-                  variant="ghost"
-                  size="compact"
-                  onClick={() => onChange(new Set())}
-                >
-                  Clear all
-                </Button>
-              </div>
-            )}
-          </div>,
-          document.body,
+          ))}
+        </div>
+        {active.size > 0 && (
+          <div className="border-t px-1.5 pt-1">
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={() => onChange(new Set())}
+            >
+              Clear all
+            </Button>
+          </div>
         )}
+      </FloatingMenu>
     </>
   );
 }
@@ -426,12 +403,13 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
       <td className="px-3 py-1 text-center">
         {row.selectionAction}
         {(!row.selectionAction || checked) && (
-          <input
-            type="checkbox"
+          <Checkbox
             checked={locked || checked}
             onChange={handleToggle}
             disabled={disabled}
-            className={`rounded ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`}
+            // Centred in its cell; the row's text carries the unsupported
+            // dimming.
+            className="mx-auto"
             data-toggle-mode={toggleMode}
             data-testid={rowCheckboxTestId}
             data-row-key={row.key}
@@ -598,14 +576,21 @@ function SelectionFilterCount({
   );
 }
 
-function isKindFilter(value: string): value is UnifiedTableKind | 'all' {
-  return (
-    value === 'all' ||
-    value === 'skill' ||
-    value === 'plugin' ||
-    value === 'collection' ||
-    value === 'mcp'
-  );
+/** The Kind filter's options: Collection and MCP server only when offered. */
+function kindFilterOptionsFor(
+  showCollectionKind: boolean,
+  showMcpKind: boolean,
+): readonly SettingsSelectOption<UnifiedTableKind | 'all'>[] {
+  const options: SettingsSelectOption<UnifiedTableKind | 'all'>[] = [
+    { value: 'all', label: 'All kinds' },
+    { value: 'skill', label: 'Skill' },
+    { value: 'plugin', label: 'Plugin' },
+  ];
+  if (showCollectionKind) {
+    options.push({ value: 'collection', label: 'Collection' });
+  }
+  if (showMcpKind) options.push({ value: 'mcp', label: 'MCP server' });
+  return options;
 }
 
 export function UnifiedTable({
@@ -670,6 +655,11 @@ export function UnifiedTable({
   const availableKinds = useMemo(
     () => new Set(rows.map((row) => row.kind)),
     [rows],
+  );
+  const showMcpKind = availableKinds.has('mcp');
+  const kindFilterOptions = useMemo(
+    () => kindFilterOptionsFor(showCollectionKind, showMcpKind),
+    [showCollectionKind, showMcpKind],
   );
   const selection = useMemo(() => {
     const counts = new Map<UnifiedTableKind, number>();
@@ -830,28 +820,22 @@ export function UnifiedTable({
           width="content"
           dataTestId="unified-table-selection-filter"
         />
-        <input
+        <SearchField
           value={nameSearch}
-          onChange={(event) => setNameSearch(event.target.value)}
+          onValueChange={setNameSearch}
           placeholder="Search by name…"
           aria-label="Search by name"
-          className="focus-ring min-w-35 flex-1 rounded-md border bg-base px-2.5 py-1.5 text-xs"
+          // Escape keeps closing the dialog that hosts the table.
+          clearOnEscape={false}
+          className="min-w-35 flex-1"
         />
-        <select
+        <SettingsSelect
           value={kindFilter}
-          onChange={(event) => {
-            if (isKindFilter(event.target.value))
-              setKindFilter(event.target.value);
-          }}
+          options={kindFilterOptions}
+          onValueChange={setKindFilter}
           aria-label="Kind filter"
-          className="focus-ring rounded-md border bg-base px-2 py-1.5 text-xs fg-primary"
-        >
-          <option value="all">All kinds</option>
-          <option value="skill">Skill</option>
-          <option value="plugin">Plugin</option>
-          {showCollectionKind && <option value="collection">Collection</option>}
-          {availableKinds.has('mcp') && <option value="mcp">MCP server</option>}
-        </select>
+          width="fit"
+        />
         <SourceMultiSelect
           options={sourceOptions}
           active={activeSources}
@@ -863,7 +847,9 @@ export function UnifiedTable({
       <div className="flex min-h-0 flex-1 flex-col">
         {showLoading &&
           (loadingIndicatorStyle === 'spinner' ? (
-            <LoadingPlaceholder space="panel" />
+            <DelayedLoadingPlaceholder>
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
           ) : (
             <p className="py-12 text-center text-s fg-secondary">Loading…</p>
           ))}

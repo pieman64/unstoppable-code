@@ -6,6 +6,7 @@ import {
   runW5BoundaryOperation,
   w5ExpectedRevision,
   type W5BoundaryOptions,
+  type W5WireCall,
 } from './w5-boundary-operation';
 import { W5RevisionConflictError } from './w5-commit-log-file-store';
 import {
@@ -1600,13 +1601,15 @@ export async function restoreArchivedContainer(
   projectId: string,
   containerId: string,
   options: W5BoundaryOptions = {},
+  wire?: W5WireCall,
 ): Promise<ArchivedContainerRestoreResponse> {
   return runW5BoundaryOperation<ArchivedContainerRestoreResponse>(
     {
       operation: 'core.archive.container.restore',
-      caller: 'desktop-host:archive-container-restore',
+      caller: wire?.caller ?? 'desktop-host:archive-container-restore',
       idempotencyKey: options.idempotencyKey,
       parameters: { projectId, containerId },
+      ...(wire?.admit && { admit: wire.admit }),
       recheckAtOutcome: true,
       isPreEffectRefusal: (error) => error instanceof W5RevisionConflictError,
     },

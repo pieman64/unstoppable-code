@@ -379,9 +379,9 @@ describe('LedgerThreadList rows and threads', () => {
     expect(row.getAttribute('aria-current')).toBe('true');
     expect(byTestId('ledger-entry-details')).not.toBeNull();
     expect(byTestId('ledger-entry-detail-owner').textContent).toBe('You');
-    expect(byTestId('ledger-entry-open-error').getAttribute('role')).toBe(
-      'alert',
-    );
+    expect(
+      byTestId('ledger-entry-open-error').querySelector('[role="alert"]'),
+    ).not.toBeNull();
     expect(byTestId('open-notice').textContent).toBe('Saved.');
     expect(byTestId('closed-explanation').textContent).toBe('This is closed.');
     expect(byTestId('open-read-state').textContent).toBe('Read is ready.');

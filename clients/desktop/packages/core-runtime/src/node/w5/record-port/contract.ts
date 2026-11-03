@@ -13,6 +13,7 @@ import type {
 import type { GuardedStorageNamespace } from '../../../storage';
 import {
   isW5CaptureFile,
+  isW5CaptureWorkspaceId,
   w5CaptureFileComponents,
   type W5CaptureFile,
   type W5CaptureRequest,
@@ -61,6 +62,33 @@ export function w5RecordTargetFor(
   // Exactly the projected path: no `..`, separator or case alias.
   return isW5CaptureFile(file) && w5RecordPathFor(root, file) === path
     ? file
+    : undefined;
+}
+
+/**
+ * The workspace file `path` names under `root` when its workspace id is
+ * outside the capture grammar (capture `unsupported-id`), so no target can
+ * name it; undefined for a nameable or any other path.
+ */
+export function w5UnnameableRecordFor(
+  root: string,
+  path: string,
+): { kind: 'manifest' | 'worktrees'; workspaceId: string } | undefined {
+  const rest = relative(root, path);
+  if (!rest || isAbsolute(rest)) return undefined;
+  const [first = '', name, ...more] = rest.split(sep);
+  if (
+    name === undefined ||
+    more.length > 0 ||
+    !isWorkspaceFileName(name) ||
+    first === '.' ||
+    first === '..' ||
+    isW5CaptureWorkspaceId(first)
+  )
+    return undefined;
+  // Exactly the projected path, as `w5RecordTargetFor` requires.
+  return join(root, first, name) === path
+    ? { kind: WORKSPACE_FILES[name], workspaceId: first }
     : undefined;
 }
 

@@ -3,7 +3,7 @@ import type { SharedContainerSharePreview } from '@canopy/desktop-shared/types';
 import type { SharedContainerType } from '@canopy/protocol/shared-containers';
 import { CHAT_LABEL } from '@canopy/protocol';
 import { getScriptDisplayName } from '@canopy/desktop-shared/scripts';
-import { AdvancedDisclosure } from '@canopy/ui-shared/components';
+import { AdvancedDisclosure, ChoiceField } from '@canopy/ui-shared/components';
 import { formatCapabilityPackageShareNote } from '@canopy/ui-shared/sharing';
 import { brandText } from '@/lib/brand';
 import { containerNoun, snapshotRepositoryDisclosure } from './shareCopy';
@@ -247,27 +247,20 @@ export function ShareScopeDetails({
                   budgetCappedFileSet.has(path),
                 );
                 return (
-                  <label
+                  <ChoiceField
                     key={group.directory}
-                    className="flex items-start gap-2 text-xs fg-secondary"
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 shrink-0"
-                      checked={allIncluded}
-                      disabled={fileScopeSaving || hasBudgetCappedFile}
-                      data-testid={`shared-container-invite-modal-file-scope-folder-${group.directory}`}
-                      onChange={(event) =>
-                        onDirectoryScopeChange(
-                          group.paths,
-                          event.target.checked,
-                        )
-                      }
-                    />
-                    <span className="min-w-0 break-all">
-                      {`${group.directory}/ (${group.paths.length} files)`}
-                    </span>
-                  </label>
+                    label={
+                      <span className="break-all">
+                        {`${group.directory}/ (${group.paths.length} files)`}
+                      </span>
+                    }
+                    checked={allIncluded}
+                    disabled={fileScopeSaving || hasBudgetCappedFile}
+                    data-testid={`shared-container-invite-modal-file-scope-folder-${group.directory}`}
+                    onChange={(event) =>
+                      onDirectoryScopeChange(group.paths, event.target.checked)
+                    }
+                  />
                 );
               })}
               <p className="text-xs fg-secondary">
@@ -283,27 +276,22 @@ export function ShareScopeDetails({
             their machine. An ellipsis would eat the basename that
             identifies it, so the label wraps to the whole path instead;
             `min-w-0` is what lets it, since a flex child otherwise refuses
-            to shrink below its content and overflows the dialog sideways.
+            to shrink below its content and overflows the dialog sideways
+            (ChoiceField's text column carries it).
           */}
           {selectableFilePaths.map((path) => {
             const budgetCapped = budgetCappedFileSet.has(path);
             return (
-              <label
+              <ChoiceField
                 key={path}
-                className="flex items-start gap-2 text-xs fg-secondary"
-              >
-                <input
-                  type="checkbox"
-                  className="mt-0.5 shrink-0"
-                  checked={includedFileSet.has(path)}
-                  disabled={fileScopeSaving || budgetCapped}
-                  data-testid={`shared-container-invite-modal-file-review-${path}`}
-                  onChange={(event) =>
-                    onFileScopeChange(path, event.target.checked)
-                  }
-                />
-                <span className="min-w-0 break-all">{path}</span>
-              </label>
+                label={<span className="break-all">{path}</span>}
+                checked={includedFileSet.has(path)}
+                disabled={fileScopeSaving || budgetCapped}
+                data-testid={`shared-container-invite-modal-file-review-${path}`}
+                onChange={(event) =>
+                  onFileScopeChange(path, event.target.checked)
+                }
+              />
             );
           })}
           {preview.untrackedCandidateCount >
@@ -334,21 +322,16 @@ export function ShareScopeDetails({
             >
               <legend className="text-xs font-medium fg-primary">Notes</legend>
               {preview.notes.map((note) => (
-                <label
+                <ChoiceField
                   key={note.id}
-                  className="flex items-center gap-2 text-xs fg-secondary"
-                >
-                  <input
-                    type="checkbox"
-                    checked={includedNoteIds.includes(note.id)}
-                    disabled={fileScopeSaving}
-                    data-testid={`shared-container-invite-modal-note-scope-${note.id}`}
-                    onChange={(event) =>
-                      onNoteScopeChange(note.id, event.target.checked)
-                    }
-                  />
-                  <span className="truncate">{note.title}</span>
-                </label>
+                  label={<span className="block truncate">{note.title}</span>}
+                  checked={includedNoteIds.includes(note.id)}
+                  disabled={fileScopeSaving}
+                  data-testid={`shared-container-invite-modal-note-scope-${note.id}`}
+                  onChange={(event) =>
+                    onNoteScopeChange(note.id, event.target.checked)
+                  }
+                />
               ))}
             </fieldset>
           )}
@@ -361,21 +344,16 @@ export function ShareScopeDetails({
                 Prompts
               </legend>
               {preview.prompts.map((prompt) => (
-                <label
+                <ChoiceField
                   key={prompt.id}
-                  className="flex items-center gap-2 text-xs fg-secondary"
-                >
-                  <input
-                    type="checkbox"
-                    checked={includedPromptIds.includes(prompt.id)}
-                    disabled={fileScopeSaving}
-                    data-testid={`shared-container-invite-modal-prompt-scope-${prompt.id}`}
-                    onChange={(event) =>
-                      onPromptScopeChange(prompt.id, event.target.checked)
-                    }
-                  />
-                  <span className="truncate">{prompt.title}</span>
-                </label>
+                  label={<span className="block truncate">{prompt.title}</span>}
+                  checked={includedPromptIds.includes(prompt.id)}
+                  disabled={fileScopeSaving}
+                  data-testid={`shared-container-invite-modal-prompt-scope-${prompt.id}`}
+                  onChange={(event) =>
+                    onPromptScopeChange(prompt.id, event.target.checked)
+                  }
+                />
               ))}
             </fieldset>
           )}
@@ -404,20 +382,13 @@ export function ShareScopeDetails({
           <legend className="text-xs font-medium fg-primary">
             Let your teammate run this
           </legend>
-          <label className="flex items-start gap-2 text-xs fg-secondary">
-            <input
-              type="checkbox"
-              className="mt-0.5 shrink-0"
-              checked={runSharingEnabled}
-              disabled={fileScopeSaving}
-              data-testid="shared-container-invite-modal-run-scope-toggle"
-              onChange={(event) => onRunSharingChange(event.target.checked)}
-            />
-            <span className="min-w-0">
-              Share the commands that start this app. Your teammate decides
-              whether to run them on their own machine.
-            </span>
-          </label>
+          <ChoiceField
+            label="Share the commands that start this app. Your teammate decides whether to run them on their own machine."
+            checked={runSharingEnabled}
+            disabled={fileScopeSaving}
+            data-testid="shared-container-invite-modal-run-scope-toggle"
+            onChange={(event) => onRunSharingChange(event.target.checked)}
+          />
           {runSharingEnabled && availableRunScripts.length === 0 && (
             <p
               className="text-xs fg-secondary"
@@ -452,25 +423,19 @@ export function ShareScopeDetails({
                 includedRunScripts.length >= MAX_PUBLISHABLE_RUN_SCRIPTS;
               return (
                 <div key={scriptName} className="space-y-0.5">
-                  <label
-                    className={`flex items-center gap-2 text-xs ${
-                      atCap ? 'fg-quaternary' : 'fg-secondary'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="shrink-0"
-                      checked={selected}
-                      disabled={fileScopeSaving || atCap}
-                      data-testid={`shared-container-invite-modal-run-scope-${scriptName}`}
-                      onChange={(event) =>
-                        onRunScriptScopeChange(scriptName, event.target.checked)
-                      }
-                    />
-                    <span className="truncate">
-                      {getScriptDisplayName(scriptName)}
-                    </span>
-                  </label>
+                  <ChoiceField
+                    label={
+                      <span className="block truncate">
+                        {getScriptDisplayName(scriptName)}
+                      </span>
+                    }
+                    checked={selected}
+                    disabled={fileScopeSaving || atCap}
+                    data-testid={`shared-container-invite-modal-run-scope-${scriptName}`}
+                    onChange={(event) =>
+                      onRunScriptScopeChange(scriptName, event.target.checked)
+                    }
+                  />
                   {selected && !resolved && (
                     <p
                       className="pl-6 text-xs fg-secondary"

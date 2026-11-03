@@ -53,12 +53,13 @@ jest.mock('../../portal/portal-event-bus', () => ({
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { createW5BoundaryFixture } from './fixtures/w5-boundary-fixture';
-import { startW5DaemonRecordHarness } from './fixtures/w5-daemon-record-harness';
+import { startW5DaemonRecordHarness } from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-daemon-record-harness';
 import { W5CommitLogHost } from '../../w5-commit-log/commit-log-host';
 import {
   __setDesktopW5FileStoreForTests,
   createW5CommitLogFileStore,
   readW5Revisions,
+  runW5ReadView,
   W5FileWriteRefusedError,
 } from '../w5-commit-log-file-store';
 import {
@@ -67,18 +68,40 @@ import {
   w5RecordPortTransport,
   type W5RecordPortClient,
 } from '../w5-daemon-record-store';
-import { nodeW5FileStore } from '../w5-file-store';
+import { nodeW5FileStore, W5RecordUnservedError } from '../w5-file-store';
 import { w5ConflictCounts } from '../w5-pre-effect-retry';
+import { w5RecordUnservedCounts } from '../w5-record-unserved';
 import { __resetSidebarItemsStateForTests } from '../sidebar-items';
 import {
   getWorkspaceWorktreeCreatedAt,
   isWorkspaceWorktreeCurrent,
   markWorkspaceWorktreeRecentlyRemoved,
+  readWorkspaceConfigDetailed,
   readWorkspaceWorktrees,
   readWorkspaceWorktreesDetailed,
   setWorktreeRegistryReconciler,
   updateWorkspaceWorktrees,
 } from '../workspace-persistence';
+import { recordRestoredWorktree } from '../archived-container-restore-records';
+import { applyCoworkIndexDecision } from '../cowork-record-decision-port';
+import { resolveUnambiguousGitHubRepository } from '../github-repository-context';
+import {
+  setWorktreeHooksPaused,
+  updateWorkspaceHooks,
+  updateWorkspaceScripts,
+} from '../workspace-script-hook-settings';
+import { initializeWorkspaceSourceRepo } from '../workspace-source-control';
+import { applyWorkspaceIndexDecision } from '../workspace-record-decision-port';
+import {
+  reorderWorkspaces,
+  updateWorkspaceMetadata,
+} from '../workspace-metadata';
+import { saveSidebarItems } from '../sidebar-save-adapter';
+import { touchAllWorkspaceTargets } from '../workspace-activity';
+import {
+  updateWorkspacePlugins,
+  type WorkspacePluginsChange,
+} from '../workspace-plugin-defaults';
 import { applyWorktreeRowDecision } from '../worktree-record-decision-port';
 
 jest.setTimeout(60_000);
@@ -195,6 +218,10 @@ async function routedRename(
 
 function conflictCount(key: string): number {
   return w5ConflictCounts().get(key) ?? 0;
+}
+
+function unservedCount(key: string): number {
+  return w5RecordUnservedCounts().get(key) ?? 0;
 }
 
 beforeAll(() => {
@@ -512,26 +539,288 @@ describe('commit requests the wire accepts', () => {
       outcome: null,
     });
     const commits = jest.spyOn(host, 'commit');
-    for (const [workspaceId, refusal] of [
-      ['a', { details: { capture: 'limit-exceeded' } }],
-      ['a.b', { payload: { kind: 'capability_unavailable' } }],
+    for (const [workspaceId, reason, refusal] of [
+      ['a', 'limit-exceeded', { details: { capture: 'limit-exceeded' } }],
+      // A reserved device name: the one class a validated project id can hit.
+      [
+        'aux',
+        'unsupported-id',
+        { payload: { kind: 'capability_unavailable' } },
+      ],
     ] as const) {
+      const key = `core.workspaceRecords.capture ${reason}`;
+      const before = unservedCount(key);
       await expect(
         readWorkspaceWorktreesDetailed(workspaceId),
       ).resolves.toMatchObject({ authority: 'unreadable' });
+      // CAN-5531: each class is named, not a generic unreadable registry.
+      const named = new W5RecordUnservedError(reason, 'worktrees');
       await expect(
         updateWorkspaceWorktrees(workspaceId, (rows) => rows.slice(1)),
-      ).rejects.toMatchObject({ name: 'WorktreeRegistryUnreadableError' });
+      ).rejects.toMatchObject({
+        name: 'WorktreeRegistryUnreadableError',
+        message: named.message,
+        cause: { name: 'W5RecordUnservedError', reason },
+      });
+      await expect(
+        updateWorkspaceWorktrees(workspaceId, (rows) => rows, {
+          requireAuthoritativeRead: true,
+        }),
+      ).rejects.toMatchObject({ message: named.message });
+      // The Auto Delete baseline refuses through the detailed read.
+      await expect(touchAllWorkspaceTargets(workspaceId)).rejects.toMatchObject(
+        { name: 'WorktreeRegistryUnreadableError', message: named.message },
+      );
       await expect(
         readW5Revisions([{ kind: 'worktrees', workspaceId }]),
       ).rejects.toMatchObject(refusal);
+      expect(unservedCount(key)).toBeGreaterThanOrEqual(before + 4);
     }
+    // A settings refusal keeps the manifest's named reason.
+    const changes: WorkspacePluginsChange[] = [
+      { kind: 'pruneMarketplace', marketplaceId: 'gone' },
+      {
+        kind: 'setDefaults',
+        defaultPluginSelections: {
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+        },
+      },
+    ];
+    for (const change of changes)
+      await expect(
+        updateWorkspacePlugins({
+          workspaceId: 'aux',
+          change,
+          source: 'workspace_settings',
+        }),
+      ).rejects.toMatchObject({
+        reason: 'configuration-unavailable',
+        message: new W5RecordUnservedError('unsupported-id', 'manifest')
+          .message,
+      });
     expect(commits).not.toHaveBeenCalled();
     expect(listRows()).toEqual([
       { id: 'one', branchName: 'first' },
       { id: 'two', branchName: 'second' },
     ]);
     commits.mockRestore();
+  });
+
+  it('names the class at each refusal site that reads a record the port cannot serve (CAN-5531)', async () => {
+    installDaemonStore(await harness.connect());
+    await host.commit({
+      operation: 'w6g.test.seed',
+      advance: Array.from({ length: 4097 }, (_, index) => ({
+        kind: 'worktree' as const,
+        workspaceId: 'a',
+        worktreeId: `seed-${index}`,
+      })),
+      files: [],
+      outcome: null,
+    });
+    const commits = jest.spyOn(host, 'commit');
+    for (const [workspaceId, reason] of [
+      ['a', 'limit-exceeded'],
+      ['aux', 'unsupported-id'],
+    ] as const) {
+      const named = new W5RecordUnservedError(reason, 'worktrees').message;
+      await expect(
+        readWorkspaceWorktreesDetailed(workspaceId),
+      ).resolves.toMatchObject({
+        authority: 'unreadable',
+        unserved: { name: 'W5RecordUnservedError', reason },
+      });
+      await expect(
+        recordRestoredWorktree({
+          source: 'archived_container_restore',
+          workspaceId,
+          archiveId: 'archived',
+          worktree: {
+            id: 'restored',
+            createdAt: new Date().toISOString(),
+            branchName: 'restored',
+            label: '',
+          },
+        }),
+      ).rejects.toMatchObject({
+        reason: 'worktrees-unavailable',
+        message: `${named} Staged recovery worktree restored was not recorded; the archived container was preserved.`,
+      });
+      await expect(
+        setWorktreeHooksPaused({
+          workspaceId,
+          worktreeId: 'one',
+          change: { kind: 'pause', hookKeys: ['setup'] },
+          source: 'desktop',
+        }),
+      ).rejects.toMatchObject({
+        reason: 'worktrees-unavailable',
+        message: `${named} This worktree's paused hooks weren't changed.`,
+      });
+    }
+
+    // The manifest refusals that read through the detailed config read.
+    const manifest = new W5RecordUnservedError('unsupported-id', 'manifest');
+    await expect(readWorkspaceConfigDetailed('aux')).resolves.toMatchObject({
+      authority: 'unreadable',
+      unserved: { reason: 'unsupported-id' },
+    });
+    await expect(
+      initializeWorkspaceSourceRepo({
+        workspaceId: 'aux',
+        source: 'workspace_settings',
+      }),
+    ).rejects.toMatchObject({
+      reason: 'configuration-unavailable',
+      message: manifest.message,
+    });
+    await expect(
+      resolveUnambiguousGitHubRepository({
+        projectId: 'aux',
+        worktreeId: 'one',
+      }),
+    ).rejects.toMatchObject({
+      name: 'WorkspaceConfigUnreadableError',
+      message: manifest.message,
+    });
+    // Script and hook settings, through the manifest editor and the write.
+    await expect(
+      updateWorkspaceScripts({
+        workspaceId: 'aux',
+        source: 'desktop',
+        change: { kind: 'replace', scripts: { setup: 'pnpm install' } },
+      }),
+    ).rejects.toMatchObject({
+      reason: 'configuration-unavailable',
+      message: manifest.message,
+    });
+    await expect(
+      updateWorkspaceHooks({
+        workspaceId: 'aux',
+        source: 'desktop',
+        change: { kind: 'replace', hooks: undefined },
+      }),
+    ).rejects.toMatchObject({
+      reason: 'configuration-unavailable',
+      message: manifest.message,
+    });
+    await expect(
+      applyCoworkIndexDecision({
+        kind: 'cowork.migration',
+        candidateId: 'aux',
+        name: 'Cowork',
+      }),
+    ).rejects.toMatchObject({
+      name: 'WorkspaceConfigUnreadableError',
+      message: manifest.message,
+    });
+
+    // An index over the capture's byte limit.
+    const indexPath = join(root, 'index.json');
+    const index: unknown = JSON.parse(readFileSync(indexPath, 'utf8'));
+    writeFileSync(
+      indexPath,
+      JSON.stringify({
+        ...(typeof index === 'object' ? index : {}),
+        padding: 'x'.repeat(8 * 1024 * 1024),
+      }),
+    );
+    const overLimit = new W5RecordUnservedError('limit-exceeded', 'index');
+    await expect(
+      applyWorkspaceIndexDecision({
+        kind: 'composition.promote.index',
+        workspaceId: 'a',
+        name: 'Renamed',
+      }),
+    ).rejects.toMatchObject({
+      reason: 'index-unavailable',
+      message: overLimit.message,
+    });
+    await expect(
+      applyCoworkIndexDecision({
+        kind: 'cowork.migration',
+        candidateId: 'cowork',
+        name: 'Cowork',
+      }),
+    ).rejects.toMatchObject({
+      reason: 'index-unavailable',
+      message: overLimit.message,
+    });
+    await expect(
+      saveSidebarItems({ source: 'projects_save', items: [] }),
+    ).rejects.toMatchObject({
+      reason: 'index-unavailable',
+      message: overLimit.message,
+    });
+    // Workspace metadata update and both reorder paths, each read counted.
+    const indexKey = 'core.workspaceRecords.capture limit-exceeded';
+    for (const act of [
+      (): Promise<unknown> =>
+        updateWorkspaceMetadata({
+          workspaceId: 'a',
+          source: 'portal',
+          patch: { name: 'Renamed' },
+        }),
+      (): Promise<unknown> =>
+        reorderWorkspaces({
+          visibleWorkspaceIds: ['a', 'b'],
+          activeWorkspaceId: 'a',
+          overWorkspaceId: 'b',
+        }),
+      (): Promise<unknown> =>
+        reorderWorkspaces({
+          source: 'projects_save',
+          workspaceOrder: ['b', 'a'],
+        }),
+    ]) {
+      const before = unservedCount(indexKey);
+      await expect(act()).rejects.toMatchObject({
+        name: 'WorkspaceMetadataRefusedError',
+        reason: 'index-unavailable',
+        message: overLimit.message,
+      });
+      expect(unservedCount(indexKey)).toBeGreaterThan(before);
+    }
+    expect(commits).not.toHaveBeenCalled();
+    commits.mockRestore();
+  });
+
+  it('counts only refusals that fail closed: an over-limit query capture reads each file live, uncounted (CAN-5531)', async () => {
+    installDaemonStore(await harness.connect());
+    // Each workspace fits one capture; both together do not.
+    for (const workspaceId of ['a', 'b'])
+      await host.commit({
+        operation: 'w6g.test.seed',
+        advance: Array.from({ length: 2100 }, (_, index) => ({
+          kind: 'worktree' as const,
+          workspaceId,
+          worktreeId: `seed-${index}`,
+        })),
+        files: [],
+        outcome: null,
+      });
+    const key = 'core.workspaceRecords.capture limit-exceeded';
+    const before = unservedCount(key);
+    const { view, read } = await runW5ReadView(
+      {
+        files: [
+          { kind: 'worktrees', workspaceId: 'a' },
+          { kind: 'worktrees', workspaceId: 'b' },
+        ],
+        discoverWorkspaces: false,
+      },
+      async (outcome) => ({
+        view: outcome,
+        read: await readWorkspaceWorktreesDetailed('a', {
+          persistRemovalCleanup: false,
+        }),
+      }),
+    );
+    expect(view).toEqual({ status: 'uncaptured', reason: 'capture-limit' });
+    expect(read.authority).toBe('ok');
+    expect(unservedCount(key)).toBe(before);
   });
 
   it('refuses a workspace id the capture cannot name before any decision, on either end', async () => {

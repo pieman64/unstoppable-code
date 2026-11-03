@@ -17,7 +17,11 @@ import { EyeIcon, EyeOffIcon, Globe } from '@canopy/ui-shared/icons/AppIcons';
 import type { ModelGatewayCredentialValidation } from '@canopy/desktop-shared/types';
 import type { OrgModelGateway } from '@/hooks/useOrgModelGateway';
 import { notifyModelGatewayCredentialChanged } from '@/lib/integrationConnectionEvents';
-import { Button, ProviderStatusDot } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ProviderStatusDot,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { SettingsRow, SettingsTextField } from './SettingsLayout';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -62,10 +66,10 @@ function OrgGatewayMark({
   }
   return (
     <Globe
-      size={16}
+      size="sm"
       aria-hidden
       data-testid="model-gateway-org-logo-placeholder"
-      className="h-4 w-4 shrink-0 fg-primary"
+      className="shrink-0 fg-primary"
     />
   );
 }
@@ -303,9 +307,9 @@ export function ModelGatewayCredentialSection({
     statusLine = 'Your gateway key works.';
   } else if (hasKey && validation?.valid === false) {
     statusLine = (
-      <span className="fg-destructive" data-testid="model-gateway-error">
+      <StatusLabel data-testid="model-gateway-error">
         {validation.error ?? 'That key didn’t work.'}
-      </span>
+      </StatusLabel>
     );
   } else {
     statusLine = gateway.enforced
@@ -357,9 +361,9 @@ export function ModelGatewayCredentialSection({
               onClick={() => setVisible((prev) => !prev)}
             >
               {visible ? (
-                <EyeOffIcon size={16} aria-hidden />
+                <EyeOffIcon size="sm" aria-hidden />
               ) : (
-                <EyeIcon size={16} aria-hidden />
+                <EyeIcon size="sm" aria-hidden />
               )}
             </Button>
           </>

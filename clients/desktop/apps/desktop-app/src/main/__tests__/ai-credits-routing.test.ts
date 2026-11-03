@@ -713,6 +713,22 @@ describe('ai-credits-routing', () => {
       expect(availabilityMock).toHaveBeenCalledTimes(1);
     });
 
+    it('allows the next send immediately after an unfunded account receives credits', async () => {
+      loadAccountMock.mockResolvedValue(makeAccount());
+      availabilityMock
+        .mockResolvedValueOnce(makeAvailability())
+        .mockResolvedValueOnce(makeAvailability({ personalEligible: true }));
+
+      await expect(getAiCreditsRoutingContext()).resolves.toMatchObject({
+        creditsEligible: false,
+      });
+      // No clock advance or account replacement: Check again / an eligibility
+      // refresh can fund the same account while the routing TTL is still live.
+      await expect(getAiCreditsRoutingContext()).resolves.toMatchObject({
+        creditsEligible: true,
+      });
+    });
+
     it('isolates routing-context cache entries by work owner', async () => {
       loadAccountMock.mockResolvedValue(makeAccount());
       availabilityMock.mockImplementation((owner?: WorkOwner) =>

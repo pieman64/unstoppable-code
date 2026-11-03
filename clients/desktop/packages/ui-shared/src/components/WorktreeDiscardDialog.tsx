@@ -127,7 +127,7 @@ export function WorktreeDiscardDialog({
       secondaryAction={
         onRetry
           ? {
-              label: 'Retry',
+              label: 'Try again',
               onSelect: onRetry,
               testId: `${WORKTREE_DISCARD_DIALOG_TEST_ID}-retry`,
             }

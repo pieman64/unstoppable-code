@@ -20,7 +20,13 @@ import type {
   AgentProviderType,
   AuthTerminalProvider,
 } from '@canopy/desktop-shared/types';
-import { Button, DialogModal } from '@canopy/ui-shared/components';
+import {
+  Button,
+  DialogModal,
+  Dot,
+  StatusGlyph,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { invalidateClaudeAuthStatusCache } from '@/hooks/useClaudeAuthStatus';
@@ -122,7 +128,7 @@ function StatusFooter({
     return (
       <div
         data-testid="auth-login-status"
-        className="px-5 py-3 border-t text-s fg-secondary"
+        className="px-6 py-3 border-t text-s fg-secondary"
       >
         Choose a provider and follow its sign-in instructions.
       </div>
@@ -130,17 +136,13 @@ function StatusFooter({
   return (
     <div
       data-testid="auth-login-status"
-      className="flex items-center gap-2 px-5 py-3 border-t bg-base/40"
+      className="flex items-center gap-2 px-6 py-3 border-t bg-base/40"
     >
-      <span
-        className={`inline-block h-2.5 w-2.5 rounded-full ${
-          status === null
-            ? 'bg-fg-secondary'
-            : status.authenticated
-              ? 'bg-success'
-              : 'bg-destructive'
-        }`}
-      />
+      {status === null ? (
+        <StatusGlyph state="running" size={12} />
+      ) : (
+        <Dot tone={status.authenticated ? 'success' : 'danger'} />
+      )}
       <div className="min-w-0 flex-1 text-s">
         {status === null && (
           <span className="fg-secondary">
@@ -166,9 +168,9 @@ function StatusFooter({
           </span>
         )}
         {status && !status.authenticated && (
-          <span className="fg-destructive">
+          <StatusLabel>
             {status.error || `Not signed in to ${providerLabel(provider)}.`}
-          </span>
+          </StatusLabel>
         )}
       </div>
       {trailing}
@@ -687,7 +689,7 @@ function TerminalAuthLoginModal({
     >
       Other account snapshots
       <ChevronRightIcon
-        size={12}
+        size="sm"
         aria-hidden
         className={`transition-transform ${
           snapshotsPanelOpen ? 'rotate-90' : ''
@@ -698,6 +700,7 @@ function TerminalAuthLoginModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title={`Sign in to ${providerLabel(provider)}`}
       subtitle="Complete the sign-in flow in the terminal below."
@@ -710,14 +713,14 @@ function TerminalAuthLoginModal({
         <div className="flex min-w-0 flex-1 flex-col">
           {intro ? (
             <p
-              className="px-5 pt-2 text-s fg-primary"
+              className="px-6 pt-2 text-s fg-primary"
               data-testid={introTestId}
             >
               {intro}
             </p>
           ) : null}
           {onCancel ? (
-            <div className="px-5 pt-2">
+            <div className="px-6 pt-2">
               <Button
                 variant="secondary"
                 size="compact"
@@ -729,7 +732,7 @@ function TerminalAuthLoginModal({
             </div>
           ) : null}
           {showTerminal ? (
-            <div className="px-5 pt-2 pb-4">
+            <div className="px-6 pt-2 pb-4">
               <div
                 ref={terminalFrameRef}
                 // An outer hairline: the terminal canvas covers an inset one.
@@ -754,7 +757,7 @@ function TerminalAuthLoginModal({
               </div>
             </div>
           ) : (
-            <div className="px-5 pt-2 pb-4">
+            <div className="px-6 pt-2 pb-4">
               <LoginFailedView
                 provider={provider}
                 exitCode={view.exitCode}

@@ -1,3 +1,4 @@
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
 import {
   IPC_CHANNELS,
   type AppAdvisorActionResponse,
@@ -10,6 +11,11 @@ import type {
   WorktreeScriptEntry,
 } from '../services/scripts-service';
 
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('../services/scripts-service', () => ({
   listWorktreeScriptEntries: jest.fn(),
   runScript: jest.fn(),

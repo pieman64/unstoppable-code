@@ -53,7 +53,9 @@ describe('ChartErrorBoundary', () => {
     expect(container.textContent).toContain(
       'Usage chart could not be rendered',
     );
-    expect(container.textContent).toContain('chart exploded');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      'Usage chart could not be rendered.',
+    );
     expect(container.querySelector('[data-testid="chart-ok"]')).toBeNull();
 
     shouldThrow = false;

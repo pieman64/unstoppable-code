@@ -1628,6 +1628,7 @@ export function registerChatHandlers(
       claudeForkResumeAt,
       claudeForkStartsFresh,
       pluginSelections,
+      packageOverlay,
       deferredToolsAllowed,
       providerType,
       executionHarness,
@@ -2162,6 +2163,9 @@ export function registerChatHandlers(
             : {}),
           ...(claudeForkStartsFresh ? { claudeForkStartsFresh: true } : {}),
           pluginSelections: sessionPluginSelections,
+          // An automation's installed package (CAN-5379), as the worktree
+          // dispatch and the native standalone send apply it.
+          ...(packageOverlay ? { packageOverlay } : {}),
           applyGlobalPluginDefaults:
             chatSurfaceUsesGlobalPluginDefaults(projectId),
           deferredToolsAllowed: deferredToolsAllowed !== false,

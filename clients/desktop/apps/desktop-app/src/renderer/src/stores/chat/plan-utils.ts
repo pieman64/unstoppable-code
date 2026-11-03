@@ -1,4 +1,4 @@
-// Pure plan-mode / tracked-plan tab transforms.
+// Plan-mode transforms and transient tracked-plan dispatch coordination.
 import { STANDALONE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type { ChatState } from './state';
 import { restartClaudeTerminalForSettingsChange } from './claudeTerminalPrompt';
@@ -9,6 +9,7 @@ import type {
   PlanExitRequestEvent,
   TrackedPlanData,
 } from '@canopy/desktop-shared/types';
+import type { TrackedPlanImplementationInput } from '@canopy/protocol/portal';
 import { extractCandidatePaths } from '@canopy/desktop-shared/plan-detection-paths';
 import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { useActivityStore } from '../activityStore';
@@ -21,6 +22,47 @@ import type {
   WorktreeChatState,
 } from './types';
 
+type PlanDispatchTarget = Pick<
+  TrackedPlanData,
+  'projectId' | 'worktreeId' | 'id' | 'latestRevisionNumber'
+>;
+const pendingPlanDispatches = new Set<string>();
+const planDispatchListeners = new Set<() => void>();
+export const PLAN_DISPATCH_BUSY_MESSAGE =
+  'An implementation is already in progress.';
+
+function planDispatchKey(plan: PlanDispatchTarget): string {
+  return `${plan.projectId}/${plan.worktreeId}/${plan.id}/${plan.latestRevisionNumber}`;
+}
+
+export function isPlanDispatching(plan: PlanDispatchTarget): boolean {
+  return pendingPlanDispatches.has(planDispatchKey(plan));
+}
+
+export function subscribePlanDispatch(listener: () => void): () => void {
+  planDispatchListeners.add(listener);
+  return () => {
+    planDispatchListeners.delete(listener);
+  };
+}
+
+/** Claim both choices for the reviewed revision until admission finishes. */
+export function beginPlanDispatch(
+  plan: PlanDispatchTarget,
+): (() => void) | undefined {
+  const key = planDispatchKey(plan);
+  if (pendingPlanDispatches.has(key)) return undefined;
+  pendingPlanDispatches.add(key);
+  for (const listener of planDispatchListeners) listener();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    pendingPlanDispatches.delete(key);
+    for (const listener of planDispatchListeners) listener();
+  };
+}
+
 export function getPendingPlanExitSource(
   toolInput?: Record<string, unknown>,
 ): AgentProviderType {
@@ -30,6 +72,24 @@ export function getPendingPlanExitSource(
   if (src === 'cursor') return 'cursor';
   if (src === 'ollama') return 'ollama';
   return 'claude';
+}
+
+/**
+ * A new implementation attempt's identity, snapshotted before dispatch. The
+ * same user message id names the sent message and its durable link, so
+ * main can register both in one admission and settle the link with that
+ * exact turn's end.
+ */
+export function createTrackedPlanImplementation(
+  planId: string,
+  revisionNumber: number,
+): TrackedPlanImplementationInput {
+  return {
+    planId,
+    revisionNumber,
+    userMessageId: `plan-implementation-${crypto.randomUUID()}`,
+    startedAt: new Date().toISOString(),
+  };
 }
 
 export function hasPendingTrackedPlanReview(

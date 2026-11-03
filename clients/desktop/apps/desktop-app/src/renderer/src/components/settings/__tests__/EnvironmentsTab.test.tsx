@@ -963,12 +963,12 @@ describe('EnvironmentsTab', () => {
       });
       if (retryFailure === 'rejection') {
         api.saveEnvironmentConfig.mockRejectedValueOnce(
-          new Error('Retry failed.'),
+          new Error('The retry failed.'),
         );
       } else {
         api.saveEnvironmentConfig.mockResolvedValueOnce({
           ok: false,
-          error: 'Retry failed.',
+          error: 'The retry failed.',
         });
       }
       let mounted = render(<EnvironmentsTab />);

@@ -15,6 +15,11 @@ export interface WorktreeDiscardOffer {
   readonly message: string;
   /** Present when a typed refusal carried it. */
   readonly description?: WorktreeDiscardDescription;
+  /**
+   * CAN-5338: a retained archive's permanent deletion failed; describe it
+   * with `retainedArchives`.
+   */
+  readonly retainedArchives?: boolean;
   /** Runs the ordinary removal the user asked for again. */
   readonly retry: () => void;
 }

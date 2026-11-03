@@ -12,7 +12,6 @@ import {
 } from 'react';
 import { PencilIcon } from '../../icons';
 import {
-  BUBBLE_ACTION_BADGE_CLASS,
   BUBBLE_SURFACE_CLASS,
   BUBBLE_INFO_SURFACE_CLASS,
 } from '../bubble-badge';
@@ -239,7 +238,10 @@ export interface MessageEditBadgeProps {
   readonly buttonRef?: Ref<HTMLButtonElement>;
 }
 
-/** The pencil badge that opens a message's editor. */
+/**
+ * The pencil badge that opens a message's editor: the 28px secondary icon
+ * Button, the same recipe as the bubble's Copy and Revert beside it.
+ */
 export function MessageEditBadge({
   label,
   onEdit,
@@ -249,12 +251,13 @@ export function MessageEditBadge({
 }: MessageEditBadgeProps): JSX.Element {
   const pending = useRef(false);
   return (
-    <button
+    <Button
       ref={buttonRef}
-      type="button"
+      variant="secondary"
+      size="compact"
+      iconOnly
       data-testid={testId}
       aria-label={label}
-      className={BUBBLE_ACTION_BADGE_CLASS}
       disabled={disabled}
       onClick={(event) => {
         if (event.detail > 1 || pending.current) return;
@@ -270,7 +273,7 @@ export function MessageEditBadge({
       }}
     >
       <PencilIcon width={14} height={14} aria-hidden="true" />
-    </button>
+    </Button>
   );
 }
 

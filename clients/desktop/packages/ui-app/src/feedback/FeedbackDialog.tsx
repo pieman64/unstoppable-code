@@ -3,8 +3,12 @@
 import { type JSX, type ReactNode, useState } from 'react';
 import {
   Button,
+  DialogFormField,
   DialogModal,
   LoadingSpinner,
+  TextArea,
+  TextInput,
+  Notice,
 } from '@canopy/ui-shared/components';
 
 /**
@@ -54,8 +58,6 @@ const REPORT_TYPE_OPTIONS: ReadonlyArray<{
 ];
 
 const FIELD_LABEL_CLASSNAME = 'block text-xs font-medium fg-secondary';
-const FIELD_CLASSNAME =
-  'focus-ring w-full rounded-lg border bg-base px-3 py-2 text-s fg-primary placeholder:fg-quaternary';
 
 function descriptionPlaceholder(type: FeedbackDialogReportType): string {
   return type === 'bug'
@@ -108,6 +110,7 @@ export function FeedbackDialog({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Feedback"
       subtitle={`Ideas, bugs, anything that felt off — they all go to the ${appName} team.`}
@@ -117,7 +120,7 @@ export function FeedbackDialog({
     >
       {submitted ? (
         <>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             <p
               className="text-s fg-primary"
               data-testid="feedback-modal-success"
@@ -126,7 +129,7 @@ export function FeedbackDialog({
             </p>
           </div>
           <div
-            className="flex items-center justify-end border-t px-5 py-3"
+            className="flex items-center justify-end border-t px-6 py-3"
             data-testid="feedback-modal-success-footer"
           >
             <Button
@@ -149,7 +152,7 @@ export function FeedbackDialog({
           }}
         >
           <div
-            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4"
+            className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4"
             data-testid="feedback-modal-body"
           >
             <div className="space-y-1.5">
@@ -179,14 +182,11 @@ export function FeedbackDialog({
               </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label
-                htmlFor="feedback-modal-description"
-                className={FIELD_LABEL_CLASSNAME}
-              >
-                Description
-              </label>
-              <textarea
+            <DialogFormField
+              label="Description"
+              htmlFor="feedback-modal-description"
+            >
+              <TextArea
                 id="feedback-modal-description"
                 data-testid="feedback-modal-description"
                 value={description}
@@ -197,46 +197,40 @@ export function FeedbackDialog({
                 }}
                 placeholder={descriptionPlaceholder(type)}
                 rows={5}
-                className={FIELD_CLASSNAME}
               />
-            </div>
+            </DialogFormField>
 
-            <div className="space-y-1.5">
-              <label
-                htmlFor="feedback-modal-title"
-                className={FIELD_LABEL_CLASSNAME}
-              >
-                Title{' '}
-                <span className="font-normal fg-secondary">(optional)</span>
-              </label>
-              <input
+            <DialogFormField
+              label="Title (optional)"
+              htmlFor="feedback-modal-title"
+            >
+              <TextInput
                 id="feedback-modal-title"
                 type="text"
                 data-testid="feedback-modal-title"
                 value={title}
                 onChange={(event): void => setTitle(event.target.value)}
                 placeholder="Summarized from your description if left blank"
-                className={FIELD_CLASSNAME}
               />
-            </div>
+            </DialogFormField>
 
             {attachments}
 
             {error !== null && (
-              <div
-                className="space-y-2 rounded-lg ring-1 ring-inset ring-line-destructive/40 bg-destructive-subtle px-3 py-2 text-xs fg-destructive"
+              <Notice
+                intent="destructive"
                 data-testid="feedback-modal-error"
+                actions={errorActions}
               >
-                <p>{error}</p>
-                {errorActions}
-              </div>
+                {error}
+              </Notice>
             )}
 
             {note}
           </div>
 
           <div
-            className="flex items-center justify-end gap-3 border-t px-5 py-3"
+            className="flex items-center justify-end gap-3 border-t px-6 py-3"
             data-testid="feedback-modal-footer"
           >
             <Button

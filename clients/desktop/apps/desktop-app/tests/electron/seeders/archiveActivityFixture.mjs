@@ -15,7 +15,11 @@ import path from 'node:path';
 import { expect } from '@playwright/test';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import { seedDemoWorkspaces } from '../demoWorkspaces.mjs';
-import { closeCanopy, launchCanopy } from '../launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from '../launchCanopy.mjs';
 import { chatPanelLocator } from '../panelHarness.mjs';
 import { seedWorktreeChat } from './seedWorktreeChat.mjs';
 import { configureArchiveFixture } from './largeArchiveFixture.mjs';
@@ -590,7 +594,9 @@ export async function closeArchiveActivityFixture({
         !globalThis.__archiveActivityObservation?.completed,
     )
     .catch(() => false);
-  if (blocked)
+  if (blocked) {
+    await captureDaemonDryRunEvidence(electronApp);
     await electronApp.evaluate(({ app }) => app.exit(0)).catch(() => undefined);
+  }
   await closeCanopy(electronApp, userDataDir);
 }

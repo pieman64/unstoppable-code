@@ -340,7 +340,7 @@ export function shareLandingRecoveryActionLabel(
     case 'switch-account':
       return 'Switch account';
     case 'retry':
-      return 'Retry';
+      return 'Try again';
     case 'check-for-updates':
       return 'Check for updates';
   }

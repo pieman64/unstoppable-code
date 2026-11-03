@@ -163,6 +163,12 @@ export interface FloatingMenuProps extends Omit<
    */
   readonly outsidePressClickThroughRef?: RefObject<HTMLElement | null>;
   /**
+   * `false` makes every outside press a click-through: the surface closes
+   * and the click still lands, as for a typeahead's suggestions, which
+   * close when the field loses focus and never block the page around them.
+   */
+  readonly outsidePressSwallowsClick?: boolean;
+  /**
    * Marks this surface as a NESTED menu (a submenu flyout). Nested surfaces
    * portal to the document body like every other floating menu, so without
    * this marker an ancestor menu treats a click inside them as an outside
@@ -175,7 +181,37 @@ export interface FloatingMenuProps extends Omit<
    * the composer's plus menu, where the motion would only delay the rows.
    */
   readonly motion?: 'enter' | 'none';
+  /**
+   * Open at this point (a right-click's coordinates, in the anchor window's
+   * viewport) instead of beside the anchor's box. `anchorRef` still names
+   * the window, the outside-press boundary and the focus fallback; pair it
+   * with a `FloatingMenuPointAnchor` at the same point.
+   */
+  readonly anchorPoint?: FloatingMenuPoint;
+  /**
+   * The document to open in (default: the anchor's), so a menu anchored
+   * inside a popped-out window never mounts in the main one, even before
+   * the anchor has mounted.
+   */
+  readonly ownerDocument?: Document;
+  /**
+   * Close when the window resizes or loses focus, as a native context menu
+   * does. Off by default: anchored menus follow their trigger instead.
+   */
+  readonly closeOnWindowChange?: boolean;
+  /**
+   * `false` while the surface may not close (an action it started is still
+   * running): an outside press neither closes it nor swallows the click it
+   * completes, so the rest of the app stays usable. Escape still reaches
+   * `onOpenChange`.
+   */
+  readonly closeOnOutsidePress?: boolean;
   readonly children: DropdownMenuSurfaceProps['children'];
+}
+
+export interface FloatingMenuPoint {
+  readonly x: number;
+  readonly y: number;
 }
 
 export const FLOATING_MENU_GAP = 4;
@@ -323,6 +359,18 @@ export function computeFloatingMenuPosition({
   };
 }
 
+function pointRect(
+  point: FloatingMenuPoint,
+): FloatingMenuPositionInput['anchorRect'] {
+  return {
+    top: point.y,
+    bottom: point.y,
+    left: point.x,
+    right: point.x,
+    width: 0,
+  };
+}
+
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
   if (typeof ref === 'function') ref(value);
   else if (ref) ref.current = value;
@@ -336,6 +384,26 @@ function enabledItems(menu: HTMLElement, selector: string): HTMLElement[] {
       !item.hidden &&
       item.getAttribute('aria-hidden') !== 'true',
   );
+}
+
+/**
+ * The press landed in a floating surface opened from inside `menuId`, at any
+ * depth (a select inside a popover, a submenu of that select). Each surface
+ * records the surface its anchor sits in as `data-floating-menu-owner`.
+ */
+function isInSurfaceOpenedFrom(
+  target: Element,
+  menuId: string,
+  doc: Document,
+): boolean {
+  let surface = target.closest<HTMLElement>('.canopy-floating-menu');
+  for (let depth = 0; surface && depth < 8; depth += 1) {
+    const owner = surface.dataset.floatingMenuOwner;
+    if (!owner) return false;
+    if (owner === menuId) return true;
+    surface = doc.getElementById(owner);
+  }
+  return false;
 }
 
 function focusMenuItem(item: HTMLElement | undefined): void {
@@ -374,7 +442,12 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       outsidePressBoundaryRef,
       openOnArrowKeys = true,
       outsidePressClickThroughRef,
+      outsidePressSwallowsClick = true,
       motion = 'enter',
+      anchorPoint,
+      ownerDocument,
+      closeOnWindowChange = false,
+      closeOnOutsidePress = true,
       className = '',
       id: idProp,
       onClick,
@@ -394,6 +467,8 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     const focusedForOpenRef = useRef(false);
     const typeaheadRef = useRef({ value: '', at: 0 });
     const managesScrollViewport = interaction !== 'manual';
+    const anchorX = anchorPoint?.x;
+    const anchorY = anchorPoint?.y;
 
     const setMenuRef = useCallback(
       (node: HTMLDivElement | null): void => {
@@ -408,8 +483,16 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       const menu = menuRef.current;
       if (!anchor || !menu) return;
       const view = getWindow(anchor);
-      const triggerRect = anchor.getBoundingClientRect();
-      const alignRect = alignRef?.current?.getBoundingClientRect();
+      const point =
+        anchorX === undefined || anchorY === undefined
+          ? null
+          : { x: anchorX, y: anchorY };
+      const triggerRect = point
+        ? pointRect(point)
+        : anchor.getBoundingClientRect();
+      const alignRect = point
+        ? undefined
+        : alignRef?.current?.getBoundingClientRect();
       const edges = alignRect ?? triggerRect;
       const anchorRect = {
         top: triggerRect.top,
@@ -487,6 +570,8 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       );
     }, [
       anchorRef,
+      anchorX,
+      anchorY,
       alignRef,
       alignOffset,
       allowFlip,
@@ -505,6 +590,19 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       }
       updatePosition();
     }, [open, updatePosition]);
+
+    // Record the surface this one was opened from, so a press in this one
+    // never reads as outside that one (see isInSurfaceOpenedFrom).
+    useLayoutEffect((): void => {
+      const menu = menuRef.current;
+      if (!open || !menu) return;
+      const owner = anchorRef.current?.closest('.canopy-floating-menu');
+      if (owner && owner !== menu && owner.id) {
+        menu.dataset.floatingMenuOwner = owner.id;
+      } else {
+        delete menu.dataset.floatingMenuOwner;
+      }
+    }, [anchorRef, open, position]);
 
     useLayoutEffect((): (() => void) | void => {
       if (!open) return;
@@ -556,6 +654,18 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     }, [anchorRef, open, updatePosition]);
 
     useEffect((): (() => void) | void => {
+      if (!open || !closeOnWindowChange) return;
+      const view = getWindow(ownerDocument ?? anchorRef.current);
+      const close = (): void => onOpenChange(false);
+      view.addEventListener('resize', close);
+      view.addEventListener('blur', close);
+      return (): void => {
+        view.removeEventListener('resize', close);
+        view.removeEventListener('blur', close);
+      };
+    }, [anchorRef, closeOnWindowChange, onOpenChange, open, ownerDocument]);
+
+    useEffect((): (() => void) | void => {
       if (!openOnArrowKeys) return;
       const trigger = anchorRef.current;
       if (!trigger) return;
@@ -581,6 +691,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
 
       const handlePointerDown = (event: PointerEvent): void => {
         if (
+          !closeOnOutsidePress ||
           !NodeConstructor ||
           !(event.target instanceof NodeConstructor) ||
           trigger?.contains(event.target) ||
@@ -597,7 +708,9 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         if (
           ElementConstructor &&
           event.target instanceof ElementConstructor &&
-          event.target.closest('[data-floating-menu-nested="true"]') !== null
+          (event.target.closest('[data-floating-menu-nested="true"]') !==
+            null ||
+            isInSurfaceOpenedFrom(event.target, menuId, doc))
         ) {
           return;
         }
@@ -612,6 +725,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         // activates its target.
         if (
           !nested &&
+          outsidePressSwallowsClick &&
           !outsidePressClickThroughRef?.current?.contains(event.target)
         ) {
           suppressNextClick(doc);
@@ -684,12 +798,15 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       };
     }, [
       anchorRef,
+      closeOnOutsidePress,
       interaction,
+      menuId,
       nested,
       onOpenChange,
       open,
       outsidePressBoundaryRef,
       outsidePressClickThroughRef,
+      outsidePressSwallowsClick,
       returnFocusRef,
       trapFocus,
     ]);
@@ -929,8 +1046,46 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       </DropdownMenuSurface>
     );
 
-    return createPortal(menu, getDocument(anchorRef.current).body);
+    return createPortal(
+      menu,
+      getDocument(ownerDocument ?? anchorRef.current).body,
+    );
   },
 );
 
 FloatingMenu.displayName = 'FloatingMenu';
+
+export interface FloatingMenuPointAnchorProps {
+  /** Pointer position in the owner window's viewport, from the event. */
+  readonly x: number;
+  readonly y: number;
+  /** The document of the window the menu opens in. */
+  readonly ownerDocument: Document;
+  readonly 'data-testid'?: string;
+}
+
+/**
+ * The anchor for a right-click menu: a zero-size point at the pointer, in
+ * the window the click came from. Pass its ref as the `FloatingMenu`'s
+ * `anchorRef`, so the menu opens at the pointer with the menu's own
+ * placement, collision, dismissal and focus return, instead of a
+ * hand-portalled anchor.
+ */
+export const FloatingMenuPointAnchor = forwardRef<
+  HTMLSpanElement,
+  FloatingMenuPointAnchorProps
+>(function FloatingMenuPointAnchor(
+  { x, y, ownerDocument, 'data-testid': dataTestId },
+  ref,
+): JSX.Element {
+  return createPortal(
+    <span
+      ref={ref}
+      aria-hidden="true"
+      data-testid={dataTestId}
+      className="pointer-events-none fixed h-0 w-0"
+      style={{ left: x, top: y }}
+    />,
+    ownerDocument.body,
+  );
+});

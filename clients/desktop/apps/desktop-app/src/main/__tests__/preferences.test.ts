@@ -1,3 +1,4 @@
+import type * as EnablementCommit from '../pipelines/pipeline-enablement-commit';
 import type * as DataSharingOptInAuthorityModule from '../lib/data-sharing-opt-in-authority';
 import type * as AtomicFileModule from '../lib/atomic-file';
 import {
@@ -8,6 +9,21 @@ import {
 import { DataSharingOptInError } from '../lib/data-sharing-opt-in-authority';
 import { personalCatalogPreferenceChanged } from '../services/personal-catalog-sync-host';
 import { notifyManagedDelegationLifetimePreferencesChanged } from '../agents/delegation/lifetime-status';
+// Core records enablement through the desktop's preference port; the
+// pipeline goldens cover the real dispatch.
+jest.mock('../canopy-runtime/pipeline-definition-dispatch', () => ({
+  setPipelineDefinitionEnabled: (
+    id: string,
+    enabled: boolean,
+  ): Promise<unknown> => {
+    const commit = jest.requireActual<typeof EnablementCommit>(
+      '../pipelines/pipeline-enablement-commit',
+    );
+    return commit.withPipelineEnablementCommit(() =>
+      commit.recordPipelineEnabled(id, enabled),
+    );
+  },
+}));
 jest.mock('../agents/delegation/lifetime-status', () => ({
   notifyManagedDelegationLifetimePreferencesChanged: jest.fn(),
 }));
@@ -199,14 +215,6 @@ jest.mock('@canopy/desktop-shared/canopy-paths', () => ({
   get resetResolvedCanopyDataDirCache(): typeof mockResetResolvedCanopyDataDirCache {
     return mockResetResolvedCanopyDataDirCache;
   },
-}));
-// This suite automocks node:fs/promises, which real registration needs.
-const mockRegisterDesktopW5Root = jest
-  .fn<Promise<{ kind: 'admitted' }>, [string]>()
-  .mockResolvedValue({ kind: 'admitted' });
-jest.mock('../lib/w5-host-admission', () => ({
-  registerDesktopW5Root: (dataRoot: string): unknown =>
-    mockRegisterDesktopW5Root(dataRoot),
 }));
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: jest.fn(),
@@ -3093,40 +3101,28 @@ describe('registerPreferenceHandlers', () => {
 });
 
 describe('create primary data-dir handler', () => {
-  const mockPrimaryWorkspacesDir = join(mockPrimaryDataDir, 'workspaces');
-  const mockPrimaryWorkspaceIndexPath = join(
-    mockPrimaryWorkspacesDir,
-    'index.json',
-  );
   const mockPrimaryAdoptionMarkerPath = join(
     mockPrimaryDataDir,
     'data-dir-adopted.json',
   );
 
-  it('creates the primary data directory, seeds the adoption marker and an empty project index, and returns the post-restart primary status', async () => {
+  it('creates the primary data directory, writes only the adoption marker, and returns the post-restart primary status', async () => {
     mockedMkdir.mockResolvedValue(undefined);
     mockedWriteFile.mockResolvedValue(undefined);
 
     const result = await createPrimaryDataDirHandler();
 
-    // The primary root joins the W5 host cohort before its seed (CAN-3797).
-    expect(mockRegisterDesktopW5Root).toHaveBeenCalledWith(mockPrimaryDataDir);
-    expect(mockedMkdir).toHaveBeenCalledWith(mockPrimaryWorkspacesDir, {
+    expect(mockedMkdir).toHaveBeenCalledWith(mockPrimaryDataDir, {
       recursive: true,
     });
-    expect(mockedWriteFileAtomically).toHaveBeenCalledWith(
-      mockPrimaryWorkspaceIndexPath,
-      JSON.stringify({ version: 1, workspaces: [] }, null, 2),
-      {
-        overwrite: false,
-        storage: { namespace: 'workspace_index', writer: 'electron_main' },
-      },
-    );
-    const markerWrite = mockedWriteFile.mock.calls.find(
+    const markerCall = mockedWriteFile.mock.calls.findIndex(
       ([filePath]) => filePath === mockPrimaryAdoptionMarkerPath,
     );
-    expect(markerWrite).toBeDefined();
-    const markerBody = markerWrite?.[1];
+    expect(markerCall).toBeGreaterThanOrEqual(0);
+    expect(mockedMkdir.mock.invocationCallOrder[0]).toBeLessThan(
+      mockedWriteFile.mock.invocationCallOrder[markerCall],
+    );
+    const markerBody = mockedWriteFile.mock.calls[markerCall]?.[1];
     if (typeof markerBody !== 'string') {
       throw new Error('Expected the adoption marker write body to be JSON');
     }
@@ -3136,25 +3132,15 @@ describe('create primary data-dir handler', () => {
       version: 1,
       adoptedAt: adoptedAtMatcher,
     });
+    // No workspace index seed: the first W5 commit on the root creates it.
+    expect(mockedWriteFileAtomically).not.toHaveBeenCalled();
+    expect(mockedWriteFile.mock.calls.map(([filePath]) => filePath)).toEqual([
+      mockPrimaryAdoptionMarkerPath,
+    ]);
+    expect(mockedMkdir.mock.calls.map(([dirPath]) => dirPath)).toEqual([
+      mockPrimaryDataDir,
+    ]);
     expect(mockResetResolvedCanopyDataDirCache).not.toHaveBeenCalled();
-    expect(result).toEqual({
-      path: mockPrimaryDataDir,
-      source: 'primary',
-      allCandidates: [mockPrimaryDataDir, mockFallbackDataDir],
-    });
-  });
-
-  it('treats an already-seeded primary project index as success', async () => {
-    mockedMkdir.mockResolvedValue(undefined);
-    const error: NodeJS.ErrnoException = new Error('index already exists');
-    error.code = 'EEXIST';
-    // Only the create-only index install can hit EEXIST; the marker write
-    // that follows is a plain overwrite and succeeds.
-    mockedWriteFileAtomically.mockRejectedValueOnce(error);
-    mockedWriteFile.mockResolvedValue(undefined);
-
-    const result = await createPrimaryDataDirHandler();
-
     expect(result).toEqual({
       path: mockPrimaryDataDir,
       source: 'primary',
@@ -3173,7 +3159,7 @@ describe('create primary data-dir handler', () => {
 
     const result = await createPrimaryDataDirHandler();
 
-    expect(mockedMkdir).toHaveBeenCalledWith(mockPrimaryWorkspacesDir, {
+    expect(mockedMkdir).toHaveBeenCalledWith(mockPrimaryDataDir, {
       recursive: true,
     });
     expect(mockResetResolvedCanopyDataDirCache).not.toHaveBeenCalled();
@@ -3184,28 +3170,26 @@ describe('create primary data-dir handler', () => {
     });
   });
 
-  it('propagates directory creation failures', async () => {
+  it('propagates directory creation failures without writing the marker', async () => {
     const error = new Error('mkdir failed');
     mockedMkdir.mockRejectedValue(error);
 
     await expect(createPrimaryDataDirHandler()).rejects.toThrow('mkdir failed');
 
+    expect(mockedWriteFile).not.toHaveBeenCalled();
     expect(mockGetResolvedCanopyDataDir).not.toHaveBeenCalled();
     expect(mockResetResolvedCanopyDataDirCache).not.toHaveBeenCalled();
   });
 
-  it('propagates project index seed failures other than EEXIST', async () => {
+  it('propagates adoption marker write failures', async () => {
     mockedMkdir.mockResolvedValue(undefined);
     const error: NodeJS.ErrnoException = new Error('disk full');
     error.code = 'ENOSPC';
-    mockedWriteFileAtomically.mockRejectedValueOnce(error);
+    mockedWriteFile.mockRejectedValueOnce(error);
 
     await expect(createPrimaryDataDirHandler()).rejects.toThrow('disk full');
 
-    expect(mockedWriteFile).not.toHaveBeenCalledWith(
-      mockPrimaryAdoptionMarkerPath,
-      expect.anything(),
-    );
+    expect(mockGetResolvedCanopyDataDir).not.toHaveBeenCalled();
     expect(mockResetResolvedCanopyDataDirCache).not.toHaveBeenCalled();
   });
 });

@@ -175,8 +175,20 @@ for (const mode of ['Update', 'Replace']) {
       expect(() => readFileSync(claudePath)).toThrow(/EACCES/);
       await convert.getByRole('button', { name: mode, exact: true }).click();
       await expect(
-        window.getByText(/EACCES.*permission denied/).first(),
+        dialog.getByText('Couldn’t convert the project. Try again.'),
       ).toBeVisible();
+      await expect(dialog.getByText(/EACCES.*permission denied/)).toHaveCount(
+        0,
+      );
+      await electronApp.evaluate(({ clipboard }) => clipboard.clear());
+      await dialog
+        .getByRole('button', { name: 'Copy details', exact: true })
+        .click();
+      await expect
+        .poll(() =>
+          electronApp.evaluate(({ clipboard }) => clipboard.readText()),
+        )
+        .toMatch(/EACCES.*permission denied/);
       await expect(dialog).toBeVisible();
       expect(
         JSON.parse(

@@ -15,9 +15,29 @@ export {
   type CanopyDaemonMigrationLaunch,
   type CanopyOwnedDaemonChildren,
 } from './daemon-host';
+export {
+  CANOPY_DAEMON_W5_HOST_CHECK,
+  classifyCanopyDaemonCapability,
+  probeCanopyDaemon,
+  waitForCanopyDaemonRelease,
+  type CanopyDaemonCapability,
+  type CanopyDaemonCapabilityInput,
+  type CanopyDaemonProbe,
+  type CanopyDaemonProbeOptions,
+  type CanopyDaemonReleaseWaitOptions,
+} from './daemon-handoff';
+export {
+  CANOPY_DAEMON_REFUSALS,
+  canopyDaemonRefusal,
+  canopyDaemonRefusalError,
+  type CanopyDaemonRefusal,
+} from './daemon-refusal';
 export type { CanopyClientEndpoint } from './endpoint';
+/** Hosts may extend the launch budget through their post-connect capability checks. */
+export { Deadline as CanopyDaemonDeadline } from './launch-deadline';
 export {
   attachOrStartCanopyDaemon,
+  type CanopyDaemonBeforeSpawn,
   type CanopyDaemonLaunchOptions,
   type CanopyDaemonLaunchResult,
 } from './launcher';

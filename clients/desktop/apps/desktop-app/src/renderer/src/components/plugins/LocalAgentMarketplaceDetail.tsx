@@ -1,4 +1,10 @@
 import type { JSX, ReactNode } from 'react';
+import {
+  SettingsRowsGroup,
+  SettingsRowsRow,
+  SettingsRowsSection,
+  SettingsRowsValue,
+} from '@canopy/ui-shared/components';
 import type { AgentModelDefinition } from '@canopy/desktop-shared/types/agent-models';
 import { getAgentModelAvailability } from '@canopy/desktop-shared/types';
 import {
@@ -26,21 +32,6 @@ export interface LocalAgentMarketplaceDetailProps {
   /** The list's load failure and its Try again, above the detail. */
   notice?: ReactNode;
   onDelete: () => void;
-}
-
-function DetailFact({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <div className="flex gap-3 text-s">
-      <dt className="w-28 shrink-0 fg-secondary">{label}</dt>
-      <dd className="min-w-0 fg-primary">{children}</dd>
-    </div>
-  );
 }
 
 /**
@@ -92,15 +83,37 @@ export function LocalAgentMarketplaceDetail({
         }
       />
 
-      <dl className="space-y-2">
-        <DetailFact label="Base model">{agentBaseModelLabel(agent)}</DetailFact>
-        <DetailFact label="Model ID">
-          <span className="font-mono text-xs">{agent.id}</span>
-        </DetailFact>
-        <DetailFact label="Updated">
-          {formatDateOrEmpty(agent.updatedAt) || '—'}
-        </DetailFact>
-      </dl>
+      <SettingsRowsSection title="Details">
+        <SettingsRowsGroup>
+          <SettingsRowsRow
+            fact
+            label="Base model"
+            control={
+              <SettingsRowsValue>
+                {agentBaseModelLabel(agent)}
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Model ID"
+            control={
+              <SettingsRowsValue>
+                <span className="font-mono text-xs">{agent.id}</span>
+              </SettingsRowsValue>
+            }
+          />
+          <SettingsRowsRow
+            fact
+            label="Updated"
+            control={
+              <SettingsRowsValue>
+                {formatDateOrEmpty(agent.updatedAt) || '—'}
+              </SettingsRowsValue>
+            }
+          />
+        </SettingsRowsGroup>
+      </SettingsRowsSection>
 
       {/* Instructions are prompt content, not a label. */}
       <div className={POSTHOG_REPLAY_BLOCK_CLASS}>

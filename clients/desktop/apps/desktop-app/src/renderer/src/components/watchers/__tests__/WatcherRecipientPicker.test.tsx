@@ -182,7 +182,7 @@ describe('WatcherRecipientPicker', () => {
 
     const headers = Array.from(
       document.body.querySelectorAll(
-        '[data-testid="watcher-recipient-picker-menu"] .text-3xs',
+        '[data-testid="watcher-recipient-picker-menu"] .canopy-picker-menu-section-label',
       ),
     );
     expect(headers.length).toBe(2);

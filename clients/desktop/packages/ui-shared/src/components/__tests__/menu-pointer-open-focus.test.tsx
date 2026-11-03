@@ -32,11 +32,6 @@ interface FamilyHarness {
   render(onPick: (key: string) => void): JSX.Element;
   /** Opens the menu the way the user does, by pointer or keyboard. */
   open(container: HTMLElement, by: 'pointer' | 'keyboard'): void;
-  /**
-   * Who turns Enter into a pick: the menu's own key handler, or the browser
-   * activating the focused `<button>` row (which jsdom does not emulate).
-   */
-  readonly enter: 'menu' | 'native-button';
 }
 
 function press(target: EventTarget, type: string, init: object = {}): void {
@@ -184,19 +179,16 @@ function RightClickMenu({
 const FAMILIES: readonly FamilyHarness[] = [
   {
     name: 'action menu (FloatingMenu: browser ⋯, sidebar, approval and model pickers)',
-    enter: 'menu',
     render: (onPick) => <ActionMenu onPick={onPick} />,
     open: (container, by) => clickTrigger(triggerIn(container), by),
   },
   {
     name: 'picker (FloatingPickerMenu listbox)',
-    enter: 'menu',
     render: (onPick) => <Picker onPick={onPick} />,
     open: (container, by) => clickTrigger(triggerIn(container), by),
   },
   {
-    name: 'right-click menu (TabContextMenu: tabs, chat messages)',
-    enter: 'native-button',
+    name: 'right-click menu (TabContextMenu on FloatingMenu: tabs, chat messages)',
     render: (onPick) => <RightClickMenu onPick={onPick} />,
     open: (container, by): void => {
       const target = triggerIn(container);
@@ -211,7 +203,6 @@ const FAMILIES: readonly FamilyHarness[] = [
   },
   {
     name: 'roving menu (WorktreeActionsMenu: the sidebar row menu)',
-    enter: 'menu',
     render: (onPick) => (
       <WorktreeActionsMenu
         accessibleLabel="Worktree actions"
@@ -240,7 +231,6 @@ const FAMILIES: readonly FamilyHarness[] = [
   },
   {
     name: 'composer menu (ChatComposerOverflowMenu)',
-    enter: 'menu',
     render: (onPick) => (
       <ChatComposerOverflowMenu
         triggerDataTestId="trigger"
@@ -325,12 +315,6 @@ describe('menus opened by pointer vs keyboard', () => {
       keyOnFocus('ArrowDown');
       expect(document.activeElement).toBe(byTestId('second'));
       keyOnFocus('Enter');
-      if (family.enter === 'native-button') {
-        // The browser clicks a focused button on Enter; jsdom does not.
-        expect(onPick).not.toHaveBeenCalled();
-        expect(document.activeElement?.tagName).toBe('BUTTON');
-        act(() => (document.activeElement as HTMLElement).click());
-      }
       expect(onPick).toHaveBeenLastCalledWith('second');
     },
   );

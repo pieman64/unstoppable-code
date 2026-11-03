@@ -109,8 +109,7 @@ function TurnOutcomeTooltipEntry({
           className={`truncate fg-primary ${REPLAY_BLOCK_CLASS}`}
           data-turn-outcome-step-label=""
         >
-          {/* The clean look's tensed label, as the step's own row says it
-              ("Couldn't run …"). */}
+          {/* Keep the step label stable; the reason below names its outcome. */}
           <StepTenseProvider value={step.outcome}>{label}</StepTenseProvider>
         </span>
         <span

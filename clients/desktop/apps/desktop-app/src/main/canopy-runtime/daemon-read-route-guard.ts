@@ -53,15 +53,12 @@ const WINDOWS_PENDING: ReadRouteDisposition = {
   until: 'CAN-4732',
   reason: 'Windows daemon reads beyond roots and directory are not verified.',
 };
-const LINUX_PENDING: ReadRouteDisposition = {
-  kind: 'blocked',
-  until: 'CAN-4966',
-  reason: 'Linux has no desktop daemon yet.',
-};
-const MACOS_ONLY: Readonly<Record<ReadRoutePlatform, ReadRouteDisposition>> = {
+const ELIGIBLE_EXCEPT_WINDOWS: Readonly<
+  Record<ReadRoutePlatform, ReadRouteDisposition>
+> = {
   darwin: ELIGIBLE,
   win32: WINDOWS_PENDING,
-  linux: LINUX_PENDING,
+  linux: ELIGIBLE,
 };
 const PROTOCOL_PENDING: ReadRouteDisposition = {
   kind: 'blocked',
@@ -76,9 +73,11 @@ const CHANGED_FILES_PENDING: ReadRouteDisposition = {
 
 /**
  * Every operation on every platform; a missing row or platform fails to
- * compile. Roots and directory keep their shipped reach on all three hosts,
- * Linux included, where a selected read still ends in a typed failure until
- * CAN-4966. A `blocked` cell keeps the in-process reader whatever a route's
+ * compile. Roots and directory keep their shipped reach on all three hosts.
+ * Linux hosts own the daemon since CAN-4966 A2, and packaged Linux builds
+ * stage it since CAN-4966 PR B; file, search, link and branch list are
+ * eligible on Linux since CAN-5547, after their equivalence suites passed
+ * there. A `blocked` cell keeps the in-process reader whatever a route's
  * selection set says.
  */
 export const READ_ROUTE_TABLE: Readonly<
@@ -89,10 +88,10 @@ export const READ_ROUTE_TABLE: Readonly<
 > = {
   'files.roots': { darwin: ELIGIBLE, win32: ELIGIBLE, linux: ELIGIBLE },
   'files.directory': { darwin: ELIGIBLE, win32: ELIGIBLE, linux: ELIGIBLE },
-  'files.file': MACOS_ONLY,
-  'files.search': MACOS_ONLY,
-  'files.link': MACOS_ONLY,
-  'git.branch.list': MACOS_ONLY,
+  'files.file': ELIGIBLE_EXCEPT_WINDOWS,
+  'files.search': ELIGIBLE_EXCEPT_WINDOWS,
+  'files.link': ELIGIBLE_EXCEPT_WINDOWS,
+  'git.branch.list': ELIGIBLE_EXCEPT_WINDOWS,
   'git.remote.get': {
     darwin: PROTOCOL_PENDING,
     win32: PROTOCOL_PENDING,
@@ -111,12 +110,12 @@ export const READ_ROUTE_TABLE: Readonly<
   'git.status.get': {
     darwin: CHANGED_FILES_PENDING,
     win32: WINDOWS_PENDING,
-    linux: LINUX_PENDING,
+    linux: CHANGED_FILES_PENDING,
   },
   'git.diff.get': {
     darwin: CHANGED_FILES_PENDING,
     win32: WINDOWS_PENDING,
-    linux: LINUX_PENDING,
+    linux: CHANGED_FILES_PENDING,
   },
 };
 
@@ -214,6 +213,22 @@ export function resolveReadRoutePlatform(
 }
 
 /**
+ * The local window caller trusted main derived for this exact sender.
+ * Remote-control bridge callers (`remote-bridge:<id>`) never match: they
+ * always keep the in-process reader, by decision.
+ */
+export function isLocalWindowCaller(
+  caller: CanopyCallerDescriptor,
+  senderId: number,
+): boolean {
+  return (
+    caller.interfaceKind === 'desktop' &&
+    caller.authorityId === LOCAL_DESKTOP_AUTHORITY_ID &&
+    caller.clientInstanceId === `${LOCAL_CALLER_PREFIX}${senderId}`
+  );
+}
+
+/**
  * Whether a read may leave for the daemon: an eligible cell for this host,
  * the trusted local window caller for this exact sender, a scope of the
  * operation's shape, and a registered, routed workspace. `null` keeps the
@@ -225,16 +240,7 @@ export function evaluateReadRoute(
   const { operation, platform, caller, scope, lookups } = input;
   if (platform === null) return null;
   if (READ_ROUTE_TABLE[operation][platform].kind !== 'eligible') return null;
-  if (
-    caller.interfaceKind !== 'desktop' ||
-    caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID
-  )
-    return null;
-  // Only the local window caller trusted main derived for this exact
-  // sender. Remote-control bridge callers (`remote-bridge:<id>`) always keep
-  // the in-process reader, by decision.
-  if (caller.clientInstanceId !== `${LOCAL_CALLER_PREFIX}${input.senderId}`)
-    return null;
+  if (!isLocalWindowCaller(caller, input.senderId)) return null;
   const shape = READ_ROUTE_SCOPE_SHAPES[operation];
   const { workspaceId, worktreeId, repoId } = scope;
   if (

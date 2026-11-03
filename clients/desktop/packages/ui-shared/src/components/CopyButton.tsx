@@ -14,6 +14,7 @@ const GLYPH_PX: Record<ButtonSize, number> = {
   lg: 18,
   control: 14,
   compact: 14,
+  field: 14,
 };
 
 export interface CopyButtonProps {
@@ -21,6 +22,8 @@ export interface CopyButtonProps {
   value: string;
   /** Accessible name when not in the copied state. */
   ariaLabel?: string;
+  /** Referenced accessible name when not in the copied state. */
+  ariaLabelledBy?: string;
   /** Tooltip when not in the copied state. */
   title?: string;
   /** Button treatment. Defaults to the quiet ghost button. */
@@ -55,6 +58,7 @@ export function CopyButton(props: CopyButtonProps): JSX.Element {
 function CopyButtonControl({
   value,
   ariaLabel = 'Copy to clipboard',
+  ariaLabelledBy,
   title = 'Copy to clipboard',
   variant = 'ghost',
   size = 'sm',
@@ -101,6 +105,7 @@ function CopyButtonControl({
           data-testid={dataTestId}
           onClick={handleClick}
           aria-label={name}
+          aria-labelledby={copied ? undefined : ariaLabelledBy}
         >
           {glyph}
         </Button>
@@ -112,6 +117,7 @@ function CopyButtonControl({
           data-testid={dataTestId}
           onClick={handleClick}
           aria-label={name}
+          aria-labelledby={copied ? undefined : ariaLabelledBy}
         >
           {glyph}
           <span>{copied ? copiedLabel : label}</span>

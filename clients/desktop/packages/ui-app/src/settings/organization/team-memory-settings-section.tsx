@@ -18,13 +18,14 @@ import {
 import type { OrganizationRole } from '@canopy/protocol/settings/organization';
 import { canEditMemorySettings } from '@canopy/protocol/settings/organization-permissions';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
-import { useSettingsErrorCopy, useSettingsLoadErrorCopy } from '../errors';
+import { useSettingsErrorCopy, useSettingsLoadFailure } from '../errors';
 import { joinClassNames } from './settings/join-class-names';
 import {
   fetchMemoryParticipation,
   updateMemberMemoryParticipation,
   type MemoryParticipationMember,
 } from './team-api';
+import type { SettingsFailure } from '../errors';
 
 const MEMORY_SETTINGS_ERROR_SCOPE = 'settings.organization.memory';
 
@@ -58,10 +59,10 @@ function MemorySettingsCard({
   const [loading, setLoading] = useState(true);
   const [savingMemberId, setSavingMemberId] = useState<string | null>(null);
   const errorCopy = useSettingsErrorCopy(MEMORY_SETTINGS_ERROR_SCOPE);
-  const loadErrorCopy = useSettingsLoadErrorCopy(MEMORY_SETTINGS_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(MEMORY_SETTINGS_ERROR_SCOPE);
   // A failed load offers Retry; a failed toggle does not.
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SettingsFailure | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   // Bumped by Retry to run the load again.
   const [loadAttempt, setLoadAttempt] = useState(0);
 
@@ -136,7 +137,7 @@ function MemorySettingsCard({
         ),
       );
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'update memory participation',
         }),
       );
@@ -163,8 +164,17 @@ function MemorySettingsCard({
           Re-enabling them does not restore expired facts.
         </p>
 
-        <ErrorBanner className="mt-3" error={loadError} onRetry={retryLoad} />
-        <ErrorBanner className="mt-3" error={error} />
+        <ErrorBanner
+          className="mt-3"
+          error={loadError?.copy}
+          details={loadError?.details}
+          onRetry={retryLoad}
+        />
+        <ErrorBanner
+          className="mt-3"
+          error={error?.copy}
+          details={error?.details}
+        />
 
         {loading ? (
           <div className="mt-4">

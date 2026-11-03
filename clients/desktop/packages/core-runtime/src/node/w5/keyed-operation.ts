@@ -53,6 +53,8 @@ export type W5ReceiptStore = Pick<
   | 'markReservationRecoveryRequired'
 >;
 
+export type W5AttemptHold = <R>(run: () => Promise<R>) => Promise<R>;
+
 export interface W5KeyedOperationInput {
   /** Trusted host-composed caller identity, distinct from the writer principal. */
   caller: string;
@@ -61,6 +63,12 @@ export interface W5KeyedOperationInput {
   parameters: unknown;
   /** State-dependent read-only admission runs only for a new key. */
   admit?: () => Promise<void>;
+  /**
+   * Holds what the attempt writes (the host's storage admission) from the
+   * reservation until the attempt settles. The lookup and `admit` run before
+   * it, so an admission that waits on the network holds nothing.
+   */
+  hold?: W5AttemptHold;
   /** Boundary-owned typed refusals, only safe before the attempt's first effect. */
   isPreEffectRefusal: (error: unknown) => boolean;
   /** Observes that a saved outcome is returned instead of running the work. */
@@ -187,70 +195,80 @@ export function createW5KeyedOperationRunner(
     };
     const admission = admit(await store.lookupReceipt(receipt));
     if (admission.status === 'replay') return replay(admission.outcome);
-    await input.admit?.();
-    const reservationId = randomUUID();
-    // Reclassify a racing winner after a reserve refusal, without retrying work.
-    // Never release uncertain reservations.
     try {
-      await store.reserve({
-        reservationId,
-        operation: input.operation,
-        receipt,
-      });
+      await input.admit?.();
     } catch (error) {
-      if (error instanceof W5CommitRefusedError) {
-        const latest = admit(await store.lookupReceipt(receipt));
-        if (latest.status === 'replay') return replay(latest.outcome);
-      }
+      // A concurrent winner may have changed the state admission reads.
+      const latest = admit(await store.lookupReceipt(receipt));
+      if (latest.status === 'replay') return replay(latest.outcome);
       throw error;
     }
-    let effectsStarted = false;
-    const validationErrors = new Set<unknown>();
-    const attempt: W5KeyedAttempt = {
-      beforeEffects: () => {
-        effectsStarted = true;
-      },
-      validate: (check) => {
-        try {
-          check();
-        } catch (error) {
-          validationErrors.add(error);
-          throw error;
-        }
-      },
-      validationError: (error) => {
-        validationErrors.add(error);
-        return error;
-      },
-    };
-    try {
-      return await work(
-        {
+    const reserveAndRun = async (): Promise<T> => {
+      const reservationId = randomUUID();
+      // Reclassify a racing winner after a reserve refusal, without retrying work.
+      // Never release uncertain reservations.
+      try {
+        await store.reserve({
+          reservationId,
           operation: input.operation,
           receipt,
-          reservationId,
-          beforeDecision: attempt.beforeEffects,
-        },
-        attempt,
-      );
-    } catch (error) {
-      try {
-        if (
-          !effectsStarted &&
-          (validationErrors.has(error) || input.isPreEffectRefusal(error))
-        ) {
-          await store.releaseReservation(reservationId);
-        } else {
-          await store.markReservationRecoveryRequired(
-            reservationId,
-            failureDiagnostics(input.operation, error),
-          );
+        });
+      } catch (error) {
+        if (error instanceof W5CommitRefusedError) {
+          const latest = admit(await store.lookupReceipt(receipt));
+          if (latest.status === 'replay') return replay(latest.outcome);
         }
-      } catch {
-        // Keep the original error, including when a decision already consumed the
-        // reservation or the worker is unavailable. Launch recovery is the fallback.
+        throw error;
       }
-      throw error;
-    }
+      let effectsStarted = false;
+      const validationErrors = new Set<unknown>();
+      const attempt: W5KeyedAttempt = {
+        beforeEffects: () => {
+          effectsStarted = true;
+        },
+        validate: (check) => {
+          try {
+            check();
+          } catch (error) {
+            validationErrors.add(error);
+            throw error;
+          }
+        },
+        validationError: (error) => {
+          validationErrors.add(error);
+          return error;
+        },
+      };
+      try {
+        return await work(
+          {
+            operation: input.operation,
+            receipt,
+            reservationId,
+            beforeDecision: attempt.beforeEffects,
+          },
+          attempt,
+        );
+      } catch (error) {
+        try {
+          if (
+            !effectsStarted &&
+            (validationErrors.has(error) || input.isPreEffectRefusal(error))
+          ) {
+            await store.releaseReservation(reservationId);
+          } else {
+            await store.markReservationRecoveryRequired(
+              reservationId,
+              failureDiagnostics(input.operation, error),
+            );
+          }
+        } catch {
+          // Keep the original error, including when a decision already consumed the
+          // reservation or the worker is unavailable. Launch recovery is the fallback.
+        }
+        throw error;
+      }
+    };
+    return input.hold ? input.hold(reserveAndRun) : reserveAndRun();
   };
 }

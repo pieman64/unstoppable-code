@@ -13,6 +13,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import {
   access,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -899,11 +900,29 @@ export async function setArchivedContainerLocked(
   );
 }
 
+/**
+ * CAN-5338: a user-confirmed discard of a retained archive whose permanent
+ * deletion cannot finish. The abandoned Git validation is skipped and refs are
+ * released best effort, never re-pinned; everything else is the ordinary
+ * purge's. Reached only through {@link purgeArchivedContainerForDiscard}.
+ */
+interface ArchivedContainerDiscardPurge {
+  /** The container directory's stat identity the user confirmed. */
+  readonly expectedIdentity: { dev: number; ino: number; birthtimeMs: number };
+  /** Releases what it can and never throws. */
+  readonly releaseGitState: (gitState: ArchivedGitState) => Promise<void>;
+}
+
 async function purgeArchivedContainerWithoutOperationLock(
   projectId: string,
   containerId: string,
-  options?: { onlyIfDeleted?: boolean; preserveLegacyChats?: boolean },
+  options?: {
+    onlyIfDeleted?: boolean;
+    preserveLegacyChats?: boolean;
+    discard?: ArchivedContainerDiscardPurge;
+  },
 ): Promise<boolean> {
+  const discard = options?.discard;
   const directory = getArchivedContainerDir(projectId, containerId);
   let manifest: ArchivedContainerManifest;
   try {
@@ -924,9 +943,10 @@ async function purgeArchivedContainerWithoutOperationLock(
         await import('./archived-container-recovery');
       await finishArchivedContainerRecovery(manifest, {
         discardingArchive: true,
+        ...(discard ? { abandonVerification: true } : {}),
       });
       await commitArchivedContainer(manifest);
-      if (manifest.recovery.gitCleanupPending) {
+      if (manifest.recovery.gitCleanupPending && !discard) {
         throw new Error(
           'Git registration cleanup is still pending. Retry after the source repository is available.',
         );
@@ -935,6 +955,7 @@ async function purgeArchivedContainerWithoutOperationLock(
     const staged = await readArchivedGitStagedDescriptor(
       projectId,
       containerId,
+      discard ? { readOnly: true, recoveryOnly: true } : undefined,
     );
     if (staged && staged.repositories.length > 0) {
       stagedGitState = {
@@ -942,15 +963,16 @@ async function purgeArchivedContainerWithoutOperationLock(
         diffFormatVersion: 1,
         repositories: staged.repositories,
       };
-      await assertArchivedGitStatePurgeable({
-        projectId,
-        id: containerId,
-        workspaceType: manifest.workspaceType,
-        gitState: stagedGitState,
-      });
+      if (!discard)
+        await assertArchivedGitStatePurgeable({
+          projectId,
+          id: containerId,
+          workspaceType: manifest.workspaceType,
+          gitState: stagedGitState,
+        });
     }
   }
-  if (manifest.version === 2) {
+  if (manifest.version === 2 && !discard) {
     // The manifest is the durable identity record for retained refs. If it
     // cannot be verified, preserve both the archive and refs for recovery.
     await assertArchivedGitStatePurgeable(manifest);
@@ -966,10 +988,12 @@ async function purgeArchivedContainerWithoutOperationLock(
     return await withWorkspaceMutationLock(projectId, async () => {
       let directoryRemovalStarted = false;
       try {
-        if (manifest.version === 2) {
-          await releaseArchivedGitState(manifest.gitState);
-        } else if (stagedGitState) {
-          await releaseArchivedGitState(stagedGitState);
+        const gitState =
+          manifest.version === 2 ? manifest.gitState : stagedGitState;
+        if (gitState) {
+          await (discard
+            ? discard.releaseGitState(gitState)
+            : releaseArchivedGitState(gitState));
         } else {
           const discarded = await discardIncompleteArchivedGitCapture(
             projectId,
@@ -1048,6 +1072,34 @@ async function purgeArchivedContainerWithoutOperationLock(
           if (planWarnings.length) throw new Error(planWarnings.join('\n'));
         }
         directoryRemovalStarted = true;
+        if (discard) {
+          // The confirmed directory only. The manifest goes last, so a crash
+          // leaves an archive that still lists, and a retry finishes it.
+          const current = await lstat(directory);
+          if (
+            !current.isDirectory() ||
+            current.dev !== discard.expectedIdentity.dev ||
+            current.ino !== discard.expectedIdentity.ino ||
+            current.birthtimeMs !== discard.expectedIdentity.birthtimeMs
+          )
+            throw new Error(
+              'The archived worktree changed identity; it was preserved.',
+            );
+          await runArchiveIoRequest({
+            version: 1,
+            type: 'reset-directory',
+            requestId: randomUUID(),
+            operationId: `archive:${projectId}:${containerId}:discard-contents`,
+            projectId,
+            containerId,
+            expectedCreatedAt: manifest.createdAt,
+            input: {
+              path: directory,
+              allowedRoot: getArchivedContainersRootDir(projectId),
+              preserveNames: ['container.json'],
+            },
+          });
+        }
         await runArchiveIoRequest({
           version: 1,
           type: 'remove-directory',
@@ -1077,7 +1129,8 @@ async function purgeArchivedContainerWithoutOperationLock(
           : true;
         const gitStateToRepin =
           manifest.version === 2 ? manifest.gitState : stagedGitState;
-        if (gitStateToRepin && archiveStillExists) {
+        // A discard never re-pins: its abandoned refs may name a gone source.
+        if (gitStateToRepin && archiveStillExists && !discard) {
           await repinArchivedGitState(gitStateToRepin).catch((repinError) => {
             // eslint-disable-next-line no-console
             console.error(
@@ -1104,6 +1157,22 @@ export async function purgeArchivedContainer(
   return withArchivedContainerOperationLock(projectId, containerId, () =>
     purgeArchivedContainerWithoutOperationLock(projectId, containerId, options),
   );
+}
+
+/**
+ * CAN-5338: the retained archive discard's purge, for a caller that already
+ * holds the container operation lock. Only `retained-archive-discard.ts` may
+ * import it (see the import-boundary test): the retention sweep, restore and
+ * Auto Delete keep the ordinary purge and its Git validation.
+ */
+export async function purgeArchivedContainerForDiscard(
+  projectId: string,
+  containerId: string,
+  discard: ArchivedContainerDiscardPurge,
+): Promise<boolean> {
+  return purgeArchivedContainerWithoutOperationLock(projectId, containerId, {
+    discard,
+  });
 }
 
 /** Called only by restore while it already owns the container operation lock. */

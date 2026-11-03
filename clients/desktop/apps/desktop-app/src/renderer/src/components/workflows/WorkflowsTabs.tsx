@@ -345,6 +345,7 @@ export function WorkflowsTabs({
                 hasWorkflows ? (): void => runPipeline() : undefined
               }
               onNewWorkflow={automations.beginCreate}
+              library={library}
             />
           ) : tab === 'workflows-schedule' ? (
             <WorkflowsScheduleTab

@@ -7,6 +7,7 @@ import type { WorktreeReplicaState } from '@canopy/protocol/worktree-replica';
 import type { W5Resource } from './commit-log';
 import {
   isJsonObject,
+  w5UnreadableMessage,
   withUnknownFields,
   type W5FileStore,
 } from './file-store';
@@ -75,6 +76,7 @@ export interface WorktreeListRepository<
   Row extends W5WorktreeListRow = W5WorktreeListRow,
 > {
   read(workspaceId: string): Promise<WorktreeListRead<Row>>;
+  remove(workspaceId: string): Promise<void>;
   /**
    * Replaces the list with `worktrees`, given the read made under the same
    * host lock, and returns the contents written.
@@ -108,7 +110,7 @@ export class WorktreeRegistryUnreadableError extends Error {
   // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
   declare readonly cause?: unknown;
   constructor(cause?: unknown) {
-    super('Worktree registry is unreadable');
+    super(w5UnreadableMessage('Worktree registry is unreadable', cause));
     this.name = 'WorktreeRegistryUnreadableError';
     if (cause !== undefined)
       Object.defineProperty(this, 'cause', {
@@ -144,6 +146,47 @@ export function createWorktreeListRepository<Row extends W5WorktreeListRow>(
   deps: WorktreeListRepositoryDeps<Row>,
 ): WorktreeListRepository<Row> {
   return {
+    async remove(workspaceId): Promise<void> {
+      await withW5RepositoryLock(
+        { kind: 'list', path: deps.filePath(workspaceId) },
+        async () => {
+          const path = deps.filePath(workspaceId);
+          const read = await deps.store.read(path);
+          if (read.state === 'unreadable')
+            throw new WorktreeRegistryUnreadableError(read.error);
+          if (read.state === 'absent') return;
+          let old: unknown;
+          let parsed = true;
+          try {
+            old = JSON.parse(read.raw);
+          } catch {
+            parsed = false;
+          }
+          const diff = diffW5Rows(
+            isJsonObject(old) ? old.worktrees : undefined,
+            undefined,
+            false,
+          );
+          await deps.store.remove(path, deps.storage, {
+            operation: 'w5.worktree_list.remove',
+            advance: [
+              ...(!parsed || diff.collectionChanged
+                ? [{ kind: 'worktrees', workspaceId } as const]
+                : []),
+              ...diff.changedIds.map(
+                (worktreeId): W5Resource => ({
+                  kind: 'worktree',
+                  workspaceId,
+                  worktreeId,
+                }),
+              ),
+            ],
+            previousRaw: read.raw,
+          });
+        },
+        { join: true },
+      );
+    },
     async read(workspaceId: string): Promise<WorktreeListRead<Row>> {
       const read = await deps.store.read(deps.filePath(workspaceId));
       if (read.state === 'present')

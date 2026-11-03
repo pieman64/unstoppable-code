@@ -43,9 +43,9 @@ export function PendingAttachmentRow({
               type="button"
               className="focus-ring fg-destructive hover:underline"
               onClick={(): void => onRetry(attachment.localId)}
-              aria-label={`Retry ${attachment.filename}`}
+              aria-label={`Try again for ${attachment.filename}`}
             >
-              Retry
+              Try again
             </button>
           ) : null}
           <Button

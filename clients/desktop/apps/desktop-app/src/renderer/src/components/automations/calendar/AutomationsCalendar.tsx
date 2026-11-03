@@ -1,4 +1,5 @@
 import { useMemo, type JSX, type ReactNode } from 'react';
+import { Notice } from '@canopy/ui-shared/components';
 import type {
   AutomationAction,
   ScheduledActivity,
@@ -209,14 +210,13 @@ export function AutomationsCalendar({
         filters={toolbarFilters}
       />
       {truncated && (
-        <div
+        <Notice
+          intent="attention"
           data-testid="automations-calendar-truncated-banner"
-          role="status"
-          className="rounded-md border border-line-attention/40 bg-warning-subtle px-3 py-2 text-xs fg-warning"
         >
           Some automations have more occurrences than can be shown in this
           range.
-        </div>
+        </Notice>
       )}
       {(calendarView === 'day' || calendarView === 'week') && (
         <DayWeekTimeGrid

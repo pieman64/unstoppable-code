@@ -12,6 +12,7 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import { ResizeHandle } from '@/components/shared/ResizeHandle';
 import { Button } from '@/components/shared/Button';
 import { ChevronTopMediumIcon as AppCatalogChevronTopMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { TextArea } from '@canopy/ui-shared/components';
 
 /**
  * Shared bottom "comments tray" shell — a resizable, always-mounted panel
@@ -324,7 +325,8 @@ export function CommentsTray<T>({
         >
           {addingNote && !readOnly && (
             <div className="px-3 pb-2">
-              <textarea
+              <TextArea
+                aria-label="General comment"
                 value={noteDraft}
                 onChange={(event): void => setNoteDraft(event.target.value)}
                 onKeyDown={(event): void => {
@@ -341,7 +343,6 @@ export function CommentsTray<T>({
                 rows={2}
                 autoFocus
                 data-testid={noteInputTestId}
-                className="focus-ring w-full resize-none rounded-md border bg-fg-primary/[0.04] px-2 py-1 text-xs fg-primary"
               />
               <div className="mt-1 flex items-center justify-end gap-1.5">
                 <Button

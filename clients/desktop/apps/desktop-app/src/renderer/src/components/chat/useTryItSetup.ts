@@ -184,7 +184,7 @@ export function useTryItSetup(input: UseTryItSetupInput): TryItSetup {
           (resolved?.kind === 'ready' &&
             signIn.catalogFailed &&
             signIn.waitsForCatalog(resolved.target))
-        ? `Couldn't load ${capability.name} setup. Retry to try again.`
+        ? `Couldn't load ${capability.name} setup. Try again.`
         : resolved?.kind === 'unavailable'
           ? resolved.message
           : undefined;

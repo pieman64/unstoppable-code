@@ -1352,6 +1352,16 @@ describe('first-paint hydration', () => {
     },
   );
 
+  it('does not write an emptied record back after a disconnect purge', async () => {
+    const t = await seeded();
+    t.setScope(null);
+    const restarted = t.make();
+    restarted.getState().ensureTeamCatalog();
+    await flush();
+    jest.runOnlyPendingTimers();
+    expect(t.storage.getItem(REFERENCE_PREVIEW_STORAGE_KEY)).toBeNull();
+  });
+
   it.each(['scope-b', null])(
     'purges hydrated data when the catalog adopts the saved scope before the scope check reports %s',
     async (next) => {

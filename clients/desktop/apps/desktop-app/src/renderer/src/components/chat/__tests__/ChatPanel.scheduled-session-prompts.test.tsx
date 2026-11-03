@@ -220,11 +220,18 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
       'chatStore.removePendingEditorSelection(',
     );
     expect(CHAT_INPUT_SOURCE).toContain('await onSendMessage(');
+    // The native callbacks wrap these to settle composer recovery (CAN-5348).
     expect(CHAT_INPUT_SOURCE).toContain(
-      'onDispatchRejected: restoreReservedInputs',
+      'onDispatchRejected: rejectNativeDispatch',
     );
+    const dispatchRejection = CHAT_INPUT_SOURCE.slice(
+      CHAT_INPUT_SOURCE.indexOf('const rejectNativeDispatch'),
+    );
+    expect(
+      dispatchRejection.slice(0, dispatchRejection.indexOf('};')),
+    ).toContain('restoreReservedInputs();');
     expect(CHAT_INPUT_SOURCE).toContain(
-      'onPreDispatchRejected: restoreRejectedDraft',
+      'onPreDispatchRejected: rejectNativePreDispatch',
     );
     expect(CHAT_INPUT_SOURCE).not.toContain(
       'clearPendingEditorSelections(tabId)',
@@ -278,7 +285,19 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     );
     expect(CHAT_INPUT_SOURCE).toMatch(/await sendMessage\(\s*rewritten\.text/);
     expect(CHAT_INPUT_SOURCE).toContain(
-      'onPreDispatchRejected: restoreRejectedDraft',
+      'onPreDispatchRejected: rejectNativePreDispatch',
+    );
+    const preDispatch = CHAT_INPUT_SOURCE.slice(
+      CHAT_INPUT_SOURCE.indexOf('const rejectNativePreDispatch'),
+    );
+    expect(preDispatch.slice(0, preDispatch.indexOf('};'))).toContain(
+      'restoreRejectedDraft();',
+    );
+    const dispatch = CHAT_INPUT_SOURCE.slice(
+      CHAT_INPUT_SOURCE.indexOf('const rejectNativeDispatch'),
+    );
+    expect(dispatch.slice(0, dispatch.indexOf('};'))).not.toContain(
+      'restoreRejectedDraft',
     );
     expect(CHAT_INPUT_SOURCE).not.toContain(
       'onDispatchRejected: restoreRejectedDraft',
@@ -351,9 +370,8 @@ describe('chat scheduled Worktree Session prompt UI coverage', () => {
     expect(SCHEDULE_MODAL_SOURCE).toContain('Date.now() + 5 * 60 * 1000');
     expect(SCHEDULE_MODAL_SOURCE).toContain('Choose a future time.');
     expect(SCHEDULE_MODAL_SOURCE).toContain('Set schedule');
-    expect(SCHEDULE_MODAL_SOURCE).toContain(
-      'flex items-center justify-center bg-overlay-scrim p-4',
-    );
+    // The shared dialog draws the centered card and its scrim.
+    expect(SCHEDULE_MODAL_SOURCE).toContain('<DialogModal');
     expect(SCHEDULE_MODAL_SOURCE).not.toContain('pt-[12vh]');
   });
 

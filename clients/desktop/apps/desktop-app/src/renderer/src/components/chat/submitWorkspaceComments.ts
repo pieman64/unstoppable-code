@@ -77,13 +77,12 @@ function withdrawRendererQueuedComments(
  * dispatch, main's input-delivery queue, or a Claude terminal launch that took
  * the prompt as its initial argument (even if saving it to the transcript then
  * failed). Callers acknowledge the comments on an ok result, so a message
- * parked only in this renderer's queue (worktree setup, a hook placeholder, or
- * a failed Claude terminal launch kept for retry) is not a send: that queue is
+ * parked only in this renderer's queue (a hook placeholder, or a failed
+ * Claude terminal launch kept for retry) is not a send: that queue is
  * not saved with the chat tab, and a restart would drop the message while the
  * comments stayed marked sent. That copy is withdrawn and the result is
  * `rejected`, so the comments stay pending and a retry cannot deliver them
- * twice. A renderer-queue report that finds no copy is `rejected` too: comments
- * never ask for the setup queue's immediate flush (`queueForSetup`), so the
+ * twice. A renderer-queue report that finds no copy is `rejected` too: the
  * copy was removed (a deleted queued bubble, a closed or rebuilt tab), not
  * dispatched. The parking paths report acceptance and then, synchronously,
  * where the message is parked, so acceptance settles a microtask later to let

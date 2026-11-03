@@ -142,6 +142,336 @@ describe('CustomizeTabSections', () => {
   const catalog = (id: string): UnifiedPluginEntry =>
     entry(id, { origin: 'marketplace', state: 'available' });
 
+  function collection(
+    id: string,
+    overrides: Partial<UnifiedPluginEntry> = {},
+  ): UnifiedPluginEntry {
+    return entry(id, {
+      kind: 'collection',
+      ref: { type: 'local-collection', collectionId: id },
+      components: {
+        skills: 2,
+        plugins: 1,
+        mcpServers: 1,
+        commands: 0,
+        agents: 0,
+      },
+      ...overrides,
+    });
+  }
+
+  it('CAN-4847 uses a compact secondary Add collection section action', () => {
+    const onCreateCollection = jest.fn();
+    render({ tab: 'collection', onCreateCollection });
+    const add = q('customize-add-collection');
+    expect(add?.classList.contains('fg-primary')).toBe(true);
+    expect(add?.classList.contains('h-7')).toBe(true);
+    expect(add?.classList.contains('text-xs')).toBe(true);
+    expect(add?.classList.contains('pointer-coarse:before:-inset-y-2')).toBe(
+      true,
+    );
+    expect(add?.hasAttribute('disabled')).toBe(false);
+    act(() => add?.click());
+    expect(onCreateCollection).toHaveBeenCalledTimes(1);
+  });
+
+  it('CAN-4847 does not rerender unchanged Browse rows while search narrows', () => {
+    const logo = jest.fn(() => <span>logo</span>);
+    const onSelectEntry = jest.fn();
+    const entries = [catalog('alpha'), catalog('alpine'), catalog('beta')];
+    const props = { entries, onSelectEntry, McpServerLogoComponent: logo };
+    render({ ...props, query: 'a' });
+    expect(logo).toHaveBeenCalledTimes(3);
+    logo.mockClear();
+    render({ ...props, query: 'al' });
+    expect(logo).not.toHaveBeenCalled();
+    const nextSelect = jest.fn();
+    render({ ...props, query: 'al', onSelectEntry: nextSelect });
+    act(() => q('plugins-entry-alpha')?.click());
+    expect(nextSelect).toHaveBeenCalledWith(entries[0]);
+    expect(onSelectEntry).not.toHaveBeenCalled();
+  });
+
+  it('CAN-4847 switches Browse from Install to the canonical installed status without showing both', () => {
+    const available = entry('catalog', {
+      origin: 'marketplace',
+      state: 'available',
+    });
+    const binding: PluginsEntryStatusBinding = {
+      states: {},
+      pendingKeys: new Set(),
+      onSetStatus: jest.fn(),
+    };
+    render({
+      entries: [available],
+      entryStatus: binding,
+      onAddEntry: jest.fn(),
+    });
+    expect(q('plugins-entry-add-catalog')?.textContent).toBe('Install');
+    const install = q('plugins-entry-add-catalog');
+    expect(install?.classList.contains('fg-primary')).toBe(true);
+    expect(install?.classList.contains('h-7')).toBe(true);
+    expect(install?.classList.contains('text-xs')).toBe(true);
+    expect(
+      install?.classList.contains('pointer-coarse:before:-inset-y-2'),
+    ).toBe(true);
+    expect(install?.hasAttribute('disabled')).toBe(false);
+    expect(q('plugins-entry-status-catalog')).toBeNull();
+    const installed = entry('local');
+    render({
+      entries: [installed, { ...available, installedEntryId: installed.id }],
+      entryStatus: { ...binding, states: { [installed.id]: ready('active') } },
+      onAddEntry: jest.fn(),
+    });
+    expect(q('plugins-entry-add-catalog')).toBeNull();
+    expect(q('plugins-entry-status-local')).not.toBeNull();
+  });
+
+  it('CAN-4847 never fabricates a disabled Available picker without a status binding', () => {
+    render({
+      entries: [
+        entry('built-in', {
+          kind: 'pipeline',
+          builtIn: true,
+          origin: 'built-in',
+          ref: { type: 'pipeline', pipelineId: 'built-in', source: 'bundled' },
+        }),
+      ],
+      entryStatus: {
+        states: {},
+        pendingKeys: new Set(),
+        onSetStatus: jest.fn(),
+      },
+    });
+    expect(
+      q('customize-installed-row-built-in')?.querySelector('.w-36'),
+    ).not.toBeNull();
+    expect(q('plugins-entry-status-built-in')).toBeNull();
+    expect(container.querySelector('[aria-haspopup="listbox"]')).toBeNull();
+  });
+
+  it('shows Add collection and its footnote even when Added is empty', () => {
+    render({
+      tab: 'collection',
+      installedActions: <button>Add collection</button>,
+    });
+    expect(q('customize-section-installed')?.textContent).toContain(
+      'Add collection',
+    );
+    expect(q('customize-section-installed-footnote')?.textContent).toBe(
+      'Adding a collection adds everything in it. Removing it keeps what you already use.',
+    );
+  });
+
+  it('CAN-4847 keeps collection Updates compact and puts the full summary and date in its tooltip', () => {
+    const summary =
+      'Priya Shah added the figma-handoff skill to the design review collection';
+    render({
+      tab: 'collection',
+      entries: [
+        collection('design', {
+          name: 'Design review',
+          typeLabel: 'Collection',
+          updateAvailable: true,
+          sharedSource: { remoteId: 'shared-design', updatedAt: '2026-10-14' },
+        }),
+      ],
+      supportedUpdateKinds: ['collection'],
+      collectionUpdateSummaries: new Map([['design', summary]]),
+      onUpdateEntry: jest.fn(async () => {}),
+    });
+    const row = q('customize-updates-row-design');
+    const subtitle = row?.querySelector(
+      '[data-testid="customize-row-subtitle-design"]',
+    );
+    expect(subtitle?.textContent).not.toContain(summary);
+    expect(subtitle?.textContent).not.toContain('Oct 14');
+    void act(() =>
+      row
+        ?.querySelector<HTMLElement>('[data-testid="customize-update-design"]')
+        ?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })),
+    );
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+      `${summary} · Oct 14, 2026 · Click to update · Updating replaces the items in this collection with the shared version. Resources you already use are kept.`,
+    );
+    expect(
+      document
+        .querySelector('[role="tooltip"]')
+        ?.querySelector('.ph-no-capture'),
+    ).not.toBeNull();
+    expect(
+      row?.querySelector('[data-testid="customize-row-name-line-design"]')
+        ?.textContent,
+    ).toBe('Design review');
+    expect(
+      row?.querySelector('[data-testid="customize-update-design"]'),
+    ).not.toBeNull();
+  });
+
+  it('CAN-4847 omits totals and invalid content counts without fabricating zero counts', () => {
+    render({
+      tab: 'collection',
+      entries: [
+        collection('unknown', {
+          components: {
+            skills: Number.NaN,
+            plugins: 0,
+            mcpServers: 0,
+            commands: 0,
+            agents: 0,
+          },
+        }),
+        collection('empty', {
+          components: {
+            skills: 0,
+            plugins: 0,
+            mcpServers: 0,
+            commands: 0,
+            agents: 0,
+          },
+        }),
+      ],
+    });
+    expect(q('customize-row-values-unknown')).toBeNull();
+    expect(q('customize-row-values-empty')).toBeNull();
+    expect(q('customize-row-subtitle-unknown')?.textContent).toBe('You');
+    expect(q('customize-row-subtitle-empty')?.textContent).toBe('You');
+  });
+
+  it('CAN-4847 shows collection content counts and places Share and Edit in the menu', () => {
+    const onShareEntry = jest.fn();
+    const onEditCollection = jest.fn();
+    render({
+      tab: 'collection',
+      entries: [collection('created')],
+      onShareEntry,
+      onEditCollection,
+      entryShareStates: new Map([['created', { status: 'shareable' }]]),
+    });
+    expect(q('customize-row-subtitle-created')?.textContent).toBe(
+      'You·11 plugin22 skills11 MCP server',
+    );
+    expect(q('customize-row-values-created')).toBeNull();
+    expect(q('customize-row-share-created')).toBeNull();
+    act(() => q('customize-row-menu-created')?.click());
+    expect(
+      document.querySelector(
+        '[data-testid="customize-row-menu-created-share"]',
+      ),
+    ).not.toBeNull();
+    act(() => dq('customize-row-menu-created-share')?.click());
+    expect(onShareEntry).toHaveBeenCalledTimes(1);
+    act(() => q('customize-row-menu-created')?.click());
+    act(() =>
+      document
+        .querySelector<HTMLElement>(
+          '[data-testid="customize-row-menu-created-edit"]',
+        )
+        ?.click(),
+    );
+    expect(onEditCollection).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps added collection Update disabled with an explanation and exposes Duplicate only', () => {
+    const onUpdateEntry = jest.fn(async () => {});
+    const onDuplicateCollection = jest.fn();
+    const added = collection('added', {
+      ownedByViewer: false,
+      custom: true,
+      updateAvailable: true,
+      sharedSource: {
+        remoteId: 's1',
+        sharedBy: 'Priya Shah',
+        updatedAt: 'not-a-date',
+      },
+    });
+    render({
+      tab: 'collection',
+      entries: [added],
+      supportedUpdateKinds: ['collection'],
+      onUpdateEntry,
+      onDuplicateCollection,
+      onEditCollection: jest.fn(),
+      updateDisabledReason: () => 'Update this collection in the desktop app.',
+      collectionUpdateSummaries: new Map([
+        ['added', 'Priya Shah added the helper skill'],
+      ]),
+    });
+    expect(q('customize-section-updates')?.textContent).not.toContain(
+      'Priya Shah added the helper skill',
+    );
+    const update = q('customize-update-added');
+    expect(update?.textContent).toBe('');
+    expect(update?.querySelector('svg')).not.toBeNull();
+    expect(update?.getAttribute('aria-disabled')).toBe('true');
+    expect(update?.getAttribute('aria-description')).toBe(
+      'Update this collection in the desktop app.',
+    );
+    act(() => update?.click());
+    expect(onUpdateEntry).not.toHaveBeenCalled();
+    const installed = q('customize-section-installed');
+    act(() =>
+      installed
+        ?.querySelector<HTMLElement>('[data-testid="customize-row-menu-added"]')
+        ?.click(),
+    );
+    expect(
+      document.querySelector('[data-testid="customize-row-menu-added-edit"]'),
+    ).toBeNull();
+    act(() =>
+      document
+        .querySelector<HTMLElement>(
+          '[data-testid="customize-row-menu-added-update"]',
+        )
+        ?.click(),
+    );
+    expect(onUpdateEntry).not.toHaveBeenCalled();
+    act(() =>
+      document
+        .querySelector<HTMLElement>(
+          '[data-testid="customize-row-menu-added-duplicate"]',
+        )
+        ?.click(),
+    );
+    expect(onDuplicateCollection).toHaveBeenCalledTimes(1);
+    expect(q('customize-row-subtitle-added')?.textContent).not.toContain(
+      'Invalid',
+    );
+  });
+
+  it('shares pending collection update state across Added and Updates', async () => {
+    const pending = deferred();
+    const onUpdateEntry = jest.fn(() => pending.promise);
+    render({
+      tab: 'collection',
+      entries: [
+        collection('added', {
+          updateAvailable: true,
+          sharedSource: { remoteId: 's1' },
+        }),
+      ],
+      supportedUpdateKinds: ['collection'],
+      onUpdateEntry,
+    });
+    act(() => q('customize-update-added')?.click());
+    act(() =>
+      q('customize-section-installed')
+        ?.querySelector<HTMLElement>('[data-testid="customize-row-menu-added"]')
+        ?.click(),
+    );
+    const menuUpdate = document.querySelector<HTMLElement>(
+      '[data-testid="customize-row-menu-added-update"]',
+    );
+    expect(menuUpdate?.getAttribute('aria-disabled')).toBe('true');
+    act(() => menuUpdate?.click());
+    expect(onUpdateEntry).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      pending.resolve();
+      await pending.promise;
+    });
+    expect(q('customize-update-added')?.getAttribute('disabled')).toBeNull();
+  });
+
   it('keeps upstream installed status in the headed Installed list', () => {
     render({
       entries: [entry('installed-skill')],
@@ -414,6 +744,12 @@ describe('CustomizeTabSections', () => {
       expect(buttons).toHaveLength(2);
       for (const button of buttons) {
         expect(button.textContent).toBe('');
+        expect(button.classList.contains('fg-tertiary')).toBe(true);
+        expect(button.classList.contains('h-7')).toBe(true);
+        expect(button.classList.contains('text-s')).toBe(true);
+        expect(
+          button.classList.contains('pointer-coarse:before:-inset-y-2'),
+        ).toBe(true);
         expect(button.getAttribute('aria-label')).toBe('Update outdated');
         expect(button.querySelector('svg')).not.toBeNull();
       }
@@ -429,7 +765,9 @@ describe('CustomizeTabSections', () => {
         buttons[0].focus();
       });
       expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
-        latestVersion ? 'Update to v2.0.0' : 'Update available',
+        latestVersion
+          ? 'Update to v2.0.0 · Click to update'
+          : 'Update available · Click to update',
       );
       act(() => {
         buttons[0].click();
@@ -512,11 +850,22 @@ describe('CustomizeTabSections', () => {
       onUpdateEntry,
     });
     const batch = q('customize-update-all');
+    expect(batch?.classList.contains('fg-primary')).toBe(true);
+    expect(batch?.classList.contains('h-7')).toBe(true);
+    expect(batch?.classList.contains('text-xs')).toBe(true);
+    expect(batch?.classList.contains('pointer-coarse:before:-inset-y-2')).toBe(
+      true,
+    );
+    expect(batch?.hasAttribute('disabled')).toBe(false);
     act(() => {
       q('customize-update-one')?.click();
       batch?.click();
     });
     expect(onUpdateEntry).toHaveBeenCalledTimes(1);
+    expect(batch?.hasAttribute('disabled')).toBe(true);
+    expect(batch?.classList.contains('disabled:bg-[var(--bg-disabled)]')).toBe(
+      true,
+    );
     await act(async () => {
       pending.resolve();
       await pending.promise;
@@ -1050,7 +1399,7 @@ describe('CustomizeTabSections', () => {
         ownershipAvailable: true,
         entries: [shared('linked', true), shared('org', false)],
       });
-      expect(badge('linked')?.textContent).toBe('Public link');
+      expect(badge('linked')).toBeNull();
       expect(badge('org')).toBeNull();
       render({
         ownershipAvailable: true,
@@ -1061,7 +1410,7 @@ describe('CustomizeTabSections', () => {
         section()?.querySelector(
           '[data-testid="customize-row-subtitle-skill:shared:linked"]',
         )?.textContent,
-      ).toBe('Northwind');
+      ).toBe('You');
     });
 
     it('renders shared actions only on Shared by me rows', () => {
@@ -1679,8 +2028,8 @@ describe('CustomizeTabSections', () => {
         onConnectEntry: () => {},
         onOpenEntryId: (id) => opened.push(id),
       });
-      expect(q('customize-row-from-plugin-mcp-local:slack')?.textContent).toBe(
-        'From the Slack plugin',
+      expect(q('customize-row-subtitle-mcp-local:slack')?.textContent).toBe(
+        'From Slack',
       );
       expect(menuLabels('mcp-local:slack')).toEqual([
         'Connect',
@@ -1737,11 +2086,11 @@ describe('CustomizeTabSections', () => {
       render({ tab: 'skill', entries: [customSkill] });
       expect(q(`customize-row-creator-${customSkill.id}`)).toBeNull();
       expect(
-        q(`customize-row-edited-${customSkill.id}`)?.textContent?.replace(
+        q(`customize-row-subtitle-${customSkill.id}`)?.textContent?.replace(
           /\s/g,
           ' ',
         ),
-      ).toMatch(/^Updated \d+[smhd] ago$/);
+      ).toBe('You');
       const marker = q(`customize-row-custom-${customSkill.id}`);
       expect(marker?.getAttribute('aria-label')).toBe('Custom skill');
       expect(
@@ -1978,11 +2327,11 @@ describe('CustomizeTabSections', () => {
         q(`customize-row-custom-${custom.id}`)?.getAttribute('aria-label'),
       ).toBe('Custom skill by Sergii');
       expect(
-        q(`customize-row-edited-${custom.id}`)?.textContent?.replace(
+        q(`customize-row-subtitle-${custom.id}`)?.textContent?.replace(
           /\s/g,
           ' ',
         ),
-      ).toBe('Updated 4h ago');
+      ).toBe('You');
       expect(
         container.querySelector('[data-testid^="customize-row-update-"]'),
       ).toBeNull();
@@ -2359,20 +2708,30 @@ describe('CustomizeTabSections', () => {
       }
     });
 
-    it('shows the footnote only under a non-empty Workflows Installed list', () => {
-      render({
-        tab: 'workflow',
-        entries: [pipelineRow()],
-        workflowActions: actions(),
-      });
-      expect(q('customize-installed-footnote')?.textContent).toBe(
-        WORKFLOW_INSTALLED_FOOTNOTE,
-      );
-      render({ tab: 'workflow', entries: [], installedExpanded: true });
-      expect(q('customize-installed-footnote')).toBeNull();
-      render({ tab: 'skill', entries: [entry('alpha')] });
-      expect(q('customize-installed-footnote')).toBeNull();
-    });
+    it.each(['ready', 'loading', 'error'] as const)(
+      'shows one Workflows footnote only for a ready non-empty Installed list (%s)',
+      (state) => {
+        for (const entries of [[pipelineRow()], []]) {
+          render({
+            tab: 'workflow',
+            installedInventory: state,
+            entries,
+            workflowActions: actions(),
+            installedExpanded: true,
+          });
+          const footnotes = container.querySelectorAll(
+            '[data-testid="customize-installed-footnote"], [data-testid="customize-section-installed-footnote"]',
+          );
+          expect(footnotes).toHaveLength(
+            state === 'ready' && entries.length > 0 ? 1 : 0,
+          );
+          if (footnotes.length)
+            expect(footnotes[0]?.textContent).toBe(WORKFLOW_INSTALLED_FOOTNOTE);
+        }
+        render({ tab: 'skill', entries: [entry('alpha')] });
+        expect(q('customize-installed-footnote')).toBeNull();
+      },
+    );
 
     it('adds no workflow controls or items without host actions', () => {
       const pipeline = pipelineRow();

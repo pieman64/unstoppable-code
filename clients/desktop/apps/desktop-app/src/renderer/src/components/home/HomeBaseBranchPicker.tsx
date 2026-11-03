@@ -504,7 +504,7 @@ export function HomeBaseBranchPicker(): JSX.Element | null {
                     }
                   >
                     <PickerMenuOptionLeading>
-                      <BranchIcon />
+                      <BranchIcon size="md" />
                     </PickerMenuOptionLeading>
                     <PickerMenuOptionContent>
                       <PickerMenuOptionLabel>
@@ -600,6 +600,7 @@ export function HomeBaseBranchPicker(): JSX.Element | null {
                   >
                     <PickerMenuOptionLeading>
                       <BranchIcon
+                        size="md"
                         data-testid={`home-base-branch-picker-option-icon-branch-${branch.name}`}
                       />
                     </PickerMenuOptionLeading>

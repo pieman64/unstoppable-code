@@ -1,6 +1,9 @@
 import type { JSX } from 'react';
 
-import { LoadingPlaceholder } from './StatusBlocks';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { ErrorBanner } from './StatusBlocks';
+import { Fact, FactList } from './FactList';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
@@ -78,9 +81,8 @@ function pluginSectionAuthor(
 }
 
 /**
- * "Plugin & Marketplace" section of the MCP server details view. Ported from
- * the desktop `McpServerDetailsModal` internal — class names, copy, and
- * testids match it exactly so tests/selectors and visual diffs are unchanged.
+ * "Plugin & Marketplace" section of the MCP server details view: the plugin's
+ * facts, then the marketplace's under a rule.
  */
 export function PluginSection({
   server,
@@ -99,138 +101,183 @@ export function PluginSection({
       <h3 className="mb-2 text-s font-medium fg-primary">
         Plugin & marketplace
       </h3>
-      {loading && <LoadingPlaceholder />}
-      {error && (
-        <div className="rounded-lg border border-line-destructive/20 bg-destructive-subtle px-3 py-2 text-s fg-destructive">
-          {error}
-        </div>
+      {loading && (
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       )}
+      <ErrorBanner className="" error={error} />
       {!loading && !error && context && (
         <div className="rounded-lg border bg-secondary/20 px-4 py-3">
-          <dl className="space-y-1.5 text-s">
-            <div className="flex gap-2">
-              <dt className="whitespace-nowrap font-medium fg-primary">
-                Plugin:
-              </dt>
-              <dd className="fg-secondary">
-                {context.plugin?.name ?? server.pluginName ?? '—'}
-                {context.plugin?.version ? ` · v${context.plugin.version}` : ''}
-              </dd>
-            </div>
+          {/* One label width for both lists, so their values line up. */}
+          <FactList labelWidth="6rem" rowGap="2" labelTone="secondary">
+            <Fact label="Plugin">
+              {context.plugin?.name ?? server.pluginName ?? '—'}
+              {context.plugin?.version ? ` · v${context.plugin.version}` : ''}
+            </Fact>
             {context.plugin?.description && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Description:
-                </dt>
-                <dd className="fg-secondary">{context.plugin.description}</dd>
-              </div>
+              <Fact label="Description">{context.plugin.description}</Fact>
             )}
-            {author && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Author:
-                </dt>
-                <dd className="fg-secondary">{author}</dd>
-              </div>
-            )}
+            {author && <Fact label="Author">{author}</Fact>}
             {context.plugin?.category && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Category:
-                </dt>
-                <dd className="fg-secondary">{context.plugin.category}</dd>
-              </div>
+              <Fact label="Category">{context.plugin.category}</Fact>
             )}
             {context.plugin?.homepage && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Homepage:
-                </dt>
-                <dd className="break-all">
+              <Fact label="Homepage" fit="break-all">
+                <a
+                  href={context.plugin.homepage}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="fg-accent hover:underline"
+                >
+                  {context.plugin.homepage}
+                </a>
+              </Fact>
+            )}
+            {context.plugin?.externalSource?.url && (
+              <Fact label="Source" fit="break-all" mono>
+                <a
+                  href={context.plugin.externalSource.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="fg-accent hover:underline"
+                >
+                  {context.plugin.externalSource.url}
+                </a>
+                {context.plugin.externalSource.sha && (
+                  <span className="ml-2 fg-secondary">
+                    @{context.plugin.externalSource.sha.slice(0, 7)}
+                  </span>
+                )}
+              </Fact>
+            )}
+          </FactList>
+          <FactList
+            labelWidth="6rem"
+            rowGap="2"
+            labelTone="secondary"
+            divided
+            placement="mt-2"
+          >
+            <Fact label="Marketplace">
+              {context.marketplace?.name ?? server.marketplaceId ?? '—'}
+            </Fact>
+            {context.marketplace?.description && (
+              <Fact label="About">{context.marketplace.description}</Fact>
+            )}
+            {context.marketplace?.sourceUrl && (
+              <Fact label="Source" fit="break-all" mono>
+                {context.marketplace.sourceType === 'github' ? (
                   <a
-                    href={context.plugin.homepage}
+                    href={`https://github.com/${context.marketplace.sourceUrl}`}
                     target="_blank"
                     rel="noreferrer"
                     className="fg-accent hover:underline"
                   >
-                    {context.plugin.homepage}
+                    {context.marketplace.sourceUrl}
                   </a>
-                </dd>
-              </div>
+                ) : (
+                  context.marketplace.sourceUrl
+                )}
+              </Fact>
             )}
-            {context.plugin?.externalSource?.url && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Source:
-                </dt>
-                <dd className="break-all">
-                  <a
-                    href={context.plugin.externalSource.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-mono text-xs fg-accent hover:underline"
-                  >
-                    {context.plugin.externalSource.url}
-                  </a>
-                  {context.plugin.externalSource.sha && (
-                    <span className="ml-2 font-mono text-xs fg-secondary">
-                      @{context.plugin.externalSource.sha.slice(0, 7)}
-                    </span>
-                  )}
-                </dd>
-              </div>
-            )}
-            <div className="flex gap-2 border-t pt-1.5">
-              <dt className="whitespace-nowrap font-medium fg-primary">
-                Marketplace:
-              </dt>
-              <dd className="fg-secondary">
-                {context.marketplace?.name ?? server.marketplaceId ?? '—'}
-              </dd>
-            </div>
-            {context.marketplace?.description && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  About:
-                </dt>
-                <dd className="fg-secondary">
-                  {context.marketplace.description}
-                </dd>
-              </div>
-            )}
-            {context.marketplace?.sourceUrl && (
-              <div className="flex gap-2">
-                <dt className="whitespace-nowrap font-medium fg-primary">
-                  Source:
-                </dt>
-                <dd className="break-all font-mono text-xs fg-secondary">
-                  {context.marketplace.sourceType === 'github' ? (
-                    <a
-                      href={`https://github.com/${context.marketplace.sourceUrl}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="fg-accent hover:underline"
-                    >
-                      {context.marketplace.sourceUrl}
-                    </a>
-                  ) : (
-                    context.marketplace.sourceUrl
-                  )}
-                </dd>
-              </div>
-            )}
-          </dl>
+          </FactList>
         </div>
       )}
     </div>
   );
 }
 
+/** One configuration's settings: names only, never secret values. */
+export function McpConfigFacts({
+  config,
+}: {
+  config: McpStandaloneConfig;
+}): JSX.Element {
+  return (
+    <FactList rowGap="2" labelTone="secondary">
+      {Object.keys(config.envVars).length > 0 && (
+        <Fact label="Env vars">{Object.keys(config.envVars).join(', ')}</Fact>
+      )}
+      {config.extraArgs.length > 0 && (
+        <Fact label="Extra args" mono fit="break-all">
+          {/* Args often carry API keys inline. */}
+          <span className={REPLAY_BLOCK_CLASS}>
+            {config.extraArgs.join(' ')}
+          </span>
+        </Fact>
+      )}
+      {Object.keys(config.extraHeaders).length > 0 && (
+        <Fact label="Extra headers">
+          {Object.keys(config.extraHeaders).join(', ')}
+        </Fact>
+      )}
+      {config.authToken && <Fact label="Auth token">configured</Fact>}
+    </FactList>
+  );
+}
+
+/** A local MCP server's connection: how it runs and where it points. */
+export interface McpConnectionFactsProps {
+  /** Where the server comes from, for a detected server. */
+  readonly source?: string | undefined;
+  /** The server's name inside its plugin, for a plugin server. */
+  readonly pluginServerName?: string | undefined;
+  readonly type: 'command' | 'http';
+  /** Shown for an HTTP server. */
+  readonly url?: string | undefined;
+  /** The full command line; rendered replay-blocked (args carry keys). */
+  readonly commandLine?: string | undefined;
+  /** Whether OAuth is configured; omitted hides the fact. */
+  readonly oauth?: boolean | undefined;
+}
+
 /**
- * "Configurations" section of the MCP server details view for standalone
- * servers. Ported from the desktop `McpServerDetailsModal` internal — class
- * names and copy match it exactly so tests/selectors and visual diffs are
- * unchanged.
+ * The connection facts of a local MCP server, in the fact list the web MCP
+ * detail uses (design call 4A, 2026-10-31). The desktop MCP page and the MCP
+ * details dialog both render it.
+ */
+export function McpConnectionFacts({
+  source,
+  pluginServerName,
+  type,
+  url,
+  commandLine,
+  oauth,
+}: McpConnectionFactsProps): JSX.Element {
+  return (
+    <FactList
+      rowGap="2"
+      labelTone="secondary"
+      dataTestId="mcp-server-connection-facts"
+    >
+      {source !== undefined && <Fact label="Source">{source}</Fact>}
+      {pluginServerName && (
+        <Fact label="Plugin server">{pluginServerName}</Fact>
+      )}
+      <Fact label="Type">
+        {type === 'command' ? 'Command (stdio)' : 'HTTP'}
+      </Fact>
+      {type === 'http' && url && (
+        <Fact label="URL" mono fit="break-all">
+          {url}
+        </Fact>
+      )}
+      {commandLine && (
+        <Fact label="Command" mono fit="break-all">
+          <span className={REPLAY_BLOCK_CLASS}>{commandLine}</span>
+        </Fact>
+      )}
+      {oauth !== undefined && (
+        <Fact label="OAuth">{oauth ? 'configured' : 'not configured'}</Fact>
+      )}
+    </FactList>
+  );
+}
+
+/**
+ * "Configurations" section of a standalone MCP server: one card per
+ * configuration. The MCP details dialog and the desktop MCP page render it.
  */
 export function StandaloneConfigsSection({
   loading,
@@ -247,12 +294,12 @@ export function StandaloneConfigsSection({
         Configurations
         {serverData ? ` (${serverData.configs.length})` : ''}
       </h3>
-      {loading && <LoadingPlaceholder />}
-      {error && (
-        <div className="rounded-lg border border-line-destructive/20 bg-destructive-subtle px-3 py-2 text-s fg-destructive">
-          {error}
-        </div>
+      {loading && (
+        <DelayedLoadingPlaceholder>
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       )}
+      <ErrorBanner className="" error={error} />
       {!loading && !error && serverData && (
         <>
           {serverData.configs.length === 0 ? (
@@ -283,48 +330,7 @@ export function StandaloneConfigsSection({
                       {config.description}
                     </p>
                   )}
-                  <dl className="space-y-1 text-xs">
-                    {Object.keys(config.envVars).length > 0 && (
-                      <div className="flex gap-2">
-                        <dt className="whitespace-nowrap font-medium fg-primary">
-                          Env vars:
-                        </dt>
-                        <dd className="fg-secondary">
-                          {Object.keys(config.envVars).join(', ')}
-                        </dd>
-                      </div>
-                    )}
-                    {config.extraArgs.length > 0 && (
-                      <div className="flex gap-2">
-                        <dt className="whitespace-nowrap font-medium fg-primary">
-                          Extra args:
-                        </dt>
-                        <dd
-                          className={`${REPLAY_BLOCK_CLASS} font-mono fg-secondary`}
-                        >
-                          {config.extraArgs.join(' ')}
-                        </dd>
-                      </div>
-                    )}
-                    {Object.keys(config.extraHeaders).length > 0 && (
-                      <div className="flex gap-2">
-                        <dt className="whitespace-nowrap font-medium fg-primary">
-                          Extra headers:
-                        </dt>
-                        <dd className="fg-secondary">
-                          {Object.keys(config.extraHeaders).join(', ')}
-                        </dd>
-                      </div>
-                    )}
-                    {config.authToken && (
-                      <div className="flex gap-2">
-                        <dt className="whitespace-nowrap font-medium fg-primary">
-                          Auth token:
-                        </dt>
-                        <dd className="fg-secondary">configured</dd>
-                      </div>
-                    )}
-                  </dl>
+                  <McpConfigFacts config={config} />
                 </div>
               ))}
             </div>

@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { ChevronDownIcon } from '../icons/AppIcons';
 import { Button } from './Button';
+import { useDialogFormFieldDescribedBy } from './dialog-form-field-context';
 import { useInDialogFormField } from './DialogFormField';
 import {
   FloatingPickerMenu,
@@ -72,6 +73,11 @@ export interface SettingsSelectProps<Value extends string = string> {
   readonly 'aria-label'?: string;
   readonly 'aria-labelledby'?: string;
   readonly 'aria-describedby'?: string;
+  /**
+   * Marks the dropdown invalid (`FormField` passes it with its error): the
+   * destructive edge at rest, edge and halo while focused or open.
+   */
+  readonly 'aria-invalid'?: boolean;
   readonly 'data-testid'?: string;
   /**
    * Host-owned replay markers for option labels that name user content: the
@@ -100,8 +106,13 @@ export function settingsSelectOptions<Value extends string>(
 }
 
 /**
- * The Settings dropdown on desktop and web: a 28px secondary capsule (the
- * compact settings button) that opens Canopy's own picker menu, with a
+ * The 28px dropdown, for everything except a form of 36px fields (use the
+ * 36px `Select` there): Settings rows, dialogs with 28px fields, toolbars,
+ * and filters. A dropdown matches the height of the fields and buttons beside
+ * it (docs/design/forms.md).
+ *
+ * The Settings dropdown on desktop and web: a 28px secondary rounded
+ * rectangle (`Button size="field"`) that opens Canopy's own picker menu, with a
  * checkmark on the chosen row and no selected-row fill. It is 144px wide by
  * default, so dropdowns in consecutive rows line up; in a dialog's form field
  * (`DialogFormField`) it fills the dialog's content width.
@@ -126,10 +137,14 @@ export function SettingsSelect<Value extends string>({
   'aria-label': ariaLabel,
   'aria-labelledby': ariaLabelledBy,
   'aria-describedby': ariaDescribedBy,
+  'aria-invalid': ariaInvalid,
   'data-testid': dataTestId,
   replayPrivacy,
 }: SettingsSelectProps<Value>): JSX.Element {
   const [open, setOpen] = useState(false);
+  // Disabling the dropdown closes its menu for good: enabling it again does
+  // not pop the menu back open and take focus.
+  if (disabled && open) setOpen(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
   const triggerId = useId();
@@ -139,6 +154,7 @@ export function SettingsSelect<Value extends string>({
   const showsPlaceholder = !chosen && placeholder !== undefined;
   const shownLabel = chosen?.label ?? placeholder ?? flat[0]?.label ?? '';
   const menuOpen = open && !disabled;
+  const describedBy = useDialogFormFieldDescribedBy(id, ariaDescribedBy);
   // The host's replay markers: they never change how the trigger or menu
   // looks.
   // eslint-disable-next-line shadcn/require-static-classes -- host-owned marker, not styling
@@ -200,7 +216,9 @@ export function SettingsSelect<Value extends string>({
         <Button
           ref={anchorRef}
           id={id ?? triggerId}
-          size="compact"
+          // A dropdown is a field: the 28px rounded rectangle, not the
+          // capsule of the actions beside it.
+          size="field"
           variant="secondary"
           className={widthClassName}
           style={{
@@ -210,7 +228,8 @@ export function SettingsSelect<Value extends string>({
           role="combobox"
           aria-label={ariaLabel}
           aria-labelledby={ariaLabelledBy}
-          aria-describedby={ariaDescribedBy}
+          aria-describedby={describedBy}
+          aria-invalid={ariaInvalid}
           aria-haspopup="listbox"
           aria-expanded={menuOpen}
           aria-controls={menuOpen ? listId : undefined}

@@ -440,11 +440,10 @@ describe('MemoryUsedButton', () => {
         ?.getAttribute('aria-pressed'),
     ).toBe('false');
     expect(document.body.textContent).not.toContain('Submitting…');
-    expect(
-      Array.from(document.querySelectorAll('span')).find((element) =>
-        element.textContent?.includes('Couldn’t submit.'),
-      )?.className,
-    ).toContain('fg-destructive');
+    // The failure announces itself through the shared error banner.
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+      'Couldn’t submit.',
+    );
   });
 
   it('clears the optimistic rating when feedback is declined', async () => {

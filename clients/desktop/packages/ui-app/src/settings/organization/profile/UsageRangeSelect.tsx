@@ -1,6 +1,6 @@
 'use client';
 
-import { SettingsSelect } from '@canopy/ui-shared/components';
+import { FormField, SettingsSelect } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import { USAGE_RANGE_OPTIONS } from './useMemberUsage';
 
@@ -17,19 +17,21 @@ export function UsageRangeSelect({
   testId,
 }: UsageRangeSelectProps): JSX.Element {
   return (
-    <label className="flex flex-col gap-1 text-xs font-medium fg-secondary">
-      Range
-      <div className="relative inline-flex">
-        <SettingsSelect
-          value={String(rangeMs)}
-          onValueChange={(value) => onChange(Number(value))}
-          data-testid={testId}
-          options={USAGE_RANGE_OPTIONS.map((option) => ({
-            value: String(option.ms),
-            label: option.label,
-          }))}
-        />
-      </div>
-    </label>
+    <FormField label="Range">
+      {(control) => (
+        <div className="relative inline-flex">
+          <SettingsSelect
+            {...control}
+            value={String(rangeMs)}
+            onValueChange={(value) => onChange(Number(value))}
+            data-testid={testId}
+            options={USAGE_RANGE_OPTIONS.map((option) => ({
+              value: String(option.ms),
+              label: option.label,
+            }))}
+          />
+        </div>
+      )}
+    </FormField>
   );
 }

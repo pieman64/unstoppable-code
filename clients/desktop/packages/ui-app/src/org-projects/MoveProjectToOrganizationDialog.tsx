@@ -2,8 +2,10 @@ import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { OrgProjectMoveErrorCode } from '@canopy/protocol/org-projects';
 import {
   Button,
-  ControlSelect,
+  DialogFormField,
   DialogModal,
+  Select,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -101,7 +103,7 @@ export function MoveProjectToOrganizationDialog({
   dataTestId = 'move-project-to-organization-dialog',
 }: MoveProjectToOrganizationDialogProps): JSX.Element {
   const selectId = useId();
-  const selectRef = useRef<HTMLSelectElement>(null);
+  const selectRef = useRef<HTMLButtonElement>(null);
   const moveRef = useRef<HTMLButtonElement>(null);
   const [selectedId, setSelectedId] = useState(() =>
     initialSelection(organizations),
@@ -141,6 +143,7 @@ export function MoveProjectToOrganizationDialog({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={close}
       title={TITLE}
       maxWidth="sm"
@@ -151,56 +154,45 @@ export function MoveProjectToOrganizationDialog({
       trapFocus
       initialFocusRef={preselected ? moveRef : selectRef}
     >
-      <div className="space-y-3 px-5 py-4">
+      <div className="space-y-3 px-6 py-4">
         <p className="text-s fg-secondary">
           Once <span className={REPLAY_MASK_CLASS}>{projectName}</span> moves to
           an organization, it stays there and cannot move back to your personal
           space.
         </p>
-        <div className="space-y-1">
-          <label htmlFor={selectId} className="block text-s fg-secondary">
-            {ORGANIZATION_LABEL}
-          </label>
-          <ControlSelect
+        <DialogFormField label={ORGANIZATION_LABEL} htmlFor={selectId}>
+          <Select
             ref={selectRef}
             id={selectId}
-            fill
-            value={selectedId}
+            value={selectedId === '' ? null : selectedId}
+            placeholder={ORGANIZATION_PLACEHOLDER}
             disabled={busy}
-            onChange={(event): void => {
-              setSelectedId(event.target.value);
+            onValueChange={(value): void => {
+              setSelectedId(value);
               setAutoPicked(false);
             }}
+            options={organizations.map((organization) => ({
+              value: organization.id,
+              label: organization.name,
+            }))}
             data-testid="move-project-to-organization-select"
-          >
-            {preselected ? null : (
-              <option value="" disabled>
-                {ORGANIZATION_PLACEHOLDER}
-              </option>
-            )}
-            {organizations.map((organization) => (
-              <option key={organization.id} value={organization.id}>
-                {organization.name}
-              </option>
-            ))}
-          </ControlSelect>
-        </div>
+          />
+        </DialogFormField>
         {visibleError && selected ? (
-          <p
-            role="alert"
+          <ErrorBanner
+            className=""
             // The sentence names the user-authored project.
-            className={`text-s fg-destructive ${REPLAY_MASK_CLASS}`}
-            data-testid="move-project-to-organization-error"
-          >
-            {moveProjectToOrganizationErrorMessage(
+            blockMessageFromReplay
+            testId="move-project-to-organization-error"
+            error={moveProjectToOrganizationErrorMessage(
               visibleError.code,
               projectName,
               selected.name,
             )}
-          </p>
+          />
         ) : null}
       </div>
-      <div className="flex justify-end gap-2 border-t px-5 py-3">
+      <div className="flex justify-end gap-2 border-t px-6 py-3">
         <Button
           variant="secondary"
           onClick={onCancel}

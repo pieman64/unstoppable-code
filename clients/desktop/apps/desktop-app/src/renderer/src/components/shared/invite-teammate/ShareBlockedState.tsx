@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface ShareBlockedStateProps {
   /**
@@ -59,15 +60,11 @@ export function ShareBlockedState({
         </div>
       )}
       {children}
-      {actionError && (
-        <p
-          role="alert"
-          className="text-xs fg-destructive"
-          data-testid="shared-container-invite-github-error"
-        >
-          {actionError}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={actionError}
+        testId="shared-container-invite-github-error"
+      />
     </div>
   );
 }

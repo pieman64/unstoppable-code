@@ -565,7 +565,7 @@ export class BrowserMaintenanceCoordinator {
           message:
             error instanceof BrowserProfileError
               ? error.message
-              : 'Browser data maintenance failed. Retry cleanup before using this profile.',
+              : 'Browser data maintenance failed. Try again before using this profile.',
         });
       if (irreversible) throw error; // Preserve admission fence until exact-generation recovery succeeds.
     } finally {
@@ -595,7 +595,7 @@ export class BrowserMaintenanceCoordinator {
         cancellable: false,
         retryable: true,
         message:
-          'Stored site data was not changed, but this profile is still paused. Retry cleanup or restart before using it.',
+          'Stored site data was not changed, but this profile is still paused. Try again or restart before using it.',
       });
       throw error;
     }

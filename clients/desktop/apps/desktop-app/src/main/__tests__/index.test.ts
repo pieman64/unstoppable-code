@@ -50,6 +50,7 @@ import type * as CopilotConnectionModule from '../copilot/connection';
 import type * as ResumeQueueHostModule from '../services/resume-queue-host';
 import type * as PendingTitlesModule from '../ledger/pending-titles';
 import type * as DefaultBrowserRegistrationModule from '../browser/default-browser-registration';
+import type * as W5DaemonRecordStoreArmModule from '../e2e-fixtures/w5-daemon-record-store-arm';
 import type { OrgProjectsCapabilityRefreshDeps } from '../services/org-projects-capability-refresh';
 import type { WindowAccessors } from '../ipc';
 import type { DesktopIpcEvent } from '../canopy-runtime/desktop-ipc-caller';
@@ -300,6 +301,25 @@ jest.mock('../lib/w5-host-admission', () => ({
   desktopW5HostAdmission: (): Promise<void> => Promise.resolve(),
   registerDesktopW5Root: (): Promise<{ kind: 'admitted' }> =>
     Promise.resolve({ kind: 'admitted' }),
+}));
+// GB12 (CAN-5543): the compiled gate (its legacy no-op is covered in
+// w5-flip-handoff.test.ts) and the handoff it turns on.
+let w5FlipCompiled = false;
+jest.mock('../lib/w5-flip-gate', () => ({
+  isW5DaemonFlipCompiled: (): boolean => w5FlipCompiled,
+}));
+const startW5FlipHandoffMock = jest.fn<Promise<void>, [unknown]>(() =>
+  Promise.resolve(),
+);
+const disposeW5FlipHandoffMock = jest.fn<Promise<void>, []>(() =>
+  Promise.resolve(),
+);
+const cancelPendingW5FlipHandoffMock = jest.fn<void, []>();
+jest.mock('../canopy-runtime/w5-flip-handoff', () => ({
+  startW5FlipHandoff: (input: unknown): Promise<void> =>
+    startW5FlipHandoffMock(input),
+  cancelPendingW5FlipHandoff: (): void => cancelPendingW5FlipHandoffMock(),
+  disposeW5FlipHandoff: (): Promise<void> => disposeW5FlipHandoffMock(),
 }));
 jest.mock('../lib/workspace-activity', () => ({
   touchWorkspaceTarget: touchWorkspaceTargetMock,
@@ -1712,6 +1732,189 @@ describe('main process shutdown', () => {
     expect(appExitMock).not.toHaveBeenCalled();
     expect(showErrorBoxMock).not.toHaveBeenCalled();
     expect(browserWindowMock).toHaveBeenCalled();
+  });
+
+  describe('E2E W5 store selection at main startup', () => {
+    const originalArm = process.env.CANOPY_PERFORMANCE_W5_STORE;
+    const originalE2e: unknown = Reflect.get(globalThis, '__CANOPY_E2E__');
+
+    beforeEach(() => {
+      Reflect.set(globalThis, '__CANOPY_E2E__', true);
+      whenReadyMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      w5FlipCompiled = false;
+      if (originalArm === undefined)
+        delete process.env.CANOPY_PERFORMANCE_W5_STORE;
+      else process.env.CANOPY_PERFORMANCE_W5_STORE = originalArm;
+      if (originalE2e === undefined)
+        Reflect.deleteProperty(globalThis, '__CANOPY_E2E__');
+      else Reflect.set(globalThis, '__CANOPY_E2E__', originalE2e);
+    });
+
+    it.each(['in-process', 'daemon-record-port'])(
+      'refuses an explicit %s request on a flip build before opening a window',
+      async (arm) => {
+        process.env.CANOPY_PERFORMANCE_W5_STORE = arm;
+        w5FlipCompiled = true;
+        const armModule = jest.requireActual<
+          typeof W5DaemonRecordStoreArmModule
+        >('../e2e-fixtures/w5-daemon-record-store-arm');
+        const start = jest.spyOn(armModule, 'startW5StoreArm');
+        const isFlushCallback = (value: unknown): value is () => void =>
+          typeof value === 'function';
+        const stderrWrite = jest
+          .spyOn(process.stderr, 'write')
+          .mockImplementation((_chunk, callback?: unknown): boolean => {
+            if (isFlushCallback(callback)) callback();
+            return true;
+          });
+        try {
+          await import('../index');
+          await waitForAppReady();
+
+          expect(start).toHaveBeenCalledWith(arm);
+          const started: unknown = await start.mock.results[0]?.value;
+          if (
+            typeof started !== 'object' ||
+            started === null ||
+            !('refusal' in started)
+          ) {
+            throw new Error('Expected the startup arm to refuse the launch');
+          }
+          expect(started.refusal).toContain('cannot run on a W5 flip build');
+          expect(stderrWrite).toHaveBeenCalledWith(
+            expect.stringContaining('cannot run on a W5 flip build'),
+            expect.any(Function),
+          );
+          expect(appExitMock).toHaveBeenCalledWith(1);
+          expect(browserWindowMock).not.toHaveBeenCalled();
+          expect(startAutoArchiveSchedulerMock).not.toHaveBeenCalled();
+        } finally {
+          start.mockRestore();
+          stderrWrite.mockRestore();
+        }
+      },
+    );
+
+    it('validates an explicit in-process request on a legacy build and continues without an installed arm', async () => {
+      process.env.CANOPY_PERFORMANCE_W5_STORE = 'in-process';
+      const armModule = jest.requireActual<typeof W5DaemonRecordStoreArmModule>(
+        '../e2e-fixtures/w5-daemon-record-store-arm',
+      );
+      const start = jest.spyOn(armModule, 'startW5StoreArm');
+      try {
+        await import('../index');
+        await waitForAppReady();
+
+        expect(start).toHaveBeenCalledWith('in-process');
+        await expect(start.mock.results[0]?.value).resolves.toEqual({
+          handle: null,
+        });
+        expect(appExitMock).not.toHaveBeenCalled();
+        expect(browserWindowMock).toHaveBeenCalled();
+      } finally {
+        start.mockRestore();
+      }
+    });
+
+    it.each([
+      { e2e: true, arm: undefined },
+      { e2e: true, arm: '' },
+      { e2e: false, arm: 'daemon-record-port' },
+    ])(
+      'does not start an arm for E2E=$e2e, selection=$arm',
+      async ({ e2e, arm }) => {
+        Reflect.set(globalThis, '__CANOPY_E2E__', e2e);
+        if (arm === undefined) delete process.env.CANOPY_PERFORMANCE_W5_STORE;
+        else process.env.CANOPY_PERFORMANCE_W5_STORE = arm;
+        const armModule = jest.requireActual<
+          typeof W5DaemonRecordStoreArmModule
+        >('../e2e-fixtures/w5-daemon-record-store-arm');
+        const start = jest.spyOn(armModule, 'startW5StoreArm');
+        try {
+          await import('../index');
+          await waitForAppReady();
+
+          expect(start).not.toHaveBeenCalled();
+          expect(appExitMock).not.toHaveBeenCalled();
+          expect(browserWindowMock).toHaveBeenCalled();
+        } finally {
+          start.mockRestore();
+        }
+      },
+    );
+  });
+
+  describe('the W5 flip launch (GB12)', () => {
+    afterEach(() => {
+      w5FlipCompiled = false;
+    });
+
+    it.each(['admitted', 'failed'] as const)(
+      'starts the handoff after W11 admission (%s) and before any later startup',
+      async (kind) => {
+        admitDesktopW5HostMock.mockResolvedValueOnce({ kind });
+        // Startup goes on while the handoff is pending (Q3(b)).
+        startW5FlipHandoffMock.mockReturnValueOnce(new Promise(() => {}));
+        whenReadyMock.mockResolvedValue(undefined);
+        await import('../index');
+        await waitForAppReady();
+        expect(startW5FlipHandoffMock).toHaveBeenCalledTimes(1);
+        expect(startW5FlipHandoffMock).toHaveBeenCalledWith({
+          admission: { kind },
+        });
+        const started = startW5FlipHandoffMock.mock.invocationCallOrder[0] ?? 0;
+        expect(admitDesktopW5HostMock.mock.invocationCallOrder[0]).toBeLessThan(
+          started,
+        );
+        expect(started).toBeLessThan(
+          browserWindowMock.mock.invocationCallOrder[0] ?? 0,
+        );
+      },
+    );
+
+    it('does not start when maintenance refuses the launch', async () => {
+      admitDesktopW5HostMock.mockResolvedValueOnce({
+        kind: 'refused',
+        message: 'Data maintenance is running.',
+      });
+      const stderrWrite = jest
+        .spyOn(process.stderr, 'write')
+        .mockImplementation((): boolean => true);
+      whenReadyMock.mockResolvedValue(undefined);
+      try {
+        await import('../index');
+        await waitForAppReady();
+        expect(startW5FlipHandoffMock).not.toHaveBeenCalled();
+      } finally {
+        stderrWrite.mockRestore();
+      }
+    });
+
+    it('releases W5 daemon sessions after the last W5 writer at quit', async () => {
+      w5FlipCompiled = true;
+      await import('../index');
+      const beforeQuit = eventHandlers.get('before-quit');
+      if (!beforeQuit) throw new Error('Missing quit hook');
+      beforeQuit({ preventDefault: jest.fn() });
+      for (let turn = 0; turn < 3; turn += 1) await waitForImmediate();
+      expect(disposeW5FlipHandoffMock).toHaveBeenCalledTimes(1);
+      // The Ledger slot precedes the W5 commit log slot, which precedes this.
+      expect(
+        shutdownLedgerStorageHostMock.mock.invocationCallOrder[0] ?? 0,
+      ).toBeLessThan(disposeW5FlipHandoffMock.mock.invocationCallOrder[0] ?? 0);
+      // A pending handoff ends before the last W5 writers drain, so they
+      // refuse at once instead of holding quit for its wait.
+      expect(cancelPendingW5FlipHandoffMock).toHaveBeenCalledTimes(1);
+      expect(
+        cancelPendingW5FlipHandoffMock.mock.invocationCallOrder[0] ?? 0,
+      ).toBeLessThan(
+        flushWorkspaceTargetTouchesMock.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(appQuitMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('starts Auto Delete only after the initial renderer window exists', async () => {

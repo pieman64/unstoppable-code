@@ -19,6 +19,8 @@ import {
   type DestructivePhase,
 } from './w5-destructive-recovery';
 import { currentW5CommitScope } from './w5-commit-scope';
+import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
+import { w5NamedUnreadable } from './w5-file-store';
 import {
   commitW5BoundaryStep,
   w5CompositionLocks,
@@ -347,6 +349,8 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
   /**
    * Runs exactly once when deferred Git setup reaches a terminal outcome,
    * including cancellation paths that intentionally publish no ready/failure event.
+   * A needs-repair detour reported through `onNeedsRepair` is not terminal:
+   * the repair or the worktree's teardown settles that setup instead.
    */
   onGitSetupSettled?: (event: {
     projectId: string;
@@ -959,6 +963,13 @@ function createSetupFailureHealthIssue(
     gitError: getErrorMessage(error),
   };
 }
+
+/**
+ * Deferred multi-repo Phase B result when the root checkout needs a repair
+ * the user must confirm. Unlike a cancellation (`null`), the Git setup stays
+ * pending until the repair completes or the worktree is torn down.
+ */
+const PHASE_B_NEEDS_REPAIR = Symbol('phase-b-needs-repair');
 
 /**
  * Deferred Phase B outlives its create's admission, so it is admitted again
@@ -1668,10 +1679,38 @@ async function findPersistedWorktree(
   return worktrees.find((worktree) => worktree.id === worktreeId) ?? null;
 }
 
+class ReservedWorktreeStorageError extends Error {}
+
+function isSetupStorageUnavailable(error: unknown): boolean {
+  return (
+    error instanceof ReservedWorktreeStorageError ||
+    error instanceof WorktreeRegistryUnreadableError ||
+    w5NamedUnreadable(error) !== undefined
+  );
+}
+
+async function readReservedWorktree(
+  ref: WorktreeSetupCancellationRef,
+): Promise<WorktreeData | null> {
+  const list = await readWorkspaceWorktreesDetailed(ref.workspaceId, {
+    persistRemovalCleanup: false,
+  });
+  if (list.authority !== 'ok') {
+    throw new ReservedWorktreeStorageError(
+      `Worktree setup failed: worktree storage is ${list.authority}.${
+        list.unserved ? ` ${list.unserved.message}` : ''
+      }`,
+    );
+  }
+  return (
+    list.worktrees.find((worktree) => worktree.id === ref.worktreeId) ?? null
+  );
+}
+
 async function isReservedWorktreeCurrent(
   ref: WorktreeSetupCancellationRef,
 ): Promise<boolean> {
-  const worktree = await findPersistedWorktree(ref.workspaceId, ref.worktreeId);
+  const worktree = await readReservedWorktree(ref);
   return worktree?.createdAt === ref.createdAt;
 }
 
@@ -2052,7 +2091,7 @@ async function removeMetadataDirIfReservationIsStale(
 async function isSupersededByReusedWorktreeId(
   ref: WorktreeSetupCancellationRef,
 ): Promise<boolean> {
-  const worktree = await findPersistedWorktree(ref.workspaceId, ref.worktreeId);
+  const worktree = await readReservedWorktree(ref);
   return worktree !== null && worktree.createdAt !== ref.createdAt;
 }
 
@@ -3259,16 +3298,22 @@ async function createAdmittedSingleRepoWorktree(
 
       return createdBranchName;
     } catch (error) {
-      if (isWorktreeSetupCancellationRequested(setupRef)) {
-        await cleanupCancelledSingleRepoSetup({
-          setupRef,
-          referenceRepoPath,
-          worktreePath,
-          metadataDir: reservation.metadataDir,
-          createdBranchName,
-        });
-        consumeWorktreeSetupCancellation(setupRef);
-        return null;
+      if (!isSetupStorageUnavailable(error)) {
+        try {
+          if (!(await shouldContinuePhaseB())) {
+            await cleanupCancelledSingleRepoSetup({
+              setupRef,
+              referenceRepoPath,
+              worktreePath,
+              metadataDir: reservation.metadataDir,
+              createdBranchName,
+            });
+            consumeWorktreeSetupCancellation(setupRef);
+            return null;
+          }
+        } catch (cleanupError) {
+          error = cleanupError;
+        }
       }
 
       const normalizedError = normalizeError(error);
@@ -3276,17 +3321,23 @@ async function createAdmittedSingleRepoWorktree(
         worktreePath,
         normalizedError,
       );
+      let storageUnavailable = isSetupStorageUnavailable(error);
+      // A thrown write cannot prove staleness; false confirms the reservation is gone.
       const marked = await recordCreationPhase(
         setupRef,
         undefined,
         true,
         healthIssue,
-      );
-      if (!marked && shouldEnforceSetupRef) return null;
+      ).catch((phaseError) => {
+        storageUnavailable ||= isSetupStorageUnavailable(phaseError);
+        return undefined;
+      });
+      if (marked === false && shouldEnforceSetupRef) return null;
       options.onGitFailed?.({
         projectId: options.workspaceId,
         worktreeId: reservation.id,
         error: getErrorMessage(normalizedError),
+        failureReason: storageUnavailable ? 'storage-unavailable' : undefined,
         healthIssue,
       });
       throw normalizedError;
@@ -3866,7 +3917,7 @@ async function createAdmittedMultiRepoWorktree(
 
   const runPhaseB = async (phaseBOptions: {
     includeRootSetup: boolean;
-  }): Promise<string | null> => {
+  }): Promise<string | null | typeof PHASE_B_NEEDS_REPAIR> => {
     const createdRepoBranches = new Map<string, string>();
     let releasePostCreateRefreshDeferral: (() => void) | undefined;
     let postCreateSetupStarted = false;
@@ -3924,13 +3975,13 @@ async function createAdmittedMultiRepoWorktree(
           };
           if (options.onNeedsRepair) {
             options.onNeedsRepair(repairEvent);
-          } else {
-            options.onGitFailed?.({
-              projectId: options.workspaceId,
-              worktreeId: reservation.id,
-              error: 'Created worktree requires repair.',
-            });
+            return PHASE_B_NEEDS_REPAIR;
           }
+          options.onGitFailed?.({
+            projectId: options.workspaceId,
+            worktreeId: reservation.id,
+            error: 'Created worktree requires repair.',
+          });
           return null;
         }
         branchName = rootSetup.branchName;
@@ -4161,20 +4212,15 @@ async function createAdmittedMultiRepoWorktree(
 
       return branchName;
     } catch (error) {
-      if (isWorktreeSetupCancellationRequested(setupRef)) {
-        await cleanupCancelledMultiRepoSetup({
-          setupRef,
-          workspaceId: options.workspaceId,
-          worktreeId: reservation.id,
-          referenceRepoPath,
-          rootWorktreePath,
-          metadataDir: reservation.metadataDir,
-          repos: includedRepos,
-          createdRepoBranches,
-          rootBranchName,
-        });
-        consumeWorktreeSetupCancellation(setupRef);
-        return null;
+      if (!isSetupStorageUnavailable(error)) {
+        try {
+          if (!(await shouldContinuePhaseB())) {
+            await cleanupCancelledSetup();
+            return null;
+          }
+        } catch (cleanupError) {
+          error = cleanupError;
+        }
       }
 
       const normalizedError = normalizeError(error);
@@ -4182,17 +4228,23 @@ async function createAdmittedMultiRepoWorktree(
         worktreeDir,
         normalizedError,
       );
+      let storageUnavailable = isSetupStorageUnavailable(error);
+      // A thrown write cannot prove staleness; false confirms the reservation is gone.
       const marked = await recordCreationPhase(
         setupRef,
         undefined,
         true,
         healthIssue,
-      );
-      if (!marked && shouldEnforceSetupRef) return null;
+      ).catch((phaseError) => {
+        storageUnavailable ||= isSetupStorageUnavailable(phaseError);
+        return undefined;
+      });
+      if (marked === false && shouldEnforceSetupRef) return null;
       options.onGitFailed?.({
         projectId: options.workspaceId,
         worktreeId: reservation.id,
         error: getErrorMessage(normalizedError),
+        failureReason: storageUnavailable ? 'storage-unavailable' : undefined,
         healthIssue,
       });
       throw normalizedError;
@@ -4205,9 +4257,10 @@ async function createAdmittedMultiRepoWorktree(
 
   if (shouldDeferGitSetup) {
     // Reservation-only response: root add + validation + repair decision now run
-    // inside Phase B (see `runPhaseB({ includeRootSetup: true })`). The renderer
-    // treats this as a `git-pending` worktree and queues the user's message; a
-    // required repair is surfaced later via `onNeedsRepair`.
+    // inside Phase B (see `runPhaseB({ includeRootSetup: true })`). The row is a
+    // `git-pending` worktree, and main holds a send into it until the setup
+    // registered below settles; a required repair is surfaced later via
+    // `onNeedsRepair`.
     const settleGitSetup = beginWorktreeGitSetup(
       options.workspaceId,
       reservation.id,
@@ -4220,6 +4273,11 @@ async function createAdmittedMultiRepoWorktree(
           worktreeDir,
           () => runPhaseB({ includeRootSetup: true }),
         );
+        // A needs-repair detour keeps the setup pending: completing the
+        // repair settles it ready, and dismissing it tears the worktree
+        // down, which settles it cancelled. Sends held for the setup wait
+        // through the repair.
+        if (branchName === PHASE_B_NEEDS_REPAIR) return;
         settleGitSetup(branchName === null ? 'cancelled' : 'ready');
         options.onGitSetupSettled?.({
           projectId: options.workspaceId,
@@ -4668,9 +4726,14 @@ function assertAutoArchiveEligibilityUnchanged(
   }
 }
 
-function cancelPhaseBIfRequested(branchName: string | null): string {
+function cancelPhaseBIfRequested(
+  branchName: string | null | typeof PHASE_B_NEEDS_REPAIR,
+): string {
   if (branchName === null) {
     throw new Error('Worktree setup was cancelled');
+  }
+  if (branchName === PHASE_B_NEEDS_REPAIR) {
+    throw new Error('Created worktree requires repair.');
   }
 
   return branchName;

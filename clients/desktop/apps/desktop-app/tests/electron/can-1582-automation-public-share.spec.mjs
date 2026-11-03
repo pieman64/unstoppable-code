@@ -126,23 +126,17 @@ test('publishes, copies, revokes, and republishes an automation public link', as
     }, AUTOMATION_ID);
     expect(publicRemoteId).toBeTruthy();
     await app.openSharedByMeAutomations();
-    await expect(
-      window
-        .getByTestId('customize-section-shared-by-me')
-        .getByTestId(`customize-row-automation:shared:${publicRemoteId}`),
-    ).toBeVisible();
-    await expect(
-      window
-        .getByTestId('customize-section-shared-by-me')
-        .getByTestId(
-          `customize-row-public-link-automation:shared:${publicRemoteId}`,
-        ),
-    ).toHaveText('Public link');
-    await expect(
-      window.getByTestId(
-        `customize-row-subtitle-automation:shared:${publicRemoteId}`,
-      ),
-    ).toHaveText('Public link');
+    const sharedRow = window
+      .getByTestId('customize-section-shared-by-me')
+      .getByTestId(`customize-row-automation:shared:${publicRemoteId}`);
+    await expect(sharedRow).toBeVisible();
+    await expect(sharedRow).toHaveAccessibleDescription(/Public link/);
+    await window
+      .getByTestId('customize-section-shared-by-me')
+      .getByTestId(`customize-row-source-automation:shared:${publicRemoteId}`)
+      .hover();
+    await expect(window.getByRole('tooltip')).toContainText('Public link');
+    await window.mouse.move(0, 0);
     await app.openAutomationsPage();
 
     // A scoped share and its public snapshot are independent. Moving the

@@ -12,6 +12,8 @@ export const COLLECTIONS_CHANNELS = {
   LOAD_COLLECTION: 'collections:load-collection',
   SAVE_COLLECTION: 'collections:save-collection',
   DELETE_COLLECTION: 'collections:delete-collection',
+  DUPLICATE_COLLECTION: 'collections:duplicate-collection',
+  APPLY_SHARED_UPDATE: 'collections:apply-shared-update',
 
   // ---- Shared (Canopy Cloud) CRUD -----------------------------------------
   // Each handler proxies to the singleton build-time Cloud backend; renderer

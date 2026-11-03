@@ -80,6 +80,7 @@ import { isDevPage } from './components/pages/dev-pages';
 import { PipelineEditorRuntimeBridge } from './components/pipeline/PipelineEditorRuntimeBridge';
 import { ReleaseHighlightsHost } from './components/release-highlights/ReleaseHighlightsHost';
 import { RemoteAccessControlledNotice } from './components/remote-access/RemoteAccessControlledNotice';
+import { BackgroundServiceUnavailableNotice } from './components/background-service/BackgroundServiceUnavailableNotice';
 import { RemoteAccessHost } from './components/remote-access/RemoteAccessHost';
 import { RepoRulesModalHost } from './components/repo-rules/RepoRulesModalHost';
 import { ScriptActionsDesktopHost } from './components/script-actions/ScriptActionsDesktopHost';
@@ -93,7 +94,10 @@ import { OsNotificationOfferBanner } from './components/shared/OsNotificationOff
 import { RepeatTaskAutomationOfferBanner } from './components/shared/RepeatTaskAutomationOfferBanner';
 import { RunCommentsModalHost } from './components/shared/RunCommentsModal';
 import { ShareSessionStatusModal } from './components/shared/ShareSessionStatusModal';
-import { LoadingPlaceholder } from './components/shared/StatusBlocks';
+import {
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+} from '@canopy/ui-shared/components';
 import { ToastContainer } from './components/shared/ToastContainer';
 import { OverlayLayerSlot } from './components/overlay-layer/OverlayLayerSlot';
 import { installAboveBrowserMirror } from './components/above-browser/aboveBrowserMirror';
@@ -1148,7 +1152,7 @@ function App(): JSX.Element {
             ok: false,
             code: 'execution_failed',
             error:
-              'The desktop needed user confirmation that did not arrive in time. Retry from the desktop.',
+              'The desktop needed user confirmation that did not arrive in time. Try again from the desktop.',
             retryable: false,
           });
         }, branchConfirmationDeadlineMs);
@@ -2090,7 +2094,9 @@ function App(): JSX.Element {
               data-main-frame={mainFrame}
               data-testid="app-main-loading"
             >
-              <LoadingPlaceholder space="inline" className="flex-1" />
+              <DelayedLoadingPlaceholder className="flex-1">
+                <CenteredLoadingSpinner />
+              </DelayedLoadingPlaceholder>
             </main>
           }
         >
@@ -2366,6 +2372,8 @@ function App(): JSX.Element {
           {/* While another computer controls this one; persistent until the
               session ends, so it sits above the transient layers. */}
           <RemoteAccessControlledNotice />
+          {/* Persistent until the background service is reached again. */}
+          <BackgroundServiceUnavailableNotice />
           <GuestUpgradeNudge />
           <OsNotificationOfferBanner />
           <RepeatTaskAutomationOfferBanner />

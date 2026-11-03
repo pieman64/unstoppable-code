@@ -47,6 +47,11 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import { DialogModal } from '@/components/shared/DialogModal';
 import { SearchBar } from '@/components/shared/search/SearchBar';
 import { LoadingSpinner } from '@/components/shared/loading';
+import {
+  EmptyState,
+  ErrorState,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 import { useContentSearch } from '@/hooks/useContentSearch';
 import { createDomSearchExecutor } from '@/lib/dom-search-highlight';
 import { formatElapsed, getElapsedMs } from '@/lib/pipelineTiming';
@@ -74,6 +79,7 @@ import {
   PageSearchFilters,
   PageSearchRow,
   pageFilter,
+  Badge,
   SegmentedControl,
 } from '@canopy/ui-shared/components';
 import {
@@ -854,13 +860,12 @@ export function AuditTrailPage(): JSX.Element {
                           {formatStatus(entry.status)}
                         </span>
                         {entry.aiCreditsRouted && !entry.modelGatewayRouted && (
-                          <span
-                            className="rounded-full bg-accent-subtle px-2 py-0.5 text-2xs font-medium fg-accent"
+                          <Badge
                             data-testid={`audit-ai-credits-badge-${entry.id}`}
                             title="This run's LLM traffic was routed through your AI Credits."
                           >
                             AI Credits
-                          </span>
+                          </Badge>
                         )}
                       </div>
                       <p className="text-xs fg-secondary">
@@ -914,16 +919,16 @@ export function AuditTrailPage(): JSX.Element {
                   </div>
 
                   {entry.error && (
-                    <p className="mt-3 text-s fg-destructive">{entry.error}</p>
+                    <p className="mt-3">
+                      <StatusLabel size="s">{entry.error}</StatusLabel>
+                    </p>
                   )}
                 </div>
               );
             })}
 
             {visibleHistoryEntries.length === 0 && !loadingHistory && (
-              <div className="rounded-xl border border-dashed px-6 py-12 text-center text-s fg-secondary">
-                No audit entries yet.
-              </div>
+              <EmptyState title="No audit entries yet." />
             )}
 
             {loadingHistory && (
@@ -940,6 +945,7 @@ export function AuditTrailPage(): JSX.Element {
       </div>
       {transcriptDisplayEntry && (
         <DialogModal
+          inset="flush"
           onClose={() => {
             transcriptRequestIdRef.current += 1;
             transcriptSearch.close();
@@ -957,7 +963,7 @@ export function AuditTrailPage(): JSX.Element {
             className="flex min-h-0 flex-1 flex-col"
             data-testid="audit-transcript-modal"
           >
-            <div className="flex flex-wrap items-center gap-3 border-b px-5 py-3">
+            <div className="flex flex-wrap items-center gap-3 border-b px-6 py-3">
               <div className="text-s fg-secondary">
                 {transcriptResponse?.type === 'success' &&
                 transcriptResponse.truncation.truncated
@@ -999,7 +1005,7 @@ export function AuditTrailPage(): JSX.Element {
               className="min-h-0 flex-1 overflow-auto"
               data-transcript-scroll
             >
-              <div className="grid gap-3 border-b px-5 py-4 md:grid-cols-3">
+              <div className="grid gap-3 border-b px-6 py-4 md:grid-cols-3">
                 <DurationRow label="Duration" entry={transcriptDisplayEntry} />
                 <IdentifierRow
                   label="Project ID"
@@ -1044,7 +1050,7 @@ export function AuditTrailPage(): JSX.Element {
               {transcriptResponse?.type === 'success' &&
                 transcriptResponse.injectedPrompts.length > 0 && (
                   <div
-                    className="space-y-3 border-b px-5 py-4"
+                    className="space-y-3 border-b px-6 py-4"
                     data-testid="audit-transcript-injected-prompts"
                   >
                     <div>
@@ -1084,7 +1090,7 @@ export function AuditTrailPage(): JSX.Element {
                   </div>
                 )}
 
-              <div ref={transcriptContentRef} className="px-5 py-4">
+              <div ref={transcriptContentRef} className="px-6 py-4">
                 {loadingTranscript ? (
                   <div
                     className="flex min-h-60 items-center justify-center gap-3 text-s fg-secondary"
@@ -1094,11 +1100,12 @@ export function AuditTrailPage(): JSX.Element {
                     Loading transcript…
                   </div>
                 ) : transcriptError ? (
-                  <div
-                    className="flex min-h-60 items-center justify-center text-s fg-destructive"
-                    data-testid="audit-transcript-error"
-                  >
-                    {transcriptError}
+                  <div className="flex min-h-60 items-center justify-center">
+                    <ErrorState
+                      space="panel"
+                      message={transcriptError}
+                      testId="audit-transcript-error"
+                    />
                   </div>
                 ) : transcriptResponse?.type !== 'success' ? (
                   <div

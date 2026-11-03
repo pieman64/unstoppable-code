@@ -1,10 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  existsSync,
-  readFileSync,
-  rmSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -16,9 +10,10 @@ import { writeJson } from './seeders/fsHelpers.mjs';
 // brand-primary data directory as a near-empty skeleton, and first-existing
 // resolution then hijacked an install living in the fallback directory (all
 // workspaces "disappeared"). Resolution is now data-aware: a candidate
-// containing `workspaces/index.json` wins over one that merely exists, and
-// the explicit Settings "Use primary folder" flow seeds an empty workspace
-// index so that deliberate switch keeps winning after relaunch.
+// holding real install data wins over one that merely exists, and the
+// explicit Settings "Use primary folder" flow writes the adoption marker so
+// that deliberate switch keeps winning after relaunch. The flow seeds no
+// workspace index (CAN-5557); the first W5 commit on the primary creates it.
 //
 // These launch-resolution flows can only be exercised WITHOUT the harness's
 // `CANOPY_DATA_DIR` override (an override short-circuits candidate
@@ -211,26 +206,22 @@ test.describe('CAN-2271 data-dir resolution', () => {
         window.getByTestId('settings-data-dir-primary-created'),
       ).toBeVisible({ timeout: 30_000 });
 
-      // The switch must seed the adoption marker and workspace index that
-      // keep the explicitly chosen primary winning data-aware resolution.
+      // The adoption marker alone keeps the explicitly chosen primary
+      // winning data-aware resolution; the switch writes no workspace index.
       expect(
         existsSync(path.join(primaryDataDir, 'data-dir-adopted.json')),
       ).toBe(true);
-      const seededIndexPath = path.join(
+      const primaryIndexPath = path.join(
         primaryDataDir,
         'workspaces',
         'index.json',
       );
-      expect(existsSync(seededIndexPath)).toBe(true);
-      expect(JSON.parse(readFileSync(seededIndexPath, 'utf8'))).toEqual({
-        version: 1,
-        workspaces: [],
-      });
+      expect(existsSync(primaryIndexPath)).toBe(false);
 
       await closeCanopy(electronApp, fallbackDataDir, { keepUserData: true });
       electronApp = undefined;
 
-      // Relaunch resolving the same candidates: the seeded primary must win
+      // Relaunch resolving the same candidates: the adopted primary must win
       // even though the fallback still holds the old install's data.
       ({ electronApp } = await launchCanopy({
         userDataDir: primaryDataDir,
@@ -244,6 +235,8 @@ test.describe('CAN-2271 data-dir resolution', () => {
       await expect(
         window2.getByTestId(FALLBACK_WORKSPACE_ROW_TESTID),
       ).toHaveCount(0);
+      // Hosting the primary creates its index through a W5 commit.
+      await expect.poll(() => existsSync(primaryIndexPath)).toBe(true);
     } finally {
       if (electronApp) {
         await closeCanopy(electronApp, fallbackDataDir, { keepUserData: true });

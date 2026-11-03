@@ -1,8 +1,8 @@
 import { useEffect, useState, type JSX } from 'react';
+import { EmptyStateRow } from '@canopy/ui-shared/components';
 import { formatTimingTimestamp } from '@/lib/pipelineTiming';
 import type {
   ExecutionState,
-  PipelineAdvisorHealthStatus,
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
 } from '@canopy/desktop-shared/types/pipeline';
@@ -15,9 +15,12 @@ import {
   usePipelineAdvisorEtaNow,
 } from '../PipelineAdvisorEta';
 import { PipelineAdvisorMarkdownText } from '../PipelineAdvisorMarkdown';
-import { isPipelineExecutionActiveStatus } from '../utils';
-import { Tooltip } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import {
+  advisorHealthBadgeTone,
+  isPipelineExecutionActiveStatus,
+} from '../utils';
+import { SettingsSelect, Tooltip } from '@canopy/ui-shared';
+import { Badge, Button, type BadgeTone } from '@canopy/ui-shared/components';
 
 // --- Pipeline Advisor helpers -----------------------------------------------
 
@@ -96,7 +99,7 @@ function AdvisorRunButton({
   const label = running
     ? 'Starting…'
     : snapshot?.lastError
-      ? 'Retry workflow advisor'
+      ? 'Try workflow advisor again'
       : 'Run workflow advisor';
   return (
     <Button
@@ -255,52 +258,17 @@ export function AdvisorActionControl({
   return <AdvisorRefreshButton pipelineStatus={pipelineStatus} onRun={onRun} />;
 }
 
-function advisorHealthBadgeClass(status: PipelineAdvisorHealthStatus): string {
-  switch (status) {
-    case 'healthy':
-      return 'bg-success-subtle fg-success-strong';
-    case 'watch':
-      return 'bg-info-subtle fg-info';
-    case 'degraded':
-      return 'bg-warning-subtle fg-warning';
-    case 'blocked':
-      return 'bg-destructive-subtle fg-destructive-strong';
-    case 'complete':
-      return 'bg-success-subtle fg-success-strong';
-    case 'unknown':
-    default:
-      return 'bg-fg-primary/[0.08] fg-primary/70';
-  }
-}
-
-/** Pill showing the advisor health status, used in the report and the header. */
-export function AdvisorHealthBadge({
-  status,
-}: {
-  status: PipelineAdvisorHealthStatus;
-}): JSX.Element {
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-3xs font-medium ${advisorHealthBadgeClass(
-        status,
-      )}`}
-    >
-      {status}
-    </span>
-  );
-}
-
-function severityClassForModal(
+function severityBadgeTone(
   severity: 'info' | 'warning' | 'critical',
-): string {
+): BadgeTone {
   switch (severity) {
     case 'critical':
-      return 'bg-destructive-subtle fg-destructive-strong';
+      return 'danger';
     case 'warning':
-      return 'bg-warning-subtle fg-warning';
+      return 'warning';
     case 'info':
     default:
-      return 'bg-info-subtle fg-info';
+      return 'info';
   }
 }
 
@@ -424,46 +392,35 @@ function AdvisorReportContent({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         {hideHealthBadge ? null : (
-          <AdvisorHealthBadge status={report.health.status} />
+          <Badge tone={advisorHealthBadgeTone(report.health.status)}>
+            {report.health.status}
+          </Badge>
         )}
         {report.eta.status !== 'complete' ? (
-          <span className="rounded-full border bg-fg-primary/[0.04] px-2 py-0.5 text-3xs font-medium fg-primary/70">
-            {formatDynamicAdvisorReportEta(report)}
-          </span>
+          <Badge>{formatDynamicAdvisorReportEta(report)}</Badge>
         ) : null}
         <span className="inline-flex items-center gap-1.5 text-2xs fg-secondary">
           Generated {formatTimingTimestamp(report.generatedAt)}
           {showHistorySelector ? (
-            <select
+            <SettingsSelect
+              width="fit"
               aria-label="Workflow Advisor report history"
               data-testid="pipeline-advisor-report-selector"
               value={selectedReportValue}
-              onChange={(event) =>
-                onReportSelectionChange?.(event.currentTarget.value)
-              }
-              className="focus-ring rounded border bg-base px-1.5 py-0.5 text-2xs fg-primary"
-            >
-              {reportHistory.map((historyReport, index) => {
-                const isLatest = index === reportHistory.length - 1;
-                return (
-                  <option
-                    key={historyReport.reportId}
-                    value={
-                      isLatest
-                        ? ADVISOR_LATEST_REPORT_VALUE
-                        : getAdvisorReportSelectValue(historyReport)
-                    }
-                  >
-                    {getAdvisorReportHistoryLabel({
-                      report: historyReport,
-                      index,
-                      total: reportHistory.length,
-                      startedAt,
-                    })}
-                  </option>
-                );
-              })}
-            </select>
+              onValueChange={(next) => onReportSelectionChange?.(next)}
+              options={reportHistory.map((historyReport, index) => ({
+                value:
+                  index === reportHistory.length - 1
+                    ? ADVISOR_LATEST_REPORT_VALUE
+                    : getAdvisorReportSelectValue(historyReport),
+                label: getAdvisorReportHistoryLabel({
+                  report: historyReport,
+                  index,
+                  total: reportHistory.length,
+                  startedAt,
+                }),
+              }))}
+            />
           ) : null}
         </span>
       </div>
@@ -505,13 +462,9 @@ function AdvisorReportContent({
                 className="rounded-md border bg-fg-primary/[0.03] px-3 py-2"
               >
                 <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-3xs font-medium ${severityClassForModal(
-                      item.severity,
-                    )}`}
-                  >
+                  <Badge tone={severityBadgeTone(item.severity)}>
                     {severityLabelForModal(item.severity)}
-                  </span>
+                  </Badge>
                   <PipelineAdvisorMarkdownText className="text-s font-medium fg-primary/85">
                     {item.title}
                   </PipelineAdvisorMarkdownText>
@@ -592,9 +545,7 @@ export function AdvisorSection({
   if (!snapshot) {
     return (
       <div className="space-y-2">
-        <p className="text-s fg-secondary">
-          No advisor update is available yet.
-        </p>
+        <EmptyStateRow title="No advisor update is available yet." />
         {onRun ? (
           <AdvisorActionControl
             pipelineStatus={pipelineStatus}

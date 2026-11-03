@@ -8,13 +8,16 @@ import {
 } from '@canopy/protocol/mcp-catalog';
 import {
   Badge,
+  ErrorBanner,
   Button,
   ExternalTextLink,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
   McpServerLogo,
   Notice,
   PluginConfigurationButton,
   PluginConnectionRouteSection,
+  EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -257,18 +260,18 @@ function CuratedMcpTools({
         </p>
       ) : toolsLoading ? (
         <div data-testid="mcp-browse-tools-loading">
-          <LoadingPlaceholder label="Loading tools…" showSpinner />
+          <DelayedLoadingPlaceholder slowNote="Still loading tools…">
+            <CenteredLoadingSpinner className="my-12" />
+          </DelayedLoadingPlaceholder>
         </div>
       ) : toolsError ? (
-        <p
-          className="text-xs fg-destructive"
-          role="alert"
-          data-testid="mcp-browse-tools-error"
-        >
-          {toolsError}
-        </p>
+        <ErrorBanner
+          className=""
+          error={toolsError}
+          testId="mcp-browse-tools-error"
+        />
       ) : toolNames === null || toolNames.length === 0 ? (
-        <p className="text-xs fg-secondary">No tools discovered yet.</p>
+        <EmptyStateRow title="No tools discovered yet" />
       ) : (
         <div className="flex flex-wrap gap-1">
           {toolNames.map((tool) => (

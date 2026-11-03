@@ -116,6 +116,8 @@ import {
   recordWorkspaceCrudTelemetry,
 } from '../../lib/desktop-telemetry';
 import { registerChatProjectHandlers } from '../chat-projects';
+import { createWorkspaceLifecycleTestDispatcher } from '../../__tests__/fixtures/workspace-lifecycle-dispatcher';
+import { TEST_IPC_CALLER } from '../../__tests__/fixtures/workspace-metadata-dispatcher';
 
 jest.setTimeout(60_000);
 
@@ -194,7 +196,11 @@ function captureDeleteHandler(): (request: unknown) => Promise<unknown> {
       handlers.set(channel, handler);
     });
   try {
-    registerChatProjectHandlers();
+    registerChatProjectHandlers({
+      // Chat project delete projects core.workspace.delete (W7b-2a).
+      dispatcher: createWorkspaceLifecycleTestDispatcher(),
+      resolveCaller: () => TEST_IPC_CALLER,
+    });
   } finally {
     handleSpy.mockRestore();
   }

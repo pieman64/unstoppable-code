@@ -74,6 +74,10 @@ import {
   createElectronDaemonCallerLifetime,
   type ElectronDaemonCallerLifetime,
 } from '../electron-daemon-caller-lifetime';
+import {
+  createElectronDaemonHealth,
+  type ElectronDaemonHealth,
+} from '../electron-daemon-health';
 
 export const AUTHORITY = 'authority-c4305';
 export const COWORK_DIR = '.canopy';
@@ -351,7 +355,13 @@ export class FakeDaemon {
 }
 
 class FakeDaemonClient implements DaemonFilesQueryClient {
+  private readonly connection = new AbortController();
+  public readonly signal = this.connection.signal;
   public constructor(private readonly daemon: FakeDaemon) {}
+  /** The connection closed under its session, as a killed daemon closes it. */
+  public drop(): void {
+    this.connection.abort();
+  }
   public query(
     name: 'worker.filesystem.roots.list',
     params: WorkerFilesystemRootsListParams,
@@ -390,7 +400,7 @@ export interface FakeSessionRecord {
   readonly caller: CanopyCallerDescriptor;
   readonly owner: AbortSignal;
   closed: boolean;
-  client: DaemonFilesQueryClient;
+  client: FakeDaemonClient;
 }
 
 /**
@@ -467,6 +477,17 @@ export class FakeConnections implements DaemonFilesConnections {
     const session = this.sessions[index];
     if (session) session.client = new FakeDaemonClient(this.daemon);
   }
+
+  /**
+   * The daemon went away under a live session: its connection closes, and
+   * the lease attaches a replacement, as a restarted daemon serves it.
+   */
+  public drop(index = this.sessions.length - 1): void {
+    const session = this.sessions[index];
+    if (!session) return;
+    session.client.drop();
+    session.client = new FakeDaemonClient(this.daemon);
+  }
 }
 
 export interface RouteHarness {
@@ -482,6 +503,8 @@ export interface RouteHarness {
     []
   >;
   readonly connectionsFactory: jest.Mock<DaemonFilesConnections, []>;
+  /** Main's background service record, with Files reads enabled. */
+  readonly health: ElectronDaemonHealth;
   readonly direct: {
     readonly roots: jest.Mock<
       ReturnType<typeof listFileTreeRoots>,
@@ -517,7 +540,7 @@ export interface RouteHarnessOptions {
   readonly entryNamePlatform?: 'posix' | 'win32';
   /** The read-route table's host; omitted, the test host's. */
   readonly platform?: ReadRoutePlatform | null;
-  /** Injected selection; omitted, production's `{roots, directory}`. */
+  /** Injected selection; omitted, production's. */
   readonly selectable?: ReadonlySet<FilesRouteObservedOperation>;
   /** The route the runtime dispatches through; `route` stays the real one. */
   readonly wrapRoute?: (route: ObservedDaemonFilesRoute) => DaemonFilesRoute;
@@ -566,6 +589,11 @@ export async function createRouteHarness(
     Promise.resolve({ authorityId: AUTHORITY, canonicalDataRoot: dataRoot }),
   );
   const connectionsFactory = jest.fn((): DaemonFilesConnections => connections);
+  const health = createElectronDaemonHealth({
+    warn: jest.fn(),
+    info: jest.fn(),
+  });
+  health.setConsumerEnabled('files_reads', true);
   const direct = {
     roots: jest.fn(listFileTreeRoots),
     directory: jest.fn(listFileTreeDirectory),
@@ -580,6 +608,10 @@ export async function createRouteHarness(
     displayDataRoot: () => displayRoot,
     workspaceType: getWorkspaceType,
     resolveWorktreeTargetIds,
+    reachability: {
+      isLatched: () => health.isLatched(),
+      noteFallback: (reason) => health.noteFallback('files_reads', reason),
+    },
     ...(options.queryDeadlineMs !== undefined && {
       queryDeadlineMs: options.queryDeadlineMs,
     }),
@@ -608,6 +640,7 @@ export async function createRouteHarness(
     connections,
     hostContext,
     connectionsFactory,
+    health,
     direct,
     route,
     runtime,

@@ -890,10 +890,10 @@ export async function withTrackedPlanRevision<T>(
     worktreeId: string;
     planId: string;
     revisionNumber: number;
-    source: TrackedPlanData['source'];
+    source?: TrackedPlanData['source'];
     reviewStatus?: TrackedPlanData['reviewStatus'];
   },
-  commit: () => Promise<T>,
+  commit: (plan: TrackedPlanData) => Promise<T>,
 ): Promise<{ accepted: false } | { accepted: true; result: T }> {
   const filePath = resolveTrackedPlansFilePath(
     request.projectId,
@@ -908,13 +908,13 @@ export async function withTrackedPlanRevision<T>(
     if (
       !plan ||
       plan.latestRevisionNumber !== request.revisionNumber ||
-      plan.source !== request.source ||
+      (request.source !== undefined && plan.source !== request.source) ||
       (request.reviewStatus !== undefined &&
         plan.reviewStatus !== request.reviewStatus)
     ) {
       return { accepted: false as const };
     }
-    if (request.source === 'opencode' && request.reviewStatus === 'approved') {
+    if (plan.source === 'opencode' && request.reviewStatus === 'approved') {
       // The implementation instruction reads this working copy. Its edits can
       // still be waiting for the sync debounce or another worktree turn, so
       // checking only the stored revision does not validate the reviewed bytes.
@@ -933,7 +933,7 @@ export async function withTrackedPlanRevision<T>(
         return { accepted: false as const };
       }
     }
-    return { accepted: true as const, result: await commit() };
+    return { accepted: true as const, result: await commit(plan) };
   });
 }
 

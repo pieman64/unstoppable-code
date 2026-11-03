@@ -8,6 +8,10 @@ import {
   chatBannerKey,
   useAiCreditsBannerStore,
 } from '@/stores/aiCreditsBannerStore';
+import {
+  composerRecoveryKey,
+  composerRecoveryStore,
+} from '@/stores/composerRecoveryStore';
 import { useTransientRetryBannerStore } from '@/stores/transientRetryBannerStore';
 import { useIngestionLagStore } from '@/stores/ingestionLagStore';
 import { invalidateAiCreditsAvailabilityCache } from '@/hooks/useAiCreditsAvailability';
@@ -45,6 +49,29 @@ import {
   isTransientRetryStateEventData,
 } from '@canopy/desktop-shared/types';
 
+/**
+ * Bind a no-billing refusal to the composer submission it refused, so the
+ * composer can get the prompt back (CAN-5348). The event is already applied,
+ * so the transcript's newest user message is the refused turn's.
+ */
+function recordComposerRecoveryAbort(
+  target: {
+    projectId: string;
+    worktreeId: string;
+    chatId: string;
+  },
+  data: unknown,
+): void {
+  if (!isRecord(data) || typeof data.canopy_turn_user_message_id !== 'string')
+    return;
+  // A child refusal must never restore the root composer's inputs.
+  if (typeof data.parent_tool_use_id === 'string') return;
+  composerRecoveryStore.recordAbort(composerRecoveryKey(target), {
+    lastUserMessageId: data.canopy_turn_user_message_id,
+    userMessageCount: 0,
+  });
+}
+
 function hasIngestionLagEventType(value: unknown): boolean {
   return (
     typeof value === 'object' &&
@@ -81,6 +108,61 @@ export function useChatEventSubscriptions(): void {
   );
   const handleDeferredToolsReloadEvent = useChatStore(
     (s) => s.handleDeferredToolsReloadEvent,
+  );
+
+  // Closing a tab/workspace releases snapshots even when its composer is not
+  // mounted. Temporary transcript loading keeps the tab and its recovery.
+  useEffect(
+    () =>
+      useChatStore.subscribe((state, previous) => {
+        if (
+          state.worktreeChats === previous.worktreeChats &&
+          state.pendingEditorSelections === previous.pendingEditorSelections
+        )
+          return;
+        for (const [worktreeKey, previousWorktree] of Object.entries(
+          previous.worktreeChats,
+        )) {
+          const current = state.worktreeChats[worktreeKey];
+          if (
+            current?.tabs === previousWorktree.tabs &&
+            state.pendingEditorSelections === previous.pendingEditorSelections
+          )
+            continue;
+          const currentTabsById = new Map(
+            current?.tabs.map(
+              (candidate) => [candidate.id, candidate] as const,
+            ) ?? [],
+          );
+          for (const tab of previousWorktree.tabs) {
+            const key = `${worktreeKey}/${tab.id}`;
+            const recovery = composerRecoveryStore.get(key);
+            const currentTab = currentTabsById.get(tab.id);
+            if (!currentTab) {
+              composerRecoveryStore.forget(key);
+              continue;
+            }
+            // The claim covers our own reservation mutations only. Once it
+            // ends, every later user edit must invalidate delayed recovery.
+            if (recovery?.claimed) continue;
+            const selections = state.pendingEditorSelections[tab.id];
+            const previousSelections = previous.pendingEditorSelections[tab.id];
+            if (
+              (currentTab.pendingAttachments !== tab.pendingAttachments &&
+                JSON.stringify(currentTab.pendingAttachments ?? []) !==
+                  JSON.stringify(tab.pendingAttachments ?? [])) ||
+              currentTab.pendingRevertAttachmentPath !==
+                tab.pendingRevertAttachmentPath ||
+              (selections !== previousSelections &&
+                JSON.stringify(selections ?? []) !==
+                  JSON.stringify(previousSelections ?? []))
+            ) {
+              composerRecoveryStore.noteUserInput(key);
+            }
+          }
+        }
+      }),
+    [],
   );
 
   // Revisioned canonical chat-state stream. Registered before any snapshot
@@ -206,6 +288,31 @@ export function useChatEventSubscriptions(): void {
           refreshAiCreditsAfterChargedTurn();
         }
       }
+      // A successful root turn cannot need refusal recovery, including a
+      // tool-free completion in a background chat whose composer is unmounted.
+      if (
+        isRecord(data) &&
+        typeof data.canopy_turn_user_message_id === 'string' &&
+        typeof data.parent_tool_use_id !== 'string'
+      ) {
+        const codex = isRecord(data.event) ? data.event : undefined;
+        const succeeded =
+          (data.type === 'result' &&
+            data.is_error !== true &&
+            data.canopy_session_continues !== true) ||
+          (data.type === 'codex' && codex?.type === 'turn.completed');
+        const recovery = composerRecoveryStore.get(composerRecoveryKey(target));
+        if (
+          succeeded &&
+          recovery?.abort === null &&
+          recovery.submission.userMessageId === data.canopy_turn_user_message_id
+        ) {
+          composerRecoveryStore.release(
+            composerRecoveryKey(target),
+            recovery.generation,
+          );
+        }
+      }
       if (isAiCreditsRoutingStatusEventData(event.data)) {
         useAiCreditsBannerStore
           .getState()
@@ -245,6 +352,8 @@ export function useChatEventSubscriptions(): void {
         // nothing can pay, so a retained "covered" answer must not survive to
         // auto-commit a model in the recovery modal.
         invalidateSharedAiCreditsRead();
+        // The composer decides later whether the refused turn did any work.
+        recordComposerRecoveryAbort(target, event.data);
       } else if (isNoBillingSourceErrorEventData(event.data)) {
         // The turn was aborted because nothing could pay for it (ECW-9091).
         // `NoBillingSourceBanner` is the visible remedy, but it gates on the
@@ -265,6 +374,7 @@ export function useChatEventSubscriptions(): void {
         // The recovery flows' retained answer is the third; see the
         // usage-limit branch above.
         invalidateSharedAiCreditsRead();
+        recordComposerRecoveryAbort(target, event.data);
       } else if (isTransientRetryStateEventData(event.data)) {
         // Transient provider-error retry state flows through the same event
         // pipeline; feed the shared target-keyed store so the retry banner

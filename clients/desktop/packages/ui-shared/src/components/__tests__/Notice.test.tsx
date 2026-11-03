@@ -189,6 +189,82 @@ describe('Notice', () => {
     expect(below).toMatch(/data-notice-actions="below" class="[^"]*pl-6/);
   });
 
+  it('never wraps an action label', () => {
+    act(() => {
+      root.render(
+        <Notice actions={<NoticeButton>Open organizations</NoticeButton>}>
+          Couldn't accept the invitation.
+        </Notice>,
+      );
+    });
+    const button = query<HTMLButtonElement>('button');
+    const classes = button?.className.split(/\s+/) ?? [];
+    expect(classes).toContain('whitespace-nowrap');
+    expect(classes).not.toContain('whitespace-normal');
+    expect(button?.className).not.toContain('overflow-wrap:anywhere');
+  });
+
+  it('moves trailing actions under the copy when the notice itself is narrow', () => {
+    act(() => {
+      root.render(
+        <Notice actions={<NoticeButton>Open organizations</NoticeButton>}>
+          Couldn't accept the invitation.
+        </Notice>,
+      );
+    });
+    // A container query on the notice's own width, not a viewport
+    // breakpoint, so any narrow host (a sidebar, a popover) stacks it.
+    const column = query<HTMLElement>('[data-notice-intent] > div');
+    expect(column?.className.split(/\s+/)).toContain('@container/notice');
+    const actions = query<HTMLElement>('[data-notice-actions="trailing"]');
+    const classes = actions?.className.split(/\s+/) ?? [];
+    expect(classes).toEqual(
+      expect.arrayContaining([
+        '@max-sm/notice:basis-full',
+        '@max-sm/notice:justify-start',
+        '@max-sm/notice:ml-0',
+        '@max-sm/notice:pl-6',
+      ]),
+    );
+    expect(classes.some((c) => /^(sm|md|lg|max-sm|max-md):/.test(c))).toBe(
+      false,
+    );
+  });
+
+  it('lets a narrow action row run under the empty dismiss column', () => {
+    act(() => {
+      root.render(
+        <Notice
+          actionsPlacement="below"
+          onDismiss={() => undefined}
+          actions={<NoticeButton>Open organizations</NoticeButton>}
+        >
+          Couldn't accept the invitation.
+        </Notice>,
+      );
+    });
+    const below = query<HTMLElement>('[data-notice-actions="below"]');
+    expect(below?.className.split(/\s+/)).toEqual(
+      // The margin frees the dismiss column; growing is what fills it.
+      expect.arrayContaining([
+        '@max-sm/notice:-mr-9',
+        '@max-sm/notice:grow',
+        '@max-sm/notice:max-w-none',
+        'pl-6',
+      ]),
+    );
+    act(() => {
+      root.render(
+        <Notice actions={<NoticeButton>Open organizations</NoticeButton>}>
+          No dismiss control.
+        </Notice>,
+      );
+    });
+    expect(
+      query<HTMLElement>('[data-notice-actions="trailing"]')?.className,
+    ).not.toContain('-mr-9');
+  });
+
   it('keeps the actions mounted when their placement changes', () => {
     // A stateful action (the credits CTA mid-purchase) must survive a host
     // moving its buttons under the copy.

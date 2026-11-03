@@ -19,6 +19,8 @@ import {
   McpSignInPendingActions,
   McpSignInPendingStatus,
   useActivityItemDensity,
+  StatusLabel,
+  ErrorBanner,
 } from '@canopy/ui-shared/components';
 
 export interface McpServersSectionItem extends McpCardDisplayServer {
@@ -122,12 +124,7 @@ export function McpServersSectionBody({
         Checking MCP servers…
       </p>
     ) : error !== null ? (
-      <p
-        className="text-xs fg-destructive"
-        data-testid="mcp-servers-card-error"
-      >
-        {error}
-      </p>
+      <ErrorBanner className="" error={error} testId="mcp-servers-card-error" />
     ) : servers.length === 0 ? (
       emptyLabel === undefined ? null : (
         <p
@@ -341,8 +338,8 @@ export function McpServersSectionBody({
                 </p>
               )}
               {server.authStatus === 'error' && server.lastError && (
-                <p className="mt-1 text-2xs fg-destructive">
-                  {server.lastError}
+                <p className="mt-1">
+                  <StatusLabel size="2xs">{server.lastError}</StatusLabel>
                 </p>
               )}
               <McpRowSettings

@@ -8,8 +8,9 @@ import type {
 import { useSettingsClient } from '../../host';
 import { fetchTeamUsage } from '../team-api';
 import { USAGE_KNOWN_LOAD_ERRORS } from '../statistics/usage-error-copy';
-import { useSettingsLoadErrorCopy } from '../../errors';
+import { useSettingsLoadFailure } from '../../errors';
 import { MEMBER_PROFILE_ERROR_SCOPE } from './use-member-paged-resource';
+import type { SettingsFailure } from '../../errors';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -31,7 +32,7 @@ export interface MemberUsageState {
   usage: TeamUsageResponse | null;
   loading: boolean;
   /** Load copy for the last failed fetch; never server text. */
-  error: string | null;
+  error: SettingsFailure | null;
   rangeMs: number;
   setRangeMs: (ms: number) => void;
   /** Fetch the usage again after a failure. */
@@ -52,13 +53,13 @@ export function useMemberUsage(
   enabled: boolean,
 ): MemberUsageState {
   const client = useSettingsClient();
-  const loadErrorCopy = useSettingsLoadErrorCopy(MEMBER_PROFILE_ERROR_SCOPE);
+  const loadErrorCopy = useSettingsLoadFailure(MEMBER_PROFILE_ERROR_SCOPE);
   // Bumped by `retry` to fetch again.
   const [reloadToken, setReloadToken] = useState(0);
   const [rangeMs, setRangeMs] = useState<number>(DEFAULT_USAGE_RANGE_MS);
   const [usage, setUsage] = useState<TeamUsageResponse | null>(null);
   const [loading, setLoading] = useState(enabled);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   useEffect(() => {
     if (!enabled) {

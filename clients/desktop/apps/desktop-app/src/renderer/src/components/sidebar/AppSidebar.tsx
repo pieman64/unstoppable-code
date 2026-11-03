@@ -29,6 +29,7 @@ import {
   DEFAULT_MENU_ROW_STYLE,
   QUIET_MENU_ROW_STYLE,
   FloatingMenu,
+  FloatingMenuPointAnchor,
   SidebarMoreControl,
   SidebarNavMarker,
   useContextMenuPlacement,
@@ -3481,51 +3482,46 @@ export function AppSidebar({
                           >
                             {mainNav.map((key) => renderMainNavItem(key))}
                           </nav>
-                          {navContextMenu &&
-                            createPortal(
-                              <>
-                                <span
-                                  ref={navContextMenuAnchorRef}
-                                  aria-hidden="true"
-                                  className="pointer-events-none fixed h-0 w-0"
-                                  style={{
-                                    left: navContextMenu.x,
-                                    top: navContextMenu.y,
-                                  }}
-                                />
-                                <FloatingMenu
-                                  open
-                                  onOpenChange={(open): void => {
-                                    if (!open) setNavContextMenu(null);
-                                  }}
-                                  anchorRef={navContextMenuAnchorRef}
-                                  placement="bottom-left"
-                                  className="w-56"
-                                  aria-label="Sidebar actions"
-                                  data-testid="sidebar-nav-context-menu"
-                                  onContextMenu={(event): void =>
-                                    event.preventDefault()
-                                  }
-                                >
-                                  <ActionMenuRowStyle>
-                                    <DropdownMenuItem
-                                      data-testid="sidebar-nav-context-customize"
-                                      aria-haspopup="dialog"
-                                      onClick={(): void => {
-                                        setNavContextMenu(null);
-                                        setCustomizeOpen(true);
-                                      }}
-                                    >
-                                      <DropdownMenuItemIcon>
-                                        <SettingsIcon />
-                                      </DropdownMenuItemIcon>
-                                      Customize sidebar…
-                                    </DropdownMenuItem>
-                                  </ActionMenuRowStyle>
-                                </FloatingMenu>
-                              </>,
-                              document.body,
-                            )}
+                          {navContextMenu && (
+                            <>
+                              <FloatingMenuPointAnchor
+                                ref={navContextMenuAnchorRef}
+                                x={navContextMenu.x}
+                                y={navContextMenu.y}
+                                ownerDocument={document}
+                              />
+                              <FloatingMenu
+                                open
+                                onOpenChange={(open): void => {
+                                  if (!open) setNavContextMenu(null);
+                                }}
+                                anchorRef={navContextMenuAnchorRef}
+                                placement="bottom-left"
+                                className="w-56"
+                                aria-label="Sidebar actions"
+                                data-testid="sidebar-nav-context-menu"
+                                onContextMenu={(event): void =>
+                                  event.preventDefault()
+                                }
+                              >
+                                <ActionMenuRowStyle>
+                                  <DropdownMenuItem
+                                    data-testid="sidebar-nav-context-customize"
+                                    aria-haspopup="dialog"
+                                    onClick={(): void => {
+                                      setNavContextMenu(null);
+                                      setCustomizeOpen(true);
+                                    }}
+                                  >
+                                    <DropdownMenuItemIcon>
+                                      <SettingsIcon />
+                                    </DropdownMenuItemIcon>
+                                    Customize sidebar…
+                                  </DropdownMenuItem>
+                                </ActionMenuRowStyle>
+                              </FloatingMenu>
+                            </>
+                          )}
                         </div>
 
                         {/* More, its literal 12px gap, and the one real

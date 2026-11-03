@@ -28,7 +28,6 @@ import {
   MessageEditNotice,
   MessageEditSurface,
 } from './MessageEditEntry';
-import { BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS } from '../bubble-badge';
 
 const LABELS = {
   // Until the provider confirms, the message is still on its way.
@@ -348,7 +347,10 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
             >
               {((row.state === 'pending' && row.canWithdraw) ||
                 row.state === 'cancelled') && (
-                <div className="absolute -right-2 -top-2 z-10 flex gap-1 transition-colors">
+                // On touch each Button's hit area reaches 8px past its 28px
+                // disc; `pointer-coarse:gap-4` lets the 44px targets meet
+                // without overlapping.
+                <div className="absolute -right-2 -top-2 z-10 flex gap-1 transition-colors pointer-coarse:gap-4">
                   {editable && (
                     <MessageEditBadge
                       buttonRef={
@@ -361,45 +363,48 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                     />
                   )}
                   {row.state === 'pending' && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      iconOnly
                       data-testid="input-delivery-cancel"
                       aria-label="Cancel pending message"
-                      className={BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS}
                       disabled={busy}
                       onClick={() => void act('cancel')}
                     >
                       <TrashIcon width={14} height={14} aria-hidden="true" />
-                    </button>
+                    </Button>
                   )}
                   {row.state === 'cancelled' && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      size="compact"
+                      iconOnly
                       data-testid="input-delivery-dismiss"
                       aria-label="Dismiss message"
                       title="Dismiss message"
-                      className={`${BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS} pointer-coarse:h-11 pointer-coarse:w-11`}
                       disabled={busy}
                       onClick={() => void act('dismiss')}
                     >
                       <TrashIcon width={14} height={14} aria-hidden="true" />
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
               {row.state === 'uncertain' && (
                 <div className="absolute -right-2 -top-2 z-10 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:right-0 pointer-coarse:top-0 pointer-coarse:opacity-100">
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="compact"
+                    iconOnly
                     data-testid="input-delivery-dismiss"
                     aria-label="Dismiss message"
                     title="Dismiss message"
-                    className={`${BUBBLE_ACTION_BADGE_DESTRUCTIVE_CLASS} pointer-coarse:h-11 pointer-coarse:w-11`}
                     disabled={busy}
                     onClick={() => void act('dismiss')}
                   >
                     <TrashIcon width={14} height={14} aria-hidden="true" />
-                  </button>
+                  </Button>
                 </div>
               )}
               <div

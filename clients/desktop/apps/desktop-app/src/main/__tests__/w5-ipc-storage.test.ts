@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type * as CanopyPaths from '@canopy/desktop-shared/canopy-paths';
+import { hasCanopyInstallData } from '@canopy/desktop-shared/canopy-paths';
 import type * as CoreStorage from '@canopy/core-runtime/storage';
 import {
   IPC_CHANNELS,
@@ -95,8 +96,9 @@ afterEach(async () => {
   await rm(mockRoot, { recursive: true, force: true });
 });
 
-describe('create primary data-dir workspace index seed', () => {
-  const workspacesDir = (): string => join(mockRoot, 'primary', 'workspaces');
+describe('create primary data-dir adoption', () => {
+  const primaryDir = (): string => join(mockRoot, 'primary');
+  const workspacesDir = (): string => join(primaryDir(), 'workspaces');
 
   function createPrimaryDataDir(): Promise<unknown> {
     registerPreferenceHandlers();
@@ -109,33 +111,36 @@ describe('create primary data-dir workspace index seed', () => {
     return Promise.resolve(Reflect.apply(handler, undefined, [{}]));
   }
 
-  it('seeds the empty index once and keeps an existing index on EEXIST', async () => {
+  it('adopts the primary folder with only the marker, which counts as install data after restart', async () => {
     await createPrimaryDataDir();
-    const indexPath = join(workspacesDir(), 'index.json');
-    expect(await readFile(indexPath, 'utf8')).toBe(
-      JSON.stringify({ version: 1, workspaces: [] }, null, 2),
-    );
 
+    expect(await readdir(primaryDir())).toEqual(['data-dir-adopted.json']);
+    const marker: unknown = JSON.parse(
+      await readFile(join(primaryDir(), 'data-dir-adopted.json'), 'utf8'),
+    );
+    const adoptedAt: unknown = expect.any(String);
+    expect(marker).toEqual({ version: 1, adoptedAt });
+    expect(hasCanopyInstallData(primaryDir())).toBe(true);
+  });
+
+  it('leaves an existing index untouched', async () => {
+    await mkdir(workspacesDir(), { recursive: true });
+    const indexPath = join(workspacesDir(), 'index.json');
     const existing = JSON.stringify({ version: 1, workspaces: [{ id: 'a' }] });
     await writeFile(indexPath, existing);
+
     await createPrimaryDataDir();
 
     expect(await readFile(indexPath, 'utf8')).toBe(existing);
     expect(await readdir(workspacesDir())).toEqual(['index.json']);
   });
 
-  it('refuses a daemon-owned index before seeding it or adopting the directory', async () => {
+  it('writes no index, so a daemon-owned index does not block adoption', async () => {
     setDaemonOwnedForTest('workspace_index');
 
-    await expect(createPrimaryDataDir()).rejects.toMatchObject({
-      name: 'StorageWriteRefusedError',
-      reason: 'daemon_owned',
-      writer: 'electron_main',
-    });
+    await createPrimaryDataDir();
 
-    await expect(readdir(join(mockRoot, 'primary'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    expect(await readdir(primaryDir())).toEqual(['data-dir-adopted.json']);
   });
 });
 

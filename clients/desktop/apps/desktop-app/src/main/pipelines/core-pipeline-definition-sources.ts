@@ -6,6 +6,7 @@ import {
   type PipelineDefinitionSourceContext,
   type PipelineDefinitionSourceDocument,
   type PipelineDefinitionSourceEntry,
+  type PipelineDefinitionCopy,
   type PipelineDefinitionSourcePort,
   type PipelineDefinitionWritePort,
 } from '@canopy/core-runtime/node/pipeline';
@@ -17,6 +18,7 @@ import {
   buildSharedPipelineId,
   isAddressableSharedPipelineRemoteId,
   parseSharedPipelineLocalId,
+  type SharedPipelineSummary,
 } from '@canopy/protocol/pipelines';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/protocol/ui-labels';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
@@ -28,33 +30,51 @@ import {
 import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 import { isPathInside } from '../lib/path-safety';
-import {
-  readPreferencesFile,
-  updatePreferencesFile,
-} from '../lib/preferences-store';
+import { readPreferencesFile } from '../lib/preferences-store';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { recordSharedItemLocalUninstall } from '../canopy-cloud/shared-item-subscriptions';
 import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
 } from '../canopy-cloud/client';
-import { getSharedPipeline, listSharedPipelines } from './canopy-server-client';
+import {
+  getSharedPipeline,
+  getSharedPipelineForExecutionContext,
+  listSharedPipelines,
+} from './canopy-server-client';
 import {
   assertStoredPipelineContext,
+  copyPipelineInstallOrigin,
   filterProjectPipelineContexts,
+  recordSharedPipelineInstall,
   filterStoredPipelineContexts,
+  readProjectPipelineOwner,
 } from './pipeline-install-context';
 import {
   deleteUserPipelineLocalMetadata,
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
 } from './pipeline-local-metadata-store';
-import { removePackageInstall } from './pipeline-package-service';
+import {
+  copyPackageInstall,
+  removePackageInstall,
+} from './pipeline-package-service';
 import { deletePipelinePluginCollectionPreferences } from './plugin-collection-store';
 import { discoverProjectPipelines } from './project-pipeline-discovery';
+import { recordPipelineEnabled } from './pipeline-enablement-commit';
+import {
+  sharedProjectDiscovery,
+  type ContainedProjectPipeline,
+} from './shared-project-discovery';
+import {
+  presentedPipeline,
+  presentPipeline,
+  presentSourceFailure,
+} from './pipeline-definition-presentation';
 import {
   assertPipelineContext,
   isPipelineContextDenial,
+  pipelineResourceContextEnabled,
 } from './resource-lanes';
 
 function isoTimestamp(value: string | undefined): string | null {
@@ -86,12 +106,16 @@ function infoEntry(
 }
 
 function storedOwner(definitionId: string): string | null {
-  // As the single-pipeline read does, never show an unreadable owner as none.
-  if (!isPipelineLocalMetadataReadable())
+  if (!isPipelineLocalMetadataReadable()) {
+    // Without organization contexts every definition is Personal and its
+    // saved owner is never read, so an unreadable store hides nothing.
+    if (!pipelineResourceContextEnabled()) return null;
+    // With them, never show an unreadable owner as none.
     throw new PipelineDefinitionSourceError(
       'core.pipeline.contextMismatch',
       backgroundExecutionDeniedMessage('unknown-provenance'),
     );
+  }
   return (
     readPipelineLocalMetadata({
       type: 'stored',
@@ -99,6 +123,24 @@ function storedOwner(definitionId: string): string | null {
       value: definitionId,
     }).owner ?? null
   );
+}
+
+/**
+ * An owner-scoped read authorizes the definition against the run owner, as
+ * the run start path does, and keeps a refusal's message.
+ */
+async function assertOwnerContext(assert: () => Promise<void>): Promise<void> {
+  try {
+    await assert();
+  } catch (error) {
+    if (isPipelineContextDenial(error))
+      throw new PipelineDefinitionSourceError(
+        'core.pipeline.contextMismatch',
+        error.message,
+        error,
+      );
+    throw error;
+  }
 }
 
 /** The local store, with each user definition's saved owner and context. */
@@ -109,7 +151,16 @@ function storedPort(): PipelineDefinitionSourcePort {
     list: async (
       context,
     ): Promise<readonly PipelineDefinitionSourceEntry[]> => {
-      const entries = await store.list(context);
+      // While saved owners cannot be read, a listing leaves out the user
+      // definitions it cannot attribute rather than failing the bundled ones.
+      const entries = await store.list(
+        pipelineResourceContextEnabled() && !isPipelineLocalMetadataReadable()
+          ? {
+              ...context,
+              sources: context.sources.filter((source) => source !== 'user'),
+            }
+          : context,
+      );
       const visible = new Set(
         (
           await filterStoredPipelineContexts(
@@ -127,6 +178,16 @@ function storedPort(): PipelineDefinitionSourcePort {
     ): Promise<PipelineDefinitionSourceDocument | null> => {
       const document = await store.read(source, definitionId, context);
       if (!document) return null;
+      if (context.owner !== undefined) {
+        await assertOwnerContext(() =>
+          assertStoredPipelineContext(
+            definitionId,
+            context.scope.workspaceId,
+            context.owner,
+          ),
+        );
+        return document;
+      }
       const [visible] = await filterStoredPipelineContexts(
         [{ id: definitionId }],
         context.scope.workspaceId,
@@ -174,13 +235,20 @@ async function projectCheckout(scope: CanopyWorkspaceScope): Promise<string> {
     : paths.getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
 }
 
-interface ContainedProjectPipeline {
-  info: PipelineInfo;
-  /** The resolved file inside the checkout; reads use it, never the link. */
-  canonicalPath: string;
+function visibleProjectPipelines(
+  context: PipelineDefinitionSourceContext,
+): Promise<ContainedProjectPipeline[]> {
+  return sharedProjectDiscovery(
+    JSON.stringify([
+      context.scope.workspaceId,
+      context.scope.worktreeId,
+      context.scope.repoId,
+    ]),
+    () => discoverVisibleProjectPipelines(context),
+  );
 }
 
-async function visibleProjectPipelines(
+async function discoverVisibleProjectPipelines(
   context: PipelineDefinitionSourceContext,
 ): Promise<ContainedProjectPipeline[]> {
   const cwd = await projectCheckout(context.scope);
@@ -201,6 +269,7 @@ async function visibleProjectPipelines(
       discovered.filter((_info, index) => canonical[index] !== undefined),
       cwd,
       context.scope.workspaceId,
+      context.owner,
     ),
   );
   return discovered.flatMap((info, index) => {
@@ -214,10 +283,13 @@ async function visibleProjectPipelines(
 function projectPort(): PipelineDefinitionSourcePort {
   return {
     sources: ['project'],
+    // A checkout that cannot be read never hides the local stores.
+    optional: true,
     list: async (context) =>
-      (await visibleProjectPipelines(context)).map(({ info }) =>
-        infoEntry(info, 'project'),
-      ),
+      (await visibleProjectPipelines(context)).map(({ info }) => {
+        presentPipeline('listed', 'project', info.id, { kind: 'info', info });
+        return infoEntry(info, 'project');
+      }),
     read: async (
       _source,
       definitionId,
@@ -227,6 +299,10 @@ function projectPort(): PipelineDefinitionSourcePort {
         (candidate) => candidate.info.id === definitionId,
       );
       if (!found) return null;
+      presentPipeline('read', 'project', definitionId, {
+        kind: 'info',
+        info: found.info,
+      });
       return {
         ...infoEntry(found.info, 'project'),
         format: 'yaml',
@@ -243,9 +319,16 @@ function curatedPort(): PipelineDefinitionSourcePort {
     list: async (): Promise<readonly PipelineDefinitionSourceEntry[]> => {
       const { listManagedCuratedPipelines } =
         await import('./curated-pipeline-catalog');
-      return (await listManagedCuratedPipelines()).map((info) =>
-        infoEntry({ ...info, readonly: true }, 'curated'),
+      const rows = await listManagedCuratedPipelines().catch(
+        (error: unknown) => {
+          presentSourceFailure('curated', error);
+          throw error;
+        },
       );
+      return rows.map((info) => {
+        presentPipeline('listed', 'curated', info.id, { kind: 'info', info });
+        return infoEntry({ ...info, readonly: true }, 'curated');
+      });
     },
     read: async (
       _source,
@@ -265,6 +348,7 @@ function curatedPort(): PipelineDefinitionSourcePort {
             )
           : error;
       });
+      presentPipeline('read', 'curated', definitionId, { kind: 'data', data });
       return {
         ...infoEntry({ ...data.info, readonly: true }, 'curated'),
         format: 'yaml',
@@ -302,19 +386,40 @@ export function sharedPipelineRows<Row extends { id: string }>(
   return rows.filter((row) => isAddressableSharedPipelineRemoteId(row.id));
 }
 
+/** The definition id of a share, with its account details kept for display. */
+function presentSharedPipeline(
+  view: 'listed' | 'read',
+  pipeline: SharedPipelineSummary,
+): string {
+  const definitionId = buildSharedPipelineId(
+    CANOPY_CLOUD_SERVER_ID,
+    pipeline.id,
+  );
+  presentPipeline(view, 'shared', definitionId, { kind: 'shared', pipeline });
+  return definitionId;
+}
+
 function sharedPort(): PipelineDefinitionSourcePort {
   return {
     sources: ['shared'],
     optional: true,
-    list: async (): Promise<readonly PipelineDefinitionSourceEntry[]> => {
-      await assertCanopyCloudCapability('pipelines-crud-v1');
-      const listed = await listSharedPipelines({ limit: 100 });
+    list: async (
+      context,
+    ): Promise<readonly PipelineDefinitionSourceEntry[]> => {
+      let listed: Awaited<ReturnType<typeof listSharedPipelines>>;
+      try {
+        await assertCanopyCloudCapability('pipelines-crud-v1');
+        listed = await listSharedPipelines({
+          limit: 100,
+          ...(context.query === undefined ? {} : { q: context.query }),
+        });
+      } catch (error) {
+        presentSourceFailure('shared', error);
+        throw error;
+      }
       return sharedPipelineRows(listed.data).map((pipeline) => ({
         source: 'shared',
-        definitionId: buildSharedPipelineId(
-          CANOPY_CLOUD_SERVER_ID,
-          pipeline.id,
-        ),
+        definitionId: presentSharedPipeline('listed', pipeline),
         name: pipeline.name,
         description: pipeline.description,
         icon: pipeline.icon,
@@ -342,14 +447,18 @@ function sharedPort(): PipelineDefinitionSourcePort {
       await assertCanopyCloudCapability('pipelines-crud-v1');
       let detail: Awaited<ReturnType<typeof getSharedPipeline>>;
       try {
-        detail = await getSharedPipeline(parsed.remoteId);
+        detail = await (context.owner === undefined
+          ? getSharedPipeline(parsed.remoteId)
+          : getSharedPipelineForExecutionContext(parsed.remoteId));
         await assertPipelineContext(
           { owner: detail.owner },
           context.scope.workspaceId,
+          context.owner,
         );
       } catch (error) {
         throw sharedPipelineReadError(error);
       }
+      presentSharedPipeline('read', detail);
       return {
         source: 'shared',
         definitionId,
@@ -408,13 +517,127 @@ export function applyUserPipelineDeleteEffects(definitionId: string): void {
   notifyDesktopInventoryChanged(['pipelines']);
 }
 
+async function assertPersonalProjectCopy(
+  workspaceId: string | undefined,
+): Promise<void> {
+  let owner: Awaited<ReturnType<typeof readProjectPipelineOwner>>;
+  try {
+    owner = await readProjectPipelineOwner(workspaceId);
+  } catch (error) {
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.contextMismatch',
+      errorMessage(error),
+      error,
+    );
+  }
+  if (owner.type === 'organization')
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.contextMismatch',
+      'Workflow unavailable (context-mismatch)',
+    );
+}
+
+/** The store steps of a copy, so a test can stand in for the store. */
+export interface PipelineCopyStore<T> {
+  /** Creates the copy under its assigned id. */
+  create(): Promise<T>;
+  /** The id the store saved the copy under. */
+  idOf(created: T): string;
+  remove(created: T): Promise<void>;
+  /** The copy as stored after its package install replaced its bytes. */
+  reread(created: T): Promise<T>;
+}
+
+/**
+ * Creates a copy with what the desktop keeps about its origin, all or
+ * nothing: a share or install receipt follows the copy, and a stored
+ * source's package install carries over with the package's own bytes.
+ */
+export async function copyPipelineWithProvenance<T>(
+  origin: PipelineDefinitionCopy['origin'],
+  definitionId: string,
+  store: PipelineCopyStore<T>,
+): Promise<T> {
+  let undoOrigin: (() => Promise<void>) | undefined;
+  const onRollback = (undo: () => Promise<void>): void => {
+    undoOrigin = undo;
+  };
+  let created: T | undefined;
+  try {
+    // A share's read already fetched the detail its receipt records; a
+    // project file has no install receipt to carry.
+    const share = presentedPipeline('read', 'shared', origin.definitionId);
+    if (
+      origin.source === 'shared' &&
+      share?.kind === 'shared' &&
+      'rawPipeline' in share.pipeline
+    )
+      await recordSharedPipelineInstall(
+        share.pipeline,
+        definitionId,
+        onRollback,
+      );
+    else if (origin.source !== 'project')
+      await copyPipelineInstallOrigin(
+        origin.definitionId,
+        definitionId,
+        onRollback,
+      );
+    created = await store.create();
+    if (store.idOf(created) !== definitionId)
+      throw new Error('Pipeline create identity mismatch');
+    let written = created;
+    if (origin.source === 'user' || origin.source === 'bundled') {
+      await copyPackageInstall(origin.definitionId, definitionId);
+      written = await store.reread(written);
+    }
+    notifyDesktopInventoryChanged(['pipelines']);
+    return written;
+  } catch (error) {
+    const failures = [errorMessage(error)];
+    try {
+      if (created !== undefined) await store.remove(created);
+      await undoOrigin?.();
+    } catch (rollbackError) {
+      failures.push(errorMessage(rollbackError));
+    }
+    throw new PipelineDefinitionSourceError(
+      isPipelineContextDenial(error)
+        ? 'core.pipeline.contextMismatch'
+        : error instanceof PipelineDefinitionSourceError
+          ? error.code
+          : 'core.pipeline.sourceUnavailable',
+      failures.join('; '),
+      error,
+    );
+  }
+}
+
 /**
  * The user store's writer with the desktop effects. The caller records a
  * new definition's owner and agent author, which depend on who wrote it.
  */
 export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
   const store = createStoredPipelineDefinitionWriter({ owner: storedOwner });
+  const stored = createStoredPipelineDefinitionPort({ owner: storedOwner });
   return {
+    copy: async (copy, context): Promise<PipelineDefinitionSourceDocument> => {
+      // An organization's project workflow is never copied out as Personal.
+      if (copy.origin.source === 'project' && pipelineResourceContextEnabled())
+        await assertPersonalProjectCopy(context.scope.workspaceId);
+      return copyPipelineWithProvenance(copy.origin, copy.definitionId, {
+        create: () => store.copy(copy, context),
+        idOf: (written) => written.definitionId,
+        remove: async (written): Promise<void> => {
+          await store.delete(written.definitionId, null, context);
+        },
+        reread: async (written) =>
+          (await stored.read('user', copy.definitionId, {
+            ...context,
+            sources: ['user'],
+          })) ?? written,
+      });
+    },
     upsert: async (
       write,
       context,
@@ -444,24 +667,15 @@ export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
   };
 }
 
-/** Records an enabled state in the `disabledPipelineIds` preference. */
-async function setDefinitionEnabled(
-  definitionId: string,
-  enabled: boolean,
-): Promise<void> {
-  await updatePreferencesFile((preferences) => {
-    const ids = new Set(preferences.disabledPipelineIds);
-    if (enabled) ids.delete(definitionId);
-    else ids.add(definitionId);
-    return { disabledPipelineIds: Array.from(ids) };
-  });
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function createDesktopPipelineDefinitionService(): PipelineDefinitionService {
   return createPipelineDefinitionService({
     ports: [storedPort(), projectPort(), curatedPort(), sharedPort()],
     writer: desktopPipelineDefinitionWriter(),
-    setDefinitionEnabled,
+    setDefinitionEnabled: recordPipelineEnabled,
     disabledDefinitionIds: async () =>
       new Set((await readPreferencesFile()).disabledPipelineIds),
     normalizeOptions: localPipelineNormalizeOptions,

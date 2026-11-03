@@ -5,12 +5,15 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { BRAND } from '@canopy/brand/current';
+import { daemonName } from '@canopy/protocol/brand';
 import type {
   CliInstallResult,
   CliPathStatus,
 } from '@canopy/desktop-shared/types';
 
 const TOOLS = ['claude', 'codex', 'codex-code-mode-host', 'gh', 'rg', 'rtk'];
+const DAEMON = daemonName(BRAND);
+const DAEMON_FILES = [`${DAEMON}.identity.json`, 'w5-commit-log-worker.js'];
 const RESOURCE_ROOTS = [
   'resources/code-graph',
   'node_modules/web-tree-sitter',
@@ -123,7 +126,7 @@ async function directories(
 }
 
 // One layout projection for both copying and freshness checks: the .deb
-// splits tools/notices out of resources/cli; an extracted tarball is flat.
+// splits tools/daemon/notices out of resources/cli; an extracted tarball is flat.
 async function distributionMembers(source: string): Promise<
   Array<{
     source: string;
@@ -142,7 +145,13 @@ async function distributionMembers(source: string): Promise<
     path.basename(source) === 'cli' &&
     path.basename(path.dirname(source)) === 'resources'
   ) {
-    const companions = [...TOOLS, 'THIRD_PARTY_NOTICES.txt'];
+    const companions = [
+      ...TOOLS,
+      DAEMON,
+      ...DAEMON_FILES,
+      'node-pty',
+      'THIRD_PARTY_NOTICES.txt',
+    ];
     const existing = await Promise.all(
       companions.map((name) => statIfPresent(path.join(source, name))),
     );
@@ -208,6 +217,9 @@ async function snapshotPackage(
     }
   }
   for (const member of await distributionMembers(path.dirname(executable))) {
+    if (!(await statIfPresent(member.source))) {
+      throw new Error(`Incomplete CLI distribution: ${member.name}`);
+    }
     await visit(member.source, member.name);
   }
   await requirePayload(path.dirname(executable));
@@ -384,16 +396,28 @@ async function requirePayload(directory: string): Promise<void> {
       source,
     ]),
   );
-  for (const name of [BRAND.cliName, ...TOOLS, 'THIRD_PARTY_NOTICES.txt']) {
+  const executables = [BRAND.cliName, ...TOOLS, DAEMON];
+  for (const name of [
+    ...executables,
+    ...DAEMON_FILES,
+    'THIRD_PARTY_NOTICES.txt',
+  ]) {
     const source = members.get(name);
-    if (!source) throw new Error(`Incomplete CLI distribution: ${name}`);
-    const stat = await fs.lstat(source);
+    const stat = source ? await statIfPresent(source) : null;
     if (
+      !stat ||
       !stat.isFile() ||
       stat.size === 0 ||
-      (name !== 'THIRD_PARTY_NOTICES.txt' && (stat.mode & 0o111) === 0)
+      (executables.includes(name) && (stat.mode & 0o111) === 0)
     ) {
       throw new Error(`Incomplete CLI distribution: ${name}`);
+    }
+  }
+  for (const name of ['package.json', 'build/Release/pty.node']) {
+    const source = members.get('node-pty');
+    const stat = source ? await statIfPresent(path.join(source, name)) : null;
+    if (!stat?.isFile() || stat.size === 0) {
+      throw new Error(`Incomplete CLI distribution: node-pty/${name}`);
     }
   }
   for (const name of RESOURCE_ROOTS) {

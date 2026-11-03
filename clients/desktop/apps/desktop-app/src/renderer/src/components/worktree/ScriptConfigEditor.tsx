@@ -29,8 +29,11 @@ import {
 import { brandText } from '@/lib/brand';
 import {
   Button,
+  FormField,
   SegmentedControl,
   SettingsSelect,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import {
   SettingsSubRow,
@@ -333,8 +336,10 @@ export function ScriptConfigEditor({
 
   const customTimeoutInput =
     !isTimeoutControlDisabled && mode === 'custom' ? (
-      <div className="flex items-center gap-1.5">
-        <input
+      <div className="w-28">
+        <TextInput
+          density="settings"
+          trailing="seconds"
           type="number"
           min={1}
           step={1}
@@ -358,13 +363,7 @@ export function ScriptConfigEditor({
               }
             }
           }}
-          className={
-            layout === 'settings'
-              ? 'focus-ring h-7 w-20 rounded-full bg-base px-3 text-xs fg-primary ring-[length:var(--border-hairline)] ring-inset ring-line-secondary'
-              : 'focus-ring w-24 rounded-lg border bg-base px-2 py-1 text-xs'
-          }
         />
-        <span className="text-2xs fg-secondary">seconds</span>
       </div>
     ) : null;
 
@@ -454,20 +453,22 @@ export function ScriptConfigEditor({
 
   return (
     <div className="space-y-2">
-      <label className="block text-s">
-        <span className="mb-1.5 block text-xs fg-secondary">{label}</span>
-        <textarea
-          ref={textareaRef}
-          value={command}
-          onChange={(event) => onCommandChange(event.target.value)}
-          onSelect={rememberSelection}
-          onClick={rememberSelection}
-          onKeyUp={rememberSelection}
-          placeholder={placeholder}
-          rows={rows}
-          className="focus-ring w-full resize-y rounded-lg border bg-base px-3 py-2 font-mono text-xs"
-        />
-      </label>
+      <FormField label={label}>
+        {(control) => (
+          <TextArea
+            {...control}
+            ref={textareaRef}
+            mono
+            value={command}
+            onChange={(event) => onCommandChange(event.target.value)}
+            onSelect={rememberSelection}
+            onClick={rememberSelection}
+            onKeyUp={rememberSelection}
+            placeholder={placeholder}
+            rows={rows}
+          />
+        )}
+      </FormField>
 
       <VariableInsertDropdown
         variables={SCRIPT_ENV_VISIBLE_VAR_DEFINITIONS}
@@ -546,6 +547,8 @@ function updateShellPlatform(
 const SHELL_PLATFORM_OPTIONS: ReadonlyArray<{
   readonly platform: 'mac' | 'windows' | 'linux';
   readonly rowLabel: string;
+  /** The short label over the dropdown in the stacked layout. */
+  readonly stackLabel: string;
   readonly ariaSuffix: string;
   readonly options: ReadonlyArray<{
     readonly value: string;
@@ -555,6 +558,7 @@ const SHELL_PLATFORM_OPTIONS: ReadonlyArray<{
   {
     platform: 'mac',
     rowLabel: 'Shell on macOS',
+    stackLabel: 'Mac',
     ariaSuffix: 'Mac shell',
     options: [
       { value: '', label: 'Default' },
@@ -565,6 +569,7 @@ const SHELL_PLATFORM_OPTIONS: ReadonlyArray<{
   {
     platform: 'windows',
     rowLabel: 'Shell on Windows',
+    stackLabel: 'Windows',
     ariaSuffix: 'Windows shell',
     options: [
       { value: '', label: 'Default' },
@@ -576,6 +581,7 @@ const SHELL_PLATFORM_OPTIONS: ReadonlyArray<{
   {
     platform: 'linux',
     rowLabel: 'Shell on Linux',
+    stackLabel: 'Linux',
     ariaSuffix: 'Linux shell',
     options: [
       { value: '', label: 'Default (Bash)' },
@@ -584,6 +590,9 @@ const SHELL_PLATFORM_OPTIONS: ReadonlyArray<{
     ],
   },
 ];
+
+/** The stacked layout keeps its original Windows, Mac, Linux order. */
+const STACK_SHELL_PLATFORM_ORDER = ['windows', 'mac', 'linux'] as const;
 
 function ShellSelectionSection({
   label,
@@ -638,46 +647,26 @@ function ShellSelectionSection({
     <div className="space-y-1.5 pt-1">
       <span className="text-2xs font-medium fg-secondary">Shell</span>
       <div className="grid gap-2 sm:grid-cols-2">
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Windows</span>
-          <select
-            aria-label={`${label} Windows shell`}
-            value={shell?.windows ?? ''}
-            onChange={(event) => updatePlatform('windows', event.target.value)}
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default</option>
-            <option value="cmd">Command Prompt</option>
-            <option value="powershell">PowerShell</option>
-            <option value="bash">Git Bash</option>
-          </select>
-        </label>
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Mac</span>
-          <select
-            aria-label={`${label} Mac shell`}
-            value={shell?.mac ?? ''}
-            onChange={(event) => updatePlatform('mac', event.target.value)}
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default</option>
-            <option value="zsh">zsh</option>
-            <option value="bash">bash</option>
-          </select>
-        </label>
-        <label className="block text-s">
-          <span className="mb-1 block text-2xs fg-secondary">Linux</span>
-          <select
-            aria-label={`${label} Linux shell`}
-            value={shell?.linux ?? ''}
-            onChange={(event) => updatePlatform('linux', event.target.value)}
-            className="focus-ring h-8 w-full rounded-lg border bg-base px-2 text-xs"
-          >
-            <option value="">Default (Bash)</option>
-            <option value="bash">bash</option>
-            <option value="zsh">zsh</option>
-          </select>
-        </label>
+        {STACK_SHELL_PLATFORM_ORDER.map((platform) => {
+          const entry = SHELL_PLATFORM_OPTIONS.find(
+            (option) => option.platform === platform,
+          );
+          if (!entry) return null;
+          return (
+            <FormField key={platform} label={entry.stackLabel}>
+              {(control) => (
+                <SettingsSelect
+                  {...control}
+                  width="fill"
+                  aria-label={`${label} ${entry.ariaSuffix}`}
+                  value={shell?.[platform] ?? ''}
+                  onValueChange={(value) => updatePlatform(platform, value)}
+                  options={entry.options}
+                />
+              )}
+            </FormField>
+          );
+        })}
       </div>
     </div>
   );
@@ -794,45 +783,51 @@ function DevServerPatternsSection({
               trimmed.length > MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH;
             const labelTooLong =
               row.label.trim().length > MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH;
-            const inputInvalid = regexInvalid || patternTooLong || labelTooLong;
+            const patternError = regexInvalid
+              ? 'Invalid regex'
+              : patternTooLong
+                ? `Pattern is too long (max ${MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH} characters)`
+                : undefined;
+            const labelError = labelTooLong
+              ? `Label is too long (max ${MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH} characters)`
+              : undefined;
             const isFirst = index === 0;
             const isLast = index === list.length - 1;
             return (
               <li key={row.id} className="space-y-1.5 rounded border p-2">
                 <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto]">
-                  <label className="block text-xs">
-                    <span className="mb-1 block text-2xs fg-secondary">
-                      Pattern
-                    </span>
-                    <input
-                      type="text"
-                      value={row.pattern}
-                      onChange={(event) =>
-                        updateRow(index, { pattern: event.target.value })
-                      }
-                      placeholder={'https?://localhost:\\d+\\S*'}
-                      maxLength={MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH}
-                      aria-invalid={inputInvalid || undefined}
-                      className="focus-ring w-full rounded-lg border bg-base px-2 py-1 font-mono text-2xs"
-                    />
-                  </label>
-                  <label className="block text-xs">
-                    <span className="mb-1 block text-2xs fg-secondary">
-                      Label
-                    </span>
-                    <input
-                      type="text"
-                      value={row.label}
-                      onChange={(event) =>
-                        updateRow(index, { label: event.target.value })
-                      }
-                      placeholder="Web app"
-                      maxLength={MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH}
-                      aria-invalid={labelTooLong || undefined}
-                      className="focus-ring w-full rounded-lg border bg-base px-2 py-1 text-2xs"
-                    />
-                  </label>
-                  <div className="flex items-end gap-1">
+                  <FormField label="Pattern" error={patternError}>
+                    {(control) => (
+                      <TextInput
+                        {...control}
+                        density="settings"
+                        mono
+                        type="text"
+                        value={row.pattern}
+                        onChange={(event) =>
+                          updateRow(index, { pattern: event.target.value })
+                        }
+                        placeholder={'https?://localhost:\\d+\\S*'}
+                        maxLength={MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH}
+                      />
+                    )}
+                  </FormField>
+                  <FormField label="Label" error={labelError}>
+                    {(control) => (
+                      <TextInput
+                        {...control}
+                        density="settings"
+                        type="text"
+                        value={row.label}
+                        onChange={(event) =>
+                          updateRow(index, { label: event.target.value })
+                        }
+                        placeholder="Web app"
+                        maxLength={MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH}
+                      />
+                    )}
+                  </FormField>
+                  <div className="flex items-start gap-1 md:pt-6">
                     <Button
                       variant="ghost"
                       size="compact"
@@ -889,21 +884,6 @@ function DevServerPatternsSection({
                     />
                   </div>
                 </div>
-                {regexInvalid && (
-                  <p className="text-2xs fg-destructive">Invalid regex</p>
-                )}
-                {patternTooLong && (
-                  <p className="text-2xs fg-destructive">
-                    Pattern is too long (max{' '}
-                    {MAX_SCRIPT_DEV_SERVER_PATTERN_LENGTH} characters)
-                  </p>
-                )}
-                {labelTooLong && (
-                  <p className="text-2xs fg-destructive">
-                    Label is too long (max {MAX_SCRIPT_DEV_SERVER_LABEL_LENGTH}{' '}
-                    characters)
-                  </p>
-                )}
               </li>
             );
           })}

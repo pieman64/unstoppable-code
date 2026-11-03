@@ -64,7 +64,7 @@ function results(...ids) {
   };
 }
 
-test('Recent chat detail shows the newest three steps and follows its setting', async () => {
+test('Recent chat detail groups multiple hidden calls and follows its setting', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-live-step-window-'),
@@ -143,10 +143,9 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
       timeout: 30_000,
     });
 
-    // Step lines in the transcript; the row under a reply holds the live
-    // "Thinking" line, which is not one of them.
+    // Count expandable transcript groups, excluding the standalone activity row.
     const groups = panel.locator(
-      '[data-testid="chat-tool-step-group"]:not([data-testid="turn-timer"] *)',
+      '[data-testid="chat-tool-step-group"]:has([aria-expanded]):not([data-testid="turn-timer"] *)',
     );
     const live = panel.getByTestId('chat-tool-step-live');
     const liveCalls = live.getByTestId('chat-tool-call');
@@ -173,35 +172,38 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
     await expect(liveCalls).toHaveCount(2);
     await expect(groups).toHaveCount(0);
 
-    // Each new step drops the oldest one behind a line that counts only the
-    // steps it holds; the running step is not repeated there.
+    // A group represents at least two hidden calls. A thought or one older
+    // call remains visible until there is enough work to summarize.
     await inject(assistant('step-read-3', [readCall('read-3', 'tooltip.ts')]));
-    await expect(groups).toHaveCount(1);
-    await expect(groups.first()).not.toHaveAttribute('data-live', '');
-    await expect(summary).toHaveText('Thought');
-    await expect(live.getByText('Thinking')).toHaveCount(0);
+    await expect(groups).toHaveCount(0);
     await expect(liveCalls).toHaveCount(3);
     await inject(results('read-3'));
     await inject(assistant('step-read-4', [readCall('read-4', 'cache.ts')]));
+    await expect(groups).toHaveCount(0);
+    await expect(liveCalls).toHaveCount(4);
+    await inject(results('read-4'));
+    await inject(assistant('step-read-5', [readCall('read-5', 'timer.ts')]));
+    await expect(groups).toHaveCount(1);
+    await expect(groups.first()).not.toHaveAttribute('data-live', '');
+    await expect(summary).toHaveText('Read 2 files');
     await expect(liveCalls).toHaveCount(3);
-    await expect(summary).toHaveText('Read 1 file');
     await expect(live.getByText('WakeLockIndicator.tsx')).toHaveCount(0);
-    await expect(live.getByText('cache.ts')).toBeVisible();
+    await expect(live.getByText('timer.ts')).toBeVisible();
 
-    // The line opens to every step and keeps following the turn.
+    // Expanding reveals the older calls while the recent rows stay mounted.
     const row = groups.first().getByRole('button').first();
     await expect(row).toHaveAttribute('aria-expanded', 'false');
     await row.click();
     await expect(row).toHaveAttribute('aria-expanded', 'true');
-    await expect(live).toHaveCount(0);
-    await expect(callRows).toHaveCount(4);
-    await inject(results('read-4'));
-    await inject(assistant('step-read-5', [readCall('read-5', 'timer.ts')]));
+    await expect(liveCalls).toHaveCount(3);
     await expect(callRows).toHaveCount(5);
+    await inject(results('read-5'));
+    await inject(assistant('step-read-6', [readCall('read-6', 'settings.ts')]));
+    await expect(callRows).toHaveCount(6);
     await row.click();
     await expect(liveCalls).toHaveCount(3);
     await expect(callRows).toHaveCount(3);
-    await inject(results('read-5'));
+    await inject(results('read-6'));
 
     // Agent text shows in full and folds the steps before it into one line.
     const message = 'Let me check where the cache is filled.';
@@ -209,13 +211,13 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
     await expect(panel.getByText(message)).toBeVisible();
     await expect(live).toHaveCount(0);
     await expect(callRows).toHaveCount(0);
-    await expect(summary).toHaveText('Read 5 files');
+    await expect(summary).toHaveText('Read 6 files');
 
     // A new window starts below the message, with no line of its own yet.
-    await inject(assistant('step-read-6', [readCall('read-6', 'boot.ts')]));
+    await inject(assistant('step-read-7', [readCall('read-7', 'boot.ts')]));
     await expect(liveCalls).toHaveCount(1);
     await expect(groups).toHaveCount(1);
-    await inject(results('read-6'));
+    await inject(results('read-7'));
 
     // A provider may emit thinking and text in one source message. Search
     // must reach the later text piece, with occurrences relative to the source.
@@ -228,7 +230,7 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
       ]),
     );
 
-    // Finishing the turn folds every run into a line; each still opens.
+    // Finishing folds the whole turn; reopening preserves a standalone call.
     await inject(
       assistant('step-answer', [
         { type: 'text', text: 'The tooltip is cached on start.' },
@@ -246,15 +248,14 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
       .getByTestId('turn-work-header')
       .getByRole('button', { name: /^Agent steps/ });
     await expect(agentSteps).toBeVisible({ timeout: 30_000 });
-    // A turn watched while it ran stays open when it finishes.
+    // Completion folds even a watched turn; reopen it to inspect its steps.
     if ((await agentSteps.getAttribute('aria-expanded')) === 'false') {
       await agentSteps.click();
     }
-    await expect(groups).toHaveCount(2);
-    await expect(live).toHaveCount(0);
-    await expect(callRows).toHaveCount(0);
-    await groups.nth(1).getByRole('button').first().click();
+    await expect(groups).toHaveCount(1);
+    await expect(live).toHaveCount(1);
     await expect(callRows).toHaveCount(1);
+    await expect(callRows.getByText('boot.ts')).toBeVisible();
 
     await panel.click();
     await window.keyboard.press('ControlOrMeta+f');
@@ -307,7 +308,7 @@ test('Recent chat detail shows the newest three steps and follows its setting', 
       window.api.savePreferences({ chatDetail: 'detailed' }),
     );
     await expect(groups).toHaveCount(0);
-    await expect(callRows).toHaveCount(6);
+    await expect(callRows).toHaveCount(7);
     await expect(panel.getByText(message)).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);

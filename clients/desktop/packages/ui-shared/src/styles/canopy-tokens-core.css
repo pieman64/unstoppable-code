@@ -232,6 +232,12 @@
   --shadow-field: var(--effect-ring-base);
   --shadow-field-focus:
     0 0 0 1px var(--fg-tertiary), 0 0 0 4px var(--line-base);
+  /* An invalid field keeps one colour family: the destructive edge at rest,
+   * and the focus geometry (edge + soft halo) in destructive roles while
+   * focused, replacing the neutral focus rather than stacking on it. */
+  --shadow-field-invalid: inset 0 0 0 1px var(--line-destructive);
+  --shadow-field-invalid-focus:
+    0 0 0 1px var(--line-destructive), 0 0 0 4px var(--bg-destructive-subtle);
   --shadow-focus: var(--effect-ring-focus);
   --shadow-tooltip: var(--shadow-tooltip);
 
@@ -1157,6 +1163,15 @@ body {
   outline-offset: 2px;
 }
 
+/* An invalid dropdown (a `combobox` trigger or a native `select`) draws its
+ * focus with the destructive field halo (`DROPDOWN_INVALID_CLASS`), so the
+ * accent outline stays off: one colour family. Any other invalid element
+ * keeps the outline, since it may have no halo of its own. Unlayered like the
+ * rule above, which a utility cannot override. */
+:is(select, [role='combobox']).focus-ring[aria-invalid='true']:focus-visible {
+  outline: none;
+}
+
 /* The same ring drawn inside the control, for full-bleed rows in a scrolling
  * or clipping container (a job list, a tree), where an outside ring would be
  * cut off at the container's edges. Use with `focus-ring`. */
@@ -1752,4 +1767,14 @@ body {
   color: var(--fg-secondary);
   background-image: none;
   -webkit-text-fill-color: currentColor;
+}
+
+/* Allow inactive transcript subtrees to skip rendering while interactive rows
+   retain their focus-ring paint and enlarged touch hit areas. */
+@utility content-auto {
+  content-visibility: auto;
+}
+
+@utility content-visible {
+  content-visibility: visible;
 }

@@ -176,6 +176,7 @@ import {
 } from '../agents/claude-approval-adapter';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { assertUntrustedChatInput } from '../agent-messaging/untrusted-input';
+import { waitForWorktreeGitSetup } from '../lib/worktree-git-setup';
 
 type EventSender = (
   channel:
@@ -227,6 +228,11 @@ interface RuntimeRecord {
    * whenever the audit turn closes so it is never reused across turns.
    */
   auditUserMessageId?: string;
+  /** Exact admitted plan input carried by the managed terminal prompt marker. */
+  planImplementationUserMessageId?: string;
+  suspendedPlanImplementationUserMessageId?: string;
+  /** Admitted delivery not yet acknowledged by its matching hook. */
+  pendingPlanImplementationUserMessageId?: string;
   /** Unix-ms when the PTY spawned, anchoring first-output latency metrics. */
   spawnedAt?: number;
   /** Token usage accumulated from assistant events during the open turn. */
@@ -245,6 +251,7 @@ interface RuntimeRecord {
   resumeHandlerUnsubscribe?: () => void;
   appAdvisorRuntime?: AppAdvisorToolRuntime;
   deferredToolsReloadContinuation?: {
+    planImplementationUserMessageId?: string;
     text: string;
     enabledResources: DeferredResourceSummary[];
     /** The interrupted turn's id; the relaunch continues the same turn. */
@@ -300,6 +307,7 @@ export interface ClaudeTerminalLaunchRuntimeOptions {
   /** Preserved only for an in-process deferred-reload continuation. */
   watcherRuntimeGeneration?: string;
   deferredToolsReloadContinuation?: {
+    planImplementationUserMessageId?: string;
     text: string;
     enabledResources: DeferredResourceSummary[];
     /** The interrupted turn's id; the relaunch continues the same turn. */
@@ -340,6 +348,13 @@ export interface ClaudeTerminalSessionService {
     target: ChatLifecycleTarget,
   ): ReturnType<ActiveChatInputProvider['getActiveChatInput']>;
   resumePendingObservations(target: ChatLifecycleTarget): Promise<void>;
+  retainPlanImplementationDelivery(
+    target: ChatLifecycleTarget & { userMessageId: string },
+  ): void;
+  recordPlanImplementationWriteFailure(
+    terminalId: string,
+    idempotencyKey?: string,
+  ): Promise<void> | undefined;
   authorizeAgentInputTerminalWrite(
     terminalId: string,
     idempotencyKey?: string,
@@ -491,6 +506,8 @@ const CLEANUP_REASONS_THAT_PERSIST_EXIT_STATE =
     'settings-change',
     'manual',
   ]);
+const WORKTREE_SETUP_FAILED = 'The worktree could not be set up.';
+const WORKTREE_SETUP_CANCELLED = 'Setup for this worktree was cancelled.';
 const CLAUDE_TERMINAL_HANDOFF_CHAR_LIMIT = 16_000;
 const TRAILING_TRANSCRIPT_SYNC_DELAY_MS = 750;
 // Post-Stop hooks (the user's own Stop hooks run alongside Canopy's) can
@@ -793,6 +810,50 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     scheduler: ClaudeTerminalChatSummaryScheduler,
   ): void {
     this.chatSummaryScheduler = scheduler;
+  }
+
+  /** Called only after main verifies the canonical admitted implementation. */
+  public retainPlanImplementationDelivery(
+    target: ChatLifecycleTarget & { userMessageId: string },
+  ): void {
+    const record = this.records.get(
+      runtimeKey(target.projectId, target.worktreeId, target.chatId),
+    );
+    if (record && isLiveClaudeTerminal(record.state)) {
+      record.pendingPlanImplementationUserMessageId = target.userMessageId;
+    }
+  }
+
+  /** A refused transport write cannot leave its admitted input active. */
+  public recordPlanImplementationWriteFailure(
+    terminalId: string,
+    idempotencyKey?: string,
+  ): Promise<void> | undefined {
+    const record = this.recordsByTerminalId.get(terminalId);
+    const userMessageId = record?.pendingPlanImplementationUserMessageId;
+    if (!record || !userMessageId || !idempotencyKey) return;
+    const suffix = idempotencyKey.slice(userMessageId.length);
+    if (
+      !idempotencyKey.startsWith(userMessageId) ||
+      !['-clear-0', '-clear-1', '-clear-2', '-paste', '-submit'].includes(
+        suffix,
+      )
+    )
+      return;
+    return getChatStateService()
+      .recordTerminalPlanImplementation(
+        {
+          projectId: record.projectId,
+          worktreeId: record.worktreeId,
+          chatId: record.chatId,
+          userMessageId,
+        },
+        'failed',
+      )
+      .then(() => {
+        if (record.pendingPlanImplementationUserMessageId === userMessageId)
+          delete record.pendingPlanImplementationUserMessageId;
+      });
   }
 
   /** Core policy for delayed managed-terminal input; ordinary writes keep their synchronous path. */
@@ -1158,11 +1219,25 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     if (pending) {
       return pending;
     }
-    const launchPromise = this.launchInternal(request, key, options).finally(
-      () => {
+    const launchPromise = this.launchInternal(request, key, options)
+      .catch(async (error: unknown) => {
+        const userMessageId = terminalPresentationTurnId(request.initialPrompt);
+        if (userMessageId) {
+          await getChatStateService().recordTerminalPlanImplementation(
+            {
+              projectId: request.projectId,
+              worktreeId: request.worktreeId,
+              chatId: request.chatId,
+              userMessageId,
+            },
+            'failed',
+          );
+        }
+        throw error;
+      })
+      .finally(() => {
         this.inflightLaunches.delete(key);
-      },
-    );
+      });
     this.inflightLaunches.set(key, launchPromise);
     return launchPromise;
   }
@@ -1189,6 +1264,24 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       };
     }
 
+    // A worktree still getting its Git checkout has no cwd to launch in.
+    // Wait without claiming the setup, so the chat send that follows still
+    // sees a failed or cancelled outcome.
+    const gitSetup = waitForWorktreeGitSetup(
+      request.projectId,
+      request.worktreeId,
+    );
+    const gitSetupOutcome = gitSetup ? await gitSetup : 'ready';
+    if (gitSetupOutcome !== 'ready') {
+      throw new Error(
+        gitSetupOutcome === 'cancelled'
+          ? WORKTREE_SETUP_CANCELLED
+          : WORKTREE_SETUP_FAILED,
+      );
+    }
+
+    const initialPromptId = terminalPresentationTurnId(request.initialPrompt);
+    let initialPlanImplementationId: string | undefined;
     const tab = await enqueueChatTabMutation(
       request.projectId,
       request.worktreeId,
@@ -1201,6 +1294,12 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         let currentTab = currentTabsFile.tabs.find(
           (candidate) => candidate.id === request.chatId,
         );
+        // Only main's existing admitted link can bind this pending delivery;
+        // a renderer fallback snapshot is not admission evidence.
+        const link = currentTab?.trackedPlanImplementation;
+        if (link && !link.outcome && link.userMessageId === initialPromptId) {
+          initialPlanImplementationId = initialPromptId;
+        }
         if (!currentTab && request.tabSnapshot?.id === request.chatId) {
           assertUntrustedChatInput(request.tabSnapshot);
           currentTab = request.tabSnapshot;
@@ -1349,6 +1448,19 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       assistantMode: appAdvisorMode ? 'app-advisor' : 'default',
       planMode: pendingPlanMode ?? tab.planMode === true,
       auditTurnOpen: false,
+      ...(initialPlanImplementationId
+        ? {
+            pendingPlanImplementationUserMessageId: initialPlanImplementationId,
+          }
+        : {}),
+      ...(options.deferredToolsReloadContinuation
+        ?.planImplementationUserMessageId
+        ? {
+            planImplementationUserMessageId:
+              options.deferredToolsReloadContinuation
+                .planImplementationUserMessageId,
+          }
+        : {}),
       codeGraphOrientationTurn: {},
       turnUsage: emptyTurnUsage(),
       turnDiffCaptureActive: false,
@@ -1401,6 +1513,8 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
             ? this.takePlanTurnLease(current)
             : undefined;
           const reloadTurnUserMessageId = current?.auditUserMessageId;
+          const reloadPlanImplementationUserMessageId =
+            current?.planImplementationUserMessageId;
           const presentationOrigin = {
             projectId: request.projectId,
             worktreeId: request.worktreeId,
@@ -1447,6 +1561,12 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
                   current?.watcherRuntimeGeneration ??
                   record.watcherRuntimeGeneration,
                 deferredToolsReloadContinuation: {
+                  ...(reloadPlanImplementationUserMessageId
+                    ? {
+                        planImplementationUserMessageId:
+                          reloadPlanImplementationUserMessageId,
+                      }
+                    : {}),
                   text: reloadRequest.continuationText,
                   enabledResources: reloadRequest.enabledResources,
                   ...(reloadTurnUserMessageId
@@ -1460,6 +1580,11 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
             );
           } catch (error) {
             reloadPlanTurnLease?.end();
+            if (current)
+              await this.settlePlanImplementation(
+                current,
+                reloadRequest.signal.aborted ? 'cancelled' : 'failed',
+              );
             throw error;
           }
           if (reloadPlanTurnLease) {
@@ -1476,6 +1601,9 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
             }
           }
           if (reloadRequest.signal.aborted) {
+            const interrupted = this.records.get(key);
+            if (interrupted)
+              await this.settlePlanImplementation(interrupted, 'cancelled');
             await this.cleanup({
               projectId: request.projectId,
               worktreeId: request.worktreeId,
@@ -1486,6 +1614,43 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
           }
         },
       );
+    const unsubscribeResume = record.resumeHandlerUnsubscribe;
+    const unsubscribeReloadOutcome = deferredToolsReloadCoordinator.subscribe(
+      (event) => {
+        if (
+          event.lifecycle.kind !== 'outcome' ||
+          event.scope.projectId !== record.projectId ||
+          event.scope.worktreeId !== record.worktreeId ||
+          event.scope.chatId !== record.chatId ||
+          this.records.get(key) !== record
+        )
+          return;
+        const userMessageId = record.suspendedPlanImplementationUserMessageId;
+        if (
+          !userMessageId ||
+          (record.planImplementationUserMessageId !== userMessageId &&
+            record.pendingPlanImplementationUserMessageId !== userMessageId)
+        )
+          return;
+        // A later unrelated Stop must not complete this abandoned attempt,
+        // including while its durable failure settlement is still pending.
+        delete record.planImplementationUserMessageId;
+        delete record.suspendedPlanImplementationUserMessageId;
+        record.pendingPlanImplementationUserMessageId = userMessageId;
+        void this.settlePlanImplementation(
+          record,
+          event.lifecycle.outcome === 'cancelled' ? 'cancelled' : 'failed',
+        ).catch((error: unknown) => {
+          this.recordDiagnostic(record, 'terminal_transcript_sync_failure', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+    );
+    record.resumeHandlerUnsubscribe = (): void => {
+      unsubscribeResume();
+      unsubscribeReloadOutcome();
+    };
     try {
       await this.persistTabState(
         request.projectId,
@@ -2008,7 +2173,20 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       this.terminalOutputDetectionTails.delete(record.state.terminalId);
       this.recordsByTerminalId.delete(record.state.terminalId);
     }
+    let settlementFailure: { error: unknown } | undefined;
     if (reason !== 'deferred-tools-reload') {
+      try {
+        const receivedHooks = record.state.sessionKey
+          ? this.hookTails.get(record.state.sessionKey)
+          : undefined;
+        await receivedHooks?.catch(() => undefined);
+        await this.settlePlanImplementation(record, 'cancelled');
+      } catch (error: unknown) {
+        settlementFailure = { error };
+        this.recordDiagnostic(record, 'terminal_transcript_sync_failure', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       this.closeAuditTurn(
         record,
         'cancelled',
@@ -2047,6 +2225,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     }
     this.records.delete(key);
     this.emitState(record);
+    if (settlementFailure) throw settlementFailure.error;
   }
 
   public async cleanupWorktree(
@@ -2078,10 +2257,69 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
 
   public markHookState(input: HookStateUpdate): Promise<void> {
     const occurredAt = Date.now();
+    const terminalHook =
+      input.hookEventName === 'Stop' ||
+      input.hookEventName === 'StopFailure' ||
+      input.hookEventName === 'SessionEnd';
+    const record = Array.from(this.records.values()).find(
+      (candidate) => candidate.state.sessionKey === input.sessionKey,
+    );
+    const suppressPlanTerminal =
+      terminalHook &&
+      record !== undefined &&
+      deferredToolsReloadCoordinator.shouldSuppressProviderTerminal(record);
+    if (suppressPlanTerminal) {
+      record.suspendedPlanImplementationUserMessageId =
+        record.planImplementationUserMessageId ??
+        record.pendingPlanImplementationUserMessageId;
+    }
     const previous = this.hookTails.get(input.sessionKey) ?? Promise.resolve();
     const pending = previous
       .catch(() => undefined)
-      .then(() => this.markHookStateOrdered(input, occurredAt));
+      .then(async () => {
+        // Keep the received plan hooks ordered even if exit removes this record
+        // before their asynchronous transcript work can run.
+        if (record && input.hookEventName === 'UserPromptSubmit') {
+          const submittedTurnId = terminalPresentationTurnId(
+            getStringField(input.hookPayload, 'prompt'),
+          );
+          if (submittedTurnId) {
+            const target = {
+              projectId: record.projectId,
+              worktreeId: record.worktreeId,
+              chatId: record.chatId,
+              userMessageId: submittedTurnId,
+            };
+            if (
+              await getChatStateService().recordTerminalPlanImplementation(
+                target,
+                'started',
+              )
+            ) {
+              record.planImplementationUserMessageId = submittedTurnId;
+              if (
+                record.pendingPlanImplementationUserMessageId ===
+                submittedTurnId
+              )
+                delete record.pendingPlanImplementationUserMessageId;
+            }
+          }
+        }
+        try {
+          await this.markHookStateOrdered(input, occurredAt);
+        } finally {
+          if (record && terminalHook && !suppressPlanTerminal) {
+            await this.settlePlanImplementation(
+              record,
+              record.interruptSettling || input.hookEventName === 'SessionEnd'
+                ? 'cancelled'
+                : input.hookEventName === 'StopFailure'
+                  ? 'failed'
+                  : 'completed',
+            );
+          }
+        }
+      });
     this.hookTails.set(input.sessionKey, pending);
     void pending
       .finally(() => {
@@ -2116,6 +2354,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
         submittedTurnId ? 'automation' : 'user',
       );
       record.presentationTurnId = turn.turnId;
+
       if (
         !record.deferredToolsReloadContinuation &&
         (turn.source === 'user' || turn.source === 'portal')
@@ -2847,6 +3086,31 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     record.planTurnLease = undefined;
     record.inheritedPlanTurnLease = undefined;
     return lease;
+  }
+
+  private async settlePlanImplementation(
+    record: RuntimeRecord,
+    outcome: 'completed' | 'failed' | 'cancelled',
+  ): Promise<void> {
+    const userMessageId =
+      record.planImplementationUserMessageId ??
+      (outcome === 'completed'
+        ? undefined
+        : record.pendingPlanImplementationUserMessageId);
+    if (!userMessageId) return;
+    await getChatStateService().recordTerminalPlanImplementation(
+      {
+        projectId: record.projectId,
+        worktreeId: record.worktreeId,
+        chatId: record.chatId,
+        userMessageId,
+      },
+      outcome,
+    );
+    if (record.planImplementationUserMessageId === userMessageId)
+      delete record.planImplementationUserMessageId;
+    if (record.pendingPlanImplementationUserMessageId === userMessageId)
+      delete record.pendingPlanImplementationUserMessageId;
   }
 
   private closeAuditTurn(
@@ -3652,8 +3916,23 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     this.terminalOutputDetectionTails.delete(payload.terminalId);
     const record = this.recordsByTerminalId.get(payload.terminalId);
     if (!record) return;
-    if (record.watcherObservations?.some((item) => !item.terminalAt)) {
-      void this.settleExitedWatcherTurn(record, payload.exitCode)
+    if (
+      record.planImplementationUserMessageId ||
+      record.pendingPlanImplementationUserMessageId ||
+      record.watcherObservations?.some((item) => !item.terminalAt)
+    ) {
+      const receivedHooks = record.state.sessionKey
+        ? this.hookTails.get(record.state.sessionKey)
+        : undefined;
+      void (receivedHooks ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() =>
+          this.settlePlanImplementation(
+            record,
+            payload.exitCode === 0 ? 'cancelled' : 'failed',
+          ),
+        )
+        .then(() => this.settleExitedWatcherTurn(record, payload.exitCode))
         .catch((error: unknown) => {
           this.recordDiagnostic(record, 'terminal_transcript_sync_failure', {
             error: error instanceof Error ? error.message : String(error),
@@ -3838,6 +4117,7 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
     record.approvalSession?.invalidatePending?.();
     try {
       const interruptedAt = Date.now();
+      await this.settlePlanImplementation(record, 'cancelled');
       await this.observeWatcherTerminal(
         record,
         'interrupted',

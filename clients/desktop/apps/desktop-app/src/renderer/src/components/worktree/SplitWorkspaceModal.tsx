@@ -2,14 +2,11 @@ import { Button } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
-  useRef,
   useState,
   type JSX,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/shallow';
 import {
   WORKSPACE_ROOT_REPO_ID,
@@ -18,10 +15,7 @@ import {
   type SplitTemporaryWorkspacePreviewResponse,
   type SplitTemporaryWorkspaceSelection,
 } from '@canopy/desktop-shared/types';
-import {
-  getInitialBadgePopoverPosition,
-  getMeasuredBadgePopoverPosition,
-} from '@canopy/ui-shared/components';
+import { ErrorBanner, RichHoverTooltip } from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
   ChatIcon,
@@ -69,49 +63,20 @@ function disambiguateEntries(
 }
 
 /**
- * List popover for the item counters, following the worktree-row badge
- * popover UX (`ChatPreviewPopover` and friends): portaled to `document.body`,
- * anchored to the counter's DOMRect, flipped above when it would overflow.
- * Shows up to the summary's included titles with an "N more…" tail.
+ * The item counter's hover list: up to the summary's included titles with an
+ * "N more…" tail, on the shared rich hover surface.
  */
-interface ItemListPopoverProps {
-  anchorRect: DOMRect;
-  heading: string;
-  entries: SplitTemporaryWorkspaceItemSummaryEntry[];
-  moreCount: number;
-}
-
-function ItemListPopover({
-  anchorRect,
+function ItemListContent({
   heading,
   entries,
   moreCount,
-}: ItemListPopoverProps): JSX.Element {
-  const popoverRef = useRef<HTMLDivElement | null>(null);
-  const [position, setPosition] = useState(() =>
-    getInitialBadgePopoverPosition(anchorRect),
-  );
-
-  useLayoutEffect(() => {
-    const element = popoverRef.current;
-    if (!element) return;
-    const measured = element.getBoundingClientRect();
-    setPosition(
-      getMeasuredBadgePopoverPosition(
-        anchorRect,
-        measured.height,
-        measured.width,
-      ),
-    );
-  }, [anchorRect]);
-
-  return createPortal(
-    <div
-      ref={popoverRef}
-      className="pointer-events-none fixed z-tooltip min-w-50 max-w-75 rounded-lg bg-popover px-3 py-2 shadow-lg"
-      style={{ top: position.top, left: position.left }}
-      role="tooltip"
-    >
+}: {
+  heading: string;
+  entries: SplitTemporaryWorkspaceItemSummaryEntry[];
+  moreCount: number;
+}): JSX.Element {
+  return (
+    <>
       <div className="mb-1 text-3xs font-semibold fg-secondary">{heading}</div>
       <div className="space-y-1.5">
         {disambiguateEntries(entries).map(({ key, entry }) => (
@@ -134,12 +99,11 @@ function ItemListPopover({
           <div className="text-3xs fg-secondary">{moreCount} more…</div>
         )}
       </div>
-    </div>,
-    document.body,
+    </>
   );
 }
 
-/** One icon+count counter with the hover list popover. Hidden when empty. */
+/** One icon+count counter with the hover list. Hidden when empty. */
 interface ItemCounterProps {
   icon: ReactNode;
   heading: string;
@@ -153,32 +117,30 @@ function ItemCounter({
   summary,
   testId,
 }: ItemCounterProps): JSX.Element | null {
-  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   if (summary.count === 0) {
     return null;
   }
   return (
-    <>
-      <span
-        className="inline-flex shrink-0 items-center gap-0.5 text-xs tabular-nums fg-secondary"
-        data-testid={testId}
-        onMouseEnter={(event) =>
-          setAnchorRect(event.currentTarget.getBoundingClientRect())
-        }
-        onMouseLeave={() => setAnchorRect(null)}
-      >
-        {icon}
-        {summary.count}
-      </span>
-      {anchorRect && (
-        <ItemListPopover
-          anchorRect={anchorRect}
+    <RichHoverTooltip
+      content={
+        <ItemListContent
           heading={heading}
           entries={summary.entries}
           moreCount={summary.count - summary.entries.length}
         />
-      )}
-    </>
+      }
+      elevation="menu"
+      surfacePadding="card"
+      surfaceClassName="min-w-50 max-w-75"
+    >
+      <span
+        className="inline-flex shrink-0 items-center gap-0.5 text-xs tabular-nums fg-secondary"
+        data-testid={testId}
+      >
+        {icon}
+        {summary.count}
+      </span>
+    </RichHoverTooltip>
   );
 }
 
@@ -541,10 +503,7 @@ export function SplitWorkspaceModal({
       titleId="split-workspace-title"
       maxWidth="xl"
     >
-      <div
-        className="space-y-4 p-5 pt-3 text-s"
-        data-testid="split-workspace-modal"
-      >
+      <div className="space-y-4 text-s" data-testid="split-workspace-modal">
         <p className="text-xs fg-secondary">
           Splitting moves each kept repo&apos;s checkout — along with its chats,
           workflow runs and plans — into a new worktree in that repo&apos;s own
@@ -734,6 +693,12 @@ export function SplitWorkspaceModal({
           </div>
         )}
 
+        <ErrorBanner
+          error={previewError}
+          className=""
+          testId="split-workspace-modal-error"
+        />
+
         <div className="flex items-center justify-end gap-2 pt-1">
           {!previewLoaded && previewError === null && repos.length > 0 && (
             <span
@@ -767,15 +732,6 @@ export function SplitWorkspaceModal({
             </Button>
           </Tooltip>
         </div>
-
-        {previewError && (
-          <div
-            className="rounded-md border border-line-destructive/40 bg-destructive-subtle px-3 py-2 text-xs fg-destructive"
-            data-testid="split-workspace-modal-error"
-          >
-            {previewError}
-          </div>
-        )}
       </div>
     </DialogModal>
   );

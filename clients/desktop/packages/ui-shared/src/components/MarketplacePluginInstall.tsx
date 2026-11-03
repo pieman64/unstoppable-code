@@ -108,7 +108,7 @@ export function PluginInstallStatusCell({
           onInstall();
         }}
         aria-label={
-          error ? `Retry install ${pluginName}` : `Install ${pluginName}`
+          error ? `Try again to install ${pluginName}` : `Install ${pluginName}`
         }
         className={`focus-ring inline-flex items-center justify-center rounded p-1 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
           error

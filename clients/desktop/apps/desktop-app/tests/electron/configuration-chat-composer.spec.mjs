@@ -15,6 +15,7 @@ import {
 } from './canopyApp.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import {
   seedAutomations,
   seedCoworkWorkspace,
@@ -665,7 +666,10 @@ test('hook source follows selected worktree while local override searches the de
     await settings.getByTestId('project-settings-add-hook').click();
     let addHook = settings.getByTestId('hook-add-form');
     await expect(addHook).toHaveCount(1);
-    await addHook.locator('select').nth(1).selectOption('chat');
+    await chooseSettingsOption(
+      addHook.getByTestId('hook-add-action-type'),
+      'chat',
+    );
     let draft = addHook.locator(
       '[data-testid^="hook-chat-draft-"][contenteditable="true"]',
     );
@@ -680,7 +684,10 @@ test('hook source follows selected worktree while local override searches the de
     ).toHaveCount(1);
     await settings.getByTestId('hook-add-another').click();
     addHook = settings.getByTestId('hook-add-form');
-    await addHook.locator('select').nth(1).selectOption('chat');
+    await chooseSettingsOption(
+      addHook.getByTestId('hook-add-action-type'),
+      'chat',
+    );
     draft = addHook.locator(
       '[data-testid^="hook-chat-draft-"][contenteditable="true"]',
     );

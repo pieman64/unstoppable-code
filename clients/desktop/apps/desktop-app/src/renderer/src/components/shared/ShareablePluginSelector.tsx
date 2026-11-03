@@ -295,15 +295,15 @@ export function ShareablePluginSelector({
 
   return (
     <div className="flex flex-1 flex-col min-h-0">
-      <p className="px-5 pt-3 text-xs fg-secondary">
+      <p className="px-6 pt-3 text-xs fg-secondary">
         {helperText ?? DEFAULT_HELPER_TEXT}
       </p>
       {isEmpty ? (
-        <div className="px-5 py-3 text-xs fg-secondary">
+        <div className="px-6 py-3 text-xs fg-secondary">
           {emptyText ?? DEFAULT_EMPTY_TEXT}
         </div>
       ) : (
-        <div className="flex flex-1 flex-col min-h-0 px-5 py-3">
+        <div className="flex flex-1 flex-col min-h-0 px-6 py-3">
           <UnifiedTable
             rows={tableRows}
             sourceOptions={tableSourceOptions}

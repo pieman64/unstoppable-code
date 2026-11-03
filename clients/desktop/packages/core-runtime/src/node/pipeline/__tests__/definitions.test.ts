@@ -243,6 +243,71 @@ describe('pipeline definition source precedence', () => {
   });
 });
 
+describe('pipeline definition owner reads', () => {
+  const ORG = 'org:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+  const ownerPort = (
+    owners: Array<string | undefined>,
+  ): PipelineDefinitionSourcePort => ({
+    ...port(['user'], [document('user', 'a')]),
+    read: (
+      source: PipelineDefinitionSourceDocument['source'],
+      definitionId: string,
+      context: { owner?: string },
+    ): Promise<PipelineDefinitionSourceDocument | null> => {
+      owners.push(context.owner);
+      return Promise.resolve(document(source, definitionId));
+    },
+  });
+
+  it('hands the owner to the source for a caller granted owner reads', async () => {
+    const owners: Array<string | undefined> = [];
+    const dispatcher = dispatcherFor([ownerPort(owners)]);
+    await dispatcher.query(
+      'core.pipeline.definition.get',
+      { definitionId: 'a', owner: ORG },
+      {
+        caller: {
+          ...caller,
+          grants: [...caller.grants, PIPELINE_GRANTS.ownerRead],
+        },
+      },
+    );
+    await dispatcher.query(
+      'core.pipeline.definition.get',
+      { definitionId: 'a' },
+      { caller },
+    );
+    expect(owners).toEqual([ORG, undefined]);
+  });
+
+  it('refuses an owner from a caller without the owner read grant', async () => {
+    const owners: Array<string | undefined> = [];
+    await expect(
+      dispatcherFor([ownerPort(owners)]).query(
+        'core.pipeline.definition.get',
+        { definitionId: 'a', owner: ORG },
+        { caller },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    expect(owners).toEqual([]);
+  });
+
+  it('rejects an owner that is not a serialized run owner', async () => {
+    await expect(
+      dispatcherFor([]).query(
+        'core.pipeline.definition.get',
+        { definitionId: 'a', owner: 'org:not-a-uuid' },
+        {
+          caller: {
+            ...caller,
+            grants: [...caller.grants, PIPELINE_GRANTS.ownerRead],
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
+  });
+});
+
 describe('pipeline definition listing', () => {
   const ports = (): PipelineDefinitionSourcePort[] => [
     port(['curated'], [document('curated', 'curated:review')], {

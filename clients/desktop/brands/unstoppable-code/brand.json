@@ -196,7 +196,11 @@
           "label": "Discord",
           "href": "https://discord.gg/thU89YfnR"
         }
-      ]
+      ],
+      "sourceRepository": {
+        "url": "https://github.com/unstoppable-si/unstoppable-code",
+        "license": "MIT"
+      }
     }
   },
   "release": {

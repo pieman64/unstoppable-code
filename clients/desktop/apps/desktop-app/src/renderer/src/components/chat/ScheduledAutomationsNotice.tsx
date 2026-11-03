@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
-import { createPortal } from 'react-dom';
 import {
   ActionTooltip,
   ConfirmDialog,
@@ -335,22 +334,21 @@ export function ScheduledAutomationsNoticeView({
         </ActionTooltip>
         {nextLabel ? ` · next ${nextLabel}` : null}
       </Notice>
-      {pauseId !== null &&
-        createPortal(
-          <ConfirmDialog
-            dataTestId="scheduled-automation-pause-dialog"
-            confirmTestId="scheduled-automation-pause-confirm"
-            title="Pause this automation?"
-            message="It won't run again until you turn it back on from Automations."
-            confirmLabel="Pause"
-            busy={pauseBusy}
-            busyLabel="Pausing…"
-            errorMessage={pauseError}
-            onConfirm={(): void => void handleConfirmPause()}
-            onCancel={handleCancelPause}
-          />,
-          getDocument(moreButtonRef.current).body,
-        )}
+      {pauseId !== null && (
+        <ConfirmDialog
+          dataTestId="scheduled-automation-pause-dialog"
+          confirmTestId="scheduled-automation-pause-confirm"
+          title="Pause this automation?"
+          message="It won't run again until you turn it back on from Automations."
+          confirmLabel="Pause"
+          busy={pauseBusy}
+          busyLabel="Pausing…"
+          errorMessage={pauseError}
+          onConfirm={(): void => void handleConfirmPause()}
+          onCancel={handleCancelPause}
+          ownerDocument={getDocument(moreButtonRef.current)}
+        />
+      )}
     </>
   );
 }

@@ -24,6 +24,7 @@ import {
 import { applyWorkspaceManifestDecision } from './workspace-record-decision-port';
 import { WORKSPACE_MANIFEST_STORAGE, withStorageAdmission } from './w5-storage';
 import { pipelineHookBindingsEnabled } from './workspace-source-record-policy';
+import { w5LifecycleReceiptCaller, type W5WireCall } from './w5-wire-call';
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { restoreWorkspaceRootInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
@@ -119,6 +120,8 @@ export interface WorkspaceSourceRepoInitializeRequest extends W5BoundaryOptions 
    */
   workspaceName?: string;
   source: WorkspaceSourceRepoInitializeSource;
+  /** A registered wire call's receipt scope and admission (W7b-4). */
+  wireCall?: W5WireCall;
 }
 
 export {
@@ -228,12 +231,17 @@ export async function initializeWorkspaceSourceRepo(
     const parameters = { ...request };
     delete parameters.expectedRevision;
     delete parameters.idempotencyKey;
+    delete parameters.wireCall;
     return runW5BoundaryOperation<WorkspaceInitGitResponse>(
       {
         operation: 'core.workspace.sourceRepo.initialize',
-        caller: 'desktop-host:workspace-source-initialization',
+        caller: w5LifecycleReceiptCaller(
+          'workspace-source-initialization',
+          request.wireCall,
+        ),
         idempotencyKey: request.idempotencyKey,
         parameters,
+        admit: request.wireCall?.admit,
         recheckAtOutcome: true,
         isPreEffectRefusal: (error) =>
           error instanceof WorkspaceSourceRepoRefusedError ||
@@ -272,7 +280,7 @@ async function initializeWorkspaceSourceRepoAdmitted(
   if (detail.authority === 'unreadable') {
     throw refuseSourceRepo(
       'configuration-unavailable',
-      new WorkspaceConfigUnreadableError().message,
+      new WorkspaceConfigUnreadableError(detail.unserved).message,
     );
   }
   const localConfig = detail.config;

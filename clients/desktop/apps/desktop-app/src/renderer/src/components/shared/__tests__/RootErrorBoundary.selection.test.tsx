@@ -26,10 +26,8 @@ it('keeps crash diagnostics in a selectable region', () => {
         </RootErrorBoundary>,
       ),
     );
-    const diagnostic = Array.from(container.querySelectorAll('p')).find(
-      (node) => node.textContent === 'Diagnostic message to copy',
-    );
-    expect(diagnostic).toBeDefined();
+    const diagnostic = container.querySelector('[role="alert"]');
+    expect(diagnostic?.textContent).toContain('Diagnostic message to copy');
     expect(diagnostic?.closest('[data-selectable]')).not.toBeNull();
   } finally {
     act(() => root.unmount());

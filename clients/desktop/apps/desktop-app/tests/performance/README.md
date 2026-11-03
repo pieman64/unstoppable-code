@@ -52,7 +52,17 @@ pnpm run perf:desktop --profile baseline --scenarios browser-actions --browser-a
 pnpm run build && node --import tsx apps/desktop-app/tests/performance/run.mjs --release-like --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run perf:desktop --profile baseline --scenarios browser-agent-actions
 pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/to/unchanged --candidate-root . --profile baseline --scenarios code-review-registry-cleanup
+pnpm run perf:desktop --profile smoke --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store daemon-record-port
+pnpm run perf:desktop:compare:interleaved --baseline-root . --candidate-root . --profile baseline --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store-arms in-process,daemon-record-port
 ```
+
+`--w5-store` launches the E2E build with the `in-process` or the
+`daemon-record-port` W5 store. The interleaved driver's
+`--w5-store-arms <baseline>,<candidate>` sets one arm per side and launches
+the candidate build on both sides. The arm is recorded as `treatment`, and
+the `w5` counters land in `scenarios[].work.w5`. Without daemon-owned storage
+rows, the daemon arm refuses W5 writes as counted typed failures. See
+[W5 store arms](../../../../docs/desktop-app-performance.md#w5-store-arms-can-5532).
 
 Timestamped smoke outputs and their matching `-diagnostics/` directories are
 retained as run pairs. After each smoke run the suite keeps only the newest two
@@ -245,6 +255,7 @@ exposes intermittent stalls that a burst can miss.
 | `hotspots.mjs`         | source-map resolution and Markdown/JSON hot-path reports                                                   |
 | `mock-server.mjs`      | deterministic E2E service lifecycle                                                                        |
 | `daemon-*.mjs`         | daemon Files treatment admission, start/attach and Files populations, arm preparation, raw summaries       |
+| `w5-store-*.mjs`       | W5 store arms: arm parsing, launch env and treatment; the startup, reload and write scenarios              |
 
 `work-metrics.json` (the counter registry) and `work-ceilings.json` (the
 per-platform ceilings) are checked-in inputs to `work-ratchet.mjs`; see

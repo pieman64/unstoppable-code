@@ -42,7 +42,7 @@ export function PipelineModelAliasesSection({
       className="space-y-1.5"
       data-testid="pipeline-model-aliases-section"
     >
-      <label className="text-xs font-medium fg-secondary ">Model aliases</label>
+      <h3 className="text-xs font-medium fg-secondary">Model aliases</h3>
       <p className="text-xs fg-secondary">
         Choose the model alias values agent steps will use. Workflow defaults
         are used as the baseline when available.

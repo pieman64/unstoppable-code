@@ -1,7 +1,7 @@
 import { type JSX, useCallback, useEffect, useState, useRef } from 'react';
 import { DoneCheckIcon, MagnifyingGlassIcon } from '@canopy/ui-shared/icons';
 import { UserPlus } from '@canopy/ui-shared/icons/AppIcons';
-import { Button, EmptyState } from '@canopy/ui-shared/components';
+import { Button, EmptyState, ErrorBanner } from '@canopy/ui-shared/components';
 import { OrganizationInviteButton } from '@canopy/ui-app/sharing';
 import {
   InviteToOrganizationDialog,
@@ -169,11 +169,10 @@ export function OnlyMemberEmptyState({
                 {`Manage members in ${organizationName}`}
               </Button>
             )}
-            {openFailed && (
-              <p className="text-xs fg-destructive" role="alert">
-                Could not open that page. Try again.
-              </p>
-            )}
+            <ErrorBanner
+              className=""
+              error={openFailed ? 'Could not open that page. Try again.' : null}
+            />
           </div>
         }
       />

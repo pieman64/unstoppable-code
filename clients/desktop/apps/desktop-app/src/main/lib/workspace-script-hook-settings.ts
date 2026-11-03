@@ -1,19 +1,18 @@
+import {
+  createWorkspaceSettingsCommands,
+  ScriptHookSettingsRefusedError,
+  type ScriptHookSettingsRefusal,
+  type ScriptHookSettingsSource,
+  type WorkspacePlanDetectionUpdateRequest,
+  type WorkspaceScriptsUpdateRequest,
+  type WorkspaceSettingsCommands,
+} from '@canopy/core-runtime/node/w5/workspace-metadata/settings';
+import type { W5WorkspaceCommandHost } from '@canopy/core-runtime/node/w5/workspace-metadata/ports';
 import { decodeW5WorktreeHooksPausedOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
-import type {
-  WorkspaceConfigFile,
-  WorkspacePlanDetectionConfig,
-  WorktreeData,
-} from '@canopy/desktop-shared/types';
+import type { WorktreeData } from '@canopy/desktop-shared/types';
 import { normalizeHookInputMap } from '@canopy/desktop-shared/types';
 import type { HookInputMap, HookOverrides } from '@canopy/desktop-shared/hooks';
 import type { W5Resource } from '@canopy/desktop-shared/node/w5-commit-log';
-import {
-  isScriptDefinition,
-  normalizeScriptInputMap,
-  normalizeScriptName,
-  type ScriptInputMap,
-  type ScriptValue,
-} from '@canopy/desktop-shared/scripts';
 import {
   bindHookContextsWithCapturedContext,
   captureBackgroundExecutionContext,
@@ -28,7 +27,17 @@ import {
 } from './w5-boundary-operation';
 import { withW5Commit } from './w5-commit-log-file-store';
 import type { W5CommitOptions } from './w5-commit-scope';
-import { createW5SingleDecisionOperation } from './w5-single-decision-operation';
+import type { W5NamedUnreadableError } from './w5-file-store';
+import {
+  createW5SingleDecisionOperation,
+  wireW5Decode,
+  withW5DecisionOnlyRetry,
+  type W5WireDecisionCall,
+} from './w5-single-decision-operation';
+import {
+  desktopW5WorkspaceCommandHost,
+  desktopW5WorkspaceManifestEditor,
+} from './w5-workspace-command-host';
 import {
   readWorkspaceConfigDetailed,
   updateWorkspaceConfig,
@@ -37,42 +46,14 @@ import {
   type WorktreeListAuthority,
 } from './workspace-persistence';
 
-/**
- * The caller of a script, hook, plan detection or paused-hook change: the
- * desktop renderer, the browser Remote Control portal, or an agent's App
- * Advisor action. A closed set; a keyed receipt names it as
- * `desktop-host:<source>`.
- */
-export type ScriptHookSettingsSource = 'desktop' | 'portal' | 'app_advisor';
-
-/**
- * A change to a workspace's persisted script overrides
- * (`core.workspace.scripts.update`, CAN-3799).
- *
- * - `replace` sets the workspace-level (root or single repository) scripts.
- * - `merge-commands` edits only the named scripts by command string: an empty
- *   command removes that script, and a `ScriptDefinition`'s other fields
- *   (timeout, shell, dev server) are kept.
- * - `repositories` replaces the scripts of each named member repository; a
- *   repository the workspace does not have is skipped, as it always was.
- * - `definition` sets one script of the workspace, or of `repoId`, keeping the
- *   others; `null` disables an inherited script. `remove-definition` drops
- *   that script's setting so the inherited one applies again. Both refuse a
- *   repository the workspace does not have
- *   (`core.script.definition.upsert` and `.delete`, CAN-4153).
- */
-export type WorkspaceScriptsChange =
-  | { kind: 'replace'; scripts: ScriptInputMap | undefined }
-  | { kind: 'merge-commands'; commands: Readonly<Record<string, string>> }
-  | {
-      kind: 'repositories';
-      repos: ReadonlyArray<{
-        repoId: string;
-        scripts: ScriptInputMap | undefined;
-      }>;
-    }
-  | { kind: 'definition'; repoId?: string; name: string; value: ScriptValue }
-  | { kind: 'remove-definition'; repoId?: string; name: string };
+export {
+  ScriptHookSettingsRefusedError,
+  type ScriptHookSettingsRefusal,
+  type ScriptHookSettingsSource,
+  type WorkspacePlanDetectionUpdateRequest,
+  type WorkspaceScriptsChange,
+  type WorkspaceScriptsUpdateRequest,
+} from '@canopy/core-runtime/node/w5/workspace-metadata/settings';
 
 /**
  * A change to a workspace's persisted hook overrides
@@ -100,24 +81,9 @@ export type WorktreeHookPauseChange =
   | { kind: 'pause' | 'resume'; hookKeys: readonly string[] };
 
 /** `expectedRevision` is the workspace revision (`workspace:{id}`). */
-export interface WorkspaceScriptsUpdateRequest extends W5BoundaryOptions {
-  workspaceId: string;
-  change: WorkspaceScriptsChange;
-  source: ScriptHookSettingsSource;
-}
-
-/** `expectedRevision` is the workspace revision (`workspace:{id}`). */
 export interface WorkspaceHooksUpdateRequest extends W5BoundaryOptions {
   workspaceId: string;
   change: WorkspaceHooksChange;
-  source: ScriptHookSettingsSource;
-}
-
-/** `expectedRevision` is the workspace revision (`workspace:{id}`). */
-export interface WorkspacePlanDetectionUpdateRequest extends W5BoundaryOptions {
-  workspaceId: string;
-  /** The whole plan detection configuration; an empty one clears it. */
-  planDetection: WorkspacePlanDetectionConfig;
   source: ScriptHookSettingsSource;
 }
 
@@ -138,24 +104,6 @@ export interface WorktreeHooksSetPausedOutcome {
   changed: boolean;
 }
 
-export type ScriptHookSettingsRefusal =
-  | 'read-only-scope'
-  | 'invalid-request'
-  | 'not-found'
-  | 'configuration-unavailable'
-  | 'worktrees-unavailable';
-
-/** The change was refused before anything was written. */
-export class ScriptHookSettingsRefusedError extends Error {
-  constructor(
-    readonly reason: ScriptHookSettingsRefusal,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'ScriptHookSettingsRefusedError';
-  }
-}
-
 const WORKTREES_UNAVAILABLE_MESSAGE =
   "Couldn't change this worktree's paused hooks because its worktree list couldn't be read. Try again.";
 
@@ -163,10 +111,31 @@ function refuse(reason: ScriptHookSettingsRefusal, message: string): never {
   throw new ScriptHookSettingsRefusedError(reason, message);
 }
 
-const runSettingsCommand =
-  createW5SingleDecisionOperation<ScriptHookSettingsSource>(
-    (error) => error instanceof ScriptHookSettingsRefusedError,
-  );
+/**
+ * #7 and #26 (W5d2, CAN-5536): each call is a decision-only unit. #7's
+ * context capture is a read in admission, and #26's list write stages no
+ * sidecar before its decision (P14).
+ */
+const isSettingsRefusal = (error: unknown): boolean =>
+  error instanceof ScriptHookSettingsRefusedError;
+
+const runSettingsCommand = withW5DecisionOnlyRetry(
+  createW5SingleDecisionOperation<ScriptHookSettingsSource>(isSettingsRefusal),
+);
+
+/** The runner for one call: a wire call's receipts name its principal. */
+function settingsRunner(
+  wire: W5WireDecisionCall<never> | undefined,
+): typeof runSettingsCommand {
+  return wire
+    ? withW5DecisionOnlyRetry(
+        createW5SingleDecisionOperation<ScriptHookSettingsSource>(
+          isSettingsRefusal,
+          wire,
+        ),
+      )
+    : runSettingsCommand;
+}
 
 function workspaceResource(workspaceId: string): W5Resource {
   return { kind: 'workspace', workspaceId };
@@ -193,10 +162,6 @@ function admitScope(workspaceId: string): void {
   if (!isWritableScope(workspaceId)) {
     refuse('read-only-scope', READ_ONLY_SCOPE_ERROR);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Unique non-empty keys, sorted: the persisted form of `pausedHookKeys`. */
@@ -245,164 +210,40 @@ async function refuseUnreadableManifest(
   }
 }
 
-function admitScriptsChange(
-  change: WorkspaceScriptsChange,
-): WorkspaceScriptsChange {
-  if (change.kind === 'merge-commands') {
-    const commands: unknown = change.commands;
-    if (
-      !isRecord(commands) ||
-      !Object.values(commands).every((command) => typeof command === 'string')
-    ) {
-      refuse('invalid-request', 'Invalid script commands.');
-    }
-    return change;
-  }
-  if (change.kind === 'repositories') {
-    const repos: unknown = change.repos;
-    if (!Array.isArray(repos)) {
-      refuse('invalid-request', 'Invalid repository scripts.');
-    }
-  }
-  if (change.kind === 'definition' || change.kind === 'remove-definition') {
-    return admitDefinitionChange(change);
-  }
-  return change;
+/** The desktop's settings commands, under `host`'s decisions and receipts. */
+export function createDesktopWorkspaceSettingsCommands(
+  host: W5WorkspaceCommandHost<ScriptHookSettingsSource>,
+): WorkspaceSettingsCommands {
+  return createWorkspaceSettingsCommands({
+    ...host,
+    manifest: desktopW5WorkspaceManifestEditor,
+    isWritableScope: (workspaceId) => isWritableScope(workspaceId),
+    readOnlyScopeMessage: READ_ONLY_SCOPE_ERROR,
+  });
 }
 
-/**
- * One script's change, normalized as it is stored, so a keyed replay of the
- * same edit fingerprints the same request.
- */
-function admitDefinitionChange(
-  change: Extract<
-    WorkspaceScriptsChange,
-    { kind: 'definition' | 'remove-definition' }
-  >,
-): WorkspaceScriptsChange {
-  if (change.repoId !== undefined) validateId(change.repoId, 'repoId');
-  const rawName: unknown = change.name;
-  const name =
-    typeof rawName === 'string' ? normalizeScriptName(rawName) : undefined;
-  if (!name) refuse('invalid-request', 'Invalid script name.');
-  const repo = change.repoId === undefined ? {} : { repoId: change.repoId };
-  if (change.kind === 'remove-definition') {
-    return { kind: 'remove-definition', ...repo, name };
-  }
-  const value = normalizeScriptInputMap({ [name]: change.value })?.[name];
-  if (value === undefined) refuse('invalid-request', 'Invalid script.');
-  return { kind: 'definition', ...repo, name, value };
-}
+let settingsCommands: WorkspaceSettingsCommands | undefined;
 
-function applyDefinitionChange(
-  config: WorkspaceConfigFile,
-  workspaceId: string,
-  change: Extract<
-    WorkspaceScriptsChange,
-    { kind: 'definition' | 'remove-definition' }
-  >,
-): void {
-  const holder =
-    change.repoId === undefined
-      ? config
-      : config.repos.find((candidate) => candidate.id === change.repoId);
-  if (!holder) {
-    refuse(
-      'not-found',
-      `Repo ${change.repoId} not found in project ${workspaceId}`,
-    );
-  }
-  const scripts: ScriptInputMap = { ...holder.scripts };
-  if (change.kind === 'definition') scripts[change.name] = change.value;
-  else delete scripts[change.name];
-  holder.scripts = normalizeScriptInputMap(scripts);
-}
-
-function mergeScriptCommands(
-  current: WorkspaceConfigFile['scripts'],
-  commands: Readonly<Record<string, string>>,
-): ScriptInputMap {
-  const merged: ScriptInputMap = { ...current };
-  for (const [name, rawCommand] of Object.entries(commands)) {
-    if (rawCommand.trim().length === 0) {
-      delete merged[name];
-      continue;
-    }
-    const previous = merged[name];
-    merged[name] = isScriptDefinition(previous)
-      ? { ...previous, command: rawCommand }
-      : rawCommand;
-  }
-  return merged;
+function workspaceSettingsCommands(): WorkspaceSettingsCommands {
+  settingsCommands ??= createDesktopWorkspaceSettingsCommands(
+    desktopW5WorkspaceCommandHost<ScriptHookSettingsSource>(),
+  );
+  return settingsCommands;
 }
 
 /**
  * The typed in-process boundary of `core.workspace.scripts.update`
- * (CAN-3816): every script override edit, from the renderer
- * (`project:save-scripts`, `workspace:save-scripts`, `workspace:merge-scripts`,
- * `workspace:save-repo-scripts`) and the portal
- * (`portal.workspace.scripts.save`). It changes only the scripts it names,
- * from a fresh read inside the manifest write queue, so a competing settings
- * write is never lost, and it never changes the workspace type. Script
- * execution stays in the scripts service. An optional workspace revision and
- * key are checked in the same commit (CAN-4370); the operation stays
- * unregistered.
+ * (CAN-3816): every script override edit, decided by the core-runtime
+ * command. The renderer and portal saves (`project:save-scripts`,
+ * `workspace:save-scripts`, `workspace:merge-scripts`,
+ * `workspace:save-repo-scripts`, `portal.workspace.scripts.save`) reach it
+ * through `core.script.definition.upsert` and `.delete` (CAN-5369). Script
+ * execution stays in the scripts service.
  */
 export async function updateWorkspaceScripts(
   request: WorkspaceScriptsUpdateRequest,
 ): Promise<void> {
-  const { workspaceId, expectedRevision } = request;
-  admitScope(workspaceId);
-  const change = admitScriptsChange(request.change);
-  return runSettingsCommand(
-    {
-      operation: 'core.workspace.scripts.update',
-      source: request.source,
-      idempotencyKey: request.idempotencyKey,
-      parameters: () => ({ workspaceId, change }),
-    },
-    () => admitManifest(workspaceId),
-    () => undefined,
-    (_admitted, options, save) => {
-      async function stageWorkspaceScripts(): Promise<undefined> {
-        await checkW5ExpectedRevision(
-          workspaceResource(workspaceId),
-          expectedRevision,
-        );
-        await refuseUnreadableManifest(
-          updateWorkspaceConfig(workspaceId, (config): void => {
-            switch (change.kind) {
-              case 'replace':
-                config.scripts = normalizeScriptInputMap(change.scripts);
-                return;
-              case 'merge-commands':
-                config.scripts = normalizeScriptInputMap(
-                  mergeScriptCommands(config.scripts, change.commands),
-                );
-                return;
-              case 'repositories':
-                for (const update of change.repos) {
-                  const repo = config.repos.find(
-                    (candidate) => candidate.id === update.repoId,
-                  );
-                  if (repo)
-                    repo.scripts = normalizeScriptInputMap(update.scripts);
-                }
-                return;
-              case 'definition':
-              case 'remove-definition':
-                applyDefinitionChange(config, workspaceId, change);
-            }
-          }),
-        );
-        return save(undefined);
-      }
-      return withW5Commit(
-        manifestCommit(options, workspaceId, expectedRevision),
-        stageWorkspaceScripts,
-      );
-    },
-  );
+  return workspaceSettingsCommands().updateScripts(request);
 }
 
 /**
@@ -441,9 +282,11 @@ function admittedHooksChange(change: WorkspaceHooksChange): unknown {
  * recorded by the hook resolver in the same queue
  * (`internal.workspace.ownership.record`); scheduling and running hooks stay
  * in the hooks service. A keyed replay never captures the context again.
+ * `wire` is the registered operation's wire call (W7b-1b).
  */
 export async function updateWorkspaceHooks(
   request: WorkspaceHooksUpdateRequest,
+  wire?: W5WireDecisionCall<void>,
 ): Promise<void> {
   const { workspaceId, change, expectedRevision } = request;
   admitScope(workspaceId);
@@ -454,7 +297,7 @@ export async function updateWorkspaceHooks(
     }
     for (const update of change.repos) validateId(update.repoId, 'repoId');
   }
-  return runSettingsCommand(
+  return settingsRunner(wire)(
     {
       operation: 'core.workspace.hooks.update',
       source: request.source,
@@ -521,49 +364,14 @@ export async function updateWorkspaceHooks(
 
 /**
  * The typed in-process boundary of `core.workspace.planDetection.update`:
- * the renderer's `workspace:save-plan-detection`. The configuration is
- * normalized when written; an empty one removes the key.
+ * the renderer's `workspace:save-plan-detection`, through the registered
+ * operation (W7a). The configuration is normalized when written; an empty
+ * one removes the key.
  */
 export async function updateWorkspacePlanDetection(
   request: WorkspacePlanDetectionUpdateRequest,
 ): Promise<void> {
-  const { workspaceId, expectedRevision } = request;
-  admitScope(workspaceId);
-  const planDetection: unknown = request.planDetection;
-  if (!isRecord(planDetection)) {
-    refuse('invalid-request', 'Invalid plan detection settings.');
-  }
-  return runSettingsCommand(
-    {
-      operation: 'core.workspace.planDetection.update',
-      source: request.source,
-      idempotencyKey: request.idempotencyKey,
-      parameters: () => ({
-        workspaceId,
-        planDetection: request.planDetection,
-      }),
-    },
-    () => admitManifest(workspaceId),
-    () => undefined,
-    (_admitted, options, save) => {
-      async function stageWorkspacePlanDetection(): Promise<undefined> {
-        await checkW5ExpectedRevision(
-          workspaceResource(workspaceId),
-          expectedRevision,
-        );
-        await refuseUnreadableManifest(
-          updateWorkspaceConfig(workspaceId, (config): void => {
-            config.planDetection = request.planDetection;
-          }),
-        );
-        return save(undefined);
-      }
-      return withW5Commit(
-        manifestCommit(options, workspaceId, expectedRevision),
-        stageWorkspacePlanDetection,
-      );
-    },
-  );
+  return workspaceSettingsCommands().updatePlanDetection(request);
 }
 
 function admitPauseChange(
@@ -635,10 +443,12 @@ function applyPauseChange(
  * An optional row revision and key are checked in the same commit
  * (CAN-4370). A keyed attempt returns, and replays, the portable projection
  * of the row; a replacement set and a pause or resume of the same keys are
- * distinct requests.
+ * distinct requests. `wire` is the registered operation's wire call
+ * (W7b-1b).
  */
 export async function setWorktreeHooksPaused(
   request: WorktreeHooksSetPausedRequest,
+  wire?: W5WireDecisionCall<WorktreeHooksSetPausedOutcome>,
 ): Promise<WorktreeHooksSetPausedOutcome> {
   const { workspaceId, worktreeId, expectedRevision } = request;
   admitScope(workspaceId);
@@ -646,7 +456,7 @@ export async function setWorktreeHooksPaused(
   const change = admitPauseChange(request.change);
   const resource: W5Resource = { kind: 'worktree', workspaceId, worktreeId };
 
-  return runSettingsCommand(
+  return settingsRunner(wire)(
     {
       operation: 'core.worktree.hooks.setPaused',
       source: request.source,
@@ -654,7 +464,10 @@ export async function setWorktreeHooksPaused(
       parameters: () => ({ workspaceId, worktreeId, change }),
     },
     () => Promise.resolve(),
-    decodeW5WorktreeHooksPausedOutcome,
+    wireW5Decode<WorktreeHooksSetPausedOutcome>(
+      decodeW5WorktreeHooksPausedOutcome,
+      wire,
+    ),
     (_admitted, options, save) => {
       async function stageWorktreeHooksPaused(): Promise<WorktreeHooksSetPausedOutcome> {
         await checkW5ExpectedRevision(resource, expectedRevision);
@@ -662,9 +475,11 @@ export async function setWorktreeHooksPaused(
           worktree?: WorktreeData;
           changed: boolean;
           authority?: WorktreeListAuthority;
+          unserved?: W5NamedUnreadableError;
         } = { changed: false };
         await updateWorkspaceWorktrees(workspaceId, (worktrees, read) => {
           result.authority = read?.authority;
+          result.unserved = read?.unserved;
           const index = worktrees.findIndex(
             (worktree) => worktree.id === worktreeId,
           );
@@ -687,7 +502,12 @@ export async function setWorktreeHooksPaused(
             result.authority === 'unreadable' ||
             result.authority === 'partial'
           ) {
-            refuse('worktrees-unavailable', WORKTREES_UNAVAILABLE_MESSAGE);
+            refuse(
+              'worktrees-unavailable',
+              result.unserved
+                ? `${result.unserved.message} This worktree's paused hooks weren't changed.`
+                : WORKTREES_UNAVAILABLE_MESSAGE,
+            );
           }
           refuse(
             'not-found',

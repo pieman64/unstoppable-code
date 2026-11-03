@@ -1,3 +1,6 @@
+import type { CollectionConfigFile } from '@canopy/desktop-shared/types/collections';
+import { ResourceContextUnavailableError } from '../../lib/resource-context-error';
+
 let mockCopilotHarnessEnabled = false;
 jest.mock('../../copilot/feature-flag', () => ({
   isCopilotHarnessEnabled: (): boolean => mockCopilotHarnessEnabled,
@@ -67,6 +70,8 @@ jest.mock('../../lib/canopy-cloud-account-store', () => ({
 }));
 jest.mock('../../lib/resource-context', () => ({
   resourceContextEnabled: jest.fn(() => false),
+  resourceContextSnapshot: jest.fn(() => Promise.resolve('snapshot')),
+  assertResourceContextSnapshot: jest.fn(() => Promise.resolve()),
 }));
 jest.mock(
   '../../collections/canopy-server-client',
@@ -86,13 +91,21 @@ jest.mock(
     revokeCollectionPublicShare: jest.fn(),
   }),
 );
-jest.mock('../../collections/collection-store', () => ({
-  readCollectionIndex: jest.fn(),
-  readCollectionConfig: jest.fn(),
-  readPersonalCollectionIndex: jest.fn(),
-  readPersonalCollectionConfig: jest.fn(),
-  writeCollectionRemoteMetadata: jest.fn(),
-}));
+jest.mock('../../collections/collection-store', () => {
+  const mockCollectionSnapshot = jest.fn<
+    Promise<CollectionConfigFile | null>,
+    [string]
+  >();
+  return {
+    readCollectionIndex: jest.fn(),
+    readCollectionConfig: mockCollectionSnapshot,
+    readLocalCollectionSnapshot: mockCollectionSnapshot,
+    readPersonalCollectionIndex: jest.fn(),
+    readPersonalCollectionConfig: jest.fn(),
+    saveCollectionConfig: jest.fn(),
+    writeCollectionRemoteMetadata: jest.fn(),
+  };
+});
 jest.mock('../../plugins/canopy-server-client', () => ({
   assertSharedPluginsSupported: jest.fn(),
   createSharedPlugin: jest.fn(),
@@ -147,6 +160,7 @@ import type { CanopyOrganizationSummary } from '@canopy/protocol/pipelines';
 import type { McpServerFile } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   getPortalCollection,
+  savePortalCollection,
   getPortalMcpServer,
   getPortalPluginDetail,
   isPortalMcpServerId,
@@ -187,6 +201,7 @@ import {
   readCollectionIndex,
   readPersonalCollectionConfig,
   readPersonalCollectionIndex,
+  saveCollectionConfig,
   writeCollectionRemoteMetadata,
 } from '../../collections/collection-store';
 import { readServer } from '../../ipc/mcp-servers';
@@ -242,6 +257,7 @@ const mockedUpdateSharedSkill = jest.mocked(updateSharedSkill);
 const mockedWriteSkillRemoteMetadata = jest.mocked(writeSkillRemoteMetadata);
 const mockedReadCollectionConfig = jest.mocked(readCollectionConfig);
 const mockedReadCollectionIndex = jest.mocked(readCollectionIndex);
+const mockedSaveCollectionConfig = jest.mocked(saveCollectionConfig);
 const mockedReadPersonalCollectionConfig = jest.mocked(
   readPersonalCollectionConfig,
 );
@@ -3484,6 +3500,43 @@ describe('portal plugin browse service', () => {
       expect(mockedReadCollectionConfig).toHaveBeenCalledWith('with-mcp');
     });
 
+    it('listPortalCollections carries sharedSource on rows', async (): Promise<void> => {
+      mockedReadCollectionIndex.mockResolvedValue({
+        version: 2,
+        collections: [
+          {
+            id: 'added',
+            revision: 'opaque:index-revision',
+            name: 'Added',
+            description: '',
+            updatedAt: '2026-09-01T00:00:00.000Z',
+            skillCount: 0,
+            pluginCount: 0,
+            mcpServerCount: 0,
+            sharedSource: { remoteId: 'remote-1', contentHash: 'hash-1' },
+          },
+          {
+            id: 'own',
+            name: 'Own',
+            description: '',
+            updatedAt: '2026-09-01T00:00:00.000Z',
+            skillCount: 0,
+            pluginCount: 0,
+            mcpServerCount: 0,
+          },
+        ],
+      });
+      mockedReadCollectionConfig.mockResolvedValue(null);
+
+      const result = await listPortalCollections();
+      expect(result.collections[0]?.revision).toBe('opaque:index-revision');
+      expect(result.collections[0]?.sharedSource).toEqual({
+        remoteId: 'remote-1',
+        contentHash: 'hash-1',
+      });
+      expect(result.collections[1]).not.toHaveProperty('sharedSource');
+    });
+
     // Review on #3180: MCP is not the only blocker — sharing also rejects a
     // Collection whose skill is missing or whose plugin marketplace is not a
     // shareable source, so those must not advertise Share either.
@@ -3695,6 +3748,7 @@ describe('portal plugin browse service', () => {
         version: 2,
         collection: {
           id: 'abc',
+          revision: 'opaque-revision:do-not-normalize',
           name: 'Pack',
           description: 'd',
           skills: [{ sourceId: 'src', skillName: 'review' }],
@@ -3709,6 +3763,37 @@ describe('portal plugin browse service', () => {
       expect(result.collection.skills).toEqual([
         { sourceId: 'src', skillName: 'review' },
       ]);
+      expect(result.collection.revision).toBe(
+        'opaque-revision:do-not-normalize',
+      );
+      expect(result.truncated).toBeUndefined();
+    });
+
+    it('preserves the exact revision when member lists exceed the response budget', async () => {
+      mockedReadCollectionConfig.mockResolvedValue({
+        version: 2,
+        collection: {
+          id: 'abc',
+          revision: 'opaque-revision:large-snapshot',
+          name: 'Large pack',
+          description: '',
+          skills: Array.from({ length: 30000 }, (_, index) => ({
+            sourceId: 'source',
+            skillName: `skill-${index}`,
+          })),
+          plugins: [],
+          mcpServers: [],
+          createdAt: 'c',
+          updatedAt: 'u',
+        },
+      });
+      const result = await getPortalCollection('abc');
+      expect(result.collection.revision).toBe('opaque-revision:large-snapshot');
+      expect(result.truncated).toBe(true);
+      expect(result.collection.skills.length).toBeLessThan(30000);
+      expect(
+        Buffer.byteLength(JSON.stringify(result), 'utf8'),
+      ).toBeLessThanOrEqual(PORTAL_CATALOG_RESULT_MAX_BYTES);
     });
 
     it('maps a missing Collection to not_found', async () => {
@@ -3723,6 +3808,239 @@ describe('portal plugin browse service', () => {
         new Error('Invalid Collection id: ../abc'),
       );
       await expect(getPortalCollection('weird')).rejects.toMatchObject({
+        code: 'invalid_payload',
+      });
+    });
+
+    it('preserves a local snapshot authorization refusal', async () => {
+      mockedReadCollectionConfig.mockRejectedValue(
+        new ResourceContextUnavailableError('context-mismatch'),
+      );
+      await expect(getPortalCollection('abc')).rejects.toMatchObject({
+        code: 'permission_denied',
+        message: 'Resource unavailable (context-mismatch)',
+      });
+    });
+
+    it('preserves coded store failures and unexpected execution failures', async () => {
+      for (const error of [
+        Object.assign(new Error('Access revoked'), {
+          code: 'permission_denied',
+        }),
+        Object.assign(new Error('Collection changed'), { code: 'conflict' }),
+        new Error('Disk unavailable'),
+      ]) {
+        mockedReadCollectionConfig.mockRejectedValue(error);
+        await expect(getPortalCollection('abc')).rejects.toBe(error);
+      }
+    });
+  });
+
+  describe('savePortalCollection', () => {
+    const draft = {
+      name: 'Launch kit',
+      description: 'Ship it',
+      skills: [{ sourceId: 'github:acme/skills', skillName: 'review' }],
+      plugins: [{ marketplaceId: 'mkt', pluginName: 'linter' }],
+      mcpServers: [],
+    };
+    const stored = {
+      id: 'abc',
+      revision: 'rev-1',
+      name: 'Old name',
+      description: '',
+      skills: [],
+      plugins: [],
+      mcpServers: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      remote: {
+        accountId: 'account-a',
+        remoteId: 'remote-own',
+        contentHash: 'hash-own',
+        shareScope: 'team' as const,
+        sharedAt: '2026-01-02T00:00:00.000Z',
+      },
+      sharedSource: {
+        remoteId: 'remote-added',
+        fetchedAt: '2026-01-03T00:00:00.000Z',
+        contentHash: 'hash-added',
+      },
+    };
+
+    beforeEach(() => {
+      mockedSaveCollectionConfig.mockImplementation((input) =>
+        Promise.resolve({
+          ...stored,
+          ...input,
+          id: input.id ?? 'new-id',
+          skills: input.skills ?? [],
+          plugins: input.plugins ?? [],
+          mcpServers: input.mcpServers ?? [],
+          createdAt: input.createdAt ?? '2026-10-14T00:00:00.000Z',
+          updatedAt: '2026-10-14T00:00:00.000Z',
+        }),
+      );
+    });
+
+    it('creates a collection without an id', async () => {
+      const result = await savePortalCollection(draft);
+      expect(mockedReadCollectionConfig).not.toHaveBeenCalled();
+      expect(mockedSaveCollectionConfig).toHaveBeenCalledWith(
+        {
+          name: 'Launch kit',
+          description: 'Ship it',
+          skills: draft.skills,
+          plugins: draft.plugins,
+          mcpServers: [],
+        },
+        undefined,
+        expect.anything(),
+      );
+      expect(result.collection.id).toBe('new-id');
+    });
+
+    it('savePortalCollection ignores sharedSource and remote in the payload and preserves them on edit', async () => {
+      mockedReadCollectionConfig.mockResolvedValue({
+        version: 2,
+        collection: stored,
+      });
+      await savePortalCollection({
+        ...draft,
+        id: 'abc',
+        expectedRevision: 'rev-1',
+        ...{
+          sharedSource: { remoteId: 'forged', fetchedAt: 'now' },
+          remote: { remoteId: 'forged' },
+          createdAt: '1999-01-01T00:00:00.000Z',
+        },
+      });
+      expect(mockedSaveCollectionConfig).toHaveBeenCalledWith(
+        {
+          id: 'abc',
+          name: 'Launch kit',
+          description: 'Ship it',
+          skills: draft.skills,
+          plugins: draft.plugins,
+          mcpServers: [],
+        },
+        undefined,
+        expect.objectContaining({ expectedRevision: 'rev-1' }),
+      );
+    });
+
+    it('rejects an edit of an unknown id with not_found', async () => {
+      mockedReadCollectionConfig.mockResolvedValue(null);
+      await expect(
+        savePortalCollection({
+          ...draft,
+          id: 'abc',
+          expectedRevision: 'rev-1',
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(mockedSaveCollectionConfig).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, null, '', 42, {}])(
+      'refuses an edit with missing or malformed revision %p',
+      async (expectedRevision) => {
+        mockedReadCollectionConfig.mockResolvedValue({
+          version: 2,
+          collection: stored,
+        });
+        await expect(
+          savePortalCollection({ ...draft, id: stored.id, expectedRevision }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+        expect(mockedSaveCollectionConfig).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a whitespace-only name', async () => {
+      await expect(
+        savePortalCollection({ ...draft, name: '   ' }),
+      ).rejects.toMatchObject({ code: 'invalid_payload' });
+      expect(mockedSaveCollectionConfig).not.toHaveBeenCalled();
+    });
+
+    it('rejects a malformed member ref', async () => {
+      for (const malformed of [
+        { ...draft, skills: [{ sourceId: 'src' }] },
+        { ...draft, plugins: [{ pluginName: 'linter' }] },
+        { ...draft, mcpServers: [{ serverId: 'srv' }] },
+        { ...draft, skills: 'review' },
+        { ...draft, description: 7 },
+      ]) {
+        await expect(savePortalCollection(malformed)).rejects.toMatchObject({
+          code: 'invalid_payload',
+        });
+      }
+      expect(mockedSaveCollectionConfig).not.toHaveBeenCalled();
+    });
+
+    it('rejects unsafe ids, empty references, stale edits and oversized payloads before save', async () => {
+      for (const malformed of [
+        { ...draft, id: 'not-safe' },
+        { ...draft, skills: [{ sourceId: '', skillName: 'review' }] },
+        { ...draft, mcpServers: [{ serverId: 'bad-path', configId: 'abc' }] },
+        { ...draft, description: 'x'.repeat(PORTAL_CATALOG_RESULT_MAX_BYTES) },
+      ]) {
+        await expect(savePortalCollection(malformed)).rejects.toMatchObject({
+          code: 'invalid_payload',
+        });
+      }
+      mockedReadCollectionConfig.mockResolvedValue({
+        version: 2,
+        collection: stored,
+      });
+      await expect(
+        savePortalCollection({ ...draft, id: stored.id }),
+      ).rejects.toMatchObject({ code: 'conflict' });
+      expect(mockedSaveCollectionConfig).not.toHaveBeenCalled();
+    });
+
+    it('does not turn resource authorization failures into invalid payload errors', async () => {
+      mockedReadCollectionConfig.mockRejectedValue(
+        Object.assign(new Error('Resource unavailable'), {
+          code: 'permission_denied',
+        }),
+      );
+      await expect(
+        savePortalCollection({
+          ...draft,
+          id: stored.id,
+          expectedRevision: 'rev',
+        }),
+      ).rejects.toMatchObject({ code: 'permission_denied' });
+    });
+
+    it('checks the complete result budget before committing metadata-heavy edits', async () => {
+      mockedReadCollectionConfig.mockResolvedValue({
+        version: 2,
+        collection: stored,
+      });
+      mockedSaveCollectionConfig.mockImplementation(
+        (_input, _prepared, guard) => {
+          guard?.validatePrepared?.({
+            ...stored,
+            description: 'x'.repeat(PORTAL_CATALOG_RESULT_MAX_BYTES),
+          });
+          return Promise.resolve(stored);
+        },
+      );
+      await expect(
+        savePortalCollection({
+          ...draft,
+          id: stored.id,
+          expectedRevision: stored.revision,
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_payload' });
+    });
+
+    it('maps a store rejection on save to invalid_payload', async () => {
+      mockedSaveCollectionConfig.mockRejectedValue(
+        new Error('Invalid MCP server reference in Collection'),
+      );
+      await expect(savePortalCollection(draft)).rejects.toMatchObject({
         code: 'invalid_payload',
       });
     });

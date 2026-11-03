@@ -396,9 +396,6 @@ export function preserveRendererOnlyTabFields(
       previous.queuedHookPlaceholder === true
         ? previous.messages
         : next.messages,
-    ...(previous.queuedForSetup !== undefined
-      ? { queuedForSetup: previous.queuedForSetup }
-      : {}),
     ...(previous.pendingAttachments
       ? { pendingAttachments: previous.pendingAttachments }
       : {}),

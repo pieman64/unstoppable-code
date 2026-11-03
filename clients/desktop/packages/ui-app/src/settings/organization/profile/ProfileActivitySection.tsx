@@ -15,6 +15,7 @@ import { getTeamFeed } from '../team-api';
 import { FeedItemCard } from '../team-feed-cards';
 import { useSettingsErrorCopy } from '../../errors';
 import { MEMBER_PROFILE_ERROR_SCOPE } from './use-member-paged-resource';
+import type { SettingsFailure } from '../../errors';
 
 interface ProfileActivitySectionProps {
   orgId: string;
@@ -42,7 +43,7 @@ export function ProfileActivitySection({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [initialLoaded, setInitialLoaded] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const fetchingRef = useRef(false);
 
   useEffect(() => {
@@ -62,7 +63,7 @@ export function ProfileActivitySection({
         }
       } catch (err: unknown) {
         if (!ignore) {
-          setError(errorCopy.loadCopy(err));
+          setError(errorCopy.loadFailure(err));
         }
       } finally {
         if (!ignore) {
@@ -92,7 +93,7 @@ export function ProfileActivitySection({
       });
       setNextCursor(page.nextCursor);
     } catch (err: unknown) {
-      setError(errorCopy.loadCopy(err));
+      setError(errorCopy.loadFailure(err));
     } finally {
       fetchingRef.current = false;
       setLoadingMore(false);
@@ -121,7 +122,11 @@ export function ProfileActivitySection({
     return (
       <div className="flex flex-col gap-3">
         {error ? (
-          <ErrorBanner error={error} onRetry={retry} />
+          <ErrorBanner
+            error={error?.copy}
+            details={error?.details}
+            onRetry={retry}
+          />
         ) : (
           <p
             className="rounded-xl border border-dashed px-4 py-12 text-center text-s fg-secondary"
@@ -145,7 +150,13 @@ export function ProfileActivitySection({
         />
       ))}
 
-      {error && <ErrorBanner error={error} onRetry={retry} />}
+      {error && (
+        <ErrorBanner
+          error={error?.copy}
+          details={error?.details}
+          onRetry={retry}
+        />
+      )}
 
       {nextCursor !== null && (
         <div className="flex justify-center py-2">

@@ -16,7 +16,10 @@ import type {
 import {
   Button,
   ErrorBanner,
-  LoadingPlaceholder,
+  CenteredLoadingSpinner,
+  DelayedLoadingPlaceholder,
+  Fact,
+  FactList,
   LoadingSpinner,
   PluginDetailContent,
   PluginDetailSectionHeading,
@@ -35,6 +38,7 @@ import {
   DetailMoreMenu,
   useDetailMoreItemContributions,
   ExecutionActionButton,
+  InlineTextSkeleton,
   MarketplaceShareButton,
   useDetailActionSlots,
   type DetailMoreMenuItem,
@@ -384,14 +388,20 @@ function BuiltInInstallPanel({
           </div>
         ))}
       </div>
-      {message && (
+      {message?.tone === 'success' ? (
         <p
-          className={`mt-3 text-xs ${message.tone === 'success' ? 'fg-secondary' : 'fg-destructive'}`}
+          className="mt-3 text-xs fg-secondary"
           data-testid="built-in-install-message"
           role="status"
         >
           {message.text}
         </p>
+      ) : (
+        <ErrorBanner
+          className="mt-3"
+          error={message?.text}
+          testId="built-in-install-message"
+        />
       )}
     </section>
   );
@@ -461,7 +471,9 @@ export function PluginDetailHost({
         <Title id="plugin-detail-title" className="sr-only">
           {pluginDisplayName(plugin)}
         </Title>
-        <LoadingPlaceholder label="Loading plugin…" showSpinner />
+        <DelayedLoadingPlaceholder slowNote="Still loading plugin…">
+          <CenteredLoadingSpinner className="my-12" />
+        </DelayedLoadingPlaceholder>
       </div>
     );
   }
@@ -478,7 +490,7 @@ export function PluginDetailHost({
           data-testid="plugin-detail-retry"
           className="mt-3"
         >
-          Retry
+          Try again
         </Button>
       </div>
     );
@@ -505,11 +517,7 @@ export function PluginDetailHost({
         onOpenEntryId={onOpenEntryId}
         testIdPrefix="plugin-detail-also-available"
       />
-      {(compatError || compatibilityError) && (
-        <p className="text-xs fg-destructive mt-2">
-          {compatError || compatibilityError}
-        </p>
-      )}
+      <ErrorBanner className="mt-2" error={compatError || compatibilityError} />
       {plugin.providerSupport.codex === 'compat' && onToggleCodexCompat && (
         <div className="mt-4 flex items-center justify-between gap-4 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30 px-4 py-3">
           <div className="pr-3">
@@ -642,10 +650,14 @@ export function PluginDetailHost({
       {plugin.externalSource && (
         <div className="min-w-0 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30 px-4 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <dl className="min-w-0 flex-1 space-y-1 text-xs">
-              <div className="flex gap-2">
-                <dt className="fg-secondary whitespace-nowrap">Source:</dt>
-                <dd className="fg-secondary min-w-0 truncate">
+            <div className="min-w-0 flex-1">
+              <FactList
+                columnGap="2"
+                rowGap="1"
+                labelTone="secondary"
+                valueTone="secondary"
+              >
+                <Fact label="Source" fit="truncate">
                   <a
                     href={
                       typeof plugin.externalSource === 'string'
@@ -660,32 +672,25 @@ export function PluginDetailHost({
                       ? plugin.externalSource
                       : plugin.externalSource.url}
                   </a>
-                </dd>
-              </div>
-              {plugin.cachedAt && (
-                <div className="flex gap-2">
-                  <dt className="fg-secondary whitespace-nowrap">
-                    Last fetched:
-                  </dt>
-                  <dd className="fg-secondary">
+                </Fact>
+                {plugin.cachedAt && (
+                  <Fact label="Last fetched">
                     {formatDate(plugin.cachedAt)}
-                  </dd>
-                </div>
-              )}
-            </dl>
+                  </Fact>
+                )}
+              </FactList>
+            </div>
           </div>
         </div>
       )}
       {!showInstallPrompt && !installing && installError && (
         // Update runs from the ⋯ menu, which closes on select, so its failure
         // shows here.
-        <p
-          role="alert"
-          className="text-s fg-destructive"
-          data-testid="plugin-detail-update-error"
-        >
-          {installError}
-        </p>
+        <ErrorBanner
+          className=""
+          error={installError}
+          testId="plugin-detail-update-error"
+        />
       )}
       {showInstallPrompt && !installing && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -693,9 +698,7 @@ export function PluginDetailHost({
             This plugin&rsquo;s content is hosted externally and needs to be
             installed.
           </p>
-          {installError && (
-            <p className="mt-4 text-s fg-destructive">{installError}</p>
-          )}
+          <ErrorBanner className="mt-4" error={installError} />
         </div>
       )}
       {installing && (
@@ -813,7 +816,7 @@ function renderMcpServerHealth(
         />
       );
     case 'loading':
-      return <span className="text-xs fg-tertiary">Loading…</span>;
+      return <InlineTextSkeleton className="w-24" />;
     case 'unavailable':
       return (
         <span

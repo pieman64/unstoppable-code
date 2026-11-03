@@ -88,9 +88,11 @@ import { createDesktopPipelineHostActions } from '../pipelines/host-actions';
 import {
   readSendJournal,
   SEND_JOURNAL_FILE,
+  type SendJournalRead,
   setBeforeSendJournalWriteForTests,
 } from '../pipelines/host-send-agent-message-state';
 import { authorizeBackgroundExecution } from '../services/background-execution-context';
+import { eventually } from './helpers/chat-delta-journal-sync-gate';
 import {
   assertTerminalChatAcceptsSettings,
   buildExistingTabDispatchOptions,
@@ -1289,6 +1291,7 @@ describe('cancellation, concurrency and timeouts', () => {
     return { release: () => release() };
   }
 
+  // The 15s timeout exceeds eventually's 10s ceiling, so a stuck journal fails on its assertion.
   it('finishes and journals a send whose caller aborted after dispatch', async () => {
     const { release } = deferredDispatch();
     const controller = new AbortController();
@@ -1302,14 +1305,23 @@ describe('cancellation, concurrency and timeouts', () => {
     controller.abort();
     await expect(pending).rejects.toThrow('aborted');
     release();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The orphaned send finishes in the background; its durable done write can take a while.
+    let journal: SendJournalRead | undefined;
+    await eventually(async () => {
+      journal = await readSendJournal(artifactsDir, key);
+      return journal.kind === 'present' && journal.record.phase === 'done';
+    }, 'the aborted send journals done').catch(() => undefined);
+    // Asserted here so a timeout reports the journal state it stopped at.
+    expect(journal).toMatchObject({
+      kind: 'present',
+      record: { phase: 'done' },
+    });
 
-    expect(JSON.parse(journalText())).toMatchObject({ phase: 'done' });
     const replay = await send(inputs(), { hostActions });
     expect(replay.outputs.state).toBe('sent');
     expect(chat.messages.size).toBe(1);
     expect(dispatch).toHaveBeenCalledTimes(1);
-  });
+  }, 15_000);
 
   it('sends nothing when aborted before the journal write', async () => {
     const controller = new AbortController();

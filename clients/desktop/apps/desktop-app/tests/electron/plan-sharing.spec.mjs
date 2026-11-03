@@ -198,7 +198,8 @@ test('tracked plan Share button opens the Cloud share modal controls', async () 
     await expect(commentsBody).toBeVisible();
 
     await planPanel.getByTestId('plan-panel-execute').click();
-    await planPanel.getByTestId('plan-panel-execute-pipeline').click();
+    // The Execute menu portals to the document body.
+    await window.getByTestId('plan-panel-execute-pipeline').click();
 
     const pipelineModal = window.getByTestId('pipeline-trigger-modal');
     await expect(pipelineModal).toBeVisible();

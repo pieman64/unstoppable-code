@@ -15,6 +15,7 @@ import {
   PageSearchControls,
   PageSearchField,
   PageSearchRow,
+  TabBar,
 } from '@canopy/ui-shared/components';
 import {
   LedgerFeedComposer,
@@ -65,30 +66,17 @@ export function FeedControls({
       data-testid="ledger-feed-controls"
       className="flex shrink-0 flex-col gap-4 pb-2"
     >
-      <div
-        role="tablist"
-        aria-label="Whose entries"
-        className="canopy-tab-list flex gap-1"
-      >
-        {audiences.map((option) => {
-          const active = option === audience;
-          return (
-            <button
-              key={option}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              data-testid={`ledger-feed-audience-${option}`}
-              onClick={() => onAudienceChange(option)}
-              className={`canopy-tab-trigger px-3 py-2 text-xs font-medium transition-colors ${
-                active ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-              }`}
-            >
-              {AUDIENCE_LABELS[option]}
-            </button>
-          );
-        })}
-      </div>
+      <TabBar
+        items={audiences.map((option) => ({
+          id: option,
+          label: AUDIENCE_LABELS[option],
+          dataTestId: `ledger-feed-audience-${option}`,
+        }))}
+        value={audience}
+        onChange={(next): void => onAudienceChange(next)}
+        label="Whose entries"
+        density="compact"
+      />
       {/* The page search row: the search fills it, the filters follow as
           one Filter dropdown. No hairline under it; the list follows. */}
       <PageSearchRow>

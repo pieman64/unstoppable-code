@@ -154,6 +154,9 @@ import { stopWorktreeScripts } from '../services/scripts-service';
 import { workerTerminal } from '../terminal/worker-terminal';
 import { listTrackedShellScriptsForWorktree } from '../lib/script-runner';
 import { forkSharedContainer } from '../shared-containers/fork';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { projectedSourceCompositionCommands } from '../canopy-runtime/source-composition-dispatch';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { recoverForkCapabilityInstalls } from '../shared-containers/capability-package/install';
 import { isCapabilityPackageDigest } from '@canopy/protocol/pipelines';
 import {
@@ -572,7 +575,10 @@ export function classifySharedContainerError(
   }
 }
 
-export function registerSharedContainerHandlers(): void {
+export function registerSharedContainerHandlers(runtime: {
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   addTrackedPlansWriteListener((projectId, worktreeId) => {
     void getSharedContainerPublishScheduler()
       .scheduleKnown(projectId, worktreeId)
@@ -1553,7 +1559,7 @@ export function registerSharedContainerHandlers(): void {
 
   registerIpcHandler<[SharedContainerForkRequest], SharedContainerForkResult>(
     IPC_CHANNELS.sharedContainersFork,
-    async (_event, request) => {
+    async (event, request) => {
       assertSharedContainersEnabled();
       validateId(request.containerId, 'containerId');
       validateId(request.revisionId, 'revisionId');
@@ -1576,11 +1582,15 @@ export function registerSharedContainerHandlers(): void {
         if (!(await isSharedContainerAccepted(request.containerId))) {
           throw forkSourceNotAccepted();
         }
-        return await forkSharedContainer({
+        const command = {
           ...request,
           destination,
           sourceOwnerDisplayName: request.sourceOwnerDisplayName.trim(),
-        });
+        };
+        return await projectedSourceCompositionCommands({
+          dispatcher: runtime.dispatcher,
+          caller: runtime.resolveCaller(event),
+        }).fork(command, () => forkSharedContainer(command));
       } catch (error) {
         if (error instanceof SharedContainerForkError) {
           return { ok: false, code: error.code, message: error.message };

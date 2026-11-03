@@ -317,7 +317,7 @@ function WorkerCard({
                 onClick={() => onRetry(worker.workerId)}
                 data-testid={testId(`worker-retry-${worker.workerId}`)}
               >
-                Retry
+                Try again
               </Button>
             )}
             <Button
@@ -359,9 +359,10 @@ function WorkerModal({
       maxWidth="4xl"
       maxHeight="86vh"
       height="86vh"
+      scrollableBody={false}
       dataTestId={`worker-modal-${worker.workerId}`}
     >
-      <div className="flex min-h-0 flex-1 flex-col p-5 pt-3">
+      <div className="flex min-h-0 flex-1 flex-col">
         <WorkerCard
           worker={worker}
           highlighted={false}

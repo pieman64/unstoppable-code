@@ -7,7 +7,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 });
 
 import { act, type JSX } from 'react';
-import { invalidateSharedAiCreditsRead } from '@/lib/openBillingPage';
+import * as openBillingPageModule from '@/lib/openBillingPage';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   AgentProviderType,
@@ -30,6 +30,10 @@ import {
 import type * as HostedSettingsAvailabilityModule from '@/components/settings/hosted/hosted-settings-availability';
 import type { SettingsRoute } from '@canopy/protocol/settings';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  resetAiCreditsHandoffsForTests,
+  useAiCreditsHandoffStore,
+} from '@/stores/aiCreditsHandoffStore';
 
 const mockHostedSettingsOpenable = jest.fn<boolean, []>();
 jest.mock('@/components/settings/hosted/hosted-settings-availability', () => ({
@@ -121,6 +125,14 @@ async function flushAsyncEffects(): Promise<void> {
   await Promise.resolve();
 }
 
+// The retained checkout outlives a render (CAN-5534); never leak it across cases.
+beforeEach(() => {
+  resetAiCreditsHandoffsForTests();
+});
+afterEach(() => {
+  resetAiCreditsHandoffsForTests();
+});
+
 describe('NoBillingSourceBanner', () => {
   const originalApiDescriptor = Object.getOwnPropertyDescriptor(window, 'api');
   const loadNativeAiCreditsAvailability = jest.fn<
@@ -146,7 +158,7 @@ describe('NoBillingSourceBanner', () => {
     // episode, so it must be reset between tests: this file mounts
     // `GetAiCreditsCta`, whose mount effect seeds one, and a retained answer
     // would otherwise satisfy the next test's assertions for the wrong reason.
-    invalidateSharedAiCreditsRead();
+    openBillingPageModule.invalidateSharedAiCreditsRead();
     resetAiCreditsArrivalForTests();
     loadNativeAiCreditsAvailability.mockReset();
     loadCanopyCloudAiCredits.mockReset();
@@ -497,6 +509,51 @@ describe('NoBillingSourceBanner', () => {
       expect(banner()).not.toBeNull();
     });
 
+    // The CAN-3637 guest: daily credits are spendable, but the catalog has no
+    // model they can run. Covered credits stand the banner down only when no
+    // dispatch dead end is in force; here it is the only recovery the
+    // composer offers.
+    it('stays up for a dispatch dead end when credits cover the chat', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+
+      await render(
+        'codex',
+        { nativeAuth: false, creditsEligible: true, loading: false },
+        false,
+        { noDispatchableModel: { missing: 'both' } },
+      );
+
+      expect(banner()?.textContent).toContain(
+        'No available model can be paid for right now.',
+      );
+      expect(signInButton()).not.toBeNull();
+      expect(getCreditsButton()).toBeNull();
+    });
+
+    // Signed in and covered, yet still no model to run: no action can help,
+    // but the banner still explains why the composer refuses the send rather
+    // than leave it blocked in silence. It never sells credits the account has.
+    it('explains a covered dispatch dead end with no action to offer', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+
+      await render(
+        'codex',
+        { nativeAuth: true, creditsEligible: true, loading: false },
+        false,
+        { noDispatchableModel: { missing: 'both' } },
+      );
+
+      expect(banner()?.textContent).toContain(
+        'No available model can be paid for right now.',
+      );
+      expect(signInButton()).toBeNull();
+      expect(getCreditsButton()).toBeNull();
+    });
+
     it('stays hidden when lane resolution found a dispatchable model', async () => {
       await render(
         'claude',
@@ -642,7 +699,9 @@ describe('NoBillingSourceBanner', () => {
         target: TARGET,
         queuedCreditHeld: true,
       });
-      expect(banner()?.textContent).toContain('Add credits, then click Retry');
+      expect(banner()?.textContent).toContain(
+        'Add credits, then click Try again',
+      );
     });
 
     it('keeps an organization policy dead end ahead of queued credit copy', async () => {
@@ -840,9 +899,40 @@ describe('NoBillingSourceBanner', () => {
         gatewayOnlyModel: true,
       });
 
+      // The dead end is over, so there is nothing left to say: the AI Credits
+      // card already reports the balance.
+      expect(banner()).toBeNull();
       expect(getCreditsButton()).toBeNull();
-      expect(banner()?.textContent).toContain('Credits available again');
-      expect(banner()?.textContent).not.toContain('Add credits');
+    });
+
+    // The reported state: a refused turn for a user who is not signed in to
+    // Claude but whose credits now cover the chat. The banner used to switch to
+    // "Credits available again" while keeping its warning icon and offering
+    // "Sign in to Claude", next to a card already saying credits are in use.
+    it('stands down when credits cover a chat that is not signed in', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      flagRuntimeFailure('claude');
+
+      await render('claude', { nativeAuth: false }, false, { target: TARGET });
+
+      expect(banner()).toBeNull();
+      expect(signInButton()).toBeNull();
+    });
+
+    it('stands down when credits cover a held queued message', async () => {
+      loadNativeAiCreditsAvailability.mockResolvedValue(
+        native({ personalEligible: true }),
+      );
+      flagRuntimeFailure('codex');
+
+      await render('codex', { nativeAuth: true }, false, {
+        target: TARGET,
+        queuedCreditHeld: true,
+      });
+
+      expect(banner()).toBeNull();
     });
 
     it('does not offer a purchase when an org pool covers the user again', async () => {
@@ -933,7 +1023,7 @@ describe('NoBillingSourceBanner', () => {
       // Assert the banner's OWN state moved, not merely that the CTA issued a
       // read: the CTA always re-reads, so a call-count assertion would pass
       // even with a no-op `onCovered`.
-      expect(banner()?.textContent).toContain('Credits available again');
+      expect(banner()).toBeNull();
       expect(getCreditsButton()).toBeNull();
     });
 
@@ -1083,7 +1173,8 @@ describe('NoBillingSourceBanner', () => {
       expect(query('chat-input-no-billing-source-reopen-billing')).toBeNull();
     });
 
-    it('does not restore an old hand-off when the banner is hidden and shown again', async () => {
+    // A surface without a chat target keeps the CTA's local hand-off.
+    it('does not restore a target-less hand-off when the banner is hidden and shown again', async () => {
       await render('claude');
       await press('chat-input-no-billing-source-get-credits');
       await press('chat-input-no-billing-source-get-credits-check-again', 500);
@@ -1107,9 +1198,8 @@ describe('NoBillingSourceBanner', () => {
       );
       await press('chat-input-no-billing-source-get-credits-check-again');
 
-      expect(banner()?.textContent).not.toContain(UNCOVERED_COPY);
+      expect(banner()).toBeNull();
       expect(getCreditsButton()).toBeNull();
-      expect(banner()?.textContent).toContain('Credits available again');
     });
   });
 
@@ -1236,6 +1326,164 @@ describe('NoBillingSourceBanner', () => {
       }
       await settle();
     }
+
+    describe('retained across chats (CAN-5534)', () => {
+      const WAITING_COPY =
+        'Finish checkout in your browser. Your credits show up here once the payment goes through.';
+      const SIBLING: ChatBannerTarget = { ...TARGET, chatId: 'c2' };
+
+      async function renderSibling(): Promise<void> {
+        await render('claude', {}, false, {
+          target: SIBLING,
+          effectiveBillingFramework: 'subscription',
+        });
+        await settle();
+      }
+
+      async function startCheckout(): Promise<void> {
+        await renderTarget({}, { effectiveBillingFramework: 'subscription' });
+        await settle();
+        await press('chat-input-no-billing-source-get-credits');
+        await settle();
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      }
+
+      it('keeps waiting through a sibling chat and back, then confirms in the origin', async () => {
+        await startCheckout();
+
+        await renderSibling();
+        expect(banner()?.textContent).toContain(WAITING_COPY);
+        expect(query('chat-input-no-billing-source-get-credits')).toBeNull();
+        expect(
+          query('chat-input-no-billing-source-get-credits-check-again'),
+        ).not.toBeNull();
+        expect(
+          query('chat-input-no-billing-source-reopen-billing')?.hasAttribute(
+            'disabled',
+          ),
+        ).toBe(false);
+
+        await renderTarget({}, { effectiveBillingFramework: 'subscription' });
+        await settle();
+        expect(banner()?.getAttribute('data-notice-intent')).toBe('neutral');
+        expect(banner()?.textContent).toContain(WAITING_COPY);
+        expect(query('chat-input-no-billing-source-get-credits')).toBeNull();
+        expect(
+          query('chat-input-no-billing-source-reopen-billing'),
+        ).not.toBeNull();
+
+        loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+        loadNativeAiCreditsAvailability.mockResolvedValue(
+          native({ personalEligible: true }),
+        );
+        await press('chat-input-no-billing-source-get-credits-check-again');
+        await settle();
+        expect(query(ARRIVAL)?.textContent).toContain('16 AI Credits added.');
+        expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps waiting when the banner is hidden and shown again', async () => {
+        await startCheckout();
+        await renderTarget(
+          {},
+          { orgLapseVisible: true, effectiveBillingFramework: 'subscription' },
+        );
+        expect(banner()).toBeNull();
+        await renderTarget({}, { effectiveBillingFramework: 'subscription' });
+        await settle();
+        expect(banner()?.textContent).toContain(WAITING_COPY);
+        expect(query('chat-input-no-billing-source-get-credits')).toBeNull();
+      });
+
+      it('keeps the retained completion alive when the banner coverage read wins the race', async () => {
+        await startCheckout();
+        await renderTarget({}, { orgLapseVisible: true });
+        loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+        let finishProbe: (
+          value: NativeAiCreditsAvailability,
+        ) => void = () => {};
+        const probe = new Promise<NativeAiCreditsAvailability>((resolve) => {
+          finishProbe = resolve;
+        });
+        loadNativeAiCreditsAvailability.mockResolvedValue(
+          native({ personalEligible: true }),
+        );
+        const ctaRead = jest
+          .spyOn(openBillingPageModule, 'readSharedAiCreditsAvailability')
+          .mockReturnValue(probe);
+        try {
+          await renderTarget();
+          await settle();
+          expect(query('chat-input-no-billing-source-get-credits')).toBeNull();
+          await act(async () => {
+            finishProbe(native({ personalEligible: true }));
+            for (let i = 0; i < 30; i++) await Promise.resolve();
+          });
+          await settle();
+          expect(
+            Object.keys(useAiCreditsHandoffStore.getState().records),
+          ).toHaveLength(0);
+          expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe('c');
+          expect(query(ARRIVAL)?.textContent).toContain('16 AI Credits added.');
+          expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+        } finally {
+          ctaRead.mockRestore();
+        }
+      });
+
+      it.each([false, true])(
+        'completes after parent eligibility hides the banner (credits card: %s)',
+        async (aiCreditsCardVisible) => {
+          await startCheckout();
+          loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+          let finishProbe: (
+            value: NativeAiCreditsAvailability,
+          ) => void = () => {};
+          loadNativeAiCreditsAvailability.mockReturnValue(
+            new Promise<NativeAiCreditsAvailability>((resolve) => {
+              finishProbe = resolve;
+            }),
+          );
+          await press('chat-input-no-billing-source-get-credits-check-again');
+          await renderTarget(
+            { creditsEligible: true },
+            { aiCreditsCardVisible },
+          );
+          expect(banner()).toBeNull();
+          await act(async () => {
+            finishProbe(native({ personalEligible: true }));
+            for (let i = 0; i < 30; i++) await Promise.resolve();
+          });
+          await settle();
+          expect(
+            Object.keys(useAiCreditsHandoffStore.getState().records),
+          ).toHaveLength(0);
+          expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe('c');
+          expect(useAiCreditsArrivalStore.getState().routed).toBe(
+            aiCreditsCardVisible,
+          );
+          expect(openAuthenticatedPortalPage).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('attributes credits a sibling finds on arrival to the originating chat, once', async () => {
+        await startCheckout();
+        loadCanopyCloudAiCredits.mockResolvedValue(balance(16));
+        loadNativeAiCreditsAvailability.mockResolvedValue(
+          native({ personalEligible: true }),
+        );
+
+        // Arriving in the sibling re-reads at once, inside the 60s throttle.
+        await renderSibling();
+        await settle();
+        expect(useAiCreditsArrivalStore.getState().arrival?.chatId).toBe('c');
+        expect(query(ARRIVAL)).toBeNull();
+
+        await renderTarget({}, { effectiveBillingFramework: 'subscription' });
+        await settle();
+        expect(query(ARRIVAL)?.textContent).toContain('16 AI Credits added.');
+      });
+    });
 
     it('confirms the credits in one positive status that outlives the banner', async () => {
       await buyAndReturn();

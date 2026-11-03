@@ -145,8 +145,9 @@ describe('PipelineDetailsNav', () => {
     container.remove();
   });
 
+  // The status filter's menu is portaled to the body.
   function byTestId(testId: string): HTMLElement | null {
-    return container.querySelector(`[data-testid="${testId}"]`);
+    return document.body.querySelector(`[data-testid="${testId}"]`);
   }
 
   function openFilter(): HTMLElement {
@@ -181,15 +182,12 @@ describe('PipelineDetailsNav', () => {
     }
   });
 
-  it('fills status dots with the solid status role, not a badge tint', () => {
-    // No group yet: the job is pending, drawn like the run card's pending
-    // dot (a solid neutral fill that reads in dark mode).
-    const dot = byTestId('pipeline-details-nav-job-build')?.querySelector(
-      'span[aria-hidden="true"]',
+  it('marks each job with the shared status glyph for its state', () => {
+    // No group yet: the job is pending, which StatusGlyph draws as queued.
+    const glyph = byTestId('pipeline-details-nav-job-build')?.querySelector(
+      '[data-status-glyph]',
     );
-    expect(dot?.classList.contains('bg-fg-secondary')).toBe(true);
-    expect(dot?.className).not.toContain('subtle');
-    expect(dot?.className).not.toContain('/');
+    expect(glyph?.getAttribute('data-status-glyph')).toBe('queued');
   });
 
   it('draws the ring inside matrix toggles and variant rows too', () => {
@@ -212,18 +210,17 @@ describe('PipelineDetailsNav', () => {
       expect(element?.classList.contains('focus-ring')).toBe(true);
       expect(element?.classList.contains('focus-ring-inset')).toBe(true);
     }
-    const groupDot = byTestId('pipeline-details-nav-job-test')?.querySelector(
-      'span[aria-hidden="true"]',
+    const glyphState = (element: Element | null | undefined): string | null =>
+      element
+        ?.querySelector('[data-status-glyph]')
+        ?.getAttribute('data-status-glyph') ?? null;
+    expect(glyphState(byTestId('pipeline-details-nav-job-test'))).toBe(
+      'failed',
     );
-    expect(groupDot?.classList.contains('bg-fg-destructive-strong')).toBe(true);
-    const variantDot = variantRow?.querySelector('span[aria-hidden="true"]');
-    expect(variantDot?.classList.contains('bg-fg-destructive-strong')).toBe(
-      true,
+    expect(glyphState(variantRow)).toBe('failed');
+    expect(glyphState(byTestId('pipeline-details-nav-child-test-test-0'))).toBe(
+      'done',
     );
-    const passedDot = byTestId(
-      'pipeline-details-nav-child-test-test-0',
-    )?.querySelector('span[aria-hidden="true"]');
-    expect(passedDot?.classList.contains('bg-fg-success-strong')).toBe(true);
   });
 
   /**
@@ -412,6 +409,24 @@ describe('PipelineDetailsNav', () => {
     expect(document.activeElement).toBe(button);
     // An enclosing preview or dialog sees the key as already handled.
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('checks the current status in the filter menu and closes on a pick', () => {
+    openFilter();
+    const rows = Array.from(
+      byTestId(
+        'pipeline-details-filter-popover',
+      )?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [],
+    );
+    expect(rows.map((row) => row.getAttribute('aria-checked'))).toEqual([
+      'true',
+      ...rows.slice(1).map(() => 'false'),
+    ]);
+    expect(rows[0]?.textContent).toContain('All');
+    act(() => {
+      rows[1]?.click();
+    });
+    expect(byTestId('pipeline-details-filter-popover')).toBeNull();
   });
 
   it('closes the filter menu on a press outside it, not inside it', () => {

@@ -58,7 +58,11 @@ export function ProfileApprovedPlansSection({
     return (
       <div className="flex flex-col gap-3">
         {error ? (
-          <ErrorBanner error={error} onRetry={retry} />
+          <ErrorBanner
+            error={error?.copy}
+            details={error?.details}
+            onRetry={retry}
+          />
         ) : (
           <p
             className={joinClassNames(
@@ -108,7 +112,13 @@ export function ProfileApprovedPlansSection({
         })}
       </ul>
 
-      {error && <ErrorBanner error={error} onRetry={retry} />}
+      {error && (
+        <ErrorBanner
+          error={error?.copy}
+          details={error?.details}
+          onRetry={retry}
+        />
+      )}
 
       {hasMore && (
         <div className="flex justify-center py-2">

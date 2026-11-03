@@ -178,6 +178,7 @@ export function CustomizeSidebarModal({
 
   return (
     <DialogModal
+      inset="flush"
       onClose={onClose}
       title="Customize sidebar"
       subtitle="Drag items to reorder them or to move them into the More menu."
@@ -262,7 +263,7 @@ export function CustomizeSidebarModal({
           </SortableContext>
         </DndContext>
       </div>
-      <div className="flex items-center justify-between gap-2 px-5 pb-5 pt-3">
+      <div className="flex items-center justify-between gap-2 px-6 pb-6 pt-3">
         <Button
           variant="ghost"
           size="compact"

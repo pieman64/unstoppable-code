@@ -11,6 +11,7 @@ import {
 import {
   WORKTREE_DISCARD_DISCONNECTED_WARNING,
   worktreeDiscardBatchPointer,
+  worktreeDiscardRefusalCopy,
 } from '../../lib/worktree-discard-copy';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -205,6 +206,9 @@ describe('WorktreeDiscardDialog (CAN-5336)', () => {
     expect(document.activeElement).toBe(
       byTestId(`${WORKTREE_DISCARD_DIALOG_TEST_ID}-cancel`),
     );
+    expect(
+      byTestId(`${WORKTREE_DISCARD_DIALOG_TEST_ID}-retry`).textContent,
+    ).toBe('Try again');
     act(() => byTestId(`${WORKTREE_DISCARD_DIALOG_TEST_ID}-retry`).click());
     act(() => byTestId(`${WORKTREE_DISCARD_DIALOG_TEST_ID}-cancel`).click());
     act(() => byTestId(`${WORKTREE_DISCARD_DIALOG_TEST_ID}-confirm`).click());
@@ -227,6 +231,15 @@ describe('WorktreeDiscardDialog (CAN-5336)', () => {
     );
   });
 
+  it('points a refusal that only needs the ordinary removal at Try again', () => {
+    expect(worktreeDiscardRefusalCopy('retry-available')).toBe(
+      'Nothing needs discarding now. Try again to remove it normally.',
+    );
+    expect(worktreeDiscardRefusalCopy('no-broken-removal')).toBe(
+      'Nothing needs discarding now. Try again to remove it normally.',
+    );
+  });
+
   it('points a batch row at the row menu', () => {
     expect(worktreeDiscardBatchPointer(BASE)).toBe(
       'Its source repository is missing. Discard it from the row menu.',
@@ -237,5 +250,58 @@ describe('WorktreeDiscardDialog (CAN-5336)', () => {
         causes: ['interrupted-discard'],
       }),
     ).toBe("Its removal can't finish. Discard it from the row menu.");
+  });
+
+  it('CAN-5338 names a retained archive and warns that an unverified checkout may hold the only copy', () => {
+    render({
+      ...BASE,
+      causes: ['archive-recovery-unverified'],
+      sources: [],
+      targets: [
+        {
+          kind: 'live-checkout',
+          path: '/data/workspaces/ws/worktrees/wt',
+          identity: '1:2',
+          identityVerified: false,
+          reason: 'archive-recovery-unverified',
+        },
+        {
+          kind: 'retained-archive',
+          path: '/data/workspaces/ws/archived-containers/wt',
+          identity: '1:4',
+          identityVerified: false,
+          reason: 'archive-recovery-unverified',
+        },
+      ],
+      alsoDeleted: ['chats', 'retained-payload-copy'],
+    });
+    const text = byTestId(WORKTREE_DISCARD_DIALOG_TEST_ID).textContent ?? '';
+    expect(text).toContain('Archived worktree');
+    expect(text).toContain('/data/workspaces/ws/archived-containers/wt');
+    expect(text).toContain(
+      "The archive's saved copy couldn't be verified. The checkout may hold the only copy of edits made after it was archived.",
+    );
+    expect(text).toContain('Discard worktree');
+    expect(text).not.toContain('(source missing)');
+  });
+
+  it('CAN-5338 warns that a retained archive alone may hold the only copy', () => {
+    render({
+      ...BASE,
+      targets: [
+        {
+          kind: 'retained-archive',
+          path: '/data/workspaces/ws/archived-containers/wt',
+          identity: '1:4',
+          identityVerified: false,
+          reason: 'source-gone',
+        },
+      ],
+    });
+    const text = byTestId(WORKTREE_DISCARD_DIALOG_TEST_ID).textContent ?? '';
+    expect(text).toContain(
+      'The archived worktree may hold the only copy of edits that were never saved anywhere else.',
+    );
+    expect(text).not.toContain('quarantined or recovery copy');
   });
 });

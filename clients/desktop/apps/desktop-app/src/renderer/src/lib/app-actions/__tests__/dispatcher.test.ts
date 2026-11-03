@@ -8892,7 +8892,7 @@ describe('dispatchAppAction', () => {
     }
   });
 
-  it('runs only the StartBranchedAgent host send through the renderer setup queue', async () => {
+  it('sends only the StartBranchedAgent Continue, without a renderer setup queue', async () => {
     const original = useChatStore.getState();
     const hydrate = jest.fn(() => {
       useChatStore.setState({
@@ -8934,7 +8934,7 @@ describe('dispatchAppAction', () => {
         undefined,
         { projectId: 'project-1', worktreeId: 'worktree-1', chatId: 'chat-1' },
         undefined,
-        { throwOnDispatchFailure: true, queueForSetup: true },
+        { throwOnDispatchFailure: true },
       );
     } finally {
       useChatStore.setState(original);
@@ -15663,6 +15663,46 @@ describe('dispatchAppAction', () => {
       'project-1',
       canonicalIssue,
       'worktree-1',
+    );
+  });
+
+  it('launches a readiness fix for an empty worktree id from the audited reference checkout', async () => {
+    useProjectsStore.setState({
+      projects: [makeWorkspace()],
+      hasHydratedProjects: true,
+    });
+    const canonicalIssue = {
+      code: 'configure-hooks' as const,
+      title: 'Add repository hooks',
+      message: 'No effective hooks.',
+      repoName: 'Project One',
+      fixPrompt: 'Canonical prompt',
+    };
+    workspaceApiMock.getWorkspaceReadiness.mockResolvedValueOnce({
+      issues: [canonicalIssue],
+    });
+
+    const response = await dispatchAppAction({
+      requestId: 'req-readiness-fix-reference',
+      source: 'assistant',
+      action: {
+        type: 'workspace.start_readiness_fix',
+        workspaceId: 'project-1',
+        worktreeId: '',
+        issueCode: 'configure-hooks',
+      },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(workspaceApiMock.getWorkspaceReadiness).toHaveBeenCalledWith({
+      workspaceId: 'project-1',
+    });
+    // The launch target must match the audited target so the launch record
+    // is keyed where Home and the Overview look for reference launches.
+    expect(launchWorkspaceReadinessFixMock).toHaveBeenCalledWith(
+      'project-1',
+      canonicalIssue,
+      undefined,
     );
   });
 
@@ -26668,7 +26708,7 @@ describe('sharing.open_dialog', () => {
 });
 
 describe('CAN-3606 create-from-link dispatch', () => {
-  it('queues a supplied prompt while the newly registered worktree is still preparing', async () => {
+  it('sends a supplied prompt to main while the newly registered worktree is still preparing', async () => {
     installLinkHost();
     useProjectsStore.setState({
       createWorktree: jest
@@ -26695,10 +26735,7 @@ describe('CAN-3606 create-from-link dispatch', () => {
         worktreeId: 'new-worktree',
       }),
       undefined,
-      expect.objectContaining({
-        queueForSetup: true,
-        throwOnDispatchFailure: true,
-      }),
+      { throwOnDispatchFailure: true },
     );
   });
   it.each(['home', 'overview'] as const)(

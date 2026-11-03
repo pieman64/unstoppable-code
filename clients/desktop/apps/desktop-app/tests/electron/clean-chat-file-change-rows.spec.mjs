@@ -284,7 +284,7 @@ test('narrow saved-file rows preserve identity, readable errors and touch action
     unlinkSync(filePath);
     await open.press('Enter');
     const status = card.getByTestId('turn-file-chip-status').first();
-    await expect(status).toBeVisible();
+    await expect(status).toHaveText('File does not exist.');
     const layout = await status.evaluate((element, name) => {
       const label = Array.from(
         element.closest('button').querySelectorAll('span'),

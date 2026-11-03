@@ -83,7 +83,11 @@ it('renders metadata and delegates selected preview without rendering definition
     container.querySelector('[data-testid="curated-pipeline-yaml"]'),
   ).toBeNull();
   expectNoLegacyBorder('[data-testid="curated-pipeline-refresh"]');
-  expectTokenRing('[data-testid="curated-pipeline-search"]');
+  expect(
+    container
+      .querySelector('[data-testid="curated-pipeline-search"]')
+      ?.closest('[data-search-field]'),
+  ).not.toBeNull();
   expectTokenRing('[data-testid="curated-pipeline-rows"]');
   click('[data-testid="curated-pipeline-preview-review"]');
   expect(input.onSelect).toHaveBeenCalledWith(detail);

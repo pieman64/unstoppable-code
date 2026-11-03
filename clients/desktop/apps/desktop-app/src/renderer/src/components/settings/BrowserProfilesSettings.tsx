@@ -5,6 +5,8 @@ import {
   BrowserProfilePermissions,
   Button,
   ColorSwatchPicker,
+  ConfirmDialog,
+  EmptyStateRow,
   Notice,
   NoticeButton,
   SettingsButtonRow,
@@ -110,14 +112,9 @@ export function BrowserProfilesSettings(): JSX.Element {
       displayName: string;
     }
   >();
-  // The confirmation replaces the button that opened it, so focus has to be
-  // carried across by hand: into the dialog when it appears, back to the
-  // trigger when it closes. Without it a keyboard or screen-reader user is
-  // dropped at the top of the page with a destructive prompt open somewhere
-  // below them.
-  const deleteDialog = useRef<HTMLDivElement>(null);
+  // The delete button is disabled while the preview loads, so the
+  // confirmation names it as the place focus returns to when it closes.
   const deleteTrigger = useRef<HTMLButtonElement>(null);
-  const restoreDeleteFocus = useRef(false);
   const select = (profileId?: string): void => {
     if (selectedIdRef.current !== profileId) selectionEpoch.current++;
     selectedIdRef.current = profileId;
@@ -139,28 +136,7 @@ export function BrowserProfilesSettings(): JSX.Element {
     preview.selectionEpoch === selectionEpoch.current
       ? preview
       : undefined;
-  // Both moves wait for the commit that swapped the two surfaces: the trigger
-  // is unmounted while the prompt is open, so the restore has to land on the
-  // button React has just mounted again, not the detached node that opened it.
-  //
-  // Restoring is keyed on an explicit dismissal rather than on the prompt
-  // closing, because selecting another profile closes it too. Treating that as
-  // a dismissal would pull focus off the row the user just clicked and onto a
-  // *different* profile's delete button — a destructive control they never
-  // aimed at. Only Cancel and Escape arm the flag.
-  const deletePromptOpen = activePreview !== undefined;
-  useEffect(() => {
-    if (deletePromptOpen) {
-      deleteDialog.current?.focus();
-      return;
-    }
-    if (!restoreDeleteFocus.current) return;
-    restoreDeleteFocus.current = false;
-    deleteTrigger.current?.focus();
-  }, [deletePromptOpen]);
-  /** Dismiss the confirmation and hand focus back to the button that opened it. */
   const dismissDeletePrompt = (): void => {
-    restoreDeleteFocus.current = true;
     setPreview(undefined);
   };
   const refreshSelected = useCallback(async (): Promise<void> => {
@@ -276,7 +252,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                   })
                 }
               >
-                Retry cleanup
+                Try again
               </NoticeButton>
             }
           >
@@ -351,9 +327,7 @@ export function BrowserProfilesSettings(): JSX.Element {
             <SettingsLoading rows={2} dataTestId="browser-profiles-loading" />
           )}
           {!loading && !error && profiles.length === 0 && (
-            <p className="text-s fg-secondary">
-              No profiles yet. Opening a browser creates its Task profile.
-            </p>
+            <EmptyStateRow title="No profiles yet. Opening a browser creates its Task profile." />
           )}
           {nextOffset !== undefined && (
             <div>
@@ -439,7 +413,7 @@ export function BrowserProfilesSettings(): JSX.Element {
                 onEnableChange={(allowEnable) => update({ allowEnable })}
                 onClearChange={(allowClear) => update({ allowClear })}
               />
-              {selected.kind === 'named' && !activePreview && (
+              {selected.kind === 'named' && (
                 <SettingsRow
                   label="Delete profile"
                   description="Removes this profile and its browser data."
@@ -478,78 +452,50 @@ export function BrowserProfilesSettings(): JSX.Element {
                 />
               )}
               {activePreview && (
-                <div
-                  ref={deleteDialog}
-                  tabIndex={-1}
-                  role="alertdialog"
-                  aria-label="Delete browser profile"
-                  className="flex items-start justify-between gap-6 focus:outline-none"
-                  data-testid="browser-profile-delete-preview"
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape' && !busy) {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      dismissDeletePrompt();
-                    }
-                  }}
-                >
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <p className="text-s font-medium fg-primary">
-                      Delete “{activePreview.displayName}” and its browser data?
-                    </p>
-                    <p className="text-xs text-pretty fg-secondary">
-                      Open pages will close and unsaved changes will be lost.
-                      {activePreview.tabs.length > 0
-                        ? ` ${activePreview.tabs.length} saved ${activePreview.tabs.length === 1 ? 'tab becomes' : 'tabs become'} unavailable.`
-                        : ''}
-                      {activePreview.defaults.length > 0
-                        ? ` ${activePreview.defaults.length} task ${activePreview.defaults.length === 1 ? 'default needs' : 'defaults need'} another profile.`
-                        : ''}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <Button
-                      size="compact"
-                      variant="secondary"
-                      disabled={busy}
-                      onClick={dismissDeletePrompt}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      size="compact"
-                      variant="destructive"
-                      data-testid="browser-profile-confirm-delete"
-                      disabled={busy}
-                      onClick={() =>
-                        void run(async () => {
-                          if (
-                            activePreview.selectionEpoch !==
-                              selectionEpoch.current ||
-                            activePreview.profileId !== selectedIdRef.current
-                          )
-                            return;
-                          const result =
-                            await window.api.browser.profiles.delete({
-                              operationId: crypto.randomUUID(),
-                              token: activePreview.token,
-                            });
-                          select(undefined);
-                          setPreview(undefined);
-                          await load();
-                          await refreshCleanup();
-                          setNotice(
-                            result.cleanupPending
-                              ? 'Profile deleted. Storage cleanup is still running.'
-                              : 'Profile deleted.',
-                          );
-                        })
-                      }
-                    >
-                      Delete profile
-                    </Button>
-                  </div>
-                </div>
+                <ConfirmDialog
+                  dataTestId="browser-profile-delete-preview"
+                  confirmTestId="browser-profile-confirm-delete"
+                  cancelTestId="browser-profile-cancel-delete"
+                  title={`Delete “${activePreview.displayName}” and its browser data?`}
+                  message={`Open pages will close and unsaved changes will be lost.${
+                    activePreview.tabs.length > 0
+                      ? ` ${activePreview.tabs.length} saved ${activePreview.tabs.length === 1 ? 'tab becomes' : 'tabs become'} unavailable.`
+                      : ''
+                  }${
+                    activePreview.defaults.length > 0
+                      ? ` ${activePreview.defaults.length} task ${activePreview.defaults.length === 1 ? 'default needs' : 'defaults need'} another profile.`
+                      : ''
+                  }`}
+                  confirmLabel="Delete profile"
+                  destructive
+                  busy={busy}
+                  errorMessage={error || null}
+                  restoreFocusRef={deleteTrigger}
+                  onCancel={dismissDeletePrompt}
+                  onConfirm={() =>
+                    void run(async () => {
+                      if (
+                        activePreview.selectionEpoch !==
+                          selectionEpoch.current ||
+                        activePreview.profileId !== selectedIdRef.current
+                      )
+                        return;
+                      const result = await window.api.browser.profiles.delete({
+                        operationId: crypto.randomUUID(),
+                        token: activePreview.token,
+                      });
+                      select(undefined);
+                      setPreview(undefined);
+                      await load();
+                      await refreshCleanup();
+                      setNotice(
+                        result.cleanupPending
+                          ? 'Profile deleted. Storage cleanup is still running.'
+                          : 'Profile deleted.',
+                      );
+                    })
+                  }
+                />
               )}
             </SettingsGroup>
           </SettingsSection>

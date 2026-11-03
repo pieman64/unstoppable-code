@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { W5FileWriteRefusedError } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+import { recordW5Work } from '@canopy/desktop-shared/node/work-counters';
 import { currentW5CommitScope } from './w5-commit-scope';
 import { logMainProcessWarn } from './main-process-logging';
 
@@ -44,6 +45,8 @@ function countConflict(
 ): void {
   const key = `${operation} ${kind} ${disposition}`;
   conflictCounts.set(key, (conflictCounts.get(key) ?? 0) + 1);
+  recordW5Work(`conflict.${operation}.${kind}.${disposition}`);
+  if (disposition === 'retried') recordW5Work('retry.attempt');
   logMainProcessWarn('W5 record commit conflict', {
     operation,
     kind,
@@ -55,6 +58,9 @@ function countConflict(
 export function w5ConflictCounts(): ReadonlyMap<string, number> {
   return conflictCounts;
 }
+
+/** A18′ bound for a daemon-backed store: three attempts per outermost unit. */
+export const W5_DAEMON_PRE_EFFECT_ATTEMPTS = 3;
 
 /**
  * Trusted daemon-backed composition only: the attempts each outermost unit
@@ -108,6 +114,35 @@ export async function runW5PreEffectUnit<T>(
         countConflict(operation, 'post-effect');
         throw error;
       }
+      if (attempt >= attempts) {
+        countConflict(operation, 'exhausted');
+        throw error;
+      }
+      countConflict(operation, 'retried');
+    } finally {
+      unit.running = false;
+    }
+  }
+}
+
+/**
+ * Runs `work`, a decision-only unit whose one commit decision is its only
+ * effect, as {@link runW5PreEffectUnit} does, except that a commit scope it
+ * opens does not stop the rerun: a stale-file refusal is returned before that
+ * decision, so nothing it staged applied (W5d2, O-1). The same rule as PR B's
+ * hosted `createW5DecisionOnlyRetry`.
+ */
+export async function runW5DecisionOnlyUnit<T>(
+  operation: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  if (attempts <= 1 || currentUnit() || currentW5CommitScope()) return work();
+  for (let attempt = 1; ; attempt += 1) {
+    const unit: PreEffectUnit = { scoped: false, running: true };
+    try {
+      return await units.run(unit, work);
+    } catch (error) {
+      if (!(error instanceof W5FileWriteRefusedError)) throw error;
       if (attempt >= attempts) {
         countConflict(operation, 'exhausted');
         throw error;

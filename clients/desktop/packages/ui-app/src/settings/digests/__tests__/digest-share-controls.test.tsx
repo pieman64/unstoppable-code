@@ -1189,6 +1189,8 @@ describe('DigestShareControls: owners and privacy', () => {
     const field = document.body.querySelector(
       '[data-testid="digest-share-link"]',
     );
-    expect(field?.classList.contains('replay-block')).toBe(true);
+    // Session replay drops a blocked element's whole subtree, so the block
+    // class may sit on the field or on the box around it.
+    expect(field?.closest('.replay-block')).not.toBeNull();
   });
 });

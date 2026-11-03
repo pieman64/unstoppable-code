@@ -1,0 +1,125 @@
+import { z } from 'zod';
+
+import { THINKING_LEVELS } from '../../thinking';
+
+/*
+ * Values the project, bot and chat host steps carry across the local worker
+ * boundary (CAN-5077): the `send-agent-message` settings and text references,
+ * and the send record a step returns. The executor's parsers and the shared
+ * validators stay the authority on content; these schemas bound and close
+ * the shapes those parsers already produce.
+ */
+
+const id = z.string().min(1).max(512);
+const name = z.string().min(1).max(512);
+
+/** The longest text a `send-agent-message` request carries, in UTF-16 code units. */
+export const WORKER_PIPELINE_HOST_TEXT_MAX = 4 * 1024 * 1024;
+
+const ShareablePluginSourceSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('builtin'), id: name }),
+  z.strictObject({ type: z.literal('github'), repo: name }),
+]);
+
+/** A portable plugin or skill reference (`ShareablePluginRef`). */
+export const WorkerPipelinePluginRefSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('skill'),
+    source: ShareablePluginSourceSchema,
+    skill_name: name,
+  }),
+  z.strictObject({
+    type: z.literal('plugin'),
+    marketplace: ShareablePluginSourceSchema,
+    plugin_name: name,
+  }),
+  z.strictObject({
+    type: z.literal('claude_plugin'),
+    marketplace: ShareablePluginSourceSchema,
+    plugin_name: name,
+  }),
+  z.strictObject({
+    type: z.literal('codex_plugin'),
+    marketplace: z.strictObject({ type: z.literal('codex-builtin'), id: name }),
+    plugin_name: name,
+  }),
+]);
+
+const referenceText = {
+  textStart: z.number().int().min(0).max(WORKER_PIPELINE_HOST_TEXT_MAX),
+  displayText: z.string().min(1).max(WORKER_PIPELINE_HOST_TEXT_MAX),
+};
+
+/** A configured prompt reference (`ConfiguredPromptReference`). */
+export const WorkerPipelinePromptReferenceSchema = z.discriminatedUnion(
+  'kind',
+  [
+    z.strictObject({
+      kind: z.literal('file'),
+      ...referenceText,
+      root: z.discriminatedUnion('kind', [
+        z.strictObject({ kind: z.literal('workspace') }),
+        z.strictObject({ kind: z.literal('repo'), repoId: id }),
+      ]),
+      relativePath: z.string().min(1).max(4096),
+    }),
+    z.strictObject({
+      kind: z.literal('plugin'),
+      ...referenceText,
+      plugin: z.discriminatedUnion('kind', [
+        z.strictObject({
+          kind: z.literal('portable'),
+          ref: WorkerPipelinePluginRefSchema,
+        }),
+        z.strictObject({
+          kind: z.literal('installed'),
+          marketplaceId: name,
+          pluginName: name,
+        }),
+      ]),
+    }),
+  ],
+);
+
+/** A send's per-turn settings; `model` is already resolved from its alias. */
+export const WorkerPipelineSendSettingsSchema = z.strictObject({
+  model: name.optional(),
+  thinkingEffort: z.enum(THINKING_LEVELS).optional(),
+  fastMode: z.boolean().optional(),
+  planMode: z.boolean().optional(),
+  approvalMode: z.enum(['ask', 'auto', 'full-access']).optional(),
+  plugins: z.array(WorkerPipelinePluginRefSchema).max(256).optional(),
+  interfaceMode: z.enum(['canopy', 'claude-code', 'auto']).optional(),
+});
+
+export const WorkerPipelineChatAddressSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('project'),
+    projectId: id,
+    taskId: id,
+    chatId: id,
+  }),
+  z.strictObject({
+    kind: z.literal('bot'),
+    botId: id,
+    taskId: id,
+    chatId: id,
+  }),
+]);
+
+/**
+ * The message a `send-agent-message` step sent (`PipelineChatSendRecord`).
+ * The executor records it on the step, including on a failure whose message
+ * was already accepted.
+ */
+export const WorkerPipelineChatSendRecordSchema = z.strictObject({
+  version: z.literal(1),
+  address: WorkerPipelineChatAddressSchema,
+  /** The accepted input id; `automation_run` watchers match it as `userMessageId`. */
+  userMessageId: id,
+  queuedMessageId: id.optional(),
+  state: z.enum(['sent', 'queued', 'steered']),
+  chatCreated: z.boolean(),
+  acceptedAt: id,
+  turnId: id.optional(),
+});

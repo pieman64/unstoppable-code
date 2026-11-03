@@ -1568,8 +1568,10 @@ test.describe('Home surface', () => {
                 queued: panel.querySelectorAll(
                   '[data-testid="queued-message-bubble"], [data-testid="queued-message-row"]',
                 ).length,
+                // One header per starting turn; its words are an inner
+                // polite status node (CAN-5483).
                 starting: panel.querySelectorAll(
-                  '[data-testid="turn-starting-status"][role="status"]',
+                  '[data-testid="turn-starting-status"]',
                 ).length,
               });
             }
@@ -1623,7 +1625,7 @@ test.describe('Home surface', () => {
         expect(frames[0].starting + frames[0].queued).toBe(1);
         const panel = window.getByTestId('panel-content-chat').first();
         const pendingSelector =
-          '[data-testid="turn-starting-status"][role="status"], [data-testid="queued-message-bubble"], [data-testid="queued-message-row"]';
+          '[data-testid="turn-starting-status"], [data-testid="queued-message-bubble"], [data-testid="queued-message-row"]';
         if (registrationSetupPhase !== 'existing-worktree') {
           await expect
             .poll(() =>
@@ -1708,6 +1710,9 @@ test.describe('Home surface', () => {
           .toBe(true);
         // Acceptance is not output: the same node remains through dispatch.
         await expect(panel.getByTestId('turn-starting-status')).toHaveCount(1);
+        await expect(
+          panel.getByTestId('turn-starting-status').getByRole('status'),
+        ).toHaveCount(1);
         const startingLifecycle = await panel
           .getByTestId('turn-starting-status')
           .evaluate(

@@ -15,6 +15,7 @@ import {
   TranscriptMarkdownAnchor,
   isNavigableTranscriptHref,
   type MarkdownOptions,
+  TRANSCRIPT_LINK_CLASS,
 } from '@canopy/ui-shared/components';
 import {
   parseFileLinkLineSuffix,
@@ -88,8 +89,7 @@ function lineAttribute(location: FileLinkLineLocation): string {
     : `${location.line}-${location.lineEnd}`;
 }
 
-const FILE_LINK_CLASSES =
-  'focus-ring inline cursor-pointer break-all rounded-sm fg-accent underline underline-offset-2 transition-colors hover:fg-accent/80 focus-visible:underline disabled:cursor-progress';
+const FILE_LINK_CLASSES = `focus-ring inline cursor-pointer break-all rounded-sm disabled:cursor-progress ${TRANSCRIPT_LINK_CLASS}`;
 
 function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
   const { href, children } = props;

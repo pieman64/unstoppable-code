@@ -9,6 +9,7 @@ import {
 import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { AdvancedDisclosure, Notice } from '@canopy/ui-shared';
+import { FormField, TextArea } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { AutomationTargetRequirementLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { CHAT_LABEL } from '@canopy/protocol';
@@ -978,21 +979,18 @@ export function ShareAutomationModal({
   const extraOptions = useCallback(
     ({ packageReview }: ShareResourceExtraOptionsContext) => (
       <div className="space-y-4">
-        <label className="block space-y-1 text-s fg-secondary">
-          <span>Description</span>
-          <textarea
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            placeholder="Describe what this automation does (optional)."
-            data-testid="share-automation-description"
-            className="min-h-20 w-full rounded-lg border bg-base px-3 py-2 fg-primary focus-ring"
-          />
-        </label>
-        {descriptionError && (
-          <p className="text-s fg-destructive" role="alert">
-            {descriptionError}
-          </p>
-        )}
+        <FormField label="Description (optional)" error={descriptionError}>
+          {(control) => (
+            <TextArea
+              {...control}
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              rows={3}
+              placeholder="Describe what this automation does."
+              data-testid="share-automation-description"
+            />
+          )}
+        </FormField>
         {sharedPipelinePinError && (
           <Notice intent="destructive" data-testid="share-automation-blockers">
             {sharedPipelinePinError}

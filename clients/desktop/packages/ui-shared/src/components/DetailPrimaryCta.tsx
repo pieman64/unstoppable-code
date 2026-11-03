@@ -23,8 +23,10 @@ export interface DetailPrimaryCtaProps {
   installLabel?: string;
 }
 
-const TRY_LABEL = 'Try it';
-const TRY_BUSY_LABEL = 'Opening chat…';
+export const DETAIL_PRIMARY_CTA_TRY_LABEL = 'Try it';
+export const DETAIL_PRIMARY_CTA_TRY_BUSY_LABEL = 'Opening chat…';
+const TRY_LABEL = DETAIL_PRIMARY_CTA_TRY_LABEL;
+const TRY_BUSY_LABEL = DETAIL_PRIMARY_CTA_TRY_BUSY_LABEL;
 
 /**
  * The single accent action in a capability detail header, beside Share.

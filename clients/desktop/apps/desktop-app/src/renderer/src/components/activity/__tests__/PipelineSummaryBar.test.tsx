@@ -109,8 +109,8 @@ describe('PipelineSummaryBar', () => {
     act(() => {
       byTestId('pipeline-summary-more')?.click();
     });
-    const cwd = Array.from(container.querySelectorAll('span')).find(
-      (span) => span.textContent === STATE.cwd,
+    const cwd = Array.from(container.querySelectorAll('dd')).find(
+      (value) => value.textContent === STATE.cwd,
     );
     expect(cwd?.classList).toContain('break-words');
     // Event inputs use the shared key/value table, which stacks when narrow.

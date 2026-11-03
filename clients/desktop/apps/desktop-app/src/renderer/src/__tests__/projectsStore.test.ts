@@ -26,7 +26,6 @@ import {
   useProjectsStore,
 } from '@/stores/projectsStore';
 import { useChatStore } from '@/stores/chatStore';
-import { readWorktreeSetupDuration } from '@/lib/worktreeSetupDurations';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useFileListStore } from '@/stores/fileListStore';
 import { useGitHubStore } from '@/stores/githubStore';
@@ -252,7 +251,6 @@ describe('projectsStore project repo adds', () => {
   const suppressWorktreePersistence = jest.fn<void, [string, string]>();
   const resumeWorktreePersistence = jest.fn<void, [string, string]>();
   const dropWorktreeQueuedState = jest.fn<void, [string, string]>();
-  const flushPendingChatsForWorktree = jest.fn<void, [string, string]>();
   const flushPendingForWorktree = jest.fn<Promise<void>, [string, string]>();
   const refreshWorktreeTabDiscoveries = jest.fn<void, [string, string]>();
   const queueWorktreeTabDiscoveryRefresh = jest.fn<void, [string, string]>();
@@ -444,7 +442,6 @@ describe('projectsStore project repo adds', () => {
       cleanupWorktree: cleanupChatWorktree,
       deselectWorktree: jest.fn(),
       dropWorktreeQueuedState,
-      flushPendingChatsForWorktree,
       flushWorktreeTabs,
       queueWorktreeTabDiscoveryRefresh,
       refreshWorktreeTabDiscoveries,
@@ -1622,95 +1619,6 @@ describe('projectsStore project repo adds', () => {
     expect(refreshWorkspaceDrift).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['available', 'unavailable'])(
-    'samples a pending row without blocking queue dispatch when storage is %s',
-    (storage) => {
-      const original = useProjectsStore.getState();
-      const createdAt = '2026-04-29T01:49:50.000Z';
-      const readyAt = Date.parse(createdAt) + 25_000;
-      const now = jest.spyOn(Date, 'now').mockReturnValue(readyAt);
-      try {
-        // This suite's window is a plain object; give it a storage to record in.
-        const stored = new Map<string, string>();
-        Object.defineProperty(window, 'localStorage', {
-          configurable: true,
-          value: {
-            getItem: (key: string): string | null => {
-              if (storage === 'unavailable')
-                throw new Error('Storage unavailable');
-              return stored.get(key) ?? null;
-            },
-            setItem: (key: string, value: string): void => {
-              if (storage === 'unavailable')
-                throw new Error('Storage unavailable');
-              stored.set(key, value);
-            },
-          },
-        });
-        useProjectsStore.setState({
-          refreshWorktreeDiffStats: jest.fn().mockResolvedValue(undefined),
-          refreshWorkspaceDrift: jest.fn().mockResolvedValue(undefined),
-          inspectHookChatPluginDependencies: jest
-            .fn()
-            .mockResolvedValue(undefined),
-          inspectRecommendedPlugins: jest.fn().mockResolvedValue(undefined),
-          projects: [
-            {
-              type: 'multi-repo',
-              id: 'workspace-a',
-              name: 'Workspace A',
-              color: '#111111',
-              repos: [],
-              worktrees: [
-                {
-                  id: 'wt-pending',
-                  branchName: 'wt-pending',
-                  createdAt,
-                  setupPhase: 'git-pending',
-                },
-              ],
-              collapsed: false,
-              order: 0,
-              sourceRepoPath: '/repos/workspace-a',
-            },
-          ],
-        });
-        useProjectsStore.getState().subscribeToWorktreeGitLifecycleEvents();
-        if (!worktreeGitReadyHandler) {
-          throw new Error('Expected worktreeGitReady handler to be registered');
-        }
-        const event = {
-          projectId: 'workspace-a',
-          worktreeId: 'wt-pending',
-          branchName: 'feature/ready',
-        };
-        worktreeGitReadyHandler(event);
-        expect(readWorktreeSetupDuration('workspace-a')).toBe(
-          storage === 'available' ? 25_000 : null,
-        );
-        expect(
-          useChatStore.getState().flushPendingChatsForWorktree,
-        ).toHaveBeenCalledWith('workspace-a', 'wt-pending');
-
-        // A replayed event finds the row ready and records nothing new.
-        now.mockReturnValue(readyAt + 60_000);
-        worktreeGitReadyHandler(event);
-        expect(readWorktreeSetupDuration('workspace-a')).toBe(
-          storage === 'available' ? 25_000 : null,
-        );
-      } finally {
-        now.mockRestore();
-        useProjectsStore.setState({
-          refreshWorktreeDiffStats: original.refreshWorktreeDiffStats,
-          refreshWorkspaceDrift: original.refreshWorkspaceDrift,
-          inspectHookChatPluginDependencies:
-            original.inspectHookChatPluginDependencies,
-          inspectRecommendedPlugins: original.inspectRecommendedPlugins,
-        });
-      }
-    },
-  );
-
   it('retries hook dependency inspection once a git-pending worktree becomes ready', async () => {
     createWorkspaceWorktree.mockResolvedValue({
       id: 'wt-pending',
@@ -2536,7 +2444,7 @@ describe('projectsStore project repo adds', () => {
     expect(selectWorktree).toHaveBeenCalledWith('workspace-a', 'wt-temp');
   });
 
-  it('reloads projects and flushes setup queues when git-ready arrives for an unknown worktree', () => {
+  it('reloads projects and flushes pipeline setup queues when git-ready arrives for an unknown worktree', () => {
     useProjectsStore.setState({
       projects: [
         {
@@ -2565,10 +2473,6 @@ describe('projectsStore project repo adds', () => {
     });
 
     expect(loadProjects).toHaveBeenCalledWith({ silent: true });
-    expect(flushPendingChatsForWorktree).toHaveBeenCalledWith(
-      'workspace-a',
-      'automation-wt',
-    );
     expect(flushPendingForWorktree).toHaveBeenCalledWith(
       'workspace-a',
       'automation-wt',
@@ -2644,6 +2548,9 @@ describe('projectsStore project repo adds', () => {
     });
     expect(useProjectsStore.getState().worktreeError).toBe('phase b exploded');
     expect(selectWorktree).toHaveBeenCalledWith('workspace-a', 'wt-fast-fail');
+    // Main ends a chat turn it held for this setup as failed in the chat, so
+    // the chat's state stays for that ending to show.
+    expect(dropWorktreeQueuedState).not.toHaveBeenCalled();
   });
 
   it('removes the rolled-back row and opens the repair modal on a deferred needs-repair event (Task I1)', () => {
@@ -2799,12 +2706,8 @@ describe('projectsStore project repo adds', () => {
       ],
     ).toBeUndefined();
     // Repair completes git setup synchronously with no `worktree:git-ready`
-    // event, so the store must flush any message queued before the
-    // needs-repair rollback itself.
-    expect(flushPendingChatsForWorktree).toHaveBeenCalledWith(
-      'workspace-a',
-      'wt-repair',
-    );
+    // event, so the store must flush pipeline work queued before the
+    // needs-repair rollback itself. Main releases a chat turn it held.
     expect(flushPendingForWorktree).toHaveBeenCalledWith(
       'workspace-a',
       'wt-repair',

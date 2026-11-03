@@ -22,8 +22,9 @@ describe('CanopyCloudApiKeyField', () => {
 
   // Button's base class carries `relative`, which Tailwind emits after
   // `absolute`, so a position class on the Button itself never applies. The
-  // show/hide toggle is seated over the input by a wrapper instead.
-  it('positions the show/hide toggle with a wrapper, not on the Button', () => {
+  // show/hide toggle sits in the field's trailing slot instead, in the flow
+  // of the field box, with no position class of its own.
+  it('seats the show/hide toggle in the field trailing slot, not by position classes', () => {
     act(() =>
       root.render(
         <CanopyCloudApiKeyField
@@ -37,6 +38,8 @@ describe('CanopyCloudApiKeyField', () => {
     const toggle = container.querySelector('[aria-label="Show API key"]');
     expect(toggle).toBeInstanceOf(HTMLButtonElement);
     expect(toggle?.classList.contains('absolute')).toBe(false);
-    expect(toggle?.parentElement?.classList.contains('absolute')).toBe(true);
+    expect(toggle?.parentElement?.getAttribute('data-field-adornment')).toBe(
+      'trailing',
+    );
   });
 });

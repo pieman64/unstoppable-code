@@ -952,13 +952,17 @@ export async function createDelegationInference({
     }
     if (isChild) {
       // request-steering: once the test releases it, the child asks its root
-      // chat for steering, then finishes.
+      // chat for steering, then finishes. While its request is queued the
+      // child stays live until the root turn is released, so the test can
+      // read the waiting state before the delegate finishes.
       if (action?.startsWith('request-steering')) {
-        if (results)
+        if (results) {
+          await parentTurnBarrier;
           return {
             marker: childMarker,
             step: { text: finding, stopReason: 'end_turn' },
           };
+        }
         await childBarrier;
         return {
           marker: childMarker,

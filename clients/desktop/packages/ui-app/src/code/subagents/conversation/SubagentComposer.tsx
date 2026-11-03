@@ -57,6 +57,7 @@ import {
   useSubagentComposerStore,
 } from './subagent-composer-store';
 import { useSubagentMessageQueue } from './useSubagentMessageQueue';
+import { StatusLabel, ErrorBanner } from '@canopy/ui-shared/components';
 
 export interface SubagentComposerProps {
   /** Root chat whose tree owns this subagent. */
@@ -459,7 +460,7 @@ export function SubagentComposer({
                     className="flex max-w-full items-center gap-2 text-xs"
                     role="alert"
                   >
-                    <span className="fg-destructive">{queued.error}</span>
+                    <StatusLabel>{queued.error}</StatusLabel>
                     <Button
                       size="compact"
                       variant="secondary"
@@ -545,11 +546,7 @@ export function SubagentComposer({
               }
             />
           </ChatComposerShell>
-          {draft.error ? (
-            <p className="px-2 text-xs fg-destructive" role="alert">
-              {draft.error}
-            </p>
-          ) : null}
+          <ErrorBanner className="mt-2" error={draft.error} />
           <SubagentRecipientMenu
             open={menuOpen}
             onOpenChange={setMenuOpen}

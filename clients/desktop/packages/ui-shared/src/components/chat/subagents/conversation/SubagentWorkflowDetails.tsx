@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import type { JSX } from 'react';
 import type { SubagentNode, SubagentTree } from '@canopy/agent-transcript';
 import { Button } from '../../../Button';
 import { ArrowUpRightIcon } from '../../../../icons/AppIcons';
@@ -17,26 +17,12 @@ import {
   subagentWorkflowUsageLabel,
 } from '../subagent-copy';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
+import { Fact, FactList } from '../../../FactList';
 
 export interface SubagentWorkflowDetailsProps {
   readonly tree: SubagentTree;
   readonly node: SubagentNode;
   readonly onOpenWorkflow?: (runId: string) => void;
-}
-
-function DetailRow({
-  label,
-  children,
-}: {
-  readonly label: string;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{label}</dt>
-      <dd className="min-w-0 break-words fg-primary">{children}</dd>
-    </>
-  );
 }
 
 /** Workflow run context and usage for a workflow agent's chat. */
@@ -64,9 +50,9 @@ export function SubagentWorkflowDetails({
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-xs">
+      <FactList>
         {runName || runId ? (
-          <DetailRow label={SUBAGENT_WORKFLOW_RUN}>
+          <Fact label={SUBAGENT_WORKFLOW_RUN}>
             <div className="flex min-w-0 flex-col gap-0.5">
               <span className="flex min-w-0 items-center gap-1.5">
                 <SubagentWorkflowMark size={12} />
@@ -88,18 +74,14 @@ export function SubagentWorkflowDetails({
                 </span>
               ) : null}
             </div>
-          </DetailRow>
+          </Fact>
         ) : null}
-        {status ? (
-          <DetailRow label={SUBAGENT_WORKFLOW_STATUS}>{status}</DetailRow>
-        ) : null}
+        {status ? <Fact label={SUBAGENT_WORKFLOW_STATUS}>{status}</Fact> : null}
         {position ? (
-          <DetailRow label={SUBAGENT_WORKFLOW_POSITION}>{position}</DetailRow>
+          <Fact label={SUBAGENT_WORKFLOW_POSITION}>{position}</Fact>
         ) : null}
-        {usage ? (
-          <DetailRow label={SUBAGENT_WORKFLOW_USAGE}>{usage}</DetailRow>
-        ) : null}
-      </dl>
+        {usage ? <Fact label={SUBAGENT_WORKFLOW_USAGE}>{usage}</Fact> : null}
+      </FactList>
       {onOpenWorkflow && runId ? (
         <div>
           <Button

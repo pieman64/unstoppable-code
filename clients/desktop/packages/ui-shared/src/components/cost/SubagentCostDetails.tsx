@@ -10,6 +10,7 @@ import {
   isCostItemPending,
   unpricedCostItemLabel,
 } from './cost-format';
+import { Fact, FactList } from '../FactList';
 
 export interface SubagentCostDetailsProps {
   /** The subagent's or delegate's cost row (`core.cost.chat.get` with a `subagentId`). */
@@ -32,21 +33,6 @@ function paidByLabel(item: CostAttributedItem): string {
     return `${label}, estimated at API prices`;
   }
   return label;
-}
-
-function DetailRow({
-  label,
-  value,
-}: {
-  readonly label: string;
-  readonly value: string;
-}): JSX.Element {
-  return (
-    <>
-      <dt className="fg-tertiary">{label}</dt>
-      <dd className="min-w-0 break-words tabular-nums fg-primary">{value}</dd>
-    </>
-  );
 }
 
 /** Pure display details for one subagent or managed delegation cost row. */
@@ -73,44 +59,44 @@ export function SubagentCostDetails({
           Part of the cost of the chat turn that started it.
         </p>
       ) : null}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
+      <FactList>
         {totalTokens === undefined ? (
           <>
-            <DetailRow
-              label="Input"
-              value={formatTokenCount(item.tokens.input)}
-            />
-            <DetailRow
-              label="Output"
-              value={formatTokenCount(item.tokens.output)}
-            />
-            <DetailRow
-              label="Cache read"
-              value={formatTokenCount(item.tokens.cacheReadInputTokens)}
-            />
+            <Fact numeric label="Input">
+              {formatTokenCount(item.tokens.input)}
+            </Fact>
+            <Fact numeric label="Output">
+              {formatTokenCount(item.tokens.output)}
+            </Fact>
+            <Fact numeric label="Cache read">
+              {formatTokenCount(item.tokens.cacheReadInputTokens)}
+            </Fact>
           </>
         ) : (
-          <DetailRow label="Tokens" value={formatTokenCount(totalTokens)} />
+          <Fact numeric label="Tokens">
+            {formatTokenCount(totalTokens)}
+          </Fact>
         )}
-        <DetailRow label="Paid by" value={paidByLabel(item)} />
+        <Fact numeric label="Paid by">
+          {paidByLabel(item)}
+        </Fact>
         {item.proxyAccounts !== undefined && item.proxyAccounts.length > 0 ? (
           <>
-            <dt className="fg-tertiary">Account</dt>
-            <dd className="flex min-w-0 fg-primary">
+            <Fact label="Account" fit="inline">
               <ProxyAccountNames
                 accounts={item.proxyAccounts}
                 testId={`${testId}-account`}
               />
-            </dd>
+            </Fact>
           </>
         ) : null}
         {item.kind === 'delegation' && item.runCount !== undefined ? (
-          <DetailRow
+          <Fact
+            numeric
             label="Runs"
-            value={`${item.runCount} ${item.runCount === 1 ? 'run' : 'runs'}`}
-          />
+          >{`${item.runCount} ${item.runCount === 1 ? 'run' : 'runs'}`}</Fact>
         ) : null}
-      </dl>
+      </FactList>
       {onOpenSessionBreakdown ? (
         <div>
           <HeaderActionButton

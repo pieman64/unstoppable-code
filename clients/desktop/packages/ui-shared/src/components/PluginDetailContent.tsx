@@ -17,6 +17,8 @@ import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
+import { ErrorBanner } from './StatusBlocks';
+import { SegmentedControl } from './SegmentedControl';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
 import {
@@ -389,7 +391,7 @@ function ReadmeSection({
           {loading && (
             <p className="text-s fg-secondary">Loading README&hellip;</p>
           )}
-          {error && <p className="text-s fg-destructive">{error}</p>}
+          <ErrorBanner className="" error={error} />
           {content !== null && !loading && (
             <div
               className={`${REPLAY_BLOCK_CLASS} prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_code]:bg-secondary [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-s [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-s [&_h3]:font-medium [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
@@ -672,39 +674,33 @@ export function PluginDetailContent({
       >
         Show:
       </span>
-      <div
-        className="inline-flex shrink-0 items-center rounded-md border bg-secondary p-0.5 text-xs"
-        role="tablist"
-        aria-label="Show plugin details for Claude or Codex"
-        data-testid="plugin-detail-provider-toggle"
-      >
-        <Tooltip label="Show this plugin's Claude details">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === 'claude'}
-            onClick={() => setActiveTab('claude')}
-            disabled={!hasClaudeSlot}
-            className={`px-3 py-1.5 rounded transition-colors ${
-              activeTab === 'claude'
-                ? 'bg-base fg-primary'
-                : 'fg-secondary hover:fg-primary'
-            } disabled:opacity-50`}
-            data-testid="plugin-detail-toggle-claude"
-          >
-            Claude
-          </button>
-        </Tooltip>
-        <CodexToggleButton
-          active={activeTab === 'codex'}
-          isCompat={codexSlotIsCompat}
-          disabled={!hasCodexSlot || (compatCapable && codexCompatDisabled)}
-          disabledReason={
-            compatCapable && codexCompatDisabled ? 'compat-off' : undefined
-          }
-          onClick={() => setActiveTab('codex')}
-        />
-      </div>
+      <SegmentedControl<FacetTab>
+        value={activeTab}
+        options={[
+          {
+            value: 'claude',
+            label: 'Claude',
+            tooltip: "Show this plugin's Claude details",
+            unavailable: !hasClaudeSlot,
+            dataTestId: 'plugin-detail-toggle-claude',
+          },
+          {
+            value: 'codex',
+            label: 'Codex',
+            tooltip: codexToggleTooltip(
+              codexSlotIsCompat,
+              compatCapable && codexCompatDisabled,
+            ),
+            unavailable:
+              !hasCodexSlot || (compatCapable && codexCompatDisabled),
+            dataTestId: 'plugin-detail-toggle-codex',
+          },
+        ]}
+        onChange={setActiveTab}
+        label="Show plugin details for Claude or Codex"
+        width="content"
+        dataTestId="plugin-detail-provider-toggle"
+      />
     </div>
   );
 
@@ -1306,50 +1302,10 @@ function McpServersSection({
   );
 }
 
-function CodexToggleButton({
-  active,
-  isCompat,
-  disabled,
-  disabledReason,
-  onClick,
-}: {
-  active: boolean;
-  isCompat: boolean;
-  disabled: boolean;
-  disabledReason?: 'compat-off';
-  onClick: () => void;
-}): JSX.Element {
-  const baseClass = `px-3 py-1.5 rounded transition-colors disabled:opacity-50 ${
-    active
-      ? isCompat
-        ? 'bg-warning-subtle fg-warning'
-        : 'bg-base fg-primary'
-      : isCompat
-        ? 'fg-warning'
-        : 'fg-secondary hover:fg-primary'
-  }`;
-
-  const button = (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      onClick={onClick}
-      disabled={disabled}
-      className={baseClass}
-      data-testid="plugin-detail-toggle-codex"
-      data-codex-compat={isCompat ? 'true' : 'false'}
-    >
-      Codex
-    </button>
-  );
-
-  const tooltipLabel =
-    disabledReason === 'compat-off'
-      ? CODEX_COMPATIBILITY_DISABLED_TOOLTIP
-      : isCompat
-        ? CODEX_COMPATIBILITY_TOOLTIP
-        : "Show this plugin's Codex details";
-
-  return <Tooltip label={tooltipLabel}>{button}</Tooltip>;
+/** What the Codex segment shows, or why it cannot be picked. */
+function codexToggleTooltip(isCompat: boolean, compatOff: boolean): string {
+  if (compatOff) return CODEX_COMPATIBILITY_DISABLED_TOOLTIP;
+  return isCompat
+    ? CODEX_COMPATIBILITY_TOOLTIP
+    : "Show this plugin's Codex details";
 }

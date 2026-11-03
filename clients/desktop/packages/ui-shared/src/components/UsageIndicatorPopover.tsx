@@ -1,12 +1,10 @@
 import {
-  useCallback,
-  useEffect,
   useId,
   useState,
   type JSX,
   type ReactNode,
+  type RefObject,
 } from 'react';
-import { getWindow } from '../panels/window-registry';
 import {
   formatCost,
   formatDuration,
@@ -19,10 +17,10 @@ import {
   USAGE_DISCLOSURE_INK_CLASS,
 } from './UsageIndicatorActions';
 import { CONTEXT_SERIES_COLORS } from '../lib/usage-series-colors';
-import { DropdownMenuSurface } from './DropdownMenu';
 import { SegmentedControl } from './SegmentedControl';
-import { COMPOSER_ROW_MENU_GAP } from './FloatingMenu';
+import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
+import { ValueRow, ValueRows } from './settings/ValueRows';
 import type {
   UsageIndicatorUsage,
   UsageIndicatorResponse,
@@ -42,21 +40,6 @@ function isEmptyUsage(usage: UsageIndicatorUsage): boolean {
     usage.contextTokens === 0 &&
     usage.inputTokens === 0 &&
     usage.outputTokens === 0
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}): JSX.Element {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-xs">
-      <dt className="fg-secondary">{label}</dt>
-      <dd className="min-w-0 truncate tabular-nums fg-primary">{value}</dd>
-    </div>
   );
 }
 
@@ -150,35 +133,21 @@ function ContextBreakdownList({
 }): JSX.Element {
   let usedIndex = -1;
   return (
-    <dl
-      data-testid="usage-indicator-context-breakdown"
-      className="flex flex-col gap-1"
-    >
+    <ValueRows dataTestId="usage-indicator-context-breakdown">
       {breakdown.categories.map((category) => {
         if (category.kind === 'used') usedIndex += 1;
         if (category.tokens <= 0 || category.kind === 'deferred') return null;
         return (
-          <div key={category.name} className="flex items-center gap-2 text-xs">
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-xs"
-              style={{
-                backgroundColor: contextCategoryColor(category.kind, usedIndex),
-              }}
-            />
-            <dt className="min-w-0 flex-1 truncate fg-primary">
-              {category.name}
-            </dt>
-            <dd className="tabular-nums fg-secondary">
-              {formatTokenCount(category.tokens)}
-            </dd>
-            <dd className="w-12 text-right tabular-nums fg-primary">
-              {formatContextShare(category.tokens, breakdown.maxTokens)}
-            </dd>
-          </div>
+          <ValueRow
+            key={category.name}
+            swatch={contextCategoryColor(category.kind, usedIndex)}
+            label={category.name}
+            value={formatTokenCount(category.tokens)}
+            share={formatContextShare(category.tokens, breakdown.maxTokens)}
+          />
         );
       })}
-    </dl>
+    </ValueRows>
   );
 }
 
@@ -237,60 +206,8 @@ function UsageDetailsTabs({
 // UsagePopover — detail panel
 // ---------------------------------------------------------------------------
 
-/**
- * Placed above the meter, the popover is pinned by its BOTTOM edge, so
- * content that grows (the context breakdown opening) extends upward in the
- * same frame instead of spilling down over the composer until the next
- * measurement moves it. Below the meter it is pinned by its top edge.
- */
-interface PopoverPosition {
-  side: 'above' | 'below';
-  /** `bottom` offset when above, `top` offset when below. */
-  edge: number;
-  left: number;
-  maxHeight: number;
-}
-
-const POPOVER_WIDTH = 292; // w-73
+/** Space between the meter and the popover when it is not aligned to a box. */
 const POPOVER_GAP = 8;
-const VIEWPORT_PADDING = 8;
-
-function computePopoverPosition(
-  anchorEl: HTMLElement,
-  popoverEl: HTMLElement | null,
-  alignEl: HTMLElement | null,
-): PopoverPosition {
-  const rect = anchorEl.getBoundingClientRect();
-  const popoverHeight = popoverEl ? popoverEl.offsetHeight : 0;
-  // Aligned to the composer box, the popover joins the settings row's menus
-  // at their 4px gap.
-  const gap = alignEl ? COMPOSER_ROW_MENU_GAP : POPOVER_GAP;
-
-  // Prefer placing above the anchor; flip below if not enough space
-  const spaceAbove = rect.top - gap;
-  const spaceBelow = getWindow(anchorEl).innerHeight - rect.bottom - gap;
-  const above = spaceAbove >= popoverHeight || spaceAbove >= spaceBelow;
-  const maxHeight = Math.max(
-    0,
-    (above ? spaceAbove : spaceBelow) - VIEWPORT_PADDING,
-  );
-  const edge = above
-    ? getWindow(anchorEl).innerHeight - (rect.top - gap)
-    : rect.bottom + gap;
-
-  // Right-aligned to the meter, which sits at the trailing end of the
-  // composer's status row, so the popover grows back over the composer. A
-  // host's align element (the composer box) sets the right edge instead,
-  // so the popover lines up with the box like the row's other menus.
-  const width = popoverEl?.offsetWidth || POPOVER_WIDTH;
-  const right = alignEl?.getBoundingClientRect().right ?? rect.right;
-  const left = Math.min(
-    Math.max(VIEWPORT_PADDING, right - width),
-    getWindow(anchorEl).innerWidth - width - VIEWPORT_PADDING,
-  );
-
-  return { side: above ? 'above' : 'below', edge, left, maxHeight };
-}
 
 export default function UsagePopover({
   usage,
@@ -304,8 +221,10 @@ export default function UsagePopover({
   contextBreakdown,
   costPreview,
   hideCost = false,
+  onClose,
   anchorRef,
   alignRef,
+  returnFocusRef,
   popoverRef,
 }: {
   usage: UsageIndicatorUsage;
@@ -319,72 +238,14 @@ export default function UsagePopover({
   contextBreakdown?: UsageIndicatorContextBreakdown;
   costPreview?: ReactNode;
   hideCost?: boolean;
-  anchorRef: React.RefObject<HTMLDivElement | null>;
-  alignRef?: React.RefObject<HTMLElement | null>;
-  popoverRef: React.RefObject<HTMLDivElement | null>;
+  /** Escape, a press outside, or Tab closes the popover. */
+  onClose: () => void;
+  anchorRef: RefObject<HTMLDivElement | null>;
+  alignRef?: RefObject<HTMLElement | null>;
+  /** The meter, which takes focus back when the popover closes. */
+  returnFocusRef: RefObject<HTMLElement | null>;
+  popoverRef: RefObject<HTMLDivElement | null>;
 }): JSX.Element {
-  const [position, setPosition] = useState<PopoverPosition | null>(null);
-
-  const updatePosition = useCallback((): void => {
-    const anchorEl = anchorRef.current;
-    if (!anchorEl) return;
-
-    const next = computePopoverPosition(
-      anchorEl,
-      popoverRef.current,
-      alignRef?.current ?? null,
-    );
-    setPosition((prev) => {
-      if (
-        prev &&
-        prev.side === next.side &&
-        prev.edge === next.edge &&
-        prev.left === next.left &&
-        prev.maxHeight === next.maxHeight
-      )
-        return prev;
-      return next;
-    });
-  }, [alignRef, anchorRef, popoverRef]);
-
-  useEffect(() => {
-    updatePosition();
-    // Track scroll/resize on the window the anchor lives in so the popover
-    // stays put when the composer has been popped out to an aux window.
-    const view = getWindow(anchorRef.current);
-    const observer =
-      typeof view.ResizeObserver === 'function'
-        ? new view.ResizeObserver(updatePosition)
-        : null;
-    if (popoverRef.current) observer?.observe(popoverRef.current);
-    view.addEventListener('resize', updatePosition);
-    view.addEventListener('scroll', updatePosition, true);
-    return (): void => {
-      observer?.disconnect();
-      view.removeEventListener('resize', updatePosition);
-      view.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [updatePosition, anchorRef, popoverRef]);
-
-  const style: React.CSSProperties = {
-    position: 'fixed',
-    zIndex: 'var(--z-index-dropdown)',
-    ...(position
-      ? {
-          ...(position.side === 'above'
-            ? { bottom: position.edge }
-            : { top: position.edge }),
-          left: position.left,
-          maxHeight: position.maxHeight,
-          // Grows from the corner nearest the meter, like the row's menus.
-          transformOrigin:
-            position.side === 'above' ? 'bottom right' : 'top right',
-        }
-      : // Unplaced for its first measurement, so it never flashes at the
-        // wrong spot before the entry motion starts.
-        { visibility: 'hidden', pointerEvents: 'none' }),
-  };
-
   // Codex app-server usage carries no cost of its own, so a Codex chat hides
   // the row unless the host priced the turn itself: cloud Core bills every
   // turn through the gateway and reports the figure regardless of harness.
@@ -424,49 +285,61 @@ export default function UsagePopover({
   const costRow = hasCostPreview ? costPreview : null;
 
   const sessionFigures = (
-    <dl data-testid="usage-indicator-details" className="flex flex-col gap-1">
+    <ValueRows dataTestId="usage-indicator-details">
       {showCost && !hasCostPreview ? (
-        <DetailRow label="Cost" value={formatCost(usage.totalCostUsd ?? 0)} />
+        <ValueRow label="Cost" value={formatCost(usage.totalCostUsd ?? 0)} />
       ) : null}
       {showDuration && (
-        <DetailRow
+        <ValueRow
           label="Duration"
           value={formatDuration(usage.durationMs ?? 0)}
         />
       )}
-      <DetailRow label="Turns" value={String(usage.numTurns)} />
-      {modelLabel && <DetailRow label="Model" value={modelLabel} />}
-      <DetailRow label="Input" value={formatTokenCount(usage.inputTokens)} />
-      <DetailRow label="Output" value={formatTokenCount(usage.outputTokens)} />
-      <DetailRow
+      <ValueRow label="Turns" value={String(usage.numTurns)} />
+      {modelLabel && (
+        <ValueRow label="Model" value={modelLabel} numeric={false} />
+      )}
+      <ValueRow label="Input" value={formatTokenCount(usage.inputTokens)} />
+      <ValueRow label="Output" value={formatTokenCount(usage.outputTokens)} />
+      <ValueRow
         label="Cache read"
         value={formatTokenCount(usage.cacheReadInputTokens)}
       />
       {showCacheWrite && (
-        <DetailRow
+        <ValueRow
           label="Cache write"
           value={formatTokenCount(usage.cacheCreationInputTokens ?? 0)}
         />
       )}
-    </dl>
+    </ValueRows>
   );
 
   return (
-    <DropdownMenuSurface
+    <FloatingMenu
       ref={popoverRef}
+      open
+      onOpenChange={(next): void => {
+        if (!next) onClose();
+      }}
+      anchorRef={anchorRef}
+      // A host's align element (the composer box) sets the right edge, so
+      // the popover lines up with the box like the settings row's menus and
+      // joins them at their 4px gap; otherwise it hangs off the meter.
+      {...(alignRef ? { alignRef } : {})}
+      returnFocusRef={returnFocusRef}
+      placement="top-right"
+      gap={alignRef ? COMPOSER_ROW_MENU_GAP : POPOVER_GAP}
+      interaction="manual"
+      openOnArrowKeys={false}
       role="dialog"
       aria-label="Usage"
       padding="readout"
       data-canopy-browser-native-overlay="true"
       data-testid="usage-indicator-popover"
-      // The shared floating-surface entry motion (scale and fade), which
-      // starts once the popover is placed, as the settings row's menus do.
-      data-positioned={position ? 'true' : 'false'}
       // A readout, not text to copy: no selection, as in the effort panel.
       // 292px: the widest row (a weekly limit's name, its reset time and the
       // percent) fits without truncating.
-      className="canopy-floating-menu w-73 select-none overflow-y-auto"
-      style={style}
+      className="w-73 select-none overflow-y-auto"
     >
       <div className="flex flex-col gap-3">
         {responseUsage && (
@@ -483,20 +356,22 @@ export default function UsagePopover({
               </p>
             </div>
             {(modelLabel || responseUsage.usage) && (
-              <dl className="flex flex-col gap-1">
-                {modelLabel && <DetailRow label="Model" value={modelLabel} />}
+              <ValueRows>
+                {modelLabel && (
+                  <ValueRow label="Model" value={modelLabel} numeric={false} />
+                )}
                 {responseUsage.usage && (
                   <>
-                    <DetailRow
+                    <ValueRow
                       label="Input"
                       value={formatTokenCount(responseUsage.usage.inputTokens)}
                     />
-                    <DetailRow
+                    <ValueRow
                       label="Output"
                       value={formatTokenCount(responseUsage.usage.outputTokens)}
                     />
                     {responseUsage.usage.reasoningTokens !== undefined && (
-                      <DetailRow
+                      <ValueRow
                         label="Reasoning"
                         value={formatTokenCount(
                           responseUsage.usage.reasoningTokens,
@@ -505,7 +380,7 @@ export default function UsagePopover({
                     )}
                     {!hideCost &&
                       responseUsage.usage.estimatedCostUsd !== undefined && (
-                        <DetailRow
+                        <ValueRow
                           label="Estimated cost"
                           value={formatCost(
                             responseUsage.usage.estimatedCostUsd,
@@ -513,7 +388,7 @@ export default function UsagePopover({
                         />
                       )}
                     {responseUsage.usage.cacheReadTokens !== undefined && (
-                      <DetailRow
+                      <ValueRow
                         label="Cache read"
                         value={formatTokenCount(
                           responseUsage.usage.cacheReadTokens,
@@ -521,7 +396,7 @@ export default function UsagePopover({
                       />
                     )}
                     {responseUsage.usage.cacheWriteTokens !== undefined && (
-                      <DetailRow
+                      <ValueRow
                         label="Cache write"
                         value={formatTokenCount(
                           responseUsage.usage.cacheWriteTokens,
@@ -530,16 +405,16 @@ export default function UsagePopover({
                     )}
                   </>
                 )}
-              </dl>
+              </ValueRows>
             )}
             {responseUsage.context && (
               <div className="flex flex-col gap-1.5">
-                <dl>
-                  <DetailRow
+                <ValueRows>
+                  <ValueRow
                     label="Reported context"
                     value={`${formatTokenCount(responseUsage.context.usedTokens)} / ${formatTokenCount(responseUsage.context.maxTokens)}`}
                   />
-                </dl>
+                </ValueRows>
                 <UsageMeter
                   percentage={Math.min(
                     100,
@@ -704,6 +579,6 @@ export default function UsagePopover({
           </div>
         )}
       </div>
-    </DropdownMenuSurface>
+    </FloatingMenu>
   );
 }

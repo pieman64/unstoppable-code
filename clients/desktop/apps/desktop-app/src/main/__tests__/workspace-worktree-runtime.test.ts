@@ -1,3 +1,9 @@
+import type * as ScriptExecutionDouble from './helpers/script-execution-double';
+jest.mock('../lib/script-execution', () =>
+  jest.requireActual<typeof ScriptExecutionDouble>(
+    './helpers/script-execution-double',
+  ),
+);
 jest.mock('node:fs/promises', () => ({
   mkdir: jest.fn(() => Promise.resolve()),
   readdir: jest.fn(),
@@ -11,6 +17,10 @@ jest.mock('../lib/paths', () => ({
       `/mock/workspaces/${workspaceId}/worktree-data/${worktreeId}`,
   ),
   getWorkspaceWorktreeDir: jest.fn(
+    (workspaceId: string, worktreeId: string) =>
+      `/mock/workspaces/${workspaceId}/worktrees/${worktreeId}`,
+  ),
+  getWorkspaceWorktreeRootRepoDir: jest.fn(
     (workspaceId: string, worktreeId: string) =>
       `/mock/workspaces/${workspaceId}/worktrees/${worktreeId}`,
   ),

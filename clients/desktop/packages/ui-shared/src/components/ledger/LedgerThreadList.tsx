@@ -22,6 +22,7 @@ import {
 } from '../../lib/ledger-threads';
 import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
+import { ErrorBanner } from '../StatusBlocks';
 import { LedgerEntryThread } from './LedgerEntryThread';
 import type { LedgerEntryPostContext } from './LedgerEntryPost';
 import type { LedgerEntryRowDetails } from './ledger-entry-attribution';
@@ -256,9 +257,7 @@ function LoadMoreFooter({
 }): JSX.Element {
   return (
     <div className="flex flex-col items-start gap-1 px-2 pb-2">
-      {loadMoreError !== null && (
-        <p className="text-2xs fg-destructive">{loadMoreError}</p>
-      )}
+      <ErrorBanner className="self-stretch" error={loadMoreError} />
       {loadingMore ? (
         <span className="flex items-center gap-2 py-1.5 text-xs fg-secondary">
           <LoadingSpinner tone="secondary" decorative />

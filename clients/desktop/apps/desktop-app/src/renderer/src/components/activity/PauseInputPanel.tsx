@@ -19,7 +19,8 @@ import {
   type PauseInputAnswerError,
 } from '@canopy/desktop-shared/pipelines/pause-input-validation';
 import {
-  Checkbox,
+  ChoiceField,
+  FormField,
   Select,
   TextArea,
   TextInput,
@@ -131,6 +132,11 @@ export function PauseInputPanel({
   );
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  // Field errors show only after a submit attempt, keyed
+  // `${checkpointId}:${fieldKey}`, and each clears when its field is edited.
+  const [shownErrors, setShownErrors] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
 
   useEffect(() => {
     setDrafts((current) =>
@@ -160,22 +166,45 @@ export function PauseInputPanel({
     () => (request ? validatePauseInputAnswerErrors(request, answers) : []),
     [answers, request],
   );
-  const allValid = checkpoints.every((checkpoint) => {
-    if (!checkpoint.request) return true;
-    return (
-      validatePauseInputAnswerErrors(
-        checkpoint.request,
-        drafts[checkpoint.id] ?? {},
-      ).length === 0
-    );
-  });
-
   const setAnswer = (key: string, value: PipelineScalar): void => {
     if (!selected) return;
+    const shownKey = `${selected.id}:${key}`;
+    if (shownErrors.has(shownKey)) {
+      setShownErrors((current) => {
+        const next = new Set(current);
+        next.delete(shownKey);
+        return next;
+      });
+    }
     setDrafts((current) => ({
       ...current,
       [selected.id]: { ...current[selected.id], [key]: value },
     }));
+  };
+
+  /**
+   * Shows the field errors of `targets` and reports whether any exist, so a
+   * submit with missing or invalid answers stops and says why.
+   */
+  const revealErrors = (targets: PipelinePauseCheckpoint[]): boolean => {
+    const invalid: string[] = [];
+    let firstInvalid: string | undefined;
+    for (const checkpoint of targets) {
+      if (!checkpoint.request) continue;
+      for (const error of validatePauseInputAnswerErrors(
+        checkpoint.request,
+        drafts[checkpoint.id] ?? {},
+      )) {
+        invalid.push(`${checkpoint.id}:${error.field}`);
+        firstInvalid ??= checkpoint.id;
+      }
+    }
+    if (invalid.length === 0) return false;
+    setShownErrors(new Set(invalid));
+    if (firstInvalid !== undefined && firstInvalid !== selected?.id) {
+      setSelectedId(firstInvalid);
+    }
+    return true;
   };
 
   const responseFor = (
@@ -305,7 +334,11 @@ export function PauseInputPanel({
               key={field.key}
               field={field}
               value={answers[field.key]}
-              errors={errorsForField(errors, field.key)}
+              errors={
+                shownErrors.has(`${selected.id}:${field.key}`)
+                  ? errorsForField(errors, field.key)
+                  : []
+              }
               onChange={(value) => setAnswer(field.key, value)}
               disabled={submitting}
               inputId={`${fieldIdPrefix}-${field.key}`}
@@ -322,8 +355,11 @@ export function PauseInputPanel({
         <Button
           variant="primary"
           data-testid="pause-input-resume"
-          disabled={submitting || errors.length > 0}
-          onClick={() => void submit([responseFor(selected)])}
+          disabled={submitting}
+          onClick={() => {
+            if (revealErrors([selected])) return;
+            void submit([responseFor(selected)]);
+          }}
         >
           {submitting
             ? 'Resuming…'
@@ -334,12 +370,13 @@ export function PauseInputPanel({
         {checkpoints.length > 1 ? (
           <Button
             data-testid="pause-input-submit-all"
-            disabled={submitting || !allValid}
-            onClick={() =>
+            disabled={submitting}
+            onClick={() => {
+              if (revealErrors(checkpoints)) return;
               void submit(
                 checkpoints.map((checkpoint) => responseFor(checkpoint)),
-              )
-            }
+              );
+            }}
           >
             {submitting ? 'Resuming…' : 'Submit all responses'}
           </Button>
@@ -391,76 +428,74 @@ function PauseField({
   inputId,
 }: PauseFieldProps): JSX.Element {
   return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={inputId} className="text-xs font-medium fg-primary">
-        {field.label}
-        {field.required ? (
-          <span className="ml-2 text-3xs font-medium fg-warning">Required</span>
-        ) : null}
-      </label>
-      {field.description ? (
-        <span className="text-xs fg-secondary">{field.description}</span>
-      ) : null}
-
-      {field.type === 'choice' ? (
-        <Select
-          id={inputId}
-          data-testid={`pause-field-${field.key}`}
-          disabled={disabled}
-          value={choiceValue(field, value)}
-          onValueChange={onChange}
-          placeholder="No selection"
-          options={choiceOptions(field)}
-        />
-      ) : field.type === 'boolean' ? (
-        <label className="flex items-center gap-2 text-s fg-primary">
-          <Checkbox
-            id={inputId}
+    <FormField
+      id={inputId}
+      label={
+        <>
+          {field.label}
+          {field.required ? (
+            <span className="ml-2 text-3xs font-medium fg-warning">
+              Required
+            </span>
+          ) : null}
+        </>
+      }
+      description={field.description}
+      error={errors.length > 0 ? errors.join(' ') : undefined}
+    >
+      {(control) =>
+        field.type === 'choice' ? (
+          <Select
+            {...control}
+            data-testid={`pause-field-${field.key}`}
+            disabled={disabled}
+            value={choiceValue(field, value)}
+            onValueChange={onChange}
+            placeholder="No selection"
+            options={choiceOptions(field)}
+          />
+        ) : field.type === 'boolean' ? (
+          <ChoiceField
+            {...control}
             data-testid={`pause-field-${field.key}`}
             disabled={disabled}
             checked={value === true}
             onChange={(event) => onChange(event.target.checked)}
+            label={value === true ? 'Yes' : 'No'}
           />
-          <span>{value === true ? 'Yes' : 'No'}</span>
-        </label>
-      ) : field.type === 'number' ? (
-        <TextInput
-          id={inputId}
-          data-testid={`pause-field-${field.key}`}
-          type="number"
-          disabled={disabled}
-          min={field.min}
-          max={field.max}
-          value={String(value)}
-          onChange={(event) => {
-            const next = event.target.value;
-            onChange(next === '' ? '' : Number(next));
-          }}
-        />
-      ) : field.multiline ? (
-        <TextArea
-          id={inputId}
-          data-testid={`pause-field-${field.key}`}
-          disabled={disabled}
-          rows={3}
-          value={String(value)}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      ) : (
-        <TextInput
-          id={inputId}
-          data-testid={`pause-field-${field.key}`}
-          disabled={disabled}
-          value={String(value)}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      )}
-
-      {errors.map((error) => (
-        <span key={error} className="text-xs fg-destructive">
-          {error}
-        </span>
-      ))}
-    </div>
+        ) : field.type === 'number' ? (
+          <TextInput
+            {...control}
+            data-testid={`pause-field-${field.key}`}
+            type="number"
+            disabled={disabled}
+            min={field.min}
+            max={field.max}
+            value={String(value)}
+            onChange={(event) => {
+              const next = event.target.value;
+              onChange(next === '' ? '' : Number(next));
+            }}
+          />
+        ) : field.multiline ? (
+          <TextArea
+            {...control}
+            data-testid={`pause-field-${field.key}`}
+            disabled={disabled}
+            rows={3}
+            value={String(value)}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        ) : (
+          <TextInput
+            {...control}
+            data-testid={`pause-field-${field.key}`}
+            disabled={disabled}
+            value={String(value)}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        )
+      }
+    </FormField>
   );
 }

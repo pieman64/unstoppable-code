@@ -156,7 +156,8 @@ import {
   createW5CommitLogFileStore,
   __setDesktopW5FileStoreForTests,
 } from '../w5-commit-log-file-store';
-import { nodeW5FileStore } from '../w5-file-store';
+import { nodeW5FileStore, W5RecordUnservedError } from '../w5-file-store';
+import * as persistence from '../workspace-persistence';
 import { __resetSidebarItemsStateForTests } from '../sidebar-items';
 import { resetChatStateServiceForTests } from '../../services/chat-state-service';
 import { getAppAdvisorWatcherService } from '../../app-advisor/watchers';
@@ -971,6 +972,46 @@ describe('CAN-5334 worktree discard', () => {
   });
 
   describe('refuses before any effect', () => {
+    it('names the class of a list the record port cannot serve once the discard runs (CAN-5531)', async () => {
+      await strandSourceLoss();
+      const description = await describeWorktreeDiscard('a', 'one');
+      const unserved = new W5RecordUnservedError('limit-exceeded', 'worktrees');
+      let running = false;
+      const read = persistence.readWorkspaceWorktreesDetailed;
+      jest
+        .spyOn(persistence, 'readWorkspaceWorktreesDetailed')
+        .mockImplementation((...args) =>
+          running
+            ? Promise.resolve({
+                worktrees: [],
+                authority: 'unreadable',
+                unserved,
+              })
+            : read(...args),
+        );
+      // The list grows past the capture's limit after the last inspection.
+      jest
+        .spyOn(w5Destructive, 'withWorktreeDiscardLifecycle')
+        .mockImplementation(async (input) => {
+          running = true;
+          await input.readCreatedAt();
+          throw new Error('The row read did not refuse');
+        });
+      const before = effectSnapshot([checkoutOf('one')]);
+      await expect(
+        discardWorktree({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          confirmation: description.confirmation,
+          source: 'desktop-ui',
+        }),
+      ).rejects.toMatchObject({
+        reason: 'recovery-required',
+        message: `${unserved.message} The discard stopped.`,
+      });
+      expect(effectSnapshot([checkoutOf('one')])).toEqual(before);
+    });
+
     it('a Git lookup failure is source-unverified', async () => {
       await strandSourceLoss();
       jest

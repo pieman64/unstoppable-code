@@ -22,19 +22,17 @@ import type {
   HookAction,
   HookOverrides,
   PipelineHookAction,
-  PlanDetectionRule,
   PluginSelectionTombstones,
   StandaloneProjectPreset,
   WorkspaceConfigFile,
   WorkspaceOwnerBinding,
   WorkspaceOwnershipTransfer,
-  WorkspacePlanDetectionConfig,
   WorkspaceRepoData,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { isThinkingLevel } from '@canopy/desktop-shared/types';
 import { normalizeHookInputMap } from '@canopy/desktop-shared/hooks';
-import { normalizePlanDetectionRule } from '@canopy/desktop-shared/plan-detection';
+import { normalizeWorkspacePlanDetection } from '@canopy/protocol/plan-detection';
 import {
   isChatTabPluginSelections,
   normalizePluginSelections,
@@ -48,13 +46,24 @@ import { normalizeScriptInputMap } from '@canopy/desktop-shared/scripts';
 import { validateWorkspaceTemplateStarterPrompts } from '@canopy/protocol/workspace-templates';
 import { isProjectStartPage } from '@canopy/protocol/start-page';
 import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
+import {
+  WORKSPACE_MANIFEST_KEYS,
+  WORKSPACE_MANIFEST_REPOSITORY_KEYS,
+  type WorkspaceManifestKey,
+  type WorkspaceManifestRepositoryKey,
+} from '@canopy/core-runtime/node/w5/workspace-metadata/manifest-keys';
 import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { getWorkspaceConfigPath, getWorkspaceWorktreesFilePath } from './paths';
 import { normalizeLegacyScriptFields } from './script-config';
 import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
 import { publishWorktreeListWrite } from './worktree-lifecycle-signals';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
-import type { PersistedFileAuthority } from './w5-file-store';
+import {
+  W5AuthorityUnreachableError,
+  w5NamedUnreadable,
+  type PersistedFileAuthority,
+  type W5NamedUnreadableError,
+} from './w5-file-store';
 import {
   diffWorktreePipelineResultsSeen,
   markWorktreePipelineResultsSeen,
@@ -101,19 +110,9 @@ export { WorkspaceConfigUnreadableError } from './workspace-manifest-repository'
 export { WorktreeRegistryUnreadableError } from './worktree-list-repository';
 export type { PersistedFileAuthority } from './w5-file-store';
 
-interface RawWorkspaceRepoData {
-  id?: unknown;
-  name?: unknown;
-  repoPath?: unknown;
-  source?: unknown;
-  manifestUrl?: unknown;
-  scripts?: unknown;
-  hooks?: unknown;
-  setupScript?: unknown;
-  teardownScript?: unknown;
-  runScript?: unknown;
-  launchScript?: unknown;
-}
+type RawWorkspaceRepoData = Partial<
+  Record<WorkspaceManifestRepositoryKey, unknown>
+>;
 
 export interface WorktreeRegistryWriteOptions {
   /** Decide this list replacement under the existing lock, before post-write effects. */
@@ -159,111 +158,15 @@ export function setWorktreeRegistryReconciler(
   worktreeRegistryReconciler = reconciler;
 }
 
-interface RawWorkspaceConfigFile {
-  privateMemory?: unknown;
-  privateMemoryManagedBy?: unknown;
-  personalCatalogId?: unknown;
-  version?: unknown;
-  type?: unknown;
-  repoPath?: unknown;
-  repos?: unknown;
-  itemSortMode?: unknown;
-  externalPath?: unknown;
-  /** @deprecated Legacy field name; read-compat only. Use externalPath. */
-  folderPath?: unknown;
-  cowork?: unknown;
-  defaultPluginSelections?: unknown;
-  sharedTemplatePublicationKey?: unknown;
-  sharedTemplateExternalId?: unknown;
-  sharedTemplateContentHash?: unknown;
-  installedFromTemplateExternalId?: unknown;
-  installedFromTemplateContentHash?: unknown;
-  seededFromBlueprintExternalId?: unknown;
-  disabledGlobalPluginSelections?: unknown;
-  sourceRepoPath?: unknown;
-  scripts?: unknown;
-  hooks?: unknown;
-  suppressedRepoIds?: unknown;
-  alwaysShow?: unknown;
-  owner?: unknown;
-  ownershipTransfer?: unknown;
-  recommendedPluginOptOutKeys?: unknown;
-  temporary?: unknown;
-  temporarySourceWorkspaceIds?: unknown;
-  temporaryRepoIdentityKeys?: unknown;
-  setupScript?: unknown;
-  teardownScript?: unknown;
-  runScript?: unknown;
-  launchScript?: unknown;
-  planDetection?: unknown;
-  archiveRetentionDays?: unknown;
-  autoArchiveDays?: unknown;
-  autoArchiveDeleteBranch?: unknown;
-  startPage?: unknown;
-}
-
-/** Every manifest field this version reads; any other field is kept. */
-const WORKSPACE_CONFIG_FIELDS: Record<keyof RawWorkspaceConfigFile, true> = {
-  privateMemory: true,
-  privateMemoryManagedBy: true,
-  personalCatalogId: true,
-  version: true,
-  type: true,
-  repoPath: true,
-  repos: true,
-  itemSortMode: true,
-  externalPath: true,
-  folderPath: true,
-  cowork: true,
-  defaultPluginSelections: true,
-  sharedTemplatePublicationKey: true,
-  sharedTemplateExternalId: true,
-  sharedTemplateContentHash: true,
-  installedFromTemplateExternalId: true,
-  installedFromTemplateContentHash: true,
-  seededFromBlueprintExternalId: true,
-  disabledGlobalPluginSelections: true,
-  sourceRepoPath: true,
-  scripts: true,
-  hooks: true,
-  suppressedRepoIds: true,
-  alwaysShow: true,
-  owner: true,
-  ownershipTransfer: true,
-  recommendedPluginOptOutKeys: true,
-  temporary: true,
-  temporarySourceWorkspaceIds: true,
-  temporaryRepoIdentityKeys: true,
-  setupScript: true,
-  teardownScript: true,
-  runScript: true,
-  launchScript: true,
-  planDetection: true,
-  archiveRetentionDays: true,
-  autoArchiveDays: true,
-  autoArchiveDeleteBranch: true,
-  startPage: true,
-};
-const WORKSPACE_REPO_FIELDS: Record<keyof RawWorkspaceRepoData, true> = {
-  id: true,
-  name: true,
-  repoPath: true,
-  source: true,
-  manifestUrl: true,
-  scripts: true,
-  hooks: true,
-  setupScript: true,
-  teardownScript: true,
-  runScript: true,
-  launchScript: true,
-};
+type RawWorkspaceConfigFile = Partial<Record<WorkspaceManifestKey, unknown>>;
 
 const rawWorkspaceManifestRepository = createWorkspaceManifestRepository({
   store: desktopW5FileStore,
   filePath: (workspaceId) => getWorkspaceConfigPath(workspaceId),
   storage: WORKSPACE_MANIFEST_STORAGE,
-  knownFields: new Set(Object.keys(WORKSPACE_CONFIG_FIELDS)),
-  knownRepoFields: new Set(Object.keys(WORKSPACE_REPO_FIELDS)),
+  // Every manifest field this version reads; any other field is kept.
+  knownFields: new Set(WORKSPACE_MANIFEST_KEYS),
+  knownRepoFields: new Set(WORKSPACE_MANIFEST_REPOSITORY_KEYS),
 });
 
 const workspaceManifestRepository: WorkspaceManifestRepository = {
@@ -514,12 +417,66 @@ async function withWorktreeFileLock<T>(
   );
 }
 
+/** Removes only the two W5 records; directory cleanup belongs to the caller. */
+export function removeWorkspaceRecords(workspaceId: string): Promise<void> {
+  const removalCommit: W5CommitOptions = {
+    operation: 'w5.workspace_records.remove',
+  };
+  return withStorageAdmission(
+    [WORKSPACE_MANIFEST_STORAGE, WORKTREE_LIST_STORAGE],
+    () =>
+      serializeWorkspaceConfig(workspaceId, () =>
+        withWorktreeFileLock(getWorkspaceWorktreesFilePath(workspaceId), () =>
+          withW5Commit(removalCommit, async () => {
+            const manifest = await desktopW5FileStore.read(
+              getWorkspaceConfigPath(workspaceId),
+            );
+            const list = await desktopW5FileStore.read(
+              getWorkspaceWorktreesFilePath(workspaceId),
+            );
+            if (manifest.state === 'unreadable')
+              throw new WorkspaceConfigUnreadableError(manifest.error);
+            if (list.state === 'unreadable')
+              throw new WorktreeRegistryUnreadableError(list.error);
+            const release = beginWorktreesSelfWrite(workspaceId);
+            onW5Abort(release);
+            try {
+              await workspaceManifestRepository.remove(workspaceId);
+              await worktreeListRepository.remove(workspaceId);
+            } catch (error) {
+              release();
+              throw error;
+            }
+            await afterW5Apply(() => {
+              recentWorktreesSelfWrites.set(workspaceId, Date.now());
+              lastWorktreesSelfWriteContent.delete(workspaceId);
+              release();
+              projectPluginDefaultsWritten({
+                configPath: getWorkspaceConfigPath(workspaceId),
+                workspaceId,
+                layerChanged: manifest.state === 'present',
+              });
+              failedWorktreeWriteInvalidations.delete(
+                getWorkspaceWorktreesFilePath(workspaceId),
+              );
+            });
+          }),
+        ),
+      ),
+  );
+}
+
 /**
  * Authority of a worktree list read: `partial` when the list was readable but
  * rows this version cannot read were left out, so an id missing from it is
  * not proof that the worktree is gone (CAN-3803).
  */
 export type WorktreeListAuthority = PersistedFileAuthority | 'partial';
+
+/** Why `read` failed, so a refusal can name it (CAN-5531). */
+function readError(read: WorktreeListRead): Error | undefined {
+  return read.authority === 'unreadable' ? read.error : undefined;
+}
 
 /** One locked read: its rows and authority, plus the read a write reuses. */
 async function readWorkspaceWorktreesFileDetailed(
@@ -724,6 +681,8 @@ interface WorkspaceConfigDetail {
   memoryMalformed: boolean;
   /** Present only when `authority` is `ok`. */
   storedFields?: StoredWorkspaceManifestFields;
+  /** The named reason an unreadable manifest could not be read (CAN-5531, CAN-5542). */
+  unserved?: W5NamedUnreadableError;
 }
 
 /** {@link readWorkspaceConfig} plus read authority and owner validity. */
@@ -746,11 +705,16 @@ async function normalizeWorkspaceConfig(
   manifest: WorkspaceManifestRead,
 ): Promise<WorkspaceConfigDetail> {
   if (manifest.authority !== 'ok') {
+    const unserved =
+      manifest.authority === 'unreadable'
+        ? w5NamedUnreadable(manifest.error)
+        : undefined;
     return {
       config: { ...DEFAULT_WORKSPACE_CONFIG, repos: [] },
       authority: manifest.authority,
       ownerMalformed: false,
       memoryMalformed: false,
+      ...(unserved ? { unserved } : {}),
     };
   }
   try {
@@ -1186,6 +1150,18 @@ function serializeWorkspaceConfig<T>(
   return workspaceManifestRepository.serialize(workspaceId, work);
 }
 
+/** Refuses a write over an unreadable `workspace.json` (CAN-3563). */
+async function refuseUnreadableWorkspaceConfig(
+  manifest: WorkspaceManifestRead,
+): Promise<never> {
+  const cause =
+    manifest.authority === 'unreadable' ? manifest.error : undefined;
+  // An unreachable authority never showed the file unreadable (CAN-5542).
+  if (!(cause instanceof W5AuthorityUnreachableError))
+    await recordWorkspaceConfigWriteRefused();
+  throw new WorkspaceConfigUnreadableError(cause);
+}
+
 async function recordWorkspaceConfigWriteRefused(): Promise<void> {
   try {
     const { getObservabilityService } = await import('../observability');
@@ -1243,12 +1219,8 @@ export async function updateWorkspaceConfig<T>(
   return serializeWorkspaceConfig(workspaceId, async (): Promise<T> => {
     const { detail, manifest } = await readWorkspaceConfigState(workspaceId);
     const { config, authority, ownerMalformed, memoryMalformed } = detail;
-    if (authority === 'unreadable') {
-      await recordWorkspaceConfigWriteRefused();
-      throw new WorkspaceConfigUnreadableError(
-        manifest.authority === 'unreadable' ? manifest.error : undefined,
-      );
-    }
+    if (authority === 'unreadable')
+      return refuseUnreadableWorkspaceConfig(manifest);
     const result = await update(config, {
       authority,
       ownerMalformed,
@@ -1310,12 +1282,8 @@ async function writeAdmittedWorkspaceConfig(
   // write over a file this process cannot read. Whatever the caller built,
   // it was not built from that file: replacing it would drop every field
   // the caller does not carry, such as `ownershipTransfer` (CAN-3563).
-  if (previous.authority === 'unreadable') {
-    await recordWorkspaceConfigWriteRefused();
-    throw new WorkspaceConfigUnreadableError(
-      manifest.authority === 'unreadable' ? manifest.error : undefined,
-    );
-  }
+  if (previous.authority === 'unreadable')
+    return refuseUnreadableWorkspaceConfig(manifest);
   const existing =
     config.personalCatalogId === undefined || ownership === 'preserve'
       ? previous
@@ -1462,33 +1430,6 @@ async function writeAdmittedWorkspaceConfig(
   }
 }
 
-function normalizeWorkspacePlanDetection(
-  value: unknown,
-): WorkspacePlanDetectionConfig | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const disabledRuleIds = normalizeStringList(value.disabledRuleIds);
-  const seenIds = new Set<string>();
-  const customRules = Array.isArray(value.customRules)
-    ? value.customRules.reduce<PlanDetectionRule[]>((acc, entry) => {
-        const rule = normalizePlanDetectionRule(entry);
-        if (rule !== null && !seenIds.has(rule.id)) {
-          seenIds.add(rule.id);
-          acc.push(rule);
-        }
-        return acc;
-      }, [])
-    : undefined;
-  if (!disabledRuleIds?.length && !customRules?.length) {
-    return undefined;
-  }
-  return {
-    ...(disabledRuleIds?.length ? { disabledRuleIds } : {}),
-    ...(customRules?.length ? { customRules } : {}),
-  };
-}
-
 function normalizeStringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -1533,6 +1474,8 @@ export async function readWorkspaceWorktreesDetailed(
   authority: WorktreeListAuthority;
   /** Rows this process removed that the read left out, when any. */
   recentlyRemovedWorktreeIds?: string[];
+  /** The named reason an unreadable list could not be read (CAN-5531, CAN-5542). */
+  unserved?: W5NamedUnreadableError;
 }> {
   const filePath = getWorkspaceWorktreesFilePath(workspaceId);
   // A21′: read-repair is effect-free, so a conflicting routed write reruns
@@ -1552,12 +1495,17 @@ function readRepairingWorktrees(
   return withWorktreeFileLock(filePath, async () => {
     const { worktrees, authority, read } =
       await readWorkspaceWorktreesFileDetailed(workspaceId);
-    if (options?.includeRecentlyRemoved) return { worktrees, authority };
+    const unserved = w5NamedUnreadable(readError(read));
+    // An unreadable read has no rows to filter, so it keeps its reason below.
+    const named = unserved ? { unserved } : {};
+    if (options?.includeRecentlyRemoved)
+      return { worktrees, authority, ...named };
     const filteredWorktrees = filterRecentlyRemovedWorktrees(
       workspaceId,
       worktrees,
     );
-    if (filteredWorktrees === worktrees) return { worktrees, authority };
+    if (filteredWorktrees === worktrees)
+      return { worktrees, authority, ...named };
     if (options?.persistRemovalCleanup !== false) {
       await writeWorkspaceWorktreesFile(
         workspaceId,
@@ -1848,7 +1796,11 @@ export async function updateWorkspaceWorktrees(
   workspaceId: string,
   updater: (
     worktrees: WorktreeData[],
-    read?: { authority: WorktreeListAuthority },
+    read?: {
+      authority: WorktreeListAuthority;
+      /** The named reason an unreadable list could not be read (CAN-5531, CAN-5542). */
+      unserved?: W5NamedUnreadableError;
+    },
   ) => WorktreeData[] | Promise<WorktreeData[]>,
   options?: WorktreeRegistryWriteOptions,
 ): Promise<WorktreeData[]> {
@@ -1865,15 +1817,17 @@ export async function updateWorkspaceWorktrees(
       ((options?.requireExistingRead || options?.requireExistingList) &&
         detailed.authority === 'absent')
     )
-      throw new WorktreeRegistryUnreadableError();
+      throw new WorktreeRegistryUnreadableError(readError(detailed.read));
     const rawWorktrees = detailed.worktrees;
     const currentWorktrees = filterRecentlyRemovedWorktrees(
       workspaceId,
       rawWorktrees,
     );
 
+    const unserved = w5NamedUnreadable(readError(detailed.read));
     const updatedWorktrees = await updater(currentWorktrees, {
       authority: detailed.authority,
+      ...(unserved ? { unserved } : {}),
     });
     const restorable = options?.restoreWorktrees ?? [];
     const nextWorktrees = restorable.length
@@ -2006,7 +1960,7 @@ export async function removeWorkspaceWorktrees(
         (authority === 'unreadable' || authority === 'partial')) ||
       (options?.requireExistingList && authority === 'absent')
     )
-      throw new WorktreeRegistryUnreadableError();
+      throw new WorktreeRegistryUnreadableError(readError(read));
     const currentWorktrees = filterRecentlyRemovedWorktrees(
       workspaceId,
       rawWorktrees,
@@ -2273,6 +2227,15 @@ function isPipelineHookAction(value: unknown): value is PipelineHookAction {
   );
 }
 
+/** A hook action the stored read keeps. */
+export function isStoredHookAction(action: unknown): action is HookAction {
+  return (
+    isCommandHookAction(action) ||
+    isChatHookAction(action) ||
+    isPipelineHookAction(action)
+  );
+}
+
 function normalizeUnknownHookMap(value: unknown): HookOverrides | undefined {
   if (!isRecord(value)) {
     return undefined;
@@ -2288,13 +2251,7 @@ function normalizeUnknownHookMap(value: unknown): HookOverrides | undefined {
       continue;
     }
 
-    const actions: HookAction[] = rawActions.filter(
-      (action): action is HookAction =>
-        isCommandHookAction(action) ||
-        isChatHookAction(action) ||
-        isPipelineHookAction(action),
-    );
-    hooks[triggerName] = actions;
+    hooks[triggerName] = rawActions.filter(isStoredHookAction);
   }
 
   return normalizeHookInputMap(hooks);

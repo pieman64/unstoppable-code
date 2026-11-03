@@ -48,14 +48,12 @@ function AutomationInstallContinuationModal(): JSX.Element | null {
         onClose={closeAutomationInstallContinuation}
         dataTestId="install-shared-automation-modal"
       >
-        <div className="space-y-3 px-5 py-4">
+        <div className="space-y-3">
           {state.status === 'loading' ? (
             <p>Refreshing the share and your projects…</p>
           ) : (
             <>
-              <Notice intent="destructive" role="alert">
-                {state.error}
-              </Notice>
+              <Notice intent="destructive">{state.error}</Notice>
               <Button
                 variant="secondary"
                 onClick={(): void => {

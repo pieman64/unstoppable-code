@@ -74,9 +74,9 @@ describe('useSettingsErrorCopy', () => {
   it('returns action copy and logs the truncated server text under its scope', () => {
     const { copy, warn, scopes } = renderHook();
     const body = `SENTINEL ${'y'.repeat(300)}`;
-    const text = copy.actionCopy(new TeamApiError(500, body), {
+    const text = copy.actionFailure(new TeamApiError(500, body), {
       action: 'rename this organization',
-    });
+    }).copy;
     expect(text).toBe("Couldn't rename this organization. Try again.");
     expect(scopes).toEqual(['organization.settings']);
     const [message, meta] = warn.mock.calls[0];
@@ -89,10 +89,29 @@ describe('useSettingsErrorCopy', () => {
   it('returns load copy and logs the failure', () => {
     const { copy, warn } = renderHook();
     expect(
-      copy.loadCopy(new TeamApiError(403), [
+      copy.loadFailure(new TeamApiError(403), [
         { status: 403, copy: 'Plan gate.' },
-      ]),
+      ]).copy,
     ).toBe('Plan gate.');
     expect(warn.mock.calls[0][0]).toBe('load failed (status=403)');
+  });
+
+  it('keeps the raw server reason beside the copy as details', () => {
+    const { copy, warn } = renderHook();
+    const failure = copy.actionFailure(new TeamApiError(500, 'SENTINEL body'), {
+      action: 'rename this organization',
+    });
+    expect(failure).toEqual({
+      copy: "Couldn't rename this organization. Try again.",
+      details: 'SENTINEL body',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves details out when the failure has no reason of its own', () => {
+    const { copy } = renderHook();
+    expect(copy.loadFailure(new TeamApiError(403))).toEqual({
+      copy: "Couldn't load this. Try again.",
+    });
   });
 });

@@ -220,7 +220,7 @@ test('turning consultation off warns when child shutdown is incomplete', async (
       ),
     ).toBeVisible();
     await expect(
-      window.getByRole('button', { name: 'Retry shutdown', exact: true }),
+      window.getByRole('button', { name: 'Try again', exact: true }),
     ).toBeVisible();
   } finally {
     await closeCanopy(electronApp, userDataDir);

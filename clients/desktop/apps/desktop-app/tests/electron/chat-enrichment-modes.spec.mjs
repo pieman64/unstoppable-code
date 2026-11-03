@@ -73,9 +73,10 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
       LINEAR_URL,
       'my Linear label',
     ]);
+    // Hover keeps the author's text but marks each chip with its icon.
     await expect(
       chat.getByTestId('github-reference').locator('svg'),
-    ).toHaveCount(0);
+    ).toHaveCount(4);
     expect(await githubReads()).toBe(0);
     const raw = chat.getByTestId('github-reference').nth(1);
     const width = (await raw.boundingBox()).width;
@@ -121,15 +122,15 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
         );
         for (const cowork of [false, true]) {
           chat = await openEnrichmentChat(window, cowork);
-          for (const [provider, mode, id, url, title] of [
-            ['linear', linear, 'CAN-42', LINEAR_URL, 'Linear enrichment title'],
+          for (const [provider, mode, id, url, resolved] of [
             [
-              'github',
-              github,
-              'acme/app#7',
-              GITHUB_URL,
-              'GitHub enrichment title',
+              'linear',
+              linear,
+              'CAN-42',
+              LINEAR_URL,
+              'CAN-42: Linear enrichment title',
             ],
+            ['github', github, 'acme/app#7', GITHUB_URL, 'acme/app#7'],
           ]) {
             const refs = chat.getByTestId(`${provider}-reference`);
             if (mode === 'off') {
@@ -143,16 +144,16 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
                       url,
                       `my ${provider === 'linear' ? 'Linear' : 'GitHub'} label`,
                     ]
-                  : [
-                      `${id}: ${title}`,
-                      `${provider === 'github' ? (cowork ? id : '#7') : id}: ${title}`,
+                  : // Replace shows Linear IDs with titles and GitHub IDs
+                    // only; a raw URL shortens to the same label.
+                    [
+                      resolved,
+                      provider === 'github' ? (cowork ? id : '#7') : resolved,
                       `my ${provider === 'linear' ? 'Linear' : 'GitHub'} label`,
                     ];
               if (provider === 'github' && !cowork) labels.push('#99');
               await expect(refs).toHaveText(labels);
-              await expect(refs.locator('svg')).toHaveCount(
-                mode === 'hover' ? 0 : labels.length,
-              );
+              await expect(refs.locator('svg')).toHaveCount(labels.length);
             }
           }
           await expect(
@@ -172,11 +173,13 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
     await window.addInitScript(() => {
       const record = { replaced: false };
       window.__can4060Startup = record;
+      // Replace would decorate Linear or shorten the GitHub URL label to `#7`.
       new MutationObserver(() => {
         if (
-          document.querySelector(
-            '[data-testid="linear-reference"], [data-testid="github-reference-title"], [data-testid="github-reference-title-placeholder"]',
-          )
+          document.querySelector('[data-testid="linear-reference"]') ||
+          Array.from(
+            document.querySelectorAll('[data-testid="github-reference"]'),
+          ).some((element) => element.textContent === '#7')
         )
           record.replaced = true;
       }).observe(document, { childList: true, subtree: true });
@@ -191,7 +194,6 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
       'my GitHub label',
       '#99',
     ]);
-    await expect(chat.getByTestId('github-reference-title')).toHaveCount(0);
     expect(await window.evaluate(() => window.__can4060Startup.replaced)).toBe(
       false,
     );
@@ -222,9 +224,18 @@ test('all provider modes preserve prose across cowork, worktree and reload', asy
     await window.evaluate(() =>
       window.api.savePreferences({ githubChatEnrichmentMode: 'replace' }),
     );
-    await expect(
-      secondChat.getByTestId('github-reference-title').first(),
-    ).toContainText('GitHub enrichment title');
+    await expect(secondChat.getByTestId('github-reference')).toHaveText([
+      'acme/app#7',
+      '#7',
+      'my GitHub label',
+      '#99',
+    ]);
+    // The title resolved in the main window serves the new window's card.
+    await secondChat.getByTestId('github-reference').first().hover();
+    await expect(secondary.getByRole('tooltip')).toContainText(
+      'GitHub enrichment title',
+    );
+    expect(await githubReads()).toBe(1);
   } finally {
     await closeCanopy(electronApp, fixture.userDataDir);
     rmSync(root, { recursive: true, force: true });

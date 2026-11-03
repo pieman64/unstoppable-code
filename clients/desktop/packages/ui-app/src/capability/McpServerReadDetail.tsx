@@ -1,8 +1,9 @@
 'use client';
 
 import { Fragment, type JSX, type ReactNode } from 'react';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, StatusLabel } from '@canopy/ui-shared/components';
 
 export interface McpServerReadDetailProps {
   statusSection?: ReactNode;
@@ -76,108 +77,92 @@ export function McpServerReadDetail({
         )}
       </div>
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-        <dt className="fg-secondary">Transport</dt>
-        <dd className="fg-primary">
+      <FactList rowGap="2" labelTone="secondary">
+        <Fact label="Transport">
           {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
-        </dd>
+        </Fact>
         {endpoint && (
           <>
-            <dt className="fg-secondary">Endpoint</dt>
-            <dd
-              className="break-all font-mono fg-primary"
-              data-testid="mcp-server-read-endpoint"
+            <Fact
+              label="Endpoint"
+              fit="break-all"
+              mono
+              dataTestId="mcp-server-read-endpoint"
             >
               {endpoint}
-            </dd>
+            </Fact>
           </>
         )}
         {server.argCount !== undefined && (
           <>
-            <dt className="fg-secondary">Arguments</dt>
-            <dd className="fg-primary">{server.argCount}</dd>
+            <Fact label="Arguments">{server.argCount}</Fact>
           </>
         )}
         {server.headerNames && server.headerNames.length > 0 && (
           <>
-            <dt className="fg-secondary">Headers</dt>
-            <dd className="fg-primary">{server.headerNames.join(', ')}</dd>
+            <Fact label="Headers">{server.headerNames.join(', ')}</Fact>
           </>
         )}
         {server.httpAuthHandler !== undefined && (
           <>
-            <dt className="fg-secondary">Auth handling</dt>
-            <dd className="fg-primary">
+            <Fact label="Auth handling">
               {server.httpAuthHandler === 'canopy'
                 ? appAuthHandlerLabel
                 : 'Provider'}
-            </dd>
+            </Fact>
           </>
         )}
         {server.oauth && (
           <>
-            <dt
-              className="font-medium fg-primary"
-              data-testid="mcp-server-read-oauth"
-            >
-              OAuth
-            </dt>
-            <dd />
-            <dt className="fg-secondary">Client ID</dt>
-            <dd className="fg-primary">
+            <Fact
+              label={<span className="font-medium fg-primary">OAuth</span>}
+              labelTestId="mcp-server-read-oauth"
+            />
+            <Fact label="Client ID">
               {server.oauth.hasClientId ? 'configured' : 'not configured'}
-            </dd>
-            <dt className="fg-secondary">Client secret</dt>
-            <dd className="fg-primary">
+            </Fact>
+            <Fact label="Client secret">
               {server.oauth.hasClientSecret ? 'configured' : 'not configured'}
-            </dd>
+            </Fact>
             {server.oauth.authorizationUrl !== undefined && (
               <>
-                <dt className="fg-secondary">Authorization URL</dt>
-                <dd className="break-all font-mono fg-primary">
+                <Fact label="Authorization URL" fit="break-all" mono>
                   {server.oauth.authorizationUrl}
-                </dd>
+                </Fact>
               </>
             )}
             {server.oauth.tokenUrl !== undefined && (
               <>
-                <dt className="fg-secondary">Token URL</dt>
-                <dd className="break-all font-mono fg-primary">
+                <Fact label="Token URL" fit="break-all" mono>
                   {server.oauth.tokenUrl}
-                </dd>
+                </Fact>
               </>
             )}
             {server.oauth.scopes !== undefined &&
               server.oauth.scopes.length > 0 && (
                 <>
-                  <dt className="fg-secondary">Scopes</dt>
-                  <dd className="fg-primary">
-                    {server.oauth.scopes.join(', ')}
-                  </dd>
+                  <Fact label="Scopes">{server.oauth.scopes.join(', ')}</Fact>
                 </>
               )}
             {server.oauth.audience !== undefined && (
               <>
-                <dt className="fg-secondary">Audience</dt>
-                <dd className="fg-primary">{server.oauth.audience}</dd>
+                <Fact label="Audience">{server.oauth.audience}</Fact>
               </>
             )}
           </>
         )}
-      </dl>
+      </FactList>
 
       {server.curated !== undefined && (
         <section data-testid="mcp-server-read-curated">
           <h4 className="mb-2 text-xs font-medium fg-primary">
             Curated catalog
           </h4>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-            <dt className="fg-secondary">Catalog key</dt>
-            <dd className="fg-primary">{server.curated.key}</dd>
+          <FactList rowGap="2" labelTone="secondary">
+            <Fact label="Catalog key">{server.curated.key}</Fact>
             {server.curated.authorName !== undefined && (
               <>
-                <dt className="fg-secondary">Author</dt>
-                <dd className="fg-primary">
+                <Fact label="Author">
                   {server.curated.authorUrl !== undefined ? (
                     <a
                       href={server.curated.authorUrl}
@@ -190,7 +175,7 @@ export function McpServerReadDetail({
                   ) : (
                     server.curated.authorName
                   )}
-                </dd>
+                </Fact>
               </>
             )}
             {[
@@ -200,8 +185,7 @@ export function McpServerReadDetail({
             ].map(([label, href]) =>
               href === undefined ? null : (
                 <Fragment key={label}>
-                  <dt className="fg-secondary">{label}</dt>
-                  <dd className="fg-primary">
+                  <Fact label={label}>
                     <a
                       href={href}
                       target="_blank"
@@ -210,17 +194,16 @@ export function McpServerReadDetail({
                     >
                       {href}
                     </a>
-                  </dd>
+                  </Fact>
                 </Fragment>
               ),
             )}
             {server.curated.requiresProviderAuth === true && (
               <>
-                <dt className="fg-secondary">Provider auth</dt>
-                <dd className="fg-primary">Required</dd>
+                <Fact label="Provider auth">Required</Fact>
               </>
             )}
-          </dl>
+          </FactList>
         </section>
       )}
 
@@ -289,12 +272,14 @@ export function McpServerReadDetail({
                           role="status"
                           data-testid="mcp-server-read-config-feedback"
                           className={`max-w-52 text-right text-3xs ${
-                            feedback.tone === 'error'
-                              ? 'fg-destructive'
-                              : 'fg-secondary'
+                            feedback.tone === 'error' ? '' : 'fg-secondary'
                           }`}
                         >
-                          {feedback.message}
+                          {feedback.tone === 'error' ? (
+                            <StatusLabel>{feedback.message}</StatusLabel>
+                          ) : (
+                            feedback.message
+                          )}
                         </span>
                       )}
                     </div>

@@ -28,6 +28,29 @@ export type OrgMultiRepoRepositoriesUpdate =
   | 'repository-mismatch'
   | 'failed';
 
+/** Why the organization repository sync refused a change. */
+export type OrgMultiRepoSyncRefusal =
+  /** The organization's catalog could not be refreshed. */
+  | 'organization-catalog-unavailable'
+  /** Git could not read a checkout's remote. */
+  | 'organization-remote-unreadable'
+  /** A repository is not one the organization holds. */
+  | 'organization-repository-outside'
+  /** The organization refused the list against a stale catalog. */
+  | 'organization-repository-mismatch'
+  /** The organization did not take the new list. */
+  | 'organization-sync-failed';
+
+/** The sync's typed refusal. Its name stays `Error`, so IPC text is unchanged. */
+export class OrgMultiRepoSyncRefusedError extends Error {
+  constructor(
+    readonly reason: OrgMultiRepoSyncRefusal,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export interface OrgMemberMultiRepoSyncDeps {
   readConfig(workspaceId: string): Promise<WorkspaceConfigFile>;
   /** `null` when the repository has no origin; throws when Git cannot answer. */
@@ -91,6 +114,22 @@ export interface OrgMemberMultiRepoSync {
     request: WorkspaceApplySourceChangesRequest,
     apply: () => Promise<T>,
   ): Promise<T>;
+  /**
+   * `applySourceChanges`' refusals, read-only. The whole gate for a change
+   * whose additions carry no `repoPath` (a wire change): it never updates
+   * the organization's list. Throws for one that does.
+   */
+  checkSourceChanges(
+    workspaceId: string,
+    request: WorkspaceApplySourceChangesRequest,
+  ): Promise<void>;
+}
+
+/** The organization's list before and after a change's additions. */
+interface SourceChangesSync {
+  readonly binding: OrganizationBinding;
+  readonly before: string[];
+  readonly after: string[];
 }
 
 interface OrganizationBinding {
@@ -138,7 +177,10 @@ export function createOrgMemberMultiRepoSync(
       .catch((): null => null);
     // A catalog that could not be refreshed proves nothing either way.
     if (snapshot === null || snapshot.stale || snapshot.error)
-      throw new Error(orgRepositoryCheckFailedText(binding.organizationName));
+      throw new OrgMultiRepoSyncRefusedError(
+        'organization-catalog-unavailable',
+        orgRepositoryCheckFailedText(binding.organizationName),
+      );
     const organizationId = binding.organizationId.toLowerCase();
     return snapshot.projects.filter(
       (row): boolean => row.organizationId?.toLowerCase() === organizationId,
@@ -154,7 +196,10 @@ export function createOrgMemberMultiRepoSync(
     try {
       remoteUrl = await deps.readRemoteUrl(path);
     } catch {
-      throw new Error(orgRepositoryRemoteUnreadableText(name));
+      throw new OrgMultiRepoSyncRefusedError(
+        'organization-remote-unreadable',
+        orgRepositoryRemoteUnreadableText(name),
+      );
     }
     return remoteUrl === null ? null : { name, remoteUrl, root: false };
   }
@@ -192,7 +237,8 @@ export function createOrgMemberMultiRepoSync(
     const resolution = resolveMultiRepoRepositories(catalog, checkouts);
     if (resolution.ok) return [...resolution.repositoryProjectIds];
     if (resolution.reason === 'no-repositories') return [];
-    throw new Error(
+    throw new OrgMultiRepoSyncRefusedError(
+      'organization-repository-outside',
       orgOutsideRepositoriesText(resolution.outside, binding.organizationName),
     );
   }
@@ -200,14 +246,89 @@ export function createOrgMemberMultiRepoSync(
   async function push(
     binding: OrganizationBinding,
     ids: string[],
-  ): Promise<string | null> {
+  ): Promise<OrgMultiRepoSyncRefusedError | null> {
     const outcome = await deps
       .updateRepositories(binding.projectId, ids)
       .catch((): OrgMultiRepoRepositoriesUpdate => 'failed');
     if (outcome === 'updated') return null;
     return outcome === 'repository-mismatch'
-      ? orgOutsideRepositoriesText([], binding.organizationName)
-      : orgRepositoriesSyncFailedText(binding.organizationName);
+      ? new OrgMultiRepoSyncRefusedError(
+          'organization-repository-mismatch',
+          orgOutsideRepositoriesText([], binding.organizationName),
+        )
+      : new OrgMultiRepoSyncRefusedError(
+          'organization-sync-failed',
+          orgRepositoriesSyncFailedText(binding.organizationName),
+        );
+  }
+
+  /**
+   * Refuses a change that gains an unheld repository; `null` when the
+   * organization's list stays as it is.
+   */
+  async function sourceChangesSync(
+    workspaceId: string,
+    request: WorkspaceApplySourceChangesRequest,
+  ): Promise<SourceChangesSync | null> {
+    const additions = request.repoAdds ?? [];
+    // Removing a repository from source control keeps it in the project.
+    if (additions.length === 0) return null;
+    const config = await deps.readConfig(workspaceId);
+    const binding = bindingOf(config);
+    if (binding === null) return null;
+    const candidates = additions.flatMap((addition): MultiRepoCheckout[] => {
+      const remoteUrl = addition.remoteUrl.trim();
+      return remoteUrl
+        ? [{ name: addition.repoName, remoteUrl, root: false }]
+        : [];
+    });
+    if (candidates.length === 0) return null;
+    const catalog = await organizationCatalog(binding);
+    const current = await projectCheckouts(config, config.repos);
+    const knownRemotes = new Set(
+      current.flatMap((checkout): string[] =>
+        checkout.remoteUrl === null ? [] : [checkout.remoteUrl.trim()],
+      ),
+    );
+    const knownIdentities = new Set(
+      current.flatMap((checkout): string[] => {
+        const identity =
+          checkout.remoteUrl === null
+            ? null
+            : normalizeRemoteUrl(checkout.remoteUrl, true);
+        return identity === null ? [] : [identity];
+      }),
+    );
+    const gained = candidates.filter((candidate): boolean => {
+      const identity =
+        candidate.remoteUrl === null
+          ? null
+          : normalizeRemoteUrl(candidate.remoteUrl, true);
+      // A retained remote unsupported by canonical matching is still the
+      // same repository when its exact remote is unchanged.
+      return identity === null
+        ? !knownRemotes.has(candidate.remoteUrl ?? '')
+        : !knownIdentities.has(identity);
+    });
+    // An unrelated source edit cannot smuggle in an unheld repository.
+    repositoryProjectIds(catalog, gained, binding);
+    const gainedCheckouts = gained.filter((candidate): boolean =>
+      additions.some(
+        (addition) =>
+          addition.repoPath !== undefined &&
+          addition.repoName === candidate.name &&
+          addition.remoteUrl.trim() === candidate.remoteUrl,
+      ),
+    );
+    if (gainedCheckouts.length === 0) return null;
+    return {
+      binding,
+      before: heldRepositoryProjectIds(catalog, current),
+      after: heldRepositoryProjectIds(catalog, [
+        ...current,
+        ...gainedCheckouts,
+      ]),
+    };
   }
 
   function eligibilityOf(
@@ -291,7 +412,7 @@ export function createOrgMemberMultiRepoSync(
         await deps.revert
           .removeRepo(workspaceId, repo.id)
           .catch((): void => {});
-        throw new Error(failure);
+        throw failure;
       }
       return repo;
     },
@@ -324,7 +445,7 @@ export function createOrgMemberMultiRepoSync(
         await deps.revert
           .restoreRepo(workspaceId, removed, index)
           .catch((): void => {});
-        throw new Error(failure);
+        throw failure;
       }
     },
 
@@ -333,70 +454,24 @@ export function createOrgMemberMultiRepoSync(
       request: WorkspaceApplySourceChangesRequest,
       apply: () => Promise<T>,
     ): Promise<T> {
-      const additions = request.repoAdds ?? [];
-      // Removing a repository from source control keeps it in the project.
-      if (additions.length === 0) return apply();
-      const config = await deps.readConfig(workspaceId);
-      const binding = bindingOf(config);
-      if (binding === null) return apply();
-      const candidates = additions.flatMap((addition): MultiRepoCheckout[] => {
-        const remoteUrl = addition.remoteUrl.trim();
-        return remoteUrl
-          ? [{ name: addition.repoName, remoteUrl, root: false }]
-          : [];
-      });
-      if (candidates.length === 0) return apply();
-      const catalog = await organizationCatalog(binding);
-      const current = await projectCheckouts(config, config.repos);
-      const knownRemotes = new Set(
-        current.flatMap((checkout): string[] =>
-          checkout.remoteUrl === null ? [] : [checkout.remoteUrl.trim()],
-        ),
-      );
-      const knownIdentities = new Set(
-        current.flatMap((checkout): string[] => {
-          const identity =
-            checkout.remoteUrl === null
-              ? null
-              : normalizeRemoteUrl(checkout.remoteUrl, true);
-          return identity === null ? [] : [identity];
-        }),
-      );
-      const gained = candidates.filter((candidate): boolean => {
-        const identity =
-          candidate.remoteUrl === null
-            ? null
-            : normalizeRemoteUrl(candidate.remoteUrl, true);
-        // A retained remote unsupported by canonical matching is still the
-        // same repository when its exact remote is unchanged.
-        return identity === null
-          ? !knownRemotes.has(candidate.remoteUrl ?? '')
-          : !knownIdentities.has(identity);
-      });
-      // An unrelated source edit cannot smuggle in an unheld repository.
-      repositoryProjectIds(catalog, gained, binding);
-      const gainedCheckouts = gained.filter((candidate): boolean =>
-        additions.some(
-          (addition) =>
-            addition.repoPath !== undefined &&
-            addition.repoName === candidate.name &&
-            addition.remoteUrl.trim() === candidate.remoteUrl,
-        ),
-      );
-      if (gainedCheckouts.length === 0) return apply();
-      const before = heldRepositoryProjectIds(catalog, current);
-      const after = heldRepositoryProjectIds(catalog, [
-        ...current,
-        ...gainedCheckouts,
-      ]);
-      const failure = await push(binding, after);
-      if (failure !== null) throw new Error(failure);
+      const sync = await sourceChangesSync(workspaceId, request);
+      if (sync === null) return apply();
+      const failure = await push(sync.binding, sync.after);
+      if (failure !== null) throw failure;
       try {
         return await apply();
       } catch (error) {
-        await push(binding, before);
+        await push(sync.binding, sync.before);
         throw error;
       }
+    },
+
+    async checkSourceChanges(workspaceId, request): Promise<void> {
+      if ((request.repoAdds ?? []).some((add) => add.repoPath !== undefined))
+        throw new Error(
+          'A change adding a repository by its folder updates the organization; use applySourceChanges',
+        );
+      await sourceChangesSync(workspaceId, request);
     },
   };
 }

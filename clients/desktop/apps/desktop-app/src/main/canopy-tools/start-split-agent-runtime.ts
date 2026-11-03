@@ -362,6 +362,9 @@ export async function startSplitAgent(
             branchedProviderForkError ??= new Error(
               'The new worktree requires repair before starting a branched agent.',
             );
+            // A repair detour keeps the setup pending, so no settlement
+            // ends this wait.
+            completeBranchedProviderFork();
           }
           sendToWindow(
             runtime.getWindow(),
@@ -518,8 +521,8 @@ export async function startSplitAgent(
       }
       runtime.signal?.throwIfAborted();
       if (kind === 'start_branched_agent') {
-        // Setup queuing is owned by the renderer's normal send flow. The host's
-        // streaming-turn queue alone does not gate sends on git-pending worktrees.
+        // The renderer's send reaches main's chat send, which holds it while
+        // the new worktree's Git setup runs.
         const response = await requestAppAdvisorRendererTool(
           {
             kind: 'dispatch_action',
@@ -533,7 +536,6 @@ export async function startSplitAgent(
               worktreeId,
               chatId,
               text: 'Continue',
-              queueForSetup: true,
             },
           },
           mainWindowOnlyToolSurfaces(runtime.getWindow),

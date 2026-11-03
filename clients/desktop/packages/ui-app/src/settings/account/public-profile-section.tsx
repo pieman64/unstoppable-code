@@ -2,7 +2,12 @@
 import {
   Button,
   buttonClassName,
+  FormField,
+  type FormFieldControlProps,
+  ErrorBanner,
   SettingsSelect,
+  TextArea,
+  TextInput,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 
@@ -203,11 +208,11 @@ export function PublicProfileSection({
             share your work with anyone.
           </p>
 
-          {editor.error && (
-            <p className="mt-3 text-s fg-destructive" role="alert">
-              {editor.error}
-            </p>
-          )}
+          <ErrorBanner
+            className="mt-3 w-full max-w-md"
+            error={editor.error?.copy}
+            details={editor.error?.details}
+          />
 
           <div className="mt-6 w-full max-w-md text-left">
             <UsernameField
@@ -331,11 +336,11 @@ export function PublicProfileSection({
           </p>
         )}
 
-        {editor.error && (
-          <p className="mt-3 text-s fg-destructive" role="alert">
-            {editor.error}
-          </p>
-        )}
+        <ErrorBanner
+          className="mt-3"
+          error={editor.error?.copy}
+          details={editor.error?.details}
+        />
       </SettingsCard>
 
       {enabled && (
@@ -350,29 +355,26 @@ export function PublicProfileSection({
           >
             <div className="flex flex-col gap-6">
               <div className="flex flex-col gap-1.5">
-                <label
-                  htmlFor="public-profile-bio"
-                  className="text-xs font-medium fg-secondary"
-                >
-                  Bio
-                </label>
-                <textarea
-                  id="public-profile-bio"
-                  value={draft.bio}
-                  onChange={(e) =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      bio: e.target.value.slice(
-                        0,
-                        PUBLIC_PROFILE_BIO_MAX_LENGTH,
-                      ),
-                    }))
-                  }
-                  rows={3}
-                  placeholder="Tell people what you build."
-                  className="rounded-md border bg-card px-3 py-2 text-s fg-primary transition-colors focus:border-line-accent/50 focus:outline-none focus:ring-1 focus:ring-line-accent/30"
-                  data-testid="public-profile-bio-input"
-                />
+                <FormField id="public-profile-bio" label="Bio">
+                  {(control) => (
+                    <TextArea
+                      {...control}
+                      value={draft.bio}
+                      onChange={(e) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          bio: e.target.value.slice(
+                            0,
+                            PUBLIC_PROFILE_BIO_MAX_LENGTH,
+                          ),
+                        }))
+                      }
+                      rows={3}
+                      placeholder="Tell people what you build."
+                      data-testid="public-profile-bio-input"
+                    />
+                  )}
+                </FormField>
                 <span className="self-end text-xs fg-secondary">
                   {draft.bio.length}/{PUBLIC_PROFILE_BIO_MAX_LENGTH}
                 </span>
@@ -526,80 +528,76 @@ function UsernameField({
   const canClaim =
     !busy && !isCurrent && availability === 'available' && clientValidation.ok;
 
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label
-        htmlFor="public-profile-username"
-        className={hideLabel ? 'sr-only' : 'text-xs font-medium fg-secondary'}
-      >
-        Username
-      </label>
-      <div className="flex flex-wrap items-start gap-2">
-        {/* Input and its availability message share a column so the message
+  // `control` is FormField's wiring when the label shows; a hidden label
+  // names the field with `aria-label` instead.
+  const renderRow = (control: FormFieldControlProps | null): JSX.Element => (
+    <div className="flex flex-wrap items-start gap-2">
+      {/* Input and its availability message share a column so the message
             aligns under the text box. */}
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          {/* The "@" is a read-only prefix inside the field; the wrapper carries
-              the border/background/focus ring and the input sits borderless. */}
-          <div className="flex items-center rounded-md border bg-card px-3 transition-colors focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
-            <span
-              className="select-none text-s fg-secondary"
-              aria-hidden="true"
-            >
-              @
-            </span>
-            <input
-              id="public-profile-username"
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value.toLowerCase())}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' && onCancel) {
-                  onCancel();
-                }
-              }}
-              maxLength={40}
-              autoComplete="off"
-              spellCheck={false}
-              className="min-w-0 flex-1 bg-transparent py-2 pl-1 text-s fg-primary outline-none"
-              data-testid="public-profile-username-input"
-            />
-          </div>
-          {availability === 'checking' && (
-            <p className="text-xs fg-secondary">Checking availability…</p>
-          )}
-          {availability === 'available' && (
-            <p className="flex items-center gap-1 text-xs fg-success">
-              <Check size={13} aria-hidden="true" />
-              Available
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        {/* The "@" is a fixed prefix inside the field edge. */}
+        <TextInput
+          {...control}
+          id="public-profile-username"
+          aria-label={control ? undefined : 'Username'}
+          density="settings"
+          leading="@"
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value.toLowerCase())}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && onCancel) {
+              onCancel();
+            }
+          }}
+          maxLength={40}
+          autoComplete="off"
+          spellCheck={false}
+          data-testid="public-profile-username-input"
+        />
+        {availability === 'checking' && (
+          <p className="text-xs fg-secondary">Checking availability…</p>
+        )}
+        {availability === 'available' && (
+          <p className="flex items-center gap-1 text-xs fg-success">
+            <Check size={13} aria-hidden="true" />
+            Available
+          </p>
+        )}
+        {availability !== 'checking' &&
+          availability !== 'available' &&
+          availability !== 'unknown' && (
+            <p className="text-xs fg-destructive">
+              {USERNAME_HINT[availability]}
             </p>
           )}
-          {availability !== 'checking' &&
-            availability !== 'available' &&
-            availability !== 'unknown' && (
-              <p className="text-xs fg-destructive">
-                {USERNAME_HINT[availability]}
-              </p>
-            )}
-        </div>
+      </div>
+      <Button
+        size="compact"
+        onClick={() => onClaim(value)}
+        disabled={!canClaim}
+        data-testid="public-profile-username-claim"
+      >
+        {ctaLabel ?? (currentUsername ? 'Change' : 'Claim')}
+      </Button>
+      {onCancel && (
         <Button
           size="compact"
-          onClick={() => onClaim(value)}
-          disabled={!canClaim}
-          data-testid="public-profile-username-claim"
+          onClick={onCancel}
+          data-testid="public-profile-username-cancel"
         >
-          {ctaLabel ?? (currentUsername ? 'Change' : 'Claim')}
+          Cancel
         </Button>
-        {onCancel && (
-          <Button
-            size="compact"
-            onClick={onCancel}
-            data-testid="public-profile-username-cancel"
-          >
-            Cancel
-          </Button>
-        )}
-      </div>
+      )}
     </div>
+  );
+
+  return hideLabel ? (
+    renderRow(null)
+  ) : (
+    <FormField id="public-profile-username" label="Username">
+      {(control) => renderRow(control)}
+    </FormField>
   );
 }
 
@@ -677,12 +675,13 @@ function SocialLinksField({
                 label: platformMeta(p).label,
               }))}
             />
-            <input
+            <TextInput
               type="url"
+              density="settings"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://…"
-              className="min-w-0 flex-1 rounded-md border bg-card px-3 py-2 text-s fg-primary"
+              className="min-w-0 flex-1"
               aria-label="Link URL"
             />
             <Button

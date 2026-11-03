@@ -914,7 +914,7 @@ describe('runWaitForAgentReplyHostAction', () => {
 
   it('rejects on abort during the wait and writes nothing', async () => {
     const controller = new AbortController();
-    const { result } = harness({
+    const { result, handles } = harness({
       wait: (options) =>
         new Promise((_resolve, reject) => {
           options.signal.addEventListener('abort', () => {
@@ -923,7 +923,10 @@ describe('runWaitForAgentReplyHostAction', () => {
         }),
       signal: controller.signal,
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Abort only once the wait listens; a fixed delay can abort while the
+    // action is still reading the pin, before the wait is called.
+    while (handles.wait.mock.calls.length === 0)
+      await new Promise((resolve) => setTimeout(resolve, 5));
     controller.abort(new Error('stopped'));
     await expect(result).rejects.toThrow('stopped');
     expect(await artifactNames()).toEqual([]);

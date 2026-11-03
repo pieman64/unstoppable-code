@@ -1,7 +1,7 @@
 // W5c2 (CAN-4807): the W5 commits of the ownership records, the organization
-// private memory record, the index seed, the default Cowork provision, the
-// two Cowork migrations and the sidebar seen record through the record
-// decision port, on the real commit log worker.
+// private memory record, the default Cowork provision, the two Cowork
+// migrations and the sidebar seen record through the record decision port, on
+// the real commit log worker.
 //
 // One log interleaves each port decision (as JSON, so it is plain data), each
 // commit the worker receives and the post-commit hooks. Every record here is
@@ -32,7 +32,6 @@ import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-work
 import type * as SidebarItemGroups from '../sidebar-item-groups';
 import type * as OwnershipPort from '../workspace-ownership-decision-port';
 import type * as CoworkPort from '../cowork-record-decision-port';
-import type * as SeedPort from '../workspace-index-seed-decision-port';
 import type * as RecordPort from '../workspace-record-decision-port';
 import type {
   AdoptedWorkspaceReleaseDecision,
@@ -41,7 +40,6 @@ import type {
   CoworkProvisionDecision,
   OrganizationOwnerRefreshDecision,
   PersonalCatalogIdDecision,
-  WorkspaceIndexSeedDecision,
   WorkspaceOwnerCompare,
   WorkspaceOwnershipDecision,
   WorktreeListPreconditions,
@@ -160,18 +158,6 @@ jest.mock('../cowork-record-decision-port', () => {
       actual.applyCoworkManifestDecision(workspaceId, mockDecision(decision)),
   };
 });
-jest.mock('../workspace-index-seed-decision-port', () => {
-  const actual = jest.requireActual<typeof SeedPort>(
-    '../workspace-index-seed-decision-port',
-  );
-  return {
-    ...actual,
-    applyWorkspaceIndexSeed: (
-      decision: WorkspaceIndexSeedDecision,
-    ): Promise<unknown> =>
-      actual.applyWorkspaceIndexSeed(mockDecision(decision)),
-  };
-});
 jest.mock('../workspace-record-decision-port', () => {
   const actual = jest.requireActual<typeof RecordPort>(
     '../workspace-record-decision-port',
@@ -214,7 +200,6 @@ import {
   WorkspacePrivateMemoryRefusedError,
 } from '../workspace-private-memory';
 import { WorkspaceConfigUnreadableError } from '../workspace-persistence';
-import { seedWorkspaceIndex } from '../workspace-index-seed';
 import {
   DEFAULT_COWORK_WORKSPACE_NAME,
   provisionCoworkWorkspaceRecord,
@@ -886,36 +871,6 @@ describe('organization private memory record', () => {
   });
 });
 
-describe('index seed', () => {
-  it('publishes an absent index outside the commit log, then never again', async () => {
-    const primaryDataDir = join(dir, 'data');
-    const seeded = await observe(() =>
-      seedWorkspaceIndex({
-        source: 'preferences_create_primary_data_dir',
-        primaryDataDir,
-      }),
-    );
-    expect(seeded.result).toEqual({ seeded: true });
-    // Zero commits: an exclusive create, with no revision and no backup.
-    expect(withoutResult(seeded)).toEqual({
-      events: ['decision:index.seed'],
-      advanced: {},
-      changed: ['index.json'],
-    });
-    expect(read('index.json')).toBe(pretty({ version: 1, workspaces: [] }));
-    expect(existsSync(join(root, 'index.json.bak'))).toBe(false);
-
-    const again = await observe(() =>
-      seedWorkspaceIndex({
-        source: 'preferences_create_primary_data_dir',
-        primaryDataDir,
-      }),
-    );
-    expect(again.result).toEqual({ seeded: false });
-    expect(withoutResult(again)).toEqual(nothingBut(['decision:index.seed']));
-  });
-});
-
 describe('designated Cowork records', () => {
   const COWORK_SETTINGS = {
     createdAt: '2025-01-01T00:00:00.000Z',
@@ -1079,6 +1034,45 @@ describe('designated Cowork records', () => {
     expect(withoutResult(rebound)).toEqual(
       nothingBut(['decision:cowork.provision']),
     );
+  });
+
+  // An adopted primary data folder holds only its marker (CAN-5557).
+  it('provisions the default on a root with no workspaces folder, creating the index in its first commit', async () => {
+    rmSync(root, { recursive: true });
+
+    const created = await observe(() =>
+      provisionCoworkWorkspaceRecord({
+        source: 'default_cowork_provision',
+        workspaceId: 'cowork',
+      }),
+    );
+
+    expect(withoutResult(created)).toEqual({
+      events: [
+        'decision:cowork.provision',
+        // No file to back up yet.
+        {
+          commit: INDEX_WRITE,
+          advance: ['workspaces', 'workspace:cowork'],
+          files: ['index.json'],
+        },
+        'sync',
+        'decision:cowork.provision.manifest',
+        manifestCommit('cowork'),
+        'sync',
+        'notify',
+      ],
+      advanced: { workspaces: 1, 'workspace:cowork': 2 },
+      changed: ['index.json', 'cowork/workspace.json'],
+    });
+    const index: unknown = JSON.parse(read('index.json') ?? 'null');
+    expect(index).toMatchObject({
+      version: 1,
+      workspaces: [
+        { id: 'cowork', name: DEFAULT_COWORK_WORKSPACE_NAME, type: 'cowork' },
+      ],
+    });
+    expect(existsSync(join(root, 'index.json.bak'))).toBe(false);
   });
 
   it('provisions a bound default on an absent manifest: the manifest inside the index update, then the index', async () => {

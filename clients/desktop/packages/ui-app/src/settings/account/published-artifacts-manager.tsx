@@ -1,8 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { Plus, Search } from '@canopy/ui-shared/icons/AppIcons';
-import { Button, DialogModal, ErrorBanner } from '@canopy/ui-shared/components';
+import { Plus } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  Button,
+  DialogModal,
+  EmptyState,
+  ErrorBanner,
+  SearchField,
+} from '@canopy/ui-shared/components';
 import {
   MAX_FEATURED_ARTIFACTS,
   PROFILE_ARTIFACT_PATH_KINDS,
@@ -183,23 +189,18 @@ export function PublishedArtifactsManager(): JSX.Element {
         onRetry={() => void refresh()}
       />
 
-      {editor.error && (
-        <p className="text-sm fg-destructive" role="alert">
-          {editor.error}
-        </p>
-      )}
+      <ErrorBanner
+        className=""
+        error={editor.error?.copy}
+        details={editor.error?.details}
+      />
 
       {published && published.length === 0 && !loadError && (
-        <div
-          className="rounded-lg border border-dashed px-6 py-8 text-center"
-          data-testid="featured-work-empty"
-        >
-          <p className="text-sm font-medium fg-primary">Nothing featured yet</p>
-          <p className="mt-1 text-sm fg-secondary">
-            Showcase your best work — add a skill, run, plan, or workflow to
-            your profile.
-          </p>
-        </div>
+        <EmptyState
+          testId="featured-work-empty"
+          title="Nothing featured yet"
+          subtitle="Showcase your best work — add a skill, run, plan, or workflow to your profile."
+        />
       )}
 
       {published && published.length > 0 && (
@@ -411,108 +412,96 @@ function AddWorkDialog({
       maxWidth="lg"
       dataTestId="add-work-dialog"
     >
-      <div className="flex flex-col gap-4 px-5 pb-5 pt-2">
-        {atLimit && (
-          <p
-            className="rounded-md border bg-secondary px-3 py-2 text-sm fg-warning"
-            role="status"
+      {atLimit && (
+        <p
+          className="rounded-md border bg-secondary px-3 py-2 text-sm fg-warning"
+          role="status"
+        >
+          You&apos;ve reached the {MAX_FEATURED_ARTIFACTS}-item limit. Remove
+          something from your profile to feature more.
+        </p>
+      )}
+      <div
+        className="flex gap-1 border-b"
+        role="tablist"
+        aria-label="Work type"
+      >
+        {PROFILE_ARTIFACT_PATH_KINDS.map((tabKind) => (
+          <button
+            key={tabKind}
+            type="button"
+            role="tab"
+            aria-selected={kind === tabKind}
+            onClick={() => setKind(tabKind)}
+            data-testid={`add-work-tab-${tabKind}`}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+              kind === tabKind
+                ? 'border-fg-primary fg-primary'
+                : 'border-transparent fg-secondary hover:fg-primary'
+            }`}
           >
-            You&apos;ve reached the {MAX_FEATURED_ARTIFACTS}-item limit. Remove
-            something from your profile to feature more.
+            {KIND_TAB_LABELS[tabKind]}
+          </button>
+        ))}
+      </div>
+
+      <SearchField
+        value={query}
+        onValueChange={setQuery}
+        aria-label={`Search your ${KIND_TAB_LABELS[kind].toLowerCase()}`}
+        placeholder={`Search your ${KIND_TAB_LABELS[kind].toLowerCase()}…`}
+        data-testid="add-work-search"
+      />
+
+      <div className="max-h-80 overflow-y-auto">
+        {searching && results === null && (
+          <p className="px-1 py-4 text-sm fg-secondary">Searching…</p>
+        )}
+        {results && results.length === 0 && !searching && (
+          <p className="px-1 py-4 text-sm fg-secondary">
+            {query
+              ? `No ${KIND_TAB_LABELS[kind].toLowerCase()} match “${query}”.`
+              : `You don't have any ${KIND_TAB_LABELS[kind].toLowerCase()} yet.`}
           </p>
         )}
-        <div
-          className="flex gap-1 border-b"
-          role="tablist"
-          aria-label="Work type"
-        >
-          {PROFILE_ARTIFACT_PATH_KINDS.map((tabKind) => (
-            <button
-              key={tabKind}
-              type="button"
-              role="tab"
-              aria-selected={kind === tabKind}
-              onClick={() => setKind(tabKind)}
-              data-testid={`add-work-tab-${tabKind}`}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
-                kind === tabKind
-                  ? 'border-fg-primary fg-primary'
-                  : 'border-transparent fg-secondary hover:fg-primary'
-              }`}
-            >
-              {KIND_TAB_LABELS[tabKind]}
-            </button>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-2 rounded-md border bg-card px-3 transition-colors focus-within:border-line-accent/50 focus-within:ring-1 focus-within:ring-line-accent/30">
-          <Search
-            size={15}
-            className="shrink-0 fg-secondary"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search your ${KIND_TAB_LABELS[kind].toLowerCase()}…`}
-            autoComplete="off"
-            spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent py-2 text-sm fg-primary outline-none"
-            data-testid="add-work-search"
-          />
-        </div>
-
-        <div className="max-h-80 overflow-y-auto">
-          {searching && results === null && (
-            <p className="px-1 py-4 text-sm fg-secondary">Searching…</p>
-          )}
-          {results && results.length === 0 && !searching && (
-            <p className="px-1 py-4 text-sm fg-secondary">
-              {query
-                ? `No ${KIND_TAB_LABELS[kind].toLowerCase()} match “${query}”.`
-                : `You don't have any ${KIND_TAB_LABELS[kind].toLowerCase()} yet.`}
-            </p>
-          )}
-          {results && results.length > 0 && (
-            <ul className="divide-y">
-              {results.map((item) => {
-                const alreadyFeatured =
-                  item.published || publishedIds.has(item.id);
-                return (
-                  <li
-                    key={item.id}
-                    className="flex items-center justify-between gap-3 px-1 py-2.5"
-                    data-testid={`add-work-row-${item.id}`}
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium fg-primary">
-                        {item.title}
-                      </p>
-                      <p className="text-xs fg-secondary">
-                        Updated {formatDate(item.updatedAt)}
-                      </p>
-                    </div>
-                    {alreadyFeatured ? (
-                      <span className="shrink-0 text-xs fg-secondary">
-                        On profile
-                      </span>
-                    ) : (
-                      <Button
-                        size="compact"
-                        onClick={() => onPick(kind, item)}
-                        disabled={busy || atLimit}
-                        data-testid={`add-work-pick-${item.id}`}
-                      >
-                        Add
-                      </Button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+        {results && results.length > 0 && (
+          <ul className="divide-y">
+            {results.map((item) => {
+              const alreadyFeatured =
+                item.published || publishedIds.has(item.id);
+              return (
+                <li
+                  key={item.id}
+                  className="flex items-center justify-between gap-3 px-1 py-2.5"
+                  data-testid={`add-work-row-${item.id}`}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium fg-primary">
+                      {item.title}
+                    </p>
+                    <p className="text-xs fg-secondary">
+                      Updated {formatDate(item.updatedAt)}
+                    </p>
+                  </div>
+                  {alreadyFeatured ? (
+                    <span className="shrink-0 text-xs fg-secondary">
+                      On profile
+                    </span>
+                  ) : (
+                    <Button
+                      size="compact"
+                      onClick={() => onPick(kind, item)}
+                      disabled={busy || atLimit}
+                      data-testid={`add-work-pick-${item.id}`}
+                    >
+                      Add
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </DialogModal>
   );

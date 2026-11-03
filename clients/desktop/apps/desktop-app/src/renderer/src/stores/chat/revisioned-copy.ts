@@ -11,10 +11,10 @@ export const CHAT_STATE_REFRESH_ERROR_HEADING =
 
 /** Inline error helper below the heading. */
 export const CHAT_STATE_REFRESH_ERROR_HELPER =
-  'Your last loaded transcript is still shown. Retry to load the latest state.';
+  'Your last loaded transcript is still shown. Try again to load the latest state.';
 
 /** Inline error action label. */
-export const CHAT_STATE_REFRESH_RETRY_LABEL = 'Retry';
+export const CHAT_STATE_REFRESH_RETRY_LABEL = 'Try again';
 
 /**
  * Shown when a destructive command was rejected as stale (conflict). The

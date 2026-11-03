@@ -15,10 +15,12 @@ import {
   Badge,
   Button,
   CopyButton,
+  DialogFormField,
   DialogModal,
   ErrorBanner,
   StatusBadge,
   SettingsSelect,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import { formatUsd } from '@canopy/ui-shared/lib';
 import { BILLING_NO_SAVED_CARD_CODE } from '@canopy/protocol/billing';
@@ -69,6 +71,7 @@ import {
   SETTINGS_GROUP_GRID_CLASS,
   SETTINGS_GROUP_GRID_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
+import type { SettingsFailure } from '../errors';
 
 interface TeamMembersSectionProps {
   detail: OrganizationDetail;
@@ -208,7 +211,7 @@ export function TeamMembersSection({
   // viewer is always on it.
   const membersListRef = useRef<HTMLUListElement | null>(null);
 
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [busyMemberId, setBusyMemberId] = useState<string | null>(null);
   const [leaving, setLeaving] = useState(false);
   const [pendingInvites, setPendingInvites] = useState<TeamInvite[]>([]);
@@ -291,7 +294,7 @@ export function TeamMembersSection({
       onDetailChange(updated);
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'change the role',
           known: LAST_OWNER_KNOWN_ERRORS,
         }),
@@ -308,7 +311,7 @@ export function TeamMembersSection({
       const updated = await removeMember(client, detail.id, member.id);
       onDetailChange(updated);
     } catch (err) {
-      setError(errorCopy.actionCopy(err, { action: 'remove the member' }));
+      setError(errorCopy.actionFailure(err, { action: 'remove the member' }));
     } finally {
       setBusyMemberId(null);
       setPendingAction(null);
@@ -323,7 +326,7 @@ export function TeamMembersSection({
       onLeft();
     } catch (err) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'leave the organization',
           known: LAST_OWNER_KNOWN_ERRORS,
         }),
@@ -343,7 +346,9 @@ export function TeamMembersSection({
       });
       await refreshInvites();
     } catch (err) {
-      setError(errorCopy.actionCopy(err, { action: 'revoke the invitation' }));
+      setError(
+        errorCopy.actionFailure(err, { action: 'revoke the invitation' }),
+      );
     } finally {
       setRevokingId(null);
       setPendingAction(null);
@@ -357,7 +362,7 @@ export function TeamMembersSection({
       <span id={`${roleLabelPrefix}-caption`} hidden>
         Role for
       </span>
-      <ErrorBanner className="" error={error} />
+      <ErrorBanner className="" error={error?.copy} details={error?.details} />
 
       {/* One grid for the whole list, each row a subgrid of it: the role
           and action columns size to their widest entry across every row, so
@@ -689,7 +694,7 @@ type AddAttempt =
   /** The org needs a card on file before the prorated seat can be charged. */
   | { kind: 'needs-card' }
   /** Any other failure, with the copy to show for it. */
-  | { kind: 'failed'; copy: string };
+  | { kind: 'failed'; failure: SettingsFailure };
 
 const ADD_MEMBER_ACTION = 'add this member';
 const QUOTE_ERROR =
@@ -762,6 +767,7 @@ function AddMemberDialog({
   const errorCopy = useSettingsErrorCopy(MEMBERS_ERROR_SCOPE);
   const webOrigin = useSettingsHost().webOrigin();
   const { blockClassName } = useSettingsPrivacy();
+  const fieldId = useId();
   // Quoting a seat and adding a card are financial; only a host with inline
   // checkout supplies them. Without the slot no charge can apply here (the
   // page hands paid per-seat invites off to the web), so the dialog starts
@@ -776,7 +782,7 @@ function AddMemberDialog({
   const [role, setRole] = useState<AddableRole>('MEMBER');
   const [groupId, setGroupId] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [outcome, setOutcome] = useState<AddOutcome | null>(null);
   const [quote, setQuote] = useState<OrganizationSeatQuote | null>(
     seatCharge === undefined ? FREE_SEAT_QUOTE : null,
@@ -912,7 +918,7 @@ function AddMemberDialog({
       }
       return {
         kind: 'failed',
-        copy: errorCopy.actionCopy(error, {
+        failure: errorCopy.actionFailure(error, {
           action: ADD_MEMBER_ACTION,
           known: INVITE_KNOWN_ERRORS,
         }),
@@ -949,27 +955,28 @@ function AddMemberDialog({
       // again rather than charging a price they never saw.
       const recheck = await confirmQuoteUnchanged();
       if (recheck !== 'unchanged') {
-        setError(
-          recheck === 'changed'
-            ? QUOTE_CHANGED_ERROR
-            : recheck === 'handoff'
-              ? SEAT_CHARGE_HANDOFF_ERROR
-              : QUOTE_RECHECK_FAILED_ERROR,
-        );
+        setError({
+          copy:
+            recheck === 'changed'
+              ? QUOTE_CHANGED_ERROR
+              : recheck === 'handoff'
+                ? SEAT_CHARGE_HANDOFF_ERROR
+                : QUOTE_RECHECK_FAILED_ERROR,
+        });
         return;
       }
       const result = await createInvite(trimmed);
       if (result.kind === 'needs-card') {
-        setError(
-          canManageBilling
+        setError({
+          copy: canManageBilling
             ? 'Add a payment method to charge the new seat.'
             : 'An organization owner needs to add a payment method before you can add members.',
-        );
+        });
       } else if (result.kind === 'failed') {
-        setError(result.copy);
+        setError(result.failure);
       }
     } catch (err) {
-      setError(errorCopy.actionCopy(err, { action: ADD_MEMBER_ACTION }));
+      setError(errorCopy.actionFailure(err, { action: ADD_MEMBER_ACTION }));
     } finally {
       setSubmitting(false);
     }
@@ -989,10 +996,7 @@ function AddMemberDialog({
       dataTestId="add-member-dialog"
     >
       {outcome ? (
-        <div
-          className="flex flex-col gap-4 px-5 pb-5 pt-4"
-          data-testid="add-member-success"
-        >
+        <div className="flex flex-col gap-4" data-testid="add-member-success">
           <div className="rounded-md border bg-secondary/30 p-4">
             <p className="text-s font-medium fg-primary">
               {outcome.seatPaymentState === 'PROCESSING'
@@ -1087,64 +1091,67 @@ function AddMemberDialog({
           </div>
         </div>
       ) : (
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-4 px-5 pb-5 pt-4"
-        >
-          <ErrorBanner error={error} />
-          <label className="flex flex-col gap-1 text-s fg-secondary">
-            <span className="font-medium fg-primary">Email</span>
-            <input
-              type="email"
-              autoFocus
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              data-testid="add-member-email"
-              className={joinClassNames(
-                'rounded-md border bg-card px-3 py-2 text-s fg-primary',
-                blockClassName,
-              )}
-            />
-          </label>
-          <div className="flex flex-wrap gap-3">
-            <label className="flex flex-1 flex-col gap-1 text-s fg-secondary">
-              <span className="font-medium fg-primary">Role</span>
-              <SettingsSelect
-                value={role}
-                onValueChange={(next) => {
-                  if (
-                    next === 'MEMBER' ||
-                    (next === 'ADMIN' && canAssignAdmin)
-                  ) {
-                    setRole(next);
-                  }
-                }}
-                data-testid="add-member-role"
-                width="fill"
-                options={roleOptions.map((option) => ({
-                  value: option,
-                  label: titleCaseRole(option),
-                }))}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <ErrorBanner error={error?.copy} details={error?.details} />
+          <DialogFormField label="Email" htmlFor={`${fieldId}-email`}>
+            <div className={joinClassNames('min-w-0 flex-1', blockClassName)}>
+              <TextInput
+                id={`${fieldId}-email`}
+                density="settings"
+                type="email"
+                autoFocus
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                data-testid="add-member-email"
               />
-            </label>
-            {subTeams.length > 0 && (
-              <label className="flex flex-1 flex-col gap-1 text-s fg-secondary">
-                <span className="font-medium fg-primary">Team (optional)</span>
+            </div>
+          </DialogFormField>
+          <div className="flex flex-wrap gap-3">
+            <div className="min-w-0 flex-1">
+              <DialogFormField label="Role" htmlFor={`${fieldId}-role`}>
                 <SettingsSelect
-                  value={groupId}
-                  onValueChange={setGroupId}
-                  data-testid="add-member-group"
+                  id={`${fieldId}-role`}
+                  value={role}
+                  onValueChange={(next) => {
+                    if (
+                      next === 'MEMBER' ||
+                      (next === 'ADMIN' && canAssignAdmin)
+                    ) {
+                      setRole(next);
+                    }
+                  }}
+                  data-testid="add-member-role"
                   width="fill"
-                  options={[
-                    { value: '', label: 'No team' },
-                    ...subTeams.map((team) => ({
-                      value: team.id,
-                      label: team.name,
-                    })),
-                  ]}
+                  options={roleOptions.map((option) => ({
+                    value: option,
+                    label: titleCaseRole(option),
+                  }))}
                 />
-              </label>
+              </DialogFormField>
+            </div>
+            {subTeams.length > 0 && (
+              <div className="min-w-0 flex-1">
+                <DialogFormField
+                  label="Team (optional)"
+                  htmlFor={`${fieldId}-group`}
+                >
+                  <SettingsSelect
+                    id={`${fieldId}-group`}
+                    value={groupId}
+                    onValueChange={setGroupId}
+                    data-testid="add-member-group"
+                    width="fill"
+                    options={[
+                      { value: '', label: 'No team' },
+                      ...subTeams.map((team) => ({
+                        value: team.id,
+                        label: team.name,
+                      })),
+                    ]}
+                  />
+                </DialogFormField>
+              </div>
             )}
           </div>
 

@@ -73,7 +73,11 @@ export function ProfileOverviewSection({
             />
           </div>
 
-          <ErrorBanner error={error} onRetry={retry} />
+          <ErrorBanner
+            error={error?.copy}
+            details={error?.details}
+            onRetry={retry}
+          />
 
           {loading && !usage ? (
             <div data-testid="profile-overview-loading">

@@ -1,17 +1,4 @@
-export function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-}
-
-export function uniqueId(baseId: string, existingIds: Set<string>): string {
-  if (!existingIds.has(baseId)) return baseId;
-  let n = 2;
-  while (existingIds.has(`${baseId}-${n}`)) n++;
-  return `${baseId}-${n}`;
-}
+export { slugify, uniqueId } from '@canopy/core-runtime/node/identifiers';
 
 export function normalizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {

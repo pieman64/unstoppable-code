@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
   CUSTOM_ACCOUNT_MCP_ID,
@@ -531,8 +532,8 @@ test('Home asks for an endpoint when the cloud refuses a start without one', asy
     ).toHaveCount(0);
     await expect(window.getByTestId('mcp-sign-in-strip-error')).toHaveCount(0);
     const endpoint = setup.getByTestId('mcp-curated-url-option');
-    await expect(endpoint.locator('option')).toHaveText(['US1', 'EU']);
-    await endpoint.selectOption(endpoints[1].url);
+    await expect(endpoint).toHaveText('US1');
+    await chooseSettingsOption(endpoint, { label: endpoints[1].label });
     await setup.getByRole('button', { name: 'Connect', exact: true }).click();
     await expect(setup).toHaveCount(0);
 

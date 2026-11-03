@@ -126,8 +126,8 @@ test('the grouped work drawer keeps the composer anchored and confirms delegate 
     const stop = drawer.getByTestId('background-tray-agent-stop').first();
     await stop.scrollIntoViewIfNeeded();
     const square = stop.locator('svg');
-    await expect(square).toHaveAttribute('width', '10px');
-    await expect(square).toHaveAttribute('height', '10px');
+    await expect(square).toHaveAttribute('width', '12px');
+    await expect(square).toHaveAttribute('height', '12px');
     const stopAll = drawer.getByTestId('background-tray-stop-all');
     await stopAll.scrollIntoViewIfNeeded();
     await stopAll.click();

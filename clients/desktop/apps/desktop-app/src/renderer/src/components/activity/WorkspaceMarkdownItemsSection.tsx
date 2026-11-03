@@ -7,6 +7,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useState,
   type ComponentProps,
   type JSX,
@@ -15,9 +16,14 @@ import type { WorkspaceNoteItem } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import {
   Button,
+  DialogFormField,
   HeaderActionButton,
   Markdown,
   markdownOptions,
+  EmptyStateRow,
+  ErrorBanner,
+  TextArea,
+  TextInput,
 } from '@canopy/ui-shared/components';
 import {
   PanelSection,
@@ -101,6 +107,8 @@ function EditorModal({
   const [content, setContent] = useState(initialContent);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const titleId = useId();
+  const contentId = useId();
 
   const handleSave = useCallback(async (): Promise<void> => {
     if (!title.trim()) return;
@@ -122,32 +130,29 @@ function EditorModal({
 
   return (
     <DialogModal onClose={onClose} title={heading} maxWidth="md">
-      <div className="space-y-3 p-5">
-        <div>
-          <label className="mb-1 block text-xs font-medium fg-secondary">
-            Title
-          </label>
-          <input
+      <div className="space-y-3">
+        <DialogFormField label="Title" htmlFor={titleId}>
+          <TextInput
+            id={titleId}
             type="text"
             value={title}
             onChange={(e): void => setTitle(e.target.value)}
             placeholder={`${heading} title`}
             autoFocus
-            className="w-full rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none placeholder:fg-secondary focus:border-fg-primary/20"
           />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium fg-secondary">
-            Content
-          </label>
-          <textarea
-            value={content}
-            onChange={(e): void => setContent(e.target.value)}
-            placeholder={`Write your ${noun}... (supports Markdown)`}
-            rows={10}
-            className={`${POSTHOG_REPLAY_BLOCK_CLASS} w-full resize-y rounded-md border bg-base px-3 py-2 text-s fg-primary outline-none placeholder:fg-secondary focus:border-fg-primary/20`}
-          />
-        </div>
+        </DialogFormField>
+        <DialogFormField label="Content" htmlFor={contentId}>
+          <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} w-full`}>
+            <TextArea
+              id={contentId}
+              value={content}
+              onChange={(e): void => setContent(e.target.value)}
+              placeholder={`Write your ${noun}... (supports Markdown)`}
+              rows={10}
+            />
+          </div>
+        </DialogFormField>
+        <ErrorBanner error={saveError} className="" />
         <div className="flex justify-end gap-2">
           <Button size="compact" onClick={onClose}>
             Cancel
@@ -161,11 +166,6 @@ function EditorModal({
             {saving ? 'Saving…' : 'Save'}
           </Button>
         </div>
-        {saveError !== null && (
-          <p role="alert" className="text-xs fg-destructive">
-            {saveError}
-          </p>
-        )}
       </div>
     </DialogModal>
   );
@@ -201,7 +201,7 @@ function ViewerModal({
         )
       }
     >
-      <div className="overflow-y-auto p-5">
+      <div className="overflow-y-auto">
         <div
           className={`${POSTHOG_REPLAY_BLOCK_CLASS} prose prose-sm max-w-none fg-primary prose-headings:fg-primary prose-p:fg-primary/80 prose-a:fg-accent prose-strong:fg-primary prose-code:fg-primary/80 prose-pre:bg-fg-primary/[0.04]`}
         >
@@ -487,9 +487,7 @@ export function WorkspaceMarkdownItemsSection({
     >
       <div className="max-h-75 overflow-y-auto">
         {items.length === 0 ? (
-          <p className="py-4 text-center text-xs fg-secondary/60">
-            No {noun}s yet
-          </p>
+          <EmptyStateRow title={`No ${noun}s yet`} />
         ) : (
           <div className="space-y-1">
             {items.map((item) => (

@@ -17,8 +17,14 @@ import {
   BulkInstallButton,
   Button,
   ControlSelect,
+  ErrorBanner,
+  ErrorState,
   MissingPluginsBadge,
+  Notice,
+  NoticeButton,
   PluginInstallStatusCell,
+  SearchField,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { MarketplaceDetailPageShell } from '../capability/MarketplaceDetailPageShell';
@@ -92,16 +98,12 @@ export function MarketplaceSourceDetail({
             Loading marketplace…
           </p>
         ) : state.sources === null && state.listError ? (
-          <div role="alert" className="flex flex-col items-start gap-3">
-            <p className="text-s fg-destructive">{state.listError}</p>
-            <Button
-              size="compact"
-              variant="secondary"
-              onClick={() => void state.reload()}
-            >
-              Try again
-            </Button>
-          </div>
+          <ErrorState
+            message={
+              <span className={REPLAY_MASK_CLASS}>{state.listError}</span>
+            }
+            onRetry={() => void state.reload()}
+          />
         ) : (
           <div
             className="flex flex-col items-start gap-3"
@@ -305,11 +307,10 @@ function MarketplaceSourceDetailBody({
         )}
         {state.pluginErrors[errorKey] && (
           <div>
-            <p
-              role="alert"
-              className={`text-xs fg-destructive ${REPLAY_MASK_CLASS}`}
-            >
-              {state.pluginErrors[errorKey]}
+            <p role="alert" className={REPLAY_MASK_CLASS}>
+              <StatusLabel size="xs">
+                {state.pluginErrors[errorKey]}
+              </StatusLabel>
             </p>
             <Button
               size="compact"
@@ -386,35 +387,37 @@ function MarketplaceSourceDetailBody({
         </MarketplaceEntityHeader>
 
         <MarketplaceSourceInvalidBanner source={source} state={state} />
-        {(state.sourceErrors[source.id] ?? state.sourceWarnings[source.id]) && (
-          <div>
-            <p
-              role="alert"
-              className={`text-xs fg-destructive ${REPLAY_MASK_CLASS}`}
-            >
-              {state.sourceErrors[source.id] ?? state.sourceWarnings[source.id]}
-            </p>
-            <Button
-              size="compact"
-              variant="secondary"
-              onClick={() => void state.reload()}
-            >
-              Refresh status
-            </Button>
-          </div>
-        )}
+        {state.sourceErrors[source.id] ? (
+          <ErrorBanner
+            className=""
+            error={state.sourceErrors[source.id]}
+            blockMessageFromReplay
+            onRetry={() => void state.reload()}
+            retryLabel="Refresh status"
+          />
+        ) : state.sourceWarnings[source.id] ? (
+          <Notice
+            intent="attention"
+            actions={
+              <NoticeButton onClick={() => void state.reload()}>
+                Refresh status
+              </NoticeButton>
+            }
+          >
+            <span className={REPLAY_MASK_CLASS}>
+              {state.sourceWarnings[source.id]}
+            </span>
+          </Notice>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="search"
+          <SearchField
             value={filters.query}
-            onChange={(event) =>
-              setFilters({ ...filters, query: event.target.value })
-            }
+            onValueChange={(query) => setFilters({ ...filters, query })}
             placeholder="Search plugins"
             aria-label="Search plugins"
             data-testid="marketplace-source-search"
-            className="focus-ring h-7 min-w-48 flex-1 rounded-md border bg-base px-2.5 text-xs fg-primary"
+            className="min-w-48 flex-1"
           />
           <FacetSelect
             label="Category"

@@ -1,14 +1,6 @@
 'use client';
 
-import {
-  memo,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type JSX,
-  type ReactNode,
-} from 'react';
+import { memo, useEffect, useMemo, type JSX, type ReactNode } from 'react';
 import {
   computePortalTurnOutcomes,
   getPortalTurnOutcomeSteps,
@@ -38,6 +30,7 @@ import {
   resolveTurnCompletionStatus,
   STEP_GROUP_BODY_CLASS,
   useChatDetail,
+  useTurnCollapse,
   useCleanChatLook,
   useGroupToolCalls,
   type TurnSummary,
@@ -52,6 +45,7 @@ import {
   cleanLiveActivity,
   describeCleanTurnSteps,
   recentStepWindow,
+  stepParts,
   segmentCleanTurn,
 } from './clean-turn-steps';
 import { ChatVisualBlock } from './ChatVisualBlock';
@@ -93,6 +87,25 @@ export function isTurnAwaitingFirstOutput(
             typeof part.data.completedAt === 'number',
         ),
     )
+  );
+}
+
+/**
+ * Whether a chat's only turn is the one its host holds while the chat's
+ * worktree finishes its Git setup. Nothing else runs in a `git-pending`
+ * worktree, so an unanswered first turn there is that held turn, which has
+ * no timer until it dispatches: a host that did not send it still shows it
+ * starting.
+ */
+export function isFirstTurnHeldForSetup(
+  turnGroups: readonly PortalChatTurnGroup[],
+  messagesById: Readonly<Record<string, PortalChatMessage>>,
+  worktreeSetupPhase: string | undefined,
+): boolean {
+  return (
+    worktreeSetupPhase === 'git-pending' &&
+    turnGroups.length === 1 &&
+    isTurnAwaitingFirstOutput(turnGroups[0], messagesById, true)
   );
 }
 
@@ -307,8 +320,6 @@ function TurnGroupViewImpl({
   resultsComplete: hostResultsComplete = false,
 }: TurnGroupViewProps): JSX.Element {
   const complete = turnGroup.complete === true;
-  const [collapsed, setCollapsed] = useState(complete);
-  const wasComplete = useRef(complete);
   const askUserInteraction = useAskUserQuestionInteraction();
   const visualHost = useChatVisualHost();
   // Clean chat look: the turn opens with "Working for 28s" and, once done,
@@ -318,7 +329,13 @@ function TurnGroupViewImpl({
   const groupToolCalls = useGroupToolCalls();
   // Chat detail `recent`: the run the turn is still adding to keeps its
   // newest steps in view under its line.
-  const recentSteps = useChatDetail() === 'recent';
+  const chatDetail = useChatDetail();
+  const recentSteps = chatDetail === 'recent';
+  const [collapsed, setCollapsed] = useTurnCollapse(
+    complete,
+    clean,
+    chatDetail,
+  );
   const workingStatus = useTurnWorkingStatus();
 
   const user = messagesById[turnGroup.userMessageId];
@@ -377,7 +394,6 @@ function TurnGroupViewImpl({
     () => ({ settled: complete && turnSettled, resultsComplete }),
     [complete, turnSettled, resultsComplete],
   );
-  // Scoped to this turn: its timer's pause holds its unresolved calls.
   const approvalWait = useMemo(
     () =>
       portalTurnApprovalWait({
@@ -461,18 +477,10 @@ function TurnGroupViewImpl({
           })
       : undefined;
   const foldable = complete && intermediates.some(hasFoldableContent);
-  useEffect(() => {
-    // Clean chat look: a turn that finishes on screen stays as it is, so
-    // nothing above the reply moves; it opens folded the next time.
-    if (!wasComplete.current && complete && !clean) {
-      setCollapsed(true);
-    }
-    wasComplete.current = complete;
-  }, [complete, clean]);
   // Opened as saved state, so the person can collapse the turn again.
   useEffect(() => {
     if (revealRequest) setCollapsed(false);
-  }, [revealRequest]);
+  }, [revealRequest, setCollapsed]);
   // A pending projected question must remain visible without asking the user
   // to discover it inside the collapsed agent-steps row. Match the
   // intermediate transcript block using the same Claude/Codex rules as the
@@ -502,7 +510,12 @@ function TurnGroupViewImpl({
     trailingTimer !== undefined &&
     rendersTimerRow(trailingTimer);
   const feedback = feedbackSlot ? (
-    <span data-testid="chat-turn-feedback">{feedbackSlot}</span>
+    <span
+      data-testid="chat-turn-feedback"
+      className={clean ? 'flex items-center gap-0.5' : undefined}
+    >
+      {feedbackSlot}
+    </span>
   ) : undefined;
   const timer = readTurnHeaderTimer(timerData);
   // The reply's Copy button copies the answer, or every reply text when the
@@ -533,19 +546,18 @@ function TurnGroupViewImpl({
         : [];
     }),
   );
-  // Grouping follows "Group tool calls" (off by default); without it every
-  // tool call keeps its own row.
-  const cleanSegments =
-    clean && groupToolCalls
-      ? segmentCleanTurn(
-          (foldable && !isExpanded
-            ? finals
-            : foldable
-              ? expandedMessages
-              : [...intermediates, ...finals]
-          ).filter((message) => message !== trailingTimer),
-        )
-      : null;
+  // Segment every clean turn so step spacing does not depend on provider
+  // message boundaries. Detail controls folding, not the step container.
+  const cleanSegments = clean
+    ? segmentCleanTurn(
+        (foldable && !isExpanded
+          ? finals
+          : foldable
+            ? expandedMessages
+            : [...intermediates, ...finals]
+        ).filter((message) => message !== trailingTimer),
+      )
+    : null;
   const lastCleanSegment = cleanSegments?.[cleanSegments.length - 1];
   const liveRun =
     clean && !complete && lastCleanSegment?.kind === 'steps'
@@ -564,14 +576,18 @@ function TurnGroupViewImpl({
       lastPart.kind === 'thinking');
   // The timer row is the live line's slot while the turn runs; empty while
   // a step line above already says what the turn does.
+  const liveLineInSteps =
+    (!groupToolCalls || recentSteps) && lastCleanSegment?.kind === 'steps';
   const liveLine =
     clean &&
     !complete &&
-    (cleanSegments ? liveRun === undefined : !stepShimmersOnScreen) ? (
+    (groupToolCalls && !recentSteps
+      ? liveRun === undefined
+      : !stepShimmersOnScreen) ? (
       // The timer row sits inside its message's text inset already.
       <ChatToolStepGroup
         summary=""
-        inset={false}
+        inset={liveLineInSteps}
         live={cleanLiveActivity(undefined, workingStatus)}
       />
     ) : null;
@@ -703,15 +719,17 @@ function TurnGroupViewImpl({
                       appIcon={appIcon}
                     />
                   ));
-                if (recent !== undefined && recent.hidden === undefined) {
-                  // Every step of the run is in view; there is nothing to count.
+                if (!groupToolCalls) {
                   return (
                     <div
                       key={`clean-steps-${segment.key}`}
                       className={STEP_GROUP_BODY_CLASS}
-                      data-testid="chat-tool-step-live"
+                      data-testid="chat-tool-step-detailed"
                     >
-                      {renderSteps(recent.shown)}
+                      {renderSteps(segment.messages)}
+                      {segment === lastCleanSegment &&
+                        liveLineInSteps &&
+                        liveLine}
                     </div>
                   );
                 }
@@ -736,8 +754,23 @@ function TurnGroupViewImpl({
                   <ChatToolStepGroup
                     key={`clean-steps-${segment.key}`}
                     summary={done.label}
+                    trailingActivity={
+                      recent !== undefined ? liveLine : undefined
+                    }
                     failedCount={done.failed}
                     blockedCount={done.blocked}
+                    collapsedStepCount={
+                      recent !== undefined && recent.hidden === undefined
+                        ? 0
+                        : stepParts(recent?.hidden ?? segment).filter(
+                            (part) => part.kind !== 'thinking',
+                          ).length
+                    }
+                    hiddenSteps={
+                      recent?.hidden
+                        ? renderSteps(recent.hidden.messages)
+                        : undefined
+                    }
                     interruptedCount={done.interrupted}
                     icon={done.icon}
                     openRequest={holdsRevealedCall ? revealRequest : undefined}
@@ -827,7 +860,7 @@ function TurnGroupViewImpl({
               // ChatTranscript separates turns with an 8px column gap. Only the
               // turn's last row borders that gap; a row below keeps the full margin.
               turnTimerHostTurnGap={workingSlot == null}
-              turnTimerLiveLine={liveLine}
+              turnTimerLiveLine={liveLineInSteps ? null : liveLine}
               // Copy rides in the timer row only when it renders; otherwise the
               // actions row below carries it, so a reply never shows two.
               {...(inTimerRow && complete

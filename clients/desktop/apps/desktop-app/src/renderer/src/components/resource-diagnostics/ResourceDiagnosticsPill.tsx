@@ -1,19 +1,10 @@
-import {
-  useCallback,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type JSX,
-} from 'react';
-import { createPortal } from 'react-dom';
-import { Tooltip } from '@canopy/ui-shared';
+import { useLayoutEffect, useRef, useState, type JSX } from 'react';
+import { Popover, Tooltip } from '@canopy/ui-shared';
 import {
   ChipSimpleIcon,
   ResourceMonitorIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
-import { useCloseOnOutsideMouseDown } from '@/hooks/useCloseOnOutsideMouseDown';
-import { useFloatingMenuPlacement } from '@/hooks/useFloatingMenuPlacement';
 import { useResourceMonitorStore } from '@/stores/resourceMonitorStore';
 import { ResourceDiagnosticsPopover } from './ResourceDiagnosticsPopover';
 import {
@@ -101,13 +92,17 @@ export function ResourceDiagnosticsPill({
   const error = useResourceMonitorStore((s) => s.error);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const compactButtonRef = useRef<HTMLButtonElement | null>(null);
+  // The trigger: measured for the compact layout, and where focus returns
+  // when the panel closes (the anchor is the wrapper, which takes no focus).
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const compactIconRef = useRef<HTMLSpanElement | null>(null);
   const compactTextRef = useRef<HTMLSpanElement | null>(null);
   const compactCpuSegmentRef = useRef<HTMLSpanElement | null>(null);
   const compactMemoryRef = useRef<HTMLSpanElement | null>(null);
   const compactMeasureRef = useRef<(() => void) | null>(null);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
+  // Opening focuses the panel itself, not its first control: the settings
+  // button's tooltip would otherwise open over the readings on every open.
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const [compactLayout, setCompactLayout] =
     useState<CompactResourceLayout>('icon');
 
@@ -116,12 +111,6 @@ export function ResourceDiagnosticsPill({
     snapshot === null ? null : `${formatCpuPercent(snapshot.cpuPercent)}%`;
   const compactMemory =
     snapshot === null ? null : formatMemoryGigabytes(snapshot.memoryRssBytes);
-
-  // Match shared floating menus and preserve outside-press dismissal.
-  const closePopover = useCallback((): void => setOpen(false), []);
-  useCloseOnOutsideMouseDown(open, rootRef, popoverRef, closePopover);
-  const menuPosition = useFloatingMenuPlacement(open, rootRef, popoverRef);
-  const position = menuPosition;
 
   let tone: Tone;
   let primaryText: string;
@@ -172,7 +161,7 @@ export function ResourceDiagnosticsPill({
       return;
     }
 
-    const button = compactButtonRef.current;
+    const button = buttonRef.current;
     const icon = compactIconRef.current;
     const text = compactTextRef.current;
     const cpuSegment = compactCpuSegmentRef.current;
@@ -249,7 +238,7 @@ export function ResourceDiagnosticsPill({
         suppressed={open}
       >
         <button
-          ref={compactLabel ? compactButtonRef : undefined}
+          ref={buttonRef}
           type="button"
           onClick={() => setOpen((prev) => !prev)}
           aria-label={title}
@@ -348,28 +337,25 @@ export function ResourceDiagnosticsPill({
           </span>
         </button>
       </Tooltip>
-      {open &&
-        createPortal(
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        anchorRef={rootRef}
+        returnFocusRef={buttonRef}
+        initialFocusRef={panelRef}
+        width="lg"
+        aria-label="Resources"
+        data-testid="resource-diagnostics-popover"
+      >
+        <div ref={panelRef} tabIndex={-1} className="outline-none">
           <ResourceDiagnosticsPopover
             snapshot={snapshot}
             error={error}
             onClose={() => setOpen(false)}
             loading={snapshot === null ? isLoading : false}
-            panelRef={popoverRef}
-            positioned={position !== null}
-            style={{
-              position: 'fixed',
-              zIndex: 'var(--z-index-dropdown)',
-              ...(position
-                ? { top: position.top, left: position.left }
-                : { visibility: 'hidden', top: 0, left: 0 }),
-              ...(menuPosition
-                ? { transformOrigin: menuPosition.transformOrigin }
-                : {}),
-            }}
-          />,
-          document.body,
-        )}
+          />
+        </div>
+      </Popover>
     </div>
   );
 }

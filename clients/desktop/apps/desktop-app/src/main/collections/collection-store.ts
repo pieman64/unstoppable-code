@@ -1,3 +1,4 @@
+import { parseCollectionIndexSharedSource } from '@canopy/protocol/collections';
 import {
   resourceContextEnabled,
   resourceContextSnapshot,
@@ -5,6 +6,7 @@ import {
 } from '../lib/resource-context';
 import {
   assertInstalledResourceContext,
+  assertLocalCollectionManagementContext,
   recordResourceInstall,
 } from '../lib/resource-install-context';
 import { getSharedCollection } from './canopy-server-client';
@@ -12,8 +14,10 @@ import {
   recordSharedItemInstall,
   recordSharedItemUninstall,
 } from '../canopy-cloud/shared-item-subscriptions';
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { mkdir, readFile, unlink } from 'node:fs/promises';
+import { writeFileAtomically } from '../lib/atomic-file';
 import { dirname } from 'node:path';
 import type {
   CollectionConfig,
@@ -40,6 +44,63 @@ import {
   type ShareRemoteMetadata,
 } from '@canopy/protocol/sharing';
 
+// All index repairs and writers share this boundary. Call unlocked helpers only
+// while holding it; network/import work should capture a revision and finalize
+// through a guarded save rather than retaining the lock across installation.
+let collectionStoreTail: Promise<unknown> = Promise.resolve();
+const mutationContext = new AsyncLocalStorage<{
+  snapshot?: string;
+  active: boolean;
+}>();
+
+async function assertMutationContext(): Promise<void> {
+  const snapshot = mutationContext.getStore()?.snapshot;
+  if (snapshot !== undefined) await assertResourceContextSnapshot(snapshot);
+}
+
+async function withCollectionStoreLock<T>(work: () => Promise<T>): Promise<T> {
+  if (mutationContext.getStore()?.active) return work();
+  const snapshot = resourceContextEnabled()
+    ? await resourceContextSnapshot()
+    : undefined;
+  const result = collectionStoreTail.then(() =>
+    mutationContext.run({ snapshot, active: true }, async () => {
+      const lease = mutationContext.getStore();
+      try {
+        await assertMutationContext();
+        return await work();
+      } finally {
+        if (lease) lease.active = false;
+      }
+    }),
+  );
+  collectionStoreTail = result.catch(() => undefined);
+  return result;
+}
+
+function notifyCollectionInventoryChanged(): void {
+  // Subscribers must queue their own reads/repairs, not inherit this writer lease.
+  mutationContext.exit(() => notifyDesktopInventoryChanged(['collections']));
+}
+
+export interface CollectionSaveGuard {
+  /** Required for a guarded replacement; a missing row is never recreated. */
+  expectedRevision: string | undefined;
+  /** Revalidate the originating Portal session/project immediately before writes. */
+  assertCurrent?: () => Promise<void>;
+  /** Check the complete stored response before any persistence effects. */
+  validatePrepared?: (collection: CollectionConfig) => void;
+}
+
+export class CollectionMutationError extends Error {
+  constructor(
+    readonly code: 'conflict' | 'not_found',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 const SAFE_ID_RE = /^[a-f0-9-]+$/;
 
 function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
@@ -48,10 +109,31 @@ function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
     name: collection.name,
     description: collection.description,
     updatedAt: collection.updatedAt,
-    skillCount: collection.skills.length,
-    pluginCount: collection.plugins.length,
-    mcpServerCount: collection.mcpServers.length,
+    ...(collection.revision ? { revision: collection.revision } : {}),
+    skillCount: new Set(
+      collection.skills.map((ref) =>
+        JSON.stringify([ref.sourceId, ref.skillName]),
+      ),
+    ).size,
+    pluginCount: new Set(
+      collection.plugins.map((ref) =>
+        JSON.stringify([ref.marketplaceId, ref.pluginName.toLowerCase()]),
+      ),
+    ).size,
+    mcpServerCount: new Set(
+      collection.mcpServers.map((ref) =>
+        JSON.stringify([ref.serverId, ref.configId]),
+      ),
+    ).size,
     hasExistingShare: Boolean(collection.remote),
+    ...(collection.sharedSource !== undefined ? { hasSharedSource: true } : {}),
+    ...(parseCollectionIndexSharedSource(collection.sharedSource)
+      ? {
+          sharedSource: parseCollectionIndexSharedSource(
+            collection.sharedSource,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -75,7 +157,20 @@ async function readCollectionIndexFile(): Promise<CollectionIndexFile | null> {
     if (parsed.version !== 2 || !Array.isArray(parsed.collections)) {
       return { version: 2, collections: [] };
     }
-    return parsed;
+    return {
+      ...parsed,
+      collections: parsed.collections.map((entry) => {
+        const { sharedSource: raw, ...rest } = entry;
+        const sharedSource = parseCollectionIndexSharedSource(raw);
+        return {
+          ...rest,
+          ...(raw !== undefined || entry.hasSharedSource
+            ? { hasSharedSource: true }
+            : {}),
+          ...(sharedSource ? { sharedSource } : {}),
+        };
+      }),
+    };
   } catch (error) {
     if (isErrnoException(error) && error.code === 'ENOENT') {
       return null;
@@ -126,22 +221,39 @@ async function readLegacyBundleConfig(
 
 async function writeCollectionIndexFile(
   collections: CollectionIndexEntry[],
+  complete = true,
 ): Promise<void> {
   const filePath = getCollectionsIndexFilePath();
   await mkdir(dirname(filePath), { recursive: true });
-  const payload: CollectionIndexFile = { version: 2, collections };
-  await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+  const payload: CollectionIndexFile = {
+    version: 2,
+    ...(complete
+      ? { entrySchema: 2 as const, memberCountsSchema: 1 as const }
+      : {}),
+    collections,
+  };
+  await assertMutationContext();
+  await writeFileAtomically(filePath, JSON.stringify(payload, null, 2), {
+    durable: true,
+  });
   // The index is what the portal (and the cloud inventory sync) projects.
-  notifyDesktopInventoryChanged(['collections']);
+  notifyCollectionInventoryChanged();
 }
 
 async function writeCollectionConfigFile(
   collection: CollectionConfig,
+  assertCurrent?: () => Promise<void>,
+  onWriteStarted?: () => void,
 ): Promise<CollectionConfigFile> {
   const filePath = getCollectionConfigFilePath(collection.id);
   await mkdir(dirname(filePath), { recursive: true });
   const payload: CollectionConfigFile = { version: 2, collection };
-  await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+  await assertCurrent?.();
+  await assertMutationContext();
+  onWriteStarted?.();
+  await writeFileAtomically(filePath, JSON.stringify(payload, null, 2), {
+    durable: true,
+  });
   return payload;
 }
 
@@ -168,9 +280,61 @@ async function migrateLegacyBundles(): Promise<CollectionIndexFile> {
   return indexFile;
 }
 
+/**
+ * Re-project every entry from its config once, for indexes written before
+ * entries carried `sharedSource`. An unreadable config keeps its entry, and a
+ * failed write only defers the repair to the next read.
+ */
+async function repairIndexEntrySchema(
+  currentIndex: CollectionIndexFile,
+): Promise<CollectionIndexFile> {
+  let complete = true;
+  const collections = await Promise.all(
+    currentIndex.collections.map(async (entry) => {
+      try {
+        const file = await readCollectionConfigUnfiltered(entry.id, false);
+        if (file) return toIndexEntry(file.collection);
+      } catch {
+        // Keep the stored entry; the config stays readable through its own path.
+      }
+      complete = false;
+      return {
+        ...entry,
+        provenanceUnknown: true,
+        hasExistingShare:
+          typeof entry.hasExistingShare === 'boolean'
+            ? entry.hasExistingShare
+            : false,
+      };
+    }),
+  );
+  try {
+    if (complete) await writeCollectionIndexFile(collections);
+  } catch (error) {
+    process.emitWarning(
+      `Could not save the repaired collections/index.json: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return {
+    version: 2,
+    ...(complete
+      ? { entrySchema: 2 as const, memberCountsSchema: 1 as const }
+      : {}),
+    collections,
+  };
+}
+
 async function readCollectionIndexUnfiltered(): Promise<CollectionIndexFile> {
   const currentIndex = await readCollectionIndexFile();
   if (currentIndex) {
+    if (
+      currentIndex.entrySchema !== 2 ||
+      currentIndex.memberCountsSchema !== 1
+    ) {
+      return repairIndexEntrySchema(currentIndex);
+    }
     const hasLegacyEntries = currentIndex.collections.some(
       (entry) => typeof entry.hasExistingShare !== 'boolean',
     );
@@ -211,6 +375,9 @@ async function readCollectionConfigUnfiltered(
       version: 2,
       collection: {
         ...parsed.collection,
+        revision:
+          parsed.collection.revision ??
+          createHash('sha256').update(raw).digest('hex'),
         mcpServers: Array.isArray(parsed.collection.mcpServers)
           ? parsed.collection.mcpServers
           : [],
@@ -221,16 +388,20 @@ async function readCollectionConfigUnfiltered(
     if (isErrnoException(error) && error.code === 'ENOENT') {
       if (!recoverLegacy) return null;
       await readCollectionIndexUnfiltered();
-      try {
-        const raw = await readFile(getCollectionConfigFilePath(id), 'utf8');
-        const parsed = JSON.parse(raw) as CollectionConfigFile;
-        return parsed.version === 2 && parsed.collection ? parsed : null;
-      } catch {
-        return null;
-      }
+      return readCollectionConfigUnfiltered(id, false);
     }
     throw error;
   }
+}
+
+/** Atomic config reads stay parallel; only missing-file legacy recovery can write. */
+async function readCollectionConfigWithRecovery(
+  id: string,
+): Promise<CollectionConfigFile | null> {
+  const file = await readCollectionConfigUnfiltered(id, false);
+  return (
+    file ?? withCollectionStoreLock(() => readCollectionConfigUnfiltered(id))
+  );
 }
 
 /** Inventory for the background policy resolver, including legacy migration.
@@ -239,7 +410,7 @@ async function readCollectionConfigUnfiltered(
 export async function readCollectionConfigForBackgroundAuthorization(
   id: string,
 ): Promise<CollectionConfigFile | null> {
-  return readCollectionConfigUnfiltered(id);
+  return readCollectionConfigWithRecovery(id);
 }
 
 async function authorizeCollectionSource(
@@ -271,6 +442,12 @@ async function authorizeCollectionSource(
     );
   } else {
     const detail = await getSharedCollection(source.remoteId);
+    if (
+      verifyHash &&
+      source.contentHash &&
+      detail.contentHash !== source.contentHash
+    )
+      throw new Error('The shared collection changed. Open it again.');
     await recordResourceInstall('collections', detail, [id]);
   }
 }
@@ -303,12 +480,12 @@ function unregisterCollectionInstall(
 export async function listCollectionSharedSourcesForBackfill(): Promise<
   Array<{ id: string; sharedSource: CollectionSharedSource }>
 > {
-  const index = await readCollectionIndexUnfiltered();
+  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
   const installs: Array<{ id: string; sharedSource: CollectionSharedSource }> =
     [];
   for (const entry of index.collections) {
     // One unreadable Collection must not hide the others.
-    const sharedSource = await readCollectionConfigUnfiltered(entry.id).then(
+    const sharedSource = await readCollectionConfigWithRecovery(entry.id).then(
       (file) => file?.collection.sharedSource,
       () => undefined,
     );
@@ -320,10 +497,10 @@ export async function listCollectionSharedSourcesForBackfill(): Promise<
 export async function readCollectionConfig(
   id: string,
 ): Promise<CollectionConfigFile | null> {
-  if (!resourceContextEnabled()) return readCollectionConfigUnfiltered(id);
+  if (!resourceContextEnabled()) return readCollectionConfigWithRecovery(id);
   const snapshot = await resourceContextSnapshot();
   await assertInstalledResourceContext('collections', id, getSharedCollection);
-  const file = await readCollectionConfigUnfiltered(id);
+  const file = await readCollectionConfigWithRecovery(id);
   if (file?.collection.sharedSource) {
     await authorizeCollectionSource(id, file.collection.sharedSource);
   }
@@ -331,14 +508,34 @@ export async function readCollectionConfig(
   return file;
 }
 
+/** Complete local snapshot for editing, duplication and removal; no network fetch. */
+export async function readLocalCollectionSnapshot(
+  id: string,
+): Promise<CollectionConfigFile | null> {
+  const snapshot = resourceContextEnabled()
+    ? await resourceContextSnapshot()
+    : undefined;
+  await assertLocalCollectionManagementContext(id);
+  const file = await readCollectionConfigWithRecovery(id);
+  // A source without a receipt cannot silently become local ownership when
+  // context enforcement is active. Live authorization repairs its receipt.
+  if (resourceContextEnabled() && file?.collection.sharedSource) {
+    const origin = await classifyInstalledResourceOrigin('collections', id);
+    if (origin === 'local')
+      await authorizeCollectionSource(id, file.collection.sharedSource);
+  }
+  if (snapshot !== undefined) await assertResourceContextSnapshot(snapshot);
+  return file;
+}
+
 export async function readCollectionIndex(): Promise<CollectionIndexFile> {
-  const index = await readCollectionIndexUnfiltered();
+  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
   if (!resourceContextEnabled()) return index;
   const snapshot = await resourceContextSnapshot();
   const allowed = await Promise.all(
     index.collections.map(async (entry): Promise<boolean> => {
       try {
-        return (await readCollectionConfig(entry.id)) !== null;
+        return (await readLocalCollectionSnapshot(entry.id)) !== null;
       } catch {
         return false;
       }
@@ -355,7 +552,7 @@ export async function readCollectionIndex(): Promise<CollectionIndexFile> {
 export async function readPersonalCollectionConfig(
   id: string,
 ): Promise<CollectionConfigFile | null> {
-  const file = await readCollectionConfigUnfiltered(id);
+  const file = await readCollectionConfigWithRecovery(id);
   if (!file) return null;
   const origin = await classifyInstalledResourceOrigin('collections', id);
   if (origin === 'excluded') return null;
@@ -371,7 +568,7 @@ export async function readPersonalCollectionConfig(
 
 /** Read the Collection index through the Personal sync view. */
 export async function readPersonalCollectionIndex(): Promise<CollectionIndexFile> {
-  const index = await readCollectionIndexUnfiltered();
+  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
   const allowed = await Promise.all(
     index.collections.map(
       async (entry) => (await readPersonalCollectionConfig(entry.id)) !== null,
@@ -383,10 +580,18 @@ export async function readPersonalCollectionIndex(): Promise<CollectionIndexFile
   };
 }
 
-export async function saveCollectionConfig(
+async function saveCollectionConfigUnlocked(
   input: Partial<CollectionConfig> & { name: string },
   onPrepared?: (collection: CollectionConfig) => void,
+  guard?: CollectionSaveGuard,
 ): Promise<CollectionConfig> {
+  // Complete desktop snapshots also carry their read revision. Legacy callers
+  // that omit it retain their compatibility API; new editors must echo it.
+  const mutationGuard: CollectionSaveGuard | undefined =
+    guard ??
+    (input.id && input.revision
+      ? { expectedRevision: input.revision }
+      : undefined);
   const now = new Date().toISOString();
   const id = input.id || randomUUID();
   if (!SAFE_ID_RE.test(id)) {
@@ -399,16 +604,31 @@ export async function saveCollectionConfig(
     ? await readCollectionConfigUnfiltered(input.id)
     : null;
 
+  if (mutationGuard && input.id) {
+    if (!existing)
+      throw new CollectionMutationError('not_found', 'Collection not found.');
+    if (
+      !mutationGuard.expectedRevision ||
+      existing.collection.revision !== mutationGuard.expectedRevision
+    )
+      throw new CollectionMutationError(
+        'conflict',
+        'Collection changed. Reload it before saving.',
+      );
+  }
   const remote = input.remote ?? existing?.collection.remote;
   const sharedSource = input.sharedSource ?? existing?.collection.sharedSource;
   const collection: CollectionConfig = {
+    revision: randomUUID(),
     id,
     name: input.name.trim(),
     description: input.description ?? '',
     skills: Array.isArray(input.skills) ? input.skills : [],
     plugins: Array.isArray(input.plugins) ? input.plugins : [],
     mcpServers: Array.isArray(input.mcpServers) ? input.mcpServers : [],
-    createdAt: input.id && input.createdAt ? input.createdAt : now,
+    createdAt: input.id
+      ? (input.createdAt ?? existing?.collection.createdAt ?? now)
+      : now,
     updatedAt: now,
     ...(remote ? { remote } : {}),
     ...(sharedSource ? { sharedSource } : {}),
@@ -441,6 +661,7 @@ export async function saveCollectionConfig(
     }
   }
 
+  mutationGuard?.validatePrepared?.(collection);
   onPrepared?.(collection);
   if (resourceContextEnabled()) {
     const snapshot = await resourceContextSnapshot();
@@ -457,12 +678,57 @@ export async function saveCollectionConfig(
     await assertResourceContextSnapshot(snapshot);
   }
 
-  await writeCollectionConfigFile(collection);
-
   const index = await readCollectionIndexUnfiltered();
-  const nextEntries = index.collections.filter((entry) => entry.id !== id);
-  nextEntries.push(toIndexEntry(collection));
-  await writeCollectionIndexFile(nextEntries);
+  await mutationGuard?.assertCurrent?.();
+  await assertMutationContext();
+  // Preserve stable index order, including multiple copies of the same source.
+  const nextEntries = index.collections.map((entry) =>
+    entry.id === id ? toIndexEntry(collection) : entry,
+  );
+  if (!nextEntries.some((entry) => entry.id === id))
+    nextEntries.push(toIndexEntry(collection));
+  let writeStarted = false;
+  try {
+    await writeCollectionConfigFile(
+      collection,
+      mutationGuard?.assertCurrent,
+      () => {
+        writeStarted = true;
+      },
+    );
+    await writeCollectionIndexFile(
+      nextEntries,
+      (index.entrySchema === 2 && index.memberCountsSchema === 1) ||
+        index.collections.length === 0,
+    );
+  } catch (error) {
+    // A durable write can reject after rename (directory sync). Restore both
+    // files under the writer lock even when the failure came from config save.
+    // A guard rejection before IO must not cause a compensating write.
+    if (writeStarted) {
+      if (existing) {
+        await writeFileAtomically(
+          getCollectionConfigFilePath(id),
+          JSON.stringify(existing, null, 2),
+          { durable: true },
+        );
+      } else {
+        try {
+          await unlink(getCollectionConfigFilePath(id));
+        } catch (cleanupError) {
+          if (!isErrnoException(cleanupError) || cleanupError.code !== 'ENOENT')
+            throw cleanupError;
+        }
+      }
+      await writeFileAtomically(
+        getCollectionsIndexFilePath(),
+        JSON.stringify(index, null, 2),
+        { durable: true },
+      );
+      notifyCollectionInventoryChanged();
+    }
+    throw error;
+  }
 
   // Only an install or update names its source; a local edit carries it over.
   if (input.sharedSource) {
@@ -479,7 +745,7 @@ export async function saveCollectionConfig(
 }
 
 /** Persist the author-side cloud link beside a local Collection. */
-export async function writeCollectionRemoteMetadata(
+async function writeCollectionRemoteMetadataUnlocked(
   id: string,
   remote: ShareRemoteMetadata,
 ): Promise<boolean> {
@@ -488,24 +754,41 @@ export async function writeCollectionRemoteMetadata(
   const collection = {
     ...file.collection,
     remote: { ...remote },
+    revision: randomUUID(),
   };
   const index = await readCollectionIndexUnfiltered();
-  await writeCollectionConfigFile(collection);
+  let writeStarted = false;
   try {
+    await writeCollectionConfigFile(collection, undefined, () => {
+      writeStarted = true;
+    });
     await writeCollectionIndexFile(
       index.collections.map((entry) =>
         entry.id === id ? toIndexEntry(collection) : entry,
       ),
+      index.entrySchema === 2 && index.memberCountsSchema === 1,
     );
   } catch (error) {
-    await writeCollectionConfigFile(file.collection);
+    if (writeStarted) {
+      await writeFileAtomically(
+        getCollectionConfigFilePath(id),
+        JSON.stringify(file, null, 2),
+        { durable: true },
+      );
+      await writeFileAtomically(
+        getCollectionsIndexFilePath(),
+        JSON.stringify(index, null, 2),
+        { durable: true },
+      );
+      notifyCollectionInventoryChanged();
+    }
     throw error;
   }
   return true;
 }
 
 /** Clear every local Collection linked to the deleted cloud share. */
-export async function clearCollectionRemoteMetadataByRemoteId(
+async function clearCollectionRemoteMetadataByRemoteIdUnlocked(
   remoteId: string,
 ): Promise<number> {
   const index = await readCollectionIndexUnfiltered();
@@ -524,27 +807,42 @@ export async function clearCollectionRemoteMetadataByRemoteId(
       if (file?.collection.remote?.remoteId !== remoteId) continue;
       const collection = { ...file.collection };
       delete collection.remote;
-      await writeCollectionConfigFile(collection);
-      changedCollections.push(file.collection);
+      collection.revision = randomUUID();
+      await writeCollectionConfigFile(collection, undefined, () => {
+        changedCollections.push(file.collection);
+      });
       nextEntries[entryIndex] = toIndexEntry(collection);
       count += 1;
     }
-    if (count > 0) await writeCollectionIndexFile(nextEntries);
+    if (count > 0)
+      await writeCollectionIndexFile(nextEntries, index.entrySchema === 2);
   } catch (error) {
     for (const collection of changedCollections) {
-      await writeCollectionConfigFile(collection);
+      await writeFileAtomically(
+        getCollectionConfigFilePath(collection.id),
+        JSON.stringify({ version: 2, collection }, null, 2),
+        { durable: true },
+      );
+    }
+    if (changedCollections.length > 0) {
+      await writeFileAtomically(
+        getCollectionsIndexFilePath(),
+        JSON.stringify(index, null, 2),
+        { durable: true },
+      );
+      notifyCollectionInventoryChanged();
     }
     throw error;
   }
   return count;
 }
 
-export async function deleteCollectionConfig(id: string): Promise<void> {
+async function deleteCollectionConfigUnlocked(id: string): Promise<void> {
   if (!id || !SAFE_ID_RE.test(id)) {
     throw new Error(`Invalid Collection id: ${id}`);
   }
 
-  if (resourceContextEnabled()) await readCollectionConfig(id);
+  if (resourceContextEnabled()) await readLocalCollectionSnapshot(id);
   // Read before the file goes: it is the only record of the install source.
   // An unreadable file never blocks the delete.
   const sharedSource = await readCollectionConfigUnfiltered(id, false).then(
@@ -552,21 +850,23 @@ export async function deleteCollectionConfig(id: string): Promise<void> {
     () => undefined,
   );
 
+  await assertMutationContext();
   try {
     await unlink(getCollectionConfigFilePath(id));
-  } catch {
-    // Missing files are fine; index cleanup remains authoritative.
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
   }
 
   const index = await readCollectionIndexUnfiltered();
   await writeCollectionIndexFile(
     index.collections.filter((entry) => entry.id !== id),
+    index.entrySchema === 2 && index.memberCountsSchema === 1,
   );
   unregisterCollectionInstall(id, sharedSource);
 }
 
 /** Only a main-owned aborted install may remove its exact local write. No cloud grant is needed. */
-export async function rollbackNewCollectionInstall(
+async function rollbackNewCollectionInstallUnlocked(
   expected: CollectionConfig,
   initial?: CollectionConfig,
 ): Promise<void> {
@@ -608,6 +908,47 @@ export async function rollbackNewCollectionInstall(
   const index = await readCollectionIndexUnfiltered();
   await writeCollectionIndexFile(
     index.collections.filter((entry) => entry.id !== expected.id),
+    index.entrySchema === 2 && index.memberCountsSchema === 1,
   );
   unregisterCollectionInstall(expected.id, expected.sharedSource);
+}
+
+export function saveCollectionConfig(
+  input: Partial<CollectionConfig> & { name: string },
+  onPrepared?: (collection: CollectionConfig) => void,
+  guard?: CollectionSaveGuard,
+): Promise<CollectionConfig> {
+  return withCollectionStoreLock(() =>
+    saveCollectionConfigUnlocked(input, onPrepared, guard),
+  );
+}
+
+export function writeCollectionRemoteMetadata(
+  id: string,
+  remote: ShareRemoteMetadata,
+): Promise<boolean> {
+  return withCollectionStoreLock(() =>
+    writeCollectionRemoteMetadataUnlocked(id, remote),
+  );
+}
+
+export function clearCollectionRemoteMetadataByRemoteId(
+  remoteId: string,
+): Promise<number> {
+  return withCollectionStoreLock(() =>
+    clearCollectionRemoteMetadataByRemoteIdUnlocked(remoteId),
+  );
+}
+
+export function deleteCollectionConfig(id: string): Promise<void> {
+  return withCollectionStoreLock(() => deleteCollectionConfigUnlocked(id));
+}
+
+export function rollbackNewCollectionInstall(
+  expected: CollectionConfig,
+  initial?: CollectionConfig,
+): Promise<void> {
+  return withCollectionStoreLock(() =>
+    rollbackNewCollectionInstallUnlocked(expected, initial),
+  );
 }

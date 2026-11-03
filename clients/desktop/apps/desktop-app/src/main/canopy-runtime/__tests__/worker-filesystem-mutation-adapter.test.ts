@@ -1212,8 +1212,8 @@ describe('the entry instructions on the local worker transport', () => {
       ledgerPath: () => join(tempRoot, 'operations', 'operation-ledger.sqlite'),
     });
     operationAdapter.service.registerDomain({
-      domain: 'pipeline',
-      kinds: ['core.pipeline.run'],
+      domain: 'example',
+      kinds: ['core.example.run'],
       restartClass: 'lost',
       cancel: () => Promise.resolve('cancelled'),
     });
@@ -1237,7 +1237,7 @@ describe('the entry instructions on the local worker transport', () => {
       },
     });
     const { operation: parent } = await operationAdapter.service.admit({
-      kind: 'core.pipeline.run',
+      kind: 'core.example.run',
       status: 'running',
       origin: { kind: 'client', sourceId: 'window-1' },
       owner: { kind: 'principal', id: 'local-desktop-user' },

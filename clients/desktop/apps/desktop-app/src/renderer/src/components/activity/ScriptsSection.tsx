@@ -244,7 +244,7 @@ function WorkspaceLifecycleInfoModal({
       titleId="workspace-lifecycle-info-modal-title"
       maxWidth="3xl"
     >
-      <div className="max-h-[70vh] overflow-auto p-5 pt-3">
+      <div className="max-h-[70vh] overflow-auto">
         {loading && (
           <div className="flex justify-center py-4">
             <LoadingSpinner />

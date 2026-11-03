@@ -14,7 +14,7 @@ import {
   type AgentAuditEntry,
 } from '@canopy/desktop-shared/types';
 import { COST_BILLING_BASES } from '@canopy/protocol/cost-view';
-import { normalizeAuditEntry } from '../../observability/audit-entry-parser';
+import { normalizeAuditEntry } from '@canopy/core-runtime/observability';
 import { classifyAuditEntry } from '../classifier';
 import { classifyAuditEntry as classifyFromReadModel } from '../read-model';
 

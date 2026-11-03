@@ -88,7 +88,7 @@ export function SourceInfoModal<TEntry, TRequest, TInfo>({
       titleId={titleId}
       maxWidth="md"
     >
-      <div className="p-5 pt-3">
+      <div className="">
         {loading && (
           <div className="flex justify-center py-4">
             <LoadingSpinner />

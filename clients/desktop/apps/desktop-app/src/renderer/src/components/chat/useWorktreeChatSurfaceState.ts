@@ -205,9 +205,9 @@ export function useWorktreeChatTabSurfaceState(
   );
   const transcript = useChatTabRenderState(
     chatTarget,
-    useShallow(({ tab }): ActiveTranscriptView | null => {
+    useShallow(({ tab, runtime }): ActiveTranscriptView | null => {
       if (!tab || tab.kind === 'file') return null;
-      return toActiveTranscriptView(tab);
+      return toActiveTranscriptView(tab, runtime);
     }),
   );
   const composerTab = useChatTabRenderState(

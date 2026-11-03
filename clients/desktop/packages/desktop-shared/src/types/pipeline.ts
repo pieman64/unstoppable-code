@@ -1416,6 +1416,11 @@ export interface ExecutionState {
    */
   paused_ms?: number;
   owner_pid?: number;
+  /**
+   * The owner's OS start identity when the host can prove it; a live
+   * `owner_pid` with a different identity is a reused PID.
+   */
+  owner_start_identity?: string;
   cwd: string;
   env: Record<string, string>;
   /**

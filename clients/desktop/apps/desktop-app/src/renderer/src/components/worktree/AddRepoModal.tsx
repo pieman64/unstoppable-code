@@ -95,6 +95,7 @@ import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   Button,
+  DialogFormField,
   Notice,
   NoticeButton,
   PrivateMemoryInlineToggle,
@@ -2746,7 +2747,7 @@ function AddRepoModalDraft({
       placement="top"
     >
       {privateMemoryPending !== null && (
-        <div className="px-5 pt-3">
+        <div className="">
           <Notice
             intent="attention"
             data-testid="add-workspace-private-memory-failed"
@@ -2770,7 +2771,7 @@ function AddRepoModalDraft({
         // A project waiting on its Private memory save locks the form, so the
         // only way forward is to finish that project rather than add another.
         disabled={isSubmitting || privateMemoryPending !== null}
-        className="min-h-0 min-w-0 space-y-4 p-5 pt-3 text-s"
+        className="min-h-0 min-w-0 space-y-4 text-s"
         data-testid="add-workspace-drop-target"
         onDragOver={handleFolderDragOver}
         onDragLeave={handleFolderDragLeave}
@@ -3013,17 +3014,18 @@ function AddRepoModalDraft({
                 testId="add-workspace-github-repo-list"
               />
             ) : (
-              <label className="block">
-                <span className="mb-1.5 block text-xs fg-secondary">
-                  Repository URL
-                </span>
+              <DialogFormField
+                label="Repository URL"
+                htmlFor="add-workspace-remote-url-input"
+              >
                 <TextInput
+                  id="add-workspace-remote-url-input"
                   data-testid="add-workspace-remote-url-input"
                   value={remoteUrl}
                   onChange={(event) => setRemoteUrl(event.target.value)}
                   placeholder="https://github.com/org/repo.git"
                 />
-              </label>
+              </DialogFormField>
             )}
 
             <ChosenFolderPath
@@ -3214,10 +3216,11 @@ function AddRepoModalDraft({
               <div>
                 <FormSectionHeading
                   title="Project name"
-                  htmlFor="add-workspace-name-input"
+                  id="add-workspace-name-heading"
                 />
                 <TextInput
                   id="add-workspace-name-input"
+                  aria-labelledby="add-workspace-name-heading"
                   data-testid="add-workspace-name-input"
                   value={workspaceName}
                   disabled={orgRetrying}

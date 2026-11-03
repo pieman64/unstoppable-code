@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import {
+  captureDaemonDryRunEvidence,
+  closeCanopy,
+  launchCanopy,
+} from './launchCanopy.mjs';
 
 test('normal owned quit persists renderer burst and OUTER runtime completion tail', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
@@ -16,6 +20,7 @@ test('normal owned quit persists renderer burst and OUTER runtime completion tai
         console.error(`${id}:${index}`);
       await window.api.loadPreferences();
     }, marker);
+    await captureDaemonDryRunEvidence(electronApp);
     // Observe actual exit before any harness fallback/reaping can supply it.
     const closed = electronApp.waitForEvent('close', { timeout: 25_000 });
     await electronApp.evaluate(({ app }) => {

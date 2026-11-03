@@ -448,7 +448,7 @@ export function SidebarBatchRemovalDialog({
         dataTestId={testId}
         onClose={close}
       >
-        <div className="flex flex-col gap-4 px-5 pb-5 pt-1" data-phase={phase}>
+        <div className="flex flex-col gap-4" data-phase={phase}>
           {phase === 'confirm' && (
             <ConfirmSummary
               mode={mode}

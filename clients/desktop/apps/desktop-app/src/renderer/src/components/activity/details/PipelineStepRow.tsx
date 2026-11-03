@@ -6,10 +6,8 @@ import type {
 import { MATRIX_JOB_ID_PREFIX } from '@canopy/desktop-shared/pipelines/matrix';
 import { isStepDefaultExpanded } from '@/lib/pipelineDetailsView';
 import type { SelectedStepSource } from '@/lib/pipelineAttemptTimeline';
-import {
-  getPipelineJobStatusBadgeClassName,
-  getPipelineJobStatusDotClassName,
-} from '../utils';
+import { pipelineStatusBadge, pipelineStatusGlyphState } from '../utils';
+import { Badge, StatusGlyph } from '@canopy/ui-shared/components';
 import { PipelineTimer } from '../PipelineTimer';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PipelineStepDetail } from './PipelineStepDetail';
@@ -118,10 +116,7 @@ function PipelineStepRowComponent({
       >
         <div className="flex min-w-0 items-center gap-2">
           <ChevronIcon open={expanded} />
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full ${getPipelineJobStatusDotClassName(status)}`}
-            aria-hidden="true"
-          />
+          <StatusGlyph state={pipelineStatusGlyphState(status)} />
           <div className="min-w-0">
             <div className="truncate text-s fg-primary/80">
               {stepDef.name ?? stepDef.id}
@@ -132,11 +127,7 @@ function PipelineStepRowComponent({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {isRunning && (
-            <span className="rounded-full bg-info-subtle px-2 py-0.5 text-3xs font-medium fg-info">
-              Live
-            </span>
-          )}
+          {isRunning && <Badge tone="info">Live</Badge>}
           {hasTimingData(stepResult?.started_at, stepResult?.completed_at) && (
             <span className="text-2xs fg-secondary">
               <PipelineTimer
@@ -156,11 +147,7 @@ function PipelineStepRowComponent({
               {costAmount}
             </span>
           ) : null}
-          <span
-            className={`rounded-full px-2 py-0.5 text-3xs font-medium ${getPipelineJobStatusBadgeClassName(status)}`}
-          >
-            {status}
-          </span>
+          <Badge {...pipelineStatusBadge(status)}>{status}</Badge>
         </div>
       </button>
       {expanded && (

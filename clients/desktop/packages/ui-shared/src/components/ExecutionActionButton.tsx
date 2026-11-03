@@ -5,10 +5,8 @@ import type {
   MouseEvent,
   ReactNode,
 } from 'react';
-import {
-  actionChipClassName,
-  SECONDARY_ACTION_BUTTON_CLASS,
-} from '../lib/row-chips';
+import { actionChipClassName } from '../lib/row-chips';
+import { buttonClassName } from './Button';
 import { Tooltip } from './Tooltip';
 
 export type ExecutionActionButtonVariant =
@@ -117,6 +115,18 @@ const VARIANT_CLASSES: Record<ExecutionActionButtonVariant, string> = {
 };
 
 /**
+ * On a detail page the action sits in the header beside Share, a capsule
+ * `Button`, so it wears the same compact capsule recipe: Try it is the primary
+ * Button, every other detail action the secondary one. Buttons are capsules.
+ */
+const DETAIL_VARIANT_CLASSES: Partial<
+  Record<ExecutionActionButtonVariant, string>
+> = {
+  primary: buttonClassName({ variant: 'primary', size: 'compact' }),
+  default: buttonClassName({ variant: 'secondary', size: 'compact' }),
+};
+
+/**
  * Small chrome-light button used for run/rerun/retry/stop and similar
  * execution-row actions. Pure display: parent owns the dispatch. The visible
  * geometry comes entirely from {@link VARIANT_CLASSES}; the wrapper adds only
@@ -143,11 +153,11 @@ export function ExecutionActionButton({
   stopKeyDownPropagation = true,
 }: ExecutionActionButtonProps): JSX.Element {
   const collapses = iconOnlyWhenNarrow && variant === 'primary';
+  const detailClassName =
+    placement === 'detail' ? DETAIL_VARIANT_CLASSES[variant] : undefined;
   const variantClassName = collapses
     ? primaryClassName(true)
-    : placement === 'detail' && variant === 'default'
-      ? `${SECONDARY_ACTION_BUTTON_CLASS} gap-1.5 whitespace-nowrap`
-      : VARIANT_CLASSES[variant];
+    : (detailClassName ?? VARIANT_CLASSES[variant]);
   return (
     <Tooltip label={title} disabled={title === undefined}>
       <button
@@ -172,7 +182,9 @@ export function ExecutionActionButton({
         }
         // Never a window drag handle: the top bar is a drag region and the
         // class is inert everywhere else, including the web.
-        className={`electron-no-drag justify-center disabled:cursor-not-allowed disabled:opacity-50 ${variantClassName} ${placement === 'detail' ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''} ${className}`}
+        // A detail action on the Button recipe brings its own disabled look
+        // and coarse-pointer hit area; the row recipes dim and grow here.
+        className={`electron-no-drag justify-center disabled:cursor-not-allowed ${detailClassName === undefined ? `disabled:opacity-50 ${placement === 'detail' ? 'pointer-coarse:min-h-11 pointer-coarse:min-w-11' : ''}` : 'whitespace-nowrap'} ${variantClassName} ${className}`}
       >
         {icon}
         {label ? (

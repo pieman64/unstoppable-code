@@ -1,7 +1,6 @@
 import type * as TryItContinuationRunnerModule from '../lib/tryItContinuationRunner';
 import type * as CanonicalChangesModule from '../stores/chat/canonical-changes';
 import type * as ChatTabUtils from '../stores/chat/tab-utils';
-import type * as SetupQueueDispatchModule from '../stores/chat/setup-queue-dispatch';
 import { WATCHER_TERMINAL_ONLY_MESSAGE } from '../stores/chat/tab-utils';
 import type * as ChatViewTypes from '../components/chat/types';
 import {
@@ -2985,11 +2984,22 @@ describe('chatStore', () => {
       toolInput: { plan: 'Implement in this chat' },
     });
     await jest.advanceTimersByTimeAsync(0);
+    const plan = await activityPlansCreateMock.getMockImplementation()?.({});
+    if (!plan) throw new Error('Missing proposal plan');
+    activityPlansUpdateMock.mockResolvedValue({
+      ...plan,
+      reviewStatus: 'approved',
+    });
     void useChatStore.getState().approvePlanExit('approve-owner');
     await jest.advanceTimersByTimeAsync(0);
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: 'proposal-chat' }),
-    );
+    const send = chatCommandMock.mock.calls
+      .map(([request]) => request.command)
+      .find((command) => command.type === 'chat.send_message');
+    expect(send).toMatchObject({
+      chatId: 'proposal-chat',
+      trackedPlanImplementation: { planId: plan.id, revisionNumber: 1 },
+    });
+    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('keeps a failed proposal projection recoverable and reports its error', async () => {
@@ -8411,6 +8421,7 @@ describe('chatStore', () => {
     useChatStore.getState().handleScheduledTerminalPrompt(event);
     await Promise.resolve();
 
+    const rejectionCallback: unknown = expect.any(Function);
     expect(sendMessage).toHaveBeenCalledWith(
       'Scheduled status check',
       undefined,
@@ -8420,6 +8431,8 @@ describe('chatStore', () => {
         initiationSource: 'automation',
         automationName: 'Nightly check',
         userMessageId: 'automation-message-1',
+        onPreDispatchRejected: rejectionCallback,
+        onDispatchRejected: rejectionCallback,
       },
     );
   });
@@ -8814,7 +8827,7 @@ describe('chatStore', () => {
     expect(tab?.pendingRevertAttachmentPath).toBeUndefined();
   });
 
-  it.each(['hook placeholder', 'worktree setup'] as const)(
+  it.each(['hook placeholder'] as const)(
     'preserves next-draft attachments when a reserved send enters the %s queue',
     async (queueKind) => {
       const { useChatStore } = loadChatStore();
@@ -8852,7 +8865,6 @@ describe('chatStore', () => {
         .sendMessage('Earlier draft', undefined, target, undefined, {
           attachmentPaths: ['/tmp/earlier-draft.png'],
           composerAttachmentsReserved: true,
-          queueForSetup: queueKind === 'worktree setup',
           onQueuedWithoutDispatch: queued,
         });
       expect(queued).toHaveBeenCalledTimes(1);
@@ -11077,7 +11089,25 @@ describe('chatStore', () => {
           planId: 'opencode-plan',
           revisionNumber: 2,
         },
+        trackedPlanImplementation: {
+          planId: 'opencode-plan',
+          revisionNumber: 2,
+        },
       },
+    });
+    if (
+      typeof command !== 'object' ||
+      command === null ||
+      !('command' in command) ||
+      typeof command.command !== 'object' ||
+      command.command === null ||
+      !('userMessageId' in command.command) ||
+      !('trackedPlanImplementation' in command.command)
+    )
+      throw new Error('No implementation send');
+    // One id names both the sent message and its durable link.
+    expect(command.command.trackedPlanImplementation).toMatchObject({
+      userMessageId: command.command.userMessageId,
     });
   });
 
@@ -11200,6 +11230,7 @@ describe('chatStore', () => {
               pendingPlanExit: { plan: 'Canonical plan' },
               pendingPlanExitRequestId: 'request',
               trackedPlanId: 'plan-1',
+              latestRevisionNumber: 1,
               trackedPlanReviewStatus: 'pending',
             }),
           ],
@@ -11558,6 +11589,7 @@ describe('chatStore', () => {
     function seedPendingClaudePlan(
       useChatStore: typeof ChatStoreModule.useChatStore,
       useActivityStore: typeof ActivityStoreModule.useActivityStore,
+      hasRevision = true,
     ): void {
       useActivityStore.setState({
         trackedPlans: { 'project/worktree': [makeReviewPlan('pending')] },
@@ -11573,6 +11605,7 @@ describe('chatStore', () => {
                 pendingPlanExit: { plan: 'Implement the feature' },
                 pendingPlanExitRequestId: 'request',
                 trackedPlanId: 'plan-1',
+                ...(hasRevision ? { latestRevisionNumber: 1 } : {}),
                 trackedPlanSource: 'claude',
                 trackedPlanReviewStatus: 'pending',
               }),
@@ -11590,6 +11623,12 @@ describe('chatStore', () => {
           },
         },
       });
+    }
+
+    function canonicalImplementationSends(): unknown[] {
+      return chatCommandMock.mock.calls
+        .map(([request]) => request.command)
+        .filter((command) => command.type === 'chat.send_message');
     }
 
     function storedReviewStatus(
@@ -11634,14 +11673,15 @@ describe('chatStore', () => {
       );
       expect(activityPlansListMock).not.toHaveBeenCalled();
       expect(settled).toBe(false);
-      // The implementation request does not wait for the plan projection.
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      // No implementation can run until its durable review has synchronized.
+      expect(canonicalImplementationSends()).toHaveLength(0);
 
       update.resolve(makeReviewPlan('approved'));
       await approval;
 
       expect(activityPlansListMock).toHaveBeenCalledTimes(1);
       expect(storedReviewStatus(useActivityStore)).toBe('approved');
+      expect(canonicalImplementationSends()).toHaveLength(1);
     });
 
     it('keeps the approval when a list read started earlier resolves afterward', async () => {
@@ -11697,13 +11737,14 @@ describe('chatStore', () => {
           expect.any(Function),
           expect.objectContaining({ chatId: 'chat' }),
         );
-        // The committed chat decision stays approved and implementation was
-        // requested exactly once.
+        // The chat decision remains approved, but no implementation runs
+        // when the durable plan approval cannot be established.
         expect(
           useChatStore.getState().worktreeChats['project/worktree']?.tabs[0]
             ?.trackedPlanReviewStatus,
         ).toBe('approved');
-        expect(sendMessageMock).toHaveBeenCalledTimes(1);
+        expect(sendMessageMock).not.toHaveBeenCalled();
+        expect(canonicalImplementationSends()).toHaveLength(0);
       },
     );
 
@@ -11734,7 +11775,8 @@ describe('chatStore', () => {
           ?.latestRevisionNumber,
       ).toBe(2);
       expect(storedReviewStatus(useActivityStore)).toBe('pending');
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(canonicalImplementationSends()).toHaveLength(0);
     });
 
     it('preserves a returned approval when the reconciliation read fails', async () => {
@@ -11782,7 +11824,8 @@ describe('chatStore', () => {
       await jest.advanceTimersByTimeAsync(0);
       expect(activityPlansListMock).toHaveBeenCalledTimes(2);
       expect(activityPlansUpdateMock).toHaveBeenCalledTimes(1);
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(canonicalImplementationSends()).toHaveLength(1);
       expect(storedReviewStatus(useActivityStore)).toBe('approved');
     });
 
@@ -11801,7 +11844,8 @@ describe('chatStore', () => {
         useActivityStore.getState().trackedPlans['project/other'],
       ).toBeUndefined();
       expect(activityPlansListMock).not.toHaveBeenCalled();
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(canonicalImplementationSends()).toHaveLength(0);
     });
 
     it('sends the implementation request once for repeated approval clicks', async () => {
@@ -11820,7 +11864,8 @@ describe('chatStore', () => {
       update.resolve(makeReviewPlan('approved'));
       await Promise.all([first, second, restoredRepeat]);
 
-      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock).not.toHaveBeenCalled();
+      expect(canonicalImplementationSends()).toHaveLength(1);
       expect(activityPlansUpdateMock).toHaveBeenCalledTimes(1);
     });
 
@@ -11864,9 +11909,119 @@ describe('chatStore', () => {
         await Promise.all([first, next]);
 
         expect(activityPlansUpdateMock).toHaveBeenCalledTimes(2);
-        expect(sendMessageMock).toHaveBeenCalledTimes(2);
+        // Both commands retain the reviewed revision captured before their
+        // asynchronous approval; main rejects a stale revision at admission.
+        expect(sendMessageMock).not.toHaveBeenCalled();
+        const sends = chatCommandMock.mock.calls
+          .map(([request]) => request.command)
+          .filter((command) => command.type === 'chat.send_message');
+        expect(sends).toHaveLength(2);
+        expect(sends[0]).toMatchObject({
+          trackedPlanImplementation: { planId: 'plan-1', revisionNumber: 2 },
+        });
       },
     );
+
+    describe('linked chat implementation (CAN-5359)', () => {
+      function seedRevisionedClaudePlan(
+        useChatStore: typeof ChatStoreModule.useChatStore,
+        useActivityStore: typeof ActivityStoreModule.useActivityStore,
+      ): void {
+        seedPendingClaudePlan(useChatStore, useActivityStore);
+        const chats = useChatStore.getState().worktreeChats['project/worktree'];
+        useChatStore.setState({
+          worktreeChats: {
+            'project/worktree': {
+              ...chats,
+              tabs: chats.tabs.map((tab) => ({
+                ...tab,
+                latestRevisionNumber: 1,
+              })),
+            },
+          },
+        });
+      }
+
+      function implementationSends(): unknown[] {
+        return chatCommandMock.mock.calls
+          .map(([request]) => request.command)
+          .filter((command) => command.type === 'chat.send_message');
+      }
+
+      it('approves the plan, then sends one message whose id is the durable link', async () => {
+        const {
+          chatStore: { useChatStore },
+          activityStore: { useActivityStore },
+        } = loadStores();
+        seedRevisionedClaudePlan(useChatStore, useActivityStore);
+        const order: string[] = [];
+        activityPlansUpdateMock.mockImplementationOnce(() => {
+          order.push('approve');
+          return Promise.resolve(makeReviewPlan('approved'));
+        });
+        const defaultCommand = chatCommandMock.getMockImplementation();
+        chatCommandMock.mockImplementation((request) => {
+          if (request.command.type === 'chat.send_message') order.push('send');
+          return defaultCommand
+            ? defaultCommand(request)
+            : Promise.resolve({
+                commandId: request.commandId,
+                revision: 1,
+                outcome: 'applied',
+              });
+        });
+
+        await useChatStore.getState().approvePlanExit('request');
+
+        expect(sendMessageMock).not.toHaveBeenCalled();
+        expect(order).toEqual(['approve', 'send']);
+        const sends = implementationSends();
+        expect(sends).toHaveLength(1);
+        const send = sends[0];
+        expect(send).toMatchObject({
+          type: 'chat.send_message',
+          chatId: 'chat',
+          text: 'Approved',
+          trackedPlanImplementation: { planId: 'plan-1', revisionNumber: 1 },
+        });
+        if (
+          typeof send !== 'object' ||
+          send === null ||
+          !('userMessageId' in send) ||
+          !('trackedPlanImplementation' in send)
+        )
+          throw new Error('No implementation send');
+        expect(send.trackedPlanImplementation).toMatchObject({
+          userMessageId: send.userMessageId,
+        });
+      });
+
+      it('refuses a legacy approval without a reviewed revision instead of sending untracked', async () => {
+        const {
+          chatStore: { useChatStore },
+          activityStore: { useActivityStore },
+        } = loadStores();
+        seedPendingClaudePlan(useChatStore, useActivityStore, false);
+        await useChatStore.getState().approvePlanExit('request');
+        expect(implementationSends()).toHaveLength(0);
+        expect(sendMessageMock).not.toHaveBeenCalled();
+        expect(activityPlansUpdateMock).not.toHaveBeenCalled();
+      });
+
+      it('does not implement untracked when the plan approval cannot be recorded', async () => {
+        const {
+          chatStore: { useChatStore },
+          activityStore: { useActivityStore },
+        } = loadStores();
+        seedRevisionedClaudePlan(useChatStore, useActivityStore);
+        activityPlansUpdateMock.mockResolvedValueOnce(null);
+
+        await useChatStore.getState().approvePlanExit('request');
+
+        expect(implementationSends()).toHaveLength(0);
+        expect(sendMessageMock).not.toHaveBeenCalled();
+      });
+    });
 
     it('applies a dismissal before the denial settles', async () => {
       const {
@@ -12604,7 +12759,7 @@ describe('chatStore', () => {
     });
 
     const tabA = useChatStore.getState().worktreeChats['projA/wtA']?.tabs[0];
-    // Renderer-local rows (setup queue, hook placeholders, cowork) are not
+    // Renderer-local rows (hook placeholders, cowork) are not
     // host-owned and must survive host snapshots; mirrored rows follow them.
     expect(tabA?.queuedMessages).toEqual([
       expect.objectContaining({ text: 'follow-up for A' }),
@@ -20232,6 +20387,7 @@ describe('Ollama provider support', () => {
               providerType: 'ollama',
               trackedPlanSource: 'ollama',
               trackedPlanId: 'plan-1',
+              latestRevisionNumber: 1,
               trackedPlanReviewStatus: 'pending',
               pendingPlanExit: {
                 plan: 'Implement with Ollama',
@@ -27479,33 +27635,6 @@ describe('chatStore hook-started tabs', () => {
     ).toEqual(queuedMessages);
   });
 
-  it('forceQueuedMessage does not bypass worktree setup queues', () => {
-    const { useChatStore } = loadChatStore();
-
-    useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [
-            makeTab({
-              id: 'chat',
-              queuedForSetup: true,
-              queuedMessages: [{ text: 'wait for setup' }],
-            }),
-          ],
-        },
-      },
-    });
-
-    cancelChatMock.mockClear();
-    sendMessageMock.mockClear();
-    useChatStore.getState().forceQueuedMessage(0);
-
-    expect(cancelChatMock).not.toHaveBeenCalled();
-    expect(sendMessageMock).not.toHaveBeenCalled();
-  });
-
   it('does not flush the head queued message while it is being edited', () => {
     const { useChatStore } = loadChatStore();
 
@@ -32184,9 +32313,10 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     );
   });
 
-  it('queues sendMessage without firing IPC when the worktree is git-pending and marks the tab queuedForSetup', async () => {
+  it('sends to main during git setup, with no renderer setup row', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
     const onDispatchAccepted = jest.fn();
+    const queued = jest.fn();
 
     projectsStore.useProjectsStore.setState({
       projects: [makeProjectWithWorktree('git-pending')],
@@ -32206,97 +32336,25 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
       .getState()
       .sendMessage('do the thing', undefined, undefined, undefined, {
         onDispatchAccepted,
-      });
-
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    expect(onDispatchAccepted).toHaveBeenCalledTimes(1);
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(tab?.queuedForSetup).toBe(true);
-    expect(tab?.queuedMessages).toHaveLength(1);
-    expect(tab?.queuedMessages[0]?.text).toBe('do the thing');
-    expect(tab?.queuedMessages[0]?.dispatchOptions).toBeUndefined();
-    // The tab should NOT have transitioned to streaming.
-    expect(tab?.status).toBe('idle');
-    // The queued bubble explains the wait; no setup annotation is added to
-    // the transcript (CAN-4981).
-    expect(tab?.messages).toHaveLength(0);
-  });
-
-  // CAN eager-composer regression: a brand-new worktree is `git-pending`
-  // exactly when its chat scope is not yet revisioned-live, so the eager
-  // composer's `pendingInitialCreation` tab and the setup queue are the same
-  // mainline flow. The eager wrapper marks the send dispatched before the
-  // recursive call, but the setup-queue path takes no ownership of the
-  // provisional echo -- leaving the prompt rendered twice (retained echo plus
-  // queued row), with no shared id for the git-ready flush to reconcile.
-  it('withdraws the eager provisional echo when the recursive send parks the message in the setup queue', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      chatStateSync: {
-        'project/worktree': { phase: 'live', revision: 1 },
-      },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ pendingInitialCreation: true })],
-        },
-      },
-    });
-
-    // `sendMessage` runs synchronously through the optimistic echo and up to
-    // its first await, so clearing the flag here lands before the
-    // `pendingEagerChatCreation` continuation reads state -- the same ordering
-    // canonical `chat.create_tab` acceptance produces.
-    const queued = jest.fn();
-    const send = chatStore.useChatStore
-      .getState()
-      .sendMessage('do the thing', undefined, undefined, undefined, {
         onQueuedWithoutDispatch: queued,
       });
-    chatStore.useChatStore.setState((state) => {
-      const scope = state.worktreeChats['project/worktree'];
-      if (!scope) return state;
-      return {
-        worktreeChats: {
-          ...state.worktreeChats,
-          'project/worktree': {
-            ...scope,
-            tabs: scope.tabs.map((tab) => ({
-              ...tab,
-              pendingInitialCreation: undefined,
-            })),
-          },
-        },
-      };
-    });
-    await send;
 
+    // Main holds the send until the worktree's setup finishes.
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat',
+      text: 'do the thing',
+    });
+    expect(queued).not.toHaveBeenCalledWith('renderer');
     const tab =
       chatStore.useChatStore.getState().worktreeChats['project/worktree']
         ?.tabs[0];
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    // The eager wrapper forwards where the recursive send parked the message.
-    expect(queued).toHaveBeenCalledTimes(1);
-    expect(queued).toHaveBeenCalledWith('renderer');
-    expect(tab?.queuedForSetup).toBe(true);
-    expect(tab?.queuedMessages).toHaveLength(1);
-    expect(tab?.queuedMessages[0]?.text).toBe('do the thing');
-    // The queued row is the message's only representation until it flushes.
+    expect(tab?.queuedMessages).toEqual([]);
     expect(
       (tab?.messages ?? []).filter((message) => message.role === 'user'),
-    ).toHaveLength(0);
-    expect(tab?.pendingUserMessages ?? []).toHaveLength(0);
-    expect(tab?.pendingTurn).toBeUndefined();
-    // No setup annotation is added alongside the queued row (CAN-4981).
-    expect(tab?.messages).toHaveLength(0);
+    ).toHaveLength(1);
   });
 
   it('keeps the saved prompt when an eager native send fails', async () => {
@@ -32512,425 +32570,6 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     ).toHaveLength(0);
   });
 
-  it('queues multiple setup-pending sends in order without adding a setup annotation', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore.getState().sendMessage('first');
-    await chatStore.useChatStore.getState().sendMessage('second');
-
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    const hasSetupAnnotation = (tab?.messages ?? []).some((msg) =>
-      msg.blocks.some((block) => block.type === 'pending_setup_info'),
-    );
-    expect(hasSetupAnnotation).toBe(false);
-    expect(tab?.queuedForSetup).toBe(true);
-    expect(tab?.queuedMessages.map((message) => message.text)).toEqual([
-      'first',
-      'second',
-    ]);
-  });
-
-  it('dispatches each setup-queued message once on git-ready without a setup annotation', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore.getState().sendMessage('first');
-    expect(sendMessageMock).not.toHaveBeenCalled();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
-      text: 'first',
-    });
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(tab?.queuedForSetup).toBeUndefined();
-    expect(tab?.queuedMessages).toHaveLength(0);
-    expect(
-      (tab?.messages ?? []).some((msg) =>
-        msg.blocks.some((block) => block.type === 'pending_setup_info'),
-      ),
-    ).toBe(false);
-  });
-
-  it('drains multiple setup sends once in order while preserving existing history', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-    const notice: ChatStoreModule.ChatMessage = {
-      id: 'existing-notice',
-      role: 'system',
-      timestamp: 1,
-      blocks: [{ type: 'text', text: 'Keep this notice' }],
-    };
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab({ messages: [notice] })],
-        },
-      },
-    });
-    const tab = (): ChatStoreModule.ChatTab | undefined =>
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    await chatStore.useChatStore.getState().sendMessage('first');
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage('second', undefined, undefined, undefined, {
-        queueForSetup: true,
-      });
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    expect(tab()?.messages).toEqual([notice]);
-    expect(tab()?.queuedMessages.map((message) => message.text)).toEqual([
-      'first',
-      'second',
-    ]);
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    await jest.advanceTimersByTimeAsync(0);
-    expect(sendMessageMock.mock.calls.map(([request]) => request.text)).toEqual(
-      ['first'],
-    );
-    chatStore.useChatStore.getState().handleChatEvent({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      data: { type: 'result', is_error: false, result: 'Done' },
-    });
-    await jest.advanceTimersByTimeAsync(1000);
-    expect(sendMessageMock.mock.calls.map(([request]) => request.text)).toEqual(
-      ['first', 'second'],
-    );
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    await jest.advanceTimersByTimeAsync(0);
-    expect(sendMessageMock).toHaveBeenCalledTimes(2);
-    expect(tab()?.queuedForSetup).toBeUndefined();
-    expect(tab()?.queuedMessages).toHaveLength(0);
-    expect(tab()?.messages).toContainEqual(notice);
-    expect(
-      tab()
-        ?.messages.flatMap((message) => message.blocks)
-        .some((block) => block.type === 'pending_setup_info'),
-    ).toBe(false);
-  });
-
-  it.each(['failure', 'repair'] as const)(
-    'handles the actual setup %s event without an annotation or premature dispatch',
-    async (outcome) => {
-      const { chatStore, projectsStore } = loadStoresWithProjects();
-      const failed = jest.fn<
-        ReturnType<CanopyApi['onWorktreeGitFailed']>,
-        Parameters<CanopyApi['onWorktreeGitFailed']>
-      >(() => jest.fn());
-      const needsRepair = jest.fn<
-        ReturnType<CanopyApi['onWorktreeNeedsRepair']>,
-        Parameters<CanopyApi['onWorktreeNeedsRepair']>
-      >(() => jest.fn());
-      const repair = jest
-        .fn()
-        .mockResolvedValue({ id: 'worktree', branchName: 'feature/setup' });
-      Object.assign(window.api, {
-        onWorktreeGitReady: jest.fn(() => jest.fn()),
-        onWorktreeGitFailed: failed,
-        onWorktreeNeedsRepair: needsRepair,
-        onWorktreeBranchChanged: jest.fn(() => jest.fn()),
-        onWorkspaceWorktreesUpdated: jest.fn(() => jest.fn()),
-        onWorktreesFileChanged: jest.fn(() => jest.fn()),
-        onWorkspaceSplitTemporaryComplete: jest.fn(() => jest.fn()),
-        orgProjects: { onOwnershipChanged: jest.fn(() => jest.fn()) },
-        repairWorkspaceWorktree: repair,
-      });
-      const project = makeProjectWithWorktree('git-pending');
-      const setupProject: SidebarItem =
-        outcome === 'repair' && project.type !== 'cowork'
-          ? {
-              ...project,
-              type: 'multi-repo',
-              repos: [],
-              sourceRepoPath: '/workspace',
-            }
-          : project;
-      projectsStore.useProjectsStore.setState({
-        projects: [setupProject],
-        saveProjects: jest.fn().mockResolvedValue(undefined),
-        refreshDiffStats: jest.fn().mockResolvedValue(undefined),
-        refreshWorkspaceDrift: jest.fn().mockResolvedValue(undefined),
-        inspectHookChatPluginDependencies: jest
-          .fn()
-          .mockResolvedValue(undefined),
-        inspectRecommendedPlugins: jest.fn().mockResolvedValue(undefined),
-      });
-      chatStore.useChatStore.setState({
-        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-        worktreeChats: {
-          'project/worktree': { activeTabId: 'chat', tabs: [makeTab()] },
-        },
-      });
-      const tab = (): ChatStoreModule.ChatTab | undefined =>
-        chatStore.useChatStore.getState().worktreeChats['project/worktree']
-          ?.tabs[0];
-      const unsubscribe = projectsStore.useProjectsStore
-        .getState()
-        .subscribeToWorktreeGitLifecycleEvents();
-      try {
-        await chatStore.useChatStore
-          .getState()
-          .sendMessage('Keep my queued input');
-        expect(tab()?.queuedForSetup).toBe(true);
-        expect(tab()?.messages).toEqual([]);
-        if (outcome === 'failure') {
-          const callback = failed.mock.calls[0]?.[0];
-          if (!callback) throw new Error('Missing setup failure subscription');
-          callback({
-            projectId: 'project',
-            worktreeId: 'worktree',
-            error: 'Setup failed in git',
-          });
-          expect(projectsStore.useProjectsStore.getState().worktreeError).toBe(
-            'Setup failed in git',
-          );
-          expect(tab()).toBeUndefined();
-          expect(sendMessageMock).not.toHaveBeenCalled();
-        } else {
-          const callback = needsRepair.mock.calls[0]?.[0];
-          if (!callback) throw new Error('Missing setup repair subscription');
-          const repairIssues = [
-            {
-              code: 'missing-claude-md' as const,
-              message: 'Project instructions missing',
-              blocking: true,
-            },
-          ];
-          callback({
-            projectId: 'project',
-            worktreeId: 'worktree',
-            branchName: 'feature/setup',
-            repairIssues,
-          });
-          expect(
-            projectsStore.useProjectsStore.getState().pendingWorkspaceRepair,
-          ).toMatchObject({ id: 'worktree', repairIssues });
-          expect(tab()?.queuedMessages.map((message) => message.text)).toEqual([
-            'Keep my queued input',
-          ]);
-          expect(tab()?.queuedForSetup).toBe(true);
-          expect(tab()?.messages).toEqual([]);
-          expect(sendMessageMock).not.toHaveBeenCalled();
-          await projectsStore.useProjectsStore
-            .getState()
-            .repairPendingWorkspaceWorktree(true);
-          await jest.advanceTimersByTimeAsync(0);
-          expect(
-            projectsStore.useProjectsStore.getState().worktreeError,
-          ).toBeNull();
-          expect(
-            projectsStore.useProjectsStore.getState().pendingWorkspaceRepair,
-          ).toBeNull();
-          expect(repair).toHaveBeenCalledWith(
-            expect.objectContaining({
-              workspaceId: 'project',
-              worktreeId: 'worktree',
-              restoreClaudeMd: true,
-            }),
-          );
-          expect(sendMessageMock).toHaveBeenCalledTimes(1);
-          expect(sendMessageMock.mock.calls[0]?.[0].text).toBe(
-            'Keep my queued input',
-          );
-          expect(tab()?.queuedForSetup).toBeUndefined();
-          expect(tab()?.queuedMessages).toHaveLength(0);
-          expect(
-            tab()
-              ?.messages.flatMap((message) => message.blocks)
-              .some((block) => block.type === 'pending_setup_info'),
-          ).toBe(false);
-          await projectsStore.useProjectsStore
-            .getState()
-            .repairPendingWorkspaceWorktree(true);
-          expect(sendMessageMock).toHaveBeenCalledTimes(1);
-        }
-      } finally {
-        unsubscribe();
-      }
-    },
-  );
-
-  it('queueForSetup immediately dispatches without a setup annotation when the worktree already raced to git-ready', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    // Worktree already advanced past git-pending before sendMessage runs — the
-    // Create Task → Chat race. queueForSetup makes the queue treatment deterministic.
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage(
-        'do the thing',
-        undefined,
-        { projectId: 'project', worktreeId: 'worktree', chatId: 'chat' },
-        undefined,
-        { queueForSetup: true },
-      );
-
-    // No setup annotation is added to the transcript (CAN-4981).
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(
-      (tab?.messages ?? []).some((msg) =>
-        msg.blocks.some((block) => block.type === 'pending_setup_info'),
-      ),
-    ).toBe(false);
-
-    // The message is not stranded: the immediate flush dispatched it via IPC.
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      text: 'do the thing',
-    });
-
-    const tabAfter =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(tabAfter?.queuedForSetup).toBeUndefined();
-    expect(tabAfter?.queuedMessages).toHaveLength(0);
-  });
-
-  it('queueForSetup stays queued when a concurrent project refresh temporarily omits the reserved row', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-    const project = makeProjectWithWorktree('git-pending');
-    if (project.type !== 'single-repo') {
-      throw new Error('Expected a single-repo worktree fixture');
-    }
-    project.worktrees = [];
-
-    projectsStore.useProjectsStore.setState({
-      projects: [project],
-    });
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage(
-        'keep this queued',
-        undefined,
-        { projectId: 'project', worktreeId: 'worktree', chatId: 'chat' },
-        undefined,
-        { queueForSetup: true },
-      );
-    await Promise.resolve();
-
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(tab?.queuedForSetup).toBe(true);
-    expect(tab?.queuedMessages[0]?.text).toBe('keep this queued');
-  });
-
-  it('sends immediately with no setup annotation when the worktree is git-ready and queueForSetup is omitted', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore.getState().sendMessage('do the thing');
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    const tab =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    const hasIntro = (tab?.messages ?? []).some((msg) =>
-      msg.blocks.some((block) => block.type === 'pending_setup_info'),
-    );
-    expect(hasIntro).toBe(false);
-    expect(tab?.queuedForSetup).toBeUndefined();
-  });
-
   it('deduplicates pending and explicit attachment paths when sending', async () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
     const attachmentPath =
@@ -33115,296 +32754,6 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
     );
   });
 
-  it('flushPendingChatsForWorktree sends queued messages in order via the IPC and clears queuedForSetup', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore.getState().sendMessage('first');
-    await chatStore.useChatStore.getState().sendMessage('second');
-
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    expect(
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0]?.queuedMessages,
-    ).toHaveLength(2);
-
-    // Phase B completes — flip the worktree to git-ready and flush.
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-
-    // Allow microtasks queued by sendMessage to run.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // The first message fires now; the second remains queued and is drained
-    // by the post-streaming hook in production. Here we only assert the
-    // first IPC call and that queuedForSetup has been cleared.
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      text: 'first',
-    });
-
-    const tabAfter =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0];
-    expect(tabAfter?.queuedForSetup).toBeUndefined();
-  });
-
-  it('signals the setup-queue dispatch only when a flush actually sends', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-    const dispatchSignal = jest.requireActual<typeof SetupQueueDispatchModule>(
-      '../stores/chat/setup-queue-dispatch',
-    );
-    const dispatched = jest.fn();
-    const unsubscribe = dispatchSignal.subscribeSetupQueueDispatch(dispatched);
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': { activeTabId: 'chat', tabs: [makeTab()] },
-      },
-    });
-    await chatStore.useChatStore.getState().sendMessage('first');
-
-    // The queue was emptied before setup finished: the flush only clears
-    // the marker, so there is nothing to announce.
-    const pending =
-      chatStore.useChatStore.getState().worktreeChats['project/worktree'];
-    if (!pending) throw new Error('Expected the worktree chats');
-    chatStore.useChatStore.setState({
-      worktreeChats: {
-        'project/worktree': {
-          ...pending,
-          tabs: pending.tabs.map((tab) => ({ ...tab, queuedMessages: [] })),
-        },
-      },
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    expect(dispatched).not.toHaveBeenCalled();
-
-    await chatStore.useChatStore.getState().sendMessage('second');
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    await jest.advanceTimersByTimeAsync(0);
-    // An IPC acknowledgement can still mean host-queue admission. Only the
-    // identified live provider-accepted event proves the input started.
-    expect(dispatched).not.toHaveBeenCalled();
-    const request = sendMessageMock.mock.calls.at(-1)?.[0];
-    if (!request) throw new Error('Expected the dispatched request');
-    chatStore.useChatStore.getState().handleChatEvent({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      data: {
-        type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
-        canopy_turn_user_message_id: request.userMessageId,
-      },
-    });
-    unsubscribe();
-
-    expect(dispatched).toHaveBeenCalledTimes(1);
-    expect(dispatched).toHaveBeenCalledWith({
-      projectId: 'project',
-      worktreeId: 'worktree',
-      chatId: 'chat',
-      count: 1,
-    });
-  });
-
-  it.each(['pending', 'refused', 'replay', 'failed', 'blocked'] as const)(
-    'does not signal sending for a %s setup dispatch',
-    async (outcome) => {
-      const { chatStore, projectsStore } = loadStoresWithProjects();
-      const dispatchSignal = jest.requireActual<
-        typeof SetupQueueDispatchModule
-      >('../stores/chat/setup-queue-dispatch');
-      const dispatched = jest.fn();
-      const unsubscribe =
-        dispatchSignal.subscribeSetupQueueDispatch(dispatched);
-      projectsStore.useProjectsStore.setState({
-        projects: [makeProjectWithWorktree('git-pending')],
-      });
-      chatStore.useChatStore.setState({
-        selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-        worktreeChats: {
-          'project/worktree': {
-            activeTabId: 'chat',
-            tabs: [
-              makeTab({
-                ...(outcome === 'blocked'
-                  ? {
-                      inputDelivery: {
-                        version: 1,
-                        epoch: 0,
-                        rows: [
-                          {
-                            id: 'earlier-input',
-                            revision: 1,
-                            createdAt: 1,
-                            state: 'pending',
-                            text: 'Earlier input',
-                            payload: {
-                              projectId: 'project',
-                              worktreeId: 'worktree',
-                              chatId: 'chat',
-                              userMessageId: 'earlier-input',
-                              text: 'Earlier input',
-                            },
-                            settingsKey: 'settings',
-                            currentAttemptId: 'attempt-1',
-                            attempts: [
-                              {
-                                id: 'attempt-1',
-                                generation: 'generation-1',
-                                provider: 'claude',
-                                createdAt: 1,
-                                admittedAt: 2,
-                              },
-                            ],
-                          },
-                        ],
-                      },
-                    }
-                  : {}),
-              }),
-            ],
-          },
-        },
-      });
-      await chatStore.useChatStore.getState().sendMessage('first');
-      projectsStore.useProjectsStore.setState({
-        projects: [makeProjectWithWorktree('git-ready')],
-      });
-      let complete: (() => void) | undefined;
-      if (outcome === 'pending') {
-        sendMessageMock.mockImplementationOnce(
-          () =>
-            new Promise<DesktopSharedTypes.ChatSendMessageResult>((resolve) => {
-              complete = (): void => resolve({});
-            }),
-        );
-      } else if (outcome === 'refused') {
-        sendMessageMock.mockResolvedValueOnce({
-          watcherDeliveryHeld: {
-            outcome: 'held',
-            reason: 'runtime_unavailable',
-          },
-        });
-      } else if (outcome === 'replay') {
-        sendMessageMock.mockResolvedValueOnce({
-          disposition: 'already_accepted',
-        });
-      } else if (outcome === 'failed') {
-        sendMessageMock.mockRejectedValueOnce(new Error('Send failed'));
-      }
-      try {
-        chatStore.useChatStore
-          .getState()
-          .flushPendingChatsForWorktree('project', 'worktree');
-        await jest.advanceTimersByTimeAsync(0);
-        expect(sendMessageMock).toHaveBeenCalled();
-        expect(dispatched).not.toHaveBeenCalled();
-        complete?.();
-        await jest.advanceTimersByTimeAsync(0);
-        expect(dispatched).not.toHaveBeenCalled();
-        if (outcome === 'pending' || outcome === 'blocked') {
-          const request = sendMessageMock.mock.calls.at(-1)?.[0];
-          if (!request) throw new Error('Expected the queued request');
-          chatStore.useChatStore.getState().handleChatEvent({
-            projectId: 'project',
-            worktreeId: 'worktree',
-            chatId: 'chat',
-            data: {
-              type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
-              canopy_turn_user_message_id: request.userMessageId,
-            },
-          });
-          expect(dispatched).toHaveBeenCalledTimes(1);
-        }
-      } finally {
-        complete?.();
-        unsubscribe();
-      }
-    },
-  );
-
-  it('keeps the active plan on a setup-queued message and forwards it when the queue flushes', async () => {
-    const { chatStore, projectsStore } = loadStoresWithProjects();
-    const activePlan: DesktopSharedTypes.ChatActivePlanContext = {
-      planId: 'plan-1',
-      viewedRevisionNumber: 3,
-    };
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-pending')],
-    });
-    chatStore.useChatStore.setState({
-      selectedWorktree: { projectId: 'project', worktreeId: 'worktree' },
-      worktreeChats: {
-        'project/worktree': {
-          activeTabId: 'chat',
-          tabs: [makeTab()],
-        },
-      },
-    });
-
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage('about the plan', undefined, undefined, undefined, {
-        activePlan,
-      });
-
-    expect(sendMessageMock).not.toHaveBeenCalled();
-    expect(
-      chatStore.useChatStore.getState().worktreeChats['project/worktree']
-        ?.tabs[0]?.queuedMessages[0]?.dispatchOptions,
-    ).toEqual({ activePlan });
-
-    projectsStore.useProjectsStore.setState({
-      projects: [makeProjectWithWorktree('git-ready')],
-    });
-    chatStore.useChatStore
-      .getState()
-      .flushPendingChatsForWorktree('project', 'worktree');
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
-      text: 'about the plan',
-      activePlan,
-    });
-  });
-
   it('dropWorktreeQueuedState clears tabs and queued messages and clears selectedWorktree when it matches the failed worktree', () => {
     const { chatStore, projectsStore } = loadStoresWithProjects();
 
@@ -33451,7 +32800,6 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
           activeTabId: 'chat',
           tabs: [
             makeTab({
-              queuedForSetup: true,
               queuedMessages: [{ text: 'pending' }],
             }),
           ],
@@ -33489,7 +32837,7 @@ describe('chatStore git-pending queue (two-phase worktree creation)', () => {
       worktreeChats: {
         'project/worktree': {
           activeTabId: 'chat',
-          tabs: [makeTab({ queuedForSetup: true })],
+          tabs: [makeTab()],
         },
       },
     });
@@ -36789,44 +36137,49 @@ describe('chatStore provisional Home first send (CAN-4742)', () => {
     ).toBeUndefined();
   });
 
-  it('adopts the echo at dispatch: one bubble, one timer, original start time', async () => {
-    const { chatStore } = loadWithWorktree('git-ready');
-    chatStore.useChatStore
-      .getState()
-      .presentProvisionalFirstSend(target, firstSend);
+  it.each(['git-ready', 'git-pending'] as const)(
+    'adopts the echo at dispatch into a %s worktree: one bubble, one timer, original start time',
+    async (setupPhase) => {
+      const { chatStore } = loadWithWorktree(setupPhase);
+      chatStore.useChatStore
+        .getState()
+        .presentProvisionalFirstSend(target, firstSend);
 
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage(firstSend.text, undefined, target, undefined, {
-        userMessageId: firstSend.userMessageId,
+      await chatStore.useChatStore
+        .getState()
+        .sendMessage(firstSend.text, undefined, target, undefined, {
+          userMessageId: firstSend.userMessageId,
+        });
+
+      const tab = chatTab(chatStore);
+      const users = tab?.messages.filter((message) => message.role === 'user');
+      expect(users?.map((message) => message.id)).toEqual(['msg-home-1']);
+      expect(users?.[0]?.timestamp).toBe(1_000);
+      const timers = tab?.messages.filter((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      );
+      expect(timers).toHaveLength(1);
+      expect(timers?.[0]?.blocks[0]).toMatchObject({ startedAt: 1_000 });
+      expect(tab?.pendingTurn).toBeUndefined();
+      expect(tab?.pendingUserMessages).toBeUndefined();
+      expect(tab?.provisionalFirstSend?.phase).toBe('dispatched');
+      expect(tab?.title).toBe('Why is the deck empty?');
+      expect(sendMessageMock).toHaveBeenCalledTimes(1);
+      expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
+        userMessageId: 'msg-home-1',
       });
 
-    const tab = chatTab(chatStore);
-    const users = tab?.messages.filter((message) => message.role === 'user');
-    expect(users?.map((message) => message.id)).toEqual(['msg-home-1']);
-    expect(users?.[0]?.timestamp).toBe(1_000);
-    const timers = tab?.messages.filter((message) =>
-      message.blocks.some((block) => block.type === 'turn_timer'),
-    );
-    expect(timers).toHaveLength(1);
-    expect(timers?.[0]?.blocks[0]).toMatchObject({ startedAt: 1_000 });
-    expect(tab?.pendingTurn).toBeUndefined();
-    expect(tab?.pendingUserMessages).toBeUndefined();
-    expect(tab?.provisionalFirstSend?.phase).toBe('dispatched');
-    expect(tab?.title).toBe('Why is the deck empty?');
-    expect(sendMessageMock).toHaveBeenCalledTimes(1);
-    expect(sendMessageMock.mock.calls[0]?.[0]).toMatchObject({
-      userMessageId: 'msg-home-1',
-    });
-
-    // A late failure callback cannot remove the adopted turn.
-    chatStore.useChatStore
-      .getState()
-      .withdrawProvisionalFirstSend(target, firstSend.userMessageId);
-    expect(
-      chatTab(chatStore)?.messages.filter((message) => message.role === 'user'),
-    ).toHaveLength(1);
-  });
+      // A late failure callback cannot remove the adopted turn.
+      chatStore.useChatStore
+        .getState()
+        .withdrawProvisionalFirstSend(target, firstSend.userMessageId);
+      expect(
+        chatTab(chatStore)?.messages.filter(
+          (message) => message.role === 'user',
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it.each([false, true])(
     'withdraws an adopted first send cancelled before host dispatch (revisioned: %s)',
@@ -36909,46 +36262,6 @@ describe('chatStore provisional Home first send (CAN-4742)', () => {
         message.blocks.some((block) => block.type === 'turn_timer'),
       ),
     ).toHaveLength(1);
-  });
-
-  it('hands the echo to the setup queue row in the same update', async () => {
-    const { chatStore } = loadWithWorktree('git-pending');
-    chatStore.useChatStore
-      .getState()
-      .presentProvisionalFirstSend(target, firstSend);
-    const states: Array<{ users: number; queued: number }> = [];
-    const unsubscribe = chatStore.useChatStore.subscribe((state) => {
-      const tab = state.worktreeChats['project/worktree']?.tabs[0];
-      states.push({
-        users:
-          tab?.messages.filter((message) => message.role === 'user').length ??
-          0,
-        queued: tab?.queuedMessages.length ?? 0,
-      });
-    });
-
-    await chatStore.useChatStore
-      .getState()
-      .sendMessage(firstSend.text, undefined, target, undefined, {
-        userMessageId: firstSend.userMessageId,
-        queueForSetup: true,
-      });
-    unsubscribe();
-
-    expect(
-      states.some((state) => state.users === 0 && state.queued === 0),
-    ).toBe(false);
-    const tab = chatTab(chatStore);
-    expect(tab?.queuedMessages.map((message) => message.text)).toEqual([
-      firstSend.text,
-    ]);
-    expect(tab?.messages.some((message) => message.role === 'user')).toBe(
-      false,
-    );
-    expect(tab?.pendingTurn).toBeUndefined();
-    expect(tab?.provisionalFirstSend?.phase).toBe('queued');
-    expect(tab?.title).toBe('Why is the deck empty?');
-    expect(sendMessageMock).not.toHaveBeenCalled();
   });
 
   it('withdraws an unsent echo and restores the title it replaced', () => {
@@ -37170,31 +36483,6 @@ describe('chatStore provisional Home first send (CAN-4742)', () => {
       }
     },
   );
-
-  it('restores the owned title when a setup-queued first send is cancelled', async () => {
-    const { chatStore } = loadWithWorktree('git-pending');
-    const store = chatStore.useChatStore.getState();
-    store.presentProvisionalFirstSend(target, firstSend);
-    await store.sendMessage(firstSend.text, undefined, target, undefined, {
-      userMessageId: firstSend.userMessageId,
-    });
-    store.clearQueuedMessage(0, target);
-    expect(chatTab(chatStore)?.queuedMessages).toHaveLength(0);
-    expect(chatTab(chatStore)?.title).toBe('New Chat');
-    expect(chatTab(chatStore)?.provisionalFirstSend).toBeUndefined();
-  });
-
-  it('keeps the same submission identity when the setup queue flushes', async () => {
-    const { chatStore } = loadWithWorktree('git-pending');
-    const store = chatStore.useChatStore.getState();
-    store.presentProvisionalFirstSend(target, firstSend);
-    await store.sendMessage(firstSend.text, undefined, target, undefined, {
-      userMessageId: firstSend.userMessageId,
-    });
-    expect(
-      chatTab(chatStore)?.queuedMessages[0]?.dispatchOptions?.userMessageId,
-    ).toBe(firstSend.userMessageId);
-  });
 
   it('does not fail a newer turn when the first dispatch throws late', async () => {
     const { chatStore } = loadWithWorktree('git-ready');

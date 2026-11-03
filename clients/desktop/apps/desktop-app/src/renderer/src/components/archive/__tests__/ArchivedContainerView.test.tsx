@@ -1274,7 +1274,7 @@ describe('ArchivedContainerView', () => {
     expect(listChatsMock).not.toHaveBeenCalled();
     expect(
       container.querySelector('[data-testid="archived-restore"]')?.textContent,
-    ).toBe('Retry workflow import');
+    ).toBe('Try workflow import again');
     expect(
       container.querySelector('[data-testid="archived-execution-row-exec-1"]'),
     ).toBeTruthy();
@@ -1309,7 +1309,7 @@ describe('ArchivedContainerView', () => {
     ).toBeNull();
     expect(
       container.querySelector('[data-testid="archived-restore"]')?.textContent,
-    ).toBe('Retry Git cleanup');
+    ).toBe('Try Git cleanup again');
     expect(
       container.querySelector('[data-testid="archived-file-recovery-banner"]')
         ?.textContent,
@@ -1345,7 +1345,7 @@ describe('ArchivedContainerView', () => {
     ).toBe('Partially restored — workflow runs pending');
     expect(
       container.querySelector('[data-testid="archived-restore"]')?.textContent,
-    ).toBe('Retry workflow import');
+    ).toBe('Try workflow import again');
   });
 
   it('restore navigates to the destination when the container is consumed', async () => {

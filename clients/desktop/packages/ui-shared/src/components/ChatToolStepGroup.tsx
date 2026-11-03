@@ -13,7 +13,6 @@ import { StepTenseProvider, useCleanChatLook } from './chat-look';
 import { STEP_GROUP_BODY_CLASS, StepRow } from './chat/StepRow';
 import type { ChatToolStepLive } from './chat/live-tool-activity';
 import { TOOL_APPROVAL_WAITING_LABEL } from './chat/tool-approval-wait';
-import { containsTensedVerb } from './chat/tool-display';
 import { formatTurnOutcomeLabel } from './chat/turn-outcome-label';
 
 /**
@@ -38,6 +37,9 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   forceExpanded = false,
   openRequest,
   liveSteps,
+  hiddenSteps,
+  collapsedStepCount,
+  trailingActivity,
   children,
   icon,
   failedCount = 0,
@@ -61,6 +63,12 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   openRequest?: object;
   /** The newest steps, shown under the closed row while the run is live. */
   liveSteps?: ReactNode;
+  /** Only the hidden prefix, so expanding leaves the recent rows mounted. */
+  hiddenSteps?: ReactNode;
+  /** A summary must stand for at least two calls, never one. */
+  collapsedStepCount?: number;
+  /** Current activity after the visible recent calls. */
+  trailingActivity?: ReactNode;
   /** Every step in the run, rendered when the group is open. */
   children?: ReactNode;
   /**
@@ -101,6 +109,22 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   }, [openRequest]);
   const clean = useCleanChatLook();
   if (clean) {
+    if (collapsedStepCount !== undefined && collapsedStepCount < 2) {
+      return (
+        <div
+          className={STEP_GROUP_BODY_CLASS}
+          data-testid="chat-tool-step-live"
+        >
+          {children}
+          {trailingActivity}
+          {trailingActivity == null && live?.showWhenUngrouped && (
+            <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
+              <StepRow label={live.label} icon={live.icon} running />
+            </div>
+          )}
+        </div>
+      );
+    }
     // Clean chat look: one closed line per run, live or done; only the
     // person opens it, so steps never pop open and fold away while they
     // stream.
@@ -110,11 +134,13 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
     return (
       <div
         data-testid="chat-tool-step-group"
+        data-chat-disclosure=""
         data-live={live === undefined ? undefined : ''}
         data-tool-approval={waiting ? 'waiting' : undefined}
       >
         <div className={`flex min-w-0 max-w-full${inset ? ' px-3' : ''}`}>
           <StepRow
+            step={live !== undefined}
             icon={live === undefined ? icon : live.icon}
             label={
               <span data-testid="chat-tool-step-summary">
@@ -128,7 +154,7 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
               </span>
             }
             detail={
-              waiting && !containsTensedVerb(live?.label) ? (
+              waiting ? (
                 <span data-testid="chat-tool-step-waiting">
                   {TOOL_APPROVAL_WAITING_LABEL}
                 </span>
@@ -167,8 +193,11 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
           />
         </div>
         {isOpen && expandable ? (
-          <div className={STEP_GROUP_BODY_CLASS}>{children}</div>
-        ) : liveSteps !== undefined ? (
+          <div className={STEP_GROUP_BODY_CLASS} data-chat-reveal-body="">
+            {hiddenSteps ?? children}
+          </div>
+        ) : null}
+        {liveSteps !== undefined ? (
           // "Show only recent steps": the newest steps stay in view under
           // the closed line while the run is live.
           <div
@@ -176,6 +205,7 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
             data-testid="chat-tool-step-live"
           >
             {liveSteps}
+            {trailingActivity}
           </div>
         ) : null}
       </div>

@@ -34,6 +34,7 @@ import {
   sharedPipelineRows,
 } from '../../pipelines/core-pipeline-definition-sources';
 import { getPipelineLocalMetadataFilePath } from '../../lib/paths';
+import * as resourceLanes from '../../pipelines/resource-lanes';
 import { createCorePipelineDefinitionAdapter } from '../../canopy-runtime/core-pipeline-definition-adapter';
 import {
   createPipelineGoldenWorld,
@@ -262,7 +263,7 @@ describe('core pipeline definitions on the desktop', () => {
     ).toBe(listed);
   });
 
-  it('fails closed on user definitions while saved owners are unreadable', async () => {
+  it('fails closed on user definitions while saved owners are unreadable, and only then', async () => {
     const metadata = getPipelineLocalMetadataFilePath();
     const saved = existsSync(metadata) ? readFileSync(metadata) : undefined;
     writeFileSync(metadata, '{ not json');
@@ -276,15 +277,34 @@ describe('core pipeline definitions on the desktop', () => {
       ).rejects.toMatchObject({
         payload: { code: 'core.pipeline.contextMismatch' },
       });
-      await expect(
-        dispatcher().query(
+      // A listing leaves out the user definitions it cannot attribute
+      // (CAN-5368) rather than failing the bundled ones with them.
+      expect(
+        (
+          await dispatcher().query(
+            'core.pipeline.definition.list',
+            { sources: ['user'] },
+            { caller },
+          )
+        ).items,
+      ).toEqual([]);
+      // Without organization contexts the saved owner is never read.
+      const contexts = jest
+        .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+        .mockReturnValue(false);
+      try {
+        const listed = await dispatcher().query(
           'core.pipeline.definition.list',
           { sources: ['user'] },
           { caller },
-        ),
-      ).rejects.toMatchObject({
-        payload: { code: 'core.pipeline.contextMismatch' },
-      });
+        );
+        expect(listed.items.map((item) => item.definitionId)).toContain(
+          world.userPipelineId,
+        );
+        expect(listed.items.every((item) => item.owner === null)).toBe(true);
+      } finally {
+        contexts.mockRestore();
+      }
       expect(
         (
           await dispatcher().query(

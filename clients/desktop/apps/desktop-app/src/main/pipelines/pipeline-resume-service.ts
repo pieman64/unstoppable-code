@@ -19,7 +19,7 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { readEnvironmentConfig } from '../lib/user-environment-store';
 import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
-import { getObservabilityService } from '../observability';
+import { createDesktopPipelineObservabilityFeed } from '../observability/ingest';
 import { getResourceMonitorService } from '../resource-monitor';
 import { buildPipelinePreferenceEnv } from './preference-env';
 import { getPipelineAdvisorService } from './pipeline-advisor';
@@ -40,6 +40,7 @@ import {
   notePipelineExecutionEvent,
 } from './transient-error-retry-scheduler';
 import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
+import { followExecutionHandle } from './pipeline-worker-dispatch';
 
 export interface ResumePipelineExecutionFromMainRequest {
   executionId: string;
@@ -380,7 +381,7 @@ export async function resumePipelineExecutionFromMain(
       runtime,
       onEvent: (event) => {
         notePipelineExecutionEvent(event, request.getWindow);
-        getObservabilityService().syncPipelineExecutionState(event.state);
+        createDesktopPipelineObservabilityFeed().onExecutionEvent(event);
         recordPipelineUsageEvent(event);
         noteAutomationPipelineEvent(event);
         if (
@@ -410,12 +411,13 @@ export async function resumePipelineExecutionFromMain(
         request.onEvent?.(event);
       },
       onStepOutput: (event) => {
-        getObservabilityService().observePipelineOutput(event);
+        createDesktopPipelineObservabilityFeed().onStepOutput(event);
         sendToAllWindows(PIPELINE_CHANNELS.STEP_OUTPUT_EVENT, event);
         request.onStepOutput?.(event);
       },
     });
     trackExecution(handle);
+    followExecutionHandle(handle);
     ownsExecutionReservation = false;
     getPipelineAdvisorService().watchExecution({
       handle,

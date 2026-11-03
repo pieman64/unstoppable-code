@@ -2887,8 +2887,10 @@ const MERGED_BASE_HARNESS_IDENTITIES = Object.freeze({
     'a864f062567bd613339246ce96a785280efbae297a0d3918daacd939ad3349fa',
   // The shared delete modal keeps a worktree's branch by default and names
   // the worktree in its title, so the dialog is found by its title prefix.
+  // CAN-5544 captures the Files dry-run evidence before the wedged-queue exit;
+  // it is inert outside the dry run.
   'apps/desktop-app/tests/electron/seeders/archiveActivityFixture.mjs':
-    '60383a6eedd6c123112d809a891ce80aaadf75a9bd97138ce8b30a3b7da6b6d1',
+    'e7c244702faae85fd88832a468fc6cccfa3855520dca8f42afa50d0414bf8578',
   'apps/desktop-app/tests/electron/seeders/index.mjs':
     '9e70d5f1e698eb7c3f67af325031c911fd439c55f3605d1319615647cdb43cc1',
   'apps/desktop-app/tests/electron/seeders/injectApprovalAutoResolvedEvent.mjs':
@@ -2979,6 +2981,12 @@ const ADDED_PR_HARNESS_IDENTITIES = Object.freeze({
   // frozen study baseline.
   'apps/desktop-app/tests/performance/code-review-registry-scenario.mjs':
     '43278aae640f28f4fd8b8dadc452444fb8427307138ab98650224e4820972255',
+  // CAN-5532's opt-in W5 store arm workloads are absent from the frozen
+  // study baseline.
+  'apps/desktop-app/tests/performance/w5-store-arms.mjs':
+    '7b93d96005b2f16ae556d51819b4e15027aabee43967d3bb0360257787c693bd',
+  'apps/desktop-app/tests/performance/w5-store-scenario.mjs':
+    '1e4cc446b6f7528b6c797109f0984b702ef0f818b3ffe874949ac582bd07e1bb',
 
   // CAN-3753 extends the transitive harness with host evidence and local smoke acceptance.
   'apps/desktop-app/tests/performance/host-measurement.mjs':
@@ -3348,7 +3356,14 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
       // test's stderr; launch behavior is unchanged.
       // CAN-4551 pins the chat automation pipelines experiment to offered so
       // ordinary E2E saves chat automations natively.
-      '7e309a3641f379a8eb6395d45fdafee72f43b445eddb4f6c33d5b7bc62ff7663',
+      // CAN-5544 resolves Files reads `on` only for the opt-in dry run and
+      // records that run's per-launch evidence before any close or abrupt
+      // kill, a direct electronApp.close() included, and rejects a snapshot
+      // outside main's Files evidence contract and a read that failed
+      // without a message; launch behavior is otherwise unchanged. The dry
+      // run also counts a GA3 (CAN-5541) latched `daemon.bypassed` read as a
+      // fallback.
+      '67459afa256fddb1626cf266f51783e324884768ea15c79ba26bc7ff278133fd',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and
@@ -3411,6 +3426,12 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     '277c1cc38d77a08f8a97e5d20027353878a2adb66ac4f812385c5fb317638bcf',
     // CAN-4607 refuses to combine samples of different treatments.
     '900731658c6ee466927d85a8e10fed85e9e34958da3bb96ee231f73ccf04f09e',
+    // The 120 Hz frame report: refresh-rate pairing and per-area frame
+    // comparisons in the console and in frame-areas.json.
+    'e59e296cebe08458048d46f84bc42f7575739d2c48c5f608f5a1e9c3dfb526ad',
+    // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
+    // report; existing defaults and frozen identities are unchanged.
+    'dc3291be5c10ef17da33702aabbb17ef1b16a2a5276948ca320fda94fca6f0af',
   ]),
   // CAN-2053 rejects scripted responses when forbidden repository instructions
   // reach the provider. Preserve the closed study's historical fixture hashes.
@@ -3437,6 +3458,9 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     // Default tool_use ids count the history's tool uses, so a later step never
     // reuses toolu_mock_N; the first step's ids are unchanged.
     '7f11af7f0660f2f6d332bde6ea1db953bccae1159f21b461f4fa689141376f87',
+    // CAN-5348 adds opt-in no-billing refusals for composer recovery coverage.
+    // Preserve the closed study's original and installed source identities.
+    '6548a9f19ec5337cb5263d3350793766c206bba0819bea15803e4a2be456982c',
   ]),
   // CAN-3662 replaces the retired preference with durable Labs choices.
   // PR #5422 seeds cache tokens for the cost token label assertions.
@@ -3473,6 +3497,9 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
       '231c36cd058ff5922ed0c9753eceec2da2a529ab7f76bd555713ddd1dc6626c8',
       // CAN-4938 adds opt-in Copilot refresh rotation controls.
       'c1775b3cb6846f406dee6f7d8bf3ab0a6a13b01c1951cbfcbf93ee7a220faa1a',
+      // PR #7217 answers the shared PULL_REQUEST_STATUS_QUERY by number with
+      // its full projection.
+      '2e9cb83c87fceca7123465572cc7f02476998e36079a2063317afee8b95e7f49',
     ]),
   // CAN-4529 caches parsed JSON bodies so routes sharing /graphql can inspect
   // a request and decline it; the Linear mock reuses that reader.
@@ -3624,6 +3651,16 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     // diagram type by its tab role now that the row is a SegmentedControl with
     // tab semantics; workloads, budgets and frozen identities are unchanged.
     '28e859c54878809a3a509021fe8dbdd56e8c300ef04d21809d2425a00ba7bd5a',
+    // The Linear reference probe counts bare references that resolved to a
+    // canonical URL now that chips show only the identifier; workloads,
+    // budgets and frozen identities are unchanged.
+    '7f9d1f00ef76be1551d1323b12b5d2936ad9e58dde93039cafaed5765539a0aa',
+    // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+    // refresh-rate pairing).
+    'a22b81da4ab3707d0ffe8ad19c8a12d57738be81d97cb92287bac15b8b0beec7',
+    // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
+    // report; existing defaults and frozen identities are unchanged.
+    'cb8b57309aee122fec3e606d5117cbdd30eaaefda9d7f6eabb9ade64a25a7176',
   ]),
   // CAN-3804 adds the checkout tail, resume and pass-through stamps, the
   // filter warm-up, the gate order check and pending-checkout diagnostics;
@@ -3662,6 +3699,12 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     // CAN-4495 adds the opt-in Code Review registry scenarios' sizing keys;
     // existing defaults are unchanged.
     '6c025906738df9b1e3e83afe25098a3077b6110e74f03d3eea511fe5e38b3778',
+    // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+    // refresh-rate pairing).
+    '8e40d177bd24791467c57eb9e5dc5a0172225cb97493a2386e7738d8cb6b5b87',
+    // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
+    // report; existing defaults and frozen identities are unchanged.
+    '957d2270ade21034e96fe681b98b21c5fffd03b1b54051c7f51b36bc0bdeab69',
   ]),
   // managed-delegation-concurrency needs both provider binaries.
   'apps/desktop-app/tests/performance/run.mjs': Object.freeze([
@@ -3676,6 +3719,12 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     '606bae162cf63f33d16974dc1dced465d2157246f8e0080ed0656060ef663b43',
     // PR #5080 builds a failed scenario's record in the diagnostics helper.
     '8a4a81ff70a7ed3b76e8a053d7f27e34491cc1887940e337683abae4ec7c57ac',
+    // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+    // refresh-rate pairing).
+    '7e27a484c450db4ac878510fc1f9bab4f3d906fd3531e334218cdc08c91f8ff0',
+    // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
+    // report; existing defaults and frozen identities are unchanged.
+    '765894b471ec94f53ac46a826b07e1dc7ab9982c8d188f6864f93eaa2b9defe0',
   ]),
   // PR #5080 keeps window-selection evidence on a failed scenario's record.
   'apps/desktop-app/tests/performance/scenario-failure-diagnostics.mjs':
@@ -3926,12 +3975,23 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     '5ce7f3372b875bde241a04b8d3a3e5ccd8097b324ea355c8c43155b703f5cb3d',
     // CAN-4607 compares daemon treatment arms outside workload `config`.
     '9a1244c24490a6a9b4586c5817ffe84a3eb14b996168645c05d83ff6f42d5ac0',
+    // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+    // refresh-rate pairing).
+    '929c440d899d352662402387b7b2ed500031ca0d611d93a4c94facf3a3c40221',
   ]),
   // CAN-3753 local smoke acceptance.
   'apps/desktop-app/tests/performance/results.mjs': Object.freeze([
     '8ecee0dbc867d0be65bb0f00d583284c879cf4ed7d591319dd90ea12deeade71',
     // CAN-4899 adds the startup-settle quit timing metric.
     '10b4c5710e941777f72e9649ebf5d684edd42694099ed86d2a4f4abf6c2204c6',
+  ]),
+  // The 120 Hz frame report (frame-smoothness scenario, frame windows,
+  // refresh-rate pairing).
+  'apps/desktop-app/tests/performance/monitor.mjs': Object.freeze([
+    'f1a2da5367253ac41fb590b607ee6fda8f2f2896f8e1912961377889410f376b',
+    // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
+    // report; existing defaults and frozen identities are unchanged.
+    'cbdfd30337304ea951e4b08b7322e8fa22992899d7c01f945fba3645698c1584',
   ]),
 });
 // CAN-3533 adds curated automation routes to the cloud fixture. Keep the

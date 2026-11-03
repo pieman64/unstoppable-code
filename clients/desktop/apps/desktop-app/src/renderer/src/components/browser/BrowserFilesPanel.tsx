@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type { BrowserTransfer } from '@canopy/desktop-shared/types';
-import { Button } from '@canopy/ui-shared';
 import { useBrowserStore } from '@/stores/browserStore';
 import { BrowserTransferRow } from './BrowserTransferRow';
 import { transferStoppedAnnouncement } from './browserTransferFormat';
+import { ErrorBanner, ErrorState } from '@canopy/ui-shared/components';
 
 interface BrowserFilesPanelProps {
   browserId: string;
 }
 
-type LoadState = 'loading' | 'ready' | 'failed';
+type LoadState = 'loading' | 'ready' | 'failed' | 'retrying';
 
 const EMPTY: BrowserTransfer[] = [];
 
@@ -25,9 +25,13 @@ export function BrowserFilesPanel({
   const hydrateTransfers = useBrowserStore((s) => s.hydrateTransfers);
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const announcement = useStoppedTransferAnnouncement(transfers);
+  const failed = loadState === 'failed' || loadState === 'retrying';
 
   const load = useCallback((): void => {
-    setLoadState('loading');
+    // A retry keeps the failure on screen until it settles.
+    setLoadState((current) =>
+      current === 'failed' || current === 'retrying' ? 'retrying' : 'loading',
+    );
     void hydrateTransfers(browserId)
       .then(() => setLoadState('ready'))
       .catch(() => setLoadState('failed'));
@@ -45,17 +49,22 @@ export function BrowserFilesPanel({
       <div role="status" className="sr-only">
         {announcement}
       </div>
-      {loadState === 'failed' && (
-        <div className="flex items-center gap-2 border-b px-2 py-1.5 text-xs">
-          <span role="alert" className="min-w-0 flex-1 fg-destructive">
-            Couldn't load downloads.
-          </span>
-          <Button variant="secondary" size="compact" onClick={load}>
-            Retry
-          </Button>
-        </div>
+      {failed && transfers.length > 0 && (
+        <ErrorBanner
+          className="m-2"
+          error="Couldn't load downloads."
+          onRetry={load}
+          retrying={loadState === 'retrying'}
+        />
       )}
-      {transfers.length > 0 ? (
+      {failed && transfers.length === 0 ? (
+        <ErrorState
+          space="panel"
+          message="Couldn't load downloads."
+          onRetry={load}
+          retrying={loadState === 'retrying'}
+        />
+      ) : transfers.length > 0 ? (
         <ul aria-label="Downloads" className="min-h-0 flex-1 overflow-auto">
           {transfers.map((transfer) => (
             <BrowserTransferRow

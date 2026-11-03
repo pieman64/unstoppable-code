@@ -2,6 +2,7 @@ import { brandText } from '@/lib/brand';
 
 export const MCP_PORT_VALIDATION_ERROR = 'Enter a port from 1 to 65535.';
 export const MCP_SAVE_ERROR_FALLBACK = 'Could not save MCP proxy settings.';
+export const MCP_PROXY_ERROR_COPY = "The MCP proxy couldn't start.";
 export const MCP_SAVED_TEXT = 'MCP proxy settings saved.';
 
 export const MCP_HTTP_AUTH_HEADING = 'HTTP MCP server auth';

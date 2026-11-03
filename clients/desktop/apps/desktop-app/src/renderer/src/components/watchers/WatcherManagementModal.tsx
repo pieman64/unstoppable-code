@@ -17,10 +17,15 @@ import {
   useState,
   type JSX,
 } from 'react';
+import { Fact, FactList } from '@canopy/ui-shared/components';
 import {
+  ChoiceField,
   DialogModal,
   ExecutionActionButton,
+  FormField,
   OverlayScrollArea,
+  ErrorBanner,
+  TextArea,
 } from '@canopy/ui-shared/components';
 import { useShallow } from 'zustand/react/shallow';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -288,6 +293,7 @@ export function WatcherManagementModal({
 
   return (
     <DialogModal
+      inset="flush"
       title={title}
       onClose={onClose}
       ownerDocument={modalDocument}
@@ -331,13 +337,13 @@ export function WatcherManagementModal({
                     dataTestId="watcher-management-add-recipient"
                   />
                 </div>
-                <textarea
+                <TextArea
+                  aria-label="Follow-up instruction (optional)"
                   value={addFollowUp}
                   onChange={(event): void => setAddFollowUp(event.target.value)}
                   placeholder="Optional follow-up instruction for the notified chat…"
                   rows={2}
                   data-testid="watcher-management-add-followup"
-                  className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
                 />
                 <div className="flex items-center justify-between gap-2">
                   {addError ? (
@@ -416,80 +422,66 @@ export function WatcherManagementModal({
                               {localWatcherProgressLabel(watcher)}
                             </div>
                           )}
-                          <dl className="mt-2 grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
-                            <div className="contents">
-                              <dt className="fg-tertiary">Watching</dt>
-                              <dd className="min-w-0 break-words fg-primary">
-                                <span
-                                  className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
-                                >
-                                  {target.title}
+                          <FactList
+                            labelWidth="6.5rem"
+                            columnGap="3"
+                            rowGap="1"
+                            placement="mt-2"
+                          >
+                            <Fact label="Watching">
+                              <span
+                                className={`${watcherTitleReplayClass(watcher.target)} font-medium`}
+                              >
+                                {target.title}
+                              </span>
+                              {target.subtitle && (
+                                <span className="ml-1 fg-secondary">
+                                  · {target.subtitle}
                                 </span>
-                                {target.subtitle && (
-                                  <span className="ml-1 fg-secondary">
-                                    · {target.subtitle}
+                              )}
+                            </Fact>
+                            <Fact
+                              label="Subscribed chat"
+                              dataTestId={`watcher-management-destination-${watcher.id}`}
+                            >
+                              {destinationLabel}
+                            </Fact>
+                            {owner && (
+                              <Fact
+                                label="Delegate"
+                                dataTestId={`watcher-management-owner-${watcher.id}`}
+                              >
+                                {owner.name}
+                                {owner.detail && (
+                                  <span className="fg-secondary">
+                                    {` · ${owner.detail}`}
                                   </span>
                                 )}
-                              </dd>
-                            </div>
-                            <div className="contents">
-                              <dt className="fg-tertiary">Subscribed chat</dt>
-                              <dd
-                                className="min-w-0 break-words fg-primary"
-                                data-testid={`watcher-management-destination-${watcher.id}`}
-                              >
-                                {destinationLabel}
-                              </dd>
-                            </div>
-                            {owner && (
-                              <div className="contents">
-                                <dt className="fg-tertiary">Delegate</dt>
-                                <dd
-                                  className="min-w-0 break-words fg-primary"
-                                  data-testid={`watcher-management-owner-${watcher.id}`}
-                                >
-                                  {owner.name}
-                                  {owner.detail && (
-                                    <span className="fg-secondary">
-                                      {` · ${owner.detail}`}
-                                    </span>
-                                  )}
-                                </dd>
-                              </div>
+                              </Fact>
                             )}
-                            <div className="contents">
-                              <dt className="fg-tertiary">Created</dt>
-                              <dd className="min-w-0 break-words fg-primary">
-                                {formatRelativeTime(watcher.createdAt)}
-                              </dd>
-                            </div>
-                            <div className="contents">
-                              <dt className="fg-tertiary">Status</dt>
-                              <dd
-                                className="min-w-0 break-words fg-primary"
-                                data-testid={`watcher-management-status-${watcher.id}`}
-                              >
-                                {watcherStatusLabelWithFailure(
-                                  watcher.status,
-                                  watcher.failureKind,
-                                )}
-                              </dd>
-                            </div>
+                            <Fact label="Created">
+                              {formatRelativeTime(watcher.createdAt)}
+                            </Fact>
+                            <Fact
+                              label="Status"
+                              dataTestId={`watcher-management-status-${watcher.id}`}
+                            >
+                              {watcherStatusLabelWithFailure(
+                                watcher.status,
+                                watcher.failureKind,
+                              )}
+                            </Fact>
                             {watcher.status === 'delivery_failed' &&
                               watcher.deliveryError && (
-                                <div className="contents">
-                                  <dt className="fg-tertiary">
-                                    Delivery error
-                                  </dt>
-                                  <dd
-                                    className="min-w-0 break-words fg-destructive"
-                                    data-testid={`watcher-management-delivery-error-${watcher.id}`}
-                                  >
-                                    {watcher.deliveryError}
-                                  </dd>
-                                </div>
+                                <Fact
+                                  label="Delivery error"
+                                  valueTone="destructive"
+                                  dataTestId={`watcher-management-delivery-error-${watcher.id}`}
+                                >
+                                  {watcher.deliveryError}
+                                </Fact>
                               )}
-                          </dl>
+                          </FactList>
                           {github &&
                             (github.filters.length > 0 ||
                               github.sample.length > 0) && (
@@ -543,19 +535,20 @@ export function WatcherManagementModal({
                             <div className="mt-2 text-xs">
                               {editingId === watcher.id ? (
                                 <div className="flex flex-col gap-1">
-                                  <span className="fg-secondary">
-                                    Follow-up instruction
-                                  </span>
-                                  <textarea
-                                    value={editText}
-                                    onChange={(event): void =>
-                                      setEditText(event.target.value)
-                                    }
-                                    rows={2}
-                                    placeholder="Instruction for the notified chat…"
-                                    data-testid={`watcher-management-edit-followup-${watcher.id}`}
-                                    className="focus-ring w-full resize-none rounded-md border bg-popover px-2 py-1.5 text-xs fg-primary placeholder:fg-secondary"
-                                  />
+                                  <FormField label="Follow-up instruction">
+                                    {(control) => (
+                                      <TextArea
+                                        {...control}
+                                        value={editText}
+                                        onChange={(event): void =>
+                                          setEditText(event.target.value)
+                                        }
+                                        rows={2}
+                                        placeholder="Instruction for the notified chat…"
+                                        data-testid={`watcher-management-edit-followup-${watcher.id}`}
+                                      />
+                                    )}
+                                  </FormField>
                                   {editError && (
                                     <span
                                       role="alert"
@@ -655,18 +648,14 @@ export function WatcherManagementModal({
                           </div>
                           {isConfirming && (
                             <div className="flex flex-col items-end gap-0.5">
-                              <label className="inline-flex items-center gap-1.5 text-2xs fg-secondary">
-                                <input
-                                  type="checkbox"
-                                  checked={notifySubscriber}
-                                  data-testid={`watcher-management-notify-${watcher.id}`}
-                                  onChange={(event): void =>
-                                    setNotifySubscriber(event.target.checked)
-                                  }
-                                  className="h-3 w-3 rounded border bg-popover fg-accent focus-ring"
-                                />
-                                Notify subscribing chat
-                              </label>
+                              <ChoiceField
+                                label="Notify subscribing chat"
+                                checked={notifySubscriber}
+                                data-testid={`watcher-management-notify-${watcher.id}`}
+                                onChange={(event): void =>
+                                  setNotifySubscriber(event.target.checked)
+                                }
+                              />
                               <span className="max-w-64 text-right text-3xs fg-secondary">
                                 Sends a final watcher-deleted message to the
                                 chat that subscribed to this watcher.
@@ -681,22 +670,18 @@ export function WatcherManagementModal({
                             </div>
                           )}
                           {deleteError && (
-                            <span
-                              role="alert"
-                              data-testid={`watcher-management-delete-error-${watcher.id}`}
-                              className="text-2xs fg-destructive"
-                            >
-                              Could not delete watcher.
-                            </span>
+                            <ErrorBanner
+                              className=""
+                              testId={`watcher-management-delete-error-${watcher.id}`}
+                              error="Could not delete watcher."
+                            />
                           )}
                           {rowJumpError && (
-                            <span
-                              role="alert"
-                              data-testid={`watcher-management-jump-error-${watcher.id}`}
-                              className="text-2xs fg-destructive"
-                            >
-                              {rowJumpError}
-                            </span>
+                            <ErrorBanner
+                              className=""
+                              testId={`watcher-management-jump-error-${watcher.id}`}
+                              error={rowJumpError}
+                            />
                           )}
                         </div>
                       </div>

@@ -598,6 +598,7 @@ export function CoordinatorLabPage(): JSX.Element {
 
         {lightbox ? (
           <DialogModal
+            inset="flush"
             onClose={() => setLightbox(null)}
             title={isVideoPath(lightbox.path) ? 'Video' : 'Screenshot'}
             subtitle={

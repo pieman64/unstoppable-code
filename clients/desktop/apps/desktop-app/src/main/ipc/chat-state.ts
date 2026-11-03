@@ -1,4 +1,7 @@
-import { ChatPlanReviewApprovalSchema } from '@canopy/protocol/portal';
+import {
+  TrackedPlanImplementationInputSchema,
+  ChatPlanReviewApprovalSchema,
+} from '@canopy/protocol/portal';
 import { parseChatAgentSentInfo } from '@canopy/protocol/portal';
 import { parseAgentSenderProvenance } from '../agent-messaging/sender-context';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
@@ -496,6 +499,7 @@ const PATCH_KEYS = new Set([
   'autoArchive',
   'pendingPlanExit',
   'pendingPlanExitRequestId',
+  'trackedPlanImplementation',
   'trackedPlanId',
   'trackedPlanSource',
   'trackedPlanReviewStatus',
@@ -587,12 +591,18 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'selectedRepoId',
     'modelConfig',
     'planReviewApproval',
+    'trackedPlanImplementation',
     'planMode',
     'codexProposalMode',
     'inputMode',
     'fileReferences',
     'attachmentPaths',
     'attachmentPromptContexts',
+  ]),
+  'chat.reject_plan_implementation_delivery': new Set([
+    'type',
+    'chatId',
+    'userMessageId',
   ]),
   'chat.commit_terminal_initial_prompt': new Set([
     'type',
@@ -1178,6 +1188,7 @@ function validateCommand(
     'chat.mark_unread': ['chatId'],
     'chat.dismiss_attention': ['chatId'],
     'chat.send_message': ['chatId', 'userMessageId'],
+    'chat.reject_plan_implementation_delivery': ['chatId', 'userMessageId'],
     'chat.commit_terminal_initial_prompt': [
       'chatId',
       'userMessageId',
@@ -1439,6 +1450,18 @@ function validateCommand(
     }
   }
   if (commandType === 'chat.send_message') {
+    if (command.trackedPlanImplementation !== undefined) {
+      const parsed = TrackedPlanImplementationInputSchema.safeParse(
+        command.trackedPlanImplementation,
+      );
+      if (
+        !parsed.success ||
+        parsed.data.userMessageId !== command.userMessageId
+      )
+        failInvalidRequest(
+          'command.trackedPlanImplementation must identify the sent message.',
+        );
+    }
     if (
       command.planReviewApproval !== undefined &&
       !ChatPlanReviewApprovalSchema.safeParse(command.planReviewApproval)
@@ -1850,6 +1873,16 @@ function validateCommand(
         'command.patch.pendingPlanExitRequestId',
       );
     }
+    if (
+      command.patch.trackedPlanImplementation !== undefined &&
+      command.patch.trackedPlanImplementation !== null &&
+      !TrackedPlanImplementationInputSchema.safeParse(
+        command.patch.trackedPlanImplementation,
+      ).success
+    )
+      failInvalidRequest(
+        'command.patch.trackedPlanImplementation must contain only attempt identity.',
+      );
     const trackedPlanId = command.patch.trackedPlanId;
     if (trackedPlanId !== undefined && trackedPlanId !== null) {
       readBoundedString(trackedPlanId, 'command.patch.trackedPlanId');

@@ -123,6 +123,7 @@ import {
   validateResolvedExecutionTarget,
 } from './pipeline-target-resolver';
 import { validatePipelineScopes } from './pipeline-scope-validation';
+import { claimPipelineOwner, pipelineOwnerFields } from './owner-fence';
 import {
   consumedStatusReasonIds,
   notePipelineLedgerResuming,
@@ -389,32 +390,7 @@ async function loadSharedPipelineSnapshotFromCache(
   return parsePipelineText(rawPipeline);
 }
 
-function getErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return undefined;
-  }
-
-  const { code } = error;
-  return typeof code === 'string' ? code : undefined;
-}
-
-export function isKnownOrphanedExecution(state: ExecutionState): boolean {
-  if (
-    state.owner_pid === undefined ||
-    !Number.isInteger(state.owner_pid) ||
-    state.owner_pid <= 0 ||
-    state.owner_pid === process.pid
-  ) {
-    return false;
-  }
-
-  try {
-    process.kill(state.owner_pid, 0);
-    return false;
-  } catch (error) {
-    return getErrorCode(error) === 'ESRCH';
-  }
-}
+export { isKnownOrphanedExecution } from './owner-fence';
 
 function isJobTerminal(job: JobResult): boolean {
   return ['success', 'failure', 'cancelled', 'skipped'].includes(job.status);
@@ -1132,7 +1108,7 @@ export function createInitialState(
     job_groups: materializedJobs.jobGroups,
     pending_pauses: [],
     started_at: new Date().toISOString(),
-    owner_pid: process.pid,
+    ...pipelineOwnerFields(),
     cwd: options.cwd,
     scope: options.scope,
     target: options.target,
@@ -2978,7 +2954,7 @@ export async function resumePipeline(
     loadedState,
     options,
   );
-  recoveredState.owner_pid = process.pid;
+  claimPipelineOwner(recoveredState);
   recoveredState.env = withExecutionOutputDirEnv(
     {
       ...stripReplayManagedEnv(loadedState.env),
@@ -3095,7 +3071,7 @@ export async function retryPipelineExecution(
     loadedState,
     options,
   );
-  retryState.owner_pid = process.pid;
+  claimPipelineOwner(retryState);
   retryState.env = withExecutionOutputDirEnv(
     {
       ...stripReplayManagedEnv(loadedState.env),
@@ -3177,7 +3153,7 @@ export async function retryMatrixJobExecution(
     loadedState,
     options,
   );
-  retryState.owner_pid = process.pid;
+  claimPipelineOwner(retryState);
   retryState.env = withExecutionOutputDirEnv(
     {
       ...stripReplayManagedEnv(loadedState.env),

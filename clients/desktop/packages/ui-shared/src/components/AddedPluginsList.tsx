@@ -2,6 +2,7 @@ import type { JSX, ReactNode } from 'react';
 import { McpServerLogo } from './McpServerLogo';
 import { ActivityItemRow } from './ActivityItemRow';
 import { ExecutionActionButton } from './ExecutionActionButton';
+import { ErrorBanner } from './StatusBlocks';
 export interface AddedPluginItem {
   id: string;
   name: string;
@@ -69,11 +70,7 @@ export function AddedPluginsList({
           </ActivityItemRow>
         ))}
       </div>
-      {error && (
-        <p role="alert" className="text-xs fg-destructive">
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error} />
     </div>
   );
 }

@@ -6,7 +6,6 @@ import {
   type JSX,
   type MouseEvent,
 } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   DraggableAttributes,
   DraggableSyntheticListeners,
@@ -15,6 +14,7 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   FloatingMenu,
+  FloatingMenuPointAnchor,
   WorkspaceIconDisclosureSwap,
   WorkspaceSectionHeader,
 } from '@canopy/ui-shared/components';
@@ -273,97 +273,94 @@ export const ProjectHeader = memo(function ProjectHeader({
         }}
         dragHandleSlot={dragHandleSlot}
       />
-      {contextMenu &&
-        headerRef.current?.ownerDocument.body &&
-        createPortal(
-          <>
-            <span
-              ref={contextMenuAnchorRef}
-              aria-hidden="true"
-              className="pointer-events-none fixed h-0 w-0"
-              style={{ left: contextMenu.x, top: contextMenu.y }}
-            />
-            <FloatingMenu
-              open
-              onOpenChange={(open): void => {
-                if (!open) closeContextMenu();
-              }}
-              anchorRef={contextMenuAnchorRef}
-              returnFocusRef={headerRef}
-              placement="bottom-left"
-              motion="none"
-              className="w-max min-w-40 max-w-[calc(100vw-1rem)]"
-              aria-label="Project actions"
-              data-testid={`workspace-session-context-menu${testIdSuffix}`}
-              onContextMenu={(event): void => event.preventDefault()}
-            >
-              {/* The right-click menu carries the workspace's actions —
+      {contextMenu && headerRef.current?.ownerDocument.body && (
+        <>
+          <FloatingMenuPointAnchor
+            ref={contextMenuAnchorRef}
+            x={contextMenu.x}
+            y={contextMenu.y}
+            ownerDocument={headerRef.current.ownerDocument}
+          />
+          <FloatingMenu
+            open
+            onOpenChange={(open): void => {
+              if (!open) closeContextMenu();
+            }}
+            anchorRef={contextMenuAnchorRef}
+            returnFocusRef={headerRef}
+            placement="bottom-left"
+            motion="none"
+            className="w-max min-w-40 max-w-[calc(100vw-1rem)]"
+            aria-label="Project actions"
+            data-testid={`workspace-session-context-menu${testIdSuffix}`}
+            onContextMenu={(event): void => event.preventDefault()}
+          >
+            {/* The right-click menu carries the workspace's actions —
                   the same ones the header's hover controls expose. */}
-              <SidebarPinMenuItem
-                testId="workspace-toggle-pin-menu-item"
-                pinned={workspacePinned}
-                onToggle={(pinned): void => {
-                  closeContextMenu();
-                  void setWorkspacePinned(projectId, pinned);
-                }}
-              />
+            <SidebarPinMenuItem
+              testId="workspace-toggle-pin-menu-item"
+              pinned={workspacePinned}
+              onToggle={(pinned): void => {
+                closeContextMenu();
+                void setWorkspacePinned(projectId, pinned);
+              }}
+            />
+            <DropdownMenuItem
+              data-testid="workspace-new-task-menu-item"
+              disabled={createWorktreeDisabled}
+              title={createWorktreeDisabled ? 'Add repos first' : undefined}
+              onClick={(): void => {
+                if (createWorktreeDisabled) {
+                  return;
+                }
+                closeContextMenu();
+                handleCreateWorktree();
+              }}
+            >
+              <DropdownMenuItemIcon>
+                <AssignmentAddIcon />
+              </DropdownMenuItemIcon>
+              <span className="truncate">New task</span>
+            </DropdownMenuItem>
+            {onOpenSettings !== undefined && (
               <DropdownMenuItem
-                data-testid="workspace-new-task-menu-item"
-                disabled={createWorktreeDisabled}
-                title={createWorktreeDisabled ? 'Add repos first' : undefined}
+                data-testid="workspace-settings-menu-item"
                 onClick={(): void => {
-                  if (createWorktreeDisabled) {
-                    return;
-                  }
                   closeContextMenu();
-                  handleCreateWorktree();
+                  handleOpenSettings();
                 }}
               >
                 <DropdownMenuItemIcon>
-                  <AssignmentAddIcon />
+                  <SettingsIcon />
                 </DropdownMenuItemIcon>
-                <span className="truncate">New task</span>
+                <span className="truncate">Project settings</span>
               </DropdownMenuItem>
-              {onOpenSettings !== undefined && (
-                <DropdownMenuItem
-                  data-testid="workspace-settings-menu-item"
-                  onClick={(): void => {
-                    closeContextMenu();
-                    handleOpenSettings();
-                  }}
-                >
-                  <DropdownMenuItemIcon>
-                    <SettingsIcon />
-                  </DropdownMenuItemIcon>
-                  <span className="truncate">Project settings</span>
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                data-testid="workspace-import-session-menu-item"
-                onClick={(): void => {
-                  useCloudConnectGateStore.getState().requestConnect({}, () => {
-                    openImportSessionModal(projectId);
-                  });
-                }}
-              >
-                <DropdownMenuItemIcon>
-                  <DownloadIcon />
-                </DropdownMenuItemIcon>
-                <span className="truncate">Import session…</span>
-              </DropdownMenuItem>
-              <SidebarSortMenuItems
-                mode={workspaceItemSortMode}
-                testIdPrefix="workspace-item-sort"
-                label="Sort tasks by"
-                onSelect={(mode): void => {
-                  closeContextMenu();
-                  void setWorkspaceItemSortMode(projectId, mode);
-                }}
-              />
-            </FloatingMenu>
-          </>,
-          headerRef.current.ownerDocument.body,
-        )}
+            )}
+            <DropdownMenuItem
+              data-testid="workspace-import-session-menu-item"
+              onClick={(): void => {
+                useCloudConnectGateStore.getState().requestConnect({}, () => {
+                  openImportSessionModal(projectId);
+                });
+              }}
+            >
+              <DropdownMenuItemIcon>
+                <DownloadIcon />
+              </DropdownMenuItemIcon>
+              <span className="truncate">Import session…</span>
+            </DropdownMenuItem>
+            <SidebarSortMenuItems
+              mode={workspaceItemSortMode}
+              testIdPrefix="workspace-item-sort"
+              label="Sort tasks by"
+              onSelect={(mode): void => {
+                closeContextMenu();
+                void setWorkspaceItemSortMode(projectId, mode);
+              }}
+            />
+          </FloatingMenu>
+        </>
+      )}
     </div>
   );
 });

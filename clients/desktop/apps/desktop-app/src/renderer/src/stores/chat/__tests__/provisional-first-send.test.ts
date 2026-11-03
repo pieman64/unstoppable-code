@@ -13,7 +13,6 @@ import {
   isProvisionalFirstSendAdmissionPending,
   presentProvisionalFirstSendOnTab,
   reconcileProvisionalTerminalFirstSend,
-  resumeQueuedProvisionalFirstSend,
   retryFailedProvisionalFirstSendOnTab,
   startingTurnUserMessageId,
   withdrawProvisionalFirstSendFromTab,
@@ -342,94 +341,93 @@ it('shows the starting status until the send queues or the chat errors', () => {
   expect(startingTurnUserMessageId(starter())).toBeUndefined();
 });
 
-it('presents a send to a worktree still setting up as its queue row, never a starting turn', () => {
-  const fileReferences = [
-    {
-      absolutePath: '/repo/src/deck.ts',
-      displayPath: 'src/deck.ts',
-      kind: 'file' as const,
-    },
-  ];
-  const tab = presentProvisionalFirstSendOnTab(starter(), {
-    ...input,
-    fileReferences,
-    attachmentPaths: ['deck.png'],
-    queuedForSetup: true,
-  });
-  if (!tab) throw new Error('expected the starter to accept the first send');
-
+it('presents a send to a worktree still setting up as a sent, starting turn', () => {
+  // Main holds the send until the setup finishes; the renderer shows it sent.
+  const tab = presented();
   const view = toActiveTranscriptView(tab);
-  expect(view.messages).toEqual([]);
-  expect(view.pendingTurnTimerId).toBe(tab.pendingTurn?.timerMessage.id);
-  expect(view.startingTurnUserMessageId).toBeUndefined();
-  expect(view.queuedForSetup).toBe(true);
-  expect(view.queuedMessages).toEqual([
-    {
-      text: input.text,
-      fileReferences,
-      attachmentPaths: ['deck.png'],
-      pendingSend: true,
-    },
+  expect(view.queuedMessages).toEqual([]);
+  expect(view.startingTurnUserMessageId).toBe(input.userMessageId);
+  expect(view.messages.map((message) => message.id)).toEqual([
+    input.userMessageId,
+    tab.pendingTurn?.timerMessage.id,
   ]);
-  // The row keeps its identity across unrelated tab updates.
-  expect(
-    toActiveTranscriptView({ ...tab, thinkingLevel: 'high' }).queuedMessages[0],
-  ).toBe(view.queuedMessages[0]);
-  // Preparation still guards the composer until the real row takes over.
-  expect(toActiveComposerView(tab).firstSendPreparing).toBe(true);
-  expect(toActiveComposerView(tab).queuedMessageCount).toBe(1);
-
-  // `sendMessage` adds the setup row and hands off in one update.
-  const row = {
-    text: input.text,
-    fileReferences,
-    attachmentPaths: ['deck.png'],
-    dispatchOptions: { userMessageId: input.userMessageId },
-  };
-  const queued: ChatTab = {
-    ...handOffProvisionalFirstSendToQueue(
-      { ...tab, queuedMessages: [row] },
-      input.userMessageId,
-    ),
-    queuedForSetup: true,
-  };
-  const queuedView = toActiveTranscriptView(queued);
-  expect(queuedView.messages).toEqual([]);
-  expect(queuedView.startingTurnUserMessageId).toBeUndefined();
-  expect(queuedView.queuedForSetup).toBe(true);
-  expect(queuedView.queuedMessages).toEqual([row]);
-
-  // Setup finished: the flushed row starts its turn as usual.
-  const resumed = resumeQueuedProvisionalFirstSend(
-    { ...queued, queuedMessages: [], queuedForSetup: undefined },
-    row,
-  );
-  const resumedView = toActiveTranscriptView(resumed);
-  expect(resumedView.queuedMessages).toEqual([]);
-  expect(resumedView.startingTurnUserMessageId).toBe(input.userMessageId);
-  expect(
-    resumedView.messages.some((message) => message.id === input.userMessageId),
-  ).toBe(true);
 });
 
-it('shows the starting turn once a setup-pending send is dispatched after setup raced to ready', () => {
-  const tab = presentProvisionalFirstSendOnTab(starter(), {
-    ...input,
-    queuedForSetup: true,
-  });
-  if (!tab?.provisionalFirstSend) throw new Error('Missing first send');
-  const dispatched: ChatTab = {
-    ...tab,
-    provisionalFirstSend: { ...tab.provisionalFirstSend, phase: 'dispatched' },
+describe('a canonical starting turn the renderer did not present', () => {
+  const userMessage = {
+    id: 'msg-held',
+    role: 'user' as const,
+    timestamp: 5_000,
+    blocks: [{ type: 'text' as const, text: 'Fix the deck' }],
+  };
+  const runtime = {
+    status: 'starting' as const,
+    activeTurn: { userMessageId: 'msg-held', startedAt: 5_000 },
   };
 
-  const view = toActiveTranscriptView(dispatched);
-  expect(view.queuedMessages).toEqual([]);
-  expect(view.queuedForSetup).toBeUndefined();
-  expect(view.startingTurnUserMessageId).toBe(input.userMessageId);
-  expect(view.messages.map((message) => message.id)).toContain(
-    input.userMessageId,
-  );
+  it('marks the held prompt starting and gives it a timer slot', () => {
+    const tab = starter({ messages: [userMessage], status: 'streaming' });
+    const view = toActiveTranscriptView(tab, runtime);
+    expect(view.startingTurnUserMessageId).toBe('msg-held');
+    expect(view.startingTurnPresentationKey).toBeUndefined();
+    expect(view.messages.map((message) => message.id)).toEqual([
+      'msg-held',
+      'msg-held:starting-timer',
+    ]);
+    expect(view.messages[1]?.blocks).toEqual([
+      { type: 'turn_timer', startedAt: 5_000, completedAt: null },
+    ]);
+    // The projection keeps its identity while nothing changes.
+    expect(toActiveTranscriptView(tab, runtime).messages).toBe(view.messages);
+  });
+
+  it('adds no timer when the canonical turn already has one', () => {
+    const timer = {
+      id: 'timer-held',
+      role: 'system' as const,
+      timestamp: 5_000,
+      blocks: [
+        { type: 'turn_timer' as const, startedAt: 5_000, completedAt: null },
+      ],
+    };
+    const tab = starter({ messages: [userMessage, timer] });
+    const view = toActiveTranscriptView(tab, runtime);
+    expect(view.messages.map((message) => message.id)).toEqual([
+      'msg-held',
+      'timer-held',
+    ]);
+    expect(view.startingTurnUserMessageId).toBe('msg-held');
+  });
+
+  it('is not starting once the turn streams or the chat errors', () => {
+    const tab = starter({ messages: [userMessage] });
+    expect(
+      toActiveTranscriptView(tab, { ...runtime, status: 'streaming' })
+        .startingTurnUserMessageId,
+    ).toBeUndefined();
+    expect(
+      toActiveTranscriptView({ ...tab, status: 'error' }, runtime)
+        .startingTurnUserMessageId,
+    ).toBeUndefined();
+  });
+
+  it('renders one bubble when the provisional send is the held turn (D11)', () => {
+    const tab = presented();
+    const view = toActiveTranscriptView(tab, {
+      status: 'starting',
+      activeTurn: { userMessageId: input.userMessageId, startedAt: 1_200 },
+    });
+    expect(view.startingTurnUserMessageId).toBe(input.userMessageId);
+    expect(view.startingTurnPresentationKey).toBe(input.userMessageId);
+    expect(
+      view.messages.filter((message) => message.id === input.userMessageId),
+    ).toHaveLength(1);
+    expect(
+      view.messages.filter((message) =>
+        message.blocks.some((block) => block.type === 'turn_timer'),
+      ),
+    ).toHaveLength(1);
+  });
 });
 
 it('presents an attachment-only submission without inventing question text', () => {

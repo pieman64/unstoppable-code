@@ -15,10 +15,12 @@ import {
 } from '@canopy/ui-shared/icons';
 import {
   Button,
+  FormField,
   TextInput,
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsFormSkeleton,
+  StatusLabel,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -40,7 +42,11 @@ import {
 import { useSettingsClient, useSettingsNavigation } from '../host';
 import { TwoFactorSetupPanel } from './two-factor-setup-panel';
 import { ApiKeysManager } from './api-keys-panel';
-import { useSettingsErrorCopy, type KnownSettingsError } from '../errors';
+import {
+  useSettingsErrorCopy,
+  type KnownSettingsError,
+  type SettingsFailure,
+} from '../errors';
 
 const SECURITY_ERROR_SCOPE = 'settings.account.security';
 const PASSWORD_SAVED = 'Password saved.';
@@ -82,7 +88,7 @@ export function SecurityPanel({
   const errorCopy = useSettingsErrorCopy(SECURITY_ERROR_SCOPE);
   const [status, setStatus] = useState<Status>('loading');
   const [data, setData] = useState<AuthSourcesResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -98,7 +104,7 @@ export function SecurityPanel({
       setStatus('ready');
     } catch (err: unknown) {
       setStatus('error');
-      setError(errorCopy.loadCopy(err));
+      setError(errorCopy.loadFailure(err));
     }
   }, [client, errorCopy]);
 
@@ -146,7 +152,8 @@ export function SecurityPanel({
 
       <ErrorBanner
         className=""
-        error={status === 'error' ? error : null}
+        error={status === 'error' ? error?.copy : null}
+        details={error?.details}
         onRetry={retry}
       />
 
@@ -279,7 +286,7 @@ export function AuthSourceRow({
   const errorCopy = useSettingsErrorCopy(SECURITY_ERROR_SCOPE);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
 
   const handleRemove = async (): Promise<void> => {
     setRemoving(true);
@@ -291,7 +298,7 @@ export function AuthSourceRow({
       });
     } catch (err: unknown) {
       setError(
-        errorCopy.actionCopy(err, {
+        errorCopy.actionFailure(err, {
           action: 'remove this sign-in method',
           known: REMOVE_AUTH_SOURCE_KNOWN_ERRORS,
         }),
@@ -312,8 +319,8 @@ export function AuthSourceRow({
             Linked {formatLinkedDate(source.linkedAt)}
           </p>
           {error && (
-            <p className="mt-1 text-xs fg-destructive" role="alert">
-              {error}
+            <p className="mt-1" role="alert">
+              <StatusLabel size="xs">{error.copy}</StatusLabel>
             </p>
           )}
         </div>
@@ -385,7 +392,7 @@ export function PasswordSection({
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<SettingsFailure | null>(null);
   const [saved, setSaved] = useState(false);
 
   const close = (): void => {
@@ -414,7 +421,7 @@ export function PasswordSection({
       close();
       onChanged();
     } catch (err: unknown) {
-      setError(errorCopy.actionCopy(err, { action: 'save the password' }));
+      setError(errorCopy.actionFailure(err, { action: 'save the password' }));
       setSubmitting(false);
     } finally {
       setSubmitting(false);
@@ -454,35 +461,37 @@ export function PasswordSection({
       className={`${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`}
     >
       {hasCredential && (
-        <label className="flex flex-col gap-1 text-s fg-secondary">
-          <span className="font-medium fg-primary">Current password</span>
+        <FormField label="Current password">
+          {(control) => (
+            <TextInput
+              {...control}
+              density="settings"
+              type="password"
+              required
+              autoComplete="current-password"
+              value={currentPassword}
+              onChange={(e) => setCurrentPassword(e.target.value)}
+              disabled={submitting}
+            />
+          )}
+        </FormField>
+      )}
+      <FormField label="New password">
+        {(control) => (
           <TextInput
+            {...control}
+            density="settings"
             type="password"
             required
-            autoComplete="current-password"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
             disabled={submitting}
           />
-        </label>
-      )}
-      <label className="flex flex-col gap-1 text-s fg-secondary">
-        <span className="font-medium fg-primary">New password</span>
-        <TextInput
-          type="password"
-          required
-          autoComplete="new-password"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          disabled={submitting}
-        />
-      </label>
+        )}
+      </FormField>
 
-      {error && (
-        <p className="text-s fg-destructive" role="alert">
-          {error}
-        </p>
-      )}
+      <ErrorBanner className="" error={error?.copy} details={error?.details} />
 
       <div className="flex items-center gap-2">
         <Button

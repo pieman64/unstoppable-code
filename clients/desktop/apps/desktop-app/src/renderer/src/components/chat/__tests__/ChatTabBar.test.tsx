@@ -1472,6 +1472,58 @@ describe('ChatTabBar file-tab hover path', () => {
     });
   }
 
+  it('names a pinned tab on hover with the shared hover card', async () => {
+    jest.useFakeTimers();
+    try {
+      window.api.getWorktreePath = jest
+        .fn()
+        .mockResolvedValue('/home/user/project/worktree');
+      seedFileTab('/home/user/project/worktree/src/index.ts');
+      const state = useChatStore.getState().worktreeChats['project/worktree'];
+      useChatStore.setState({
+        worktreeChats: {
+          'project/worktree': {
+            ...state,
+            tabs: state.tabs.map((tab) => ({ ...tab, pinned: true })),
+          },
+        },
+      });
+
+      await act(async () => {
+        root.render(createElement(ChatTabBar));
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const tab = container.querySelector<HTMLElement>(
+        '[data-testid="chat-tab-file-1"]',
+      );
+      expect(tab?.getAttribute('data-pinned')).toBe('true');
+      act(() => {
+        tab?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+      act(() => {
+        jest.advanceTimersByTime(200);
+      });
+      const card = document.body.querySelector('[role="tooltip"]');
+      expect(card?.textContent).toBe('src/index.ts');
+      expect(container.contains(card)).toBe(false);
+      act(() => {
+        tab?.dispatchEvent(
+          new MouseEvent('mouseout', {
+            bubbles: true,
+            relatedTarget: document.body,
+          }),
+        );
+        jest.advanceTimersByTime(500);
+      });
+      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('shows the worktree-relative path on a file tab inside the project', async () => {
     window.api.getWorktreePath = jest
       .fn()

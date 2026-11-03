@@ -112,12 +112,14 @@ function setInputValue(
   });
 }
 
-function setSelectValue(el: HTMLSelectElement, v: string): void {
-  const setter = nativeValueSetter(HTMLSelectElement.prototype);
-  act(() => {
-    setter?.call(el, v);
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-  });
+/** Opens a shared dropdown and picks the option with this label. */
+function chooseOption(trigger: HTMLElement, label: string): void {
+  act(() => trigger.click());
+  const option = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="option"]'),
+  ).find((candidate) => candidate.textContent === label);
+  if (!option) throw new Error(`Missing option ${label}`);
+  act(() => option.click());
 }
 
 function headerButton(container: HTMLElement, name: string): HTMLButtonElement {
@@ -249,9 +251,10 @@ describe('ModelAliasesEditor', () => {
 
     const modeSelect = container.querySelector(
       '[data-testid="model-alias-a-mode"]',
-    ) as HTMLSelectElement;
+    );
+    if (!(modeSelect instanceof HTMLElement)) throw new Error('Missing mode');
 
-    setSelectValue(modeSelect, 'inline');
+    chooseOption(modeSelect, 'Inline model');
     expect(lastChange?.[0].defaults).toEqual({ base: '' });
 
     // Choose a base model via the mocked picker.
@@ -262,21 +265,22 @@ describe('ModelAliasesEditor', () => {
     expect(lastChange?.[0].defaults).toEqual({ base: 'claude-sonnet-4-6' });
 
     // Select a plugin collection.
-    const pcSelect = Array.from(container.querySelectorAll('select')).find(
-      (s) => Array.from(s.options).some((o) => o.value === 'reviewers'),
-    ) as HTMLSelectElement;
-    setSelectValue(pcSelect, 'reviewers');
+    const pcSelect = Array.from(
+      container.querySelectorAll<HTMLElement>('[role="combobox"]'),
+    ).find((candidate) => candidate !== modeSelect);
+    if (!pcSelect) throw new Error('Missing plugin collection select');
+    chooseOption(pcSelect, 'Reviewers (reviewers)');
     expect(lastChange?.[0].defaults).toEqual({
       base: 'claude-sonnet-4-6',
       plugin_collection_id: 'reviewers',
     });
 
-    setSelectValue(modeSelect, 'agent');
+    chooseOption(modeSelect, 'Agent');
     expect(lastChange?.[0].defaults).toEqual({
       agent_id: 'agent_model_reviewer',
     });
 
-    setSelectValue(modeSelect, 'none');
+    chooseOption(modeSelect, 'No default');
     expect(lastChange?.[0].defaults).toBeUndefined();
     cleanup();
   });

@@ -105,9 +105,12 @@ export function registerAppAdvisorWatcherHandlers(
       sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
       sendChatWindowCommand: accessors.sendChatWindowCommand,
       deliverWatcherMessage: deliverWatcherMessageToChat,
-      onChange: (watchers: AppAdvisorWatcherSummary[]) => {
+      onChange: (
+        watchers: AppAdvisorWatcherSummary[],
+        completedGitHub: AppAdvisorWatcherSummary[] = [],
+      ) => {
         try {
-          emitPortalWatcherProjection(watchers);
+          emitPortalWatcherProjection([...watchers, ...completedGitHub]);
         } catch (error: unknown) {
           logMainProcessError('Portal watcher projection failed', error);
         }
