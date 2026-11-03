@@ -1,0 +1,677 @@
+{
+  "description": "CAN-4874 synthetic shell delta sequence. The client hydrates from an overview read at cursor 100, then receives these cursored portal.state.delta batches. Each batch lists the overview a fresh read returns after it, written by hand from the server cache rules (delete before upsert, parent constrains a removal only when nonempty, no cascade, chat_project rows never in the overview read, rows ordered by type then local id). Rows are synthetic test data.",
+  "initial": {
+    "cursor": 100,
+    "entities": [
+      {
+        "entityType": "workspace",
+        "localId": "ws-1",
+        "payload": {
+          "name": "Repository",
+          "type": "single-repo",
+          "order": 1
+        }
+      },
+      {
+        "entityType": "workspace",
+        "localId": "ws-cowork",
+        "payload": {
+          "name": "Cowork",
+          "type": "cowork",
+          "order": 2
+        }
+      },
+      {
+        "entityType": "worktree",
+        "localId": "wt-1",
+        "parentLocalId": "ws-1",
+        "payload": {
+          "workspaceLocalId": "ws-1",
+          "branch": "feature/koala",
+          "label": "koala",
+          "status": "active"
+        }
+      },
+      {
+        "entityType": "worktree",
+        "localId": "wt-2",
+        "parentLocalId": "ws-1",
+        "payload": {
+          "workspaceLocalId": "ws-1",
+          "branch": "feature/lynx",
+          "label": "lynx",
+          "status": "active",
+          "hasUnread": true
+        }
+      },
+      {
+        "entityType": "standalone_chat",
+        "localId": "sc-1",
+        "parentLocalId": "ws-cowork",
+        "payload": {
+          "projectLocalId": "ws-cowork",
+          "title": "Plan launch",
+          "lastMessageAt": "2026-10-25T10:00:00.000Z",
+          "hasActiveChat": true
+        }
+      },
+      {
+        "entityType": "standalone_chat",
+        "localId": "sc-2",
+        "parentLocalId": "ws-cowork",
+        "payload": {
+          "projectLocalId": "ws-cowork",
+          "title": "Write notes",
+          "lastMessageAt": "2026-10-25T09:00:00.000Z"
+        }
+      },
+      {
+        "entityType": "standalone_chat",
+        "localId": "sc-2",
+        "parentLocalId": "ws-other",
+        "payload": {
+          "projectLocalId": "ws-other",
+          "title": "Other notes",
+          "lastMessageAt": "2026-10-25T08:00:00.000Z"
+        }
+      },
+      {
+        "entityType": "chat_summary",
+        "localId": "chat-1",
+        "parentLocalId": "ws-1:wt-1",
+        "payload": {
+          "chatId": "chat-1",
+          "scope": "worktree",
+          "workspaceLocalId": "ws-1",
+          "worktreeLocalId": "wt-1",
+          "title": "First tab",
+          "order": 0,
+          "lastMessageAt": "2026-10-25T07:00:00.000Z"
+        }
+      },
+      {
+        "entityType": "chat_summary",
+        "localId": "chat-2",
+        "parentLocalId": "ws-1:wt-1",
+        "payload": {
+          "chatId": "chat-2",
+          "scope": "worktree",
+          "workspaceLocalId": "ws-1",
+          "worktreeLocalId": "wt-1",
+          "title": "Second tab",
+          "order": 1,
+          "lastMessageAt": "2026-10-25T07:30:00.000Z"
+        }
+      },
+      {
+        "entityType": "chat_summary",
+        "localId": "chat-3",
+        "parentLocalId": "ws-1:wt-2",
+        "payload": {
+          "chatId": "chat-3",
+          "scope": "worktree",
+          "workspaceLocalId": "ws-1",
+          "worktreeLocalId": "wt-2",
+          "title": "Lynx tab",
+          "hasUnread": true,
+          "lastMessageAt": "2026-10-25T06:00:00.000Z"
+        }
+      }
+    ]
+  },
+  "batches": [
+    {
+      "name": "active standalone chat activity",
+      "nextCursor": 105,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-105",
+          "cursor": 105,
+          "payload": {
+            "scope": "standalone_chat",
+            "target": {
+              "standaloneChatLocalId": "sc-1"
+            },
+            "entities": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-1",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "localId": "sc-1",
+                  "projectLocalId": "ws-cowork",
+                  "title": "Plan launch",
+                  "lastMessageAt": "2026-10-25T10:05:00.000Z",
+                  "hasActiveChat": true
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1", "ws-1/wt-2"],
+        "standaloneChats": [
+          "ws-cowork/sc-1:Plan launch@2026-10-25T10:05:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-other/sc-2:Other notes@2026-10-25T08:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1", "chat-2", "chat-3"]
+      }
+    },
+    {
+      "name": "new standalone chat and a chat project",
+      "nextCursor": 112,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-112",
+          "cursor": 112,
+          "payload": {
+            "scope": "standalone_chat",
+            "entities": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-0",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "projectLocalId": "ws-cowork",
+                  "title": "Draft brief",
+                  "lastMessageAt": "2026-10-25T10:10:00.000Z"
+                }
+              },
+              {
+                "entityType": "chat_project",
+                "localId": "cp-1",
+                "payload": {
+                  "name": "Launch project"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1", "ws-1/wt-2"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch@2026-10-25T10:05:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-other/sc-2:Other notes@2026-10-25T08:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1", "chat-2", "chat-3"]
+      }
+    },
+    {
+      "name": "workspace rows outside the overview scope",
+      "nextCursor": 118,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-118",
+          "cursor": 118,
+          "payload": {
+            "scope": "workspace",
+            "target": {
+              "workspaceLocalId": "ws-1"
+            },
+            "entities": [
+              {
+                "entityType": "workspace",
+                "localId": "ws-1",
+                "payload": {
+                  "name": "Repository renamed",
+                  "type": "single-repo",
+                  "order": 1
+                }
+              },
+              {
+                "entityType": "workspace",
+                "localId": "ws-2",
+                "payload": {
+                  "name": "Second",
+                  "type": "single-repo",
+                  "order": 0
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": [
+          "ws-2:Second",
+          "ws-1:Repository renamed",
+          "ws-cowork:Cowork"
+        ],
+        "worktrees": ["ws-1/wt-1", "ws-1/wt-2"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch@2026-10-25T10:05:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-other/sc-2:Other notes@2026-10-25T08:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1", "chat-2", "chat-3"]
+      }
+    },
+    {
+      "name": "parent-scoped removals",
+      "nextCursor": 130,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-127",
+          "cursor": 127,
+          "payload": {
+            "scope": "standalone_chat",
+            "removed": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-2",
+                "parentLocalId": "ws-other"
+              }
+            ]
+          }
+        },
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-130",
+          "cursor": 130,
+          "payload": {
+            "scope": "chat",
+            "target": {
+              "workspaceLocalId": "ws-1",
+              "worktreeLocalId": "wt-1",
+              "chatLocalId": "chat-2"
+            },
+            "removed": [
+              {
+                "entityType": "chat_summary",
+                "localId": "chat-2",
+                "parentLocalId": "ws-1:wt-1"
+              },
+              {
+                "entityType": "pr_status",
+                "localId": "wt-1",
+                "parentLocalId": "ws-1:wt-1"
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": [
+          "ws-2:Second",
+          "ws-1:Repository renamed",
+          "ws-cowork:Cowork"
+        ],
+        "worktrees": ["ws-1/wt-1", "ws-1/wt-2"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch@2026-10-25T10:05:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1", "chat-3"]
+      }
+    },
+    {
+      "name": "same-frame removal and re-add",
+      "nextCursor": 131,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-131",
+          "cursor": 131,
+          "payload": {
+            "scope": "standalone_chat",
+            "removed": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-1"
+              }
+            ],
+            "entities": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-1",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "projectLocalId": "ws-cowork",
+                  "title": "Plan launch v2",
+                  "lastMessageAt": "2026-10-25T10:20:00.000Z",
+                  "hasActiveChat": false,
+                  "hasUnread": true
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": [
+          "ws-2:Second",
+          "ws-1:Repository renamed",
+          "ws-cowork:Cowork"
+        ],
+        "worktrees": ["ws-1/wt-1", "ws-1/wt-2"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v2@2026-10-25T10:20:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1", "chat-3"]
+      }
+    },
+    {
+      "name": "worktree, last tab, workspace and project removals",
+      "nextCursor": 140,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-140",
+          "cursor": 140,
+          "payload": {
+            "scope": "worktree",
+            "target": {
+              "workspaceLocalId": "ws-1",
+              "worktreeLocalId": "wt-2"
+            },
+            "removed": [
+              {
+                "entityType": "worktree",
+                "localId": "wt-2",
+                "parentLocalId": "ws-1"
+              },
+              {
+                "entityType": "chat_summary",
+                "localId": "chat-3"
+              },
+              {
+                "entityType": "workspace",
+                "localId": "ws-2"
+              },
+              {
+                "entityType": "chat_project",
+                "localId": "cp-1"
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v2@2026-10-25T10:20:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    },
+    {
+      "name": "removals whose parent matches no row",
+      "nextCursor": 141,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-141",
+          "cursor": 141,
+          "payload": {
+            "scope": "standalone_chat",
+            "removed": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-0",
+                "parentLocalId": "ws-1"
+              },
+              {
+                "entityType": "workspace",
+                "localId": "ws-1",
+                "parentLocalId": "unrelated"
+              },
+              {
+                "entityType": "chat_summary",
+                "localId": "chat-1",
+                "parentLocalId": "ws-1:wt-9"
+              },
+              {
+                "entityType": "standalone_chat",
+                "localId": ""
+              },
+              {
+                "entityType": "unknown_kind",
+                "localId": "sc-2"
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v2@2026-10-25T10:20:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    },
+    {
+      "name": "envelope id, parent and title fallbacks",
+      "nextCursor": 150,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-150",
+          "cursor": 150,
+          "payload": {
+            "scope": "standalone_chat",
+            "entities": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-9",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "name": "Fallback name",
+                  "lastMessageAt": "2026-10-25T10:30:00.000Z"
+                }
+              },
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-8",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "lastMessageAt": "2026-10-25T10:40:00.000Z"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v2@2026-10-25T10:20:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-cowork/sc-8:sc-8@2026-10-25T10:40:00.000Z",
+          "ws-cowork/sc-9:Fallback name@2026-10-25T10:30:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    },
+    {
+      "name": "explicit empty standalone strings",
+      "nextCursor": 151,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-151",
+          "cursor": 151,
+          "payload": {
+            "scope": "standalone_chat",
+            "entities": [
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-1",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "projectLocalId": "",
+                  "title": "",
+                  "name": "Plan launch v3",
+                  "lastMessageAt": "2026-10-25T10:50:00.000Z"
+                }
+              },
+              {
+                "entityType": "standalone_chat",
+                "localId": "sc-7",
+                "parentLocalId": "ws-cowork",
+                "payload": {
+                  "projectLocalId": "",
+                  "title": "",
+                  "name": "",
+                  "lastMessageAt": "2026-10-25T10:45:00.000Z"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v3@2026-10-25T10:50:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-cowork/sc-7:sc-7@2026-10-25T10:45:00.000Z",
+          "ws-cowork/sc-8:sc-8@2026-10-25T10:40:00.000Z",
+          "ws-cowork/sc-9:Fallback name@2026-10-25T10:30:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    },
+    {
+      "name": "PR status observation over the worktree status",
+      "nextCursor": 161,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-160",
+          "cursor": 160,
+          "payload": {
+            "scope": "worktree",
+            "entities": [
+              {
+                "entityType": "worktree",
+                "localId": "wt-1",
+                "parentLocalId": "ws-1",
+                "payload": {
+                  "workspaceLocalId": "ws-1",
+                  "branch": "feature/koala",
+                  "label": "koala",
+                  "status": "active",
+                  "lastKnownPrStatus": {
+                    "repos": [
+                      {
+                        "repoId": "__workspace_root__",
+                        "repoName": "canopy",
+                        "status": {
+                          "prNumber": 4874,
+                          "prUrl": "https://github.com/example/canopy/pull/4874",
+                          "state": "open"
+                        }
+                      }
+                    ],
+                    "lastCheckedAt": "2026-10-25T10:55:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-161",
+          "cursor": 161,
+          "payload": {
+            "scope": "pr",
+            "entities": [
+              {
+                "entityType": "pr_status",
+                "localId": "wt-1",
+                "parentLocalId": "ws-1:wt-1",
+                "payload": {
+                  "workspaceLocalId": "ws-1",
+                  "worktreeLocalId": "wt-1",
+                  "repos": [
+                    {
+                      "repoId": "__workspace_root__",
+                      "status": {
+                        "number": 4874,
+                        "state": "merged"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1 #4874:open"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v3@2026-10-25T10:50:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-cowork/sc-7:sc-7@2026-10-25T10:45:00.000Z",
+          "ws-cowork/sc-8:sc-8@2026-10-25T10:40:00.000Z",
+          "ws-cowork/sc-9:Fallback name@2026-10-25T10:30:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    },
+    {
+      "name": "PR status removal restores the worktree status",
+      "nextCursor": 162,
+      "events": [
+        {
+          "type": "portal.state.delta",
+          "eventId": "ev-162",
+          "cursor": 162,
+          "payload": {
+            "scope": "pr",
+            "removed": [
+              {
+                "entityType": "pr_status",
+                "localId": "wt-1",
+                "parentLocalId": "ws-1:wt-1"
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "workspaces": ["ws-1:Repository renamed", "ws-cowork:Cowork"],
+        "worktrees": ["ws-1/wt-1 #4874:open"],
+        "standaloneChats": [
+          "ws-cowork/sc-0:Draft brief@2026-10-25T10:10:00.000Z",
+          "ws-cowork/sc-1:Plan launch v3@2026-10-25T10:50:00.000Z",
+          "ws-cowork/sc-2:Write notes@2026-10-25T09:00:00.000Z",
+          "ws-cowork/sc-7:sc-7@2026-10-25T10:45:00.000Z",
+          "ws-cowork/sc-8:sc-8@2026-10-25T10:40:00.000Z",
+          "ws-cowork/sc-9:Fallback name@2026-10-25T10:30:00.000Z"
+        ],
+        "chatSummaries": ["chat-1"]
+      }
+    }
+  ]
+}

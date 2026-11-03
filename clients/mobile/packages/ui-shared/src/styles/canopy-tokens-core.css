@@ -1,0 +1,1755 @@
+@import './app-icons.css';
+
+:root {
+  /* Document canvases retain their own surfaces across app appearances.
+   * Resolve selection with the matching default light/dark bg-muted value. */
+  --bg-selection-paper: rgba(0, 0, 0, 0.075);
+  --bg-selection-dark: rgba(255, 255, 255, 0.105);
+
+  /* Chat column geometry, shared by every host so a transcript reads at one
+   * width on desktop and web. The composer shell includes the composer's
+   * 16px side gutters on each side. */
+  --chat-reading-width: 736px;
+  --chat-composer-shell-width: calc(var(--chat-reading-width) + 32px);
+
+  /* The effective interface-scale zoom (desktop only). The desktop renderer
+   * overrides it inline on <html> with the live Electron zoom factor so CSS
+   * that must stay in physical units (the macOS traffic-light reservation)
+   * can divide by it; the web app leaves it at 1. */
+  --ui-zoom: 1;
+
+  /* One physical-pixel-safe UI hairline. Standard-density displays need one
+   * CSS pixel; Retina-class displays can resolve a crisp half-pixel stroke.
+   * These static values are the web fallback: the desktop renderer overrides
+   * the token inline with `1 / devicePixelRatio` px, which is exactly one
+   * device pixel at every interface-scale zoom on every display. */
+  --border-hairline: 1px;
+}
+
+/* Width is intentionally animated for the user's chat-width setting so text
+ * reflows together with the composer, without scaling the text itself. */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-width-transition {
+    transition: max-width 200ms ease-out;
+  }
+}
+
+@media only screen and (-webkit-min-device-pixel-ratio: 2),
+  only screen and (min-resolution: 192dpi) {
+  :root {
+    --border-hairline: 0.5px;
+  }
+}
+
+/* Tailwind v4 only auto-detects utility classes inside the consuming app's
+ * own source tree. The shared @canopy/ui-shared components ship class strings
+ * (including arbitrary values like text-3xs, bg-accent/[0.12], and
+ * [mask-image:...]) that the desktop renderer references inline, but the web
+ * portal does not. Without an explicit @source directive Tailwind silently
+ * drops every utility that only appears under packages/ui-shared/src, which
+ * is why shared rows render with default font sizes and missing selected/
+ * hover backgrounds. Registering the package source tree here lets every
+ * consumer of canopy-tokens.css pick up the same utilities. The path is
+ * relative to this CSS file. */
+@source "../components";
+@source "../icons";
+@source "../lib";
+
+/* Tailwind v4 theme mapping. Surface utilities use `bg-*`; content color
+ * utilities use the custom literal `fg-*` namespace below. The `--color-fg-*`
+ * entries also make cross-role uses explicit, for example `bg-fg-secondary`
+ * for a neutral status dot. */
+@theme inline {
+  /* Shared viewport/body-overlay stacking tiers. See docs/stacking-tiers.md
+   * for the global-vs-local rule and exception policy. Tailwind v4's
+   * `--z-index-*` namespace emits the matching `z-*` utilities. */
+  --z-index-sticky: 100;
+  --z-index-drawer: 200;
+  --z-index-modal: 300;
+  --z-index-dropdown: 400;
+  --z-index-toast: 500;
+  --z-index-tooltip: 600;
+  --z-index-spotlight: 700;
+
+  /* Default UI borders and dividers use the UI Kit hairline stroke. Explicit
+   * widths such as border-2 remain unchanged. */
+  --default-border-width: var(--border-hairline);
+
+  --font-sans:
+    var(--font-inter, 'Inter'), -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, sans-serif;
+  --font-mono:
+    var(--font-jetbrains-mono, 'JetBrains Mono'), 'Fira Code', 'SF Mono',
+    monospace;
+
+  /* Keep a narrow three-weight hierarchy: regular body copy at 400, quiet UI
+   * emphasis at 450, and true bold emphasis at 500. Map heavier Tailwind
+   * utilities to 500 so they remain restrained without becoming invisible. */
+  --font-weight-thin: 400;
+  --font-weight-extralight: 400;
+  --font-weight-light: 400;
+  --font-weight-normal: 400;
+  --font-weight-medium: 450;
+  --font-weight-semibold: 450;
+  --font-weight-bold: 500;
+  --font-weight-extrabold: 500;
+  --font-weight-black: 500;
+
+  /* Compact product typography. The product scale uses xs/s/m for 13/14/16px,
+   * plus two dense sizes below xs. All are rem-based so desktop UI scaling
+   * applies consistently. */
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: 0.875rem;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 0.75rem;
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.125rem;
+  --text-s: 0.875rem;
+  --text-s--line-height: 1.25rem;
+  --text-m: 1rem;
+  --text-m--line-height: 1.5rem;
+
+  --color-line-depth: var(--line-depth);
+  --color-line-base: var(--line-base);
+  --color-line-primary: var(--line-primary);
+  --color-line-secondary: var(--line-secondary);
+  --color-line-tertiary: var(--line-tertiary);
+  --color-line-quaternary: var(--line-quaternary);
+  --color-line-transparent: var(--line-transparent);
+  --color-line-disabled: var(--line-disabled);
+  --color-line-selected: var(--line-selected);
+  --color-line-focus: var(--line-focus);
+  --color-line-accent: var(--line-accent);
+  --color-line-destructive: var(--line-destructive);
+  --color-line-attention: var(--line-attention);
+  --color-line-positive: var(--line-positive);
+  --color-line-special: var(--line-special);
+  /* `base` must NOT be registered in the global `--color-*` namespace: a
+   * `--color-base` entry makes Tailwind resolve `text-base` as a color
+   * utility (`color: var(--bg-base)` — text painted with the page
+   * background) instead of the core 1rem font-size utility (CAN-1589).
+   * Register it only in the property-scoped namespaces actually consumed
+   * by the codebase: bg-base (+ opacity modifiers), border-b-base,
+   * ring-offset-base, and from-base. */
+  --background-color-base: var(--bg-base);
+  --background-color-depth: var(--bg-depth);
+  /* Generic generated hue for compact indicators. Unlike `accent`, this
+   * remains blue when the product accent changes. */
+  --color-blue: var(--primitive-blue-500);
+  --border-color-base: var(--bg-base);
+  --ring-offset-color-base: var(--bg-base);
+  --gradient-color-base: var(--bg-base);
+  --color-primary: var(--bg-primary);
+  --color-card: var(--bg-card);
+  --color-secondary: var(--bg-secondary);
+  --background-color-tertiary: var(--bg-tertiary);
+  --background-color-quaternary: var(--bg-quaternary);
+  --color-subtle: var(--bg-subtle);
+  --color-muted: var(--bg-muted);
+  --color-transparent: var(--bg-transparent);
+  --color-disabled: var(--bg-disabled);
+  --color-selected: var(--bg-selected);
+  --color-inverse: var(--bg-inverse);
+  --color-tooltip-inverse: var(--bg-tooltip-inverse);
+  --color-accent: var(--bg-accent);
+  --color-accent-hover: var(--bg-accent-hover);
+  --color-accent-muted: var(--bg-accent-muted);
+  --color-accent-subtle: var(--bg-accent-subtle);
+  --color-destructive: var(--bg-destructive);
+  --color-destructive-hover: var(--bg-destructive-hover);
+  --color-destructive-muted: var(--bg-destructive-muted);
+  --color-destructive-subtle: var(--bg-destructive-subtle);
+  --color-attention: var(--bg-attention);
+  --color-attention-muted: var(--bg-attention-muted);
+  --color-positive: var(--bg-positive);
+  --color-positive-muted: var(--bg-positive-muted);
+  --color-special: var(--bg-special);
+  --color-special-muted: var(--bg-special-muted);
+  --color-sidebar: var(--bg-sidebar);
+  --color-popover: var(--bg-popover);
+  --color-success: var(--bg-success);
+  --color-success-subtle: var(--bg-success-subtle);
+  --color-warning: var(--bg-warning);
+  --color-warning-subtle: var(--bg-warning-subtle);
+  --color-info: var(--bg-info);
+  --color-info-subtle: var(--bg-info-subtle);
+  --color-special-subtle: var(--bg-special-subtle);
+  /* Modal/drawer backdrop: black with theme-tuned opacity in both modes. */
+  --color-overlay-scrim: var(--overlay-scrim);
+
+  --color-fg-primary: var(--fg-primary);
+  --color-fg-secondary: var(--fg-secondary);
+  --color-fg-tertiary: var(--fg-tertiary);
+  --color-fg-quaternary: var(--fg-quaternary);
+  --color-fg-disabled: var(--fg-disabled);
+  --color-fg-selected: var(--fg-selected);
+  --color-fg-emphasis: var(--fg-emphasis);
+  --color-fg-accent: var(--fg-accent);
+  --color-fg-destructive: var(--fg-destructive);
+  --color-fg-attention: var(--fg-attention);
+  --color-fg-positive: var(--fg-positive);
+  --color-fg-special: var(--fg-special);
+  --color-fg-success: var(--fg-success);
+  --color-fg-warning: var(--fg-warning);
+  --color-fg-success-strong: var(--fg-success-strong);
+  --color-fg-warning-strong: var(--fg-warning-strong);
+  --color-fg-destructive-strong: var(--fg-destructive-strong);
+  --color-fg-special-strong: var(--fg-special-strong);
+  --color-fg-info: var(--fg-info);
+  --color-fg-blue: var(--fg-blue);
+  --color-fg-purple: var(--fg-purple);
+  --color-fg-orange: var(--fg-orange);
+  --color-fg-tooltip-inverse: var(--fg-tooltip-inverse);
+
+  /* Run states and git file statuses use the intent roles, whose hues are
+   * fixed in every theme: see OPERATIONAL_STATUS_COLORS. */
+
+  /* Border radius - from design system */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  /* The sidebar row corner (worktree, workspace header, cowork, chat, and
+   * footer rows): between the 8px control and the 12px surface so a 32px row
+   * reads as a row, not a pill. Owned by the row primitives; a control nested
+   * inside a row takes this less its inset. */
+  --radius-row: 10px;
+  --radius-full: 9999px;
+
+  /* Shadows - from UI Kit. These must live in Tailwind's theme namespace;
+   * :root aliases do not change the values Tailwind emits for shadow-* utilities. */
+  --shadow-2xs: var(--shadow-surface-xxs);
+  --shadow-xs: var(--shadow-surface-xs);
+  --shadow-sm: var(--shadow-surface-sm);
+  --shadow-md: var(--shadow-surface-md);
+  --shadow-lg: var(--shadow-surface-lg);
+  --shadow-xl: var(--shadow-surface-xl);
+  /* Form field edge at rest, and its neutral focused state: a grey ink edge
+   * with a soft line-base halo, replacing the resting edge in one box-shadow.
+   * Neutral on purpose; accent is reserved for the primary action. */
+  --shadow-field: var(--effect-ring-base);
+  --shadow-field-focus:
+    0 0 0 1px var(--fg-tertiary), 0 0 0 4px var(--line-base);
+  --shadow-focus: var(--effect-ring-focus);
+  --shadow-tooltip: var(--shadow-tooltip);
+
+  /* Animations */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --animate-fade-in: fade-in 0.25s cubic-bezier(0, 0, 0.2, 1);
+  --animate-slide-up: slide-up 0.25s cubic-bezier(0, 0, 0.2, 1);
+  --animate-scale-in: scale-in 0.2s cubic-bezier(0, 0, 0.2, 1);
+  --animate-collapse-in: collapse-in 0.25s cubic-bezier(0, 0, 0.2, 1);
+  --animate-slide-in-left: slide-in-left 0.25s cubic-bezier(0, 0, 0.2, 1);
+  --animate-slide-in-right: slide-in-right 0.25s cubic-bezier(0, 0, 0.2, 1);
+  /* The three 3×3 dot spinners. Each dot runs the same named animation and
+   * staggers itself with `animation-delay`, which is declared after the
+   * `animate-*` shorthand in the utilities layer so the delay survives. */
+  --animate-loading-dot: loading-dot 1.2s ease-in-out infinite both;
+  --animate-run-dot: run-dot 1.2s ease-in-out infinite both;
+  --animate-thinking-dot: thinking-dot 0.9s ease-in-out infinite both;
+  /* CometSpinner: one unhurried turn of the comet ring every 1.2s, the
+   * dot spinners' cycle. */
+  --animate-comet-spin: comet-spin 1.2s linear infinite;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes slide-up {
+    from {
+      transform: translateY(8px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+  @keyframes scale-in {
+    from {
+      transform: scale(0.95);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  @keyframes floating-menu-enter {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes collapse-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes slide-in-left {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+  @keyframes slide-in-right {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  /* 6-step cycle: 7→4→1→(0+2)→(3+5)→(6+8) → repeat */
+  @keyframes comet-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes thinking-dot {
+    0% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    3% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    16.67% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    20% {
+      opacity: 0.55;
+      transform: scale(0.94);
+    }
+    33.33% {
+      opacity: 0.55;
+      transform: scale(0.94);
+    }
+    37% {
+      opacity: 0.3;
+      transform: scale(0.9);
+    }
+    50% {
+      opacity: 0.3;
+      transform: scale(0.9);
+    }
+    53% {
+      opacity: 0.15;
+      transform: scale(0.85);
+    }
+    66.67% {
+      opacity: 0.15;
+      transform: scale(0.85);
+    }
+    70% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(0);
+    }
+  }
+
+  /* Diagonal sweep: (1+9)→(8+2)→(7+3)→(4+6) → repeat */
+  @keyframes run-dot {
+    0% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    3% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    25% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    28% {
+      opacity: 0.4;
+      transform: scale(0.92);
+    }
+    50% {
+      opacity: 0.15;
+      transform: scale(0.85);
+    }
+    53% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(0);
+    }
+  }
+
+  /* Perimeter march: 8 positions, each ~12.5% apart, with fading trail */
+  @keyframes loading-dot {
+    0% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    2% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    12.5% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    15% {
+      opacity: 0.55;
+      transform: scale(0.94);
+    }
+    25% {
+      opacity: 0.55;
+      transform: scale(0.94);
+    }
+    27.5% {
+      opacity: 0.3;
+      transform: scale(0.9);
+    }
+    37.5% {
+      opacity: 0.3;
+      transform: scale(0.9);
+    }
+    40% {
+      opacity: 0.15;
+      transform: scale(0.85);
+    }
+    50% {
+      opacity: 0.15;
+      transform: scale(0.85);
+    }
+    52.5% {
+      opacity: 0;
+      transform: scale(0);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(0);
+    }
+  }
+}
+
+/* Sidebar disclosures are intentionally immediate. Keep children in normal
+ * flow and avoid motion on this frequently used navigation interaction. */
+.sidebar-fade-presence {
+  pointer-events: auto;
+}
+
+.sidebar-fade-presence-inner {
+  min-height: 0;
+}
+
+/* Literal foreground utilities. These intentionally use `fg-*` instead of
+ * Tailwind's overloaded `text-*` namespace, and support the same opacity
+ * modifiers and variants as built-in color utilities. */
+@utility fg-* {
+  color: --value(--color-fg-*);
+  color: --alpha(--value(--color-fg-*) / --modifier([percentage]));
+  color: --alpha(--value(--color-fg-*) / calc(--modifier(integer) * 1%));
+}
+
+/* Literal line utilities apply semantic line tokens to dedicated rule
+ * elements without coupling them to border or background utility names. */
+@utility line-* {
+  background-color: --value(--color-line-*);
+  background-color: --alpha(--value(--color-line-*) / --modifier([percentage]));
+  background-color: --alpha(
+    --value(--color-line-*) / calc(--modifier(integer) * 1%)
+  );
+}
+
+/* Tailwind ships a static `bg-transparent` utility. Bind the canonical name
+ * back to the generated theme role so all `bg-*` colors share one source. */
+@utility bg-transparent {
+  background-color: var(--bg-transparent);
+}
+
+/* Canonical selected-tab underline. Keeping this as a named utility prevents
+ * component-specific border colors from drifting away from the accent line. */
+@utility tab-accent-line {
+  border-bottom-color: var(--line-accent);
+}
+
+/* A `fill` settings box (`SettingsRowsGroup fill`) grows into its section so
+ * its minimum stays content-based, but draws its surface as a layer that ends
+ * at its last child's bottom edge, so the unused height under the footer stays
+ * transparent. Without anchor positioning the layer covers the whole box. The
+ * component paints the layer with the settings surface utilities. */
+@utility settings-fill-box {
+  position: relative;
+  isolation: isolate;
+  anchor-scope: --settings-fill-end;
+
+  & > :last-child {
+    anchor-name: --settings-fill-end;
+  }
+
+  &::before {
+    position: absolute;
+    inset: 0;
+    z-index: -1; /* z-exception: the box surface sits under its own rows */
+    content: '';
+  }
+
+  @supports (anchor-name: --settings-fill-end) {
+    &::before {
+      bottom: anchor(--settings-fill-end bottom);
+    }
+  }
+}
+
+/* The scrolling list in a `fill` settings box: it grows up to its rows'
+ * height and scrolls past it, and keeps 7rem, or its rows when they are
+ * shorter, before the page scrolls instead. A short viewport (a small window
+ * or a large UI scale) lets the page scroll every row: a nested 7rem scroller
+ * can be shorter than one wrapped row, which keyboard focus could then never
+ * reveal whole. At 40rem and below, the first-run page's header and footer
+ * already hold the list at its 7rem floor. Desktop UI scale is Chromium zoom,
+ * which shrinks the CSS viewport, so the query follows it. */
+@utility settings-fill-list {
+  flex: 1 1 0px;
+  max-height: max-content;
+  min-height: calc-size(max-content, min(size, 7rem));
+  overflow-y: auto;
+
+  @media (max-height: 40rem) {
+    flex: none;
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+/* Shared underline tabs use one uninterrupted divider for the list and draw
+ * an accent indicator only beneath the selected trigger. Horizontal spacing
+ * belongs to the list gap rather than trigger padding so the selected line is
+ * exactly as wide as its label/control. Hidden scrollbars keep an overflowing
+ * tab row scrollable without reserving a gutter between buttons and divider. */
+.canopy-tab-list {
+  position: relative;
+  border-bottom: 0;
+  column-gap: 32px !important;
+  scrollbar-width: none;
+}
+
+.canopy-tab-list::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0; /* z-exception: tab underline stays within its tab list */
+  border-bottom: var(--default-border-width) solid var(--line-base);
+  content: '';
+  pointer-events: none;
+}
+
+.canopy-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.canopy-tab-trigger {
+  position: relative;
+  border: 0;
+  padding-right: 0 !important;
+  padding-bottom: 16px !important;
+  padding-left: 0 !important;
+  touch-action: manipulation;
+}
+
+/* Enlarge the pointer/touch target without changing the trigger's measured
+ * width, label spacing, or selected-indicator geometry. */
+.canopy-tab-trigger::before {
+  position: absolute;
+  inset: 0 -8px;
+  content: '';
+}
+
+.canopy-tab-trigger[aria-selected='true']::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1; /* z-exception: selected tab indicator stays within its tab */
+  height: 2px;
+  border-radius: 0;
+  background: var(--line-accent);
+  content: '';
+}
+
+/* Color highlights are navigational feedback, not decorative motion. A zero
+ * duration keeps hover/selection backgrounds attached to a fast cursor while
+ * leaving transform, opacity, disclosure, and progress animations available. */
+.transition-colors {
+  transition-duration: 0ms !important;
+  transition-delay: 0ms !important;
+}
+
+/* Compatibility aliases for established app role names. Canonical generated
+ * roles (`bg-*`, `fg-*`, `line-*`, shadows, effects, and so on) are declared
+ * directly in generated-theme-tokens.css and bind to generated primitives. */
+:root {
+  /* Generic hue roles backed by the generated UI Kit primitives. */
+  --fg-blue: var(--primitive-blue-600);
+  --fg-purple: var(--fg-special);
+  --fg-orange: var(--primitive-orange-600);
+
+  --bg-card: var(--bg-primary);
+  --bg-activity-card-hover: var(--bg-secondary);
+  --bg-accent-hover: var(--primitive-accent-600);
+  --bg-accent-subtle: var(--bg-accent-muted);
+  --bg-destructive-hover: var(--primitive-red-600);
+  --bg-destructive-subtle: var(--bg-destructive-muted);
+  --bg-sidebar: var(--bg-depth);
+  --bg-popover: var(--bg-secondary);
+  --bg-success: var(--bg-positive);
+  --bg-success-subtle: var(--bg-positive-muted);
+  --bg-warning: var(--bg-attention);
+  --bg-warning-subtle: var(--bg-attention-muted);
+  --bg-special-subtle: var(--bg-special-muted);
+  /* Info is blue in every theme: special keeps purple. The solid takes the
+   * step whose white text matches the solid special surface. */
+  --bg-info: var(--primitive-blue-500);
+  --bg-info-subtle: color-mix(in srgb, var(--fg-info) 16%, transparent);
+
+  --fg-success: var(--fg-positive);
+  --fg-warning: var(--fg-attention);
+  --fg-info: var(--fg-blue);
+  /* Intent ink for small text (11px and below), which the intent inks do not
+   * carry at 4.5:1 on light surfaces: badges, run-state labels, and status
+   * dots. Dark mode keeps the intent inks, which already do. Info needs none:
+   * its blue is already this step. */
+  --fg-success-strong: var(--primitive-green-600);
+  --fg-warning-strong: var(--primitive-orange-600);
+  --fg-destructive-strong: var(--primitive-red-600);
+  --fg-special-strong: var(--primitive-purple-600);
+
+  /* The inverse tooltip tone: a reversed black sheet in light mode. Dark mode
+   * swaps it for the regular tooltip surface instead of a white sheet. */
+  --bg-tooltip-inverse: var(--bg-inverse);
+  --fg-tooltip-inverse: var(--bg-base);
+}
+
+:root.dark {
+  --bg-activity-card-hover: var(--bg-quaternary);
+  --bg-tooltip-inverse: var(--bg-quaternary);
+  --fg-tooltip-inverse: var(--fg-primary);
+  --fg-blue: var(--primitive-blue-300);
+  --fg-orange: var(--primitive-orange-300);
+  --fg-success-strong: var(--fg-success);
+  --fg-warning-strong: var(--fg-warning);
+  --fg-destructive-strong: var(--fg-destructive);
+  --fg-special-strong: var(--fg-special);
+}
+
+/* Codex fast-mode chip treatment, shared by the desktop renderer and the web
+   portal via the shared ChatComposerToolbar. Defined once in a theme-neutral
+   :root block (not per-theme): `var(--fg-info)` is substituted at use-time, so
+   the chip's active highlight tracks the active mode's info ink on every
+   surface. Mirrors the desktop definitions in
+   apps/desktop-app/src/renderer/src/styles/globals.css (kept there too, with
+   identical values, so desktop is unaffected) — but web only imports this shared
+   file, so without these the portal fast-mode chip's active style resolved to
+   nothing. */
+:root {
+  --codex-fast-mode-foreground: var(--fg-info);
+  --codex-fast-mode-background: color-mix(
+    in srgb,
+    var(--fg-info) 15%,
+    transparent
+  );
+}
+
+/* ============================================
+   Base Styles
+   ============================================ */
+* {
+  border-color: var(--line-base);
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--fg-primary);
+  font-family: var(--font-sans);
+  font-weight: var(--font-weight-normal);
+  font-feature-settings:
+    'rlig' 1,
+    'calt' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* App chrome behaves like native controls. Opt in on the body so public
+ * web pages keep normal browser selection; the body marker also covers
+ * portalled menus, dialogs, and tooltips. Do not apply this to every descendant:
+ * readable regions must be able to restore selection through inheritance.
+ * Keep this scope explicit: a body :has() descendant lookup invalidates the
+ * document during transcript updates.
+ * Base-layer rules keep explicit select-text/select-none utilities authoritative.
+ */
+@layer base {
+  /* Keep native selection theme-aware without recoloring syntax or links. */
+  @media (forced-colors: none) {
+    /* Let descendants inherit the highlight. A universal descendant highlight
+     * rule makes Chromium restyle the whole transcript as the caret moves. */
+    :where(body[data-app-selection])::selection {
+      background-color: var(--bg-muted);
+      color: currentColor;
+    }
+
+    :where(body[data-app-selection])
+      :where([data-selection-surface='paper'])::selection,
+    :where(body[data-app-selection])
+      :where([data-selection-surface='paper'])
+      ::selection {
+      background-color: var(--bg-selection-paper);
+    }
+
+    :where(body[data-app-selection])
+      :where([data-selection-surface='dark'])::selection,
+    :where(body[data-app-selection])
+      :where([data-selection-surface='dark'])
+      ::selection {
+      background-color: var(--bg-selection-dark);
+    }
+  }
+
+  :where(body[data-app-selection]) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  :where(body[data-app-selection] input),
+  :where(body[data-app-selection] textarea),
+  :where(body[data-app-selection] [contenteditable='']),
+  :where(body[data-app-selection] [contenteditable='true']),
+  :where(body[data-app-selection] [contenteditable='plaintext-only']),
+  :where(body[data-app-selection] [data-chat-window]),
+  :where(body[data-app-selection] [data-selectable]),
+  :where(body[data-app-selection] .prose),
+  :where(body[data-app-selection] pre),
+  :where(body[data-app-selection] code),
+  :where(body[data-app-selection] samp),
+  :where(body[data-app-selection] .font-mono),
+  :where(body[data-app-selection] .monaco-editor),
+  :where(body[data-app-selection] [role='alert']) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* Controls inside readable regions remain controls; inline prose links and
+   * rich preview details deliberately retain their region's selection. */
+  :where(body[data-app-selection] button),
+  :where(body[data-app-selection] [role='button']),
+  :where(body[data-app-selection] [role='tab']),
+  :where(body[data-app-selection] [role='menuitem']),
+  :where(body[data-app-selection] [role='menuitemcheckbox']),
+  :where(body[data-app-selection] [role='menuitemradio']),
+  :where(body[data-app-selection] [role='option']) {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+/* Monaco paints selection in overlay elements, rather than ::selection.
+ * These variables cover both the single-file and diff editors. The app scope
+ * outranks Monaco's injected theme so load order and focus do not restore blue.
+ */
+@media (forced-colors: none) {
+  body[data-app-selection] .monaco-editor:not(.hc-black, .hc-light) {
+    --vscode-editor-selectionBackground: var(--bg-muted);
+    --vscode-editor-inactiveSelectionBackground: var(--bg-muted);
+  }
+}
+
+/*
+ * Wrapped UI text avoids a lone word on its last line. `text-wrap-style`
+ * inherits, so one value on the root reaches cards, menus, tooltips, dialogs
+ * and settings, portals included. It only moves line breaks: `truncate` and
+ * `whitespace-nowrap` text never wraps, and a `text-balance` or `text-wrap`
+ * utility still wins on its own element.
+ *
+ * Plain breaks stay where moving words hurts or isn't wanted: code, whose
+ * breaks are exact; fields and editors, where each keystroke would shift the
+ * words above the caret; numeric columns; and the chat itself
+ * (`data-chat-window`: transcript and composer), where streamed text would
+ * pull words already on screen between lines. Menus and tooltips opened from
+ * the chat render outside it and stay pretty. `@layer base` and `:where()`
+ * keep all of this below any utility a component sets.
+ */
+@layer base {
+  :root {
+    text-wrap-style: pretty;
+  }
+
+  :where(
+    pre,
+    code,
+    kbd,
+    samp,
+    .font-mono,
+    .tabular-nums,
+    textarea,
+    input,
+    [contenteditable],
+    [data-chat-window]
+  ) {
+    text-wrap-style: auto;
+  }
+}
+
+/* Tooltips use one quiet typographic voice. Apply the regular weight to the
+ * semantic surface and every rich-content descendant so local emphasis
+ * utilities cannot reintroduce the 450 weight inside a tooltip. Native
+ * OS/browser `title` tooltips remain platform-controlled. */
+[role='tooltip'],
+[role='tooltip'] * {
+  font-weight: var(--font-weight-normal) !important;
+}
+
+/* Browser defaults and the typography plugin otherwise introduce bold
+ * weights independently of Tailwind's font-* utility tokens. The typography
+ * plugin emits its prose rule outside a cascade layer, so this matching
+ * unlayered default must follow it. Explicit weight utilities opt out and keep
+ * their requested weight. The substring checks also cover responsive/state
+ * variants such as `sm:font-medium`. */
+:where(b, strong):not(
+  [class*='font-thin'],
+  [class*='font-extralight'],
+  [class*='font-light'],
+  [class*='font-normal'],
+  [class*='font-medium'],
+  [class*='font-semibold'],
+  [class*='font-bold'],
+  [class*='font-extrabold'],
+  [class*='font-black'],
+  [class*='font-[']
+) {
+  font-weight: var(--font-weight-bold);
+}
+
+.prose :where(h1, h2, h3, h4, h5, h6, th) {
+  font-weight: var(--font-weight-medium);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Card styles */
+.card-surface {
+  background-color: var(--bg-card);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+}
+
+/* Surface elevated - for dropdowns, popovers */
+.surface-elevated {
+  background-color: var(--bg-card);
+  border: 0.5px solid var(--line-base);
+  border-radius: var(--radius-lg);
+}
+
+.dark .surface-elevated {
+  background-color: var(--bg-secondary);
+}
+
+/* GitHub-style PR label pills. The label color math is precomputed in JS
+   (`PrLabelBadge`) and handed in via CSS custom properties so the light/dark
+   switch stays here. Light mode is a solid fill with contrasting text; dark
+   mode uses GitHub's Primer treatment: a translucent label-color tint with a
+   lightened, label-hued border and text. */
+.canopy-pr-label {
+  background-color: var(--pr-label-bg);
+  color: var(--pr-label-fg);
+  border: 0.5px solid var(--pr-label-border);
+}
+
+.dark .canopy-pr-label {
+  background-color: var(--pr-label-bg-dark);
+  color: var(--pr-label-fg-dark);
+  border-color: var(--pr-label-border-dark);
+}
+
+/* Custom scrollbar. Thickness lives in the scrollbar-geometry block above.
+ *
+ * The `:not()` guard there keeps the scroller-style probe in
+ * `useAlwaysVisibleScrollbars.ts` on genuinely native scrollbars: any
+ * `::-webkit-scrollbar` rule matching an element makes Chromium give it a
+ * custom, space-taking scrollbar, which would make the probe report "always
+ * show" on every machine. */
+
+/* Every custom-scrollbar rule carries the probe exclusion: ANY
+   `::-webkit-scrollbar*` style matching an element makes Chromium give it a
+   custom, space-taking scrollbar, so a single unguarded rule here would make
+   the scroller-style probe report "always show" on overlay-mode machines. */
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Where a vertical and a horizontal scrollbar meet, Chromium paints a white
+   square by default; let the surface show through instead. */
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Scrollbars show the arrow. A styled scrollbar takes its scroller's cursor,
+   so the prompt box's `cursor-text` showed the text cursor over its bar.
+   Chromium ignores `cursor` on `::-webkit-scrollbar` itself; the thumb and
+   the track each honour their own. */
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb,
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-track {
+  cursor: default;
+}
+
+/*
+ * The overlay rail is absolutely positioned against its wrapper, so the
+ * wrapper needs a positioning context. `:where()` keeps this at zero
+ * specificity, and `@layer base` keeps it below Tailwind's `utilities` layer,
+ * so a caller passing its own position utility (e.g. the chat transcript's
+ * `absolute inset-0`) wins. Both parts are load-bearing: a hard-coded
+ * `relative` class loses because Tailwind orders `.relative` after
+ * `.absolute`, and an UNLAYERED rule here would beat every layered utility
+ * no matter its specificity.
+ */
+@layer base {
+  :where([data-overlay-scroll-area]) {
+    position: relative;
+  }
+}
+
+/*
+ * Search fields never draw the browser's own clear button (Chromium's blue
+ * ×) or search decoration, in any field of either app. A field that offers
+ * clearing renders the shared muted icon button instead (PickerMenuSearchInput
+ * `onClear`). Layered, so a field's own utilities still apply.
+ */
+@layer base {
+  input[type='search']::-webkit-search-cancel-button,
+  input[type='search']::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+}
+
+/*
+ * Scrollbar geometry, in ONE place for both the overlay rails and the native
+ * `::-webkit-scrollbar` long tail, switched by the `data-scrollbars` mode that
+ * `useAlwaysVisibleScrollbars` stamps on the document root.
+ *
+ * Overlay mode (macOS "When scrolling"): a slim 6px thumb that grows to 8px on
+ * hover — the affordance matters because the bar is otherwise hidden.
+ *
+ * Always mode: the OS draws a permanent, chunkier scrollbar, so ours matches
+ * that thickness instead of staying a hairline. The size comes from the
+ * platform's measured track width (`--canopy-native-scrollbar-width`, 15px on
+ * macOS) less a 3px inset per side, which is the proportion macOS uses for its
+ * own knob. It does NOT grow on hover — native always-visible scrollbars keep
+ * a fixed width and only deepen in colour.
+ *
+ * Every mode keeps the thumb at least 2px in from the nearest edge.
+ */
+:root {
+  --canopy-scrollbar-thumb-inset: 2px;
+  --canopy-scrollbar-thumb-size: 6px;
+  --canopy-scrollbar-rail-size: 10px;
+}
+
+:root[data-scrollbars='always'] {
+  --canopy-scrollbar-thumb-inset: 3px;
+  --canopy-scrollbar-thumb-size: calc(
+    var(--canopy-native-scrollbar-width, 15px) - 6px
+  );
+  --canopy-scrollbar-rail-size: var(--canopy-native-scrollbar-width, 15px);
+}
+
+[data-overlay-scrollbar],
+[data-sidebar-scrollbar] {
+  width: var(--canopy-scrollbar-rail-size);
+}
+
+[data-overlay-scrollbar-thumb],
+[data-sidebar-scrollbar-thumb] {
+  width: var(--canopy-scrollbar-thumb-size);
+  right: var(--canopy-scrollbar-thumb-inset);
+}
+
+/* Native scrollbars on surfaces not yet using OverlayScrollArea follow the
+   same thickness, and get the same >=2px inset via a transparent border the
+   background is clipped inside. */
+:not([data-native-scrollbar-probe])::-webkit-scrollbar {
+  width: var(--canopy-scrollbar-rail-size);
+  height: var(--canopy-scrollbar-rail-size);
+}
+
+/* "Never" hides the visual affordance without disabling wheel, touch,
+   keyboard, or programmatic scrolling on native-scrollbar holdouts. */
+:root[data-scrollbar-behavior='never']
+  :not([data-native-scrollbar-probe])::-webkit-scrollbar {
+  display: none;
+}
+
+/* Explicit visibility policies override Chromium's OS-derived native thumb
+   fading for holdout scroll areas. Hover and scroll activity are marked per
+   element by useScrollbarBehavior's shared capture listeners. */
+:root[data-scrollbar-behavior='hover']
+  :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb,
+:root[data-scrollbar-behavior='scroll']
+  :not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb {
+  background-color: transparent;
+}
+
+:root[data-scrollbar-behavior='hover']
+  [data-native-scrollbar-hovered='true']::-webkit-scrollbar-thumb,
+:root[data-scrollbar-behavior='scroll']
+  [data-native-scrollbar-scrolling='true']::-webkit-scrollbar-thumb {
+  background-color: var(--fg-quaternary);
+}
+
+/*
+ * Overlay scrollbar motion, matching the desktop sidebar exactly: the rail
+ * owns hover so the full 10px hit area grows the 6px thumb to 8px and deepens
+ * it from `--fg-quaternary` to `--fg-secondary`, rather than only the visible
+ * thumb pixels reacting. It grows by `scale` from its right edge rather than
+ * by `width`, so the motion runs on the compositor; the hovered corner is
+ * narrowed to 3px across first, so the scaled thumb lands on a true 4px round
+ * end.
+ */
+[data-overlay-scrollbar] {
+  transition: opacity 200ms ease-out;
+}
+
+[data-overlay-scrollbar-thumb] {
+  transform-origin: right center;
+  transition:
+    scale 250ms ease-out,
+    background-color 250ms ease-out;
+}
+
+[data-overlay-scrollbar]:hover [data-overlay-scrollbar-thumb] {
+  scale: calc(8 / 6) 1;
+  border-radius: 3px / 4px;
+  background-color: var(--fg-secondary);
+}
+
+/*
+ * Lines that change thickness on hover by `scale` rather than `width`, so the
+ * motion runs on the compositor. The line inside every resize divider
+ * (`ResizeRailIndicator`) is a 2px box drawn at half its width at rest, and
+ * full while its `group` handle is hovered or a drag is in progress; the
+ * sidebar's 2px group rail doubles while hovered or its group is expanded.
+ * The resize line keeps its trailing edge still, where a 1px line centered in
+ * the 8px handle has always been drawn (Chromium snaps its half-pixel offset
+ * forward), so it thickens toward the leading side as it always has.
+ * Wherever a line is scaled, its corner is first divided across the scaled
+ * axis by the same factor, so it lands on the true round end of a line that
+ * thickness. Hover matches Tailwind's `group-hover`, which applies only where
+ * hover exists.
+ */
+[data-resize-rail-indicator='vertical'] {
+  transform-origin: right center;
+  scale: 0.5 1;
+  border-radius: 1px / 0.5px;
+}
+
+[data-resize-rail-indicator='horizontal'] {
+  transform-origin: center bottom;
+  scale: 1 0.5;
+  border-radius: 0.5px / 1px;
+}
+
+[data-resize-rail-indicator][data-active='true'] {
+  scale: none;
+  border-radius: var(--radius-full);
+}
+
+[data-group-rail-line][data-expanded='true'] {
+  scale: 2 1;
+  border-radius: 1px / 2px;
+}
+
+@media (hover: hover) {
+  .group:hover [data-resize-rail-indicator] {
+    scale: none;
+    border-radius: var(--radius-full);
+  }
+
+  .group\/group-rail:hover [data-group-rail-line] {
+    scale: 2 1;
+    border-radius: 1px / 2px;
+  }
+}
+
+/*
+ * Native scrollbars borrow the sidebar's colours — the same 6px
+ * `--fg-quaternary` pill, deepening to `--fg-secondary` on hover. System mode
+ * leaves Chromium's OS-derived visibility intact; explicit policies above
+ * control the resting thumb colour for native-scrollbar holdouts.
+ */
+/* One rule, longhands only: the `background` SHORTHAND resets `background-clip`
+   back to `border-box`, which silently cancelled the transparent-border inset
+   below and painted the thumb across the full rail width. */
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb {
+  border: var(--canopy-scrollbar-thumb-inset) solid transparent;
+  background-color: var(--fg-quaternary);
+  background-clip: padding-box;
+  border-radius: var(--radius-full);
+  transition: background-color 0.2s ease-out;
+}
+
+:not([data-native-scrollbar-probe])::-webkit-scrollbar-thumb:hover {
+  background-color: var(--fg-secondary);
+}
+
+.scrollbar-hide {
+  scrollbar-width: none; /* Firefox / Chromium 121+ */
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none; /* Chromium (overrides global ::-webkit-scrollbar) */
+}
+
+/* Focus visible styles */
+.focus-ring {
+  outline: none;
+}
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--line-focus);
+  outline-offset: 2px;
+}
+
+/* The same ring drawn inside the control, for full-bleed rows in a scrolling
+ * or clipping container (a job list, a tree), where an outside ring would be
+ * cut off at the container's edges. Use with `focus-ring`. */
+.focus-ring-inset:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The ring around a row, for a toggle whose `::before` stretches its hit area
+ * over the row while other controls sit beside it (a collapsed turn summary
+ * and its outcome control). Use with `focus-ring`. */
+.focus-ring-stretched:focus-visible {
+  outline: none;
+}
+
+.focus-ring-stretched:focus-visible::before {
+  outline: 2px solid var(--line-focus);
+  outline-offset: 2px;
+}
+
+/* Rows in a menu, picker or context menu show keyboard focus the way they
+ * show hover, as a fill, never as the ring (DESIGN.md, Interaction states).
+ * This holds for every menu, including rows that also carry `focus-ring`;
+ * the hover fill is the default below. Controls inside a row (a favorite
+ * star, a clear button) keep the ring. */
+:is([role='menu'], [role='listbox'])
+  :is(
+    [role='menuitem'],
+    [role='menuitemradio'],
+    [role='menuitemcheckbox'],
+    [role='option']
+  ):focus-visible {
+  outline: none;
+}
+
+/* The default fill sits in `base`, under Tailwind's utilities, so a row's own
+ * background (selected, accent, a tone's hover) still wins over it. */
+@layer base {
+  :is([role='menu'], [role='listbox'])
+    :is(
+      [role='menuitem'],
+      [role='menuitemradio'],
+      [role='menuitemcheckbox'],
+      [role='option']
+    ):focus-visible {
+    background-color: var(--bg-subtle);
+  }
+}
+
+/*
+ * Textarea resize grip. Chromium draws its grip flush in the corner, where a
+ * rounded field's arc cuts through it, and CSS cannot move it. Keep the native
+ * resize behavior but repaint the resizer: two 1px diagonal strokes in the
+ * quaternary ink, 5px from each edge, so a 1px field border keeps 4px of clear
+ * space around the grip. The strokes end where the 8px corner arc has already
+ * straightened, so the arc stays clear too. Other engines keep their native
+ * grip.
+ */
+.field-resize-grip::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.field-resize-grip::-webkit-resizer {
+  background-color: transparent;
+  background-image:
+    linear-gradient(
+      135deg,
+      transparent 0 calc(50% - 0.5px),
+      var(--fg-quaternary) calc(50% - 0.5px) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    ),
+    linear-gradient(
+      135deg,
+      transparent 0 calc(50% - 0.5px),
+      var(--fg-quaternary) calc(50% - 0.5px) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    );
+  background-size:
+    8px 8px,
+    4px 4px;
+  background-position:
+    right 5px bottom 5px,
+    right 5px bottom 5px;
+  background-repeat: no-repeat;
+}
+
+/*
+ * Canonical dropdown/popover entry motion. Positioning is fixed with numeric
+ * top/left coordinates so transform remains exclusively available for scale.
+ * The shared React primitive withholds `data-positioned=true` until collision
+ * geometry and the final transform origin have been resolved.
+ */
+.canopy-floating-menu {
+  z-index: var(
+    --z-index-dropdown
+  ); /* z-exception: CSS backing for the shared dropdown tier */
+  max-width: calc(100vw - 16px);
+}
+
+/*
+ * Action menus and listboxes scroll inside the surface content box rather
+ * than on the rounded outer layer. The surface's canonical 4px padding is
+ * therefore also the scrollbar's top, right, and bottom inset. Clipping both
+ * layers prevents the native thumb from entering the 12px corner arcs during
+ * overscroll. The native `auto` gutter is intentionally overflow-aware:
+ * non-scrolling menus keep symmetric content insets, while Chromium reserves
+ * scrollbar space during actual overflow in the same layout pass that resolves
+ * `overflow-y`. This avoids component state, stale resize measurements, and
+ * ResizeObserver feedback loops as filtering or collision height changes.
+ *
+ * Manual composites own their internal list viewport and opt out through
+ * data-scroll-viewport=false, avoiding nested/double-painted scrollbars.
+ */
+.canopy-floating-menu[data-scroll-viewport='true'] {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  /*
+   * The surface's vertical padding moves INTO the scroll content: leaving it
+   * on the surface parks a band of surface color below the last visible row,
+   * which reads as a stray light strip under a mid-clipped row. With the
+   * viewport running edge to edge, rows scroll under the rounded corners
+   * instead, and the same 4px breathing room rides with the content.
+   */
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.canopy-floating-menu-scroll-content {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.canopy-floating-menu-scroll-viewport {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  border-radius: var(--radius-md);
+}
+
+/*
+ * Flagship picker anatomy. Width grows from the shared 216px default to the
+ * trigger width, then stops at the shared 320px/viewport cap. Intrinsic labels
+ * truncate inside the shared rails instead of changing the shell. Searchable
+ * manual composites use their list as the sole native scroll viewport. Its
+ * native `auto` gutter matches the managed action-menu viewport: short lists
+ * retain symmetric row insets, while an actual overflow reserves scrollbar
+ * space in the same layout pass without stale measurement state.
+ */
+.canopy-picker-menu {
+  display: flex;
+  width: min(
+    max(
+      var(--canopy-picker-trigger-width, 0px),
+      var(--canopy-picker-minimum-width, 13.5rem)
+    ),
+    var(--canopy-picker-maximum-width, 20rem),
+    calc(100vw - 16px)
+  );
+  min-width: 0;
+  max-width: min(var(--canopy-picker-maximum-width, 20rem), calc(100vw - 16px));
+  flex-direction: column;
+  overflow: hidden;
+  /*
+   * Vertical surface pad parks a dead band under a mid-clipped row (same
+   * failure mode as action menus). Zero it so the list scrolls under the
+   * rounded corners; horizontal `p-1` inset stays. Top/bottom breathing room
+   * lives on search/footer and `.canopy-picker-menu-list-content`.
+   */
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* Keep the surface's inset edge above the opaque provider rail. Repeat the
+ * shell's own shadow-xl clipped to the inside; the shell already paints outer
+ * elevation. */
+.canopy-model-picker-shell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: var(--shadow-xl);
+  clip-path: inset(0);
+  pointer-events: none;
+}
+
+/*
+ * The picker list scrolls behind a shared OverlayScrollArea: its native
+ * scrollbar is hidden and never participates in layout, so option rows keep
+ * symmetric left/right insets while the overlay thumb rides 2px in from the
+ * surface edge.
+ */
+/* Keep native picker scrollbars hidden; OverlayScrollArea controls its rail
+ * visibility according to the app or system scrollbar setting. */
+.canopy-picker-menu,
+.canopy-picker-menu * {
+  scrollbar-width: none;
+}
+
+.canopy-picker-menu::-webkit-scrollbar,
+.canopy-picker-menu *::-webkit-scrollbar {
+  display: none !important;
+}
+
+.canopy-picker-menu-list {
+  overscroll-behavior: contain;
+  border-radius: var(--radius-md);
+}
+
+/*
+ * List-content owns the 4px gap under the search/tabs divider and under the
+ * last row (including footerless menus) so scrolling to the end never crops
+ * the final option against the viewport edge.
+ */
+.canopy-picker-menu-list-content {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+/* Highlighted model rows add a 1px gap; keep the last visible inset at 4px. */
+.canopy-model-picker-highlight-selection .canopy-picker-menu-list-content {
+  padding-bottom: 3px;
+}
+
+/*
+ * Optional compact picker tabs consume the same content grid as every picker.
+ * Intrinsic tab widths share spare space without shrinking, so normal-width
+ * labels remain complete; on a narrower viewport the header scrolls
+ * horizontally instead of clipping ambiguous fragments. Keyboard focus
+ * scrolls the active tab into view. Selection is an accent underline that
+ * sits on the shared bottom rail (not a filled capsule) — same cue language
+ * as panel tabs.
+ */
+.canopy-picker-menu-tabs {
+  display: flex;
+  /* No width:100% — with -mx-1 that freezes the border box at the padded
+   * content width and leaves an 8px gap on the right. Auto width + negative
+   * margins expands to the surface edges like search/footer. */
+  min-width: 0;
+  align-items: stretch;
+  gap: 1px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.canopy-picker-menu-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.canopy-picker-menu-tab {
+  flex: 1 0 auto;
+}
+
+.canopy-picker-menu-tab[data-active='true']::after {
+  content: '';
+  position: absolute;
+  right: 0.5rem;
+  /* Sit fully inside the tab — tabs use overflow-y: hidden, so a
+   * bottom: -1px indicator was half-clipped and thickness changes looked like
+   * a no-op on localhost. */
+  bottom: 0;
+  left: 0.5rem;
+  z-index: 1;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--fg-accent);
+}
+
+.canopy-floating-menu[data-positioned='true'] {
+  animation: floating-menu-enter 250ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: opacity, transform;
+}
+
+/* Opt-out for high-frequency surfaces (sidebar context menus): the menu
+ * appears immediately with no entry motion. */
+.canopy-floating-menu.canopy-floating-menu-no-motion[data-positioned='true'] {
+  animation: none;
+}
+
+.markdown-code-copy-host:hover > .markdown-code-copy-control,
+.markdown-code-copy-host:focus-within > .markdown-code-copy-control {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.markdown-code-copy-button::before {
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  content: '';
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='13' height='13' rx='2' ry='2'/%3E%3Cpath d='M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'/%3E%3C/svg%3E");
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: 14px 14px;
+}
+
+.markdown-code-copy-button[data-copied='true']::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .canopy-floating-menu[data-positioned='true'] {
+    animation: none;
+  }
+}
+
+/* Base type size. The desktop "Interface scale" preference is NOT a
+ * font-size scale: it is a uniform Electron page zoom applied by the main
+ * process (apps/desktop-app/src/main/lib/ui-zoom.ts), so every CSS pixel —
+ * text, controls, radii, icons, insets, shadows — grows together. The
+ * renderer only records the selection as `data-ui-scale` on <html> and
+ * publishes `--ui-zoom` / `--border-hairline` (see `:root` above and
+ * apps/desktop-app/src/renderer/src/lib/theme.ts). The web app zooms
+ * natively through the browser and never sets either.
+ */
+:root {
+  font-size: 16px;
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared sidebar row styles (desktop sidebar + web portal rail)
+ * ------------------------------------------------------------------------ */
+
+/* Worktree creation reserves the exact 20px leading slot used by ordinary
+ * sidebar rows. A fixed 16px rounded rectangle previews the incoming icon
+ * without introducing a second loader or shifting the label. */
+.sidebar-icon-skeleton {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg-quaternary) 24%, transparent);
+}
+
+.sidebar-icon-skeleton::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background: color-mix(in srgb, var(--fg-quaternary) 20%, transparent);
+  opacity: 0;
+}
+
+/* Cut the usage-alert halo out of the avatar itself. A background-colored ring
+ * looks like a solid white/gray border when the sidebar material is
+ * translucent; this mask lets the actual material below show through. */
+.sidebar-account-avatar-attention-mask {
+  -webkit-mask-image: radial-gradient(
+    circle 4px at calc(100% + 1px) 1px,
+    transparent 0 3.75px,
+    black 4px
+  );
+  mask-image: radial-gradient(
+    circle 4px at calc(100% + 1px) 1px,
+    transparent 0 3.75px,
+    black 4px
+  );
+}
+
+@keyframes sidebar-icon-skeleton-shade {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sidebar-icon-skeleton::after {
+    animation: sidebar-icon-skeleton-shade 1200ms ease-in-out infinite;
+  }
+}
+
+/* `InlineTextSkeleton`: the same soft shade as a bar on a line of prose,
+ * holding the place of text that has not arrived. 0.9em tall and centered on
+ * the text, it stays inside the line box, so the line height never changes.
+ * The halo softens its edges. It shades only while `data-active` marks a
+ * fetch in flight, after 300ms so cache hits never flash. */
+.canopy-inline-skeleton {
+  position: relative;
+  display: inline-block;
+  height: 0.9em;
+  overflow: hidden;
+  vertical-align: middle;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--fg-quaternary) 24%, transparent);
+  box-shadow: 0 0 0.2em 0.05em
+    color-mix(in srgb, var(--fg-quaternary) 16%, transparent);
+}
+
+/* Only an active bar gets the shade layer: a transcript can hold hundreds of
+ * idle bars, and each pseudo-element is another box to lay out. */
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-inline-skeleton[data-active='true']::after {
+    position: absolute;
+    inset: 0;
+    content: '';
+    background: color-mix(in srgb, var(--fg-quaternary) 20%, transparent);
+    opacity: 0;
+    animation: sidebar-icon-skeleton-shade 1200ms ease-in-out 300ms infinite;
+  }
+}
+
+/* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
+ * lays its resting and busy labels in one grid cell so the button keeps one
+ * width, and draws the label that is not showing from `data-reserved-label`,
+ * so it holds its width without adding text to the DOM. */
+.canopy-reserved-label::before {
+  content: attr(data-reserved-label);
+}
+
+/* Shimmering status text (`canopy-text-shimmer`), for work in progress such
+ * as a focused sidebar row's "Running setup…": a primary-ink band sweeps
+ * across text drawn in its own color. The band holds the full primary ink
+ * (white in dark, black in light) across its middle third, with a soft edge
+ * each side: a band that only touched full strength at one point read as a
+ * faint grey pass. The gradient paints the glyphs through
+ * `background-clip: text`; `currentColor` still reads the element's `color`
+ * because only the fill is made transparent. At rest (reduced motion) the
+ * visible window holds no band, so the text reads in its plain color. */
+.canopy-text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 35%,
+    var(--fg-primary) 45%,
+    var(--fg-primary) 55%,
+    currentColor 65%,
+    currentColor 100%
+  );
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* A stronger shimmer for the clean chat look's live step: the words rest in
+ * the quaternary ink and a soft primary band sweeps across them in one
+ * continuous, linear pass. The gradient is a seamless 200%-wide tile
+ * (repeat-x) and the animation moves exactly one tile per cycle, so the loop
+ * never restarts visibly; eased intermediate stops keep the band's edges
+ * soft. Rows set `--canopy-shimmer-delay` from the document clock so a row
+ * that remounts picks up the sweep where it was instead of starting over. */
+.canopy-text-shimmer-strong {
+  color: var(--fg-quaternary);
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 22%,
+    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 32%,
+    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 42%,
+    var(--fg-primary) 50%,
+    color-mix(in oklab, currentColor 30%, var(--fg-primary)) 58%,
+    color-mix(in oklab, currentColor 75%, var(--fg-primary)) 68%,
+    currentColor 78%,
+    currentColor 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: repeat-x;
+  background-position: 0% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+@keyframes canopy-text-shimmer-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@keyframes canopy-text-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-text-shimmer {
+    animation: canopy-text-shimmer 2s linear infinite;
+  }
+
+  .canopy-text-shimmer-strong {
+    animation: canopy-text-shimmer-sweep 2.4s linear infinite;
+    animation-delay: var(--canopy-shimmer-delay, 0s);
+  }
+}
+
+/* Without motion the band would sit still over part of the words, so the
+ * live step shows in plain secondary ink instead. */
+@media (prefers-reduced-motion: reduce) {
+  .canopy-text-shimmer-strong {
+    color: var(--fg-secondary);
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* CometSpinner (`components/CometSpinner.tsx`): a ring whose ink fades in
+ * along a conic gradient toward a round head. The geometry is adapted from
+ * the `Comet` spinner in loading-dev 0.3.5
+ * (https://github.com/jakubkrehel/loading), used under the MIT License:
+ *
+ * Copyright (c) 2026 Jakub Krehel
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ * The stroke is 12% of the spinner's size, with a 1.5px floor so the ring
+ * stays legible at sidebar sizes. */
+.canopy-comet-tail {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: conic-gradient(from 0deg, transparent, currentColor);
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--canopy-comet-stroke)),
+    #000 0
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--canopy-comet-stroke)),
+    #000 0
+  );
+}
+
+.canopy-comet-head {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--canopy-comet-stroke);
+  height: var(--canopy-comet-stroke);
+  border-radius: 9999px;
+  background: currentColor;
+  transform: translateX(-50%);
+}
+
+/* Fade scrolling settings rows beneath the fixed Back control by masking the
+ * moving viewport itself. The material remains visible through the mask, and
+ * the custom scrollbar stays fully opaque as the viewport's sibling. */
+.settings-nav-scroll-mask {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 0.75rem);
+  mask-image: linear-gradient(to bottom, transparent 0, black 0.75rem);
+}
+
+/* Visibility and document lifecycle. Keep the resting glyph and
+ * accessible running state; inactive effects own no ticking animations or
+ * forced layers. This also covers a reduced-motion preference changed live. */
+[data-canopy-motion-active='false'],
+[data-canopy-motion-active='false'] * {
+  animation: none !important;
+  will-change: auto !important;
+}
+.canopy-text-shimmer-strong[data-canopy-motion-active='false'] {
+  color: var(--fg-secondary);
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
+}

@@ -1,0 +1,5 @@
+# Test configuration for `flutter test`.
+tags:
+  # Local Remote Control request budgets (CAN-4872). CI excludes the tag;
+  # run them with `flutter test --tags request-budget`.
+  request-budget:
