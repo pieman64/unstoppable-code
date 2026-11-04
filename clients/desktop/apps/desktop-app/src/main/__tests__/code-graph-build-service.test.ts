@@ -70,9 +70,7 @@ const mockHasCompletedCodeGraph = jest.fn<
   Parameters<typeof readCodeGraphWorktreeCompletion>
 >(() => false);
 jest.mock('../lib/code-graph-worktree-fingerprint', () => ({
-  persistStableCodeGraphWorktreeFingerprint: jest.fn(
-    (): Promise<boolean> => Promise.resolve(true),
-  ),
+  clearCodeGraphWorktreeFingerprintCache: jest.fn(),
   readCodeGraphWorktreeCompletion: (
     ...args: Parameters<typeof readCodeGraphWorktreeCompletion>
   ): Promise<boolean> => Promise.resolve(mockHasCompletedCodeGraph(...args)),
@@ -384,6 +382,9 @@ describe('code graph build service', () => {
       expect(mockRunCodeGraphWorkerBuild).toHaveBeenCalledWith(
         'project-1/worktree-1',
         expect.objectContaining({
+          // The build host stores this once the graph is published, when the
+          // worktree still matches it.
+          fingerprint: { start: 'fingerprint' },
           timings: {
             fingerprintMs: 17,
             seedCopyMs: anyNumber,
@@ -401,6 +402,11 @@ describe('code graph build service', () => {
         ok: true,
         result: builtResult(),
         seedOutcomes: [],
+        fingerprint: {
+          outcome: 'persisted',
+          endFingerprintMs: 4.04,
+          persistMs: 1.01,
+        },
       });
 
       await runWorktreeCodeGraphBuild({
@@ -431,8 +437,11 @@ describe('code graph build service', () => {
       });
       const build = records[0]?.codeGraphBuild;
       expect(build?.totalMs).toBeGreaterThanOrEqual(0);
-      expect(build?.endFingerprintMs).toBeGreaterThanOrEqual(0);
-      expect(build?.fingerprintPersistMs).toBeGreaterThanOrEqual(0);
+      expect(build).toMatchObject({
+        endFingerprintMs: 4,
+        fingerprintPersistMs: 1,
+        fingerprintPersistOutcome: 'persisted',
+      });
     });
 
     it('omits the first-graph request time once the worktree has a graph', async () => {

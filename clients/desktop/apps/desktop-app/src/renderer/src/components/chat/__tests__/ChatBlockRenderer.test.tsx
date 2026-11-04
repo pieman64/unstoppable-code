@@ -3330,7 +3330,7 @@ describe('CAN-4275 located links', () => {
   );
 
   it.each(['README.md:012:4-020:9', '/workspace/README.md#L12-20'])(
-    'resolves stripped %s, preserves the label/title, and replaces range/single/plain state',
+    'resolves stripped %s, preserves the label/tooltip, and replaces range/single/plain state',
     async (href) => {
       useAgentFilePresentationStore.setState({ byTabId: {} });
       const original = Object.getOwnPropertyDescriptor(window, 'api');
@@ -3364,8 +3364,24 @@ describe('CAN-4275 located links', () => {
         );
       try {
         render(href);
-        expect(container.querySelector('button')?.title).toBe(href);
+        const link = container.querySelector('button');
+        expect(link?.hasAttribute('title')).toBe(false);
         expect(container.textContent).toBe('Authored label');
+        // The full target shows in the shared tooltip after the long hover delay.
+        act(() => {
+          link?.parentElement?.dispatchEvent(
+            new MouseEvent('mouseover', { bubbles: true }),
+          );
+        });
+        await act(() => new Promise((resolve) => setTimeout(resolve, 550)));
+        expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(
+          href,
+        );
+        act(() => {
+          link?.parentElement?.dispatchEvent(
+            new MouseEvent('mouseout', { bubbles: true }),
+          );
+        });
         await act(() =>
           Promise.resolve(container.querySelector('button')?.click()),
         );

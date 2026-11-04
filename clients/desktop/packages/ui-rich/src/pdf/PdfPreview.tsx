@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type FormEvent,
   type JSX,
 } from 'react';
 import {
@@ -21,17 +20,23 @@ import {
   type RenderTask,
 } from 'pdfjs-dist';
 import {
-  nextPdfSearchMatchIndex,
   searchPdfPagesIncrementally,
   type PdfSearchMatch,
   type PdfSearchTextItem,
 } from './pdf-search';
-import { Button, SearchField } from '@canopy/ui-shared/components';
+import { Button, Tooltip } from '@canopy/ui-shared/components';
+import {
+  MinusIcon,
+  PlusIcon,
+  MaximizeIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import styles from './PdfPreview.module.css';
+import { isPdfRectangle, pdfExternalLinks } from './pdf-links';
 
 export const PDF_PREVIEW_MAX_PAGES = 500;
 export const PDF_PREVIEW_MAX_CANVAS_PIXELS = 8_388_608;
+const EMPTY_SEARCH_MATCHES: readonly PdfSearchMatch[] = [];
 export const PDF_PREVIEW_MAX_SOURCE_IMAGE_PIXELS = 8_388_608;
 const PDF_PREVIEW_PAGE_LOAD_CONCURRENCY = 8;
 const MIN_ZOOM = 0.5;
@@ -48,14 +53,17 @@ export interface PdfPreviewAssets {
 export interface PdfPreviewProps {
   readonly bytes: ArrayBuffer;
   readonly fileName: string;
-  /**
-   * Show the name in the toolbar. Hosts that already name the file in their
-   * own chrome pass `false`; the name then survives only as the preview
-   * region's accessible name, so the panel states it exactly once.
-   */
-  readonly showFileName?: boolean;
+  readonly search?: { readonly query: string; readonly index: number };
+  readonly onSearchResult?: (result: PdfPreviewSearchResult) => void;
   readonly onRenderFailure: (failure: PdfPreviewRenderFailure) => void;
   readonly resolveAssets: (pdfJsVersion: string) => PdfPreviewAssets;
+}
+
+export interface PdfPreviewSearchResult {
+  readonly ready: boolean;
+  readonly query: string;
+  readonly totalCount: number;
+  readonly currentIndex: number;
 }
 
 interface PdfLoadedPageInfo {
@@ -108,7 +116,8 @@ type PdfPageShellStyle = CSSProperties & {
 export function PdfPreview({
   bytes,
   fileName,
-  showFileName = true,
+  search,
+  onSearchResult,
   onRenderFailure,
   resolveAssets,
 }: PdfPreviewProps): JSX.Element {
@@ -117,10 +126,20 @@ export function PdfPreview({
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [fitWidth, setFitWidth] = useState(false);
-  const [query, setQuery] = useState('');
-  const [matches, setMatches] = useState<readonly PdfSearchMatch[]>([]);
-  const [activeMatchIndex, setActiveMatchIndex] = useState(-1);
-  const [searching, setSearching] = useState(false);
+  const query = search?.query ?? '';
+  const [result, setResult] = useState<{
+    query: string;
+    matches: readonly PdfSearchMatch[];
+  }>({ query: '', matches: [] });
+  const matches =
+    result.query === query ? result.matches : EMPTY_SEARCH_MATCHES;
+  const requestedIndex = search?.index ?? 0;
+  const activeMatchIndex =
+    matches.length === 0
+      ? -1
+      : requestedIndex >= 0 && requestedIndex < matches.length
+        ? requestedIndex
+        : 0;
   const previewPageCount = Math.min(totalPages, PDF_PREVIEW_MAX_PAGES);
   const searchReady = previewPageCount > 0 && pages.length === previewPageCount;
   const assets = useMemo(() => resolveAssets(version), [resolveAssets]);
@@ -130,6 +149,8 @@ export function PdfPreview({
   const documentRef = useRef<PDFDocumentProxy | null>(null);
   const pageShells = useRef(new Map<number, HTMLElement>());
   const canvases = useRef(new Map<number, HTMLCanvasElement>());
+  const linkLayers = useRef(new Map<number, HTMLDivElement>());
+  const annotationCache = useRef(new Map<number, Promise<unknown>>());
   const textLayers = useRef(new Map<number, HTMLDivElement>());
   const renderWork = useRef(new Map<number, PdfPageRenderWork>());
   const textDivs = useRef(new Map<number, HTMLElement[]>());
@@ -159,6 +180,7 @@ export function PdfPreview({
       canvas.height = 0;
     }
     textLayers.current.get(pageIndex)?.replaceChildren();
+    linkLayers.current.get(pageIndex)?.replaceChildren();
   }, []);
 
   const applySearchHighlight = useCallback((pageIndex?: number): void => {
@@ -305,6 +327,43 @@ export function PdfPreview({
         if (renderWork.current.get(pageIndex)?.token !== token) return;
         textDivs.current.set(pageIndex, textLayer.textDivs);
         applySearchHighlight(pageIndex);
+        // Annotation failure is separate from canvas/text failure: keep the
+        // readable page if only its links are damaged.
+        let annotations = annotationCache.current.get(pageIndex);
+        if (!annotations) {
+          annotations = info.page.getAnnotations({ intent: 'display' });
+          annotationCache.current.set(pageIndex, annotations);
+        }
+        void annotations
+          .then((items: unknown) => {
+            if (renderWork.current.get(pageIndex)?.token !== token) return;
+            const layer = linkLayers.current.get(pageIndex);
+            if (!layer) return;
+            const anchors = pdfExternalLinks(items).flatMap((link) => {
+              const rectangle: unknown = viewport.convertToViewportRectangle([
+                ...link.rect,
+              ]);
+              if (!isPdfRectangle(rectangle)) return [];
+              const [x1, y1, x2, y2] = rectangle;
+              const anchor = layer.ownerDocument.createElement('a');
+              anchor.href = link.url;
+              anchor.target = '_blank';
+              anchor.rel = 'noopener noreferrer';
+              anchor.title = link.url;
+              anchor.setAttribute('aria-label', link.url);
+              anchor.dataset.testid = 'pdf-external-link';
+              anchor.style.left = `${Math.min(x1, x2)}px`;
+              anchor.style.top = `${Math.min(y1, y2)}px`;
+              anchor.style.width = `${Math.abs(x2 - x1)}px`;
+              anchor.style.height = `${Math.abs(y2 - y1)}px`;
+              return anchor;
+            });
+            layer.replaceChildren(...anchors);
+          })
+          .catch(() => {
+            if (annotationCache.current.get(pageIndex) === annotations)
+              annotationCache.current.delete(pageIndex);
+          });
       } catch (error) {
         // A cancelled or superseded render (scroll-out, zoom change) is
         // routine and must not touch page state. A real rasterization or
@@ -337,11 +396,10 @@ export function PdfPreview({
       setPages([]);
       setTotalPages(0);
       setCurrentPage(1);
-      setMatches([]);
-      setActiveMatchIndex(-1);
-      setSearching(false);
+      setResult({ query: '', matches: [] });
     });
     textCache.current.clear();
+    annotationCache.current.clear();
     searchGeneration.current += 1;
     const documentRenderWork = renderWork.current;
 
@@ -542,165 +600,113 @@ export function PdfPreview({
     }
   }, [activeMatchIndex, applySearchHighlight, matches]);
 
-  const runSearch = (event: FormEvent<HTMLFormElement>): void => {
-    event.preventDefault();
-    if (!searchReady) return;
-    const normalized = query.trim();
-    const generation = searchGeneration.current + 1;
-    searchGeneration.current = generation;
-    if (normalized.length === 0) {
-      setMatches([]);
-      setActiveMatchIndex(-1);
-      setSearching(false);
-      return;
-    }
-    setSearching(true);
+  useEffect(() => {
+    const generation = ++searchGeneration.current;
+    if (!searchReady || query.trim().length === 0) return;
     void searchPdfPagesIncrementally({
       pageCount: pages.length,
-      query: normalized,
+      query: query.trim(),
       getPageItems: async (pageIndex) => {
         const cached = getPageTextContent(pageIndex);
         if (!cached) return [];
         try {
           return textItems(await cached);
         } catch {
-          // One page failing extraction contributes no items for that page
-          // only; matches already found on healthy pages must survive.
           return [];
         }
       },
       isCurrent: () => searchGeneration.current === generation,
     })
-      .then((result) => {
-        if (result === null || searchGeneration.current !== generation) return;
-        setMatches(result);
-        setActiveMatchIndex(result.length > 0 ? 0 : -1);
-        setSearching(false);
+      .then((found) => {
+        if (found !== null && searchGeneration.current === generation)
+          setResult({ query, matches: found });
       })
       .catch(() => {
-        // A failed extraction must not strand the aria-live region on
-        // "Searching…" (or reject unhandled); report an empty result instead.
-        if (searchGeneration.current !== generation) return;
-        setMatches([]);
-        setActiveMatchIndex(-1);
-        setSearching(false);
+        if (searchGeneration.current === generation)
+          setResult({ query, matches: [] });
       });
-  };
+    return (): void => {
+      searchGeneration.current += 1;
+    };
+  }, [getPageTextContent, pages.length, query, searchReady]);
 
-  const moveMatch = (direction: 1 | -1): void => {
-    setActiveMatchIndex((current) =>
-      nextPdfSearchMatchIndex(current, matches.length, direction),
-    );
-  };
+  useEffect(() => {
+    onSearchResult?.({
+      ready: searchReady,
+      query,
+      totalCount: matches.length,
+      currentIndex: Math.max(0, activeMatchIndex),
+    });
+  }, [activeMatchIndex, matches.length, onSearchResult, query, searchReady]);
 
   return (
     <div
       className={styles.preview}
       data-testid="pdf-preview"
-      // `role` is required for the label to reach assistive tech: neither this
-      // element nor the toolbar carries one otherwise, and `aria-label` on a
-      // role-less div is ignored.
-      role={showFileName ? undefined : 'group'}
-      aria-label={showFileName ? undefined : fileName}
+      role="group"
+      aria-label={fileName}
     >
-      <div className={styles.toolbar} data-testid="pdf-preview-toolbar">
-        {showFileName && (
-          <span className={styles.fileName} title={fileName}>
-            {fileName}
-          </span>
-        )}
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          aria-label="Zoom out"
-          disabled={zoom <= MIN_ZOOM}
-          onClick={() => {
-            setFitWidth(false);
-            setZoom((value) => Math.max(MIN_ZOOM, value - ZOOM_STEP));
-          }}
-        >
-          −
-        </Button>
-        <span aria-label="Zoom level">{Math.round(zoom * 100)}%</span>
-        <Button
-          variant="ghost"
-          size="compact"
-          iconOnly
-          aria-label="Zoom in"
-          disabled={zoom >= MAX_ZOOM}
-          onClick={() => {
-            setFitWidth(false);
-            setZoom((value) => Math.min(MAX_ZOOM, value + ZOOM_STEP));
-          }}
-        >
-          +
-        </Button>
-        <Button
-          variant="ghost"
-          size="compact"
-          aria-label="Fit PDF to width"
-          aria-pressed={fitWidth}
-          onClick={() => setFitWidth(true)}
-        >
-          Fit width
-        </Button>
-        <span aria-label="Current PDF page">
-          {currentPage} / {Math.max(totalPages, pages.length)}
-        </span>
-        <form className={styles.search} onSubmit={runSearch}>
-          <SearchField
-            aria-label="Search PDF"
-            data-testid="pdf-search-input"
-            className="w-44"
-            disabled={!searchReady}
-            value={query}
-            onValueChange={(next) => {
-              searchGeneration.current += 1;
-              setQuery(next);
-              setMatches([]);
-              setActiveMatchIndex(-1);
-              setSearching(false);
+      <div
+        className={styles.zoomControls}
+        data-testid="pdf-zoom-controls"
+        role="group"
+        aria-label="PDF zoom"
+      >
+        <Tooltip label="Zoom in">
+          <Button
+            variant="ghost"
+            size="compact"
+            iconOnly
+            aria-label="Zoom in"
+            disabled={zoom >= MAX_ZOOM}
+            onClick={() => {
+              setFitWidth(false);
+              setZoom((value) => Math.min(MAX_ZOOM, value + ZOOM_STEP));
             }}
-          />
-          <Button
-            type="submit"
-            variant="secondary"
-            size="compact"
-            aria-label="Search PDF text"
-            disabled={!searchReady}
           >
-            Search
+            <PlusIcon size="sm" />
           </Button>
+        </Tooltip>
+        <Tooltip label="Zoom out">
           <Button
             variant="ghost"
             size="compact"
             iconOnly
-            aria-label="Previous PDF search match"
-            disabled={matches.length === 0}
-            onClick={() => moveMatch(-1)}
+            aria-label="Zoom out"
+            disabled={zoom <= MIN_ZOOM}
+            onClick={() => {
+              setFitWidth(false);
+              setZoom((value) => Math.max(MIN_ZOOM, value - ZOOM_STEP));
+            }}
           >
-            ↑
+            <MinusIcon size="sm" />
           </Button>
+        </Tooltip>
+        <Tooltip label="Fit PDF to width">
           <Button
             variant="ghost"
             size="compact"
             iconOnly
-            aria-label="Next PDF search match"
-            disabled={matches.length === 0}
-            onClick={() => moveMatch(1)}
+            aria-label="Fit PDF to width"
+            aria-pressed={fitWidth}
+            onClick={() => setFitWidth(true)}
           >
-            ↓
+            <MaximizeIcon size="sm" />
           </Button>
-          <span data-testid="pdf-search-count" aria-live="polite">
-            {searching
-              ? 'Searching…'
-              : `${activeMatchIndex < 0 ? 0 : activeMatchIndex + 1} / ${String(matches.length)}`}
-          </span>
-        </form>
+        </Tooltip>
+        <span className={styles.zoomLevel} aria-label="Zoom level">
+          {Math.round(zoom * 100)}%
+        </span>
       </div>
+      <span
+        className={styles.pageCounter}
+        data-testid="pdf-page-counter"
+        aria-label="Current PDF page"
+      >
+        {currentPage} / {Math.max(totalPages, pages.length)}
+      </span>
       {/* The rendered pages are file content: session replay keeps a
-          placeholder. The toolbar and its file name stay recorded. */}
+          placeholder. The floating controls stay recorded. */}
       <div
         className={`${REPLAY_BLOCK_CLASS} ${styles.scroller}`}
         ref={scrollerRef}
@@ -743,6 +749,13 @@ export function PdfPreview({
                       else textLayers.current.delete(pageIndex);
                     }}
                     className={styles.textLayer}
+                  />
+                  <div
+                    ref={(node) => {
+                      if (node) linkLayers.current.set(pageIndex, node);
+                      else linkLayers.current.delete(pageIndex);
+                    }}
+                    className={styles.linkLayer}
                   />
                 </>
               ) : (

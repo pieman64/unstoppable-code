@@ -18,6 +18,7 @@ import {
   ErrorBanner,
   Markdown,
   SettingsTableSkeleton,
+  Tooltip,
   useCopyToClipboard,
 } from '@canopy/ui-shared/components';
 import {
@@ -294,14 +295,14 @@ function FeedCardShell({
               <MemberAvatar
                 name={member?.name ?? item.actor.displayName ?? ''}
                 image={member?.image ?? null}
-                size={32}
+                size="lg"
               />
             </SettingsLink>
           ) : (
             <MemberAvatar
               name={member?.name ?? item.actor.displayName ?? ''}
               image={member?.image ?? null}
-              size={32}
+              size="lg"
             />
           )}
           <span
@@ -405,31 +406,35 @@ function CopyPermalinkButton({
   };
 
   // The same capsule in both states, so focus stays on it: the circle with
-  // the link glyph, then the labelled "Copied" confirmation.
-  return copied ? (
-    <Button
-      variant="secondary"
-      size="compact"
-      onClick={() => void copy()}
-      data-testid="feed-item-copy-link"
-      aria-label="Copy link to this activity"
-      title="Copy link to this activity"
-    >
-      <ClipboardCheck size={13} />
-      Copied
-    </Button>
-  ) : (
-    <Button
-      variant="ghost"
-      size="compact"
-      iconOnly
-      onClick={() => void copy()}
-      data-testid="feed-item-copy-link"
-      aria-label="Copy link to this activity"
-      title="Copy link to this activity"
-    >
-      <Link2 size={13} />
-    </Button>
+  // the link glyph, then the labelled "Copied" confirmation. One tooltip
+  // wraps both, so swapping them keeps the wrapper and focus; it stays quiet
+  // while "Copied" shows.
+  return (
+    <Tooltip label="Copy link to this activity" suppressed={copied}>
+      {copied ? (
+        <Button
+          variant="secondary"
+          size="compact"
+          onClick={() => void copy()}
+          data-testid="feed-item-copy-link"
+          aria-label="Copy link to this activity"
+        >
+          <ClipboardCheck size={13} />
+          Copied
+        </Button>
+      ) : (
+        <Button
+          variant="ghost"
+          size="compact"
+          iconOnly
+          onClick={() => void copy()}
+          data-testid="feed-item-copy-link"
+          aria-label="Copy link to this activity"
+        >
+          <Link2 size={13} />
+        </Button>
+      )}
+    </Tooltip>
   );
 }
 

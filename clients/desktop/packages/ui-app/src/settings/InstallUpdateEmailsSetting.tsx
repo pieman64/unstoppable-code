@@ -14,6 +14,7 @@ import {
   SettingsFormSkeleton,
   SettingsRowsRow,
   CopyDetailsButton,
+  SettingsRowsSection,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -82,18 +83,12 @@ export interface InstallUpdateEmailsSettingProps {
 
 function renderDefaultFrame(content: ReactNode): ReactNode {
   return (
-    <section
-      className="flex flex-col gap-3"
-      aria-labelledby="install-update-emails-heading"
+    <SettingsRowsSection
+      title={INSTALL_UPDATE_EMAILS_TITLE}
+      headingId="install-update-emails-heading"
     >
-      <h2
-        id="install-update-emails-heading"
-        className="text-m font-medium fg-primary"
-      >
-        {INSTALL_UPDATE_EMAILS_TITLE}
-      </h2>
       {content}
-    </section>
+    </SettingsRowsSection>
   );
 }
 

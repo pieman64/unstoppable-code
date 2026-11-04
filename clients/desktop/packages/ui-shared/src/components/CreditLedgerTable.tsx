@@ -22,6 +22,7 @@
 import type { JSX } from 'react';
 import type { AiCreditsLedgerEntry } from '@canopy/protocol';
 import { formatCredits } from '../lib/billing-format';
+import { DataTable } from './DataTable';
 
 /**
  * Exactly the customer-safe display fields this component reads, picked from
@@ -72,35 +73,43 @@ export function CreditLedgerTable({
   formatDate,
 }: CreditLedgerTableProps): JSX.Element {
   return (
-    <div className="overflow-x-auto">
-      <table className="hidden w-full text-left text-s sm:table">
-        <thead>
-          <tr className="text-xs fg-secondary">
-            <th className="py-2 pr-4 font-medium">Date</th>
-            <th className="py-2 pr-4 font-medium">Description</th>
-            <th className="py-2 font-medium">Credits</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {entries.map((entry) => (
-            <tr key={entry.id} data-testid={`credit-ledger-row-${entry.id}`}>
-              <td className="whitespace-nowrap py-2 pr-4 fg-secondary">
-                {formatDate(entry.createdAt)}
-              </td>
-              <td className="py-2 pr-4 fg-primary">
-                {entry.description ?? '—'}
-              </td>
-              <td
-                className={`whitespace-nowrap py-2 ${
-                  entry.credits < 0 ? 'fg-secondary' : 'fg-primary'
-                }`}
+    <div>
+      <DataTable
+        className="hidden sm:block"
+        caption="Credit activity"
+        rows={entries}
+        rowKey={(entry) => entry.id}
+        rowAttributes={(entry) => ({
+          'data-testid': `credit-ledger-row-${entry.id}`,
+        })}
+        columns={[
+          {
+            key: 'date',
+            header: 'Date',
+            tone: 'secondary',
+            render: (entry) => formatDate(entry.createdAt),
+          },
+          {
+            key: 'description',
+            header: 'Description',
+            tone: 'primary',
+            overflow: 'wrap',
+            render: (entry) => entry.description ?? '—',
+          },
+          {
+            key: 'credits',
+            header: 'Credits',
+            align: 'right',
+            render: (entry) => (
+              <span
+                className={entry.credits < 0 ? 'fg-secondary' : 'fg-primary'}
               >
                 {creditLabel(entry.credits)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              </span>
+            ),
+          },
+        ]}
+      />
 
       <ul className="flex flex-col divide-y sm:hidden">
         {entries.map((entry) => (

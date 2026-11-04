@@ -39,7 +39,7 @@ import type {
   SharedCollectionSummary,
 } from '@canopy/desktop-shared/types/collections';
 import type {
-  McpServerData,
+  McpServerDataView,
   McpServerIndexEntry,
   McpServerStatusEntry,
   McpServerToolsCacheEntry,
@@ -1203,7 +1203,7 @@ describe('PluginsPage discovery', () => {
       openProviderConnectorSettings: jest.fn().mockResolvedValue(undefined),
       loadServer: jest.fn(),
       getAccountConnection: jest.fn(),
-      saveServer: jest.fn().mockImplementation((server: McpServerData) =>
+      saveServer: jest.fn().mockImplementation((server: McpServerDataView) =>
         Promise.resolve({
           version: 1,
           server: {
@@ -1843,6 +1843,15 @@ describe('PluginsPage discovery', () => {
 
   function entryDetail(): Element | null {
     return document.querySelector('[data-testid="plugins-entry-detail"]');
+  }
+
+  /** The connection notice keeps the raw error under Technical details. */
+  function openTechnicalDetails(): void {
+    const toggle = entryDetail()?.querySelector<HTMLButtonElement>(
+      '[data-testid="plugin-connection-technical-details-toggle"]',
+    );
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle?.click());
   }
 
   function mcpServerDialog(): Element | null {
@@ -7086,6 +7095,7 @@ describe('PluginsPage discovery', () => {
       expect(
         container.querySelector('[data-testid="plugin-oauth-browser"]'),
       ).toBeNull();
+      openTechnicalDetails();
       expect(entryDetail()?.textContent).toContain(
         'Secure storage unavailable',
       );
@@ -7136,6 +7146,7 @@ describe('PluginsPage discovery', () => {
     );
     act(() => authChanged());
     await settle();
+    openTechnicalDetails();
     expect(entryDetail()?.textContent).toContain(
       'Temporary status read failure',
     );

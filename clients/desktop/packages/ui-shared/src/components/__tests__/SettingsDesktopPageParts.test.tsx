@@ -4,9 +4,9 @@
 import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { AdvancedDisclosure } from '../AdvancedDisclosure';
 import { DialogFormField } from '../DialogFormField';
 import { DialogModal } from '../DialogModal';
+import { Disclosure } from '../Disclosure';
 import { SettingsSelect } from '../SettingsSelect';
 import { ChoiceList, ChoiceListRow } from '../ChoiceList';
 import { TextLinkButton } from '../ExternalTextLink';
@@ -200,16 +200,16 @@ describe('TextLinkButton', () => {
   });
 });
 
-describe('AdvancedDisclosure', () => {
+describe('Disclosure leading mark', () => {
   it('draws a leading mark after the chevron and names the region it opens', () => {
     render(
-      <AdvancedDisclosure
+      <Disclosure
         label="Only have a Grok account?"
         dataTestId="hint"
         leadingIcon={<svg data-testid="mark" />}
       >
         Body
-      </AdvancedDisclosure>,
+      </Disclosure>,
     );
     const toggle = byTestId('hint-toggle');
     expect(toggle.textContent).toBe('Only have a Grok account?');

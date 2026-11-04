@@ -577,10 +577,12 @@ test('custom skill Edit opens its Marketplace edit page', async () => {
     // CAN-4261: the page has no Back; the Skills crumb returns to the list.
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
     await expect(skillsList).toBeVisible();
-    // A custom skill's row reads its last update (CAN-4844).
-    await expect(installedSkillRow(window, CUSTOM_SKILL)).toContainText(
-      /Updated\s\d+[smhd]\sago/,
-    );
+    // CAN-4847: the compact custom row names its creator.
+    await expect(
+      installedSkillRow(window, CUSTOM_SKILL).getByTestId(
+        `customize-row-subtitle-skill:custom:app:${CUSTOM_SKILL}`,
+      ),
+    ).toHaveText('You');
 
     // ---------------------------------------------------------------------
     // The row menu's Edit opens the same page; Cancel lands on the details.
@@ -990,7 +992,9 @@ test('CAN-4264 skill page checks, applies once, reloads content and synchronizes
     await expect(status).toContainText('Up to date');
     // CAN-4261: the page has no Back; the Skills crumb returns to the list.
     await window.getByTestId('plugins-entry-detail-breadcrumb-type').click();
-    await expect(row).toContainText('GitHub · e2e');
+    await expect(
+      row.getByTestId(`customize-row-source-skill:${sourceId}:${name}`),
+    ).toHaveText('e2e');
     // CAN-4267: the row's "Update available" button became the Customize
     // update marker and the Updates section.
     await expect(

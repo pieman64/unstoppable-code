@@ -95,31 +95,16 @@ describe('DagProgressDots', () => {
     expect(glyphs(compact)).toEqual(glyphs(full));
     // Static: no job buttons, no popovers; a hairline between tiers.
     expect(compact).not.toContain('<button');
-    expect(compact.match(/data-dag-tier-separator/g)).toHaveLength(1);
-  });
-
-  it('keeps every job state in order in the tiny drawer strip', () => {
-    const tiers = [JOBS.slice(0, 4), JOBS.slice(4)].map((tier) =>
-      tier.map((job) => job.jobId),
-    );
-    const jobs = Object.fromEntries(JOBS.map((job) => [job.jobId, job]));
-    const full = renderToString(<DagProgressDots tiers={tiers} jobs={jobs} />);
-    const tiny = renderToString(
-      <DagProgressDots tiers={tiers} jobs={jobs} appearance="tiny" />,
-    );
-    expect(glyphs(tiny)).toEqual(glyphs(full));
-    expect(tiny).not.toContain('<button');
-    expect(tiny).not.toContain('data-dag-tier-separator');
+    expect(compact.match(/data-progress-stage-separator/g)).toHaveLength(1);
   });
 
   it.each(['running', 'restarting'] as const)(
-    'uses the shared rotating comet for a tiny %s job',
+    'uses the shared rotating comet for a %s job',
     (status) => {
       const html = renderToString(
         <DagProgressDots
           tiers={[['active']]}
           jobs={{ active: { jobId: 'active', name: 'Active', status } }}
-          appearance="tiny"
         />,
       );
       expect(html).toContain('data-spinner="comet"');

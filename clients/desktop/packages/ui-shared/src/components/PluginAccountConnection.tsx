@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { CheckIcon, ChevronDownIcon } from '../icons/AppIcons';
+import { CheckIcon } from '../icons/AppIcons';
+import { Disclosure } from './Disclosure';
 import { Notice } from './Notice';
 
 /** Statuses that read as a working connection and carry the check. */
@@ -28,7 +29,7 @@ export function PluginAccountConnection({
   availability,
   headingLevel = 3,
 }: PluginAccountConnectionProps): JSX.Element {
-  const Heading = headingLevel === 4 ? 'h4' : 'h3';
+  const HeadingTag = headingLevel === 4 ? 'h4' : 'h3';
   return (
     <div className="min-w-0 space-y-5">
       <section
@@ -38,9 +39,9 @@ export function PluginAccountConnection({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <Heading className="text-s font-medium fg-primary">
+              <HeadingTag className="text-s font-medium fg-primary">
                 Connection
-              </Heading>
+              </HeadingTag>
               <p
                 className="inline-flex items-center gap-1.5 text-xs fg-secondary"
                 aria-live="polite"
@@ -105,19 +106,13 @@ export function PluginConnectionNotice({
       title={title}
       detail={
         !guidance ? (
-          <details className="group/diagnostics mt-2 min-w-0">
-            <summary className="focus-ring flex w-fit cursor-pointer list-none items-center gap-1 rounded fg-secondary [&::-webkit-details-marker]:hidden">
-              <ChevronDownIcon
-                size={12}
-                className="shrink-0 group-open/diagnostics:rotate-180"
-                aria-hidden="true"
-              />
-              Technical details
-            </summary>
-            <p className="mt-2 whitespace-pre-wrap break-words font-mono">
-              {error}
-            </p>
-          </details>
+          <Disclosure
+            label="Technical details"
+            dataTestId="plugin-connection-technical-details"
+            className="mt-2"
+          >
+            <p className="whitespace-pre-wrap break-words font-mono">{error}</p>
+          </Disclosure>
         ) : undefined
       }
     >

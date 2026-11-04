@@ -34,6 +34,10 @@ import type { CuratedPipelineListQuery } from '@canopy/protocol/pipeline-catalog
 import {
   Button,
   BusyLabel,
+  DataTableBody,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
   EmptyState,
   ErrorBanner,
   SearchField,
@@ -409,62 +413,49 @@ export function PipelineListView({
             <>
               {/* Table */}
               {filtered.length > 0 && (
-                <div
-                  className="overflow-hidden overflow-x-auto rounded-lg border"
-                  data-testid="pipelines-table"
+                <DataTableFrame
+                  testId="pipelines-table"
+                  caption="Workflows"
+                  layout="fixed"
+                  minWidth="56.25rem"
                 >
-                  <table className="w-full min-w-225 table-fixed text-s">
-                    <colgroup>
-                      <col />
-                      <col className="w-32" />
-                      <col className="w-32" />
-                      <col className="w-28" />
-                      {/* Fits the widest row: 6 actions (toggle, share link,
-                        edit/view, share, duplicate, delete) on a shared row
-                        with delete rights =
-                        6*26px + 5*2px gap + 24px cell padding = 190px. */}
-                      <col className="w-52" />
-                    </colgroup>
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="text-left px-3 py-2 font-medium fg-secondary">
-                          Workflow
-                        </th>
-                        <th className="text-left px-3 py-2 font-medium fg-secondary">
-                          Source
-                        </th>
-                        <th className="text-left px-3 py-2 font-medium fg-secondary">
-                          Scope
-                        </th>
-                        <th className="text-left px-3 py-2 font-medium fg-secondary">
-                          Triggers
-                        </th>
-                        <th className="px-3 py-2 text-right whitespace-nowrap font-medium fg-secondary">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.map((p) => (
-                        <PipelineTableRow
-                          key={`${p.source}:${p.id}`}
-                          pipeline={p}
-                          enabled={!disabledPipelineIds.has(p.id)}
-                          onToggleEnabled={(enabled) =>
-                            onToggleEnabled(p.id, enabled)
-                          }
-                          onEdit={onEdit}
-                          onDelete={() => handleRowDelete(p)}
-                          onDuplicate={onDuplicate}
-                          onShare={onShare}
-                          sharePending={
-                            sharePendingId === `${p.source}:${p.id}`
-                          }
-                        />
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                  <DataTableHead>
+                    <DataTableHeaderCell>Workflow</DataTableHeaderCell>
+                    <DataTableHeaderCell width="8rem">
+                      Source
+                    </DataTableHeaderCell>
+                    <DataTableHeaderCell width="8rem">
+                      Scope
+                    </DataTableHeaderCell>
+                    <DataTableHeaderCell width="7rem">
+                      Triggers
+                    </DataTableHeaderCell>
+                    {/* Fits the widest row: 6 actions (toggle, share link,
+                      edit/view, share, duplicate, delete) on a shared row
+                      with delete rights =
+                      6*26px + 5*2px gap + 24px cell padding = 190px. */}
+                    <DataTableHeaderCell width="13rem" align="right">
+                      Actions
+                    </DataTableHeaderCell>
+                  </DataTableHead>
+                  <DataTableBody>
+                    {filtered.map((p) => (
+                      <PipelineTableRow
+                        key={`${p.source}:${p.id}`}
+                        pipeline={p}
+                        enabled={!disabledPipelineIds.has(p.id)}
+                        onToggleEnabled={(enabled) =>
+                          onToggleEnabled(p.id, enabled)
+                        }
+                        onEdit={onEdit}
+                        onDelete={() => handleRowDelete(p)}
+                        onDuplicate={onDuplicate}
+                        onShare={onShare}
+                        sharePending={sharePendingId === `${p.source}:${p.id}`}
+                      />
+                    ))}
+                  </DataTableBody>
+                </DataTableFrame>
               )}
 
               <div

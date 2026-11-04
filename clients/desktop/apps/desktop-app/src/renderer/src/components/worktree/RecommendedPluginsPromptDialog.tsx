@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import type {
   RecommendedPluginApplyResult,
@@ -355,9 +355,9 @@ export function RecommendedPluginsPromptDialog({
             className="space-y-2 rounded-lg border p-3"
             data-testid="recommended-plugin-requirements"
           >
-            <h3 className="text-xs font-medium fg-primary">
+            <Heading level={3} variant="title">
               Environment setup
-            </h3>
+            </Heading>
             <ul className="space-y-2">
               {prompt.requirements.map((requirement) => (
                 <li

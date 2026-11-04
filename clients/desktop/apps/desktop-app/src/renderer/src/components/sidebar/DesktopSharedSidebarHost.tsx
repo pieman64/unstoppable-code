@@ -56,9 +56,17 @@ import {
   type WorktreePipelineEntry,
 } from '@/stores/pipelineRunsStore';
 import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
-import { ArchivedContainersNavLink, LoadingSpinner } from '@canopy/ui-shared';
+import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
+import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
+import { isCoworkChatTarget } from '@/lib/cowork';
+import {
+  ArchivedContainersNavLink,
+  LoadingSpinner,
+  summarizeCommandFailure,
+} from '@canopy/ui-shared';
 import { openArchivedOverviewSurface } from '@/lib/archivedContainerNavigation';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { resolveNavigationTarget } from '@/lib/navigation/page-availability';
 import { useDesktopPendingProjects } from './desktopPendingProjects';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
 import { TeardownFailedError, useProjectsStore } from '@/stores/projectsStore';
@@ -89,6 +97,7 @@ import type {
   WorktreeDiffStatsStyle,
 } from '@canopy/desktop-shared/types';
 import {
+  APP_ADVISOR_PROJECT_ID,
   defaultCoworkWorkspaceIdForContext,
   isDefaultCoworkWorkspaceId,
 } from '@canopy/desktop-shared/types';
@@ -196,6 +205,12 @@ import { useSpaceNotificationSidebarProps } from '@/hooks/useSpaceNotificationSi
 
 /** Row naming while early access is off: stored label or branch, then id. */
 const DEFAULT_ROW_NAMING: WorktreeRowNaming = { title: undefined };
+
+// Creation must reject to release the shared sidebar's pending row. The
+// projects store already presents this failure through WorktreeErrorNotice.
+class WorktreeCreationNoticeError extends Error {
+  override name = 'WorktreeCreationNoticeError';
+}
 
 // Host contracts are exported alongside the component for focused unit tests.
 
@@ -1338,7 +1353,12 @@ export function DesktopSharedSidebarHost({
   // change takes) must not let its first render see the PREVIOUS mount's
   // last-published keys before this mount's own effect above republishes.
   useEffect(() => resetDesktopRowLiveKeys, []);
-  const refreshSequence = useRef(0);
+  const refreshState = useRef<{
+    client: CanopyClient;
+    active: boolean;
+    inFlight: boolean;
+    pending: boolean;
+  } | null>(null);
   const onSnapshotRef = useRef(onSnapshot);
   const onRefreshMeasuredRef = useRef(onRefreshMeasured);
   useEffect(() => {
@@ -1543,29 +1563,49 @@ export function DesktopSharedSidebarHost({
     ],
   );
   const refresh = useCallback(async (): Promise<void> => {
-    const sequence = ++refreshSequence.current;
-    const startedAt = performance.now();
+    const state = refreshState.current;
+    if (!state?.active || state.client !== client) return;
+    if (state.inFlight) {
+      state.pending = true;
+      return;
+    }
+    state.inFlight = true;
     try {
-      const next = await client.query('session.snapshot', {});
-      if (sequence !== refreshSequence.current) return;
-      setSnapshot(next);
-      onSnapshotRef.current?.(next);
-      onRefreshMeasuredRef.current?.(performance.now() - startedAt);
-    } catch (error) {
-      // The native path remains available and the dark switch must not crash
-      // the desktop shell while a snapshot refresh is transiently unavailable.
-      reportRendererConsoleError('Shared sidebar snapshot refresh failed', {
-        error,
-      });
-      if (sequence === refreshSequence.current) {
-        setSnapshotFailures((count) => count + 1);
-      }
+      do {
+        state.pending = false;
+        const startedAt = performance.now();
+        try {
+          const next = await client.query('session.snapshot', {});
+          if (!state.active) return;
+          if (state.pending) continue;
+          setSnapshot(next);
+          onSnapshotRef.current?.(next);
+          onRefreshMeasuredRef.current?.(performance.now() - startedAt);
+        } catch (error) {
+          if (!state.active) return;
+          // Keep the native path available while a snapshot is unavailable.
+          reportRendererConsoleError('Shared sidebar snapshot refresh failed', {
+            error,
+          });
+          if (!state.pending) setSnapshotFailures((count) => count + 1);
+        }
+      } while (state.active && state.pending);
+    } finally {
+      state.inFlight = false;
     }
   }, [client]);
 
   useEffect(() => {
+    const state = { client, active: true, inFlight: false, pending: false };
+    refreshState.current = state;
+    const unsubscribe = client.subscribe('session.snapshot-stale', () => {
+      void refresh();
+    });
     void refresh();
-    return client.subscribe('session.snapshot-stale', () => void refresh());
+    return (): void => {
+      state.active = false;
+      unsubscribe();
+    };
   }, [client, refresh]);
   // Until a first snapshot lands the rail shows "Loading projects", and the
   // only other re-pull is a stale event that may never come. Retry a failed
@@ -2171,7 +2211,30 @@ export function DesktopSharedSidebarHost({
             },
           };
         }}
-        onGroupError={(_workspaceId, error): void =>
+        onGroupError={(_workspaceId, error): void => {
+          const navigation = useNavigationStore.getState();
+          const visiblePage = resolveNavigationTarget(navigation.activePage);
+          const archive = useArchivedContainersStore.getState();
+          const shared = useSharedContainerReplicasStore.getState();
+          // Match the page and overlays that can cover WorktreeErrorNotice
+          // inside MainPage; a covered notice cannot own the visible failure.
+          const archiveCoversNotice = [archive.viewer, archive.overview].some(
+            (entry) =>
+              entry !== null &&
+              entry.workspaceId !== APP_ADVISOR_PROJECT_ID &&
+              !isCoworkChatTarget(entry.workspaceId),
+          );
+          if (
+            error instanceof WorktreeCreationNoticeError &&
+            useProjectsStore.getState().worktreeError === error.message &&
+            (visiblePage === 'main' || visiblePage === 'kanban') &&
+            !navigation.settingsOpen &&
+            !useSidebarPageHandoffStore.getState().coversMainShell &&
+            !archiveCoversNotice &&
+            shared.viewer === null &&
+            !shared.pastSharesOpen
+          )
+            return;
           useGitHubStore
             .getState()
             .addToast(
@@ -2179,31 +2242,28 @@ export function DesktopSharedSidebarHost({
                 ? error.message
                 : 'Group changes could not be saved. Try again.',
               'error',
-            )
-        }
+            );
+        }}
         onCreateWorktree={async (workspaceId, groupId) => {
-          if (!groupId) {
-            model.onCreateWorktree(workspaceId);
-            return { status: 'pending' };
-          }
-          const created = await useProjectsStore
-            .getState()
-            .createWorktree(workspaceId, {
-              sidebarItemGroupId: groupId,
-              onRegistered: (worktree): void =>
-                model.onSelectWorktree(workspaceId, worktree.id),
-            });
+          const created = groupId
+            ? await useProjectsStore.getState().createWorktree(workspaceId, {
+                sidebarItemGroupId: groupId,
+                onRegistered: (worktree): void =>
+                  model.onSelectWorktree(workspaceId, worktree.id),
+              })
+            : await model.onCreateWorktree(workspaceId);
           if (
             !created &&
             useProjectsStore.getState().pendingWorkspaceRepair?.workspaceId ===
               workspaceId
           )
             return { status: 'pending' };
-          if (!created)
-            throw new Error(
-              useProjectsStore.getState().worktreeError ??
-                'Worktree could not be created. Try again.',
-            );
+          if (!created) {
+            const error = useProjectsStore.getState().worktreeError;
+            if (error && summarizeCommandFailure(error).summary !== '')
+              throw new WorktreeCreationNoticeError(error);
+            throw new Error('Worktree could not be created. Try again.');
+          }
           return { status: 'completed', worktreeId: created.id };
         }}
         onCreateBranchWorktree={model.onCreateBranchWorktree}
@@ -2371,7 +2431,7 @@ export function DesktopSharedSidebarHost({
                   onClick={(): void => {
                     if (createWorktreeDisabled) return;
                     close();
-                    model.onCreateWorktree(project.id);
+                    void model.onCreateWorktree(project.id);
                   }}
                 >
                   <DropdownMenuItemIcon>

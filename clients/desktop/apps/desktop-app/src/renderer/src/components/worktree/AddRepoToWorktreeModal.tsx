@@ -18,6 +18,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import {
   Button,
+  Heading,
   Notice,
   SegmentedControl,
   type SegmentedControlOption,
@@ -618,9 +619,9 @@ export function AddRepoToWorktreeModal({
 
             {loadingOptions ? (
               <div className="rounded-xl border bg-secondary/10 p-4">
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Loading projects
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   Checking repo identities for eligible join targets.
                 </p>
@@ -630,9 +631,9 @@ export function AddRepoToWorktreeModal({
                 className="rounded-xl border bg-secondary/10 p-4"
                 data-testid="add-repo-to-worktree-modal-empty"
               >
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   No eligible projects
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   Add a project with at least one repo that is not already here.
                 </p>
@@ -659,9 +660,9 @@ export function AddRepoToWorktreeModal({
 
             {loadingExisting || !hasLoadedExisting ? (
               <div className="rounded-xl border bg-secondary/10 p-4">
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Loading worktrees
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   Checking other projects for joinable worktrees.
                 </p>
@@ -671,9 +672,9 @@ export function AddRepoToWorktreeModal({
                 className="rounded-xl border bg-secondary/10 p-4"
                 data-testid="add-repo-to-worktree-modal-existing-empty"
               >
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   No worktrees to join
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   Create a worktree in another project first, then join it into
                   this one.

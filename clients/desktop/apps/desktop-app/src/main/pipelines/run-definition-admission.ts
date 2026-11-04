@@ -5,9 +5,14 @@ import {
   type PipelineDefinition,
 } from '@canopy/protocol/canopy-core';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
-import type { Pipeline } from '@canopy/desktop-shared/types/pipeline';
+import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
+import type {
+  Pipeline,
+  PipelineData,
+} from '@canopy/desktop-shared/types/pipeline';
 import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { withPipelinePresentation } from './pipeline-definition-presentation';
 
 export interface AdmittedRunDefinition {
   /** The validated document the run executes and snapshots. */
@@ -77,4 +82,61 @@ export async function admitStoredRunDefinition(
   );
   if (diagnostic) throw new Error(diagnostic.message);
   return { pipeline: parsePipelineText(definition.document), definition };
+}
+
+export interface AdmittedCuratedRunDefinition extends AdmittedRunDefinition {
+  /**
+   * The managed revision the same read refreshed, with its cached file.
+   */
+  readonly managed: PipelineData;
+  /** The revision's package, which the run executes with. */
+  readonly pipelinePackage?: NonNullable<ExecutionOptions['pipelinePackage']>;
+}
+
+/** A refusal in the words of the source that refused it. */
+function sourceMessage(error: CanopyOperationError): string {
+  const cause = error.runtimeCause;
+  return cause instanceof Error && cause.message
+    ? cause.message
+    : error.payload.message;
+}
+
+/**
+ * The validated revision a curated run executes, read through
+ * `core.pipeline.definition.get` like a stored run's. Core's curated source
+ * refreshes the managed revision and its package in that one read; a revision
+ * that does not validate refuses the run with its first diagnostic.
+ */
+export function admitCuratedRunDefinition(
+  definitionId: string,
+): Promise<AdmittedCuratedRunDefinition> {
+  return withPipelinePresentation(async (presentation) => {
+    let definition: PipelineDefinition;
+    try {
+      ({ definition } = await getDesktopCanopyRuntime().query(
+        'core.pipeline.definition.get',
+        { definitionId, scope: {} },
+        { caller: PIPELINE_RUN_ADMISSION_CALLER },
+      ));
+    } catch (error) {
+      throw error instanceof CanopyOperationError
+        ? new Error(sourceMessage(error))
+        : error;
+    }
+    const read = presentation.pipeline('read', 'curated', definitionId);
+    if (read?.kind !== 'data')
+      throw new Error('This curated workflow could not be read.');
+    const diagnostic = definition.diagnostics.find(
+      (entry) => entry.severity === 'error',
+    );
+    if (diagnostic) throw new Error(diagnostic.message);
+    return {
+      pipeline: parsePipelineText(definition.document),
+      definition,
+      managed: read.data,
+      ...(read.pipelinePackage
+        ? { pipelinePackage: read.pipelinePackage }
+        : {}),
+    };
+  });
 }

@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import { Heading, Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { isNoticeStatesPageEnabled } from '@/components/sidebar/notice-states-page-flag';
 import { NoticeComposerPreview } from './NoticeComposerPreview';
 import { ToastTestBench } from './ToastTestBench';
@@ -87,7 +87,9 @@ function NoticeStateGalleryContent(): JSX.Element {
       data-testid="page-notice-states"
     >
       <header className="px-8 pt-8 pb-4">
-        <h1 className="text-lg font-semibold">Notices — all states</h1>
+        <Heading level={1} variant="page">
+          Notices — all states
+        </Heading>
         <p className="mt-1 max-w-3xl text-xs fg-secondary">
           The composer notices and the other notices that follow the title-first
           shape, rendered through the shared <code>Notice</code> with the copy
@@ -108,7 +110,9 @@ function NoticeStateGalleryContent(): JSX.Element {
           className="mb-12"
           data-testid="notice-gallery-section-primitive"
         >
-          <h2 className="mb-1 text-sm font-semibold">Primitive</h2>
+          <Heading level={2} variant="title" className="mb-1">
+            Primitive
+          </Heading>
           <p className="mb-3 max-w-3xl text-xs fg-secondary">
             One surface for every intent; only the glyph ink changes. A short
             title in the primary ink leads the line and the message follows it
@@ -160,7 +164,9 @@ function NoticeStateGalleryContent(): JSX.Element {
             className="mb-12"
             data-testid={`notice-gallery-section-${section.id}`}
           >
-            <h2 className="mb-1 text-sm font-semibold">{section.title}</h2>
+            <Heading level={2} variant="title" className="mb-1">
+              {section.title}
+            </Heading>
             <p className="mb-3 max-w-3xl text-xs fg-secondary">
               {section.note}
             </p>

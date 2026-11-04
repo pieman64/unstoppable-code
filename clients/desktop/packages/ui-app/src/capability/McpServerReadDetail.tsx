@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, type JSX, type ReactNode } from 'react';
-import { Fact, FactList } from '@canopy/ui-shared/components';
+import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
 import { Button, StatusLabel } from '@canopy/ui-shared/components';
 
@@ -56,7 +56,9 @@ export function McpServerReadDetail({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-base font-semibold fg-primary">{server.name}</h3>
+          <Heading level={3} variant="section">
+            {server.name}
+          </Heading>
           {server.description && (
             <p className="mt-1 text-sm fg-secondary">{server.description}</p>
           )}
@@ -155,9 +157,9 @@ export function McpServerReadDetail({
 
       {server.curated !== undefined && (
         <section data-testid="mcp-server-read-curated">
-          <h4 className="mb-2 text-xs font-medium fg-primary">
+          <Heading level={4} variant="label" className="mb-2">
             Curated catalog
-          </h4>
+          </Heading>
           <FactList rowGap="2" labelTone="secondary">
             <Fact label="Catalog key">{server.curated.key}</Fact>
             {server.curated.authorName !== undefined && (
@@ -209,12 +211,14 @@ export function McpServerReadDetail({
 
       {statusSection}
       <section aria-labelledby="mcp-server-configs-heading">
-        <h4
+        <Heading
+          level={4}
+          variant="label"
           id="mcp-server-configs-heading"
-          className="mb-2 text-xs font-medium fg-primary"
+          className="mb-2"
         >
           Configurations
-        </h4>
+        </Heading>
         {server.configs.length === 0 ? (
           <p className="text-xs fg-secondary">No configurations.</p>
         ) : (

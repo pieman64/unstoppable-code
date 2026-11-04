@@ -21,6 +21,7 @@ import {
   IN_APP_BROWSER_NETWORK_PATH_URL_MESSAGE,
 } from '@/lib/browserUrl';
 import { resetBrowserTabPreviewsForTests } from '@/lib/panels/browser-tab-preview';
+import { BrowserAddressBar } from '../BrowserAddressBar';
 import { BrowserBar } from '../BrowserBar';
 import { BrowserConsolePanel } from '../BrowserConsolePanel';
 import { BrowserNetworkPanel } from '../BrowserNetworkPanel';
@@ -208,7 +209,11 @@ beforeEach(() => {
 afterEach(() => {
   // Two Browser-bar cases opt into local-only browsing; reset so the rest of
   // the file keeps the default.
-  useBrowserStore.setState({ localServersOnly: false });
+  useBrowserStore.setState({
+    localServersOnly: false,
+    searchEngineId: 'google',
+    customSearchEngines: [],
+  });
   boundingRectSpy.mockRestore();
   requestAnimationFrameSpy.mockRestore();
   cancelAnimationFrameSpy.mockRestore();
@@ -602,6 +607,76 @@ describe('BrowserBar', () => {
     } finally {
       act(() => root.unmount());
       container.remove();
+    }
+  });
+
+  async function submitAddressBar(value: string): Promise<{
+    readonly input: HTMLInputElement | null;
+    readonly cleanup: () => void;
+  }> {
+    seedLiveBrowser();
+    const { container, root } = mount(
+      <BrowserAddressBar
+        browserId={BROWSER_ID}
+        snapshot={snapshot()}
+        inspectorOpen={false}
+        errorCount={0}
+        onToggleInspector={(): void => undefined}
+      />,
+    );
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-testid="browser-url-input"]',
+    );
+    await act(async () => {
+      setInputValue(input, value);
+      input?.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+      await Promise.resolve();
+    });
+    return {
+      input,
+      cleanup: (): void => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it('searches Google from the address bar when keywords are typed', async () => {
+    const { input, cleanup } = await submitAddressBar('react hooks');
+    try {
+      expect(input?.placeholder).toBe('Search Google or type a URL');
+      expect(browserApi.navigate).toHaveBeenCalledWith({
+        browserId: BROWSER_ID,
+        url: 'https://www.google.com/search?q=react+hooks',
+      });
+      expect(input?.getAttribute('aria-invalid')).toBe('false');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('searches with a search engine the user added', async () => {
+    useBrowserStore.setState({
+      searchEngineId: 'custom-wiki',
+      customSearchEngines: [
+        {
+          id: 'custom-wiki',
+          name: 'Wikipedia',
+          urlTemplate: 'https://en.wikipedia.org/w/index.php?search=%s',
+        },
+      ],
+    });
+    const { input, cleanup } = await submitAddressBar('react hooks');
+    try {
+      expect(input?.placeholder).toBe('Search Wikipedia or type a URL');
+      expect(browserApi.navigate).toHaveBeenCalledWith({
+        browserId: BROWSER_ID,
+        url: 'https://en.wikipedia.org/w/index.php?search=react+hooks',
+      });
+    } finally {
+      cleanup();
     }
   });
 

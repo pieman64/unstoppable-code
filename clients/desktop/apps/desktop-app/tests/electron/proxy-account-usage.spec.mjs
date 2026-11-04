@@ -198,11 +198,11 @@ test('proxy account settings show scoped limits and preserve fresh cached values
     await expect(claude).toContainText('sam@example.com');
     await expect(claude).toContainText('Claude Max 20x');
     await expect(claude.getByRole('progressbar').first()).not.toBeVisible();
-    await claude.locator('summary').click();
+    await claude.getByTestId('provider-account-usage-toggle').click();
     await expect(claude.getByRole('progressbar').first()).toBeVisible();
     await expect(claude).toContainText(/Sonnet/i);
     await expect(claude).toContainText(/Extra usage/i);
-    await claude.locator('summary').focus();
+    await claude.getByTestId('provider-account-usage-toggle').focus();
     await window.keyboard.press('Enter');
     await expect(claude.getByRole('progressbar').first()).not.toBeVisible();
     await window.keyboard.press('Enter');
@@ -210,7 +210,7 @@ test('proxy account settings show scoped limits and preserve fresh cached values
     const codex = window.getByTestId(
       `account-proxy-account-${PROXY_USAGE_CODEX}`,
     );
-    await codex.locator('summary').click();
+    await codex.getByTestId('provider-account-usage-toggle').click();
     await expect(codex).toContainText(/review/i);
     await expect(codex).toContainText('123');
     expect(
@@ -267,7 +267,7 @@ test('passive Codex quotas show each window duration once', async () => {
     const account = window.getByTestId(
       `account-proxy-account-${PROXY_USAGE_CODEX}`,
     );
-    await account.locator('summary').click();
+    await account.getByTestId('provider-account-usage-toggle').click();
     await expect(
       account.getByText('5-hour window', { exact: true }),
     ).toBeVisible();
@@ -308,7 +308,7 @@ test('Settings refreshes untimestamped passive quotas after live reads fail', as
     const account = window.getByTestId(
       `account-proxy-account-${PROXY_USAGE_CLAUDE}`,
     );
-    await account.locator('summary').click();
+    await account.getByTestId('provider-account-usage-toggle').click();
     const meter = account.getByRole('progressbar').first();
     await expect(meter).toHaveAttribute('aria-valuenow', '20');
     await expect(account.getByRole('status')).toBeVisible();

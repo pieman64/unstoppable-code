@@ -47,6 +47,23 @@ afterEach(() => {
 });
 
 describe('surfaceFindStore', () => {
+  it('restores the modal opener when retargeting an already-open background search', () => {
+    const background = document.createElement('button');
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const pdf = document.createElement('button');
+    dialog.append(pdf);
+    document.body.append(background, dialog);
+    store().registerController(
+      makeController('chat', 'background', background),
+    );
+    store().registerController(makeController('file', 'pdf', pdf));
+    store().openFor('chat', 'background', background);
+    store().openFor('file', 'pdf', pdf);
+    store().close();
+    expect(document.activeElement).toBe(pdf);
+  });
+
   it('registers and unregisters controllers and lists available modes', () => {
     const chat = makeController('chat', 'c1');
     const file = makeController('file', 't1');

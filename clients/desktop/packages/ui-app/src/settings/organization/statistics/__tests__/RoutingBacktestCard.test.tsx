@@ -388,7 +388,14 @@ describe('RoutingBacktestCard', () => {
     expect(byTestId('routing-backtest-export-spend')).toBeNull();
     expect(byTestId('routing-backtest-export-models')).toBeNull();
     expect(byTestId('routing-backtest-enable-auto')).toBeNull();
-    expect(byTestId('routing-backtest-details')?.textContent).toContain(
+    const detailsToggle = byTestId('routing-backtest-details-toggle');
+    expect(detailsToggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(byTestId('routing-backtest-details-body')).toBeNull();
+    await act(async () => {
+      detailsToggle?.click();
+    });
+    expect(detailsToggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(byTestId('routing-backtest-details-body')?.textContent).toContain(
       'claude-sonnet-5',
     );
   });
@@ -408,9 +415,6 @@ describe('RoutingBacktestCard', () => {
     expect(progress?.querySelector('[aria-label="Thinking"]')).not.toBeNull();
     const bar = progress?.querySelector('[role="progressbar"]');
     expect(bar?.getAttribute('aria-valuenow')).toBe('0');
-    expect(bar?.firstElementChild?.getAttribute('style')).toContain(
-      'width: 0%',
-    );
     expect(byTestId('routing-backtest-progress-count')).toBeNull();
   });
 

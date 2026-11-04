@@ -482,6 +482,30 @@ describe('PipelineEditAdapter project pipelines', () => {
       worktreeId: '',
     });
   });
+
+  it('shares with the worktree its opener named while another checkout is selected', () => {
+    // A Workflows panel in a pop-out window opens its own checkout's pipeline
+    // while the main window shows another worktree.
+    setMockEditor('project-review', { pipelineInfo: PROJECT, isDirty: false });
+    renderShell(
+      { ...TARGET, worktree: WORKTREE_A },
+      {
+        pipelines: pipelinesApi({
+          projectContext: {
+            cwd: '/repo-b',
+            worktree: { projectId: 'project-b', worktreeId: 'worktree-b' },
+          },
+        }),
+      },
+    );
+
+    click(byTestId('pipeline-share'));
+
+    expect(byTestId('mock-share-modal')?.dataset).toMatchObject({
+      projectId: 'project-a',
+      worktreeId: 'worktree-a',
+    });
+  });
 });
 
 describe('PipelineEditAdapter shortcuts', () => {

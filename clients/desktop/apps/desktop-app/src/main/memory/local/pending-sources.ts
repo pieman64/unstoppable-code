@@ -5,7 +5,7 @@ import {
   type ImportState,
   type ImportStateStagedEntry,
 } from './import/ledger';
-import { isMemoryMarkdownFileName } from './store';
+import { isMemoryMarkdownFileName } from './memory-files';
 
 export interface PendingImport {
   fileKey: string;

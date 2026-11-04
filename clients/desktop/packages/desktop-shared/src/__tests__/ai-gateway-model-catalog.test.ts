@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { mergeAiGatewayModelCatalog } from '../ai-gateway-model-catalog';
+import { mapThinkingToReasoningEffort } from '../lib/codex-model-config';
 import {
   initOrgGatewayModelAliases,
   resolveOwnerScopedModelId,
@@ -869,4 +870,160 @@ describe('mergeAiGatewayModelCatalog', () => {
       ]).toEqual(['off', 'low', 'medium', 'high']);
     });
   });
+});
+
+describe('approved gateway model reasoning', () => {
+  afterEach(() => sharedTypes.initAiGatewayModels([], []));
+
+  it.each([
+    {
+      id: 'kimi-k3.1-pro',
+      gatewayId: 'moonshotai/kimi-k3.1-pro',
+      levels: ['low', 'high'],
+    },
+    {
+      id: 'minimax-m3.1-flash',
+      gatewayId: 'minimax/minimax-m3.1-flash',
+      levels: ['low', 'medium', 'high'],
+    },
+    {
+      id: 'mercury-3',
+      gatewayId: 'inception/mercury-3',
+      levels: ['low', 'medium', 'high'],
+    },
+  ])(
+    'never invents disabled reasoning for $gatewayId',
+    ({ id, gatewayId, levels }) => {
+      const response = catalog([
+        { id, gatewayId, recommendedHarness: 'codex' },
+      ]);
+      const row = response.models[0];
+      if (!row) throw new Error('Missing catalog fixture');
+      row.thinkingLevelsExact = true;
+      row.supportedThinkingLevels = levels.map((level) => {
+        if (!sharedTypes.isThinkingLevel(level))
+          throw new Error('Invalid effort fixture');
+        return level;
+      });
+      const merged = mergeAiGatewayModelCatalog({
+        packageConfig,
+        catalog: response,
+      });
+      expect(merged.gatewayRoutes[0]?.supportedThinkingLevels).toEqual(levels);
+      sharedTypes.initAiGatewayModels(
+        merged.aiGatewayModels,
+        merged.gatewayRoutes,
+      );
+      expect(
+        sharedTypes.modelSupportsThinkingLevel(id, 'off', 'codex', true),
+      ).toBe(false);
+      expect(
+        sharedTypes.clampThinkingLevelForModel('off', id, 'codex', true),
+      ).toBe('low');
+      expect(sharedTypes.getGatewayModelEntry(id)?.gatewayId).toBe(gatewayId);
+      for (const level of row.supportedThinkingLevels) {
+        expect(mapThinkingToReasoningEffort(level, id, true)).toBe(level);
+      }
+    },
+  );
+
+  it('adds one Terra route without replacing native context, thinking, or harness guards', () => {
+    const pkg = parseModelPackageConfig(
+      JSON.parse(
+        readFileSync(resolve(__dirname, '../../../../package.json'), 'utf8'),
+      ),
+    );
+    const response = catalog([
+      {
+        id: 'gpt-6.1-terra',
+        gatewayId: 'openai/gpt-6.1-terra',
+        recommendedHarness: 'codex',
+        requiresLocalHarnessSupport: true,
+      },
+    ]);
+    const row = response.models[0];
+    if (!row) throw new Error('Missing Terra fixture');
+    row.contextWindow = 1_050_000;
+    row.supportedThinkingLevels = [
+      'off',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ];
+    const merged = mergeAiGatewayModelCatalog({
+      packageConfig: pkg,
+      catalog: response,
+    });
+    const terra = merged.codexModels.filter(
+      (entry) => entry.id === 'gpt-6.1-terra',
+    );
+    expect(terra).toHaveLength(1);
+    expect(terra[0]).toMatchObject({
+      contextWindow: 500_000,
+      supportedThinkingLevels: [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+        'ultra',
+      ],
+      gateway: {
+        gatewayId: row.gatewayId,
+        contextWindow: 1_050_000,
+        supportedThinkingLevels: row.supportedThinkingLevels,
+        gatewayOnly: false,
+      },
+    });
+    expect(merged.aiGatewayModels).toEqual([]);
+    expect(
+      merged.gatewayRoutes.filter((entry) => entry.modelId === 'gpt-6.1-terra'),
+    ).toHaveLength(1);
+    row.recommendedHarness = 'claude';
+    const mismatch = mergeAiGatewayModelCatalog({
+      packageConfig: pkg,
+      catalog: response,
+    });
+    expect(
+      mismatch.codexModels.find((entry) => entry.id === 'gpt-6.1-terra')
+        ?.gateway,
+    ).toBeUndefined();
+    expect(mismatch.aiGatewayModels).toEqual([]);
+    expect(mismatch.gatewayRoutes).toEqual([]);
+    const offline = mergeAiGatewayModelCatalog({ packageConfig: pkg });
+    expect(
+      offline.codexModels.find((entry) => entry.id === 'gpt-6.1-terra'),
+    ).toMatchObject({ contextWindow: 500_000 });
+    expect(offline.gatewayRoutes).toEqual([]);
+  });
+});
+
+it('honors versioned exact-effort metadata for any route rather than model IDs', () => {
+  const response = catalog([
+    {
+      id: 'future-exact-model',
+      gatewayId: 'vendor/future-exact-model',
+      recommendedHarness: 'codex',
+    },
+  ]);
+  const row = response.models[0];
+  if (!row) throw new Error('Missing fixture');
+  Object.assign(row, {
+    thinkingLevelsExact: true,
+    supportedThinkingLevels: ['low', 'high'],
+  });
+  const merged = mergeAiGatewayModelCatalog({
+    packageConfig,
+    catalog: response,
+  });
+  expect(merged.aiGatewayModels[0]?.supportedThinkingLevels).toEqual([
+    'low',
+    'high',
+  ]);
+  expect(merged.gatewayRoutes[0]?.supportedThinkingLevels).toEqual([
+    'low',
+    'high',
+  ]);
 });

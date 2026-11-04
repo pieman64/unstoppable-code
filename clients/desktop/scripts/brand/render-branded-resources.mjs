@@ -4,9 +4,12 @@
 
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -178,39 +181,84 @@ export function renderBrandedResources(brand, options = {}) {
     throw new Error(`Resource source directory not found: ${sourceResources}`);
   }
   const builtActionOutputs = snapshotBuiltActionOutputs(targetResources);
-  rmSync(targetResources, { recursive: true, force: true });
-  mkdirSync(targetResources, { recursive: true });
-  for (const entry of readdirSync(sourceResources, { withFileTypes: true })) {
-    if (entry.name === 'skills') {
-      throw new Error(
-        'Bundled skills must live under brand-templates/skills or brands/<id>/skills',
-      );
+  mkdirSync(dirname(targetResources), { recursive: true });
+  const stagingResources = mkdtempSync(`${targetResources}.staging-`);
+  try {
+    for (const entry of readdirSync(sourceResources, { withFileTypes: true })) {
+      if (entry.name === 'skills') {
+        throw new Error(
+          'Bundled skills must live under brand-templates/skills or brands/<id>/skills',
+        );
+      }
+      const sourcePath = join(sourceResources, entry.name);
+      const targetPath = join(stagingResources, entry.name);
+      if (entry.isDirectory()) {
+        copyWithTokens(sourcePath, targetPath, brand);
+      } else if (entry.isFile()) {
+        renderResourceFile(sourcePath, targetPath, brand);
+      }
     }
-    const sourcePath = join(sourceResources, entry.name);
-    const targetPath = join(targetResources, entry.name);
-    if (entry.isDirectory()) {
-      copyWithTokens(sourcePath, targetPath, brand);
-    } else if (entry.isFile()) {
-      renderResourceFile(sourcePath, targetPath, brand);
+    const skillsDir = join(stagingResources, 'skills');
+    if (existsSync(sourceSkillTemplates)) {
+      copyWithTokens(sourceSkillTemplates, skillsDir, brand);
     }
+    if (existsSync(sourceBrandSkills)) {
+      copyWithTokens(sourceBrandSkills, skillsDir, brand);
+    }
+    renderBrandedPlugins(brand, {
+      targetResources: stagingResources,
+      replaceTokens,
+      sourcePluginTemplates,
+      sourceBrandPlugins,
+      sourcePreparedPluginTemplates,
+      sourceBrandPreparedPlugins,
+    });
+    restoreBuiltActionOutputs(stagingResources, builtActionOutputs);
+    replaceTree(stagingResources, targetResources);
+  } finally {
+    rmSync(stagingResources, { recursive: true, force: true });
   }
-  const skillsDir = join(targetResources, 'skills');
-  if (existsSync(sourceSkillTemplates)) {
-    copyWithTokens(sourceSkillTemplates, skillsDir, brand);
-  }
-  if (existsSync(sourceBrandSkills)) {
-    copyWithTokens(sourceBrandSkills, skillsDir, brand);
-  }
-  renderBrandedPlugins(brand, {
-    targetResources,
-    replaceTokens,
-    sourcePluginTemplates,
-    sourceBrandPlugins,
-    sourcePreparedPluginTemplates,
-    sourceBrandPreparedPlugins,
-  });
-  restoreBuiltActionOutputs(targetResources, builtActionOutputs);
   return targetResources;
+}
+
+// Dev processes and concurrent tests read the target while it is re-rendered.
+// Each rename atomically replaces one entry, so a reader sees either the old
+// or the new version of every file that both trees contain, never neither.
+function replaceTree(sourceDir, targetDir) {
+  const existing = lstatSync(targetDir, { throwIfNoEntry: false });
+  if (!existing?.isDirectory()) {
+    if (existing) {
+      rmSync(targetDir, { recursive: true, force: true });
+    }
+    try {
+      renameSync(sourceDir, targetDir);
+      return;
+    } catch (error) {
+      // A concurrent render of the same brand created the directory first.
+      if (error?.code !== 'ENOTEMPTY' && error?.code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+  const entries = readdirSync(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const sourcePath = join(sourceDir, entry.name);
+    const targetPath = join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      replaceTree(sourcePath, targetPath);
+      continue;
+    }
+    if (lstatSync(targetPath, { throwIfNoEntry: false })?.isDirectory()) {
+      rmSync(targetPath, { recursive: true, force: true });
+    }
+    renameSync(sourcePath, targetPath);
+  }
+  const kept = new Set(entries.map((entry) => entry.name));
+  for (const name of readdirSync(targetDir)) {
+    if (!kept.has(name)) {
+      rmSync(join(targetDir, name), { recursive: true, force: true });
+    }
+  }
 }
 
 if (isCliEntrypoint(import.meta.url)) {

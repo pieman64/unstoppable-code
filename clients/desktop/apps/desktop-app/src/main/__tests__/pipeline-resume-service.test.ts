@@ -65,6 +65,9 @@ jest.mock('../pipelines/transient-error-retry-scheduler', () => ({
 }));
 const mockGetActiveExecutionHandle = jest.fn();
 const mockHasActiveExecution = jest.fn(() => false);
+jest.mock('../pipelines/pipeline-worker-dispatch', () =>
+  jest.requireActual<object>('./helpers/pipeline-worker-dispatch-double'),
+);
 jest.mock('../pipelines/pipeline-execution-registry', () => ({
   get getActiveExecutionHandle(): typeof mockGetActiveExecutionHandle {
     return mockGetActiveExecutionHandle;

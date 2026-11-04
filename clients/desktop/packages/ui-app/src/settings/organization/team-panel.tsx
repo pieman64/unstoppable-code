@@ -11,6 +11,7 @@ import {
   OrgEnforcedConsentList,
   SettingsListSkeleton,
   StatusBadge,
+  Heading,
 } from '@canopy/ui-shared/components';
 import type {
   IncomingTeamInvitation,
@@ -224,7 +225,9 @@ export function TeamPanel({
 
       {status === 'ready' && invitations.length > 0 && (
         <div data-testid="team-invitations">
-          <h2 className="text-s font-medium fg-primary">Pending invitations</h2>
+          <Heading level={2} variant="title">
+            Pending invitations
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             You&apos;ve been invited to these organizations. Accept to join, or
             decline to remove the invitation.
@@ -341,7 +344,7 @@ export function TeamPanel({
                   <OrganizationLogo
                     name={org.name}
                     logoUrl={org.logoUrl}
-                    size={36}
+                    size="xl"
                   />
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">

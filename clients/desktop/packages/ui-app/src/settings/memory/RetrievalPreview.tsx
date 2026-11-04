@@ -8,6 +8,7 @@ import {
   ChoiceList,
   ChoiceListRow,
   CopyButton,
+  Disclosure,
   SearchField,
   TextInput,
   EmptyState,
@@ -15,6 +16,7 @@ import {
   Notice,
   ValueRow,
   ValueRows,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
@@ -176,36 +178,37 @@ export function RetrievalPreview({
           )}
 
           {preview.renderedBlock !== null && (
-            <details className="rounded-xl border bg-card">
-              <summary className="cursor-pointer px-4 py-3 text-s font-medium fg-primary">
-                Rendered injection block
-              </summary>
-              <div className="border-t p-4">
-                <div className="flex justify-end">
-                  <CopyButton
-                    size="compact"
-                    variant="secondary"
-                    value={preview.renderedBlock}
-                    ariaLabel="Copy rendered block"
-                    title="Copy rendered block"
-                    label="Copy"
-                    dataTestId="retrieval-preview-copy-block"
-                  />
-                </div>
-                <pre
-                  className={withPrivacyClass(
-                    'mt-2 overflow-x-auto whitespace-pre-wrap rounded-lg bg-base p-3 font-mono text-xs fg-primary',
-                    blockClassName,
-                  )}
-                >
-                  {preview.renderedBlock}
-                </pre>
+            <Disclosure
+              variant="box"
+              label="Rendered injection block"
+              dataTestId="retrieval-preview-rendered-block"
+            >
+              <div className="flex justify-end">
+                <CopyButton
+                  size="compact"
+                  variant="secondary"
+                  value={preview.renderedBlock}
+                  ariaLabel="Copy rendered block"
+                  title="Copy rendered block"
+                  label="Copy"
+                  dataTestId="retrieval-preview-copy-block"
+                />
               </div>
-            </details>
+              <pre
+                className={withPrivacyClass(
+                  'overflow-x-auto whitespace-pre-wrap rounded-lg bg-base p-3 font-mono text-xs fg-primary',
+                  blockClassName,
+                )}
+              >
+                {preview.renderedBlock}
+              </pre>
+            </Disclosure>
           )}
 
           <section className="rounded-xl border bg-card p-4">
-            <h3 className="text-s font-semibold fg-primary">Diagnostics</h3>
+            <Heading level={3} variant="title">
+              Diagnostics
+            </Heading>
             <div className="mt-2">
               <ValueRows>
                 <ValueRow

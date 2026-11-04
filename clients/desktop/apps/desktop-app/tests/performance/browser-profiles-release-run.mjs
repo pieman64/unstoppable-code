@@ -668,9 +668,13 @@ async function runSample(ordinal) {
       const destination = index % 2;
       await task('named_switch_ready', async () => {
         await page.getByTestId('browser-profile-picker').click();
+        // The profile dropdown is Canopy's menu (SettingsSelect), not a native
+        // select: open it, then press the option with the profile's value.
+        await page.getByTestId('browser-profile-selection').click();
         await page
-          .getByTestId('browser-profile-selection')
-          .selectOption(profileIds[destination]);
+          .getByRole('listbox')
+          .locator(`[role="option"][data-value="${profileIds[destination]}"]`)
+          .click();
         await page.getByTestId('browser-profile-replace').click();
         await expect(page.getByTestId('browser-profile-menu')).toHaveCount(0);
         await expect(page.getByTestId('browser-profile-picker')).toContainText(

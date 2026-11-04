@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Button, DialogModal } from '@canopy/ui-shared';
 import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { LinearProgress } from '@/components/shared/loading';
+import { ProgressBar } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { formatElapsed } from '@/lib/pipelineTiming';
 import { announceBackgroundCloneOutcomes } from '@/lib/cloneJobOutcomes';
@@ -112,9 +112,10 @@ function CloneJobRow({ job, now }: CloneJobRowProps): JSX.Element {
         )}
       </div>
       {!failed && !finished && (
-        <LinearProgress
-          percentage={Math.floor(job.percent)}
+        <ProgressBar
+          value={Math.floor(job.percent)}
           label={`Clone progress for ${job.repoName}`}
+          hideLabel
         />
       )}
       {failed ? (

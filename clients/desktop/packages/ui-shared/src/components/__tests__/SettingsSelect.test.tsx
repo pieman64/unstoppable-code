@@ -1,5 +1,5 @@
 /** @jest-environment jsdom */
-import { act } from 'react';
+import { act, createRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { DialogModal } from '../DialogModal';
@@ -56,6 +56,15 @@ function render(props: Partial<SettingsSelectProps> = {}): HTMLButtonElement {
 function listbox(): HTMLElement | null {
   return document.querySelector<HTMLElement>('[role="listbox"]');
 }
+
+it('hands its trigger to a ref, so a host can focus the dropdown', () => {
+  const ref = createRef<HTMLButtonElement>();
+  const trigger = render({ ref });
+  expect(ref.current).toBe(trigger);
+  // The menu still anchors to the trigger.
+  act(() => trigger.click());
+  expect(listbox()).not.toBeNull();
+});
 
 it('draws a 144px rounded-rectangle trigger instead of a native select', () => {
   const trigger = render();

@@ -3004,10 +3004,11 @@ const ADDED_PR_HARNESS_IDENTITIES = Object.freeze({
   // CAN-4693 serves a strict authenticated auth-link mint for hosted settings links.
   // #6467 reports the organization's GitHub connection in its bootstrap.
   // #6634 serves the Appearance page's account data.
+  // #7366 seeds two billing charges for the Account billing table flow.
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings-fixtures.mjs':
     '76aa450ea4dd54fd07f20913ea18cd5f9ea5d4d882ae9e1e9cd97e8887f1a0a0',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings.mjs':
-    'd8d1c46708c7ace2ce376be7a05982bcaca8426f6a06406cf6013d6916f871b3',
+    'ba5c3b7c393b134d39c463813d14ae217b523eeac5c7c980669537aeb6afc79c',
   // Cost's fixtures and their transitive seeders join the current closure.
   // Keep the closed study's original identities unchanged.
   'apps/desktop-app/tests/electron/seeders/seedCostInsights.mjs':
@@ -3363,7 +3364,10 @@ const REVIEWED_CURRENT_HARNESS_IDENTITIES = Object.freeze({
       // without a message; launch behavior is otherwise unchanged. The dry
       // run also counts a GA3 (CAN-5541) latched `daemon.bypassed` read as a
       // fallback.
-      '67459afa256fddb1626cf266f51783e324884768ea15c79ba26bc7ff278133fd',
+      // CAN-5088 and CAN-5089 pin the daemon terminals and code graph
+      // experiments to offered so ordinary E2E terminals and graph builds
+      // stay in the app; launch behavior is otherwise unchanged.
+      '190e52be99060a9cf07e8953b60cd5af0e1ec6958ffb355cd850c842be06b118',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and
@@ -3992,6 +3996,8 @@ const REVIEWED_PR_HARNESS_IDENTITIES = Object.freeze({
     // CAN-5532 composes the opt-in W5 store arms with the 120 Hz frame
     // report; existing defaults and frozen identities are unchanged.
     'cbdfd30337304ea951e4b08b7322e8fa22992899d7c01f945fba3645698c1584',
+    // Frame-budget runs move the window onto the fastest display first.
+    '2305ebf67343ebd98139aeceae5c8a589f993e3f910982f3f4e75c77815e67ee',
   ]),
 });
 // CAN-3533 adds curated automation routes to the cloud fixture. Keep the

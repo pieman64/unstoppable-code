@@ -68,6 +68,7 @@ import {
 } from '../lib/model-policy-state';
 import { checkModelGatewayRoute } from '../lib/model-gateway-state';
 import { listCoworkWorkspacesAsChatProjects } from '../lib/cowork-workspace-crud';
+import type { SidebarItemsSnapshot } from '../lib/sidebar-items';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import {
   createWorkEntry,
@@ -110,6 +111,7 @@ import {
 import {
   createAiCreditsScopeOwnerResolver,
   resolveAiCreditsScopeOwner,
+  type SnapshotWorkOwnerEvidence,
 } from '../agents/work-owner';
 import {
   pinInheritingAgentToDestination,
@@ -435,9 +437,10 @@ function validateStandaloneProjectId(value: string): string {
 
 async function readStandaloneProjects(
   strict = false,
+  sidebarSnapshot?: SidebarItemsSnapshot,
 ): Promise<ChatProjectData[]> {
   try {
-    return await listCoworkWorkspacesAsChatProjects();
+    return await listCoworkWorkspacesAsChatProjects(sidebarSnapshot);
   } catch (error) {
     if (strict) throw error;
     return [];
@@ -959,12 +962,20 @@ function resolveStandaloneSummaryOwner(
 
 export async function listStandaloneChats(options?: {
   strict?: boolean;
+  /** Share session discovery without putting provisioning inside its view. */
+  sidebarSnapshot?: SidebarItemsSnapshot;
+  ownerEvidence?: SnapshotWorkOwnerEvidence;
   /** Authorized visible parents for a complete Activity inventory. */
   projectIds?: readonly string[];
 }): Promise<PortalStandaloneChatSummary[]> {
-  const projects = await readStandaloneProjects(options?.strict);
+  const projects = await readStandaloneProjects(
+    options?.strict,
+    options?.sidebarSnapshot,
+  );
   const summaries: PortalStandaloneChatSummary[] = [];
-  const resolveOwner = createAiCreditsScopeOwnerResolver();
+  const resolveOwner = createAiCreditsScopeOwnerResolver(
+    options?.ownerEvidence,
+  );
   // The desktop shell needs chat metadata, not transcript bodies. The Work
   // Entry registry's write-through summaries keep this startup projection
   // proportional to chat count rather than transcript bytes.

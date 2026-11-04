@@ -7,6 +7,8 @@ import type { E2eBuildUnit } from '../../scripts/lib/e2e-build-inputs.mjs';
 import { preparePdfWorker } from '../../scripts/public-build/pdf-worker.mjs';
 import {
   mainEntrySource,
+  isolatedMainEntrySource,
+  linuxSafeStorageHelperPlugin,
   withOneBytePlaceholder,
 } from '../../scripts/lib/desktop-main-entry.mjs';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
@@ -593,42 +595,44 @@ function bytecodeJsFallbackPlugin(entries: BytecodeFallbackEntry[]): Plugin {
 
         writeFileSync(
           entryPath,
-          code.replace(
-            bytecodeRequire,
-            [
-              ...(performanceSourceMapsEnabled
-                ? [
-                    'if (process.env.CANOPY_PERFORMANCE_PROFILE_PLAIN_JS === "1") {',
-                    `  require("./${entry.fallbackFile}");`,
-                    '} else {',
-                  ]
-                : []),
-              'function shouldUseBytecodeFallback(error) {',
-              '  const code = error && typeof error === "object" ? error.code : undefined;',
-              '  if (code === "MODULE_NOT_FOUND") {',
-              `    return error instanceof Error && error.message.includes("./${entry.bytecodeFile}");`,
-              '  }',
-              '  const message = error instanceof Error ? error.message : String(error);',
-              '  return message.includes("Invalid or incompatible cached data") ||',
-              '    message.includes("cachedDataRejected") ||',
-              '    message.includes("BytecodeBuffer must be a buffer object");',
-              '}',
-              'try {',
-              `  require("./${entry.bytecodeFile}");`,
-              '} catch (error) {',
-              '  if (!shouldUseBytecodeFallback(error)) {',
-              '    throw error;',
-              '  }',
-              '  if (process.env.CANOPY_BYTECODE_FALLBACK_DEBUG === "1") {',
-              '    const message = error instanceof Error ? error.message : String(error);',
-              '    process.stderr.write(',
-              `      \`Bytecode load failed for ${entry.bytecodeFile}; falling back to ${entry.fallbackFile}: \${message}\\n\`,`,
-              '    );',
-              '  }',
-              `  require("./${entry.fallbackFile}");`,
-              '}',
-              ...(performanceSourceMapsEnabled ? ['}'] : []),
-            ].join('\n'),
+          isolatedMainEntrySource(
+            code.replace(
+              bytecodeRequire,
+              [
+                ...(performanceSourceMapsEnabled
+                  ? [
+                      'if (process.env.CANOPY_PERFORMANCE_PROFILE_PLAIN_JS === "1") {',
+                      `  require("./${entry.fallbackFile}");`,
+                      '} else {',
+                    ]
+                  : []),
+                'function shouldUseBytecodeFallback(error) {',
+                '  const code = error && typeof error === "object" ? error.code : undefined;',
+                '  if (code === "MODULE_NOT_FOUND") {',
+                `    return error instanceof Error && error.message.includes("./${entry.bytecodeFile}");`,
+                '  }',
+                '  const message = error instanceof Error ? error.message : String(error);',
+                '  return message.includes("Invalid or incompatible cached data") ||',
+                '    message.includes("cachedDataRejected") ||',
+                '    message.includes("BytecodeBuffer must be a buffer object");',
+                '}',
+                'try {',
+                `  require("./${entry.bytecodeFile}");`,
+                '} catch (error) {',
+                '  if (!shouldUseBytecodeFallback(error)) {',
+                '    throw error;',
+                '  }',
+                '  if (process.env.CANOPY_BYTECODE_FALLBACK_DEBUG === "1") {',
+                '    const message = error instanceof Error ? error.message : String(error);',
+                '    process.stderr.write(',
+                `      \`Bytecode load failed for ${entry.bytecodeFile}; falling back to ${entry.fallbackFile}: \${message}\\n\`,`,
+                '    );',
+                '  }',
+                `  require("./${entry.fallbackFile}");`,
+                '}',
+                ...(performanceSourceMapsEnabled ? ['}'] : []),
+              ].join('\n'),
+            ),
           ),
         );
       }
@@ -1046,6 +1050,17 @@ export default defineConfig(({ mode }) => {
             fallbackFile: '_index.js',
           },
         ]),
+        linuxSafeStorageHelperPlugin({
+          entryFile: resolve(
+            repoRoot,
+            'apps/desktop-app/src/main/lib/linux-safe-storage-helper.ts',
+          ),
+          alias: aliases,
+          define: commonDefines,
+          onInputs: (files): void => {
+            if (isE2eBuild) assertE2eBuildInputs('main', files);
+          },
+        }),
         utilityWorkerPlugin(commonDefines),
       ],
       // Main-only on purpose: the first-party Google OAuth client secret is

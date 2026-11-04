@@ -3,7 +3,6 @@
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
   SETTINGS_CARD_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -14,6 +13,7 @@ import {
   SettingsFormSkeleton,
   ToggleSwitch,
   Tooltip,
+  Heading,
 } from '@canopy/ui-shared/components';
 import type { OrganizationRole } from '@canopy/protocol/settings/organization';
 import { canEditMemorySettings } from '@canopy/protocol/settings/organization-permissions';
@@ -152,7 +152,9 @@ function MemorySettingsCard({
       data-testid="team-memory-settings-section"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Memory participation</h2>
+        <Heading level={2} variant="section">
+          Memory participation
+        </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
           Choose whose organization conversations can be used to build shared
           memory.

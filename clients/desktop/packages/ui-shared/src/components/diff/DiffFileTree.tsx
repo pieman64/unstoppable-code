@@ -6,6 +6,7 @@ import type { JSX, ReactNode } from 'react';
 import { Button } from '../Button';
 import { DiffLineCounts } from '../DiffLineCounts';
 import { RichHoverTooltip } from '../RichHoverTooltip';
+import { Heading } from '../Heading';
 
 /**
  * Closed set of changed-file status strings recognized by the shared diff
@@ -225,9 +226,11 @@ function DiffFileTreeGroupRow({
       className="space-y-1 px-1 py-1"
       data-testid={`diff-file-tree-group-${group.heading.toLowerCase()}`}
     >
-      <h3 className="px-1 text-3xs font-semibold fg-secondary">
-        {group.heading}
-      </h3>
+      <div className="px-1">
+        <Heading level={3} variant="label">
+          {group.heading}
+        </Heading>
+      </div>
       {group.files.length === 0 ? (
         <p className="px-1 text-3xs fg-secondary">None</p>
       ) : (

@@ -19,6 +19,8 @@
     "./node/git": "./src/node/git/index.ts",
     "./node/github": "./src/node/github/index.ts",
     "./node/terminal": "./src/node/terminal/index.ts",
+    "./node/terminal/host": "./src/node/terminal/host/index.ts",
+    "./node/code-graph": "./src/node/code-graph/index.ts",
     "./node/pipeline": "./src/node/pipeline/index.ts",
     "./node/operations": "./src/node/operations/index.ts",
     "./node/operations/ledger": "./src/node/operations/ledger/index.ts",
@@ -77,7 +79,8 @@
     "./node/w5/workspace-metadata/daemon-binding": "./src/node/w5/workspace-metadata/daemon-binding.ts",
     "./node/w5/workspace-metadata/manifest-edit": "./src/node/w5/workspace-metadata/manifest-edit.ts",
     "./node/w5/workspace-metadata/module": "./src/node/w5/workspace-metadata/module.ts",
-    "./node/script/execution": "./src/node/script/execution/index.ts"
+    "./node/script/execution": "./src/node/script/execution/index.ts",
+    "./node/initiated-work": "./src/node/initiated-work/index.ts"
   },
   "dependencies": {
     "@canopy/core-transport": "workspace:*",

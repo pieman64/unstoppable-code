@@ -116,6 +116,11 @@ export interface ForkCapabilityInstallJournal {
     name: string;
     localId?: string;
     createdAt?: string;
+    /**
+     * When the create's save last wrote it. Converting to an owned workflow
+     * rewrites it after its create, so this can be later than `createdAt`.
+     */
+    updatedAt?: string;
   }>;
   /** Selections this attempt added to the destination's defaults. */
   selections?: {
@@ -292,6 +297,9 @@ export function parseForkCapabilityInstallJournal(
                 : {}),
               ...(isString(automation.createdAt)
                 ? { createdAt: automation.createdAt }
+                : {}),
+              ...(isString(automation.updatedAt)
+                ? { updatedAt: automation.updatedAt }
                 : {}),
             },
           ]

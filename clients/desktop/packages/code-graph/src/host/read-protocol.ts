@@ -7,6 +7,8 @@ import type { CodeGraphBaseIdentity } from '../base-graph';
 import type { ReadCodeGraphSummaryProjectionResult } from '../summary-projection';
 import type { ChangedSymbol } from '../impact/changed-symbols';
 import type { CodeGraphFingerprintMetadata } from '../store/database';
+import type { CodeGraphSnapshotEnvelope } from '../types/code-graph-tools';
+import type { CodeGraphSnapshotImportResult } from '../snapshot/import';
 
 // The requests and responses a code-graph read host exchanges with its
 // launcher.
@@ -59,12 +61,6 @@ export type CodeGraphWorkerReadTask =
     }
   | { kind: 'fingerprint-metadata' }
   /**
-   * The one write in this lane: the end-of-build worktree fingerprint. It
-   * shares the lane so worktree cleanup cancels it with the reads (same key)
-   * and Electron main never opens the database read-write.
-   */
-  | { kind: 'persist-fingerprint'; fingerprint: string }
-  /**
    * Checks a published base generation's identifying rows before shadow
    * maintenance trusts its manifest (skip as current, or seed the next build).
    */
@@ -86,6 +82,18 @@ export type CodeGraphWorkerReadTask =
       baseRef: string;
       resourcesDir: string;
       maxDepth?: number;
+    }
+  /** One repository's graph as a deterministic snapshot (no derived tables). */
+  | { kind: 'snapshot-export'; repoId: string; generatedAt: string }
+  /**
+   * Replaces one repository's graph with a parsed snapshot. A writer, like the
+   * fingerprint: it shares the lane so cleanup cancels it with the reads.
+   */
+  | {
+      kind: 'snapshot-import';
+      repoId: string;
+      rootPath: string;
+      envelope: CodeGraphSnapshotEnvelope;
     };
 
 export interface CodeGraphWorkerReadRequest {
@@ -98,7 +106,6 @@ export type CodeGraphWorkerReadResult =
   | { kind: 'readonly-summary'; value: ReadCodeGraphSummaryProjectionResult }
   | { kind: 'base-identity'; value: CodeGraphBaseIdentityReadResult }
   | { kind: 'fingerprint-metadata'; value: CodeGraphFingerprintMetadata }
-  | { kind: 'persist-fingerprint' }
   | { kind: 'validate-base'; value: boolean }
   | {
       kind: 'detect-changed';
@@ -111,7 +118,9 @@ export type CodeGraphWorkerReadResult =
   | {
       kind: 'change-impact';
       value: { report: ChangeImpactReport; lastBuildAt: number | null };
-    };
+    }
+  | { kind: 'snapshot-export'; value: CodeGraphSnapshotEnvelope }
+  | { kind: 'snapshot-import'; value: CodeGraphSnapshotImportResult };
 
 /** Host utility-only identity check. No paths or raw marker text in results. */
 export type CodeGraphBaseIdentityReadResult =

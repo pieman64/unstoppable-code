@@ -1,6 +1,8 @@
 // CAN-4140: run admission reads the stored definition through
 // `core.pipeline.definition.get`. A global run's read names its owner, which
 // the desktop binding authorizes instead of the navigation context.
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -8,9 +10,14 @@ import {
 import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
 import {
   createPipelineGoldenWorld,
+  GOLDEN_CURATED_KEY,
+  GOLDEN_CURATED_YAML,
   type GoldenWorld,
 } from '../../__tests__/pipeline-golden/world';
-import { admitStoredRunDefinition } from '../run-definition-admission';
+import {
+  admitCuratedRunDefinition,
+  admitStoredRunDefinition,
+} from '../run-definition-admission';
 
 const ORG = 'org:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const mockOwnerChecks: Array<[string, string | undefined, string | undefined]> =
@@ -47,7 +54,7 @@ beforeAll(async () => {
 afterAll(async () => {
   setDesktopCanopyRuntime(null);
   await runtime.shutdown();
-  world.dispose();
+  await world.dispose();
 });
 
 beforeEach(() => {
@@ -78,4 +85,30 @@ it('reads any other run definition through the navigation context', async () => 
     admitStoredRunDefinition(world.userPipelineId, { projectId: 'project-1' }),
   ).rejects.toThrow('Workflow unavailable (context-mismatch)');
   expect(mockOwnerChecks).toEqual([]);
+});
+
+// CAN-5076: a curated run is admitted through `core.pipeline.definition.get`
+// too, with the managed revision that same read refreshed.
+it('admits a curated run with the managed revision core read', async () => {
+  const admitted = await admitCuratedRunDefinition(
+    `curated:${GOLDEN_CURATED_KEY}`,
+  );
+  expect(admitted.definition).toMatchObject({
+    definitionId: `curated:${GOLDEN_CURATED_KEY}`,
+    source: 'curated',
+    document: GOLDEN_CURATED_YAML,
+    checksum: `sha256:${createHash('sha256').update(GOLDEN_CURATED_YAML).digest('hex')}`,
+  });
+  expect(admitted.pipeline.name).toBe('Golden curated triage');
+  expect(readFileSync(admitted.managed.info.filePath ?? '', 'utf8')).toBe(
+    GOLDEN_CURATED_YAML,
+  );
+});
+
+it("refuses a curated run its catalog no longer offers, in the catalog's words", async () => {
+  await expect(
+    admitCuratedRunDefinition('curated:missing-curated'),
+  ).rejects.toThrow(
+    'This curated workflow is no longer available. Refresh the workflow list.',
+  );
 });

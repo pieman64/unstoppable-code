@@ -1,13 +1,17 @@
 import type {
   AccountMcpConnection,
   AccountMcpConnectionSummary,
-  McpServerData,
-  McpServerConfigData,
+  McpServerDataView,
+  McpServerConfigView,
   McpServerIndexEntry,
   SaveMcpServerRequest,
   RewriteMcpServerRefsRequest,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { AccountMcpConnectionError } from '@canopy/desktop-shared/types/mcp-servers';
+import {
+  isStoredSecretValue,
+  type SecretValueInput,
+} from '@canopy/desktop-shared/types/stored-secrets';
 import {
   MAX_MCP_EXTRA_HEADERS,
   mcpExtraHeadersProblem,
@@ -17,7 +21,7 @@ import { pointRefsAt } from '@/lib/mcpServerRefs';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { AccountMcpActions } from '@/hooks/useAccountMcpActions';
 
-export function getDefaultConfigId(configs: McpServerConfigData[]): string {
+export function getDefaultConfigId(configs: McpServerConfigView[]): string {
   return configs.find((config) => config.enabled)?.id ?? configs[0]?.id ?? '';
 }
 
@@ -46,9 +50,9 @@ export const CLOUD_REGISTRATION_UNAVAILABLE =
  * local proxy merges them.
  */
 export function cloudMcpHeaders(
-  headers: Record<string, string> | undefined,
-  configs: McpServerConfigData[],
-): Record<string, string> {
+  headers: Record<string, SecretValueInput> | undefined,
+  configs: McpServerConfigView[],
+): Record<string, SecretValueInput> {
   const extra =
     configs.find((config) => config.id === getDefaultConfigId(configs))
       ?.extraHeaders ?? {};
@@ -67,9 +71,18 @@ export function cloudMcpHeaders(
 
 /** Why the cloud can't store these headers, naming the header at fault. */
 export function cloudHeadersProblem(
-  headers: Record<string, string>,
+  headers: Record<string, SecretValueInput>,
 ): string | undefined {
-  const problem = mcpExtraHeadersProblem(headers);
+  // A saved value was checked when it was stored and main checks it again
+  // once resolved; here only its name is judged.
+  const problem = mcpExtraHeadersProblem(
+    Object.fromEntries(
+      Object.entries(headers).map(([name, value]) => [
+        name,
+        isStoredSecretValue(value) ? 'saved' : value,
+      ]),
+    ),
+  );
   if (!problem) return undefined;
   const stays = 'so this server stays on this device.';
   switch (problem.kind) {
@@ -105,12 +118,20 @@ export function isCloudReadyUrl(url: string): boolean {
 }
 
 export function defaultConfigAuthToken(
-  configs: McpServerConfigData[],
-): string | undefined {
+  configs: McpServerConfigView[],
+): SecretValueInput | undefined {
   const token = configs.find(
     (config) => config.id === getDefaultConfigId(configs),
   )?.authToken;
-  return token?.trim() ? token : undefined;
+  if (token === undefined || isStoredSecretValue(token)) return token;
+  return token.trim() ? token : undefined;
+}
+
+/** Whether a cloud request keeps any device secret by reference. */
+export function keepsStoredSecrets(
+  values: ReadonlyArray<SecretValueInput | null | undefined>,
+): boolean {
+  return values.some((value) => isStoredSecretValue(value));
 }
 
 export async function loadSignedInAccountId(): Promise<string | undefined> {
@@ -123,9 +144,9 @@ export async function loadSignedInAccountId(): Promise<string | undefined> {
 
 /** Configs without their plaintext tokens; a cloud server keeps its own. */
 export function withoutAuthTokens(
-  configs: McpServerConfigData[],
-): McpServerConfigData[] {
-  return configs.map((config): McpServerConfigData => {
+  configs: McpServerConfigView[],
+): McpServerConfigView[] {
+  return configs.map((config): McpServerConfigView => {
     const next = { ...config };
     delete next.authToken;
     return next;
@@ -133,10 +154,10 @@ export function withoutAuthTokens(
 }
 
 export function sameHeaders(
-  left: Record<string, string>,
-  right: Record<string, string>,
+  left: Record<string, SecretValueInput>,
+  right: Record<string, SecretValueInput>,
 ): boolean {
-  const entries = (headers: Record<string, string>): string =>
+  const entries = (headers: Record<string, SecretValueInput>): string =>
     JSON.stringify(
       Object.entries(headers).sort(([a], [b]): number => a.localeCompare(b)),
     );
@@ -144,7 +165,9 @@ export function sameHeaders(
 }
 
 // A device server's own sign-ins stop mattering once the cloud owns it.
-export async function clearDeviceSignIns(server: McpServerData): Promise<void> {
+export async function clearDeviceSignIns(
+  server: McpServerDataView,
+): Promise<void> {
   await Promise.all(
     server.configs.map(async (config): Promise<void> => {
       try {
@@ -184,11 +207,11 @@ export const DELETED_HERE_REMOVE_UNSUPPORTED =
 /** Shared by the legacy row and Marketplace detail; the captured account owns credentials. */
 export async function promoteCustomMcpServer(
   row: McpServerIndexEntry,
-  credential: { bearerToken?: string; expectedAccountId: string },
+  credential: { bearerToken?: SecretValueInput; expectedAccountId: string },
   accountActions: AccountMcpActions,
   onOAuthClientRequired: () => void,
 ): Promise<void> {
-  let server: McpServerData;
+  let server: McpServerDataView;
   try {
     server = (await window.mcpServers.loadServer(row.id)).server;
   } catch {
@@ -226,10 +249,17 @@ export async function promoteCustomMcpServer(
     expectedAccountId,
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(bearerToken ? { bearerToken } : {}),
+    // Saved headers and tokens reach the cloud by reference; main resolves
+    // them against this server and its own URL only.
+    ...(keepsStoredSecrets([...Object.values(headers), bearerToken])
+      ? { secretSource: { serverId: row.id } }
+      : {}),
     // The cloud can't register an OAuth client for this server and never
     // takes a user-supplied one for a custom URL; an access token still works.
     onOAuthClientRequired: (): void => onOAuthClientRequired(),
     onStarted: async (connection): Promise<void> => {
+      // The device token stays until the cloud connects: a cancelled move
+      // restores this server by reference, and the reference needs it.
       await window.mcpServers.saveServer({
         ...server,
         definition: {
@@ -237,7 +267,6 @@ export async function promoteCustomMcpServer(
           httpAuthHandler: 'account',
           updatedAt: new Date().toISOString(),
         },
-        configs: withoutAuthTokens(server.configs),
         accountConnectionId: connection.id,
       });
       bound = true;
@@ -247,6 +276,16 @@ export async function promoteCustomMcpServer(
         [{ serverId: row.id, configId: getDefaultConfigId(server.configs) }],
         { serverId: connection.serverKey, configId: connection.configId },
       ).catch((): void => undefined);
+    },
+    // A browser sign-in can take a while; drop the token from the server as
+    // it is now, so edits saved meanwhile stay.
+    onConnected: async (connection): Promise<void> => {
+      const current = (await window.mcpServers.loadServer(row.id)).server;
+      await window.mcpServers.saveServer({
+        ...current,
+        configs: withoutAuthTokens(current.configs),
+        accountConnectionId: connection.id,
+      });
     },
     // A cancelled promotion puts the row back on this device exactly as it
     // was, keeping the handler the index held for it before.

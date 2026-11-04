@@ -3,7 +3,7 @@
 import type { ComponentPropsWithoutRef, JSX } from 'react';
 import type { DigestReportData } from '@canopy/protocol/settings';
 import { Markdown, markdownOptions } from '@canopy/ui-shared';
-import { Fact, FactList } from '@canopy/ui-shared/components';
+import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type { MarkdownOverrides } from '@canopy/ui-shared';
 import {
   formatCountExact,
@@ -133,15 +133,16 @@ export function DigestReport({
           {cadenceLabel(digest.cadence)} ·{' '}
           {formatDigestPeriod(digest.periodStart, digest.periodEnd)}
         </p>
-        <h1
-          className={joinClassNames(
-            'mt-1 text-xl font-semibold fg-primary',
-            blockClassName,
-          )}
+        <Heading
+          level={1}
+          variant="page"
+          className="mt-1"
           data-testid="digest-report-headline"
         >
-          {digest.headline ?? 'Work digest'}
-        </h1>
+          <span className={blockClassName === '' ? undefined : blockClassName}>
+            {digest.headline ?? 'Work digest'}
+          </span>
+        </Heading>
       </header>
 
       <FactList
@@ -197,7 +198,9 @@ export function DigestReport({
           className="rounded-xl bg-card p-5 shadow-sm"
           data-testid="digest-quiet-period"
         >
-          <h2 className="text-base font-semibold fg-primary">Quiet period</h2>
+          <Heading level={2} variant="section">
+            Quiet period
+          </Heading>
           <div
             className={joinClassNames(
               `mt-2 ${DIGEST_PROSE_CLASS}`,
@@ -227,12 +230,13 @@ export function DigestReport({
             aria-labelledby="digest-contributors-heading"
             data-testid="digest-contributors"
           >
-            <h2
+            <Heading
+              level={2}
+              variant="section"
               id="digest-contributors-heading"
-              className="text-base font-semibold fg-primary"
             >
               Team
-            </h2>
+            </Heading>
             {/*
             Ranked by Impact score, the same ordering and the same numbers the
             Statistics People tab shows — both read `computeUserLeaderboard`

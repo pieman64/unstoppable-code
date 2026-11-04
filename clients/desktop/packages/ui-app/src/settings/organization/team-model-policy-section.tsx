@@ -3,7 +3,6 @@
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
   SETTINGS_CARD_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -19,6 +18,7 @@ import {
   ToggleSwitch,
   Tooltip,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import type {
@@ -415,7 +415,9 @@ function ModelPolicyCard({
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className={SETTINGS_CARD_TITLE_CLASS}>Model access</h2>
+            <Heading level={2} variant="section">
+              Model access
+            </Heading>
             <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
               Choose which AI models your members may use.
             </p>

@@ -35,6 +35,10 @@ import {
   CORE_EXECUTION_QUERIES,
   CORE_EXECUTION_STREAMS,
 } from './execution/status';
+import {
+  CORE_OBSERVABILITY_QUERIES,
+  CORE_OBSERVABILITY_STREAMS,
+} from './observability/operations';
 import { CORE_CHAT_MESSAGE_INSTRUCTION_DEFINITIONS } from './chat/commands-messaging';
 import {
   ANNOTATION_INSTRUCTION_DEFINITIONS,
@@ -85,6 +89,7 @@ export const CORE_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   ...PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   ...OPERATION_QUERY_DEFINITIONS,
   ...CORE_EXECUTION_QUERIES,
+  ...CORE_OBSERVABILITY_QUERIES,
   ...CORE_INTEGRATION_QUERIES,
   ...CORE_PULL_REQUEST_QUERY_DEFINITIONS,
 });
@@ -110,6 +115,7 @@ export const CORE_STREAM_DEFINITIONS = defineCanopyStreamRegistry('core', {
   ...CORE_CHAT_STREAM_DEFINITIONS,
   ...OPERATION_STREAM_DEFINITIONS,
   ...CORE_EXECUTION_STREAMS,
+  ...CORE_OBSERVABILITY_STREAMS,
 });
 
 // Transport-level definitions (handshake, leases, events, health). The

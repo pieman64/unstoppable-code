@@ -919,6 +919,8 @@ async function buildState(): Promise<BoardState> {
       cache.set(id, entry);
     }
     const note = notesFor(notes.chats, id);
+    // `hidden: true` drops a finished or abandoned chat from the board.
+    if (note.hidden === true) continue;
     chats.push({
       id,
       title: str(note.label) ?? title,
@@ -1104,6 +1106,43 @@ function sendFile(
   stream.pipe(res);
 }
 
+// Answers a file request with byte ranges, so a <video> can seek and read its
+// duration even when its index sits at the end of the file.
+function sendRanged(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  size: number,
+): void {
+  res.setHeader('accept-ranges', 'bytes');
+  const range = /^bytes=(\d*)-(\d*)$/.exec(
+    String(req.headers.range ?? '').trim(),
+  );
+  if (range && (range[1] || range[2])) {
+    let start = range[1]
+      ? Number(range[1])
+      : Math.max(0, size - Number(range[2]));
+    let end = range[1] && range[2] ? Number(range[2]) : size - 1;
+    end = Math.min(end, size - 1);
+    if (start > end || start >= size) {
+      res.statusCode = 416;
+      res.setHeader('content-range', `bytes */${size}`);
+      res.end();
+      return;
+    }
+    start = Math.max(0, start);
+    res.statusCode = 206;
+    res.setHeader('content-range', `bytes ${start}-${end}/${size}`);
+    res.setHeader('content-length', String(end - start + 1));
+    if (req.method === 'HEAD') return void res.end();
+    sendFile(res, path, { start, end });
+    return;
+  }
+  res.setHeader('content-length', String(size));
+  if (req.method === 'HEAD') return void res.end();
+  sendFile(res, path);
+}
+
 const BOARD_PAGE = '/coordinator-lab.html';
 const SANDBOX_POLICY = 'sandbox allow-scripts allow-popups allow-forms';
 
@@ -1192,13 +1231,13 @@ function api(): Plugin {
       const file = resolve(path.slice(3));
       const ext = extname(file).toLowerCase();
       const type = FS_MIME[ext] ?? MIME[ext];
-      let ok = false;
+      let size = -1;
       try {
-        ok = statSync(file).isFile();
+        if (statSync(file).isFile()) size = statSync(file).size;
       } catch {
-        ok = false;
+        size = -1;
       }
-      if (!servableFile(file) || !type || !ok) {
+      if (!servableFile(file) || !type || size < 0) {
         res.statusCode = 404;
         res.end();
         return;
@@ -1207,7 +1246,7 @@ function api(): Plugin {
       res.setHeader('cache-control', 'no-store');
       // The sandbox policy set above keeps a report's or an SVG's script
       // in an opaque origin, in a card's frame or opened on its own.
-      sendFile(res, file);
+      sendRanged(req, res, file, size);
       return;
     }
     if (path === '/api/file') {
@@ -1226,34 +1265,7 @@ function api(): Plugin {
       }
       res.setHeader('content-type', MIME[ext]);
       res.setHeader('cache-control', 'no-store');
-      res.setHeader('accept-ranges', 'bytes');
-      // Byte ranges, so a <video> can seek and read its duration.
-      const range = /^bytes=(\d*)-(\d*)$/.exec(
-        String(req.headers.range ?? '').trim(),
-      );
-      if (range && (range[1] || range[2])) {
-        let start = range[1]
-          ? Number(range[1])
-          : Math.max(0, size - Number(range[2]));
-        let end = range[1] && range[2] ? Number(range[2]) : size - 1;
-        end = Math.min(end, size - 1);
-        if (start > end || start >= size) {
-          res.statusCode = 416;
-          res.setHeader('content-range', `bytes */${size}`);
-          res.end();
-          return;
-        }
-        start = Math.max(0, start);
-        res.statusCode = 206;
-        res.setHeader('content-range', `bytes ${start}-${end}/${size}`);
-        res.setHeader('content-length', String(end - start + 1));
-        if (req.method === 'HEAD') return void res.end();
-        sendFile(res, path, { start, end });
-        return;
-      }
-      res.setHeader('content-length', String(size));
-      if (req.method === 'HEAD') return void res.end();
-      sendFile(res, path);
+      sendRanged(req, res, path, size);
       return;
     }
     next();

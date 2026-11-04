@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import {
   isDefaultCoworkWorkspaceId,
@@ -535,9 +535,9 @@ export function ChatProjectSettingsModal({
               data-testid="chat-project-settings-retention"
             >
               <div data-testid="chat-project-settings-retention-card">
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Deletion retention
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   {`Deleted chats and legacy archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
                 </p>
@@ -606,9 +606,9 @@ export function ChatProjectSettingsModal({
 
         {activeTab === 'instructions' && (
           <div className="flex min-h-0 flex-1 flex-col">
-            <h3 id="claude-md-label" className="text-s font-medium fg-primary">
+            <Heading level={3} variant="title" id="claude-md-label">
               CLAUDE.md
-            </h3>
+            </Heading>
             <p id="claude-md-description" className="mt-1 text-xs fg-secondary">
               Instructions for every chat in this project.
             </p>

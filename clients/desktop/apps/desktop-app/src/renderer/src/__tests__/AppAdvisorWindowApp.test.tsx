@@ -144,6 +144,7 @@ jest.mock('@/stores/featureFlagsStore', () => ({
 const mockGetBrowserState = jest.fn();
 const mockSetLocalServersOnly = jest.fn();
 const mockSetOpenAppLinksInBuiltInBrowser = jest.fn();
+const mockApplySearchPreferences = jest.fn();
 jest.mock('@/stores/browserStore', () => ({
   useBrowserStore: {
     getState: (): unknown => mockGetBrowserState(),
@@ -328,6 +329,7 @@ describe('AppAdvisorWindowApp command handling', () => {
       applySnapshot: applyBrowserSnapshotMock,
       setLocalServersOnly: mockSetLocalServersOnly,
       setOpenAppLinksInBuiltInBrowser: mockSetOpenAppLinksInBuiltInBrowser,
+      applySearchPreferences: mockApplySearchPreferences,
     });
     getChatStateMock.mockImplementation(
       () =>
@@ -479,10 +481,12 @@ describe('AppAdvisorWindowApp command handling', () => {
   });
 
   it('subscribes to app-link events and hydrates browser preferences', async () => {
-    loadPreferencesMock.mockResolvedValue({
+    const preferences = {
       inAppBrowserLocalServersOnly: true,
       openAppLinksInBuiltInBrowser: true,
-    });
+      inAppBrowserSearchEngineId: 'bing',
+    };
+    loadPreferencesMock.mockResolvedValue(preferences);
 
     act(() => {
       root.render(createElement(AppAdvisorWindowApp));
@@ -492,6 +496,7 @@ describe('AppAdvisorWindowApp command handling', () => {
     expect(mockEnsureBrowserEventSubscription).toHaveBeenCalledTimes(1);
     expect(mockSetLocalServersOnly).toHaveBeenCalledWith(true);
     expect(mockSetOpenAppLinksInBuiltInBrowser).toHaveBeenCalledWith(true);
+    expect(mockApplySearchPreferences).toHaveBeenCalledWith(preferences);
   });
 
   it('opens the archived overview and Empty trash confirmation in the popout renderer', async () => {

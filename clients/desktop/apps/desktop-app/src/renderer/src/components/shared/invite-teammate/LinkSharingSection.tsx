@@ -8,6 +8,8 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
   ErrorBanner,
+  Tooltip,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   BuildingIcon,
@@ -187,26 +189,29 @@ export function LinkSharingSection({
         />
       )}
       <div className="flex min-w-0 items-center justify-between gap-3">
-        <h3 className="text-s font-medium fg-primary">{LINK_SHARING_LABEL}</h3>
+        <Heading level={3} variant="title">
+          {LINK_SHARING_LABEL}
+        </Heading>
         <div className="flex min-w-0 items-center gap-2">
           {status}
           {link.link && (
             <>
-              <Button
-                variant="ghost"
-                size="compact"
-                iconOnly
-                ref={moreRef}
-                aria-label={LINK_MORE_OPTIONS_LABEL}
-                title={LINK_MORE_OPTIONS_LABEL}
-                aria-haspopup="menu"
-                aria-expanded={moreOpen}
-                disabled={locked}
-                onClick={() => setMoreOpen((open) => !open)}
-                data-testid={`${TEST_ID}-more`}
-              >
-                <MoreHorizontalIcon width={16} height={16} />
-              </Button>
+              <Tooltip label={LINK_MORE_OPTIONS_LABEL} suppressed={moreOpen}>
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  iconOnly
+                  ref={moreRef}
+                  aria-label={LINK_MORE_OPTIONS_LABEL}
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  disabled={locked}
+                  onClick={() => setMoreOpen((open) => !open)}
+                  data-testid={`${TEST_ID}-more`}
+                >
+                  <MoreHorizontalIcon width={16} height={16} />
+                </Button>
+              </Tooltip>
               <FloatingMenu
                 open={moreOpen}
                 onOpenChange={setMoreOpen}

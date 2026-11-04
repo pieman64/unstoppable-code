@@ -13,8 +13,8 @@
  */
 import { isDeepStrictEqual } from 'node:util';
 import {
-  convertibleChatAutomation,
   ownedPipelineToChatAction,
+  type ChatAutomationAction,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
 import type {
@@ -28,8 +28,20 @@ import type { PipelineAgentAuthor } from '@canopy/desktop-shared/types/pipeline'
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
+import { readPipelineLocalMetadata } from '../pipelines/pipeline-local-metadata-store';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
-import { saveOwnedChatPipeline } from './chat-automation-conversion';
+import {
+  convertsToOwnedChatPipeline,
+  impliedChatTargetRequirement,
+  regeneratedOwnedChatAction,
+  saveOwnedChatPipeline,
+} from './chat-automation-conversion';
+import {
+  nativeGrantAuthority,
+  ownedPipelineAuthority,
+  sameNativeGrantAuthority,
+  withNativeGrantAuthority,
+} from './chat-automation-native-grant';
 import { chatAutomationPipelinesEnabled } from './chat-automation-experiment';
 import { deleteOwnedPipeline, ownedPipelineId } from './owned-pipeline';
 import { projectOwnedChatAutomation } from './owned-chat-projection';
@@ -37,6 +49,8 @@ import {
   getAutomationsService,
   type AutomationsService,
   type AutomationTrustedCreate,
+  type AutomationTrustedUpdate,
+  type AutomationTrustedWrite,
 } from './service';
 
 /** A person writing the automation clears any agent marker. */
@@ -57,8 +71,7 @@ async function convertSaved(
 ): Promise<AutomationMutationResponse> {
   if (!saved.ok) return saved;
   const { activity } = saved;
-  if (!activity || !convertibleChatAutomation(activity).convertible)
-    return saved;
+  if (!activity || !convertsToOwnedChatPipeline(activity)) return saved;
   const converted = await service.replaceWithOwnedPipeline(
     activity.id,
     saveOwnedChatPipeline,
@@ -102,16 +115,18 @@ function writeUpdate(
   request: AutomationUpdateRequest,
   writer: UpdateWriter,
   service: AutomationsService,
+  trusted: Omit<AutomationTrustedUpdate, 'agentAuthor'> = {},
 ): Promise<AutomationMutationResponse> {
   return service.update(request, writer.authorize, writer.callerContext, {
+    ...trusted,
     agentAuthor: writer.agentAuthor,
   });
 }
 
 /**
  * The activity as the update would store it with chat action `action`: the
- * request's name and run restriction (so adding one keeps it native) and the
- * writer's agent author, which decide whether it converts.
+ * request's name, run restriction (so adding one keeps it native) and install
+ * provenance, and the writer's agent author, which decide whether it converts.
  */
 function editedActivity(
   request: AutomationUpdateRequest,
@@ -129,69 +144,97 @@ function editedActivity(
     action,
     agentAuthor: writer.agentAuthor ?? undefined,
     targetRequirement,
+    // An applied update replaces the provenance, as the update stores it.
+    ...(request.installedFrom !== undefined
+      ? { installedFrom: request.installedFrom }
+      : {}),
   };
 }
 
+/** An update request and the trusted facts main writes it with. */
+interface ConvertedBack {
+  request: AutomationUpdateRequest;
+  trusted: Omit<AutomationTrustedWrite, 'agentAuthor'>;
+}
+
 /**
- * Regenerates the owned pipeline for `edited`, then stores the activity;
- * `undefined` when `edited` doesn't convert.
+ * A converted automation stored as its native chat action again: its run
+ * restriction, which the conversion dropped, is the one the action implies,
+ * unless the request sets its own (CAN-5479). Only main's restoration is
+ * trusted past an install's guard; a request's own restriction isn't.
+ */
+function convertedBack(
+  request: AutomationUpdateRequest,
+  action: ChatAutomationAction,
+): ConvertedBack {
+  if (request.targetRequirement !== undefined)
+    return { request: { ...request, action }, trusted: {} };
+  return {
+    request: {
+      ...request,
+      action,
+      targetRequirement: impliedChatTargetRequirement(action),
+    },
+    trusted: { restoresImpliedTargetRequirement: true },
+  };
+}
+
+/** The chat action an update request sends, if it sends one. */
+function chatActionOf(
+  action: AutomationAction | undefined,
+): ChatAutomationAction | undefined {
+  return action?.type === 'worktree_prompt' ||
+    action?.type === 'standalone_prompt' ||
+    action?.type === 'app_advisor_prompt' ||
+    action?.type === 'worktree_session_prompt'
+    ? action
+    : undefined;
+}
+
+/**
+ * Regenerates the owned pipeline for `edited` and stores the activity in one
+ * queued write; `undefined` when `edited` doesn't convert.
  */
 async function regenerateOwned(
   request: AutomationUpdateRequest,
-  stored: ScheduledActivity,
   edited: ScheduledActivity,
   pipelineId: string,
   previous: PipelineData,
   writer: UpdateWriter,
   service: AutomationsService,
 ): Promise<AutomationMutationResponse | undefined> {
-  if (!convertibleChatAutomation(edited).convertible) return undefined;
+  if (!convertsToOwnedChatPipeline(edited)) return undefined;
   // The global pipeline's write never sees the chat's own target: check it
   // as the native save would, before anything is written.
   const targetRefusal = await service.nativeTargetRefusal(edited);
   if (targetRefusal) return { ok: false, error: targetRefusal };
-  let replacement;
+  let action: AutomationAction;
   try {
-    // The snapshot the hand-edit check read: a write since then fails the
-    // save's revision check instead of being overwritten.
-    replacement = await saveOwnedChatPipeline(edited, { pipelineId, previous });
+    action = regeneratedOwnedChatAction(edited, pipelineId);
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     };
   }
-  const restore = (): Promise<void> =>
-    replacement.rollback().catch(() =>
-      logMainProcessWarn('Failed to restore an automation’s workflow', {
-        operation: 'restore-owned-pipeline',
-      }),
-    );
-  let updated: AutomationMutationResponse;
-  try {
-    updated = await writeUpdate(
-      { ...request, action: replacement.action },
-      writer,
-      service,
-    );
-  } catch (error) {
-    // The update can throw after storing the activity (while notifying);
-    // then the regenerated pipeline is the one it runs, so keep it.
-    const current = await (
-      writer.callerContext
-        ? service.listForContext(writer.callerContext)
-        : service.list()
-    )
-      .then(({ activities }) =>
-        activities.find((entry) => entry.id === stored.id),
-      )
-      .catch(() => undefined);
-    if (current === undefined || isDeepStrictEqual(current, stored))
-      await restore();
-    throw error;
-  }
-  if (!updated.ok) await restore();
-  return updated;
+  // CAN-5465: the pipeline is saved inside the update, which refuses while a
+  // run is in progress, so no run reads it with the inputs it replaces.
+  return writeUpdate(
+    {
+      ...request,
+      action,
+      // The pipeline action takes no run restriction (CAN-5479).
+      ...(request.targetRequirement ? { targetRequirement: null } : {}),
+    },
+    writer,
+    service,
+    {
+      // The snapshot the hand-edit check read: a write since then fails the
+      // save's revision check instead of being overwritten.
+      regeneratesOwnedPipeline: () =>
+        saveOwnedChatPipeline(edited, { pipelineId, previous }),
+    },
+  );
 }
 
 export const OWNED_PIPELINE_CHANGED =
@@ -214,6 +257,7 @@ function ownedPipelineMatchesChat(
       current.content,
       action.inputs ?? {},
       isCoworkWorkspace,
+      action.modelAliasPreferences,
     ) !== null
   );
 }
@@ -252,7 +296,6 @@ export async function updateAutomationFromForm(
   ) {
     const regenerated = await regenerateOwned(
       request,
-      stored,
       editedActivity(request, stored, request.action, PERSON_WRITER),
       owned,
       current,
@@ -261,7 +304,16 @@ export async function updateAutomationFromForm(
     );
     if (regenerated) return projected(regenerated);
   }
-  const updated = await service.update(request, undefined, undefined, PERSON);
+  // A chat action for an automation that owns its pipeline converts it back.
+  const chatBack =
+    stored && owned !== undefined ? chatActionOf(request.action) : undefined;
+  const back = chatBack ? convertedBack(request, chatBack) : undefined;
+  const updated = await service.update(
+    back ? back.request : request,
+    undefined,
+    undefined,
+    { ...back?.trusted, ...PERSON },
+  );
   if (!updated.ok || !updated.activity) return updated;
   // Converted back, or pointed at another pipeline: it no longer owns this one.
   // Delete the revision checked above; a write since then keeps the pipeline.
@@ -294,7 +346,7 @@ export async function createAutomationForAgent(
 ): Promise<AutomationMutationResponse> {
   const created = await service.create(request, trusted);
   if (!created.ok || !created.activity) return created;
-  if (!convertibleChatAutomation(created.activity).convertible) return created;
+  if (!convertsToOwnedChatPipeline(created.activity)) return created;
   if (!(await chatAutomationPipelinesEnabled())) return created;
   return convertSaved(created, service);
 }
@@ -309,9 +361,11 @@ export const OWNED_PIPELINE_HAND_EDITED =
  * An agent's update (CAN-4551, 7c). A native automation updates as before.
  * One that owns its pipeline is re-checked as agent-authored, whatever the
  * experiment's state: while it still converts, its pipeline is regenerated
- * with the agent's marker; once D11 would refuse its runs, it converts back
- * to the native action and the pipeline is deleted. Its chat action is the
- * one sent, else the one its pipeline stands for.
+ * with the agent's marker; once D11 would refuse its runs, or the update
+ * changes the plugins, approval mode or Orchestrator model its native grant
+ * keeps (CAN-5479), it converts back to the native action and the pipeline is
+ * deleted. Its chat action is the one sent, else the one its pipeline stands
+ * for, with the grant's settings in place of whatever a hand edit set.
  */
 export async function updateAutomationForAgent(
   request: AutomationUpdateRequest,
@@ -339,14 +393,33 @@ export async function updateAutomationForAgent(
   // A chat action would overwrite or delete a workflow changed by hand.
   if (sentChat && !ownedPipelineMatchesChat(stored, current))
     return { ok: false, error: OWNED_PIPELINE_HAND_EDITED };
-  const chat =
-    sentChat ??
-    (request.action === undefined && current !== undefined
-      ? (ownedPipelineToChatAction(
+  const fromPipeline =
+    current !== undefined
+      ? ownedPipelineToChatAction(
           current.content,
           stored.action.inputs ?? {},
           isCoworkWorkspace,
-        ) ?? undefined)
+          stored.action.modelAliasPreferences,
+        )
+      : null;
+  // CAN-5479: the authority the automation has, which an agent's write
+  // keeps: its native grant's, never what a hand edit put in its pipeline.
+  const authority =
+    fromPipeline === null
+      ? undefined
+      : ownedPipelineAuthority(
+          stored.id,
+          readPipelineLocalMetadata({
+            type: 'stored',
+            source: 'user',
+            value: owned,
+          }),
+          fromPipeline,
+        );
+  const chat =
+    sentChat ??
+    (request.action === undefined && fromPipeline !== null
+      ? withNativeGrantAuthority(fromPipeline, authority)
       : undefined);
   if (chat === undefined || current === undefined) {
     // A pipeline action, or a workflow changed by hand: updated as sent.
@@ -381,18 +454,18 @@ export async function updateAutomationForAgent(
       ? { ok: false, error: AUTOMATION_CHANGED_MEANWHILE }
       : response;
   const edited = editedActivity(request, stored, chat, writer);
-  const regenerated = await regenerateOwned(
-    request,
-    stored,
-    edited,
-    owned,
-    current,
-    guarded,
-    service,
-  );
+  // Its grant is re-minted for the new revision only with the authority it
+  // had; an agent's change of authority stays a native action's (CAN-5479).
+  const regenerated = sameNativeGrantAuthority(
+    nativeGrantAuthority(chat),
+    authority,
+  )
+    ? await regenerateOwned(request, edited, owned, current, guarded, service)
+    : undefined;
   if (regenerated) return changed(regenerated);
-  // D11 would refuse its converted runs: back to the native action, if the
-  // agent may write that, checked inside the queued write.
+  // D11 would refuse its converted runs, or its authority changed: back to
+  // the native action, if the agent may write that, checked inside the
+  // queued write.
   const { authorizeNative } = writer;
   const nativeWriter: UpdateWriter = authorizeNative
     ? {
@@ -402,10 +475,13 @@ export async function updateAutomationForAgent(
           authorizeNative(chat),
       }
     : guarded;
+  const chatBack = chatActionOf(chat);
+  const back = chatBack ? convertedBack(request, chatBack) : undefined;
   const updated = await writeUpdate(
-    { ...request, action: chat },
+    back ? back.request : { ...request, action: chat },
     nativeWriter,
     service,
+    back?.trusted,
   );
   if (
     updated.ok &&

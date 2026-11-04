@@ -69,6 +69,12 @@ describe('getMonacoLanguage', () => {
     expect(getMonacoLanguage('a.xml')).toBe('xml');
   });
 
+  it('maps Terraform and HCL extensions to hcl', () => {
+    expect(getMonacoLanguage('main.tf')).toBe('hcl');
+    expect(getMonacoLanguage('prod.tfvars', 'tfvars')).toBe('hcl');
+    expect(getMonacoLanguage('config.hcl')).toBe('hcl');
+  });
+
   it('treats config-like extensions as plaintext', () => {
     expect(getMonacoLanguage('a.toml')).toBe('plaintext');
     expect(getMonacoLanguage('a.env')).toBe('plaintext');

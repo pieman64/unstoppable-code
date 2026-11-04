@@ -3732,17 +3732,17 @@ export function AppSidebar({
                               </span>
                               <Badge
                                 tone="warning"
-                                // The 18px capsule sits the same inset from
-                                // the banner's top, bottom and trailing edge:
-                                // 5px in the 28px banner (`-mr-0.75` against
-                                // its 8px padding), 7px in early access's
-                                // 32px one (`-mr-px`).
+                                variant="solid"
+                                // Nested corner: the 20px label sits 4px from
+                                // the 28px `rounded-row` banner's edges
+                                // (`-mr-1` against its 8px padding), 6px from
+                                // early access's 32px one (`-mr-0.5`).
                                 className={
-                                  simplifiedSidebar ? '-mr-px' : '-mr-0.75'
+                                  simplifiedSidebar ? '-mr-0.5' : '-mr-1'
                                 }
                                 data-testid="sidebar-dev-badge"
                               >
-                                Dev build
+                                DEV
                               </Badge>
                             </SidebarFooterBanner>
                           </div>

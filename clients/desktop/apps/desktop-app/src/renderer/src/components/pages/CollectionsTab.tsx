@@ -24,6 +24,7 @@ import { ErrorBanner } from '../shared';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  Disclosure,
   Notice,
 } from '@canopy/ui-shared/components';
 import { UnifiedTable } from '../shared/UnifiedTable';
@@ -1030,16 +1031,16 @@ export function SharedCollectionDetailModal({
                   renderSharedByYou?.(detail, refreshDetail)}
 
                 {isEdit && editable.items.length > 0 && (
-                  <details className="rounded-lg border bg-secondary/20">
-                    <summary className="cursor-pointer px-3 py-2 text-xs font-medium fg-primary">
-                      Required items (
-                      {editable.items.filter((item) => item.required).length}/
-                      {editable.items.length})
-                    </summary>
+                  <Disclosure
+                    variant="box"
+                    label="Required items"
+                    meta={`${editable.items.filter((item) => item.required).length}/${editable.items.length}`}
+                    dataTestId="collection-required-items"
+                  >
                     <div
                       role="group"
                       aria-label="Required items"
-                      className="divide-y border-t"
+                      className="divide-y"
                     >
                       {editable.items.map((item, index) => {
                         const label =
@@ -1072,7 +1073,7 @@ export function SharedCollectionDetailModal({
                         );
                       })}
                     </div>
-                  </details>
+                  </Disclosure>
                 )}
               </>
             )}

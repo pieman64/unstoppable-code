@@ -109,7 +109,6 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
           onClick={busy ? undefined : onOpen}
           aria-label={`Open ${filename}`}
           aria-describedby={descriptionId}
-          title={pathLabel}
           aria-busy={busy}
           aria-disabled={busy}
           className="focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-secondary"

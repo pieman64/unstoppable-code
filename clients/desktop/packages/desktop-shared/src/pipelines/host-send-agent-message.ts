@@ -9,7 +9,13 @@
  * Message text, file contents and paths are user data: no parse error here
  * echoes them.
  */
-import type { ChatInterfaceMode } from '@canopy/agent-transcript';
+import {
+  isChatAttachmentPromptKind,
+  type ChatAttachmentPromptContext,
+  type ChatInterfaceMode,
+  type FileReference,
+} from '@canopy/agent-transcript/types';
+import { isCodexSpeed, type CodexSpeed } from '@canopy/protocol/automations';
 import {
   isValidatedConfiguredPromptReferences,
   validateConfiguredPromptReferences,
@@ -22,6 +28,8 @@ import {
 import { WorkerPipelineChatSendRecordSchema } from '@canopy/protocol/canopy-core';
 import { isThinkingLevel, THINKING_LEVELS } from '@canopy/protocol/thinking';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
+import { normalizePluginSelections } from '../lib/plugin-selections-normalization';
+import type { ChatTabPluginSelections } from '../types';
 import { APPROVAL_MODES, type ApprovalMode } from '../types/approvals';
 import type { PipelineChatSendRecord } from '../types/pipeline';
 import {
@@ -42,12 +50,21 @@ export interface SendAgentMessageSettings {
   model?: string;
   thinkingEffort?: ThinkingLevel;
   fastMode?: boolean;
+  /** `speed`: the Codex speed, Ultra fast included; never with `fastMode`. */
+  speed?: CodexSpeed;
   planMode?: boolean;
   approvalMode?: ApprovalMode;
   plugins?: ShareablePluginRef[];
+  /**
+   * `plugin_selections`: local plugin selections, normalized, as a chat
+   * automation stores them (CAN-5479).
+   */
+  pluginSelections?: ChatTabPluginSelections;
   /** New chats only. */
   interfaceMode?: ChatInterfaceMode;
 }
+
+export type SendAgentMessageInputMode = 'typed' | 'voice';
 
 export type SendAgentMessageMode = 'queue' | 'steer';
 
@@ -60,6 +77,18 @@ export interface SendAgentMessageInputs {
   textReferences?: ConfiguredPromptReference[];
   /** Relative to the step's working folder; existing chats only. */
   attachments?: string[];
+  /**
+   * `attachment_paths`: absolute paths, as a chat automation stores them
+   * (CAN-5479). Existing chats only; desktop main refuses any path outside the
+   * target task's attachments folder. Never with `attachments`.
+   */
+  attachmentPaths?: string[];
+  /** `attachment_prompt_contexts`: existing chats only. */
+  attachmentPromptContexts?: ChatAttachmentPromptContext[];
+  /** `file_references`: legacy composer file references; existing chats only. */
+  fileReferences?: FileReference[];
+  /** `input_mode`: existing chats only. */
+  inputMode?: SendAgentMessageInputMode;
   /**
    * `literal_text`: the runner left `text` and `text_references` as written,
    * expressions included (CAN-4551). Inline text only.
@@ -101,6 +130,7 @@ export const SEND_AGENT_MESSAGE_AUTHORITY_INPUTS = [
   'model',
   'plan_mode',
   'plugins',
+  'plugin_selections',
 ] as const;
 
 export const SEND_AGENT_MESSAGE_INTERFACE_MODES: readonly ChatInterfaceMode[] =
@@ -286,6 +316,163 @@ function parseAttachments(
   return { ok: true, value: paths };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parsePluginSelections(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<ChatTabPluginSelections | undefined> {
+  const raw = presentInput(inputs, 'plugin_selections');
+  if (raw === undefined) return { ok: true, value: undefined };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  return isPlainObject(parsed)
+    ? { ok: true, value: normalizePluginSelections(parsed) }
+    : failure(`${STEP} "plugin_selections" must be a JSON object`);
+}
+
+function parseAttachmentPaths(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<string[] | undefined> {
+  const array = parseJsonArray(inputs, 'attachment_paths');
+  if (!array.ok) return array;
+  if (array.value === undefined) return { ok: true, value: undefined };
+  const paths: string[] = [];
+  for (const entry of array.value) {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      return failure(`${STEP} "attachment_paths" must list non-empty paths`);
+    }
+    paths.push(entry);
+  }
+  return { ok: true, value: paths };
+}
+
+function parseAttachmentPromptContexts(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<ChatAttachmentPromptContext[] | undefined> {
+  const array = parseJsonArray(inputs, 'attachment_prompt_contexts');
+  if (!array.ok) return array;
+  if (array.value === undefined) return { ok: true, value: undefined };
+  const contexts: ChatAttachmentPromptContext[] = [];
+  for (const entry of array.value) {
+    const attachmentPath: unknown = isPlainObject(entry)
+      ? entry.attachmentPath
+      : undefined;
+    const promptKind: unknown = isPlainObject(entry)
+      ? entry.promptKind
+      : undefined;
+    if (
+      typeof attachmentPath !== 'string' ||
+      !isChatAttachmentPromptKind(promptKind)
+    ) {
+      return failure(
+        `${STEP} "attachment_prompt_contexts" holds an invalid attachment context`,
+      );
+    }
+    contexts.push({ attachmentPath, promptKind });
+  }
+  return { ok: true, value: contexts };
+}
+
+function parseFileReference(entry: unknown): FileReference | undefined {
+  if (!isPlainObject(entry)) return undefined;
+  const { displayPath, absolutePath, repoName, kind, textStart } = entry;
+  if (
+    typeof displayPath !== 'string' ||
+    typeof absolutePath !== 'string' ||
+    (repoName !== undefined && typeof repoName !== 'string') ||
+    (kind !== undefined && typeof kind !== 'string') ||
+    (textStart !== undefined && typeof textStart !== 'number')
+  ) {
+    return undefined;
+  }
+  return {
+    displayPath,
+    absolutePath,
+    ...(repoName !== undefined ? { repoName } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(textStart !== undefined ? { textStart } : {}),
+  };
+}
+
+function parseFileReferences(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<FileReference[] | undefined> {
+  const array = parseJsonArray(inputs, 'file_references');
+  if (!array.ok) return array;
+  if (array.value === undefined) return { ok: true, value: undefined };
+  const references: FileReference[] = [];
+  for (const entry of array.value) {
+    const reference = parseFileReference(entry);
+    if (!reference) {
+      return failure(
+        `${STEP} "file_references" holds an invalid file reference`,
+      );
+    }
+    references.push(reference);
+  }
+  return { ok: true, value: references };
+}
+
+function parseInputMode(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<SendAgentMessageInputMode | undefined> {
+  const mode = presentInput(inputs, 'input_mode');
+  if (mode === undefined) return { ok: true, value: undefined };
+  if (mode === 'typed' || mode === 'voice') return { ok: true, value: mode };
+  return failure(`${STEP} "input_mode" must be "typed" or "voice"`);
+}
+
+/** The composer payload a chat automation stores (CAN-5479); existing chats only. */
+interface ComposerPayload {
+  attachmentPaths?: string[];
+  attachmentPromptContexts?: ChatAttachmentPromptContext[];
+  fileReferences?: FileReference[];
+  inputMode?: SendAgentMessageInputMode;
+}
+
+/** Each composer field and its input, for the existing-chat check. */
+const COMPOSER_INPUTS: ReadonlyArray<readonly [keyof ComposerPayload, string]> =
+  [
+    ['attachmentPaths', 'attachment_paths'],
+    ['attachmentPromptContexts', 'attachment_prompt_contexts'],
+    ['fileReferences', 'file_references'],
+    ['inputMode', 'input_mode'],
+  ];
+
+function parseComposerPayload(
+  inputs: Record<string, string | undefined>,
+): HostInputParse<ComposerPayload> {
+  const attachmentPaths = parseAttachmentPaths(inputs);
+  if (!attachmentPaths.ok) return attachmentPaths;
+  const contexts = parseAttachmentPromptContexts(inputs);
+  if (!contexts.ok) return contexts;
+  const fileReferences = parseFileReferences(inputs);
+  if (!fileReferences.ok) return fileReferences;
+  const inputMode = parseInputMode(inputs);
+  if (!inputMode.ok) return inputMode;
+  return {
+    ok: true,
+    value: {
+      ...(attachmentPaths.value !== undefined
+        ? { attachmentPaths: attachmentPaths.value }
+        : {}),
+      ...(contexts.value !== undefined
+        ? { attachmentPromptContexts: contexts.value }
+        : {}),
+      ...(fileReferences.value !== undefined
+        ? { fileReferences: fileReferences.value }
+        : {}),
+      ...(inputMode.value !== undefined ? { inputMode: inputMode.value } : {}),
+    },
+  };
+}
+
 /**
  * The longest prompt the shape-only check will synthesize. Offsets count
  * UTF-16 code units, and a `text_file` is at most
@@ -368,6 +555,17 @@ function parseSettings(
   if (!fastMode.ok) return fastMode;
   if (fastMode.value !== undefined) settings.fastMode = fastMode.value;
 
+  const speed = presentInput(inputs, 'speed');
+  if (speed !== undefined) {
+    if (!isCodexSpeed(speed)) {
+      return failure(`${STEP} "speed" must be standard, fast or ultrafast`);
+    }
+    if (settings.fastMode !== undefined) {
+      return failure(`${STEP} "speed" and "fast_mode" can't both be set`);
+    }
+    settings.speed = speed;
+  }
+
   const planMode = parseBoolean(inputs, 'plan_mode');
   if (!planMode.ok) return planMode;
   if (planMode.value !== undefined) settings.planMode = planMode.value;
@@ -386,6 +584,11 @@ function parseSettings(
   const plugins = parsePlugins(inputs);
   if (!plugins.ok) return plugins;
   if (plugins.value !== undefined) settings.plugins = plugins.value;
+
+  const pluginSelections = parsePluginSelections(inputs);
+  if (!pluginSelections.ok) return pluginSelections;
+  if (pluginSelections.value !== undefined)
+    settings.pluginSelections = pluginSelections.value;
 
   const interface_ = presentInput(inputs, 'interface_mode');
   if (interface_ !== undefined) {
@@ -433,6 +636,23 @@ export function parseSendAgentMessageInputs(
   if (attachments.value !== undefined && !hasChat) {
     return failure(`${STEP} "attachments" requires "chat_id"`);
   }
+  const composer = parseComposerPayload(inputs);
+  if (!composer.ok) return composer;
+  if (!hasChat) {
+    for (const [field, name] of COMPOSER_INPUTS) {
+      if (composer.value[field] !== undefined) {
+        return failure(`${STEP} "${name}" requires "chat_id"`);
+      }
+    }
+  }
+  if (
+    attachments.value !== undefined &&
+    composer.value.attachmentPaths !== undefined
+  ) {
+    return failure(
+      `${STEP} "attachments" and "attachment_paths" can't both be set`,
+    );
+  }
   const literalText = parseBoolean(inputs, 'literal_text');
   if (!literalText.ok) return literalText;
   if (literalText.value === true && text.value.kind !== 'inline') {
@@ -465,6 +685,7 @@ export function parseSendAgentMessageInputs(
       ...(attachments.value !== undefined
         ? { attachments: attachments.value }
         : {}),
+      ...composer.value,
       ...(literalText.value === true ? { literalText: true } : {}),
       ...(replaceEmptyChat.value === true ? { replaceEmptyChat: true } : {}),
       ...(newChat.value === true ? { newChat: true } : {}),

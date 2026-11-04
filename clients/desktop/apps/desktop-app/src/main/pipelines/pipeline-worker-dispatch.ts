@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import {
   WORKER_PIPELINE_INITIATION_SOURCES,
+  WORKER_PIPELINE_SWEEP_MAX,
   type OperationOrigin,
   type OperationOwner,
   type WorkerPipelineExecutionStartParams,
@@ -23,6 +26,11 @@ import {
   stagePipelineLaunch,
   pipelineCancelMark,
   readPipelineCancelCapture,
+  readStoredPipelineExecution,
+  stagePipelineControl,
+  takePipelineRecoveryCapture,
+  type PipelineControlLaunch,
+  type PipelineControlSettlement,
 } from './pipeline-worker-host';
 
 /*
@@ -51,8 +59,8 @@ function originOf(options: ExecutionOptions): OperationOrigin {
     : { kind: 'client', sourceId: LOCAL_PRINCIPAL };
 }
 
-function ownerOf(owner: string): OperationOwner {
-  const context = parseWorkspaceContext(owner);
+function ownerOf(owner: string | undefined): OperationOwner {
+  const context = owner === undefined ? null : parseWorkspaceContext(owner);
   return context?.kind === 'organization'
     ? { kind: 'organization', id: context.organizationId }
     : { kind: 'principal', id: LOCAL_PRINCIPAL };
@@ -172,5 +180,130 @@ export async function drainPipelineThroughLocalWorker(
     return;
   throw new Error(
     result.error?.message ?? 'The workflow run could not be stopped.',
+  );
+}
+
+/**
+ * Run a recovery control (CAN-4141) through core and the local worker: core
+ * records it under the execution's run, or a run of its own, then dispatches
+ * it keyed by `requestId`. `launch` is the entry point's host side, which
+ * acts on the dispatched command. Legacy callers keep their results: the
+ * full state comes back, and the entry point's own error is rethrown.
+ */
+export async function controlPipelineThroughLocalWorker(
+  control: PipelineControlRequest,
+  launch: PipelineControlLaunch,
+  origin: 'client' | 'automation' = 'client',
+): Promise<PipelineControlSettlement> {
+  const { executionId, requestId } = control.params;
+  const stored = await readStoredPipelineExecution(executionId).catch(
+    () => null,
+  );
+  const staged = stagePipelineControl(requestId, launch);
+  let result: Awaited<
+    ReturnType<
+      ReturnType<typeof getDesktopCanopyRuntime>['pipelineRuns']['control']
+    >
+  >;
+  let capture: ReturnType<typeof staged.take>;
+  try {
+    result = await getDesktopCanopyRuntime().pipelineRuns.control({
+      control,
+      origin:
+        origin === 'automation'
+          ? { kind: 'automation', sourceId: executionId }
+          : { kind: 'client', sourceId: LOCAL_PRINCIPAL },
+      owner: ownerOf(stored?.execution_context),
+    });
+  } finally {
+    capture = staged.take();
+  }
+  if (result.status === 'completed') {
+    if (capture.settlement) return capture.settlement;
+    // Core answered from its record of an earlier dispatch of this key.
+    const state = await readStoredPipelineExecution(
+      result.execution.executionId,
+    );
+    if (state) return { outcome: result.outcome, state };
+  }
+  if (capture.error instanceof Error) throw capture.error;
+  throw new Error(
+    result.status === 'completed'
+      ? 'The workflow run could not be changed.'
+      : (result.error?.message ?? 'The workflow run could not be changed.'),
+  );
+}
+
+/**
+ * The startup orphan sweep through core and the local worker (CAN-4141):
+ * pause the executions among `executionIds` that a process left running when
+ * it exited, in batches the worker accepts. Resolves with the sweep's
+ * messages for executions it could not recover, which a later startup
+ * retries.
+ */
+export async function sweepOrphanedPipelinesThroughLocalWorker(
+  executionIds: readonly string[],
+): Promise<string[]> {
+  const errors: string[] = [];
+  for (
+    let start = 0;
+    start < executionIds.length;
+    start += WORKER_PIPELINE_SWEEP_MAX
+  )
+    errors.push(
+      ...(await sweepBatch(
+        executionIds.slice(start, start + WORKER_PIPELINE_SWEEP_MAX),
+      )),
+    );
+  return errors;
+}
+
+async function sweepBatch(executionIds: readonly string[]): Promise<string[]> {
+  const requestId = randomUUID();
+  let result: Awaited<
+    ReturnType<
+      ReturnType<typeof getDesktopCanopyRuntime>['pipelineRuns']['sweep']
+    >
+  >;
+  try {
+    result = await getDesktopCanopyRuntime().pipelineRuns.sweep(
+      executionIds,
+      requestId,
+    );
+  } catch (error) {
+    takePipelineRecoveryCapture(requestId);
+    throw error;
+  }
+  const capture = takePipelineRecoveryCapture(requestId);
+  if (result.status === 'completed') return capture.errors ?? [];
+  throw new Error(
+    result.error?.message ??
+      'Interrupted workflow runs could not be recovered.',
+  );
+}
+
+/**
+ * The shutdown checkpoint through core and the local worker (CAN-4141):
+ * close admission and pause every live execution so it resumes after the
+ * restart. The checkpoint's own error is rethrown.
+ */
+export async function checkpointPipelinesThroughLocalWorker(): Promise<void> {
+  const requestId = randomUUID();
+  let result: Awaited<
+    ReturnType<
+      ReturnType<typeof getDesktopCanopyRuntime>['pipelineRuns']['checkpoint']
+    >
+  >;
+  try {
+    result = await getDesktopCanopyRuntime().pipelineRuns.checkpoint(requestId);
+  } catch (error) {
+    takePipelineRecoveryCapture(requestId);
+    throw error;
+  }
+  const capture = takePipelineRecoveryCapture(requestId);
+  if (result.status === 'completed') return;
+  if (capture.error instanceof Error) throw capture.error;
+  throw new Error(
+    result.error?.message ?? 'Some workflow runs could not be paused.',
   );
 }

@@ -892,9 +892,13 @@ async function runSample(ordinal) {
           });
       }, url);
       await page.getByTestId('browser-profile-picker').click();
+      // The profile dropdown is Canopy's menu (SettingsSelect), not a native
+      // select: open it, then press the option with the profile's value.
+      await page.getByTestId('browser-profile-selection').click();
       await page
-        .getByTestId('browser-profile-selection')
-        .selectOption(named.profileId);
+        .getByRole('listbox')
+        .locator(`[role="option"][data-value="${named.profileId}"]`)
+        .click();
       const modal = page.getByTestId('browser-javascript-dialog');
       await task('switch_click_to_beforeunload_prompt', async () => {
         await page.getByTestId('browser-profile-replace').click();

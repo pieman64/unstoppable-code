@@ -4,6 +4,7 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import {
   Button,
   DialogModal,
+  Disclosure,
   DELEGATED_AGENT_CHANGES_FAILED_LABEL,
   DELEGATED_AGENT_DIFF_SHORTENED_LABEL,
   DELEGATED_AGENT_LOADING_CHANGES_LABEL,
@@ -48,32 +49,30 @@ function ChangedFiles({
       ) : (
         <div className="flex flex-col gap-2">
           {changes.files.map((file) => (
-            <details
+            <Disclosure
               key={file.path}
-              data-testid="subagent-changed-file"
-              className="min-w-0 rounded-md border px-3 py-2"
+              variant="box"
+              label={<span className="font-mono">{file.path}</span>}
+              meta={file.change}
+              dataTestId="subagent-changed-file"
             >
-              <summary className="cursor-pointer break-words text-sm fg-primary">
-                <span className="font-mono">{file.path}</span>
-                <span className="fg-tertiary"> · {file.change}</span>
-              </summary>
               {file.diff ? (
                 <pre
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-2 max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary p-3 font-mono text-xs fg-secondary`}
+                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-secondary p-3 font-mono text-xs fg-secondary`}
                 >
                   {file.diff}
                 </pre>
               ) : (
-                <p className="mt-2 text-xs fg-secondary">
+                <p className="text-xs fg-secondary">
                   {DELEGATED_AGENT_NO_DIFF_LABEL}
                 </p>
               )}
               {file.diffTruncated ? (
-                <p className="mt-2 text-xs fg-tertiary">
+                <p className="text-xs fg-tertiary">
                   {DELEGATED_AGENT_DIFF_SHORTENED_LABEL}
                 </p>
               ) : null}
-            </details>
+            </Disclosure>
           ))}
         </div>
       )}

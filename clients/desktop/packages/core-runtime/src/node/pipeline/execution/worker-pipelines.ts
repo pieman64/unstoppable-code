@@ -5,10 +5,18 @@ import {
   type CanopyQueryHandler,
   type CanopyStreamHandlerMap,
   type WorkerPipelineCancelMode,
+  type WorkerPipelineControlResult,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionEventsItem,
   type WorkerPipelineExecutionResult,
+  type WorkerPipelineExecutionResumeParams,
+  type WorkerPipelineExecutionRetryParams,
   type WorkerPipelineExecutionStartParams,
+  type WorkerPipelineMatrixJobRetryParams,
+  type WorkerPipelineRecoveryCheckpointResult,
+  type WorkerPipelineRecoverySweepParams,
+  type WorkerPipelineRecoverySweepResult,
+  type WorkerPipelineMatrixVariantCancelParams,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError } from '../../../runtime/errors';
@@ -25,6 +33,27 @@ export interface PipelineExecutionObserver {
   }): void;
 }
 
+/** One recovery control (CAN-4141), by the instruction that carries it. */
+export type PipelineControlRequest =
+  | {
+      operation: 'worker.pipeline.execution.resume';
+      params: WorkerPipelineExecutionResumeParams;
+    }
+  | {
+      operation: 'worker.pipeline.execution.retry';
+      params: WorkerPipelineExecutionRetryParams;
+    }
+  | {
+      operation: 'worker.pipeline.matrixJob.retry';
+      params: WorkerPipelineMatrixJobRetryParams;
+    }
+  | {
+      operation: 'worker.pipeline.matrixVariant.cancel';
+      params: WorkerPipelineMatrixVariantCancelParams;
+    };
+
+export type PipelineControlOperation = PipelineControlRequest['operation'];
+
 /**
  * The trusted host side of `worker.pipeline.execution.*`: the executor, its
  * execution store and the launches core prepared. Every method speaks
@@ -40,6 +69,29 @@ export interface PipelineExecutionWorker {
     params: WorkerPipelineExecutionStartParams,
     signal: AbortSignal,
   ): Promise<WorkerPipelineExecution>;
+  /**
+   * Run the recovery control core prepared under `params.requestId`, once.
+   * Throws {@link pipelineLaunchUnavailableError} when there is none.
+   */
+  control(
+    request: PipelineControlRequest,
+    signal: AbortSignal,
+  ): Promise<WorkerPipelineControlResult>;
+  /**
+   * Pause the executions among `params.executionIds` whose recorded owner
+   * has exited, so they can resume (the startup orphan sweep).
+   */
+  sweep(
+    params: WorkerPipelineRecoverySweepParams,
+  ): Promise<WorkerPipelineRecoverySweepResult>;
+  /**
+   * Close admission and pause every live execution at a checkpoint before
+   * the worker stops. Throws {@link pipelineCheckpointFailedError} when one
+   * could not be paused.
+   */
+  checkpoint(params: {
+    requestId: string;
+  }): Promise<WorkerPipelineRecoveryCheckpointResult>;
   /** `null` when this worker has no such execution. */
   get(executionId: string): Promise<WorkerPipelineExecution | null>;
   /**
@@ -113,6 +165,36 @@ export function pipelineStartFailedError(cause: unknown): CanopyOperationError {
   );
 }
 
+/** A control the executor refused; its message stays in host diagnostics. */
+export function pipelineControlFailedError(
+  cause: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'failed_precondition',
+      code: 'worker.pipeline.controlFailed',
+      message: 'The workflow run could not be changed.',
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** A shutdown checkpoint that left a live execution unpaused. */
+export function pipelineCheckpointFailedError(
+  cause: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'failed_precondition',
+      code: 'worker.pipeline.checkpointFailed',
+      message: 'Some workflow runs could not be paused.',
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
 const TERMINAL: ReadonlySet<string> = new Set(
   WORKER_PIPELINE_TERMINAL_STATUSES,
 );
@@ -164,6 +246,19 @@ export interface WorkerPipelineHandlers {
       'worker.pipeline.execution.cancel',
       CanopyHandlerContext
     >;
+    'worker.pipeline.recovery.sweep': CanopyInstructionHandler<
+      'worker.pipeline.recovery.sweep',
+      CanopyHandlerContext
+    >;
+    'worker.pipeline.recovery.checkpoint': CanopyInstructionHandler<
+      'worker.pipeline.recovery.checkpoint',
+      CanopyHandlerContext
+    >;
+  } & {
+    [N in PipelineControlOperation]: CanopyInstructionHandler<
+      N,
+      CanopyHandlerContext
+    >;
   };
   streams: Pick<
     CanopyStreamHandlerMap<CanopyHandlerContext>,
@@ -195,6 +290,29 @@ export function createWorkerPipelineHandlers(
       ): Promise<WorkerPipelineExecutionResult> => ({
         execution: await worker.start(params, signal),
       }),
+      'worker.pipeline.execution.resume': (params, { signal }) =>
+        worker.control(
+          { operation: 'worker.pipeline.execution.resume', params },
+          signal,
+        ),
+      'worker.pipeline.execution.retry': (params, { signal }) =>
+        worker.control(
+          { operation: 'worker.pipeline.execution.retry', params },
+          signal,
+        ),
+      'worker.pipeline.matrixJob.retry': (params, { signal }) =>
+        worker.control(
+          { operation: 'worker.pipeline.matrixJob.retry', params },
+          signal,
+        ),
+      'worker.pipeline.matrixVariant.cancel': (params, { signal }) =>
+        worker.control(
+          { operation: 'worker.pipeline.matrixVariant.cancel', params },
+          signal,
+        ),
+      'worker.pipeline.recovery.sweep': (params) => worker.sweep(params),
+      'worker.pipeline.recovery.checkpoint': (params) =>
+        worker.checkpoint(params),
       'worker.pipeline.execution.cancel': async ({
         executionId,
         mode = 'finalize',

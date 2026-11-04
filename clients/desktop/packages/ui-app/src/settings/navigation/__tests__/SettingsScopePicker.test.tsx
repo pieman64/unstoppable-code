@@ -59,7 +59,7 @@ describe('SettingsScopePicker', () => {
     return element as HTMLElement;
   }
 
-  it('fits a person to one initial in the small trigger and menu avatars', () => {
+  it('fits a person to one initial in the 16px menu avatar, two in the trigger', () => {
     act(() =>
       root.render(
         <SettingsScopePicker
@@ -73,8 +73,8 @@ describe('SettingsScopePicker', () => {
     const trigger = q('nav-scope-picker');
     const triggerAvatar = trigger.querySelector('[role="img"]');
     expect(triggerAvatar).toBeInstanceOf(HTMLElement);
-    // Two letters do not fit a 16–24px circle; the lab shows one.
-    expect(triggerAvatar?.textContent).toBe('M');
+    // The 24px trigger avatar fits two letters; the 16px menu avatar one.
+    expect(triggerAvatar?.textContent).toBe('MC');
 
     act(() => trigger.click());
     const menuAvatar = q('nav-scope-option-account').querySelector(
@@ -84,7 +84,7 @@ describe('SettingsScopePicker', () => {
     expect(menuAvatar?.textContent).toBe('M');
   });
 
-  it('fits an organization to one initial in the trigger logo', () => {
+  it('shows an organization’s two initials in the trigger logo', () => {
     act(() =>
       root.render(
         <SettingsScopePicker
@@ -109,6 +109,6 @@ describe('SettingsScopePicker', () => {
       '[data-testid="org-logo"]',
     );
     expect(logo).toBeInstanceOf(HTMLElement);
-    expect(logo?.textContent).toBe('N');
+    expect(logo?.textContent).toBe('NL');
   });
 });

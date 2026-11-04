@@ -198,12 +198,12 @@ describe('McpServerHealthSection', () => {
     );
     const onTested = jest.fn();
     renderHealth({ testConnection: { available: true, run }, onTested });
-    const select = byTestId('mcp-health-config-select');
-    if (!(select instanceof HTMLSelectElement)) throw new Error('no select');
-    act(() => {
-      select.value = 'work';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    click('mcp-health-config-select');
+    const option = document.querySelector<HTMLElement>(
+      '[role="listbox"] [role="option"][data-value="work"]',
+    );
+    if (!option) throw new Error('no work option');
+    act(() => option.click());
     click('mcp-health-test');
     await flush();
     expect(run).toHaveBeenCalledWith('work');

@@ -16,6 +16,7 @@ import {
   Checkbox,
   CopyButton,
   DetailActionBar,
+  Disclosure,
   McpServerLogo,
   Notice,
   NoticeButton,
@@ -24,6 +25,7 @@ import {
   StatusPill,
   ToggleSwitch,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   ChevronLeftMediumIcon,
@@ -88,7 +90,9 @@ export function SettingsSection({
       {title || description ? (
         <div className="space-y-1">
           {title ? (
-            <h2 className="text-m font-medium fg-primary">{title}</h2>
+            <Heading level={2} variant="section">
+              {title}
+            </Heading>
           ) : null}
           {description ? (
             <div className="text-xs text-pretty fg-secondary">
@@ -634,10 +638,7 @@ export function ConnectSection({
 // Matches Muse's pre-registered OAuth client in apps/web oauth-server.
 const MUSE_CLIENT_ID = 'meta-muse';
 
-/**
- * One agent's setup steps, collapsed to its logo and name. The chevron shows
- * on hover or keyboard focus, and stays while the steps are open.
- */
+/** One agent's setup steps, collapsed to its logo and name. */
 function AgentSetup({
   logo,
   name,
@@ -653,43 +654,18 @@ function AgentSetup({
   readonly children?: ReactNode;
   readonly testId: string;
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
   return (
-    <div className="flex min-w-0 flex-col gap-3" data-testid={testId}>
-      <button
-        type="button"
-        data-settings-control="disclosure"
-        aria-expanded={expanded}
-        data-testid={`${testId}-toggle`}
-        className="group focus-ring flex w-fit items-center gap-2 rounded-md text-s font-medium fg-primary"
-        onClick={() => setExpanded((current) => !current)}
-      >
-        {logo}
-        {name}
-        <ChevronRightIcon
-          size={14}
-          aria-hidden
-          className={`shrink-0 fg-tertiary transition-[opacity,rotate] ${
-            expanded
-              ? 'rotate-90 opacity-100'
-              : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'
-          }`}
-        />
-      </button>
-      {expanded ? (
-        <>
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 sm:gap-6">
-            <div className="min-w-0 flex-1 text-xs text-pretty fg-secondary">
-              {description}
-            </div>
-            {control ? (
-              <div className="flex shrink-0 items-center gap-2">{control}</div>
-            ) : null}
-          </div>
-          {children}
-        </>
-      ) : null}
-    </div>
+    <Disclosure label={name} leadingIcon={logo} dataTestId={testId}>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 sm:gap-6">
+        <div className="min-w-0 flex-1 text-xs text-pretty fg-secondary">
+          {description}
+        </div>
+        {control ? (
+          <div className="flex shrink-0 items-center gap-2">{control}</div>
+        ) : null}
+      </div>
+      {children}
+    </Disclosure>
   );
 }
 
@@ -772,9 +748,9 @@ export function IdentityBlock({
       />
       <div className="min-w-0 space-y-0.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h2 className="min-w-0 text-xl font-medium fg-primary">
+          <Heading level={2} variant="page" className="min-w-0">
             {detail.clientName}
-          </h2>
+          </Heading>
           {status ? <StatusPill tone="secondary">{status}</StatusPill> : null}
         </div>
         <div className="text-s text-pretty fg-secondary">

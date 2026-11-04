@@ -6,6 +6,7 @@ import { ErrorBanner } from './StatusBlocks';
 import { Fact, FactList } from './FactList';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Heading } from './Heading';
 
 // ---------------------------------------------------------------------------
 // Narrow structural prop types
@@ -57,10 +58,12 @@ export interface McpStandaloneConfig {
   readonly name: string;
   readonly description?: string;
   readonly enabled: boolean;
-  readonly envVars: Readonly<Record<string, string>>;
+  // Only names and whether a token is set are shown; values may be
+  // stored-secret references rather than text.
+  readonly envVars: Readonly<Record<string, unknown>>;
   readonly extraArgs: readonly string[];
-  readonly extraHeaders: Readonly<Record<string, string>>;
-  readonly authToken?: string;
+  readonly extraHeaders: Readonly<Record<string, unknown>>;
+  readonly authToken?: unknown;
 }
 
 /** Standalone server payload rendered by {@link StandaloneConfigsSection}. */
@@ -98,9 +101,9 @@ export function PluginSection({
   const author = pluginSectionAuthor(server, context?.plugin);
   return (
     <div data-testid="mcp-server-details-plugin-section">
-      <h3 className="mb-2 text-s font-medium fg-primary">
+      <Heading level={3} variant="title" className="mb-2">
         Plugin & marketplace
-      </h3>
+      </Heading>
       {loading && (
         <DelayedLoadingPlaceholder>
           <CenteredLoadingSpinner className="my-12" />
@@ -212,7 +215,9 @@ export function McpConfigFacts({
           {Object.keys(config.extraHeaders).join(', ')}
         </Fact>
       )}
-      {config.authToken && <Fact label="Auth token">configured</Fact>}
+      {config.authToken !== undefined && config.authToken !== '' && (
+        <Fact label="Auth token">configured</Fact>
+      )}
     </FactList>
   );
 }
@@ -290,10 +295,10 @@ export function StandaloneConfigsSection({
 }): JSX.Element {
   return (
     <div>
-      <h3 className="mb-2 text-s font-medium fg-primary">
+      <Heading level={3} variant="title" className="mb-2">
         Configurations
         {serverData ? ` (${serverData.configs.length})` : ''}
-      </h3>
+      </Heading>
       {loading && (
         <DelayedLoadingPlaceholder>
           <CenteredLoadingSpinner className="my-12" />

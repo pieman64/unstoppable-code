@@ -40,4 +40,13 @@ describe('QueuedMessageReason', () => {
       '<div class="mb-1 text-xs fg-secondary" data-testid="queued-message-waiting-reason" data-waiting-reason="background_work">Sends when background work finishes, so your new settings can apply. Run now sends it without them.</div>',
     );
   });
+
+  it('lets an inline reason shrink, so it truncates before the row actions', () => {
+    const markup = renderToStaticMarkup(
+      <QueuedMessageReason waitingReason="background_work" layout="inline" />,
+    );
+    const wrapper = /^<span class="([^"]*)"/.exec(markup)?.[1].split(' ');
+    expect(wrapper).toContain('min-w-0');
+    expect(wrapper).not.toContain('shrink-0');
+  });
 });

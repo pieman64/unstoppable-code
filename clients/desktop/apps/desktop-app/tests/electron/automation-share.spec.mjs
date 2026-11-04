@@ -836,13 +836,15 @@ test('renders a Markdown share description in Marketplace Shared by me', async (
         ?.remoteId;
     }, SHAREABLE_ID);
     expect(remoteId).toBeTruthy();
-    // CAN-4840, CAN-5220: Shared by me rows name the audience and share date; the
+    // CAN-4847: Shared by me rows use compact creator metadata; the
     // description remains in the preview.
     await app.openSharedByMeAutomations();
     const card = window
       .getByTestId('customize-section-shared-by-me')
       .getByTestId(`customize-row-automation:shared:${remoteId}`);
-    await expect(card).toContainText('Platform · Since Jun 18');
+    await expect(
+      card.getByTestId(`customize-row-subtitle-automation:shared:${remoteId}`),
+    ).toHaveText('You');
 
     await card.click();
     const description = window

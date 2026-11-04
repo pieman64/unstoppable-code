@@ -96,6 +96,40 @@ import {
   visibleOrganizations,
 } from './hosted-settings-fixtures.mjs';
 
+/** Two card charges, so the Billing history table has rows to show. */
+const ACCOUNT_BILLING_CHARGES = Object.freeze([
+  {
+    id: 'chg_mock_topup',
+    kind: 'CREDIT_TOP_UP',
+    status: 'SUCCEEDED',
+    amountUsd: 25,
+    amountRefundedUsd: 0,
+    currency: 'usd',
+    description: 'AI credits top-up',
+    seatCount: null,
+    periodStart: null,
+    periodEnd: null,
+    cardBrand: 'visa',
+    cardLast4: '4242',
+    createdAt: '2026-10-02T09:00:00.000Z',
+  },
+  {
+    id: 'chg_mock_renewal',
+    kind: 'SUBSCRIPTION_RENEWAL',
+    status: 'SUCCEEDED',
+    amountUsd: 20,
+    amountRefundedUsd: 0,
+    currency: 'usd',
+    description: 'Pro plan',
+    seatCount: 1,
+    periodStart: '2026-10-01T00:00:00.000Z',
+    periodEnd: '2026-11-01T00:00:00.000Z',
+    cardBrand: 'visa',
+    cardLast4: '4242',
+    createdAt: '2026-10-01T09:00:00.000Z',
+  },
+]);
+
 /** Better Auth's default session cookie name (no prefix configured on web). */
 export const HOSTED_SETTINGS_SESSION_COOKIE = 'better-auth.session_token';
 /** `TWO_FACTOR_VERIFIED_COOKIE` in `apps/web/src/lib/account-api-contracts.ts`. */
@@ -910,7 +944,10 @@ const OPERATION_ROUTES = [
     method: 'GET',
     path: /^\/api\/account\/billing\/history$/,
     handle(ctx) {
-      respond(ctx, 200, { charges: [], nextCursor: null });
+      respond(ctx, 200, {
+        charges: ACCOUNT_BILLING_CHARGES,
+        nextCursor: null,
+      });
     },
   },
   {

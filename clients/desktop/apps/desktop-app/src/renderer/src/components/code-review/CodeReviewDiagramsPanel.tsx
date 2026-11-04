@@ -21,7 +21,11 @@ import { PlanDataModelDiffDiagram } from '@/components/plan-explore/diagram/Plan
 import { usePlanDiagramViews } from '@/components/plan-explore/diagram/usePlanDiagramViews';
 import type { DiagramSearchHandle } from '@canopy/ui-app/find';
 import type { AddNodeCommentInput } from '@/components/plan-explore/usePlanComments';
-import { Button, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Button,
+  SegmentedControl,
+  Heading,
+} from '@canopy/ui-shared/components';
 
 type DiagramsTab = 'logicDiff' | 'dataModelDiff';
 
@@ -217,7 +221,9 @@ export const CodeReviewDiagramsPanel = forwardRef<
     return (
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center overflow-hidden p-8">
         <div className="max-w-md text-center">
-          <h2 className="text-lg font-medium fg-primary">Review this branch</h2>
+          <Heading level={2} variant="section">
+            Review this branch
+          </Heading>
           <p className="mt-1 text-s fg-secondary">
             Generate annotations and diagrams for the branch&apos;s changes.
           </p>

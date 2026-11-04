@@ -70,7 +70,7 @@ describe('model package configuration', () => {
       showMoreOnly: false,
       cursorModelId: 'gpt-6.1-terra',
     });
-    expect(gpt61Terra?.gatewayId).toBeUndefined();
+    expect(gpt61Terra?.gatewayId).toBe('openai/gpt-6.1-terra');
     expect(gpt6Sol).toMatchObject({
       label: 'GPT 6 Sol',
       sortOrder: 44,

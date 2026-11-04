@@ -33,7 +33,12 @@ import {
   TableActionButton,
   TableActionsCell,
 } from '@canopy/ui-shared';
-import { Badge } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  DataTableCell,
+  DataTableRow,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 
 function ExecutionScopeBadge({
@@ -162,22 +167,20 @@ export function PipelineTableRow({
   const executionScopes = readPipelineInfoScopes(pipeline);
 
   return (
-    <tr
+    <DataTableRow
       data-testid={`pipeline-row-${pipeline.source === 'curated' ? pipeline.id : `${pipeline.source}:${pipeline.id}`}`}
-      className={`border-b last:border-b-0 hover:bg-secondary/30 transition-colors ${
-        enabled ? '' : 'opacity-55'
-      }`}
+      dimmed={!enabled}
     >
       {/* Pipeline: icon + name + description */}
-      <td className="px-3 py-2.5 align-middle">
+      <DataTableCell tone="primary">
         <div className="flex items-center gap-3 min-w-0">
           <div className="shrink-0 w-9 h-9 rounded-lg bg-accent-subtle flex items-center justify-center text-m">
             {pipeline.icon || '⚡'}
           </div>
           <div className="min-w-0">
-            <h3 className="text-s font-medium fg-primary truncate">
+            <Heading level={3} variant="title" truncate>
               {pipeline.name}
-            </h3>
+            </Heading>
             {description && (
               <p className="text-xs fg-secondary mt-0.5 truncate">
                 {description}
@@ -185,10 +188,10 @@ export function PipelineTableRow({
             )}
           </div>
         </div>
-      </td>
+      </DataTableCell>
 
       {/* Source */}
-      <td className="px-3 py-2.5 align-middle">
+      <DataTableCell>
         <div className="flex items-center gap-1.5 flex-wrap">
           <Badge className="shrink-0">{sourceMeta.label}</Badge>
           {isShared && (
@@ -198,10 +201,10 @@ export function PipelineTableRow({
             />
           )}
         </div>
-      </td>
+      </DataTableCell>
 
       {/* Execution scope */}
-      <td className="px-3 py-2.5 align-middle">
+      <DataTableCell>
         <div
           className="flex items-center gap-1.5 flex-wrap"
           data-testid={`pipeline-scope-${pipeline.id}`}
@@ -210,10 +213,10 @@ export function PipelineTableRow({
             <ExecutionScopeBadge key={`scope-${scope}`} scope={scope} />
           ))}
         </div>
-      </td>
+      </DataTableCell>
 
       {/* Triggers */}
-      <td className="px-3 py-2.5 align-middle">
+      <DataTableCell>
         {triggers.length > 0 ? (
           <div className="flex items-center gap-1.5">
             {triggers.map((t) => (
@@ -223,13 +226,13 @@ export function PipelineTableRow({
         ) : (
           <span className="text-xs fg-secondary">—</span>
         )}
-      </td>
+      </DataTableCell>
 
       {/* Actions: always-visible icon group, right aligned. The enabled
           toggle folds in here rather than owning its own column — disabled
           pipelines are hidden from every run picker but stay listed so they
           can be re-enabled. */}
-      <td className="px-3 py-2.5 align-middle">
+      <DataTableCell align="right">
         <TableActionsCell
           onFocusLeave={(): void => setConfirmDelete(false)}
           // Only consume Escape when there is actually an armed delete to
@@ -345,7 +348,7 @@ export function PipelineTableRow({
             </TableActionButton>
           )}
         </TableActionsCell>
-      </td>
-    </tr>
+      </DataTableCell>
+    </DataTableRow>
   );
 }

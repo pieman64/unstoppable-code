@@ -23,6 +23,11 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
   'files_reads',
   // The daemon-backed W5 store's record-port lease (CAN-5542).
   'workspace_records',
+  // Renderer terminals the daemon-terminals experiment placed (CAN-5088).
+  'terminals',
+  // Renderer code-graph builds and reads the daemon-code-graph experiment
+  // placed (CAN-5089).
+  'code_graph',
 ] as const;
 export type BackgroundServiceConsumer =
   (typeof BACKGROUND_SERVICE_CONSUMERS)[number];

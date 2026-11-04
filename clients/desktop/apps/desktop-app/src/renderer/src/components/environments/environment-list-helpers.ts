@@ -1,6 +1,6 @@
 import type {
-  EnvironmentConfigData,
-  EnvironmentDefinition,
+  EnvironmentConfigView,
+  EnvironmentDefinitionView,
   EnvironmentRuntime,
 } from '@canopy/desktop-shared/types';
 import {
@@ -41,16 +41,16 @@ export function makeUntitledEnvironmentId(): string {
 }
 
 export function sortEnvironments(
-  environments: ReadonlyArray<EnvironmentDefinition>,
-): EnvironmentDefinition[] {
+  environments: ReadonlyArray<EnvironmentDefinitionView>,
+): EnvironmentDefinitionView[] {
   return [...environments].sort(compareEnvironmentDefinitions);
 }
 
 export function descendantIds(
-  environments: ReadonlyArray<EnvironmentDefinition>,
+  environments: ReadonlyArray<EnvironmentDefinitionView>,
   rootId: string,
 ): Set<string> {
-  const childrenByParent = new Map<string, EnvironmentDefinition[]>();
+  const childrenByParent = new Map<string, EnvironmentDefinitionView[]>();
   for (const environment of environments) {
     if (environment.parentId) {
       const list = childrenByParent.get(environment.parentId) ?? [];
@@ -73,7 +73,7 @@ export function descendantIds(
 }
 
 export function countUsagesFor(
-  config: EnvironmentConfigData,
+  config: EnvironmentConfigView,
   environmentId: string,
 ): number {
   let total = 0;
@@ -97,7 +97,7 @@ export interface UsageIndicators {
 }
 
 export function buildUsageIndicators(
-  config: EnvironmentConfigData,
+  config: EnvironmentConfigView,
   environmentId: string,
   workspaces: ReadonlyArray<{ id: string; name: string }>,
 ): UsageIndicators {
@@ -140,7 +140,7 @@ export function buildUsageIndicators(
 }
 
 export function isReferencedByAssignment(
-  config: EnvironmentConfigData,
+  config: EnvironmentConfigView,
   environmentId: string,
 ): boolean {
   for (const runtime of ENVIRONMENT_RUNTIMES) {
@@ -155,7 +155,7 @@ export function isReferencedByAssignment(
 }
 
 export function isReferencedAsParent(
-  config: EnvironmentConfigData,
+  config: EnvironmentConfigView,
   environmentId: string,
 ): boolean {
   return config.environments.some(

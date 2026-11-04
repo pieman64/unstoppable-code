@@ -8,13 +8,16 @@ import type {
   ExplorerSearchLogEntry,
 } from '@canopy/protocol/settings/organization-memory';
 import {
+  Badge,
+  DataTable,
   DelayedLoadingPlaceholder,
   ErrorBanner,
-  SettingsTableSkeleton,
   SettingsSelect,
   EmptyStateRow,
   ValueRow,
   ValueRows,
+  Heading,
+  type DataTableColumn,
 } from '@canopy/ui-shared/components';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsClient, useSettingsPrivacy } from '../host';
@@ -46,6 +49,49 @@ function statusClasses(status: ExplorerIngestJobStatus): string {
   if (status === 'RUNNING') return 'bg-accent-subtle fg-accent';
   return 'bg-base fg-secondary';
 }
+
+const JOB_COLUMNS: ReadonlyArray<DataTableColumn<ExplorerIngestJob>> = [
+  {
+    key: 'status',
+    header: 'Status',
+    render: (job) => (
+      <span
+        className={`rounded-full px-2 py-0.5 text-xs font-semibold ${statusClasses(job.status)}`}
+      >
+        {job.status}
+      </span>
+    ),
+  },
+  {
+    key: 'created',
+    header: 'Created',
+    render: (job) => new Date(job.createdAt).toLocaleString(),
+  },
+  {
+    key: 'attempts',
+    header: 'Attempts',
+    align: 'right',
+    render: (job) => job.attempts,
+  },
+  {
+    key: 'heartbeat',
+    header: 'Heartbeat',
+    render: (job) =>
+      job.heartbeatStale ? (
+        <Badge tone="danger">Stale</Badge>
+      ) : job.lastHeartbeatAt === null ? (
+        '—'
+      ) : (
+        new Date(job.lastHeartbeatAt).toLocaleString()
+      ),
+  },
+  {
+    key: 'lastError',
+    header: 'Last error',
+    overflow: 'truncate',
+    render: (job) => job.lastError ?? '—',
+  },
+];
 
 function isJobStatus(value: string): value is ExplorerIngestJobStatus {
   return STATUSES.some((status) => status === value);
@@ -102,12 +148,12 @@ export function OpsView({
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
       <div className="space-y-6">
-        <section className="rounded-xl border bg-card">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
+        <section className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-base font-semibold fg-primary">
+              <Heading level={2} variant="section">
                 Ingest jobs
-              </h2>
+              </Heading>
               <p className="mt-1 text-xs fg-secondary">
                 Attempts, worker heartbeat, and terminal errors.
               </p>
@@ -130,80 +176,42 @@ export function OpsView({
               ]}
             />
           </div>
-          {jobsLoading && jobsError === null && visibleJobs.length === 0 ? (
-            <div className="p-4">
-              <DelayedLoadingPlaceholder>
-                <SettingsTableSkeleton />
-              </DelayedLoadingPlaceholder>
-            </div>
+          {jobsError !== null && visibleJobs.length === 0 ? (
+            <ErrorBanner
+              className=""
+              error={jobsError.copy}
+              details={jobsError.details}
+              onRetry={() => selectStatus(status)}
+            />
+          ) : jobsLoading && visibleJobs.length === 0 ? (
+            <DelayedLoadingPlaceholder>
+              <DataTable
+                columns={JOB_COLUMNS}
+                rows={[]}
+                rowKey={(job) => job.id}
+                caption="Ingest jobs"
+                testId="memory-jobs-table"
+                loading
+                minWidth="47.5rem"
+              />
+            </DelayedLoadingPlaceholder>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-190 text-left text-xs">
-                <thead className="bg-base fg-secondary">
-                  <tr>
-                    <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-4 py-3 font-medium">Created</th>
-                    <th className="px-4 py-3 font-medium">Attempts</th>
-                    <th className="px-4 py-3 font-medium">Heartbeat</th>
-                    <th className="px-4 py-3 font-medium">Last error</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {jobsError !== null && visibleJobs.length === 0 ? (
-                    <tr>
-                      <td className="px-4 py-3" colSpan={5}>
-                        <ErrorBanner
-                          className=""
-                          error={jobsError?.copy}
-                          details={jobsError?.details}
-                          onRetry={() => selectStatus(status)}
-                        />
-                      </td>
-                    </tr>
-                  ) : null}
-                  {visibleJobs.map((job) => (
-                    <tr key={job.id}>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`rounded-full px-2 py-0.5 font-semibold ${statusClasses(job.status)}`}
-                        >
-                          {job.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 fg-secondary">
-                        {new Date(job.createdAt).toLocaleString()}
-                      </td>
-                      <td className="px-4 py-3 tabular-nums fg-primary">
-                        {job.attempts}
-                      </td>
-                      <td
-                        className={`px-4 py-3 ${
-                          job.heartbeatStale
-                            ? 'font-medium fg-destructive'
-                            : 'fg-secondary'
-                        }`}
-                      >
-                        {job.heartbeatStale
-                          ? 'Stale'
-                          : job.lastHeartbeatAt === null
-                            ? '—'
-                            : new Date(job.lastHeartbeatAt).toLocaleString()}
-                      </td>
-                      <td className="max-w-sm truncate px-4 py-3 fg-secondary">
-                        {job.lastError ?? '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              columns={JOB_COLUMNS}
+              rows={visibleJobs}
+              rowKey={(job) => job.id}
+              caption="Ingest jobs"
+              testId="memory-jobs-table"
+              emptyLabel="No ingest jobs"
+              minWidth="47.5rem"
+            />
           )}
         </section>
 
         <section className="rounded-xl border bg-card p-4">
-          <h2 className="text-base font-semibold fg-primary">
+          <Heading level={2} variant="section">
             Recently injected
-          </h2>
+          </Heading>
           <div className="mt-4 space-y-4 border-l pl-4">
             {searchEntries.length === 0 ? (
               <EmptyStateRow title="No search activity yet." />
@@ -273,9 +281,9 @@ export function OpsView({
       </div>
 
       <aside className="h-fit rounded-xl border bg-card p-4 xl:sticky xl:top-6">
-        <h2 className="text-base font-semibold fg-primary">
+        <Heading level={2} variant="section">
           Effective configuration
-        </h2>
+        </Heading>
         <div className="mt-2">
           <ValueRows>
             {Object.entries(config).map(([key, value]) => (

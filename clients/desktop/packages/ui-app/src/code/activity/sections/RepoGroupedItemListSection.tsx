@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type JSX } from 'react';
-import { ChevronRightIcon } from '@canopy/ui-shared/icons';
+import { Disclosure } from '@canopy/ui-shared/components';
 import { ItemListSection, type ActivityListItem } from './ItemListSection';
 
 export interface RepoGroupedEntry {
@@ -76,40 +76,28 @@ export function RepoGroupedItemListSection({
         );
         const open = expanded.has(bucket.repoId) || hasRunningChild;
         return (
-          <div key={bucket.repoId}>
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={(): void =>
-                setExpanded((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(bucket.repoId)) next.delete(bucket.repoId);
-                  else next.add(bucket.repoId);
-                  return next;
-                })
-              }
-              className="focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05]"
-              data-testid={`portal-${kind}-repo-header`}
-            >
-              <ChevronRightIcon
-                width={14}
-                height={14}
-                className={`transition-transform ${open ? 'rotate-90' : ''}`}
-              />
-              <span className="flex-1">{bucket.repoName}</span>
-              <span className="text-3xs font-normal fg-secondary/60">
-                {bucket.entries.length} {kind}
-              </span>
-            </button>
-            {open && (
-              <div className="mt-1 pl-4">
-                <ItemListSection
-                  emptyLabel={`No ${kind}.`}
-                  items={bucket.entries.map((entry) => entry.item)}
-                />
-              </div>
-            )}
-          </div>
+          <Disclosure
+            key={bucket.repoId}
+            variant="box"
+            label={bucket.repoName}
+            meta={`${bucket.entries.length} ${kind}`}
+            open={open}
+            onOpenChange={(): void =>
+              setExpanded((previous) => {
+                const next = new Set(previous);
+                if (next.has(bucket.repoId)) next.delete(bucket.repoId);
+                else next.add(bucket.repoId);
+                return next;
+              })
+            }
+            dataTestId={`portal-${kind}-repo`}
+            toggleTestId={`portal-${kind}-repo-header`}
+          >
+            <ItemListSection
+              emptyLabel={`No ${kind}.`}
+              items={bucket.entries.map((entry) => entry.item)}
+            />
+          </Disclosure>
         );
       })}
     </div>

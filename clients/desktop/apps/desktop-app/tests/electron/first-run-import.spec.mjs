@@ -534,7 +534,7 @@ test.describe('first-run import page', () => {
     });
   }
 
-  test('CAN-4674 recency hint opens the picker by keyboard and Escape preserves the target', async () => {
+  test('CAN-4674 lands on the most recent import without a recency hint', async () => {
     test.setTimeout(180_000);
     const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can4674-hint-'));
     const fixture = seedPostImportRulesFixture(userDataDir);
@@ -543,29 +543,17 @@ test.describe('first-run import page', () => {
     try {
       const window = await launch.electronApp.firstWindow();
       const home = await importFirstRunRuleProjects(window, fixture);
-      const hint = home.getByTestId('home-workspace-reason');
-      await expect(hint).toContainText('Most recent');
-      const action = hint.getByRole('button', {
-        name: 'Switch project',
-        exact: true,
-      });
-      await action.focus();
-      await action.press('Enter');
-      const payments = importedWorkspace(userDataDir, 'payments-service');
-      const option = window.getByTestId(`home-workspace-option-${payments.id}`);
-      await expect(option).toBeVisible();
-      await window.keyboard.press('Escape');
-      await expect(option).toHaveCount(0);
       await expect(home.getByTestId('home-workspace-select')).toContainText(
         'side-quest',
       );
-      await expect(hint).toBeVisible();
+      await expect(home.getByText('Most recent', { exact: true })).toHaveCount(
+        0,
+      );
       await openFirstRunRulesOffer(window);
       await applyImportRules(window);
       await expect(home.getByTestId('home-workspace-select')).toContainText(
         'payments-service',
       );
-      await expect(hint).toHaveCount(0);
     } finally {
       await closeCanopy(launch.electronApp, userDataDir);
       fixture.cleanup();

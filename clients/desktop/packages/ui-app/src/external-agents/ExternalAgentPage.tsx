@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ChangeEvent, type JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { useStore } from 'zustand';
 import type { ExternalAgentsClient } from '@canopy/app-core';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
@@ -20,10 +20,10 @@ import {
   AgentAccessEditor,
   Button,
   ConfirmDialog,
-  ControlSelect,
   Notice,
   NoticeButton,
   SegmentedControl,
+  SettingsSelect,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
 import { formatDate } from '@canopy/ui-shared/lib';
@@ -72,6 +72,7 @@ import {
   useOptionalSettingsHost,
   type SettingsUiHost,
 } from '../settings/host/settings-host';
+import { ExternalAgentSkeleton } from './external-agents-skeletons';
 import { EXTERNAL_AGENTS_PATH } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -140,28 +141,13 @@ function ExternalAgentStoreView({
   readonly onOpenPath: (path: string) => void;
 }): JSX.Element {
   const store = useMountedStore(client, connectionId, createExternalAgentStore);
-  if (store === null) return <ExternalAgentLoading />;
+  if (store === null) return <ExternalAgentSkeleton />;
   return (
     <ExternalAgentStoreContent
       store={store}
       cloudName={cloudName}
       onOpenPath={onOpenPath}
     />
-  );
-}
-
-function ExternalAgentLoading(): JSX.Element {
-  return (
-    <div
-      data-testid="external-agent-loading"
-      role="status"
-      aria-label="Loading agent"
-      className="flex w-full flex-col gap-3 pb-16"
-    >
-      <div className="h-8 w-48 animate-pulse rounded bg-subtle" />
-      <div className="h-24 animate-pulse rounded-lg bg-secondary" />
-      <div className="h-40 animate-pulse rounded-lg bg-secondary" />
-    </div>
   );
 }
 
@@ -235,7 +221,7 @@ function ExternalAgentStoreContent({
       );
     }
 
-    return <ExternalAgentLoading />;
+    return <ExternalAgentSkeleton />;
   }
 
   return (
@@ -363,10 +349,6 @@ function ExternalAgentDetailView({
   const confirmExposeNames = (): void => {
     setDraft((current) => setAccessExposeNames(current, true));
     setConfirmingExposeNames(false);
-  };
-
-  const changeExpiry = (event: ChangeEvent<HTMLSelectElement>): void => {
-    setExpiry(expiryValue(event.currentTarget.value));
   };
 
   const save = (): void => {
@@ -573,24 +555,28 @@ function ExternalAgentDetailView({
                   label="Access ends"
                   htmlFor="external-agent-access-ends"
                   control={
-                    <ControlSelect
+                    <SettingsSelect<AccessExpiry>
                       id="external-agent-access-ends"
                       data-testid="external-agent-access-ends"
+                      width="fit"
                       value={expiry}
-                      onChange={changeExpiry}
+                      onValueChange={setExpiry}
                       disabled={disabled}
-                    >
-                      <option value="keep">
-                        {detail.expiresAt === null
-                          ? 'Keep current: when I remove it'
-                          : `Keep current: ${formatDate(detail.expiresAt)}`}
-                      </option>
-                      <option value="never">When I remove it</option>
-                      <option value="7">7 days from now</option>
-                      <option value="30">30 days from now</option>
-                      <option value="90">90 days from now</option>
-                      <option value="365">365 days from now</option>
-                    </ControlSelect>
+                      options={[
+                        {
+                          value: 'keep',
+                          label:
+                            detail.expiresAt === null
+                              ? 'Keep current: when I remove it'
+                              : `Keep current: ${formatDate(detail.expiresAt)}`,
+                        },
+                        { value: 'never', label: 'When I remove it' },
+                        { value: '7', label: '7 days from now' },
+                        { value: '30', label: '30 days from now' },
+                        { value: '90', label: '90 days from now' },
+                        { value: '365', label: '365 days from now' },
+                      ]}
+                    />
                   }
                 />
               )}
@@ -892,19 +878,6 @@ function unavailableAction(action: ExternalAgentAction): string {
   if (action === 'pause') return 'pause the agent';
   if (action === 'resume') return 'resume the agent';
   return 'remove the agent';
-}
-
-function expiryValue(value: string): AccessExpiry {
-  if (
-    value === 'never' ||
-    value === '7' ||
-    value === '30' ||
-    value === '90' ||
-    value === '365'
-  ) {
-    return value;
-  }
-  return 'keep';
 }
 
 function expiryChange(value: AccessExpiry): ExternalAgentExpiryChange {

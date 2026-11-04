@@ -17,6 +17,7 @@ import type {
   OrganizationSummary,
 } from '@canopy/protocol/settings';
 import { SettingsOperationError } from '@canopy/protocol/settings/errors';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   createFakeSettingsClient,
   createTestSettingsHost,
@@ -73,6 +74,7 @@ function hostWithErroringImage(): SettingsUiHost {
     alt,
     className,
     onError,
+    'data-testid': testId,
   }: SettingsImageProps): JSX.Element {
     return (
       <img
@@ -80,6 +82,7 @@ function hostWithErroringImage(): SettingsUiHost {
         alt={alt}
         className={className}
         data-host-image="true"
+        data-testid={testId}
         onError={onError}
       />
     );
@@ -88,7 +91,9 @@ function hostWithErroringImage(): SettingsUiHost {
 }
 
 describe('avatars and logos', () => {
-  it('renders a member image through the host image with the block class', async () => {
+  // Avatars carry the shared replay block class themselves (inert on a host
+  // without session replay), not the host's.
+  it('renders a member image through the host image, blocked from replay', async () => {
     const host = hostWithErroringImage();
     await render(
       <MemberAvatar name="Grace Hopper" image="https://example.com/a.png" />,
@@ -96,7 +101,7 @@ describe('avatars and logos', () => {
     );
     const img = container.querySelector('img');
     expect(img?.getAttribute('data-host-image')).toBe('true');
-    expect(img?.className).toBe(`rounded-full ${BLOCK}`);
+    expect(img?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
 
     // A failed load still falls back to the initials, still blocked.
     await act(async () => {
@@ -106,7 +111,7 @@ describe('avatars and logos', () => {
     const placeholder = container.querySelector('[role="img"]');
     expect(container.querySelector('img')).toBeNull();
     expect(placeholder?.textContent).toBe('GH');
-    expect(placeholder?.classList.contains(BLOCK)).toBe(true);
+    expect(placeholder?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
   });
 
   it('blocks an organization logo and its initials', async () => {
@@ -120,20 +125,12 @@ describe('avatars and logos', () => {
     );
     const logos = container.querySelectorAll('[data-testid="org-logo"]');
     expect(logos).toHaveLength(2);
-    logos.forEach((logo) => expect(logo.classList.contains(BLOCK)).toBe(true));
+    logos.forEach((logo) =>
+      expect(logo.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true),
+    );
     expect(
       container.querySelector('img')?.getAttribute('data-host-image'),
     ).toBe('true');
-  });
-
-  it('adds no class token on a host without replay privacy', async () => {
-    await render(
-      <MemberAvatar name="Grace Hopper" image={null} />,
-      createTestSettingsHost().host,
-    );
-    expect(container.querySelector('[role="img"]')?.className).toBe(
-      'flex items-center justify-center rounded-full bg-accent text-xs font-medium fg-emphasis',
-    );
   });
 });
 

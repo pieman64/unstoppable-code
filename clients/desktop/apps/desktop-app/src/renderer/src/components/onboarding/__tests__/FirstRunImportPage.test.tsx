@@ -667,7 +667,7 @@ describe('FirstRunImportPage', () => {
     );
   });
 
-  it('lands on the most recent of several imports and says why (CAN-4674)', async () => {
+  it('lands on the most recent of several imports (CAN-4674)', async () => {
     const OLDER = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
     const api = installApi(
       scan([
@@ -684,11 +684,10 @@ describe('FirstRunImportPage', () => {
 
     expect(navigateAfterRepositoryWorkspaceCreated).toHaveBeenCalledWith(
       'ws-side-quest',
-      'most-recent-import',
     );
   });
 
-  it('gives no reason when only one import succeeded (CAN-4674)', async () => {
+  it('lands on the only successful import (CAN-4674)', async () => {
     const api = installApi(scan([candidate('alpha'), candidate('beta')]));
     api.importProjects.mockResolvedValue({
       results: [
@@ -705,7 +704,7 @@ describe('FirstRunImportPage', () => {
     );
   });
 
-  it('opens nothing, with or without a reason, when the context changed during import (CAN-4674)', async () => {
+  it('opens nothing when the context changed during import (CAN-4674)', async () => {
     const api = installApi(scan([candidate('alpha'), candidate('beta')]));
     api.importProjects.mockImplementation(() => {
       useWorkspaceContextStore.setState({ accountEpoch: 2 });

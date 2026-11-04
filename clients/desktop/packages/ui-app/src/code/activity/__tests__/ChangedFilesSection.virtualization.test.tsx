@@ -65,6 +65,18 @@ function mountSection(
   };
 }
 
+function getChangedFileRow(
+  container: HTMLElement,
+  path: string,
+): HTMLElement | null {
+  // The full path is the native title on the row's truncated text.
+  return (
+    container
+      .querySelector(`[title="${path}"]`)
+      ?.closest<HTMLElement>('[data-testid="activity-changed-file"]') ?? null
+  );
+}
+
 function getList(container: HTMLElement): HTMLElement {
   const list = container.querySelector<HTMLElement>(
     '[data-testid="activity-changed-files"]',
@@ -318,8 +330,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     const list = getList(mounted.container);
 
     try {
-      const firstRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const firstRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       expect(firstRow).not.toBeNull();
       if (firstRow === null) throw new Error('Expected the first file row');
@@ -329,8 +342,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
 
       expect(firstRow.isConnected).toBe(true);
       expect(document.activeElement).toBe(firstRow);
-      const nextRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00001.ts"]',
+      const nextRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00001.ts',
       );
       if (nextRow === null) throw new Error('Expected the next file row');
       expect(nextRow.tabIndex).toBe(0);
@@ -369,8 +383,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     const list = getList(mounted.container);
 
     try {
-      const firstRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const firstRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       if (firstRow === null) throw new Error('Expected the first file row');
 
@@ -402,8 +417,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     const list = getList(mounted.container);
 
     try {
-      const row = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const row = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       if (row === null) throw new Error('Expected the first file row');
 
@@ -453,8 +469,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     });
 
     try {
-      const firstRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const firstRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       expect(firstRow).not.toBeNull();
       if (firstRow === null) throw new Error('Expected the first file row');
@@ -473,8 +490,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         onFileClick: jest.fn(),
       });
 
-      const updatedRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const updatedRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       expect(updatedRow).not.toBeNull();
       expect(updatedRow).not.toBe(firstRow);
@@ -496,8 +514,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     });
 
     try {
-      const firstRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00000.ts"]',
+      const firstRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00000.ts',
       );
       expect(firstRow).not.toBeNull();
       if (firstRow === null) throw new Error('Expected the first file row');
@@ -511,8 +530,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         onFileClick: jest.fn(),
       });
 
-      const nextRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00001.ts"]',
+      const nextRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00001.ts',
       );
       expect(nextRow).not.toBeNull();
       expect(document.activeElement).toBe(nextRow);
@@ -540,8 +560,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
       act(() => getShowMore(mounted.container, 'uncommitted').click());
       scrollTo(list, 6_000);
 
-      const focusedRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00250.ts"]',
+      const focusedRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00250.ts',
       );
       if (focusedRow === null) throw new Error('Expected the focused file row');
       act(() => focusedRow.focus());
@@ -564,8 +585,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         onFileClick: jest.fn(),
       });
 
-      const replacementRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00251.ts"]',
+      const replacementRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00251.ts',
       );
       expect(replacementRow).not.toBeNull();
       expect(document.activeElement).toBe(replacementRow);
@@ -585,8 +607,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     });
 
     try {
-      const focusedRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00050.ts"]',
+      const focusedRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00050.ts',
       );
       if (focusedRow === null) throw new Error('Expected the focused file row');
       act(() => focusedRow.focus());
@@ -600,8 +623,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         onFileClick: jest.fn(),
       });
 
-      const currentRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00050.ts"]',
+      const currentRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00050.ts',
       );
       expect(currentRow).not.toBeNull();
       expect(document.activeElement).toBe(currentRow);
@@ -619,8 +643,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
     });
 
     try {
-      const focusedRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00050.ts"]',
+      const focusedRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00050.ts',
       );
       if (focusedRow === null) throw new Error('Expected the focused file row');
       act(() => focusedRow.focus());
@@ -637,8 +662,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         onFileClick: jest.fn(),
       });
 
-      const currentRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00050.ts"]',
+      const currentRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00050.ts',
       );
       expect(currentRow).not.toBeNull();
       expect(document.activeElement).toBe(currentRow);
@@ -672,9 +698,7 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
       act(() => button.click());
 
       expect(
-        mounted.container.querySelector(
-          '[data-testid="activity-changed-file"][title="src/uncommitted-00250.ts"]',
-        ),
+        getChangedFileRow(mounted.container, 'src/uncommitted-00250.ts'),
       ).not.toBeNull();
       expect(
         getShowMore(mounted.container, 'uncommitted').textContent,
@@ -692,9 +716,7 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         finalPage.click();
       });
       expect(
-        mounted.container.querySelector(
-          '[data-testid="activity-changed-file"][title="src/uncommitted-00449.ts"]',
-        ),
+        getChangedFileRow(mounted.container, 'src/uncommitted-00449.ts'),
       ).not.toBeNull();
       expect(
         mounted.container.querySelector(
@@ -756,8 +778,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
 
     try {
       act(() => getShowMore(mounted.container, 'uncommitted').click());
-      const row = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00250.ts"]',
+      const row = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00250.ts',
       );
       expect(row).not.toBeNull();
       if (!row) throw new Error('Expected a revealed file row');
@@ -800,8 +823,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
       button.focus();
       act(() => button.click());
 
-      const lastRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00200.ts"]',
+      const lastRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00200.ts',
       );
       expect(lastRow).not.toBeNull();
       expect(document.activeElement).toBe(lastRow);
@@ -848,9 +872,7 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
       expect(uncommittedShowMore).not.toBeNull();
       expect(uncommittedShowMore?.textContent).toContain('1 file not shown');
       expect(
-        mounted.container.querySelector(
-          '[data-testid="activity-changed-file"][title="src/uncommitted-00200.ts"]',
-        ),
+        getChangedFileRow(mounted.container, 'src/uncommitted-00200.ts'),
       ).toBeNull();
     } finally {
       mounted.unmount();
@@ -881,8 +903,9 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         button.click();
       });
 
-      const firstRevealedRow = mounted.container.querySelector<HTMLElement>(
-        '[data-testid="activity-changed-file"][title="src/uncommitted-00200.ts"]',
+      const firstRevealedRow = getChangedFileRow(
+        mounted.container,
+        'src/uncommitted-00200.ts',
       );
       expect(firstRevealedRow).not.toBeNull();
       expect(firstRevealedRow?.isConnected).toBe(true);
@@ -937,9 +960,7 @@ describe('ChangedFilesSection virtualization and reveal budget', () => {
         getShowMore(mounted.container, 'uncommitted').textContent,
       ).toContain('250 files not shown');
       expect(
-        mounted.container.querySelector(
-          '[data-testid="activity-changed-file"][title="src/uncommitted-00350.ts"]',
-        ),
+        getChangedFileRow(mounted.container, 'src/uncommitted-00350.ts'),
       ).toBeNull();
     } finally {
       mounted.unmount();

@@ -1,6 +1,6 @@
 import { Fragment, type JSX, type ReactNode, useMemo } from 'react';
 import type {
-  EnvironmentConfigData,
+  EnvironmentConfigView,
   EnvironmentRuntime,
 } from '@canopy/desktop-shared/types';
 import { getEnvironmentUsage } from '@canopy/desktop-shared/lib/user-environment';
@@ -29,7 +29,7 @@ interface EnvironmentUsageListProps {
   /** Environment id whose usage we want to render. */
   environmentId: string | null;
   /** Latest config used to compute global + workspace assignments. */
-  config: EnvironmentConfigData;
+  config: EnvironmentConfigView;
   /** Workspaces the renderer currently knows about, used for display names. */
   workspaces: ReadonlyArray<EnvironmentUsageWorkspace>;
   /**

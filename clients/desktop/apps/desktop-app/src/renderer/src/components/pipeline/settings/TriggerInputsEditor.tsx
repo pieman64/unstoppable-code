@@ -18,7 +18,7 @@ import { TextAreaField } from '../shared/TextAreaField';
 import { SelectField } from '../shared/SelectField';
 import { ToggleField } from '../shared/ToggleField';
 import { Tooltip } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 const TRIGGER_LABELS: Record<PipelineTriggerType, string> = {
@@ -437,9 +437,9 @@ export function TriggerInputsEditor({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold fg-primary">
+        <Heading level={4} variant="label">
           {TRIGGER_LABELS[triggerType]}
-        </h3>
+        </Heading>
         {!readonly && (
           <Button size="compact" onClick={addInput}>
             Add input

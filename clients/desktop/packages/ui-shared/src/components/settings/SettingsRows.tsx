@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
+import { Heading } from '../Heading';
 import { NoticeShapeProvider } from '../Notice';
 import { SETTINGS_GROUP_CLASS } from './SettingsCard';
 
@@ -73,12 +74,9 @@ export function SettingsRowsSection({
       {title || description ? (
         <div className="space-y-1">
           {title ? (
-            <h2
-              id={headingId}
-              className="text-m font-medium text-balance fg-primary"
-            >
+            <Heading level={2} variant="section" id={headingId}>
               {title}
-            </h2>
+            </Heading>
           ) : null}
           {description ? (
             <div className="text-xs text-pretty fg-secondary">

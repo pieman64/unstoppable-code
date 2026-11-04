@@ -24,14 +24,10 @@ import {
 } from '@canopy/code-graph/store/database';
 import { fingerprintCodeGraphWorktree } from '../lib/code-graph-worktree-fingerprint-core';
 import {
-  persistCodeGraphWorktreeFingerprint,
-  persistStableCodeGraphWorktreeFingerprint,
-  readCodeGraphBuildStampUncached,
+  clearCodeGraphWorktreeFingerprintCache,
   readCodeGraphWorktreeCompletion,
-  readPersistedCodeGraphWorktreeFingerprint,
   readPersistedCodeGraphWorktreeFingerprintSnapshot,
   setCodeGraphFingerprintMetadataReaderForTests,
-  setCodeGraphFingerprintMetadataWriterForTests,
 } from '../lib/code-graph-worktree-fingerprint';
 
 function git(root: string, args: string[]): void {
@@ -72,20 +68,10 @@ describe('code graph worktree fingerprint', () => {
         db.close();
       }
     });
-    setCodeGraphFingerprintMetadataWriterForTests((dbPath, fingerprint) => {
-      const db = new DatabaseSync(dbPath);
-      try {
-        setMetadataValue(db, 'worktree_fingerprint', fingerprint);
-      } finally {
-        db.close();
-      }
-      return Promise.resolve();
-    });
   });
 
   afterEach(() => {
     setCodeGraphFingerprintMetadataReaderForTests(null);
-    setCodeGraphFingerprintMetadataWriterForTests(null);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -168,7 +154,7 @@ describe('code graph worktree fingerprint', () => {
     ).resolves.toEqual({ ok: true, fingerprint: direct });
   });
 
-  it('round-trips the persisted end-of-build fingerprint', async () => {
+  it('reads the fingerprint a build stored once its cache entry is cleared', async () => {
     const dbPath = path.join(root, 'graph.db');
     const db = new DatabaseSync(dbPath);
     runCodeGraphMigrations(db);
@@ -187,7 +173,12 @@ describe('code graph worktree fingerprint', () => {
     expect(
       await readPersistedCodeGraphWorktreeFingerprintSnapshot(dbPath, KEY),
     ).toMatchObject({ fingerprint: null, cacheHit: true });
-    await persistCodeGraphWorktreeFingerprint(dbPath, 'fingerprint-value', KEY);
+    // The build host stores the fingerprint; the build service then drops
+    // the stat-keyed entry, since a WAL write can leave graph.db unchanged.
+    const writer = new DatabaseSync(dbPath);
+    setMetadataValue(writer, 'worktree_fingerprint', 'fingerprint-value');
+    writer.close();
+    clearCodeGraphWorktreeFingerprintCache(dbPath);
     expect(
       await readPersistedCodeGraphWorktreeFingerprintSnapshot(dbPath, KEY),
     ).toMatchObject({
@@ -196,33 +187,6 @@ describe('code graph worktree fingerprint', () => {
       extractorVersion: null,
       cacheHit: false,
     });
-  });
-
-  it('only persists a fingerprint for a stable build window', async () => {
-    const dbPath = path.join(root, 'stable-graph.db');
-    const db = new DatabaseSync(dbPath);
-    runCodeGraphMigrations(db);
-    db.close();
-
-    await persistCodeGraphWorktreeFingerprint(dbPath, 'previous', KEY);
-    await expect(
-      persistStableCodeGraphWorktreeFingerprint(dbPath, 'start', 'end', KEY),
-    ).resolves.toBe(false);
-    await expect(
-      readPersistedCodeGraphWorktreeFingerprint(dbPath, KEY),
-    ).resolves.toBe('previous');
-
-    await expect(
-      persistStableCodeGraphWorktreeFingerprint(
-        dbPath,
-        'stable',
-        'stable',
-        KEY,
-      ),
-    ).resolves.toBe(true);
-    await expect(
-      readPersistedCodeGraphWorktreeFingerprint(dbPath, KEY),
-    ).resolves.toBe('stable');
   });
 
   // Stack samples taken during real beachballs showed
@@ -269,67 +233,6 @@ describe('code graph worktree fingerprint', () => {
       cacheHit: true,
     });
     expect(reader).toHaveBeenCalledTimes(1);
-  });
-
-  it('reads the build stamp through the worker on every call, bypassing the stat cache', async () => {
-    const dbPath = path.join(root, 'stamp-graph.db');
-    const db = new DatabaseSync(dbPath);
-    runCodeGraphMigrations(db);
-    db.close();
-    let stamp = '100';
-    const reader = jest.fn(
-      (): Promise<CodeGraphFingerprintMetadata> =>
-        Promise.resolve({
-          fingerprint: null,
-          schemaVersion: CODE_GRAPH_SCHEMA_VERSION,
-          extractorVersion: 7,
-          completed: true,
-          lastBuildAt: stamp,
-        }),
-    );
-    setCodeGraphFingerprintMetadataReaderForTests(reader);
-    await readPersistedCodeGraphWorktreeFingerprintSnapshot(dbPath, KEY);
-
-    // A WAL-only publication leaves graph.db's stat unchanged.
-    stamp = '101';
-    await expect(readCodeGraphBuildStampUncached(dbPath, KEY)).resolves.toBe(
-      '101',
-    );
-    expect(reader).toHaveBeenCalledTimes(2);
-    expect(reader).toHaveBeenLastCalledWith(dbPath, KEY);
-  });
-
-  it('reports an unreadable build stamp as null', async () => {
-    setCodeGraphFingerprintMetadataReaderForTests(() =>
-      Promise.reject(new Error('SQLITE_BUSY')),
-    );
-
-    await expect(
-      readCodeGraphBuildStampUncached(path.join(root, 'busy.db'), KEY),
-    ).resolves.toBeNull();
-  });
-
-  // The end-of-build write previously opened `graph.db` read-write on the
-  // Electron main thread after every build. It must stay in the worker lane.
-  it('writes the stable fingerprint through the worker without opening the database inline', async () => {
-    const dbPath = path.join(root, 'offthread-write-graph.db');
-    const db = new DatabaseSync(dbPath);
-    runCodeGraphMigrations(db);
-    db.close();
-    const writer = jest.fn<Promise<void>, [string, string, string]>(() =>
-      Promise.resolve(),
-    );
-    setCodeGraphFingerprintMetadataWriterForTests(writer);
-
-    await expect(
-      persistStableCodeGraphWorktreeFingerprint(dbPath, 'same', 'same', KEY),
-    ).resolves.toBe(true);
-    await expect(
-      persistStableCodeGraphWorktreeFingerprint(dbPath, 'before', 'after', KEY),
-    ).resolves.toBe(false);
-
-    expect(writer).toHaveBeenCalledTimes(1);
-    expect(writer).toHaveBeenCalledWith(dbPath, 'same', KEY);
   });
 
   it('reports completion from the worker-read metadata', async () => {

@@ -1,4 +1,5 @@
 import {
+  Heading,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -1990,9 +1991,14 @@ export function CustomSkillEditor({
         data-testid="skill-editor-page"
         aria-labelledby="skill-editor-page-title"
       >
-        <h1 id="skill-editor-page-title" className="sr-only">
+        <Heading
+          level={1}
+          variant="page"
+          id="skill-editor-page-title"
+          className="sr-only"
+        >
           {title}
-        </h1>
+        </Heading>
         <SkillEditPageUnsavedGuard
           editingName={editingName}
           name={editingName ?? (editor.skillName || 'New skill')}

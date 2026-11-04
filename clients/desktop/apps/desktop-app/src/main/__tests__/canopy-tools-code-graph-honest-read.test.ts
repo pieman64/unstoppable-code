@@ -58,6 +58,12 @@ jest.mock('../code-graph/read-runner', () => {
 import { CodeGraphWorkerReadError } from '../code-graph/read-runner';
 import { getCodeGraphContext } from '../canopy-tools/code-graph-runtime';
 const runtime = { projectId: 'workspace', worktreeId: 'worktree' };
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
+});
+
 describe('honest independent retained read errors', () => {
   beforeEach(() => {
     jest.mocked(fs.existsSync).mockReturnValue(true);

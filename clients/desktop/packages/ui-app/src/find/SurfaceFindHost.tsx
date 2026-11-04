@@ -34,17 +34,29 @@ export function SurfaceFindHost(): JSX.Element | null {
   const controllers = useSurfaceFindStore((s) => s.controllers);
   const query = useSurfaceFindStore((s) => s.query);
   const focusNonce = useSurfaceFindStore((s) => s.focusNonce);
+  const dialog =
+    controller?.anchor.closest<HTMLElement>(
+      '[role="dialog"], [aria-modal="true"]',
+    ) ?? null;
   // Recomputed per open and switch too: page visibility (the hidden main
   // page) can change without the registry changing.
   const { availableModes, scopes } = useMemo(() => {
     const doc = controller?.anchor.ownerDocument;
-    const modes = getAvailableFindModes(controllers, doc);
+    const localControllers = Object.fromEntries(
+      Object.entries(controllers).filter(
+        ([, entry]) =>
+          entry.controller.anchor.closest(
+            '[role="dialog"], [aria-modal="true"]',
+          ) === dialog,
+      ),
+    );
+    const modes = getAvailableFindModes(localControllers, doc);
     const byMode: Partial<Record<FindSurfaceMode, FindScopeOption[]>> = {};
     for (const mode of modes) {
-      byMode[mode] = getFindScopes(controllers, mode, doc);
+      byMode[mode] = getFindScopes(localControllers, mode, doc);
     }
     return { availableModes: modes, scopes: byMode };
-  }, [controllers, controller]);
+  }, [controllers, controller, dialog]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   if (controller === null) return null;
@@ -59,7 +71,16 @@ export function SurfaceFindHost(): JSX.Element | null {
         availableModes={availableModes}
         scopes={scopes}
         activeScopeKey={controller.scopeKey}
-        onModeChange={store.switchMode}
+        onModeChange={(mode, scopeKey): void => {
+          const options = scopes[mode] ?? [];
+          const remembered = store.activeScope[mode];
+          const selected =
+            scopeKey ??
+            options.find((option) => option.key === remembered)?.key ??
+            options[0]?.key;
+          if (selected && options.some((option) => option.key === selected))
+            store.switchMode(mode, selected);
+        }}
         query={query}
         onQueryChange={store.setQuery}
         currentIndex={state.currentIndex}
@@ -77,7 +98,7 @@ export function SurfaceFindHost(): JSX.Element | null {
         onClose={store.close}
         inputRef={inputRef}
         focusNonce={focusNonce}
-        portalContainer={controller.anchor.ownerDocument.body}
+        portalContainer={dialog ?? controller.anchor.ownerDocument.body}
       />
     </Suspense>
   );

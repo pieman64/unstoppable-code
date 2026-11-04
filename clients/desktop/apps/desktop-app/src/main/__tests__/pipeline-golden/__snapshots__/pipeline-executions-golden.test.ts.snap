@@ -2536,6 +2536,224 @@ exports[`agent actions runs through pipeline.run and controls runs through legac
 }
 `;
 
+exports[`curated and shared runs runs the reviewed curated revision and refuses a changed or missing one 1`] = `
+{
+  "byId": {
+    "result": {
+      "data": {
+        "event_name": "dispatch",
+        "id": "<run:curated-by-id>",
+        "initiator": {
+          "kind": "user",
+        },
+        "inputs": {},
+        "jobs": {
+          "triage": {
+            "outputs": {},
+            "retry_count": 0,
+            "status": "pending",
+            "steps": {
+              "sort": {
+                "outputs": {},
+                "status": "pending",
+              },
+            },
+          },
+        },
+        "pending_pauses": [],
+        "pipeline": "Golden curated triage",
+        "pipeline_id": "curated:golden-curated",
+        "status": "running",
+        "status_reasons": [],
+      },
+      "success": true,
+    },
+    "settled": {
+      "event_name": "dispatch",
+      "id": "<run:curated-by-id>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "triage": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "sort": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden curated triage",
+      "pipeline_id": "curated:golden-curated",
+      "status": "success",
+      "status_reasons": [],
+    },
+  },
+  "byLocator": {
+    "result": {
+      "data": {
+        "event_name": "dispatch",
+        "id": "<run:curated-by-locator>",
+        "initiator": {
+          "kind": "user",
+        },
+        "inputs": {},
+        "jobs": {
+          "triage": {
+            "outputs": {},
+            "retry_count": 0,
+            "status": "pending",
+            "steps": {
+              "sort": {
+                "outputs": {},
+                "status": "pending",
+              },
+            },
+          },
+        },
+        "pending_pauses": [],
+        "pipeline": "Golden curated triage",
+        "pipeline_id": "curated:golden-curated",
+        "status": "running",
+        "status_reasons": [],
+      },
+      "success": true,
+    },
+    "settled": {
+      "event_name": "dispatch",
+      "id": "<run:curated-by-locator>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "triage": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "sort": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden curated triage",
+      "pipeline_id": "curated:golden-curated",
+      "status": "success",
+      "status_reasons": [],
+    },
+  },
+  "changed": {
+    "result": {
+      "error": "This curated workflow changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "missing": {
+    "result": {
+      "error": "This curated workflow is no longer available. Refresh the workflow list.",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "planReady": {
+    "result": {
+      "error": "This curated workflow no longer supports the selected trigger. Reopen the launch dialog and choose another workflow.",
+      "success": false,
+    },
+    "settled": null,
+  },
+}
+`;
+
+exports[`curated and shared runs runs the share rather than the caller copy and refuses a missing one 1`] = `
+{
+  "missing": {
+    "result": {
+      "error": "HTTP 404: Not found",
+      "success": false,
+    },
+    "settled": null,
+  },
+  "share": {
+    "result": {
+      "data": {
+        "event_name": "dispatch",
+        "id": "<run:shared-run>",
+        "initiator": {
+          "kind": "user",
+        },
+        "inputs": {},
+        "jobs": {
+          "run": {
+            "outputs": {},
+            "retry_count": 0,
+            "status": "pending",
+            "steps": {
+              "__auto_step_0": {
+                "outputs": {},
+                "status": "pending",
+              },
+            },
+          },
+        },
+        "pending_pauses": [],
+        "pipeline": "Golden shared dispatch",
+        "pipeline_id": "shared:canopy-cloud:shared-golden-dispatch",
+        "status": "running",
+        "status_reasons": [],
+      },
+      "success": true,
+    },
+    "settled": {
+      "event_name": "dispatch",
+      "id": "<run:shared-run>",
+      "initiator": {
+        "kind": "user",
+      },
+      "inputs": {},
+      "jobs": {
+        "run": {
+          "conclusion": "success",
+          "outputs": {},
+          "retry_count": 0,
+          "status": "success",
+          "steps": {
+            "__auto_step_0": {
+              "conclusion": "success",
+              "exit_code": 0,
+              "outputs": {},
+              "status": "success",
+            },
+          },
+        },
+      },
+      "pending_pauses": [],
+      "pipeline": "Golden shared dispatch",
+      "pipeline_id": "shared:canopy-cloud:shared-golden-dispatch",
+      "status": "success",
+      "status_reasons": [],
+    },
+  },
+}
+`;
+
 exports[`desktop IPC pauses an orphaned run at startup and resumes it 1`] = `
 {
   "before": {

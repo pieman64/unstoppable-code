@@ -18,6 +18,7 @@ import {
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
+  setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
 } from '../pipelines/pipeline-local-metadata-store';
 
@@ -29,6 +30,20 @@ const USER_LOCATOR = {
 const AUTHOR = {
   chat: { projectId: 'project-1', worktreeId: 'task-1', chatId: 'chat-1' },
   recordedAt: '2026-10-19T00:00:00.000Z',
+};
+const GRANT = {
+  automationId: 'automation-1',
+  pipelineRevision: 3,
+  contentHash: 'sha256:abc',
+  approvalMode: 'full-access' as const,
+  plugins: [
+    {
+      type: 'skill' as const,
+      source: { type: 'builtin' as const, id: 'app' },
+      skill_name: 'review',
+    },
+  ],
+  model: 'gpt-5.5',
 };
 
 function readFile(): unknown {
@@ -102,6 +117,70 @@ describe('pipeline local metadata store', () => {
     expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
       owner: 'personal',
     });
+  });
+
+  // CAN-5479: what a converted automation's native action set.
+  it('records a native grant, keeps it across an agent write, and drops it on a person’s save', () => {
+    recordUserPipelineOwner('pipeline-1', 'personal');
+    setUserPipelineAgentAuthor('pipeline-1', AUTHOR);
+    setUserPipelineOwnerAutomation('pipeline-1', 'automation-1');
+    setUserPipelineNativeGrant('pipeline-1', GRANT);
+    // An agent's later write keeps the grant; its revision decides.
+    setUserPipelineAgentAuthor('pipeline-1', {
+      ...AUTHOR,
+      recordedAt: '2026-11-01T00:00:00.000Z',
+    });
+    setUserPipelineOwnerAutomation('pipeline-1', 'automation-1');
+    recordUserPipelineOwner('pipeline-1', 'personal');
+    expect(readPipelineLocalMetadata(USER_LOCATOR).nativeGrant).toEqual(GRANT);
+    // A person's write: the pipeline is no longer the agent's.
+    setUserPipelineAgentAuthor('pipeline-1', null);
+    expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
+      owner: 'personal',
+      ownerAutomationId: 'automation-1',
+    });
+  });
+
+  it('clears a native grant on its own, and drops one a person’s save finds', () => {
+    setUserPipelineAgentAuthor('pipeline-1', AUTHOR);
+    setUserPipelineNativeGrant('pipeline-1', GRANT);
+    setUserPipelineNativeGrant('pipeline-1', null);
+    expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
+      agentAuthor: AUTHOR,
+    });
+    // A person's automation records one with no agent author.
+    setUserPipelineNativeGrant('pipeline-2', GRANT);
+    setUserPipelineAgentAuthor('pipeline-2', null);
+    expect(
+      readPipelineLocalMetadata({ ...USER_LOCATOR, value: 'pipeline-2' }),
+    ).toEqual({});
+  });
+
+  it('drops a malformed native grant whole', () => {
+    fs.mkdirSync(path.dirname(mockMetadataPath), { recursive: true });
+    const { automationId: _id, ...noAutomation } = GRANT;
+    void _id;
+    for (const nativeGrant of [
+      noAutomation,
+      { ...GRANT, pipelineRevision: '3' },
+      { ...GRANT, approvalMode: 'everything' },
+      { ...GRANT, plugins: [{ kind: 'nope' }] },
+      { ...GRANT, model: 7 },
+      { ...GRANT, pluginSelections: ['col-1'] },
+    ]) {
+      fs.writeFileSync(
+        mockMetadataPath,
+        JSON.stringify({
+          version: 1,
+          entries: {
+            'stored:user:pipeline-1': { agentAuthor: AUTHOR, nativeGrant },
+          },
+        }),
+      );
+      expect(readPipelineLocalMetadata(USER_LOCATOR)).toEqual({
+        agentAuthor: AUTHOR,
+      });
+    }
   });
 
   it('drops a malformed owning automation', () => {

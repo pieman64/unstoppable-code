@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type JSX } from 'react';
 import { useCapabilities } from '@canopy/app-state';
+import { Heading } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   CHAT_VISUAL_TEST_IDS,
@@ -38,9 +39,9 @@ function ChatVisualsPanelItem({
       data-tool-use-id={owner.toolUseId}
       className="flex scroll-mt-4 flex-col gap-2"
     >
-      <h3 className={`${REPLAY_MASK_CLASS} text-s font-medium fg-primary`}>
-        {owner.reference.title}
-      </h3>
+      <Heading level={3} variant="title">
+        <span className={REPLAY_MASK_CLASS}>{owner.reference.title}</span>
+      </Heading>
       <ChatVisualBlock owner={owner} variant="panel" />
     </li>
   );

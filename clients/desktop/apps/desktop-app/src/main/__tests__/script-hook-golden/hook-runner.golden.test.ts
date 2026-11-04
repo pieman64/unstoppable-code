@@ -5,6 +5,29 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { HookAction } from '@canopy/desktop-shared/hooks';
 import type { RunShellScriptOptions } from '../../lib/script-runner';
+import type { InitiatedWorkRuntimeHelper } from '../helpers/initiated-work-runtime';
+
+// Hook runs go through the initiated-work engine (CAN-4144).
+jest.mock('../../canopy-runtime/desktop-runtime', () => ({
+  getActiveDesktopRuntime: (): { initiatedWork: unknown } => ({
+    initiatedWork: jest
+      .requireActual<InitiatedWorkRuntimeHelper>(
+        '../helpers/initiated-work-runtime',
+      )
+      .testInitiatedWork().engine,
+  }),
+}));
+
+// The core hook source reads the worktree's paused hooks and the project's
+// saved owner when a hook fires (CAN-4146).
+jest.mock('../../lib/workspace-persistence', () => ({
+  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+}));
+jest.mock('../../lib/project-owner', () => ({
+  resolveProjectSavedOwner: jest.fn(() =>
+    Promise.resolve({ kind: 'personal' }),
+  ),
+}));
 
 jest.mock('../../lib/worktree-data-env', () => ({
   buildWorktreeDataEnv: (
@@ -85,6 +108,10 @@ import {
   type RunHookOptions,
 } from '../../lib/hook-runner';
 import { withWorkspaceTargetArchiveDrain } from '../../lib/workspace-target-exclusion';
+import {
+  closeTestInitiatedWork,
+  readyTestInitiatedWork,
+} from '../helpers/initiated-work-runtime';
 
 const mockedLaunchHookChat = jest.mocked(launchHookChat);
 const mockedLaunchHookPipeline = jest.mocked(launchHookPipeline);
@@ -122,6 +149,7 @@ function start(
     hook: descriptor,
     cwd: '/w',
     invocation: 'automatic',
+    pause: 'enforce',
     timeoutSeconds: 60,
     getWindow: () => null,
     onEnqueued: () => trace.push(`enqueued ${name}`),
@@ -143,6 +171,14 @@ function shellFor(script: string): PendingShell {
   if (!shell) throw new Error(`no shell for ${script}`);
   return shell;
 }
+
+beforeAll(async () => {
+  await readyTestInitiatedWork();
+});
+
+afterAll(() => {
+  closeTestInitiatedWork();
+});
 
 beforeEach(() => {
   jest.clearAllMocks();

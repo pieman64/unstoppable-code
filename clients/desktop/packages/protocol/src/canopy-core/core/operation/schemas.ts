@@ -73,6 +73,7 @@ export const OPERATION_ORIGIN_KINDS = [
   'system',
   'delegation',
 ] as const;
+export type OperationOriginKind = (typeof OPERATION_ORIGIN_KINDS)[number];
 
 /** What started the work. A client origin names the requesting principal. */
 export const OperationOriginSchema = z.strictObject({

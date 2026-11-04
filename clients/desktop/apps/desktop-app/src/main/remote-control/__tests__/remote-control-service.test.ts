@@ -553,12 +553,18 @@ describe('RemoteControlService', () => {
     ['host', 'desktop', 6],
     ['host', 'desktop', 8],
     ['host', 'desktop', 9],
+    ['controller', 'this computer', 10],
+    ['host', 'desktop', 10],
+    ['controller', 'this computer', 11],
+    ['host', 'desktop', 11],
   ] as const)(
     'refuses an incompatible %s (update %s, protocol %s) before a bridge opens',
     async (olderSide, update, protocolVersion) => {
       // Protocol 7 retires checklist channels; protocol 9 adds receipt-bound
-      // skill replacement; protocol 10 adds a Labs flag key. Negotiate before
-      // dispatching incompatible requests.
+      // skill replacement; protocol 10 adds a Labs flag key; protocol 11
+      // keeps stored secrets out of environment and run-value replies;
+      // protocol 12 does the same for MCP server load and save.
+      // Negotiate before dispatching incompatible requests.
       expect(REMOTE_PROTOCOL_VERSION).toBeGreaterThan(protocolVersion);
       const hub = new InMemoryRelayHub();
       const older = { protocolVersion, appVersion: '0.9.0' };

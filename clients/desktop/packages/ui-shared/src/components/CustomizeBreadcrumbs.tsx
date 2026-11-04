@@ -57,12 +57,19 @@ export function CustomizeBreadcrumbs({
       <ol className="flex h-full min-w-0 items-center gap-1">
         {items.map((item, index) => {
           const current = index === items.length - 1;
+          // The full text is a native title on the truncated text only, never
+          // on the crumb button (docs/design/interaction.md#tooltips).
           const label = item.privateLabel ? (
-            <span className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}>
+            <span
+              className={`min-w-0 truncate ${REPLAY_MASK_CLASS}`}
+              title={item.title}
+            >
               {item.label}
             </span>
           ) : item.shrink ? (
-            <span className="min-w-0 truncate">{item.label}</span>
+            <span className="min-w-0 truncate" title={item.title}>
+              {item.label}
+            </span>
           ) : (
             item.label
           );
@@ -97,7 +104,6 @@ export function CustomizeBreadcrumbs({
                 onClick={item.onSelect}
                 data-testid={item.testId}
                 data-entry-kind={item.entryKind}
-                title={item.title}
                 className={navigable}
               >
                 {label}

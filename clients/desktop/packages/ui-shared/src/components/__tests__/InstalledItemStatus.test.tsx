@@ -627,7 +627,12 @@ describe('InstalledItemStatusControl', () => {
         />
       </>,
     );
-    expect(byTestId('a-loading').textContent).toBe('Loading…');
+    // The picker's capsule in skeleton, announced but carrying no visible text.
+    expect(byTestId('a-loading').getAttribute('role')).toBe('status');
+    expect(byTestId('a-loading').textContent).toBe('Loading status');
+    expect(
+      byTestId('a-loading').querySelector('.sr-only + [skullet-bar].h-7'),
+    ).not.toBeNull();
     // An unreadable status keeps the picker's shape, disabled, with its
     // reason as the tooltip and accessible description.
     const unavailable = byTestId('b-unavailable');

@@ -4,7 +4,6 @@ import {
   DROPDOWN_TRIGGER_INTERACTION_CLASS,
   buttonClassName,
 } from '../Button';
-import { ControlSelect } from '../ControlSelect';
 import { Select } from '../Field';
 import { PickerTrigger } from '../PickerMenu';
 import { SettingsSelect } from '../SettingsSelect';
@@ -15,7 +14,7 @@ import { SettingsSelect } from '../SettingsSelect';
  */
 const noop = (): undefined => undefined;
 
-function classesOf(html: string, tag: 'button' | 'select'): string[] {
+function classesOf(html: string, tag: 'button'): string[] {
   const match = new RegExp(`<${tag}[^>]*class="([^"]*)"`).exec(html);
   if (!match?.[1]) throw new Error(`No <${tag}> in ${html}`);
   return match[1].split(/\s+/);
@@ -78,19 +77,5 @@ describe('dropdown trigger interaction', () => {
       );
     }
     expect(picker).toContain('shadow-field');
-  });
-
-  it('presses the native dropdown like a button', () => {
-    const native = classesOf(
-      renderToStaticMarkup(
-        <ControlSelect aria-label="Sound" value="a" onChange={noop}>
-          <option value="a">A</option>
-        </ControlSelect>,
-      ),
-      'select',
-    );
-    expect(native).toEqual(
-      expect.arrayContaining(tokens(DROPDOWN_TRIGGER_INTERACTION_CLASS)),
-    );
   });
 });

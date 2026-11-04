@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { totalmem } from 'node:os';
+import type { ExecutionHostLaunchRequest } from '@canopy/core-platform/execution-host/port';
+import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
 
 class FakeUtilityProcess extends EventEmitter {
   public readonly postMessage = jest.fn();
@@ -31,6 +34,10 @@ import {
   type CodeGraphWorkerReadResult,
   type CodeGraphWorkerReadTask,
 } from '../code-graph/read-runner';
+import {
+  getExecutionHostPort,
+  setExecutionHostPort,
+} from '../execution-host/utility-process-host';
 
 const REQUEST: CodeGraphWorkerReadRequest = {
   dbPath: '/private/graph.db',
@@ -85,6 +92,36 @@ describe('code-graph read runner', () => {
     );
     for (const child of children) child.emit('exit', 0);
     await Promise.all(cancellations);
+  });
+
+  it('launches each read host through getExecutionHostPort().launch with the read entry and budget', async () => {
+    const utility = getExecutionHostPort();
+    const launches: ExecutionHostLaunchRequest[] = [];
+    setExecutionHostPort({
+      probe: (probeRequest) => utility.probe(probeRequest),
+      launch: (launchRequest) => {
+        launches.push(launchRequest);
+        return utility.launch(launchRequest);
+      },
+    });
+    try {
+      const pending = start();
+      expect(launches).toEqual([
+        {
+          entry: 'code-graph-read-worker.js',
+          serviceName: 'code-graph-read',
+          budget: codeGraphHostBudget('read', {
+            totalMemoryBytes: totalmem(),
+          }),
+        },
+      ]);
+      children[0]?.emit('message', {
+        data: { ok: true, result: { kind: 'calls', value: [{}] } },
+      });
+      await pending;
+    } finally {
+      setExecutionHostPort(undefined);
+    }
   });
 
   it('forks a read utility process and returns its typed response', async () => {
@@ -210,7 +247,7 @@ describe('code-graph read runner', () => {
         kind: 'context',
         request: {
           dbPath: REQUEST.dbPath,
-          task: { kind: 'persist-fingerprint', fingerprint: 'fingerprint' },
+          task: { kind: 'fingerprint-metadata' },
         },
       });
       const busy = [start('one'), start('two'), comparison, maintenance];

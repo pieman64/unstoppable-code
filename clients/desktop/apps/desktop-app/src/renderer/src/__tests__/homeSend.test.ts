@@ -304,7 +304,7 @@ let callOrder: string[] = [];
 function resetStores(): void {
   callOrder = [];
   useHomeComposerStore.getState().reset();
-  useProjectsStore.setState({ projects: [] });
+  useProjectsStore.setState({ projects: [], worktreeError: null });
   // No test exercises `fetchFileIndex` unless it staged shadow-backed
   // `fileReferences` first (see the Task F3 rewrite describe block below) —
   // the default here fails loudly if that invariant is ever broken.
@@ -2125,6 +2125,29 @@ describe('dispatchHomeSend new-worktree / branch routing', () => {
         select: false,
       }),
     );
+  });
+
+  it('shows the Git creation error and releases sending while preserving the retry draft', async () => {
+    const error = 'Git is unavailable. Install Git, then recheck.';
+    useProjectsStore.setState({ worktreeError: error });
+    jest
+      .mocked(useProjectsStore.getState().createWorktree)
+      .mockResolvedValue(undefined);
+    useHomeComposerStore.setState({
+      workspaceId: 'ws-1',
+      branchTarget: { kind: 'new-worktree' },
+      text: 'build a thing',
+    });
+
+    await dispatchHomeSend();
+
+    expect(useHomeComposerStore.getState()).toMatchObject({
+      isSending: false,
+      sendError: error,
+      text: 'build a thing',
+    });
+    expect(useChatStore.getState().sendMessage).not.toHaveBeenCalled();
+    expect(useNavigationStore.getState().navigate).not.toHaveBeenCalled();
   });
 
   it('sets sendError and preserves the draft when createWorktree fails', async () => {

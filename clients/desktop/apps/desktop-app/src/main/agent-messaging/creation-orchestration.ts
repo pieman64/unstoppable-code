@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   parseChatCreationAction,
   type ChatCreationAction,
@@ -16,6 +17,7 @@ import {
   dispatchAgentChatSend,
   pipelineDiscoveryCaller,
   type AgentChatSendContext,
+  type PipelineNativeGrantSeed,
   type PipelineNewChatSeed,
 } from './send-orchestration';
 import type { AgentSenderRuntimeSource } from './sender-context';
@@ -66,6 +68,23 @@ function seedAppliesToBotChat(
     (seed.model === undefined &&
       seed.providerType === undefined &&
       seed.pluginSelections === undefined)
+  );
+}
+
+/**
+ * Whether a seed's D11 settings are exactly a native grant's (CAN-5479): the
+ * approvals, the plugins and, for an Orchestrator chat, the model. Anything
+ * else falls back to D11.
+ */
+function seedIsGranted(
+  seed: PipelineNewChatSeed,
+  grant: PipelineNativeGrantSeed,
+  projectChat: boolean,
+): boolean {
+  return (
+    seed.approvalMode === grant.approvalMode &&
+    isDeepStrictEqual(seed.pluginSelections, grant.pluginSelections) &&
+    (projectChat || seed.model === grant.model)
   );
 }
 
@@ -164,6 +183,20 @@ async function create(
     trusted.kind === 'pipeline' &&
     isAutomationRunSource(trusted.source) &&
     !agentOriginated;
+  const projectAction =
+    action.type === 'projects.create_task' ||
+    action.type === 'projects.create_task_chat';
+  // CAN-5479: a converted agent automation's run keeps what its native
+  // action set, which its send step verified, while the seed is exactly it.
+  const nativeGrant =
+    trusted.kind === 'pipeline' &&
+    agentOriginated &&
+    isAutomationRunSource(trusted.source) &&
+    newChatSeed !== undefined &&
+    context.nativeGrant !== undefined &&
+    seedIsGranted(newChatSeed, context.nativeGrant, projectAction)
+      ? context.nativeGrant
+      : undefined;
   if (trusted.kind === 'pipeline') {
     caller = pipelineDiscoveryCaller(trusted.source);
   } else {
@@ -182,9 +215,6 @@ async function create(
         ? { kind: 'app_advisor', chatId: source.chatId }
         : { kind: 'project_agent', ...source };
   }
-  const projectAction =
-    action.type === 'projects.create_task' ||
-    action.type === 'projects.create_task_chat';
   // D11: before any effect, the run's agent must still be current, keep the
   // run's owner and, for an Orchestrator target, have its access, as a send's.
   if (trusted.kind === 'pipeline' && trusted.source.agentOrigin)
@@ -214,18 +244,23 @@ async function create(
   if (
     newChatSeed &&
     !projectAction &&
-    !seedAppliesToBotChat(newChatSeed, automationRun)
+    !seedAppliesToBotChat(
+      newChatSeed,
+      automationRun || nativeGrant !== undefined,
+    )
   )
     throw new AgentChatSendError(
       'unsupported_action',
       'Orchestrator chats accept only thinking effort, fast mode, plan mode and approval mode.',
     );
   // D11 for a new chat: an agent-originated seed may set the model, plan mode
-  // and interface, but never plugins, and approvals only within the agent's.
+  // and interface, but never plugins, and approvals only within the agent's;
+  // a native grant keeps what the automation's native action set (CAN-5479).
   if (
     newChatSeed?.pluginSelections !== undefined &&
     trusted.kind === 'pipeline' &&
-    trusted.source.agentOrigin
+    trusted.source.agentOrigin &&
+    nativeGrant === undefined
   )
     throw new AgentChatSendError(
       'authorization_conflict',
@@ -421,11 +456,26 @@ async function create(
               }
             : {}),
         };
-        const started = await context.startAdmission?.(
-          { workspaceId: projectId, worktreeId: taskId },
-          action.initialMessage !== undefined,
-        );
-        if (!started && agentOriginated && newChatSeed?.approvalMode)
+        // CAN-5479: a granted approval mode resolves as the native send's
+        // did, with no agent admission, which the native send never had.
+        const granted =
+          nativeGrant?.approvalMode !== undefined
+            ? await (
+                await import('./turn-override')
+              ).resolveAutomationApprovalMode(
+                projectId,
+                nativeGrant.approvalMode,
+              )
+            : undefined;
+        const started =
+          granted === undefined
+            ? await context.startAdmission?.(
+                { workspaceId: projectId, worktreeId: taskId },
+                action.initialMessage !== undefined,
+              )
+            : undefined;
+        if (granted !== undefined) seed = { ...seed, approvalMode: granted };
+        else if (!started && agentOriginated && newChatSeed?.approvalMode)
           throw new AgentChatSendError(
             'authorization_conflict',
             'An agent-originated run cannot choose approvals for a new chat.',
@@ -443,8 +493,13 @@ async function create(
           seed = { ...seed, approvalMode: started.approvalMode };
         }
       } else if (newChatSeed) {
-        // D11: bot creation has no start admission to take approvals from.
-        if (agentOriginated && newChatSeed.approvalMode)
+        // D11: bot creation has no start admission to take approvals from;
+        // a native grant's are the native action's own (CAN-5479).
+        if (
+          agentOriginated &&
+          newChatSeed.approvalMode &&
+          nativeGrant === undefined
+        )
           throw new AgentChatSendError(
             'authorization_conflict',
             'An agent-originated run cannot choose approvals for a new chat.',
@@ -570,8 +625,15 @@ async function create(
             chatId,
             text: action.initialMessage,
           };
+      // CAN-5479: the granted chat's first message is the native action's
+      // prompt, which the native send made without the agent's admission.
+      const { admission: _admission, ...unadmitted } = context;
+      void _admission;
       try {
-        const accepted = await dispatchAgentChatSend(sendAction, context);
+        const accepted = await dispatchAgentChatSend(
+          sendAction,
+          nativeGrant?.approvalMode !== undefined ? unadmitted : context,
+        );
         return {
           address,
           taskCreated,

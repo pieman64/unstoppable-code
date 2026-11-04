@@ -26,6 +26,48 @@ import { revealInList } from './drawer-layout';
 
 import { DrawerRowPresentationContext } from './drawer-presentation';
 
+const DETAIL_FADE_MASK =
+  'linear-gradient(to right, black calc(100% - 24px), transparent)';
+
+/** A detail too long for the row (a long job strip) fades out at its end
+ * instead of cutting a glyph in half. */
+function RowDetail({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const measure = (): void =>
+      setOverflowing(node.scrollWidth > node.clientWidth);
+    measure();
+    if (typeof ResizeObserver !== 'function') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    // The strip grows inside its wrapper without resizing the row.
+    for (const child of node.querySelectorAll(':scope > *, :scope > * > *'))
+      observer.observe(child);
+    return (): void => observer.disconnect();
+  }, []);
+  return (
+    <span
+      ref={ref}
+      className="min-w-0 flex-1 truncate text-xs fg-tertiary"
+      data-overflowing={overflowing ? 'true' : undefined}
+      style={
+        overflowing
+          ? { maskImage: DETAIL_FADE_MASK, WebkitMaskImage: DETAIL_FADE_MASK }
+          : undefined
+      }
+    >
+      {children}
+    </span>
+  );
+}
+
 function InspectorReveal({
   animate,
   children,
@@ -129,6 +171,7 @@ export function DrawerRow({
   const modal = presentation === 'modal';
   const navigation = presentation === 'legacy' ? undefined : openAction;
   const navigationInHeader = navigation !== undefined && (modal || !action);
+  const linkRow = navigation !== undefined && !inspector && !action && !modal;
   const headerAction = navigationInHeader ? (
     <Tooltip label={navigation.label}>
       <Button
@@ -212,12 +255,14 @@ export function DrawerRow({
       >
         {name}
       </span>
-      {!modal && detail !== undefined && (
-        <span className="min-w-0 flex-1 truncate text-xs fg-tertiary">
-          {/* The open inspector shows it in full. */}
-          {open ? null : detail}
-        </span>
-      )}
+      {!modal &&
+        detail !== undefined &&
+        // The open inspector shows it in full.
+        (open ? (
+          <span className="min-w-0 flex-1" />
+        ) : (
+          <RowDetail>{detail}</RowDetail>
+        ))}
       {!headerAccessory && trailing !== undefined && (
         <span className="shrink-0 text-xs tabular-nums fg-tertiary">
           {trailing}
@@ -237,28 +282,56 @@ export function DrawerRow({
   return (
     <li
       ref={ref}
-      className={`group/row flex flex-col ${modal ? 'rounded-lg' : 'rounded-xl'} ${fill}`}
+      className={`group/row flex flex-col ${modal ? 'rounded-lg' : 'rounded-drawer-row'} ${fill}`}
       data-tray-row={rowKey}
       data-testid={testId}
     >
       {/* The action ends 4px from the row's end, as from its top and bottom. */}
       <div
-        className={`flex h-9 min-w-0 items-center text-s ${modal && !open ? 'rounded-lg hover:bg-subtle' : ''} ${modal && !navigationInHeader ? 'pr-3' : presentation === 'legacy' ? 'gap-3 pr-1' : 'gap-2.5 pr-1'}`}
+        className={`relative flex h-9 min-w-0 items-center text-s ${modal && !open ? 'rounded-lg hover:bg-subtle' : ''} ${modal && !navigationInHeader ? 'pr-3' : presentation === 'legacy' ? 'gap-3 pr-1' : 'gap-2.5 pr-1'}`}
       >
-        {inspector ? (
-          <button
-            type="button"
-            className={`group/header focus-visible:outline focus-visible:outline-1 focus-visible:outline-fg-quaternary focus-visible:-outline-offset-1 flex h-9 min-w-0 flex-1 items-center gap-2.5 text-left outline-none ${modal ? 'rounded-lg pl-3' : 'rounded-xl pl-2.75'}`}
-            aria-expanded={open}
-            aria-controls={open ? inspectorId : undefined}
-            onClick={(event): void => {
-              setAnimateDetails(modal && event.detail > 0);
-              inspector.onToggle();
-            }}
-            data-testid="background-tray-row-toggle"
-          >
-            {content}
-          </button>
+        {inspector || linkRow ? (
+          <>
+            {/* With nothing to unfold, the whole row is its way out (a pull
+                request opens on GitHub): the button lies under the row's
+                content, and controls in the row sit above it. */}
+            <button
+              type="button"
+              className={`focus-visible:outline focus-visible:outline-1 focus-visible:outline-fg-quaternary focus-visible:-outline-offset-1 outline-none ${
+                inspector
+                  ? `group/header flex h-9 min-w-0 flex-1 items-center gap-2.5 text-left ${modal ? 'rounded-lg pl-3' : 'rounded-drawer-row pl-2.75'}`
+                  : 'absolute inset-0 rounded-drawer-row'
+              }`}
+              aria-expanded={inspector ? open : undefined}
+              aria-controls={inspector && open ? inspectorId : undefined}
+              onClick={(event): void => {
+                if (!inspector) {
+                  navigation?.onClick();
+                  return;
+                }
+                setAnimateDetails(modal && event.detail > 0);
+                inspector.onToggle();
+              }}
+              data-testid={
+                inspector
+                  ? 'background-tray-row-toggle'
+                  : 'background-tray-row-open'
+              }
+            >
+              {inspector ? (
+                content
+              ) : (
+                <span className="sr-only">
+                  {name}, {navigation?.label}
+                </span>
+              )}
+            </button>
+            {!inspector && (
+              <div className="pointer-events-none flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
+                {content}
+              </div>
+            )}
+          </>
         ) : (
           <div className="flex h-9 min-w-0 flex-1 items-center gap-2.5 pl-2.75">
             {content}
@@ -266,7 +339,7 @@ export function DrawerRow({
         )}
         {headerAccessory && (
           <>
-            <span className="shrink-0">{headerAccessory}</span>
+            <span className="relative shrink-0">{headerAccessory}</span>
             {trailing !== undefined && (
               <span className="shrink-0 text-xs tabular-nums fg-tertiary">
                 {trailing}
@@ -274,14 +347,24 @@ export function DrawerRow({
             )}
           </>
         )}
-        {/* One 56px action column, so the times line up whichever action a
-            row has, or none. */}
-        {(!modal || navigationInHeader) && (
+        {/* One action column, so the times line up whichever icon action a
+            row has, or none; a labeled action (Resume) widens its own row. */}
+        {linkRow ? (
           <span
-            className={`flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'w-7'}`}
+            aria-hidden="true"
+            className="pointer-events-none flex w-7 shrink-0 justify-center fg-tertiary group-hover/row:fg-primary"
           >
-            {headerAction}
+            {/* The whole row is the link, as View completed's is. */}
+            <ChevronRightIcon size={14} />
           </span>
+        ) : (
+          (!modal || navigationInHeader) && (
+            <span
+              className={`flex shrink-0 items-center justify-end ${presentation === 'legacy' ? 'w-14' : 'min-w-7'}`}
+            >
+              {headerAction}
+            </span>
+          )
         )}
       </div>
       {open && inspector && (
@@ -361,14 +444,17 @@ export function InspectorFooter({
   readonly action?: { readonly label: string; readonly onClick: () => void };
 }): JSX.Element {
   const modal = useContext(DrawerRowPresentationContext) === 'modal';
+  // Beside footer text the action ends at the time column; alone, it sits
+  // under the names above it rather than floating at the row's end.
+  const leading = modal || children == null;
   return (
     <div
-      className={`mt-2 flex items-center gap-3 text-xs ${modal ? '' : 'mr-9.5 justify-end'}`}
+      className={`mt-2 flex items-center gap-3 text-xs ${leading ? '' : 'mr-9.5 justify-end'}`}
     >
       {children}
       {action && (
         <InspectorOpenAction
-          placement={modal ? 'block' : 'footer'}
+          placement={leading ? 'block' : 'footer'}
           label={action.label}
           onClick={action.onClick}
         />

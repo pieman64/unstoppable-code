@@ -124,6 +124,7 @@ class OwnedExecutionHost extends ReportedExecutionHost {
   private readonly queued: Uint8Array[] = [];
   private writing: Promise<void> = Promise.resolve();
   private inputClosed = false;
+  private stopping = false;
 
   constructor(
     started: Promise<PlatformExecutionProcess>,
@@ -157,6 +158,7 @@ class OwnedExecutionHost extends ReportedExecutionHost {
   kill(): boolean {
     const child = this.child;
     if (!child || this.exited) return false;
+    this.stopping = true;
     child.terminate({ mode: 'graceful' }).catch(() => {
       // The outcome reports a tree whose cleanup was not confirmed as lost.
     });
@@ -189,7 +191,9 @@ class OwnedExecutionHost extends ReportedExecutionHost {
       this.diagnostics?.('stderr', bytes),
     );
     this.reportSpawn();
-    for (const frame of this.queued.splice(0)) this.write(frame);
+    // A host killed as it spawned never sees what was posted while it started.
+    const queued = this.queued.splice(0);
+    if (!this.stopping) for (const frame of queued) this.write(frame);
     // The outcome follows the delivery of all output, so every message the
     // host sent is reported before its exit.
     void Promise.allSettled([stdout, stderr])

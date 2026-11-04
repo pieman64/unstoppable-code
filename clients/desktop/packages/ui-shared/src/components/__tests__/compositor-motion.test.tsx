@@ -6,7 +6,6 @@ import { readFileSync } from 'node:fs';
 // eslint-disable-next-line no-restricted-imports
 import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { LinearProgress } from '../LinearProgress';
 import { ResizeRailIndicator } from '../ResizeRailIndicator';
 
 const TOKENS_SOURCE = readFileSync(
@@ -27,31 +26,6 @@ function render(markup: string): HTMLElement {
 }
 
 describe('compositor-only motion', () => {
-  it('sizes a progress bar by layout and leaves its motion to the compositor', () => {
-    const track = render(
-      renderToStaticMarkup(<LinearProgress percentage={30} label="Upload" />),
-    );
-    const bar = track.firstElementChild;
-    expect(bar).toBeInstanceOf(HTMLElement);
-    if (!(bar instanceof HTMLElement)) return;
-    // Exact at rest: the bar keeps its width and round ends; useFlipBox draws
-    // a change as a scale from the top-left corner.
-    expect(bar.style.width).toBe('30%');
-    expect(bar.className).toContain('rounded-full');
-    expect(bar.className).toContain('origin-top-left');
-    expect(bar.className).not.toMatch(LAYOUT_TRANSITION);
-  });
-
-  it('keeps an indeterminate bar a still third of the track', () => {
-    const bar = render(
-      renderToStaticMarkup(<LinearProgress percentage={0} indeterminate />),
-    ).firstElementChild;
-    expect(bar).toBeInstanceOf(HTMLElement);
-    if (!(bar instanceof HTMLElement)) return;
-    expect(bar.className).toContain('w-1/3');
-    expect(bar.style.width).toBe('');
-  });
-
   it('thickens a resize line by scale from the shared stylesheet', () => {
     const idle = render(
       renderToStaticMarkup(<ResizeRailIndicator active={false} />),

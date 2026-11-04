@@ -105,8 +105,8 @@ export const BUTTON_PRESS_CLASS = 'duration-150 active:scale-97';
 /**
  * How a dropdown trigger behaves under the pointer: the secondary `Button`'s
  * press, its hover fill, and that hover look held while the menu is open.
- * `Select`, `SettingsSelect`, `ControlSelect`, and the `PickerTrigger` field
- * variant all use it; each keeps its own field shape and edge.
+ * `Select`, `SettingsSelect`, and the `PickerTrigger` field variant all use
+ * it; each keeps its own field shape and edge.
  */
 export const DROPDOWN_TRIGGER_INTERACTION_CLASS = `${BUTTON_PRESS_CLASS} ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS}`;
 

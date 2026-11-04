@@ -19,6 +19,32 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
   value: true,
 });
 
+/**
+ * jsdom has neither the Web Animations API nor media queries; skullet starts
+ * its pulse only where `Element.animate` exists and reduced motion is off.
+ */
+function stubMotion({ reduced }: { readonly reduced: boolean }): {
+  readonly animate: jest.Mock;
+} {
+  const animate = jest.fn(() => ({ startTime: null }));
+  Object.defineProperty(Element.prototype, 'animate', {
+    configurable: true,
+    value: animate,
+  });
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    value: (query: string) => ({
+      matches: reduced && query.includes('prefers-reduced-motion'),
+    }),
+  });
+  return { animate };
+}
+
+afterEach(() => {
+  Reflect.deleteProperty(Element.prototype, 'animate');
+  Reflect.deleteProperty(window, 'matchMedia');
+});
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -103,25 +129,26 @@ describe('settings skeletons', () => {
   );
 
   it.each(SKELETONS)(
-    '$testId stops every animation under reduced motion and has no entry animation',
+    '$testId pulses through skullet, holds still under reduced motion, and has no entry animation',
     ({ testId, element }) => {
+      const motion = stubMotion({ reduced: false });
       render(element);
       const region = statusRegion(testId);
-      const animated = Array.from(
-        region.querySelectorAll('[class*="animate-"]'),
-      ).filter((node) =>
-        Array.from(node.classList).some(
-          (name) => name.startsWith('animate-') && name !== 'animate-none',
-        ),
-      );
-      expect(animated.length).toBeGreaterThan(0);
-      for (const node of animated) {
-        expect(node.classList.contains('motion-reduce:animate-none')).toBe(
-          true,
+      expect(motion.animate).toHaveBeenCalled();
+      for (const [keyframes] of motion.animate.mock.calls) {
+        expect(keyframes).toContainEqual(
+          expect.objectContaining({ opacity: 1 }),
         );
-        expect(node.classList.contains('animate-pulse')).toBe(true);
       }
+      // No hand-rolled pulse or fill: skullet owns both.
+      expect(region.querySelectorAll('[class*="animate-"]')).toHaveLength(0);
       expect(region.className).not.toMatch(/animate-|fade|transition/);
+      act(() => root.unmount());
+      root = createRoot(container);
+
+      const still = stubMotion({ reduced: true });
+      render(element);
+      expect(still.animate).not.toHaveBeenCalled();
     },
   );
 
@@ -157,22 +184,16 @@ describe('settings skeletons', () => {
 });
 
 describe('SkeletonBlock', () => {
-  it('is a hidden, text-free muted bar sized by its typed props', () => {
+  it('is a hidden, text-free skullet bar sized by its typed props', () => {
     render(<SkeletonBlock height="title" width="1/3" className="mt-2" />);
     const block = container.firstElementChild;
     expect(block?.getAttribute('aria-hidden')).toBe('true');
+    expect(block?.hasAttribute('skullet-bar')).toBe(true);
     expect(block?.textContent).toBe('');
-    for (const name of [
-      'bg-muted',
-      'animate-pulse',
-      'motion-reduce:animate-none',
-      'rounded-full',
-      'h-3.5',
-      'w-1/3',
-      'mt-2',
-    ]) {
+    for (const name of ['rounded-full', 'h-3.5', 'w-1/3', 'mt-2']) {
       expect(block?.classList.contains(name)).toBe(true);
     }
+    expect(block?.className).not.toMatch(/\bbg-|animate-/);
   });
 
   it.each([
@@ -189,7 +210,7 @@ describe('SkeletonBlock', () => {
       expect(block?.classList.contains(name)).toBe(true);
     }
     expect(block?.classList.contains('w-full')).toBe(false);
-    expect(block?.classList.contains('motion-reduce:animate-none')).toBe(true);
+    expect(block?.hasAttribute('skullet-bar')).toBe(true);
   });
 });
 

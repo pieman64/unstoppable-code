@@ -360,14 +360,17 @@ export const useSurfaceFindStore = create<SurfaceFindState>()((set, get) => {
       }
       const previous = getActiveFindController(state);
       previous?.close();
-      // A switch within the bar's window keeps the original opener; a retarget
-      // into another window (Cmd/Ctrl+F in a popped-out panel) takes that
-      // window's opener, so closing never focuses the window the user left.
-      const sameWindow =
+      // Keep the opener only within the same focus boundary. Retargeting into
+      // a dialog or another window must not restore an inert/background opener.
+      const sameFocusBoundary =
         previous?.anchor.ownerDocument ===
-        entry.controller.anchor.ownerDocument;
+          entry.controller.anchor.ownerDocument &&
+        previous?.anchor.closest('[role="dialog"], [aria-modal="true"]') ===
+          entry.controller.anchor.closest(
+            '[role="dialog"], [aria-modal="true"]',
+          );
       const nextReturnFocus =
-        state.open && sameWindow
+        state.open && sameFocusBoundary
           ? state.returnFocus
           : isHtmlElementInAnyRealm(returnFocus) &&
               !isInsideSurfaceFindBar(returnFocus)

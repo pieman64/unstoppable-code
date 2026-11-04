@@ -11,7 +11,7 @@ import {
 } from 'node:fs/promises';
 import type * as CodexRuntime from '@canopy/desktop-shared/node/codex-runtime';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 let mockProjectsDir = '';
 let mockCandidateNames: string[] = [];
@@ -979,6 +979,57 @@ describe('local memory Claude import', () => {
     expect(finalEntry.fileHash).not.toBe(v1Entry.fileHash);
   });
 
+  it('keeps one note ID when two runs import the same source at once', async () => {
+    const sourcePath = join(sourceDir, 'MEMORY.md');
+    await writeFile(sourcePath, '# Shared fact', 'utf8');
+    const options = { workspaceId: 'workspace-1', repoPath: '/repo/path' };
+    // Both runs read the ledger before either one stages the source.
+    const readLedger = ledgerModule.readImportState;
+    const writeLedger = ledgerModule.writeImportState;
+    let reads = 0;
+    let bothRead = (): void => undefined;
+    const bothReadPromise = new Promise<void>((resolve) => {
+      bothRead = resolve;
+    });
+    jest
+      .spyOn(ledgerModule, 'readImportState')
+      .mockImplementation(async (scopeDir) => {
+        const state = await readLedger(scopeDir);
+        reads += 1;
+        if (reads === 2) bothRead();
+        if (reads <= 2) await bothReadPromise;
+        return state;
+      });
+    const persistedNoteIds: Array<string | undefined> = [];
+    jest
+      .spyOn(ledgerModule, 'writeImportState')
+      .mockImplementation(async (scopeDir, state) => {
+        await writeLedger(scopeDir, state);
+        const entry = state.sources[sourcePath];
+        if (entry && 'stagedAs' in entry) persistedNoteIds.push(entry.noteId);
+      });
+
+    const results = await Promise.all([
+      runClaudeMemoryImport(options),
+      runClaudeMemoryImport(options),
+    ]);
+
+    expect(results.map((result) => result.errors)).toEqual([[], []]);
+    const entry = (await readImportState(mockWorkspaceScopeDir)).sources[
+      sourcePath
+    ];
+    if (!entry || !('stagedAs' in entry)) {
+      throw new Error('Expected a staged ledger entry');
+    }
+    expect(entry.noteId).toBeDefined();
+    // Once persisted, the import's identity never changes.
+    expect(new Set(persistedNoteIds)).toEqual(new Set([entry.noteId]));
+    expect(results.map((result) => result.staged).sort()).toEqual([0, 1]);
+    expect(await readdir(join(mockWorkspaceScopeDir, 'imported'))).toEqual([
+      basename(entry.stagedAs),
+    ]);
+  });
+
   it('is idempotent when the original content hash is unchanged', async () => {
     await writeFile(join(sourceDir, 'MEMORY.md'), '# Stable fact', 'utf8');
     const options = {
@@ -1088,7 +1139,9 @@ describe('local memory Claude import', () => {
     expect(renameSpy).toHaveBeenCalledTimes(1);
     const renameCall = renameSpy.mock.calls[0];
     if (!renameCall) throw new Error('Expected atomic ledger rename');
-    expect(renameCall[0]).toMatch(/import-state\.json\..+\.tmp$/);
+    // A sibling dot entry, which readers ignore and a crash's sweep removes.
+    expect(dirname(renameCall[0])).toBe(mockWorkspaceScopeDir);
+    expect(basename(renameCall[0])).toMatch(/^\.memory-write-.+\.tmp$/);
     expect(renameCall[1]).toBe(
       join(mockWorkspaceScopeDir, 'import-state.json'),
     );

@@ -1,5 +1,6 @@
 import {
   Button,
+  Heading,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -2153,9 +2154,9 @@ export function WorkspaceSettingsModal({
             {!isTemporaryWorkspace &&
               (!workspace.sourceRepoPath ? (
                 <div className="rounded-lg border p-4">
-                  <h3 className="text-s font-medium fg-primary">
+                  <Heading level={3} variant="title">
                     Source repo missing
-                  </h3>
+                  </Heading>
                   <p className="mt-1 text-xs fg-secondary">
                     Multi-repo projects now require a project root git repo.
                     This project is missing its tracked source repo path and
@@ -2168,9 +2169,9 @@ export function WorkspaceSettingsModal({
 
                   <div className="rounded-lg border p-4">
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-s font-medium fg-primary">
+                      <Heading level={3} variant="title">
                         Origin remote
-                      </h3>
+                      </Heading>
                       {sourceRemoteUrl && (
                         <CopyButton
                           value={sourceRemoteUrl}
@@ -2263,9 +2264,9 @@ export function WorkspaceSettingsModal({
               data-testid="workspace-settings-retention"
             >
               <div data-testid="workspace-settings-retention-card">
-                <h3 className="text-sm font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Deletion retention
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   {`Deleted worktrees are kept for ${pendingRetention.days} ${pendingRetention.days === 1 ? 'day' : 'days'} before they're removed. Archived worktrees are kept until you delete them.`}
                 </p>
@@ -2339,7 +2340,9 @@ export function WorkspaceSettingsModal({
         {activeTab === 'repositories' && (
           <div>
             <div className="flex items-center justify-between">
-              <h3 className="text-s font-medium fg-primary">Repositories</h3>
+              <Heading level={3} variant="title">
+                Repositories
+              </Heading>
               {addStep === 'list' && (
                 <Button
                   variant="ghost"
@@ -2734,9 +2737,9 @@ export function WorkspaceSettingsModal({
             ) : (
               <>
                 <div className="rounded-lg border p-3 space-y-3">
-                  <h4 className="text-s font-medium fg-primary">
+                  <Heading level={4} variant="title">
                     Project root
-                  </h4>
+                  </Heading>
                   <ScriptConfigEditor
                     label="Before setup"
                     scriptName="before-setup"
@@ -3426,9 +3429,9 @@ export function WorkspaceSettingsModal({
                           height="14"
                           className={`shrink-0 fg-secondary transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
                         />
-                        <h4 className="text-s font-medium fg-primary">
+                        <Heading level={4} variant="title">
                           {repo.name}
-                        </h4>
+                        </Heading>
                       </button>
                       {!isCollapsed && (
                         <>
@@ -3970,9 +3973,9 @@ export function WorkspaceSettingsModal({
               <>
                 {/* Workspace-level hooks */}
                 <div className="rounded-lg border p-3 space-y-3">
-                  <h4 className="text-s font-medium fg-primary">
+                  <Heading level={4} variant="title">
                     Project root
-                  </h4>
+                  </Heading>
                   <HookActionEditor
                     key={hookEditMode}
                     chatContext={resolveHookComposerContext({
@@ -4005,9 +4008,9 @@ export function WorkspaceSettingsModal({
                       key={repo.id}
                       className="rounded-lg border p-3 space-y-3"
                     >
-                      <h4 className="text-s font-medium fg-primary">
+                      <Heading level={4} variant="title">
                         {repo.name}
-                      </h4>
+                      </Heading>
 
                       <HookActionEditor
                         key={hookEditMode}
@@ -4050,7 +4053,9 @@ export function WorkspaceSettingsModal({
         {activeTab === 'claude-md' && (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex items-center justify-between">
-              <h3 className="text-s font-medium fg-primary">Instructions</h3>
+              <Heading level={3} variant="title">
+                Instructions
+              </Heading>
               {!claudeMd.trim() && !claudeMdUnavailable && (
                 <Button
                   size="compact"
@@ -4426,7 +4431,9 @@ function TemporaryWorkspacePromotionCard({
       className="rounded-lg border p-4"
       data-testid="temporary-workspace-promotion"
     >
-      <h3 className="text-s font-medium fg-primary">Temporary project</h3>
+      <Heading level={3} variant="title">
+        Temporary project
+      </Heading>
       <p className="mt-1 text-xs fg-secondary">
         This project was created for an adhoc multi-repo worktree. Make it
         permanent to keep it after its worktrees are deleted.

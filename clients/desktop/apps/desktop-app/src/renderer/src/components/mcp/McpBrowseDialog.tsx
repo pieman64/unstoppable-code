@@ -14,7 +14,7 @@ import {
   type CuratedMcpDetailRoutes,
   type McpDetailEntry,
 } from '@canopy/ui-app/capability';
-import { SearchField } from '@canopy/ui-shared/components';
+import { SearchField, Heading } from '@canopy/ui-shared/components';
 
 // ---------------------------------------------------------------------------
 // Curated logo (remote CDN <img> with icon fallback)
@@ -274,7 +274,9 @@ function CuratedSection({
   if (entries.length === 0) return null;
   return (
     <div className="space-y-2">
-      <h3 className="text-xs font-medium fg-secondary">{title}</h3>
+      <Heading level={3} variant="label">
+        {title}
+      </Heading>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {entries.map((entry) => (
           <CuratedCard

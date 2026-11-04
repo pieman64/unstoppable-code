@@ -4,9 +4,12 @@
  *
  * Browser-safe; it reads only the model catalog, to keep a Claude interface
  * mode for a Claude model alone. Conversion is lossless or refused: an action
- * whose settings the steps can't carry exactly stays native. Every local ID is a
- * pipeline input; the prompt stays literal in the YAML (`literal_text`), so
- * sharing, which strips input values, keeps it.
+ * whose settings the steps can't carry exactly stays native. Every local ID,
+ * local plugin selection, attachment and Agent is a pipeline input or an
+ * automation model preference, never a YAML literal; the prompt stays literal
+ * in the YAML (`literal_text`), so sharing, which strips input values, keeps
+ * it. A run restriction isn't converted: a valid one is the chat action's own
+ * single context, which desktop main checks before it drops it (CAN-5479).
  */
 import { APP_ADVISOR_BOT_ID } from '@canopy/agent-actions/families/bots/actions';
 import type {
@@ -14,6 +17,7 @@ import type {
   ApprovalMode,
   AutomationAction,
   ChatInterfaceMode,
+  ChatTabPluginSelections,
   ScheduledActivity,
   ShareablePluginRef,
 } from '../types';
@@ -24,9 +28,20 @@ import {
   resolveKnownModel,
   STANDALONE_CHAT_PROJECT_ID,
 } from '../types';
-import type { Pipeline, PipelineInputDef, Step } from '../types/pipeline';
+import type {
+  Pipeline,
+  PipelineAgentModelAliasPreference,
+  PipelineInputDef,
+  Step,
+} from '../types/pipeline';
+import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
+import type {
+  ChatAttachmentPromptContext,
+  FileReference,
+} from '@canopy/agent-transcript/types';
 import { parseSendAgentMessageInputs } from '../pipelines/host-send-agent-message';
+import { normalizePluginSelections } from './plugin-selections-normalization';
 
 /** The generated pipeline's only job. */
 export const CHAT_AUTOMATION_JOB = 'chat';
@@ -44,6 +59,19 @@ const REPLY_TIMEOUT_MINUTES = '720';
 /** A Work Entry title is at most this long (`create-bot-entry`). */
 const ENTRY_TITLE_MAX = 200;
 
+/**
+ * The model alias an Agent model converts to: the send step can't name an
+ * Agent model id, so the automation's model preferences map the alias to the
+ * Agent, and the local Agent id stays out of the YAML.
+ */
+export const CHAT_AUTOMATION_MODEL_ALIAS = 'chat_model';
+
+/** The automation's model preferences for its owned pipeline's alias. */
+export type ChatAutomationModelAliasPreferences = Record<
+  string,
+  PipelineAgentModelAliasPreference
+>;
+
 export type ChatAutomationAction = Extract<
   AutomationAction,
   {
@@ -60,34 +88,13 @@ export type ChatAutomationConversionRefusal =
   | 'not_a_chat_action'
   /** A D4 send, the Home scheduled task or a legacy standalone chat. */
   | 'native_send'
-  /** Attachments, voice input or legacy file references. */
-  | 'composer_payload'
-  /** Local plugin selections, which a shareable step input can't carry. */
-  | 'local_plugin_selections'
-  /** A Codex speed the step's `fast_mode` can't express. */
-  | 'unsupported_speed'
-  /** An Agent model, which the send step's `model` can't name. */
-  | 'agent_model'
-  /** A run restriction, which a global workflow has no target to apply to. */
-  | 'target_requirement'
-  /** A title or group name the expression runner would evaluate. */
-  | 'expression_text'
-  /** A group named `none`, which the create steps refuse at run time. */
-  | 'reserved_group_name'
-  /**
-   * A plugin prompt reference, which the send step resolves without the
-   * provider the native send resolves it with.
-   */
-  | 'plugin_reference'
-  /** An installed capability package, which the owned pipeline can't carry. */
-  | 'installed_package'
-  /**
-   * An interface mode with no model: the native send keeps it only for a
-   * Claude chat, which the default model decides at run time.
-   */
-  | 'interface_mode_unresolved'
   /** Settings D11 refuses for a run an agent's automation starts. */
-  | 'agent_settings';
+  | 'agent_settings'
+  /**
+   * A pinned Agent route, which only the automation's own native send may
+   * start a chat on (CAN-5379).
+   */
+  | 'agent_route';
 
 export type ChatAutomationConvertibility =
   | { convertible: true }
@@ -119,6 +126,21 @@ function isChatAutomationAction(
 }
 
 const EXPRESSION = '${{';
+
+/**
+ * An expression that evaluates to `${{`. Create steps interpolate their title
+ * and group once, so each `${{` written as this comes out as written.
+ */
+const ESCAPED_EXPRESSION = "${{ '${{' }}";
+
+/** Text a create step interpolates to `text`, exactly. */
+function escapeExpressions(text: string): string {
+  return text.split(EXPRESSION).join(ESCAPED_EXPRESSION);
+}
+
+function unescapeExpressions(text: string): string {
+  return text.split(ESCAPED_EXPRESSION).join(EXPRESSION);
+}
 
 function hasLocalPluginSelections(action: ChatAutomationAction): boolean {
   const selections = action.pluginSelections;
@@ -163,67 +185,43 @@ export function convertibleChatAutomation(
       action.workspaceId === STANDALONE_CHAT_PROJECT_ID
     )
       return refuse('native_send');
-    if (
-      (action.attachmentPaths?.length ?? 0) > 0 ||
-      (action.attachmentPromptContexts?.length ?? 0) > 0 ||
-      (action.fileReferences?.length ?? 0) > 0 ||
-      action.inputMode === 'voice'
-    )
-      return refuse('composer_payload');
   }
   if (action.type === 'worktree_prompt' && action.purpose === 'scheduled_task')
     return refuse('native_send');
-  if (hasLocalPluginSelections(action))
-    return refuse('local_plugin_selections');
-  if (action.modelConfig?.speed === 'ultrafast')
-    return refuse('unsupported_speed');
-  if (isAgentModel(action.model)) return refuse('agent_model');
-  if (activity.targetRequirement !== undefined)
-    return refuse('target_requirement');
-  if (
-    action.type === 'worktree_prompt' &&
-    action.interfaceMode !== undefined &&
-    action.model === undefined
-  )
-    return refuse('interface_mode_unresolved');
-  if (
-    (action.type === 'app_advisor_prompt' &&
-      activity.name.includes(EXPRESSION)) ||
-    (action.type !== 'worktree_session_prompt' &&
-      action.sidebarGroupName?.includes(EXPRESSION) === true)
-  )
-    return refuse('expression_text');
-  if (
-    action.type !== 'worktree_session_prompt' &&
-    action.sidebarGroupName?.trim().toLowerCase() === 'none'
-  )
-    return refuse('reserved_group_name');
-  if (activity.installedFrom?.capabilityPackage !== undefined)
-    return refuse('installed_package');
+  if (action.model !== undefined && parseAgentRouteModelId(action.model))
+    return refuse('agent_route');
+  // D11: a send into an existing chat changes no authority (local plugin
+  // selections included), and an agent's run takes no plugins through a
+  // prompt reference or a file reference nothing contains. A chat an agent's automation creates keeps the plugins,
+  // approval mode and Orchestrator model its native action set (CAN-5479):
+  // main records them as the owned pipeline's native grant, and honors them
+  // only for that automation's run of that exact revision.
   if (activity.agentAuthor !== undefined) {
-    // D11: an agent-originated run chooses no plugins (nor through a prompt
-    // reference) and no approval mode for a chat it creates; an Orchestrator
-    // chat also takes no model, and a send into an existing chat changes no
-    // authority.
     if (
-      (action.plugins?.length ?? 0) > 0 ||
-      action.approvalMode !== undefined ||
       action.promptReferences?.some((reference) => reference.kind === 'plugin')
     )
       return refuse('agent_settings');
-    if (action.type === 'app_advisor_prompt' && action.model !== undefined)
-      return refuse('agent_settings');
-    if (action.type === 'worktree_session_prompt' && setsAuthority(action))
+    if (
+      action.type === 'worktree_session_prompt' &&
+      (setsAuthority(action) ||
+        hasLocalPluginSelections(action) ||
+        (action.fileReferences?.length ?? 0) > 0)
+    )
       return refuse('agent_settings');
   }
-  if (action.promptReferences?.some((reference) => reference.kind === 'plugin'))
-    return refuse('plugin_reference');
   return { convertible: true };
 }
 
-function isClaudeModel(model: string | undefined): boolean {
-  const known = model === undefined ? undefined : resolveKnownModel(model);
-  return known !== undefined && getProviderForModel(known) === 'claude';
+/**
+ * Whether the native send could keep a Claude interface mode: for a Claude
+ * model, and for no model or an Agent that inherits one, where the default
+ * model decides at run time (desktop main resolves it then).
+ */
+function mayKeepInterfaceMode(model: string | undefined): boolean {
+  if (model === undefined) return true;
+  const known = resolveKnownModel(model);
+  const provider = known === undefined ? undefined : getProviderForModel(known);
+  return provider === undefined ? isAgentModel(model) : provider === 'claude';
 }
 
 /** The send step's settings inputs for an action. */
@@ -232,17 +230,30 @@ function settingsInputs(action: ChatAutomationAction): Record<string, string> {
   const thinking =
     config?.thinkingLevel ??
     ('thinking' in action ? action.thinking : undefined);
-  const fastMode =
-    config?.speed !== undefined ? config.speed === 'fast' : config?.fastMode;
+  // `fast_mode` carries Regular and Fast, as it always has; only Ultra fast
+  // needs `speed`.
+  const ultrafast = config?.speed === 'ultrafast';
+  const fastMode = ultrafast
+    ? undefined
+    : config?.speed !== undefined
+      ? config.speed === 'fast'
+      : config?.fastMode;
   // The native send drops the mode for a chat that isn't Claude's.
   const interfaceMode: ChatInterfaceMode | undefined =
-    action.type === 'worktree_prompt' && isClaudeModel(action.model)
+    action.type === 'worktree_prompt' && mayKeepInterfaceMode(action.model)
       ? action.interfaceMode
       : undefined;
   return {
-    ...(action.model !== undefined ? { model: action.model } : {}),
+    ...(action.model !== undefined
+      ? {
+          model: isAgentModel(action.model)
+            ? CHAT_AUTOMATION_MODEL_ALIAS
+            : action.model,
+        }
+      : {}),
     ...(thinking !== undefined ? { thinking_effort: thinking } : {}),
     ...(fastMode !== undefined ? { fast_mode: String(fastMode) } : {}),
+    ...(ultrafast ? { speed: 'ultrafast' } : {}),
     ...(action.planMode !== undefined
       ? { plan_mode: String(action.planMode) }
       : {}),
@@ -254,6 +265,41 @@ function settingsInputs(action: ChatAutomationAction): Record<string, string> {
       : {}),
     ...(interfaceMode !== undefined ? { interface_mode: interfaceMode } : {}),
   };
+}
+
+/**
+ * Send step inputs whose values are local, so they are automation inputs, as
+ * target IDs are: local plugin selections, and a session prompt's composer
+ * payload (absolute attachment paths, their prompt contexts, legacy file
+ * references and voice input).
+ */
+const VALUE_INPUTS = [
+  'plugin_selections',
+  'attachment_paths',
+  'attachment_prompt_contexts',
+  'file_references',
+  'input_mode',
+] as const;
+
+/** The automation inputs the send step reads with `VALUE_INPUTS`. */
+function valueInputs(action: ChatAutomationAction): Record<string, string> {
+  const values: Record<string, string> = {};
+  if (action.pluginSelections && hasLocalPluginSelections(action))
+    values.plugin_selections = JSON.stringify(
+      normalizePluginSelections(action.pluginSelections),
+    );
+  if (action.type !== 'worktree_session_prompt') return values;
+  if (action.attachmentPaths !== undefined)
+    values.attachment_paths = JSON.stringify(action.attachmentPaths);
+  if (action.attachmentPromptContexts !== undefined)
+    values.attachment_prompt_contexts = JSON.stringify(
+      action.attachmentPromptContexts,
+    );
+  // None sends as no input: an agent's run refuses any file references.
+  if ((action.fileReferences?.length ?? 0) > 0)
+    values.file_references = JSON.stringify(action.fileReferences);
+  if (action.inputMode !== undefined) values.input_mode = action.inputMode;
+  return values;
 }
 
 /** The prompt, kept literal so the runner never evaluates it. */
@@ -300,6 +346,9 @@ function sendStep(
   target: Record<string, string>,
   options: { replaceEmptyChat?: boolean; newChat?: boolean } = {},
 ): Step {
+  const values: Record<string, string> = {};
+  for (const name of Object.keys(valueInputs(action)))
+    values[name] = input(name);
   return {
     id: STEP.send,
     uses: 'builtin/send-agent-message',
@@ -307,17 +356,26 @@ function sendStep(
       ...target,
       ...textInputs(action),
       ...settingsInputs(action),
+      ...values,
       ...(options.replaceEmptyChat ? { replace_empty_chat: 'true' } : {}),
       ...(options.newChat ? { new_chat: 'true' } : {}),
     },
   };
 }
 
+/** The automation's name, cut to the step's limit, then escaped. */
 function entryTitle(name: string): string {
   const title = name.trim();
-  return title.length > ENTRY_TITLE_MAX
-    ? `${title.slice(0, ENTRY_TITLE_MAX - 1)}…`
-    : title;
+  return escapeExpressions(
+    title.length > ENTRY_TITLE_MAX
+      ? `${title.slice(0, ENTRY_TITLE_MAX - 1)}…`
+      : title,
+  );
+}
+
+/** A create step's `group`, escaped; a stacked worktree takes none. */
+function groupInput(name: string | undefined): Record<string, string> {
+  return name !== undefined ? { group: escapeExpressions(name) } : {};
 }
 
 function steps(
@@ -379,9 +437,8 @@ function steps(
               worktree_setup: 'run',
               // A stacked worktree follows its root's group, so the native
               // action makes no group call for it; one would unstack it.
-              ...(action.sidebarGroupName !== undefined &&
-              action.baseWorktreeId === undefined
-                ? { group: action.sidebarGroupName }
+              ...(action.baseWorktreeId === undefined
+                ? groupInput(action.sidebarGroupName)
                 : {}),
             },
           },
@@ -422,9 +479,7 @@ function steps(
             uses: 'builtin/create-project-entry',
             with: {
               ...project,
-              ...(action.sidebarGroupName !== undefined
-                ? { group: action.sidebarGroupName }
-                : {}),
+              ...groupInput(action.sidebarGroupName),
             },
           },
           sendStep(
@@ -459,9 +514,7 @@ function steps(
             with: {
               ...bot,
               title: entryTitle(activity.name),
-              ...(action.sidebarGroupName !== undefined
-                ? { group: action.sidebarGroupName }
-                : {}),
+              ...groupInput(action.sidebarGroupName),
             },
           },
           sendStep(
@@ -503,11 +556,13 @@ function steps(
 
 /**
  * The owned pipeline for a convertible activity, and the automation's inputs
- * for it. Throws for an activity `convertibleChatAutomation` refuses.
+ * and model preferences for it. Throws for an activity
+ * `convertibleChatAutomation` refuses.
  */
 export function chatAutomationToPipeline(activity: ConvertibleActivity): {
   pipeline: Pipeline;
   inputs: Record<string, string>;
+  modelAliasPreferences?: ChatAutomationModelAliasPreferences;
 } {
   const verdict = convertibleChatAutomation(activity);
   if (!verdict.convertible)
@@ -516,14 +571,30 @@ export function chatAutomationToPipeline(activity: ConvertibleActivity): {
   if (!isChatAutomationAction(action))
     throw new Error("This automation can't convert (not_a_chat_action).");
   const built = steps(activity, action);
+  const inputs = { ...built.inputs, ...valueInputs(action) };
+  const agent = isAgentModel(action.model) ? action.model : undefined;
   return {
     pipeline: {
       name: activity.name,
       scope: 'global',
-      on: dispatchInputs(Object.keys(built.inputs)),
+      on: dispatchInputs(Object.keys(inputs)),
+      ...(agent !== undefined
+        ? {
+            model_aliases: [
+              { id: CHAT_AUTOMATION_MODEL_ALIAS, name: 'Chat agent' },
+            ],
+          }
+        : {}),
       jobs: { [CHAT_AUTOMATION_JOB]: { steps: built.steps } },
     },
-    inputs: built.inputs,
+    inputs,
+    ...(agent !== undefined
+      ? {
+          modelAliasPreferences: {
+            [CHAT_AUTOMATION_MODEL_ALIAS]: { mode: 'agent', agent_id: agent },
+          },
+        }
+      : {}),
   };
 }
 
@@ -549,8 +620,29 @@ function stringWith(step: Step | undefined): Record<string, string> | null {
   return values;
 }
 
+/** The Agent an automation's model preferences map the chat alias to. */
+function aliasAgent(
+  pipeline: Pipeline,
+  preferences: Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  if (
+    !pipeline.model_aliases?.some(
+      (alias) => alias.id === CHAT_AUTOMATION_MODEL_ALIAS,
+    )
+  )
+    return undefined;
+  const preference: unknown = preferences?.[CHAT_AUTOMATION_MODEL_ALIAS];
+  if (typeof preference !== 'object' || preference === null) return undefined;
+  const mode: unknown = Reflect.get(preference, 'mode');
+  const agentId: unknown = Reflect.get(preference, 'agent_id');
+  return mode === 'agent' && typeof agentId === 'string' ? agentId : undefined;
+}
+
 /** The action fields the send step carries, through the step's own parser. */
-function sendFields(send: Record<string, string>): {
+function sendFields(
+  send: Record<string, string>,
+  inputs: Readonly<Record<string, string>>,
+): {
   prompt: string;
   promptReferences?: ConfiguredPromptReference[];
   model?: string;
@@ -558,11 +650,23 @@ function sendFields(send: Record<string, string>): {
   planMode?: boolean;
   approvalMode?: ApprovalMode;
   plugins?: ShareablePluginRef[];
+  pluginSelections?: ChatTabPluginSelections;
   interfaceMode?: ChatInterfaceMode;
+  attachmentPaths?: string[];
+  attachmentPromptContexts?: ChatAttachmentPromptContext[];
+  fileReferences?: FileReference[];
+  inputMode?: 'typed' | 'voice';
 } | null {
   const values: Record<string, string> = { ...send };
   for (const [key, placeholder] of Object.entries(TARGET_PLACEHOLDERS))
     if (key in values) values[key] = placeholder;
+  // A value input reads its automation input, exactly as generated.
+  for (const name of VALUE_INPUTS) {
+    if (!(name in values)) continue;
+    const value = inputs[name];
+    if (values[name] !== input(name) || value === undefined) return null;
+    values[name] = value;
+  }
   const parsed = parseSendAgentMessageInputs(values);
   if (!parsed.ok || parsed.value.text.kind !== 'inline') return null;
   const { settings } = parsed.value;
@@ -576,7 +680,11 @@ function sendFields(send: Record<string, string>): {
           fastMode: settings.fastMode,
         }
       : {}),
+    ...(settings.speed !== undefined
+      ? { speed: settings.speed, fastMode: settings.speed === 'fast' }
+      : {}),
   };
+  const composer = parsed.value;
   return {
     prompt: parsed.value.text.text,
     ...(parsed.value.textReferences !== undefined
@@ -589,8 +697,23 @@ function sendFields(send: Record<string, string>): {
       ? { approvalMode: settings.approvalMode }
       : {}),
     ...(settings.plugins !== undefined ? { plugins: settings.plugins } : {}),
+    ...(settings.pluginSelections !== undefined
+      ? { pluginSelections: settings.pluginSelections }
+      : {}),
     ...(settings.interfaceMode !== undefined
       ? { interfaceMode: settings.interfaceMode }
+      : {}),
+    ...(composer.attachmentPaths !== undefined
+      ? { attachmentPaths: composer.attachmentPaths }
+      : {}),
+    ...(composer.attachmentPromptContexts !== undefined
+      ? { attachmentPromptContexts: composer.attachmentPromptContexts }
+      : {}),
+    ...(composer.fileReferences !== undefined
+      ? { fileReferences: composer.fileReferences }
+      : {}),
+    ...(composer.inputMode !== undefined
+      ? { inputMode: composer.inputMode }
       : {}),
   };
 }
@@ -600,6 +723,7 @@ function candidate(
   pipeline: Pipeline,
   inputs: Readonly<Record<string, string>>,
   isCoworkProject: (projectId: string) => boolean,
+  modelAliasPreferences: Readonly<Record<string, unknown>> | undefined,
 ): { name: string; action: AutomationAction } | null {
   const job = pipeline.jobs[CHAT_AUTOMATION_JOB];
   if (!job) return null;
@@ -607,11 +731,39 @@ function candidate(
   const send = stringWith(job.steps.find((step) => step.id === STEP.send));
   const firstWith = stringWith(first);
   if (!first || !send || !firstWith) return null;
-  const fields = sendFields(send);
+  const fields = sendFields(send, inputs);
   if (!fields) return null;
-  const { interfaceMode, ...common } = fields;
+  if (fields.model === CHAT_AUTOMATION_MODEL_ALIAS) {
+    const agent = aliasAgent(pipeline, modelAliasPreferences);
+    if (agent === undefined) return null;
+    fields.model = agent;
+  }
+  const {
+    interfaceMode,
+    attachmentPaths,
+    attachmentPromptContexts,
+    fileReferences,
+    inputMode,
+    ...common
+  } = fields;
+  const composer = {
+    ...(attachmentPaths !== undefined ? { attachmentPaths } : {}),
+    ...(attachmentPromptContexts !== undefined
+      ? { attachmentPromptContexts }
+      : {}),
+    ...(fileReferences !== undefined ? { fileReferences } : {}),
+    ...(inputMode !== undefined ? { inputMode } : {}),
+  };
+  // Only a session prompt carries a composer payload.
+  if (
+    first.uses !== 'builtin/send-agent-message' &&
+    Object.keys(composer).length > 0
+  )
+    return null;
   const group =
-    firstWith.group !== undefined ? { sidebarGroupName: firstWith.group } : {};
+    firstWith.group !== undefined
+      ? { sidebarGroupName: unescapeExpressions(firstWith.group) }
+      : {};
   const name = pipeline.name;
   switch (first.uses) {
     case 'builtin/create-worktree':
@@ -649,7 +801,10 @@ function candidate(
     case 'builtin/create-bot-entry':
       // The title is the automation's name, cut to the step's limit.
       return {
-        name: firstWith.title ?? name,
+        name:
+          firstWith.title !== undefined
+            ? unescapeExpressions(firstWith.title)
+            : name,
         action: { type: 'app_advisor_prompt', ...group, ...common },
       };
     case 'builtin/send-agent-message': {
@@ -667,6 +822,7 @@ function candidate(
             worktreeId: taskId,
             chatId: inputs.chat_id,
             ...common,
+            ...composer,
           },
         };
       if (inputs.bot_id !== undefined)
@@ -745,18 +901,31 @@ export function ownedPipelineToChatAction(
   pipeline: Pipeline,
   inputs: Readonly<Record<string, string>>,
   isCoworkProject: (projectId: string) => boolean,
+  /** The automation's `modelAliasPreferences`, which name its Agent. */
+  modelAliasPreferences?: Readonly<Record<string, unknown>>,
 ): ChatAutomationAction | null {
-  const found = candidate(pipeline, inputs, isCoworkProject);
+  const found = candidate(
+    pipeline,
+    inputs,
+    isCoworkProject,
+    modelAliasPreferences,
+  );
   if (!found || !isChatAutomationAction(found.action)) return null;
   const activity = { name: found.name, action: found.action };
   if (!convertibleChatAutomation(activity).convertible) return null;
   const regenerated = chatAutomationToPipeline(activity);
   // The pipeline's name is the automation's own; everything else must match,
-  // so any hand edit (a step, env, defaults) keeps the pipeline as it is.
+  // so any hand edit (a step, env, defaults, a model preference) keeps the
+  // pipeline as it is.
   return sameJson(regenerated.pipeline, {
     ...pipeline,
     name: regenerated.pipeline.name,
-  }) && sameJson(regenerated.inputs, inputs)
+  }) &&
+    sameJson(regenerated.inputs, inputs) &&
+    sameJson(
+      regenerated.modelAliasPreferences ?? {},
+      modelAliasPreferences ?? {},
+    )
     ? found.action
     : null;
 }

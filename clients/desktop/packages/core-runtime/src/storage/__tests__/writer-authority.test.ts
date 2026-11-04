@@ -182,6 +182,9 @@ describe('evaluateStorageWrite', () => {
 
 describe('generated ownership table', () => {
   const ADMITTED = {
+    pipeline_plugin_preferences: [
+      'shared/node/pipelines/plugin-collection-store',
+    ],
     preferences: ['main/lib/preferences-store'],
     startup_migrations: ['main/lib/migrations'],
     workspace_approvals: ['main/lib/approvals-persistence'],

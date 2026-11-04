@@ -1,7 +1,12 @@
-import { memoryEditRevision, withMemoryWriteLock } from './edit-coordination';
+import {
+  memoryEditRevision,
+  recordMemoryEdit,
+  withMemoryWriteLock,
+} from './edit-coordination';
 import { createHash } from 'node:crypto';
 import { access, readFile, readdir, rename, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { isPortableFileName } from '@canopy/protocol/memory-sync';
 import {
   type AgentModelConfig,
   type ChatModel,
@@ -22,13 +27,20 @@ import {
   keepChatHistoryProfile,
 } from './chat-history-profile';
 import {
+  assertMemoryScopeLockHeld,
   ensureOwnerOnlyDir,
+  isMemoryMarkdownFileName,
+} from './memory-files';
+import {
   clipMemoryIndex,
   normalizeTopicName,
   redactMemoryContent,
-  isMemoryMarkdownFileName,
 } from './store';
 import { countMemoryLines } from './boundary-truncation';
+import {
+  LOCAL_MEMORY_READ_ONLY_MESSAGE,
+  LocalMemoryScopeReadOnlyError,
+} from './scope-manifest';
 import {
   findTopicReferences,
   normalizeOutputTopicFilename,
@@ -1179,7 +1191,7 @@ function normalizeAndValidateOutput(
       );
       continue;
     }
-    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) {
+    if (!isPortableFileName(filename)) {
       diagnostics.push(`${field}.filename: reserved device name`);
       continue;
     }
@@ -1399,7 +1411,10 @@ async function moveFileToConsolidated(
     }
     try {
       if (guard) await guard.move(source, destination);
-      else await rename(source, destination);
+      else {
+        await assertMemoryScopeLockHeld();
+        await rename(source, destination);
+      }
       return destination;
     } catch (error) {
       if (isNodeError(error, 'ENOENT')) {
@@ -1451,6 +1466,7 @@ async function rollbackAppliedConsolidation(
   for (const move of [...archived].reverse()) {
     if (isTopicMove(move)) continue;
     try {
+      await assertMemoryScopeLockHeld();
       await rename(move.destinationPath, move.sourcePath);
     } catch (error) {
       emitRollbackWarning(error);
@@ -1825,10 +1841,28 @@ async function fitIndexToLimits(
   return { output: { ...candidate, memoryMd }, clipped: true };
 }
 
+/**
+ * The scope's revision, read once the scope is ready for writes; null when
+ * a newer build made it read-only.
+ */
+async function writableEditRevision(scopeDir: string): Promise<string | null> {
+  try {
+    return await withMemoryWriteLock(scopeDir, () =>
+      memoryEditRevision(scopeDir),
+    );
+  } catch (error) {
+    if (error instanceof LocalMemoryScopeReadOnlyError) return null;
+    throw error;
+  }
+}
+
 export async function runLocalMemoryConsolidation(
   options: RunConsolidationOptions,
 ): Promise<RunConsolidationResult> {
-  const editRevision = memoryEditRevision(options.scopeDir);
+  const editRevision = await writableEditRevision(options.scopeDir);
+  if (editRevision === null) {
+    return { status: 'failed', reason: LOCAL_MEMORY_READ_ONLY_MESSAGE };
+  }
   // The index and topics this run replaces, read before its input so the
   // input can only be newer: the commit runs only while the scope is still
   // exactly this state (compare-before-destroy), the consolidation snapshot
@@ -1986,8 +2020,11 @@ export async function runLocalMemoryConsolidation(
       memoryMd: stripPrunedIndexLines(output.memoryMd, prunedTopics),
     };
     const applied = await withMemoryWriteLock(options.scopeDir, async () => {
-      if (memoryEditRevision(options.scopeDir) !== editRevision) return false;
+      if ((await memoryEditRevision(options.scopeDir)) !== editRevision) {
+        return false;
+      }
       if (!partial || (prunedOutput.topicFiles?.length ?? 0) > 0) {
+        await recordMemoryEdit(options.scopeDir);
         if (options.snapshotBeforeWrite !== false) {
           await saveLocalMemorySnapshot(
             options.scopeDir,

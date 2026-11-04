@@ -1325,6 +1325,16 @@ describe('InstallSharedAutomationModal', () => {
     });
     const row = byTestId(`install-automation-packaged-pipeline-${authorId}`);
     expect(row?.dataset.status).toBe('update');
+    // The new YAML sits behind the row's closed review disclosure.
+    const review = byTestId(
+      `install-automation-packaged-pipeline-${authorId}-review`,
+    );
+    expect(review?.getAttribute('aria-expanded')).toBe('false');
+    expect(
+      byTestId(`install-automation-packaged-pipeline-${authorId}-yaml`),
+    ).toBeNull();
+    act(() => review?.click());
+    expect(review?.getAttribute('aria-expanded')).toBe('true');
     expect(
       byTestId(`install-automation-packaged-pipeline-${authorId}-yaml`)
         ?.textContent,

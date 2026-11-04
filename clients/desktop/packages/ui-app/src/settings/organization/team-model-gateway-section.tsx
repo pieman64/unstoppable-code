@@ -2,7 +2,6 @@
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 
@@ -22,6 +21,7 @@ import {
   SettingsRowsRow,
   TextInput,
   ToggleSwitch,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
@@ -312,7 +312,9 @@ function ModelGatewayCard({
       <div className="flex min-w-0 flex-col gap-1">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <h2 className={SETTINGS_CARD_TITLE_CLASS}>Model gateway</h2>
+            <Heading level={2} variant="section">
+              Model gateway
+            </Heading>
             <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
               Specify a custom AI gateway available to your members
             </p>
@@ -525,12 +527,12 @@ function ModelGatewayCard({
                   data-testid="model-gateway-models-panel"
                 >
                   <div className="flex items-center justify-between gap-3 px-4 py-3">
-                    <h3 className="text-s font-medium fg-primary">
+                    <Heading level={3} variant="title">
                       Models
                       {gateway.models.length > 0
                         ? ` (${gateway.models.length})`
                         : ''}
-                    </h3>
+                    </Heading>
                     {canAddModel && !addOpen ? (
                       <Button
                         type="button"

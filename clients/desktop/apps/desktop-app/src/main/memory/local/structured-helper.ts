@@ -17,7 +17,7 @@ import {
 } from '../../integration/structured-helper-dispatch';
 import type { LocalMemoryHelperModel } from './helper-model';
 import { isLocalMemoryModelBlockedByPolicy } from './model-policy';
-import { ensureOwnerOnlyDir } from './store';
+import { ensureOwnerOnlyDir } from './memory-files';
 
 /**
  * Consolidation reads up to a few hundred KB of memory and rewrites the whole

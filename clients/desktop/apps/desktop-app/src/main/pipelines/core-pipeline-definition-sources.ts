@@ -7,6 +7,8 @@ import {
   type PipelineDefinitionSourceDocument,
   type PipelineDefinitionSourceEntry,
   type PipelineDefinitionCopy,
+  type PipelineDefinitionInstall,
+  type PipelineDefinitionRemote,
   type PipelineDefinitionSourcePort,
   type PipelineDefinitionWritePort,
 } from '@canopy/core-runtime/node/pipeline';
@@ -18,6 +20,7 @@ import {
   buildSharedPipelineId,
   isAddressableSharedPipelineRemoteId,
   parseSharedPipelineLocalId,
+  type SharedPipelineDetail,
   type SharedPipelineSummary,
 } from '@canopy/protocol/pipelines';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/protocol/ui-labels';
@@ -28,11 +31,15 @@ import {
   localPipelineNormalizeOptions,
 } from '@canopy/desktop-shared/node/pipelines/definition-sources';
 import { backgroundExecutionDeniedMessage } from '@canopy/desktop-shared/lib/automation-context-copy';
+import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 import { isPathInside } from '../lib/path-safety';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
-import { recordSharedItemLocalUninstall } from '../canopy-cloud/shared-item-subscriptions';
+import {
+  recordSharedItemInstall,
+  recordSharedItemLocalUninstall,
+} from '../canopy-cloud/shared-item-subscriptions';
 import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
@@ -57,9 +64,17 @@ import {
 } from './pipeline-local-metadata-store';
 import {
   copyPackageInstall,
+  dropPackageInstallInBackground,
   removePackageInstall,
 } from './pipeline-package-service';
-import { deletePipelinePluginCollectionPreferences } from './plugin-collection-store';
+import {
+  getUserPipelineOwner,
+  isLocalUserPipeline,
+  selectedOwnerContext,
+  validatePipelineOwnerTargetsOnSave,
+} from './pipeline-owner-policy';
+import * as localPipelines from './pipeline-service';
+import { deletePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import { discoverProjectPipelines } from './project-pipeline-discovery';
 import { recordPipelineEnabled } from './pipeline-enablement-commit';
 import {
@@ -348,14 +363,201 @@ function curatedPort(): PipelineDefinitionSourcePort {
             )
           : error;
       });
-      presentPipeline('read', 'curated', definitionId, { kind: 'data', data });
+      presentPipeline('read', 'curated', definitionId, {
+        kind: 'data',
+        data,
+        ...(data.pipelinePackage
+          ? { pipelinePackage: data.pipelinePackage }
+          : {}),
+      });
       return {
         ...infoEntry({ ...data.info, readonly: true }, 'curated'),
         format: 'yaml',
         text: rawPipeline,
       };
     },
+    remote: async (
+      _source,
+      definitionId,
+    ): Promise<PipelineDefinitionRemote> => {
+      const { readCuratedPipelineRemote } =
+        await import('./curated-pipeline-catalog');
+      try {
+        return remoteKeepingMessages(
+          await readCuratedPipelineRemote(definitionId),
+        );
+      } catch (error) {
+        throw remoteSourceError(error);
+      }
+    },
   };
+}
+
+/**
+ * A remote's failure with the message its install callers have always
+ * shown: a missing remote is `remoteNotFound`, a resource-context refusal a
+ * context mismatch, and anything else an unavailable source.
+ */
+function remoteSourceError(error: unknown): PipelineDefinitionSourceError {
+  if (error instanceof PipelineDefinitionSourceError) return error;
+  return new PipelineDefinitionSourceError(
+    isCloudNotFound(error)
+      ? 'core.pipeline.remoteNotFound'
+      : isPipelineContextDenial(error)
+        ? 'core.pipeline.contextMismatch'
+        : 'core.pipeline.sourceUnavailable',
+    errorMessage(error),
+    error,
+  );
+}
+
+function remoteKeepingMessages(
+  remote: PipelineDefinitionRemote,
+): PipelineDefinitionRemote {
+  return {
+    document: remote.document,
+    remoteVersion: remote.remoteVersion,
+    ...(remote.packageManifest
+      ? {
+          packageManifest: () =>
+            (remote.packageManifest?.() ?? Promise.resolve(undefined)).catch(
+              (error: unknown) => {
+                throw remoteSourceError(error);
+              },
+            ),
+        }
+      : {}),
+    install: (write, context) =>
+      remote.install(write, context).catch((error: unknown) => {
+        throw remoteSourceError(error);
+      }),
+  };
+}
+
+/**
+ * Installs a share as a user pipeline with its provenance, all or nothing:
+ * the install receipt, a replaced pipeline's dropped package install and the
+ * subscription ledger entry follow the definition, and a failure restores a
+ * replaced pipeline or removes a created one before undoing the receipt.
+ */
+export async function installSharedPipeline(
+  detail: SharedPipelineDetail,
+  write: PipelineDefinitionInstall,
+): Promise<PipelineInfo> {
+  const id = write.definitionId;
+  // An existing pipeline keeps its owner; a new one takes the selected one.
+  const ownerContext =
+    write.replaces && isLocalUserPipeline(id)
+      ? await getUserPipelineOwner(id)
+      : await selectedOwnerContext();
+  const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
+    write.pipeline,
+    ownerContext,
+  );
+  if (ownerRefusal !== null)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.contextMismatch',
+      ownerRefusal,
+    );
+  const previous = write.replaces ? localPipelines.getPipeline(id) : undefined;
+  const previousRaw = write.replaces
+    ? localPipelines.getPipelineText(id)
+    : undefined;
+  let savedDefinition = false;
+  let savedId = id;
+  let undoReceipt: (() => Promise<void>) | undefined;
+  try {
+    if (
+      write.replaces &&
+      (!previous?.success ||
+        !previous.data ||
+        !previousRaw?.success ||
+        !previousRaw.data)
+    )
+      throw new Error('Workflow unavailable (unknown-provenance)');
+    savedDefinition = write.replaces;
+    const result = localPipelines.savePipeline(
+      {
+        id,
+        name: write.name,
+        description: write.description,
+        icon: write.icon,
+        content: write.pipeline,
+        rawContent: write.text,
+      },
+      write.replaces ? undefined : { id },
+    );
+    if (!result.success || !result.data)
+      throw new Error(result.error ?? 'Failed to save the workflow');
+    savedDefinition = true;
+    savedId = result.data.id;
+    if (result.data.id !== id)
+      throw new Error('Pipeline create identity mismatch');
+    await recordSharedPipelineInstall(detail, id, (undo) => {
+      undoReceipt = undo;
+    });
+    if (write.replaces) await removePackageInstall(id);
+    recordSharedItemInstall({
+      kind: 'pipeline',
+      remoteId: detail.id,
+      sourceKind: 'shared',
+      contentHash: detail.contentHash,
+      localId: id,
+    });
+    notifyDesktopInventoryChanged(['pipelines']);
+    return result.data;
+  } catch (error) {
+    const failures = [errorMessage(error)];
+    try {
+      if (savedDefinition) {
+        if (previous?.data && previousRaw?.data) {
+          const restored = localPipelines.savePipeline({
+            ...previous.data.info,
+            content: previous.data.content,
+            rawContent: previousRaw.data,
+          });
+          if (!restored.success)
+            throw new Error(restored.error ?? 'Failed to restore workflow');
+        } else {
+          const removed = localPipelines.deletePipeline(savedId);
+          if (!removed.success)
+            throw new Error(removed.error ?? 'Failed to roll back workflow');
+        }
+      }
+      await undoReceipt?.();
+    } catch (rollbackError) {
+      failures.push(errorMessage(rollbackError));
+    }
+    throw new PipelineDefinitionSourceError(
+      isPipelineContextDenial(error)
+        ? 'core.pipeline.contextMismatch'
+        : 'core.pipeline.sourceUnavailable',
+      failures.join('; '),
+      error,
+    );
+  }
+}
+
+/**
+ * A share's display fields as the share landing page installs them: the
+ * reviewed document's own, falling back to the share's description.
+ */
+export function sharedInstallDisplay(detail: SharedPipelineDetail): {
+  name: string;
+  description: string;
+  icon: string;
+} {
+  try {
+    const content = parsePipelineText(detail.rawPipeline);
+    return {
+      name: content.name,
+      description: content.description ?? detail.description,
+      icon: content.icon ?? '',
+    };
+  } catch {
+    // Core refuses the document; nothing is installed.
+    return { name: detail.name, description: detail.description, icon: '' };
+  }
 }
 
 function isCloudNotFound(error: unknown): error is CanopyCloudClientError {
@@ -474,6 +676,48 @@ function sharedPort(): PipelineDefinitionSourcePort {
         text: detail.rawPipeline,
       };
     },
+    remote: async (
+      _source,
+      definitionId,
+    ): Promise<PipelineDefinitionRemote | null> => {
+      const parsed = parseSharedPipelineLocalId(definitionId);
+      if (
+        !parsed ||
+        parsed.serverId !== CANOPY_CLOUD_SERVER_ID ||
+        !isAddressableSharedPipelineRemoteId(parsed.remoteId)
+      )
+        return null;
+      let detail: SharedPipelineDetail;
+      try {
+        detail = await getSharedPipeline(parsed.remoteId);
+      } catch (error) {
+        throw remoteSourceError(error);
+      }
+      return {
+        document: {
+          source: 'shared',
+          definitionId,
+          ...sharedInstallDisplay(detail),
+          readonly: !detail.canUpdate,
+          revision: 0,
+          owner: null,
+          createdAt: isoTimestamp(detail.createdAt),
+          updatedAt: isoTimestamp(detail.updatedAt),
+          format: 'yaml',
+          text: detail.rawPipeline,
+        },
+        remoteVersion: detail.contentHash,
+        install: async (write): Promise<PipelineDefinitionSourceDocument> => {
+          const info = await installSharedPipeline(detail, write);
+          return {
+            ...infoEntry(info, 'user'),
+            revision: info.revision ?? 0,
+            format: 'yaml',
+            text: write.text,
+          };
+        },
+      };
+    },
   };
 }
 
@@ -494,7 +738,7 @@ async function assertWritableContext(definitionId: string): Promise<void> {
 
 /** Desktop effects of a saved user definition: an edit drops its stale package install record. */
 export function applyUserPipelineSaveEffects(editedId: string | null): void {
-  if (editedId !== null) void removePackageInstall(editedId);
+  if (editedId !== null) dropPackageInstallInBackground(editedId);
   notifyDesktopInventoryChanged(['pipelines']);
 }
 
@@ -503,18 +747,23 @@ export function applyUserPipelineSaveEffects(editedId: string | null): void {
  * preferences, local owner metadata, subscription ledger entry and package
  * install go with it.
  */
-export function applyUserPipelineDeleteEffects(definitionId: string): void {
-  deletePipelinePluginCollectionPreferences({
-    type: 'stored',
-    source: 'user',
-    value: definitionId,
-  });
+export async function applyUserPipelineDeleteEffects(
+  definitionId: string,
+): Promise<void> {
   deleteUserPipelineLocalMetadata(definitionId);
   // The subscription ledger names every share this copy came from, even
   // after a local edit dropped its package record.
   recordSharedItemLocalUninstall({ kind: 'pipeline', localId: definitionId });
-  void removePackageInstall(definitionId);
+  dropPackageInstallInBackground(definitionId);
   notifyDesktopInventoryChanged(['pipelines']);
+  await deletePipelinePluginCollectionPreferences(
+    {
+      type: 'stored',
+      source: 'user',
+      value: definitionId,
+    },
+    'electron_main',
+  );
 }
 
 async function assertPersonalProjectCopy(
@@ -661,7 +910,7 @@ export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
         expectedRevision,
         context,
       );
-      applyUserPipelineDeleteEffects(definitionId);
+      await applyUserPipelineDeleteEffects(definitionId);
       return revision;
     },
   };

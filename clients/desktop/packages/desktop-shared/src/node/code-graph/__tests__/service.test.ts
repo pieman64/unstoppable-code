@@ -1,12 +1,17 @@
 import {
   mkdirSync,
   mkdtempSync,
+  renameSync,
   rmSync,
   writeFileSync,
   existsSync,
 } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { getMetadataValue } from '@canopy/code-graph/store/database';
+import { runCodeGraphMigrations } from '@canopy/code-graph/store/migrations';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { tryAcquireCodeGraphWriterLease } from '@canopy/code-graph/store/writer-lease';
 import { getCanopyDataDir } from '../../../canopy-paths';
 import {
   getWorktreeCodeGraphDbPath,
@@ -67,6 +72,108 @@ describe('CodeGraphWorktreeService', () => {
       delete process.env.CANOPY_DATA_DIR;
     } else {
       process.env.CANOPY_DATA_DIR = originalCanopyDataDir;
+    }
+  });
+
+  it('builds only while it holds the graph writer lease, waiting for another writer', async () => {
+    const dbPath = getWorktreeCodeGraphDbPath(workspaceId, worktreeId);
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+    const other = tryAcquireCodeGraphWriterLease(dbPath);
+    expect(other).not.toBeNull();
+    const onWait = jest.fn();
+    let built = false;
+    const building = getCodeGraphWorktreeService()
+      .buildOrUpdate(descriptor, undefined, { onWait })
+      .then((result) => {
+        built = true;
+        return result;
+      });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(onWait).toHaveBeenCalledTimes(1);
+    expect(built).toBe(false);
+    other?.release();
+    await expect(building).resolves.toMatchObject({ filesParsed: 2 });
+    // Released once the build finished.
+    const after = tryAcquireCodeGraphWriterLease(dbPath);
+    expect(after).not.toBeNull();
+    after?.release();
+  });
+
+  it('builds into a graph another writer replaced while the build waited for the lease', async () => {
+    const service = getCodeGraphWorktreeService();
+    const dbPath = getWorktreeCodeGraphDbPath(workspaceId, worktreeId);
+    // A reader opens and caches the engine on an incomplete graph.
+    await expect(service.getStatus(descriptor)).resolves.toBeNull();
+    const stale = await service.getEngine(descriptor);
+    const other = tryAcquireCodeGraphWriterLease(dbPath);
+    const building = service.buildOrUpdate(descriptor);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The other writer (a desktop seed) installs a new database over it.
+    const replacement = `${dbPath}.replacement`;
+    const fresh = new DatabaseSync(replacement);
+    runCodeGraphMigrations(fresh);
+    fresh.close();
+    rmSync(dbPath, { force: true });
+    renameSync(replacement, dbPath);
+    other?.release();
+
+    await expect(building).resolves.toMatchObject({ filesParsed: 2 });
+    // The build reopened the installed file instead of writing through the
+    // stale connection, whose WAL frames belong to the replaced database.
+    expect((await service.getEngine(descriptor)) === stale).toBe(false);
+    const installed = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(getMetadataValue(installed, 'completed_build_at')).not.toBeNull();
+    } finally {
+      installed.close();
+    }
+  });
+
+  it('keeps a reader that waited for the writer lease behind a close that started meanwhile', async () => {
+    const service = getCodeGraphWorktreeService();
+    const dbPath = getWorktreeCodeGraphDbPath(workspaceId, worktreeId);
+    mkdirSync(path.dirname(dbPath), { recursive: true });
+    // The graph is missing, so opening it for reads must create it under the
+    // lease, which another writer holds.
+    const other = tryAcquireCodeGraphWriterLease(dbPath);
+    let opened = false;
+    const reading = service.getEngine(descriptor).then((engine) => {
+      opened = true;
+      return engine;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let finishReplacement: () => void = () => undefined;
+    const replacing = service.withWorktreeClosed(
+      workspaceId,
+      worktreeId,
+      () => new Promise<void>((resolve) => (finishReplacement = resolve)),
+    );
+    other?.release();
+    // The reader finishes preparing the graph while the replacement runs; it
+    // must not open until the close lets it.
+    const first = await Promise.race([
+      reading.then(() => 'opened'),
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 3_000)),
+    ]);
+    expect(first).toBe('waiting');
+    expect(opened).toBe(false);
+    finishReplacement();
+    await replacing;
+    await reading;
+    expect(opened).toBe(true);
+  }, 15_000);
+
+  it('reads a current graph without waiting for a writer that holds the lease', async () => {
+    const service = getCodeGraphWorktreeService();
+    await service.buildOrUpdate(descriptor);
+    await service.closeWorktree(workspaceId, worktreeId);
+    const writer = tryAcquireCodeGraphWriterLease(
+      getWorktreeCodeGraphDbPath(workspaceId, worktreeId),
+    );
+    try {
+      await expect(service.getStatus(descriptor)).resolves.not.toBeNull();
+    } finally {
+      writer?.release();
     }
   });
 

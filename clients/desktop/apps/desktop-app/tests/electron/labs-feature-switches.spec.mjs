@@ -66,12 +66,14 @@ async function openLabs(launched) {
   }
   return page;
 }
-test('new users only see Files reads, chat automation pipelines and page experiments in Labs', async () => {
+test('new users only see Files reads, daemon terminals and code graph, chat automation pipelines and page experiments in Labs', async () => {
   const launched = await launchCanopy();
   try {
     const page = await openLabs(launched);
     const ids = [
       'daemon-files-reads',
+      'daemon-terminals',
+      'daemon-code-graph',
       'chat-automation-pipelines',
       'overview-page',
       'kanban-page',

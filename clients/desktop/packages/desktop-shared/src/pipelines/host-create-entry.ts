@@ -92,13 +92,9 @@ function parseTitleAndGroup(
       message: `${step} "title" must be at most ${CREATE_ENTRY_TITLE_MAX} characters`,
     };
   }
+  // Creating never removes a group: `none` is a name to join here, and means
+  // "remove" only to move-to-group (CAN-5479).
   const group = presentInput(inputs, 'group');
-  if (group?.toLowerCase() === 'none') {
-    return {
-      ok: false,
-      message: `${step} "group" names a group to join; use move-to-group to remove one`,
-    };
-  }
   return {
     ok: true,
     value: {

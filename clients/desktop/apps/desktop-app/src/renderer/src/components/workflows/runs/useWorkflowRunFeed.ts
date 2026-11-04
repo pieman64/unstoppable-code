@@ -34,6 +34,7 @@ import {
   buildWorkflowRunRows,
   loadOlderAutomationRuns,
   mergeAutomationRuns,
+  type RunFeedInput,
 } from '@/lib/workflows/run-feed';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -71,6 +72,18 @@ interface RunFeedSources {
    * to it. Every automation's otherwise.
    */
   readonly historyActivityId?: string;
+  /**
+   * Scope rules that replace the context's, for a feed narrowed to one
+   * workspace (the workspace Workflows panel). The context still scopes
+   * Load more.
+   */
+  readonly predicates?: Pick<
+    RunFeedInput,
+    | 'activityInScope'
+    | 'orphanRunInScope'
+    | 'executionInScope'
+    | 'watcherInScope'
+  >;
 }
 
 /**
@@ -134,6 +147,7 @@ export function useWorkflowRunFeed({
   scope,
   automationsLoading,
   historyActivityId,
+  predicates,
 }: RunFeedSources): WorkflowRunFeed {
   useEffect(() => retainExecutionFeed(), []);
   const executions = useExecutionFeedStore((state) => state.executions);
@@ -218,6 +232,7 @@ export function useWorkflowRunFeed({
           : scope.context === undefined ||
             projectIdsInContext.has(execution.project_id),
       watcherInScope: scope.watcherInContext,
+      ...predicates,
       executionActions: executionRunActions,
       automationRunResult: (run) => {
         const destination = resolveAutomationRunDestination(run);
@@ -264,6 +279,7 @@ export function useWorkflowRunFeed({
     executions,
     executionsLoaded,
     executionsLoading,
+    predicates,
     projects,
     runs,
     scope,

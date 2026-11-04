@@ -236,11 +236,9 @@ describe('WorkspaceReadinessOverview', () => {
     expect(container.textContent).toContain('Fix in new worktree');
     expect(container.textContent).toContain('Couldn’t check API.');
     expect(container.textContent).toContain('Try again');
-    expect(
-      container.querySelector(
-        'table[aria-label="Project readiness recommendations"]',
-      ),
-    ).not.toBeNull();
+    expect(container.querySelector('table caption')?.textContent).toBe(
+      'Project readiness recommendations',
+    );
     expect(
       Array.from(container.querySelectorAll('thead th')).every(
         (header) => header.getAttribute('scope') === 'col',
@@ -248,7 +246,8 @@ describe('WorkspaceReadinessOverview', () => {
     ).toBe(true);
     const workspaceHeader = container.querySelector('tbody th');
     expect(workspaceHeader).not.toBeNull();
-    expect(workspaceHeader?.hasAttribute('scope')).toBe(false);
+    // One recommendation: the project heads just its own row.
+    expect(workspaceHeader?.getAttribute('scope')).toBe('row');
     expect(workspaceHeader?.textContent).toBe('Application');
     expect(workspaceHeader?.querySelector('button')).toBeNull();
     expect(
@@ -270,16 +269,10 @@ describe('WorkspaceReadinessOverview', () => {
     expect(
       container.querySelector('[aria-label="1 recommendations"]'),
     ).not.toBeNull();
-    expect(
-      container
-        .querySelector('[data-testid="workspace-readiness-table-scroll"]')
-        ?.classList.contains('max-h-96'),
-    ).toBe(true);
-    expect(
-      container
-        .querySelector('[data-testid="workspace-readiness-table-scroll"]')
-        ?.classList.contains('overflow-y-auto'),
-    ).toBe(true);
+    // A long list scrolls inside the card instead of growing the page.
+    const scroller = container.querySelector('table')?.parentElement;
+    expect(scroller?.style.maxHeight).toBe('24rem');
+    expect(scroller?.classList.contains('overflow-y-auto')).toBe(true);
   });
 
   it('masks only the project name in a failed readiness message', async () => {

@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type {
   ChatTabPluginSelections,
@@ -365,9 +365,9 @@ export function RecommendedPluginsSettingsPanel({
   }
 
   const headerCopy = (
-    <h3 className="text-s font-medium fg-primary">
+    <Heading level={3} variant="title">
       Recommended from canopy.json
-    </h3>
+    </Heading>
   );
 
   if (!worktreeId) {

@@ -652,6 +652,39 @@ describe('file-index:get over worker.filesystem.search', () => {
   );
 });
 
+describe('file-index:get mentions entry cap', () => {
+  it('stops the mentions index at 100,000 entries and marks it truncated', async () => {
+    const rootPath = resolve(tmpdir(), 'capped-mentions-index');
+    const tree = flatTree(rootPath, 100_001);
+    const fileIndexing = createDefaultFileIndexingPreferences();
+    const runtime = createDesktopRuntime({
+      fileSearchServices: {
+        getFileBrowserRoots: () =>
+          Promise.resolve(rootsOf(root('repo', rootPath))),
+        readFileIndexingPreferences: () => Promise.resolve(fileIndexing),
+        listIgnoredPathEntries: () => Promise.resolve([]),
+        readBoundaryForRoot: () => tree.readBoundary,
+      },
+    });
+    try {
+      const index = await runtime.queryFileIndexForLegacyIpc(
+        { projectId: 'project-1', worktreeId: 'wt-1', purpose: 'mentions' },
+        { caller: localCaller({ id: 1 }) },
+      );
+      const direct = await buildFileIndexResult(rootPath, {
+        gitAware: false,
+        globMatcher: buildFileGlobMatcher(fileIndexing),
+        readBoundary: tree.readBoundary,
+      });
+      expect(direct.files).toHaveLength(100_001);
+      expect(index.repos[0]?.files).toEqual(direct.files.slice(0, 100_000));
+      expect(index.repos[0]?.truncated).toBe(true);
+    } finally {
+      await runtime.shutdown();
+    }
+  }, 120_000);
+});
+
 describe('desktop adapter and daemon handler parity', () => {
   let h: RouteHarness | undefined;
 

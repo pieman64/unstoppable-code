@@ -22,7 +22,8 @@ import {
   listStoredPipelines,
   saveStoredPipeline,
 } from '@canopy/desktop-shared/pipelines/store';
-import { rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, rmSync } from 'node:fs';
 import { app } from 'electron';
 import * as storeModule from '@canopy/desktop-shared/pipelines/store';
 import * as pipelineInstallContext from '../../pipelines/pipeline-install-context';
@@ -52,10 +53,13 @@ import {
 import {
   createPipelineGoldenWorld,
   GOLDEN_CURATED_KEY,
+  GOLDEN_CURATED_YAML,
   GOLDEN_PROJECT_PIPELINE_FILE,
   GOLDEN_PROJECT_PIPELINE_ID,
   GOLDEN_SHARED_DISPATCH_REMOTE_ID,
+  GOLDEN_SHARED_DISPATCH_YAML,
   GOLDEN_SHARED_REMOTE_ID,
+  GOLDEN_SHARED_YAML,
   GOLDEN_WORKSPACE_ID,
   GOLDEN_WORKTREE_ID,
   type GoldenWorld,
@@ -94,7 +98,7 @@ afterAll(async () => {
   setDesktopCanopyRuntime(null);
   await runtime.shutdown();
   userData.mockRestore();
-  world.dispose();
+  await world.dispose();
 });
 
 /** Run one call and pin its normalized result with the cloud requests it made. */
@@ -612,6 +616,186 @@ describe('core definition copies, enablement and replay', () => {
       expect(listStoredPipelines().data?.length).toBe(count);
     } finally {
       await restarted.shutdown();
+    }
+  });
+});
+
+// CAN-5076: curated imports and share installs, captured on unchanged code
+// before they move behind core definition ownership.
+describe('installs from the curated catalog and shares', () => {
+  const curatedHash = createHash('sha256')
+    .update(GOLDEN_CURATED_YAML)
+    .digest('hex');
+
+  /** What an install left behind for one local id. */
+  async function installedState(id: string): Promise<unknown> {
+    const { flushSharedItemSubscriptions, readSharedItemSubscriptionLedger } =
+      await import('../../canopy-cloud/shared-item-subscriptions');
+    const { listPackageInstalls } =
+      await import('../../pipelines/pipeline-package-service');
+    await flushSharedItemSubscriptions();
+    const stored = getStoredPipeline(id).data;
+    return {
+      info: stored?.info,
+      text: readFileSync(getStoredPipelinePath(id).data ?? '', 'utf8'),
+      owner: readPipelineLocalMetadata({
+        type: 'stored',
+        source: 'user',
+        value: id,
+      }).owner,
+      context: await pipelineInstallContext
+        .readStoredPipelineContext(id)
+        .catch((error: unknown) => ({ thrown: String(error) })),
+      subscriptions: (await readSharedItemSubscriptionLedger()).installs.filter(
+        (install) => install.localIds.includes(id),
+      ),
+      packageInstalls: (await listPackageInstalls()).filter(
+        (install) => install.localPipelineId === id,
+      ),
+    };
+  }
+
+  async function capturedInstall(
+    install: () => Promise<unknown>,
+    idOf: (result: unknown) => string | undefined,
+  ): Promise<unknown> {
+    const before = new Set(
+      (listStoredPipelines().data ?? []).map((info) => info.id),
+    );
+    let installedId: string | undefined;
+    const result = await capture(async () => {
+      const value = await install();
+      installedId = idOf(value);
+      return value;
+    });
+    const added = (listStoredPipelines().data ?? [])
+      .map((info) => info.id)
+      .filter((id) => !before.has(id));
+    const state =
+      installedId === undefined
+        ? undefined
+        : world.normalize(await installedState(installedId));
+    for (const id of added) deleteStoredPipeline(id);
+    return { result, added: added.length, state };
+  }
+
+  const ipcId = (value: unknown): string | undefined => {
+    const result = value as IPCResult<PipelineInfo>;
+    return result.success ? result.data?.id : undefined;
+  };
+
+  it('imports a curated revision as a user definition and refuses a stale one', async () => {
+    expect({
+      ipc: await capturedInstall(
+        () =>
+          invokeIpc(PIPELINE_CHANNELS.CURATED_IMPORT, {
+            key: GOLDEN_CURATED_KEY,
+            expectedContentHash: curatedHash,
+          }),
+        ipcId,
+      ),
+      ipcStale: await capturedInstall(
+        () =>
+          invokeIpc(PIPELINE_CHANNELS.CURATED_IMPORT, {
+            key: GOLDEN_CURATED_KEY,
+            expectedContentHash: '0'.repeat(64),
+          }),
+        ipcId,
+      ),
+      ipcMissing: await capturedInstall(
+        () =>
+          invokeIpc(PIPELINE_CHANNELS.CURATED_IMPORT, {
+            key: 'missing-curated',
+            expectedContentHash: curatedHash,
+          }),
+        ipcId,
+      ),
+      ipcInvalid: await capturedInstall(
+        () =>
+          invokeIpc(PIPELINE_CHANNELS.CURATED_IMPORT, {
+            key: GOLDEN_CURATED_KEY,
+          }),
+        ipcId,
+      ),
+      portal: await capturedInstall(
+        () =>
+          runPortalCommand('portal.pipeline.install_curated', {
+            key: GOLDEN_CURATED_KEY,
+            expectedContentHash: curatedHash,
+          }),
+        (value) => {
+          const payload = (value as { payload?: { result?: unknown } }).payload;
+          const result = payload?.result as { pipelineId?: string } | undefined;
+          return result?.pipelineId;
+        },
+      ),
+      portalStale: await capturedInstall(
+        () =>
+          runPortalCommand('portal.pipeline.install_curated', {
+            key: GOLDEN_CURATED_KEY,
+            expectedContentHash: '0'.repeat(64),
+          }),
+        () => undefined,
+      ),
+    }).toMatchSnapshot();
+  });
+
+  it('installs a share through pipelines:save with its provenance and refuses a missing one', async () => {
+    const contexts = jest
+      .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
+      .mockReturnValue(true);
+    // The fields the share landing page sends: the reviewed snapshot's own.
+    const save = (
+      sourceRemoteId: string,
+      yaml: string,
+      id?: string,
+    ): Promise<unknown> => {
+      const content = parsePipelineText(yaml);
+      return invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        ...(id === undefined ? {} : { id }),
+        sourceRemoteId,
+        name: content.name,
+        description: content.description ?? '',
+        icon: content.icon ?? '',
+        content,
+      });
+    };
+    try {
+      const reinstallTarget = await world.saveUserPipeline(
+        GOLDEN_USER_PIPELINE_YAML,
+        'reinstall-target',
+      );
+      expect({
+        install: await capturedInstall(
+          () => save(GOLDEN_SHARED_REMOTE_ID, GOLDEN_SHARED_YAML),
+          ipcId,
+        ),
+        missing: await capturedInstall(
+          () => save('shared-missing', GOLDEN_SHARED_YAML),
+          ipcId,
+        ),
+        reinstall: await capturedInstall(
+          () =>
+            save(
+              GOLDEN_SHARED_DISPATCH_REMOTE_ID,
+              GOLDEN_SHARED_DISPATCH_YAML,
+              reinstallTarget,
+            ),
+          ipcId,
+        ),
+        reinstallUnknown: await capturedInstall(
+          () =>
+            save(
+              GOLDEN_SHARED_REMOTE_ID,
+              GOLDEN_SHARED_YAML,
+              'missing-pipeline',
+            ),
+          ipcId,
+        ),
+      }).toMatchSnapshot();
+      deleteStoredPipeline(reinstallTarget);
+    } finally {
+      contexts.mockRestore();
     }
   });
 });

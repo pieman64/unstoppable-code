@@ -28,7 +28,7 @@ async function confirmWorktreeArchive(window, row) {
 // after chat storage copied. The original checkout stayed intact. This spec
 // reproduces the admission timeout through the real sidebar archive action,
 // holds the worker's exit, then retries after the interruption is reported.
-test('waits for archive worker exit after admission timeout and retries without losing chat', async () => {
+test('waits for archive worker exit after admission timeout and keeps the worktree and chat when the retry is refused', async () => {
   test.setTimeout(120_000);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-archive-admission-'),
@@ -184,15 +184,28 @@ test('waits for archive worker exit after admission timeout and retries without 
       ).worktrees.some((worktree) => worktree.id === worktreeId),
     ).toBe(true);
 
+    // The interrupted archive's journal ends recovery-required, so the retry
+    // is refused and offers the discard instead. Cancel keeps the worktree.
     await confirmWorktreeArchive(window, row);
-    await expect(row).toHaveCount(0, { timeout: 45_000 });
-    await window
-      .getByTestId(`sidebar-project-${workspace.id}-archived-link`)
-      .click();
-    await window.getByTestId(`archived-overview-open-${worktreeId}`).click();
-    const viewer = window.getByTestId('archived-container-view');
-    await viewer.getByTestId('archived-chat-row-admission-chat').click();
-    await expect(viewer.getByText(retainedText)).toBeVisible();
+    const discard = window.getByTestId('worktree-discard-dialog');
+    await expect(discard).toBeVisible({ timeout: 30_000 });
+    await expect(
+      window.getByTestId('worktree-discard-dialog-targets'),
+    ).toContainText(workspace.worktreePath);
+    await window.getByTestId('worktree-discard-dialog-cancel').click();
+    await expect(discard).toHaveCount(0);
+    await expect(row).toBeVisible();
+    expect(existsSync(workspace.worktreePath)).toBe(true);
+    expect(existsSync(path.join(archiveDir, 'container.json'))).toBe(false);
+    expect(
+      JSON.parse(
+        readFileSync(path.join(workspaceMetaDir, 'worktrees.json'), 'utf8'),
+      ).worktrees.some((worktree) => worktree.id === worktreeId),
+    ).toBe(true);
+    await row.click();
+    await expect(
+      chatPanelLocator(window).getByText(retainedText),
+    ).toBeVisible();
   } finally {
     if (electronApp) {
       await electronApp

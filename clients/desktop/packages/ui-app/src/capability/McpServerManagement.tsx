@@ -12,10 +12,10 @@ import {
 import {
   Button,
   ConfirmDialog,
-  ControlSelect,
   McpConnectionStatusBadge,
+  SettingsSelect,
 } from '@canopy/ui-shared';
-import { ErrorBanner, Notice } from '@canopy/ui-shared/components';
+import { ErrorBanner, Notice, Heading } from '@canopy/ui-shared/components';
 import {
   mcpAuthStatusBadgeClass,
   mcpAuthStatusLabel,
@@ -296,21 +296,18 @@ function McpServerHealthSectionForTarget({
     <>
       <div className="flex flex-wrap items-center gap-2">
         {testable.length > 1 && (
-          <ControlSelect
+          <SettingsSelect
             aria-label="Configuration to test"
             data-testid="mcp-health-config-select"
-            value={effectiveConfigId}
+            width="fit"
+            value={effectiveConfigId ?? null}
             disabled={pending}
-            onChange={(event): void => {
-              setSelectedConfigId(event.target.value);
-            }}
-          >
-            {testable.map((config) => (
-              <option key={config.id} value={config.id}>
-                {config.name}
-              </option>
-            ))}
-          </ControlSelect>
+            onValueChange={setSelectedConfigId}
+            options={testable.map((config) => ({
+              value: config.id,
+              label: config.name,
+            }))}
+          />
         )}
         <Button
           variant="secondary"
@@ -367,12 +364,9 @@ function McpServerHealthSectionForTarget({
       className="space-y-3"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <h3
-          id={`${reasonId}-heading`}
-          className="text-s font-medium fg-primary"
-        >
+        <Heading level={3} variant="title" id={`${reasonId}-heading`}>
           Health
-        </h3>
+        </Heading>
         {badgeNode}
       </div>
       {lastCheckedNode}
@@ -615,12 +609,9 @@ function McpServerManagementActionsForTarget({
       className="space-y-3"
     >
       <div className="flex flex-wrap items-center gap-2">
-        <h3
-          id={`${idPrefix}-heading`}
-          className="text-s font-medium fg-primary"
-        >
+        <Heading level={3} variant="title" id={`${idPrefix}-heading`}>
           Placement
-        </h3>
+        </Heading>
         <span
           data-testid="mcp-management-placement"
           data-placement={placement}

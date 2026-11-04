@@ -36,6 +36,7 @@ import {
   type OperationAcceptRequest,
   type OperationLedgerBackupOptions,
 } from '../ledger';
+import { RESTORED_TABLES } from '../ledger/backup';
 
 const DAY = 24 * 60 * 60 * 1_000;
 
@@ -444,6 +445,7 @@ describe('storage', () => {
     ledger.close();
     const db = new DatabaseSync(dbPath);
     for (const table of [
+      'initiated_work_heads',
       'delegations',
       'delegation_leases',
       'execution_targets',
@@ -459,6 +461,36 @@ describe('storage', () => {
     expect(ledger.registerTarget(IN_PROCESS_WORKER_TARGET)).toMatchObject(
       IN_PROCESS_WORKER_TARGET,
     );
+  });
+
+  it('upgrades a version 2 ledger in place and records source heads', () => {
+    const kept = ledger.accept(request({ receipt: keyed })).operation;
+    ledger.close();
+    const db = new DatabaseSync(dbPath);
+    db.exec('DROP TABLE initiated_work_heads');
+    db.prepare(
+      `UPDATE operation_meta SET value = '2' WHERE key = 'schema_version'`,
+    ).run();
+    db.close();
+    ledger = open();
+    expect(ledger.get(kept.operationId)).toEqual(kept);
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBeNull();
+    ledger.recordSourceHead('github.pr', 'subject-1', 'head-1');
+    ledger.recordSourceHead('github.pr', 'subject-1', 'head-2');
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBe('head-2');
+    expect(ledger.sourceHead('github.pr', 'subject-2')).toBeNull();
+  });
+
+  it('commits writes made atomically together, or none of them', () => {
+    expect(() =>
+      ledger.atomically(() => {
+        ledger.recordSourceHead('github.pr', 'subject-1', 'head-1');
+        ledger.accept(request());
+        throw new Error('later write failed');
+      }),
+    ).toThrow('later write failed');
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBeNull();
+    expect(ledger.list({ limit: 10 }).items).toHaveLength(0);
   });
 
   it('keeps a registered target row and refuses a different one', () => {
@@ -612,12 +644,15 @@ describe('backup and restore', () => {
 
   it('restores in place on the writer connection, never swapping the database file', async () => {
     const kept = ledger.accept(request()).operation;
+    ledger.recordSourceHead('github.pr', 'subject-1', 'head-1');
     const record = await backup({
       dataRoot: dir,
       backupPath: 'backups/operation-ledger-in-place.sqlite',
       isOutsideCheckouts: outside,
     });
     ledger.accept(request());
+    ledger.recordSourceHead('github.pr', 'subject-1', 'head-2');
+    ledger.recordSourceHead('github.pr', 'subject-2', 'head-3');
     ledger.close();
     const before = statSync(dbPath).ino;
     restoreOperationLedgerBackup(record, {
@@ -633,9 +668,22 @@ describe('backup and restore', () => {
     ledger = open();
     expect(ledger.list({ limit: 10 }).items).toEqual([kept]);
     expect(ledger.eventsHead()).toBe(1);
+    // Source heads rewind with the rest of the ledger.
+    expect(ledger.sourceHead('github.pr', 'subject-1')).toBe('head-1');
+    expect(ledger.sourceHead('github.pr', 'subject-2')).toBeNull();
     // The event log rewound, so cursors issued before the restore must not
     // resume against it.
     expect(ledger.ledgerId).not.toBe(previousLedgerId);
+  });
+
+  it('restores every table the ledger holds', () => {
+    const tables = ledger.connection
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`,
+      )
+      .all()
+      .map((row) => String(row.name));
+    expect([...RESTORED_TABLES].sort()).toEqual(tables);
   });
 
   it('refuses to restore while the ledger is open or from a changed copy', async () => {

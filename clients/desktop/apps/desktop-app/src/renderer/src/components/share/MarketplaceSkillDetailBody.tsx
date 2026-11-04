@@ -29,6 +29,7 @@ import { Button } from '../shared/Button';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { SkillPublisherProvenance } from '@canopy/ui-shared/components/SkillPublisherProvenance';
 import { parseSkillSource } from '@/lib/skillFrontmatter';
@@ -388,9 +389,9 @@ function PackageReview({
       data-testid="deep-link-share-package-summary"
     >
       <div>
-        <h3 className="text-s font-medium fg-primary">
+        <Heading level={3} variant="title">
           {PIPELINE_PACKAGE_INCLUDED_HEADING}
-        </h3>
+        </Heading>
         <p className="text-xs fg-secondary">
           {formatPipelinePackageFileSummary(
             summary.totalFiles,
@@ -431,9 +432,9 @@ function PackageReview({
       </ul>
       {(summary.publisherNotes?.length ?? 0) > 0 && (
         <div data-testid="deep-link-share-package-notes">
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
-          </h3>
+          </Heading>
           <p className="text-xs fg-secondary">
             {PIPELINE_PACKAGE_PUBLISHER_NOTE}
           </p>

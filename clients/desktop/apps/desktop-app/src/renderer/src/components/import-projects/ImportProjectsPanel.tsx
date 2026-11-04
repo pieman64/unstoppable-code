@@ -21,6 +21,7 @@ import {
   Checkbox,
   ChoiceField,
   ErrorBanner,
+  ProgressBar,
   StatusPill,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -640,20 +641,12 @@ export function ImportProjectsPanel({
           Importing project {Math.min(completedItems + 1, totalItems)} of{' '}
           {totalItems}…
         </p>
-        <div
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-          aria-label="Import progress"
-          className="h-1.5 w-full overflow-hidden rounded-full bg-secondary"
-          data-testid="import-projects-progress"
-        >
-          <div
-            className="h-full w-full bg-accent transition-[translate]"
-            style={{ translate: `${percent - 100}%` }}
-          />
-        </div>
+        <ProgressBar
+          value={percent}
+          label="Import progress"
+          hideLabel
+          dataTestId="import-projects-progress"
+        />
         <p className="text-xs fg-secondary">{detail}…</p>
       </div>
     );

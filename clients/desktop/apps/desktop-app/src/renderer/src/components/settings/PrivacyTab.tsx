@@ -20,7 +20,7 @@ import {
 } from '@/stores/workspaceContextStore';
 import { CanopyCloudAccountSection } from './CanopyCloudAccountSection';
 import { CloudSyncStatus } from './CloudSyncStatus';
-import { TelemetryDisclosure } from './TelemetryDisclosure';
+import { TelemetrySharingIntro } from './TelemetrySharingIntro';
 import { TelemetrySharingControls } from './TelemetrySharingControls';
 import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
 import {
@@ -232,7 +232,7 @@ export function PrivacyTab(): JSX.Element {
           ) : undefined
         }
       >
-        <TelemetryDisclosure />
+        <TelemetrySharingIntro />
         <TelemetrySharingControls
           value={sharing}
           rawValue={sharing}

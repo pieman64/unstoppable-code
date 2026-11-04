@@ -39,16 +39,9 @@ beforeEach(() => {
   mockSelectWorkspace.mockClear();
 });
 
-it('selects the created workspace with no reason by default', (): void => {
+it('selects the created workspace', (): void => {
   navigateAfterRepositoryWorkspaceCreated('new-project');
   expect(mockSelectWorkspace).toHaveBeenCalledWith('new-project');
-});
-
-it('passes a landing reason through to the Home selection (CAN-4674)', (): void => {
-  navigateAfterRepositoryWorkspaceCreated('new-project', 'most-recent-import');
-  expect(mockSelectWorkspace).toHaveBeenCalledWith('new-project', {
-    reason: 'most-recent-import',
-  });
 });
 
 it('records the automation project and clears its pending reference before opening Repositories', (): void => {

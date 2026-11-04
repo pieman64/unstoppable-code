@@ -1,7 +1,12 @@
 'use client';
 
 import { useRef, type ChangeEvent, type JSX } from 'react';
-import { Button, CopyDetailsButton } from '@canopy/ui-shared/components';
+import {
+  Button,
+  CopyDetailsButton,
+  DISPLAY_AVATAR_SIZE_PX,
+  type DisplayAvatarSize,
+} from '@canopy/ui-shared/components';
 import { Camera, ImagePlus } from '@canopy/ui-shared/icons/AppIcons';
 import { ALLOWED_AVATAR_MIME_TYPES } from '@canopy/protocol/settings/account';
 import { OrganizationLogo } from './OrganizationLogo';
@@ -12,7 +17,8 @@ const LOGO_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
 interface OrganizationLogoEditorProps {
   name: string;
   logoUrl: string | null;
-  size?: number;
+  /** A shared avatar step; defaults to the 72px profile size. */
+  size?: DisplayAvatarSize;
   busy: boolean;
   error: SettingsFailure | null;
   onPick: (file: File) => void;
@@ -34,12 +40,13 @@ interface OrganizationLogoEditorProps {
 export function OrganizationLogoEditor({
   name,
   logoUrl,
-  size = 64,
+  size = '2xl',
   busy,
   error,
   onPick,
   onRemove,
 }: OrganizationLogoEditorProps): JSX.Element {
+  const px = DISPLAY_AVATAR_SIZE_PX[size];
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>): void => {
@@ -61,18 +68,18 @@ export function OrganizationLogoEditor({
           onClick={() => inputRef.current?.click()}
           disabled={busy}
           aria-label="Change organization logo"
-          className="group relative rounded-lg disabled:cursor-not-allowed"
-          style={{ width: size, height: size }}
+          className="group relative rounded-md disabled:cursor-not-allowed"
+          style={{ width: px, height: px }}
         >
           <OrganizationLogo name={name} logoUrl={logoUrl} size={size} />
           <span
             aria-hidden="true"
-            className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/40 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+            className="absolute inset-0 flex items-center justify-center rounded-md bg-black/40 text-white opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
           >
             {busy ? (
               <span className="text-xs font-medium">…</span>
             ) : (
-              <Camera size={Math.max(16, Math.round(size / 4))} />
+              <Camera size={Math.max(16, Math.round(px / 4))} />
             )}
           </span>
         </button>
@@ -84,13 +91,13 @@ export function OrganizationLogoEditor({
           onClick={() => inputRef.current?.click()}
           disabled={busy}
           aria-label="Add organization logo"
-          style={{ width: size, height: size }}
-          className="flex items-center justify-center rounded-lg border-2 border-dashed fg-secondary transition-colors hover:border-line-accent hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
+          style={{ width: px, height: px }}
+          className="flex items-center justify-center rounded-md border-2 border-dashed fg-secondary transition-colors hover:border-line-accent hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? (
             <span className="text-xs font-medium">…</span>
           ) : (
-            <ImagePlus size={Math.max(16, Math.round(size / 3))} />
+            <ImagePlus size={Math.max(16, Math.round(px / 3))} />
           )}
         </button>
       )}

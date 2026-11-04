@@ -21,6 +21,8 @@ const loadUsageMetricsMock = jest.fn();
 const loadUsageMetricsViewMock = jest.fn();
 const loadUsageTabSummaryMock = jest.fn();
 const subscribeMock = jest.fn();
+const loadAuditOverviewMock = jest.fn();
+const getUsageOverviewMock = jest.fn();
 const refreshProviderUsageMock = jest.fn<Promise<void>, [string]>();
 
 jest.mock('../observability', () => ({
@@ -34,6 +36,9 @@ jest.mock('../observability', () => ({
     loadUsageTabSummary: loadUsageTabSummaryMock,
     subscribe: subscribeMock,
     refreshProviderUsage: refreshProviderUsageMock,
+    loadAuditOverview: loadAuditOverviewMock,
+    getUsageOverview: getUsageOverviewMock,
+    getRetentionDays: (): number => 7,
   })),
 }));
 
@@ -65,7 +70,44 @@ import {
   type UsageTimeseriesRequest,
   type UsageTimeseriesResponse,
 } from '@canopy/desktop-shared/types';
-import { registerObservabilityHandlers } from '../ipc/observability';
+import {
+  CORE_OBSERVABILITY_QUERIES,
+  CORE_OBSERVABILITY_STREAMS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import { createCanopyDispatcher } from '@canopy/core-runtime';
+import { createCoreObservabilityAdapter } from '../canopy-runtime/core-observability-adapter';
+import { getObservabilityService } from '../observability';
+import { registerObservabilityHandlers as registerWithDispatcher } from '../ipc/observability';
+
+const RENDERER: CanopyCallerDescriptor = {
+  principalId: 'local-user',
+  clientInstanceId: 'renderer-1',
+  authorityId: 'local-desktop',
+  interfaceKind: 'test',
+  grants: [],
+};
+
+/** Registers the channels over a core dispatcher serving the mocked service. */
+function registerObservabilityHandlers(
+  getWindow: Parameters<typeof registerWithDispatcher>[0],
+): void {
+  const dispatcher = createCanopyDispatcher({
+    profile: 'core',
+    definitions: {
+      queries: CORE_OBSERVABILITY_QUERIES,
+      instructions: {},
+      streams: CORE_OBSERVABILITY_STREAMS,
+    },
+    handlers: {
+      ...createCoreObservabilityAdapter(() =>
+        Promise.resolve(getObservabilityService()),
+      ),
+      instructions: {},
+    },
+  });
+  registerWithDispatcher(getWindow, dispatcher, () => RENDERER);
+}
 
 interface InvalidUsageTimeseriesDateCase {
   label: string;
@@ -286,7 +328,17 @@ describe('observability IPC history handler', () => {
     loadTranscriptMock.mockResolvedValue({
       type: 'not_available',
     });
-    loadUsageTimeseriesMock.mockResolvedValue({ buckets: [] });
+    loadAuditOverviewMock.mockReturnValue({
+      version: 1,
+      historicalMode: 'forward-only',
+      retentionDays: 7,
+      recentEntries: [],
+    });
+    getUsageOverviewMock.mockReturnValue({
+      updatedAt: '2026-03-26T00:00:00.000Z',
+      providers: [],
+    });
+    loadUsageTimeseriesMock.mockResolvedValue({ kind: 'tokens', buckets: [] });
     loadUsageMetricsMock.mockResolvedValue({
       updatedAt: '2026-03-26T00:00:00.000Z',
       retentionDays: 7,
@@ -320,8 +372,36 @@ describe('observability IPC history handler', () => {
         byInitiationSource: { total: 0, rows: [] },
       },
     });
-    loadUsageMetricsViewMock.mockResolvedValue({ rows: [] });
-    loadUsageTabSummaryMock.mockResolvedValue({ stats: [] });
+    loadUsageMetricsViewMock.mockResolvedValue({
+      rows: [],
+      resolvedWindow: {
+        start: '2026-03-19T00:00:00.000Z',
+        end: '2026-03-26T00:00:00.000Z',
+      },
+      earliestEventAt: '2026-03-01T00:00:00.000Z',
+    });
+    loadUsageTabSummaryMock.mockImplementation(
+      (request: UsageTabSummaryRequest) =>
+        Promise.resolve({
+          tab: request.tab,
+          cards: [],
+          earliestEventAt: '2026-03-01T00:00:00.000Z',
+          resolvedWindows: {
+            last7d: {
+              start: '2026-03-19T00:00:00.000Z',
+              end: '2026-03-26T00:00:00.000Z',
+            },
+            prior7d: {
+              start: '2026-03-12T00:00:00.000Z',
+              end: '2026-03-19T00:00:00.000Z',
+            },
+            allTime: {
+              start: '2026-03-01T00:00:00.000Z',
+              end: '2026-03-26T00:00:00.000Z',
+            },
+          },
+        }),
+    );
     subscribeMock.mockImplementation((): (() => void) => unsubscribe);
     getStableAnonymousKeyMock.mockResolvedValue(
       '11111111-2222-4333-8444-555555555555',
@@ -341,6 +421,30 @@ describe('observability IPC history handler', () => {
       '11111111-2222-4333-8444-555555555555',
     );
     expect(getStableAnonymousKeyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('composes the snapshot from the core audit overview and host provider usage', async (): Promise<void> => {
+    const handler = registeredHandlers.get(
+      IPC_CHANNELS.observabilityLoadSnapshot,
+    );
+    if (handler === undefined) throw new Error('Snapshot handler missing');
+
+    await expect(handler(undefined)).resolves.toEqual({
+      version: 1,
+      historicalMode: 'forward-only',
+      retentionDays: 7,
+      recentEntries: [],
+      usage: { updatedAt: '2026-03-26T00:00:00.000Z', providers: [] },
+    });
+    expect(loadSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a failed read with the error the read raised', async (): Promise<void> => {
+    loadHistoryMock.mockRejectedValueOnce(new Error('audit day unreadable'));
+
+    await expect(invokeHistoryHandler({})).rejects.toThrow(
+      'audit day unreadable',
+    );
   });
 
   it('forwards valid optional IDs to the history service', async (): Promise<void> => {

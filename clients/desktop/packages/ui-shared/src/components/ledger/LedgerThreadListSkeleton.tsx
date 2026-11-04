@@ -1,10 +1,21 @@
 import type { JSX } from 'react';
 import {
-  SKELETON_BLOCK_CLASS,
   SkeletonBlock,
+  useSkeletonBone,
   type SkeletonBarWidth,
 } from '../SkeletonBlock';
 import type { LedgerDensity } from './ledger-entry-slots';
+
+/** The type avatar's own size: 32px on a page, 24px in a panel. */
+function AvatarBone({ page }: { readonly page: boolean }): JSX.Element {
+  const bone = useSkeletonBone<HTMLSpanElement>();
+  return (
+    <span
+      {...bone}
+      className={`block shrink-0 rounded-full ${page ? 'size-8' : 'size-6'}`}
+    />
+  );
+}
 
 export interface LedgerThreadListSkeletonProps {
   readonly density: LedgerDensity;
@@ -69,11 +80,7 @@ export function LedgerThreadListSkeleton({
             index === shown.length - 1 ? '' : 'border-b border-line-base'
           }`}
         >
-          {/* The type avatar's own size: 32px on a page, 24px in a panel. */}
-          <span
-            aria-hidden="true"
-            className={`${SKELETON_BLOCK_CLASS} shrink-0 rounded-full ${page ? 'size-8' : 'size-6'}`}
-          />
+          <AvatarBone page={page} />
           <div className="flex min-w-0 flex-1 flex-col gap-2">
             {/* The type line and the attribution line. */}
             <div className="flex min-w-0 flex-col gap-0.5">

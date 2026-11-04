@@ -2,7 +2,6 @@
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
   SETTINGS_CARD_ROW_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
@@ -14,6 +13,7 @@ import {
   ErrorBanner,
   SettingsFormSkeleton,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import type { SubscriptionPlanPricingRow } from '@canopy/protocol/telemetry';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
@@ -97,7 +97,9 @@ export function TeamSubscriptionPricingSection({
       data-testid="team-subscription-pricing-section"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h2 className={SETTINGS_CARD_TITLE_CLASS}>AI provider plan pricing</h2>
+        <Heading level={2} variant="section">
+          AI provider plan pricing
+        </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
           Set the monthly price for each AI provider plan your team uses. These
           prices drive the billed-cost and savings estimates on the Statistics

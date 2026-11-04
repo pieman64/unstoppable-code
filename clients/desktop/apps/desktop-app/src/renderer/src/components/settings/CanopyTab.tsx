@@ -977,10 +977,20 @@ export function CanopyTab(): JSX.Element {
                   )}
                 <p>
                   {window.platform === 'linux'
-                    ? (updateState.info?.manualDownload?.guidance ??
+                    ? (updateState.info?.packageManagerUpdate?.guidance ??
+                      updateState.info?.manualDownload?.guidance ??
                       'Check for updates again to get the official Linux download and checksum.')
                     : 'Use “Update available” in the sidebar to start the download.'}
                 </p>
+                {window.platform === 'linux' &&
+                  updateState.info?.packageManagerUpdate && (
+                    <code
+                      className={`block font-mono select-text break-all ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                      data-testid="settings-linux-update-command"
+                    >
+                      {updateState.info.packageManagerUpdate.command}
+                    </code>
+                  )}
                 {window.platform === 'linux' &&
                   updateState.info?.manualDownload && (
                     <>

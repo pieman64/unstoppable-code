@@ -6,12 +6,12 @@ import type {
   BackgroundTask,
   BackgroundTaskStatus,
 } from '@canopy/protocol/background-tasks';
-import { AnsiOutput } from '@canopy/ui-shared/components';
+import { AnsiOutput, Disclosure } from '@canopy/ui-shared/components';
 import {
   getBackgroundProcessStatusClassName as getStatusClassName,
   isTerminalBackgroundProcessStatus as isTerminalStatus,
 } from '@canopy/ui-shared/lib';
-import { ChevronIcon, WorkflowIcon } from '@canopy/ui-shared/icons';
+import { WorkflowIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { TaskStopAction } from './TaskStopAction';
 
@@ -184,19 +184,14 @@ export function BackgroundProcessesSectionBody({
       {/* Stopped processes (collapsible) */}
       {stoppedProcesses.length > 0 && (
         <div className="pt-1">
-          <button
-            type="button"
-            aria-expanded={stoppedExpanded}
-            onClick={(): void => setStoppedExpanded((previous) => !previous)}
-            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
-            data-testid="activity-bg-stopped-toggle"
+          <Disclosure
+            label={`Stopped (${stoppedProcesses.length})`}
+            open={stoppedExpanded}
+            onOpenChange={setStoppedExpanded}
+            dataTestId="activity-bg-stopped"
+            toggleTestId="activity-bg-stopped-toggle"
           >
-            <ChevronIcon open={stoppedExpanded} />
-            Stopped ({stoppedProcesses.length})
-          </button>
-
-          {stoppedExpanded && (
-            <div className="mt-2 space-y-1.5">
+            <div className="space-y-1.5">
               {stoppedProcesses.map((process) => (
                 <div
                   key={process.id}
@@ -228,7 +223,7 @@ export function BackgroundProcessesSectionBody({
                 </div>
               ))}
             </div>
-          )}
+          </Disclosure>
         </div>
       )}
     </div>

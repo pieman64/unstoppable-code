@@ -12,7 +12,11 @@ import type {
   RunDefaults,
   ShellType,
 } from '@canopy/desktop-shared/types/pipeline';
-import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
+import {
+  ChoiceList,
+  ChoiceListRow,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { PipelineRelatedSections } from './PipelineRelatedSections';
 import {
   getTriggerInputDefs,
@@ -193,7 +197,9 @@ export function PipelineSettingsPanel({
   return (
     <div className="h-full flex flex-col bg-card">
       <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-        <h2 className="text-s font-semibold fg-primary">Workflow settings</h2>
+        <Heading level={2} variant="title">
+          Workflow settings
+        </Heading>
         {onClose && (
           <Tooltip label="Close settings">
             <Button
@@ -213,7 +219,9 @@ export function PipelineSettingsPanel({
         <div className="px-4 py-5 space-y-8">
           {/* General */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-4">General</h3>
+            <Heading level={3} variant="title" className="mb-4">
+              General
+            </Heading>
             <div className="space-y-4">
               <FormField label="Name">
                 <TextField
@@ -253,7 +261,9 @@ export function PipelineSettingsPanel({
 
           {/* Triggers */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-4">Triggers</h3>
+            <Heading level={3} variant="title" className="mb-4">
+              Triggers
+            </Heading>
             <ChoiceList aria-label="Triggers">
               {TRIGGER_OPTIONS.map((trigger) => {
                 const isActive = activeTriggerTypes.includes(trigger.type);
@@ -285,9 +295,9 @@ export function PipelineSettingsPanel({
 
           {/* Execution Scope */}
           <section data-testid="pipeline-execution-scope">
-            <h3 className="text-s font-semibold fg-primary mb-1">
+            <Heading level={3} variant="title" className="mb-1">
               Execution scope
-            </h3>
+            </Heading>
             <p className="text-xs fg-secondary mb-4">
               Controls where this workflow can be shown and run.
             </p>
@@ -322,9 +332,9 @@ export function PipelineSettingsPanel({
           {/* Trigger Inputs */}
           {activeTriggerTypes.length > 0 && (
             <section>
-              <h3 className="text-s font-semibold fg-primary mb-1">
+              <Heading level={3} variant="title" className="mb-1">
                 Trigger inputs
-              </h3>
+              </Heading>
               <p className="text-xs fg-secondary mb-4">
                 Inputs are collected from the user when the workflow is
                 triggered and made available to steps as{' '}
@@ -346,9 +356,9 @@ export function PipelineSettingsPanel({
 
           {/* Plugin Collections */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-1">
+            <Heading level={3} variant="title" className="mb-1">
               Plugin collections
-            </h3>
+            </Heading>
             <p className="text-xs fg-secondary mb-4">
               Named sets of shareable skills and marketplace plugins that agent
               steps can opt into via <code>with.plugin_collection_id</code>.
@@ -362,9 +372,9 @@ export function PipelineSettingsPanel({
 
           {/* Model Aliases */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-1">
+            <Heading level={3} variant="title" className="mb-1">
               Model aliases
-            </h3>
+            </Heading>
             <p className="text-xs fg-secondary mb-4">
               Named model choices that agent steps can use via{' '}
               <code>with.model</code>. Aliases can provide workflow defaults,
@@ -380,9 +390,9 @@ export function PipelineSettingsPanel({
 
           {/* Environment Variables */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-4">
+            <Heading level={3} variant="title" className="mb-4">
               Environment variables
-            </h3>
+            </Heading>
             <KeyValueEditor
               value={pipeline.env || {}}
               onChange={onUpdateEnv}
@@ -392,9 +402,9 @@ export function PipelineSettingsPanel({
 
           {/* Run Defaults */}
           <section>
-            <h3 className="text-s font-semibold fg-primary mb-4">
+            <Heading level={3} variant="title" className="mb-4">
               Run defaults
-            </h3>
+            </Heading>
             <div className="space-y-4">
               <FormField label="Shell" hint="Default shell for run steps">
                 <SelectField

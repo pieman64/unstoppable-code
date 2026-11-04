@@ -74,7 +74,7 @@ describe('BlueprintPicker', () => {
       />,
     );
     expect(unselected).toMatch(
-      /<h3 class="[^"]*font-semibold[^"]*">Start from<\/h3><p[^>]*>Sets up instructions/,
+      /<h3[^>]*>Start from<\/h3><p[^>]*>Sets up instructions/,
     );
     expect(unselected).not.toContain('add-workspace-blueprint-description');
     const selected = renderToStaticMarkup(

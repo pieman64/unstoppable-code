@@ -94,7 +94,14 @@ describe('UserBubble sent images (early access)', () => {
   function tileNames(): string[] {
     return Array.from(
       container.querySelectorAll('[data-testid="message-image-attachment"]'),
-    ).map((tile) => tile.getAttribute('title') ?? '');
+    ).map(
+      // An openable tile names its image in `Open <name>` (its tooltip is the
+      // shared one); a plain tile keeps the name as its title.
+      (tile) =>
+        tile.getAttribute('title') ??
+        tile.getAttribute('aria-label')?.replace(/^Open /, '') ??
+        '',
+    );
   }
 
   function chipText(): string {

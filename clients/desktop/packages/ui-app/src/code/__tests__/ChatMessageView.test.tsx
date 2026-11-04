@@ -10,6 +10,7 @@ import type {
 } from '@canopy/protocol/portal';
 
 import { ChatLookProvider } from '@canopy/ui-shared/components/chat-look';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   preloadSmoothMarkdown,
   SmoothStreamingProvider,
@@ -45,6 +46,19 @@ function html(msg: PortalChatMessage): string {
       <ChatMessageView message={msg} />
     </ChatLookProvider>,
   );
+}
+
+/** A file link's full target, read from its shared hover tooltip. */
+function fileLinkTooltip(link: HTMLElement): string | null {
+  act(() => {
+    link.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+  const text =
+    document.body.querySelector('[role="tooltip"]')?.textContent ?? null;
+  act(() => {
+    link.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+  });
+  return text;
 }
 
 describe('ChatMessageView', () => {
@@ -1407,12 +1421,25 @@ describe('agent file links (CAN-3172)', () => {
     const openFileLink = jest.fn((): Promise<boolean> => Promise.resolve(true));
     const { container, unmount } = renderWith({ openFileLink });
     const links = fileLinks(container);
-    expect(links.map((link) => link.getAttribute('title'))).toEqual([
+    expect(links.map((link) => fileLinkTooltip(link))).toEqual([
       'src/a.ts',
       '/vercel/sandbox/src/a.ts',
       'C:/repo/src/a.ts',
       'file:///vercel/sandbox/src/a.ts#L3',
     ]);
+    // The path is user content and the tip portals outside the transcript's
+    // replay block, so its surface is blocked itself.
+    act(() => {
+      links[0]?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(
+      document.body
+        .querySelector('[role="tooltip"]')
+        ?.classList.contains(REPLAY_BLOCK_CLASS),
+    ).toBe(true);
+    act(() => {
+      links[0]?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
     // Paths never become site anchors that could navigate to a 404.
     expect(container.querySelector('a[href="src/a.ts"]')).toBeNull();
     expect(
@@ -1458,7 +1485,7 @@ describe('agent file links (CAN-3172)', () => {
     ).toHaveLength(1);
 
     const retry = fileLinks(container).find(
-      (link) => link.getAttribute('title') === '/vercel/sandbox/src/a.ts',
+      (link) => fileLinkTooltip(link) === '/vercel/sandbox/src/a.ts',
     );
     expect(retry?.getAttribute('data-file-link-state')).toBe('idle');
     await act(() => {
@@ -1573,7 +1600,7 @@ describe('agent file links with line locations (CAN-4275)', () => {
     expect(
       links.map((link) => [
         link.textContent,
-        link.getAttribute('title'),
+        fileLinkTooltip(link),
         link.getAttribute('data-file-link-line'),
       ]),
     ).toEqual([

@@ -19,6 +19,7 @@ import {
 import { HistoryIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
+import { Disclosure } from '../Disclosure';
 import { ErrorBanner } from '../StatusBlocks';
 import {
   ledgerAttributedActorName,
@@ -234,15 +235,12 @@ export function LedgerEntryDetails({
                 {ledgerSourceDescription(view.entry.entry.origin, view.source)}
               </p>
               {sourceTarget?.kind === 'summary' && (
-                <details
-                  data-testid="ledger-entry-summary-snapshot"
-                  className="text-xs fg-secondary"
+                <Disclosure
+                  label="Show recorded summary"
+                  dataTestId="ledger-entry-summary-snapshot"
                 >
-                  <summary className="focus-ring w-fit cursor-pointer rounded-sm fg-primary">
-                    Show recorded summary
-                  </summary>
                   <div
-                    className={`${REPLAY_BLOCK_CLASS} mt-2 flex flex-col gap-1.5`}
+                    className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1.5 text-xs fg-secondary`}
                   >
                     <p className="font-medium fg-primary">
                       {sourceTarget.snapshot.title}
@@ -268,7 +266,7 @@ export function LedgerEntryDetails({
                       {`Generated ${formatLedgerDateTime(sourceTarget.snapshot.generatedAt)}`}
                     </p>
                   </div>
-                </details>
+                </Disclosure>
               )}
             </div>
           </Fact>

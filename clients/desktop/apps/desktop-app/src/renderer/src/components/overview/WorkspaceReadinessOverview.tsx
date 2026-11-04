@@ -36,7 +36,16 @@ import {
   useWorkspaceReadinessLaunchStore,
 } from '@/stores/workspaceReadinessLaunchStore';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { ErrorBanner, StatusLabel } from '@canopy/ui-shared/components';
+import {
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+  ErrorBanner,
+  StatusLabel,
+} from '@canopy/ui-shared/components';
 
 const READINESS_PARALLELISM = 4;
 
@@ -110,17 +119,19 @@ function WorkspaceCell({
   rowSpan,
 }: WorkspaceCellProps): JSX.Element {
   return (
-    <th
+    <DataTableCell
+      rowHeader
       rowSpan={rowSpan}
-      className="px-3 py-2.5 text-left font-normal align-top"
+      tone="primary"
+      overflow="truncate"
     >
-      <div
-        className={`${POSTHOG_REPLAY_MASK_CLASS} truncate text-xs font-medium fg-primary`}
+      <span
+        className={`${POSTHOG_REPLAY_MASK_CLASS} font-medium`}
         title={workspaceName}
       >
         {workspaceName}
-      </div>
-    </th>
+      </span>
+    </DataTableCell>
   );
 }
 
@@ -417,204 +428,177 @@ export function WorkspaceReadinessOverview({
         Suggestions for deeper repository integration.
       </p>
 
-      <div className="overflow-hidden rounded-lg border bg-secondary/10">
-        <div
-          className="max-h-96 overflow-y-auto"
-          data-testid="workspace-readiness-table-scroll"
-        >
-          <table
-            aria-label="Project readiness recommendations"
-            className="w-full table-fixed text-left"
-          >
-            <thead className="sticky top-0 z-10 bg-base">
-              <tr>
-                <th
-                  scope="col"
-                  className="w-9/25 border-b px-3 py-2 text-3xs font-medium fg-secondary"
-                >
-                  Project
-                </th>
-                <th
-                  scope="col"
-                  className="border-b px-3 py-2 text-3xs font-medium fg-secondary"
-                >
-                  Recommendation
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {showingInitialCheck && (
-                <tr>
-                  <td colSpan={2} className="px-3 py-5">
-                    <div className="flex items-center gap-2 text-xs fg-secondary">
-                      <LoadingSpinner />
-                      <span>Checking project readiness…</span>
-                    </div>
-                  </td>
-                </tr>
-              )}
+      <DataTableFrame
+        caption="Project readiness recommendations"
+        layout="fixed"
+        maxHeight="24rem"
+        testId="workspace-readiness-table"
+      >
+        <DataTableHead sticky>
+          <DataTableHeaderCell width="36%">Project</DataTableHeaderCell>
+          <DataTableHeaderCell>Recommendation</DataTableHeaderCell>
+        </DataTableHead>
+        <DataTableBody>
+          {showingInitialCheck && (
+            <DataTableRow>
+              <DataTableCell colSpan={2}>
+                <div className="flex items-center gap-2">
+                  <LoadingSpinner />
+                  <span>Checking project readiness…</span>
+                </div>
+              </DataTableCell>
+            </DataTableRow>
+          )}
 
-              {!showingInitialCheck &&
-                allLoaded &&
-                failedWorkspaceIds.size === 0 &&
-                totalIssueCount === 0 && (
-                  <tr>
-                    <td colSpan={2} className="px-3 py-5 text-xs fg-secondary">
-                      All Code projects have setup and launch scripts, hooks,
-                      and shared agent instructions in place.
-                    </td>
-                  </tr>
-                )}
+          {!showingInitialCheck &&
+            allLoaded &&
+            failedWorkspaceIds.size === 0 &&
+            totalIssueCount === 0 && (
+              <DataTableRow>
+                <DataTableCell colSpan={2} overflow="wrap">
+                  All Code projects have setup and launch scripts, hooks, and
+                  shared agent instructions in place.
+                </DataTableCell>
+              </DataTableRow>
+            )}
 
-              {codeWorkspaces.map((workspace) => {
-                const issues = issuesByWorkspace[workspace.id] ?? [];
-                const failed = failedWorkspaceIds.has(workspace.id);
-                if (!failed && issues.length === 0) return null;
-                const workspaceName = getWorkspaceDisplayName(workspace);
+          {codeWorkspaces.map((workspace) => {
+            const issues = issuesByWorkspace[workspace.id] ?? [];
+            const failed = failedWorkspaceIds.has(workspace.id);
+            if (!failed && issues.length === 0) return null;
+            const workspaceName = getWorkspaceDisplayName(workspace);
 
-                if (failed) {
-                  return (
-                    <tr
-                      key={workspace.id}
-                      className="border-t first:border-t-0"
-                    >
-                      <WorkspaceCell workspaceName={workspaceName} />
-                      <td className="px-3 py-2.5 align-top">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-xs">
-                            <StatusLabel>
-                              Couldn’t check{' '}
-                              <span className={POSTHOG_REPLAY_MASK_CLASS}>
-                                {workspaceName}
-                              </span>
-                              .
-                            </StatusLabel>
-                          </p>
-                          <div className="flex flex-wrap items-center gap-1">
-                            <WorkspaceSettingsButton
-                              workspaceId={workspace.id}
-                              workspaceName={workspaceName}
-                            />
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              aria-label={
-                                retryingWorkspaceIds.has(workspace.id)
-                                  ? `Trying again for ${workspaceName}`
-                                  : `Try again for ${workspaceName}`
-                              }
-                              aria-busy={retryingWorkspaceIds.has(workspace.id)}
-                              disabled={
-                                refreshing ||
-                                retryingWorkspaceIds.has(workspace.id)
-                              }
-                              onClick={() => void retry(workspace)}
-                            >
-                              {retryingWorkspaceIds.has(workspace.id)
-                                ? 'Trying again…'
-                                : 'Try again'}
-                            </Button>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                }
-
-                const rowCount = issues.length;
-                return issues.map((issue, issueIndex) => {
-                  const key = `${workspace.id}:${workspaceReadinessIssueKey(issue)}`;
-                  const isLaunching = launchingKey === key;
-                  const launched = selectWorkspaceReadinessLaunch(
-                    { records: launchRecords },
-                    workspace.id,
-                    undefined,
-                    workspaceReadinessIssueKey(issue),
-                  );
-                  const chatMissing =
-                    launched !== undefined &&
-                    missingChats.includes(launchedReadinessFixKey(launched));
-                  const viewLabel = chatMissing
-                    ? 'Open worktree'
-                    : 'View conversation';
-                  return (
-                    <tr key={key} className="border-t first:border-t-0">
-                      {issueIndex === 0 && (
-                        <WorkspaceCell
+            if (failed) {
+              return (
+                <DataTableRow key={workspace.id} verticalAlign="top">
+                  <WorkspaceCell workspaceName={workspaceName} />
+                  <DataTableCell overflow="wrap">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs">
+                        <StatusLabel>
+                          Couldn’t check{' '}
+                          <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                            {workspaceName}
+                          </span>
+                          .
+                        </StatusLabel>
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <WorkspaceSettingsButton
+                          workspaceId={workspace.id}
                           workspaceName={workspaceName}
-                          rowSpan={rowCount}
                         />
-                      )}
-                      <td className="px-3 py-2.5 align-top">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-xs fg-primary">
-                              {issue.title}
-                            </div>
-                            <div className="truncate text-3xs fg-secondary">
-                              {issue.code === 'recovery-required'
-                                ? issue.message
-                                : issue.repoName}
-                            </div>
-                            {chatMissing && (
-                              <div className="text-3xs fg-secondary">
-                                Conversation unavailable
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-1">
-                            {issueIndex === 0 && (
-                              <WorkspaceSettingsButton
-                                workspaceId={workspace.id}
-                                workspaceName={workspaceName}
-                              />
-                            )}
-                            {issue.fixPrompt === null ? null : launched ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                aria-label={`${viewLabel} for ${issue.title} in ${workspaceName}`}
-                                onClick={() =>
-                                  void navigateToWorkspaceReadinessChat(
-                                    workspace.id,
-                                    launched.worktreeId,
-                                    launched.chatId,
-                                  )
-                                }
-                              >
-                                {viewLabel}
-                              </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                aria-label={
-                                  isLaunching
-                                    ? `Starting fix for ${issue.title} in ${workspaceName}`
-                                    : `Fix ${issue.title} in new worktree for ${workspaceName}`
-                                }
-                                aria-busy={isLaunching}
-                                disabled={launchingKey !== null}
-                                onClick={() =>
-                                  void handleFix(workspace.id, issue)
-                                }
-                              >
-                                {isLaunching
-                                  ? 'Starting…'
-                                  : 'Fix in new worktree'}
-                              </Button>
-                            )}
-                          </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={
+                            retryingWorkspaceIds.has(workspace.id)
+                              ? `Trying again for ${workspaceName}`
+                              : `Try again for ${workspaceName}`
+                          }
+                          aria-busy={retryingWorkspaceIds.has(workspace.id)}
+                          disabled={
+                            refreshing || retryingWorkspaceIds.has(workspace.id)
+                          }
+                          onClick={() => void retry(workspace)}
+                        >
+                          {retryingWorkspaceIds.has(workspace.id)
+                            ? 'Trying again…'
+                            : 'Try again'}
+                        </Button>
+                      </div>
+                    </div>
+                  </DataTableCell>
+                </DataTableRow>
+              );
+            }
+
+            const rowCount = issues.length;
+            return issues.map((issue, issueIndex) => {
+              const key = `${workspace.id}:${workspaceReadinessIssueKey(issue)}`;
+              const isLaunching = launchingKey === key;
+              const launched = selectWorkspaceReadinessLaunch(
+                { records: launchRecords },
+                workspace.id,
+                undefined,
+                workspaceReadinessIssueKey(issue),
+              );
+              const chatMissing =
+                launched !== undefined &&
+                missingChats.includes(launchedReadinessFixKey(launched));
+              const viewLabel = chatMissing
+                ? 'Open worktree'
+                : 'View conversation';
+              return (
+                <DataTableRow key={key} verticalAlign="top">
+                  {issueIndex === 0 && (
+                    <WorkspaceCell
+                      workspaceName={workspaceName}
+                      rowSpan={rowCount}
+                    />
+                  )}
+                  <DataTableCell overflow="wrap">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs fg-primary">{issue.title}</div>
+                        <div className="truncate text-3xs fg-secondary">
+                          {issue.code === 'recovery-required'
+                            ? issue.message
+                            : issue.repoName}
                         </div>
-                      </td>
-                    </tr>
-                  );
-                });
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                        {chatMissing && (
+                          <div className="text-3xs fg-secondary">
+                            Conversation unavailable
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1">
+                        {issueIndex === 0 && (
+                          <WorkspaceSettingsButton
+                            workspaceId={workspace.id}
+                            workspaceName={workspaceName}
+                          />
+                        )}
+                        {issue.fixPrompt === null ? null : launched ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`${viewLabel} for ${issue.title} in ${workspaceName}`}
+                            onClick={() =>
+                              void navigateToWorkspaceReadinessChat(
+                                workspace.id,
+                                launched.worktreeId,
+                                launched.chatId,
+                              )
+                            }
+                          >
+                            {viewLabel}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-label={
+                              isLaunching
+                                ? `Starting fix for ${issue.title} in ${workspaceName}`
+                                : `Fix ${issue.title} in new worktree for ${workspaceName}`
+                            }
+                            aria-busy={isLaunching}
+                            disabled={launchingKey !== null}
+                            onClick={() => void handleFix(workspace.id, issue)}
+                          >
+                            {isLaunching ? 'Starting…' : 'Fix in new worktree'}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </DataTableCell>
+                </DataTableRow>
+              );
+            });
+          })}
+        </DataTableBody>
+      </DataTableFrame>
 
       <ErrorBanner error={launchError} className="mt-3" />
     </section>

@@ -32,13 +32,12 @@
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type {
   SharedContainerRepositorySummary,
-  UserEnvironmentEntry,
+  UserEnvironmentEntryView,
   UserEnvironmentUiMode,
 } from '@canopy/desktop-shared/types';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/desktop-shared/types';
 import { getScriptDisplayName } from '@canopy/desktop-shared/scripts';
 import type { SharedContainerRevisionRunCommand } from '@canopy/protocol/shared-containers';
-import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { EnvironmentVariableEditor } from '@/components/environments/EnvironmentVariableEditor';
 import { Button } from '@/components/shared/Button';
@@ -46,7 +45,7 @@ import { DeleteConfirmModal } from '@/components/shared/DeleteConfirmModal';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
 import type { SharedContainerRunState } from './useSharedContainerRun';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { Disclosure, ErrorBanner, Heading } from '@canopy/ui-shared/components';
 
 export interface SharedContainerRunPanelProps {
   run: SharedContainerRunState;
@@ -105,8 +104,6 @@ function SharedContainerRunCommandRow({
   runDisabled: boolean;
   onRun: () => void;
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-
   return (
     <li
       className="rounded-md ring ring-line-base px-2 py-1.5"
@@ -128,24 +125,14 @@ function SharedContainerRunCommandRow({
           </Button>
         )}
       </div>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        data-testid={`shared-container-run-command-details-${command.name}`}
-        className="focus-ring -ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-xs fg-quaternary transition-colors hover:fg-secondary"
-        onClick={(): void => setExpanded((current) => !current)}
+      <Disclosure
+        label="Details"
+        dataTestId={`shared-container-run-command-disclosure-${command.name}`}
+        toggleTestId={`shared-container-run-command-details-${command.name}`}
       >
-        <ChevronRightIcon
-          width={11}
-          height={11}
-          aria-hidden="true"
-          className={`shrink-0 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
-        />
-        Details
-      </button>
-      {expanded && (
+        {/* The body keeps its own test id, which specs key on. */}
         <div
-          className="mt-0.5 space-y-0.5 px-1"
+          className="space-y-0.5"
           data-testid={`shared-container-run-command-details-body-${command.name}`}
         >
           <p
@@ -155,7 +142,7 @@ function SharedContainerRunCommandRow({
           </p>
           <p className="text-xs fg-quaternary">{`Runs in ${locationLabel}`}</p>
         </div>
-      )}
+      </Disclosure>
     </li>
   );
 }
@@ -170,7 +157,7 @@ export function SharedContainerRunPanel({
   const [confirming, setConfirming] = useState<
     'allow' | 'revoke' | 'refresh' | null
   >(null);
-  const [draft, setDraft] = useState<UserEnvironmentEntry[]>([]);
+  const [draft, setDraft] = useState<UserEnvironmentEntryView[]>([]);
   const [envInvalid, setEnvInvalid] = useState<string | null>(null);
   const [envMode, setEnvMode] = useState<UserEnvironmentUiMode>('key-value');
   const status = run.status;
@@ -249,7 +236,9 @@ export function SharedContainerRunPanel({
           className="space-y-1.5"
           data-testid="shared-container-run-commands"
         >
-          <h3 className="text-xs font-medium fg-primary">Published commands</h3>
+          <Heading level={3} variant="label">
+            Published commands
+          </Heading>
           {status.run.commands.length === 0 ? (
             <p className="text-xs fg-secondary">
               {publisherLabel} did not publish any commands.
@@ -293,9 +282,9 @@ export function SharedContainerRunPanel({
             className="space-y-1.5"
             data-testid="shared-container-run-environment"
           >
-            <h3 className="text-xs font-medium fg-primary">
+            <Heading level={3} variant="label">
               Environment variables
-            </h3>
+            </Heading>
             <>
               <p className="text-xs fg-secondary">
                 Names {publisherLabel} listed, as a hint. Values are never

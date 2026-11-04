@@ -2,8 +2,9 @@ import { execFile } from 'node:child_process';
 import { constants, existsSync, realpathSync } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import * as path from 'node:path';
-import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { getGitExecutableDetectionMode } from '@canopy/protocol/git-executable';
+import { BRAND } from '@canopy/brand/current';
 import { getBrandEnv } from '../brand/env';
 import { sanitizeEnvVars } from '../lib/mcp-security';
 import { stripAgentSecretValues } from '../lib/agent-secret-values-env';
@@ -266,11 +267,11 @@ function getPipelineBundledBinDirOverride(): string | undefined {
 let loginShellPathRefreshInFlight: Promise<void> | null = null;
 let loginShellPathGeneration = 0;
 
-/** Linux x64 and arm64 use the same bounded login-shell and terminal-shell resolution. */
+/** Supported Linux desktops share the Git detector's login-shell resolution. */
 export function isLinuxLoginShellPathSupported(): boolean {
   return (
-    hostOperatingSystem() === 'linux' &&
-    (process.arch === 'x64' || process.arch === 'arm64')
+    getGitExecutableDetectionMode(hostOperatingSystem() ?? '', process.arch) ===
+    'linux'
   );
 }
 
@@ -538,7 +539,7 @@ export function getLoginShellPath(): string {
  * instead of the inherited fallback. `force` also refreshes a fresh cache, for
  * an explicit user recheck after installing a tool; it shares an in-flight
  * probe and keeps the previous value if the probe fails. No-op outside macOS
- * and Linux x64/arm64.
+ * and supported Linux desktops.
  */
 export async function prewarmLoginShellPath(options?: {
   force?: boolean;

@@ -1,7 +1,7 @@
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { Notice, ToggleSwitch } from '@canopy/ui-shared';
+import { Disclosure, Notice, ToggleSwitch } from '@canopy/ui-shared';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useCanopyCloudConnected } from '@/hooks/useCanopyCloudConnected';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
@@ -153,11 +153,14 @@ export function PersonalCatalogRows({
         />
       }
     >
-      <details data-testid="personal-catalog-disclosure">
-        <summary className="focus-ring w-fit cursor-pointer rounded text-xs fg-secondary">
-          What is sent
-        </summary>
-        <div className="mt-2 space-y-2 text-xs text-pretty fg-secondary">
+      {/* Kept mounted: the payload list stays in the DOM while closed so
+          find-in-page reaches it. */}
+      <Disclosure
+        label="What is sent"
+        keepMounted
+        dataTestId="personal-catalog-disclosure"
+      >
+        <div className="space-y-2 text-xs text-pretty fg-secondary">
           <p>
             {DISCLOSURE} Revision and catalog generation numbers keep updates in
             order.
@@ -168,7 +171,7 @@ export function PersonalCatalogRows({
             carryover state stay on this device.
           </p>
         </div>
-      </details>
+      </Disclosure>
     </SettingsRow>
   );
   return renderFrame({ notices, row });

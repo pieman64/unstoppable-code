@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { build } from 'esbuild';
+import { loadBrand } from '../../../../../scripts/brand/load-brand.mjs';
 
 /*
  * A test composition of offline W5 maintenance (CAN-3797 Q9): the real
@@ -20,7 +21,7 @@ import {
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '@canopy/core-platform';
-import { W5CommitLogHost } from './apps/desktop-app/src/main/w5-commit-log/commit-log-host';
+import { W5CommitLogHost } from '@canopy/core-runtime/node/w5/commit-log-host';
 import { captureW5Backup } from './apps/desktop-app/src/main/lib/w5-backup';
 import {
   runW5Maintenance,
@@ -106,7 +107,11 @@ export async function buildW5MaintenanceComposition({
   const packageJson = JSON.parse(
     readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
   );
-  await build({
+  const brand = loadBrand(process.env.CANOPY_BRAND ?? 'canopy', {
+    repoRoot,
+  });
+  delete brand.__paths;
+  const result = await build({
     stdin: { contents: SOURCE, resolveDir: repoRoot, loader: 'ts' },
     outfile,
     bundle: true,
@@ -114,6 +119,26 @@ export async function buildW5MaintenanceComposition({
     format: 'cjs',
     target: 'node24',
     logLevel: 'error',
+    metafile: true,
+    // Plain Node tests must not depend on a previous desktop brand:prepare.
+    plugins: [
+      {
+        name: 'maintenance-test-brand',
+        setup(build) {
+          build.onResolve({ filter: /^@canopy\/brand\/current$/ }, () => ({
+            path: '@canopy/brand/current',
+            namespace: 'maintenance-test-brand',
+          }));
+          build.onLoad(
+            { filter: /.*/, namespace: 'maintenance-test-brand' },
+            () => ({
+              contents: `export const BRAND = ${JSON.stringify(brand)}; export default BRAND;`,
+              loader: 'js',
+            }),
+          );
+        },
+      },
+    ],
     define: {
       __CANOPY_CURSOR_CLI__: JSON.stringify(packageJson['cursor-cli'] ?? null),
       __CANOPY_E2E__: 'false',
@@ -124,6 +149,7 @@ export async function buildW5MaintenanceComposition({
   });
   const running = new Set();
   return {
+    buildInputs: Object.keys(result.metafile.inputs),
     /**
      * Starts one maintenance run. `line` resolves with its first stdout line
      * (or rejects when it exits without one); `exited` with its exit code.

@@ -114,11 +114,11 @@ function ChatAgentSentTitle({
   const titleClass = inline ? INLINE_TITLE_CLASS : TITLE_CLASS;
   const opener = useAgentSentSenderOpener();
   const sameContext =
-    sender.kind === 'project'
-      ? receivingContext.kind === 'project' &&
-        sender.projectId === receivingContext.projectId
-      : receivingContext.kind === 'bot' &&
-        sender.botId === receivingContext.botId;
+    sender.kind === 'bot'
+      ? receivingContext.kind === 'bot' &&
+        sender.botId === receivingContext.botId
+      : receivingContext.kind === 'project' &&
+        sender.projectId === receivingContext.projectId;
   const content = (
     <>
       <AgentIcon

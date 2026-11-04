@@ -20,6 +20,7 @@ import {
   AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE,
   AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
 } from '../lib/pipeline-package-display';
+import { Heading } from './Heading';
 
 export interface AutomationDefinitionSummaryProps {
   automation: SharedAutomationDocument;
@@ -280,7 +281,9 @@ export function AutomationDefinitionSummary({
   return (
     <div className="space-y-6" data-testid="automation-definition-summary">
       <section data-testid="automation-summary-action">
-        <h2 className="text-sm font-semibold">What it does</h2>
+        <Heading level={2} variant="title">
+          What it does
+        </Heading>
         <div className="mt-2 rounded-xl border bg-card p-4 text-sm">
           <p className="font-medium">{actionLabel(action)}</p>
           <div className="mt-1">
@@ -312,7 +315,9 @@ export function AutomationDefinitionSummary({
 
       {hasNeeds && (
         <section data-testid="automation-summary-needs">
-          <h2 className="text-sm font-semibold">What it needs</h2>
+          <Heading level={2} variant="title">
+            What it needs
+          </Heading>
           <div className="mt-2 space-y-3 rounded-xl border bg-card p-4 text-sm">
             {plugins.length > 0 && (
               <div>

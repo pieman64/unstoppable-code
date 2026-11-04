@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
   isPipelineContentHash,
@@ -11,6 +10,7 @@ import type {
   PipelinePackageInstallRecordV1,
 } from '@canopy/desktop-shared/types/pipeline';
 import { CAPABILITY_PACKAGE_INSTALL_OWNER_KINDS } from '@canopy/desktop-shared/types/pipeline';
+import { writeStoreFileDurably } from '../lib/durable-store-write';
 
 interface PipelinePackageInstallStoreV1 {
   version: 1;
@@ -32,6 +32,12 @@ interface PipelinePackageInstallStoreV1 {
    * writeStore} copies it aside first.
    */
   unreadableFile?: boolean;
+  /**
+   * The file is a ledger from a newer version. Reads degrade to empty like an
+   * unreadable file, but no write replaces it: the newer build that wrote it
+   * is the only one that can carry its records forward.
+   */
+  newerVersion?: boolean;
 }
 
 const mutationQueues = new Map<string, Promise<void>>();
@@ -179,6 +185,13 @@ async function readStore(
   try {
     const value: unknown = JSON.parse(raw);
     if (
+      isRecord(value) &&
+      typeof value.version === 'number' &&
+      value.version > 1
+    ) {
+      return { version: 1, records: [], unreadable: [], newerVersion: true };
+    }
+    if (
       !isRecord(value) ||
       value.version !== 1 ||
       !Array.isArray(value.records)
@@ -220,35 +233,30 @@ async function writeStore(
   storePath: string,
   store: PipelinePackageInstallStoreV1,
 ): Promise<void> {
+  if (store.newerVersion) {
+    throw new Error('Pipeline package install ledger is from a newer version');
+  }
   await mkdir(path.dirname(storePath), { recursive: true });
   if (store.unreadableFile) {
     // Keep the bytes this build could not read. Writing over them would turn a
-    // recoverable file (truncated, hand-edited, written by an unknown future
-    // format) into permanent loss of every install it recorded.
-    //
-    // Deliberate consequences:
-    // - A well-formed ledger from a future `version` lands here too. On a
-    //   downgrade it is set aside and replaced by a v1 file; an upgrade does not
-    //   merge it back automatically, but nothing is lost.
-    // - If the copy itself fails (EACCES, disk full) this throws and the write
-    //   does not happen. Blocking one install is preferable to overwriting the
-    //   only copy of the user's ledger.
-    // - The side copy is not pruned. It happens once per unreadable file:
-    //   the write that follows it leaves a readable v1 ledger behind.
+    // recoverable file (truncated or hand-edited) into permanent loss of every
+    // install it recorded. If the copy itself fails (EACCES, disk full) this
+    // throws and the write does not happen: blocking one install is preferable
+    // to overwriting the only copy of the user's ledger. The side copy is not
+    // pruned; it happens once, since the write leaves a readable v1 ledger.
     await copyFile(storePath, `${storePath}.unreadable-${Date.now()}`);
   }
-  const temporaryPath = `${storePath}.${process.pid}.${randomUUID()}.tmp`;
   // Rows this build could not parse are written back alongside the ones it
   // could, so a downgrade does not quietly delete a newer build's installs.
   const serializable = {
     version: store.version,
     records: [...store.records, ...store.unreadable],
   };
-  await writeFile(temporaryPath, `${JSON.stringify(serializable, null, 2)}\n`, {
-    encoding: 'utf8',
-    flag: 'wx',
-  });
-  await rename(temporaryPath, storePath);
+  await writeStoreFileDurably(
+    storePath,
+    `${JSON.stringify(serializable, null, 2)}\n`,
+    { encoding: 'utf8' },
+  );
 }
 
 export async function listPipelinePackageInstalls(
@@ -407,6 +415,40 @@ export async function insertCapabilityPackageInstallIfAbsent(
   });
 }
 
+/**
+ * Moves an install's local content pin from `expected` to `next` while it
+ * still pins `expected` (a record without its own pin pins its manifest's
+ * hash). The check lives inside the store mutation queue, so an install that
+ * replaced the record meanwhile keeps its pin. True when the pin moved.
+ */
+export async function repinCapabilityPackageInstallLocalContent(
+  storePath: string,
+  owner: CapabilityPackageInstallOwner,
+  expected: string,
+  next: string,
+): Promise<boolean> {
+  if (!isPipelineContentHash(next)) {
+    throw new Error('Invalid pipeline package install content hash');
+  }
+  return mutateStore(storePath, async () => {
+    const store = await readStore(storePath);
+    const ownerKey = installOwnerKey(owner);
+    const index = store.records.findIndex(
+      (entry) => installOwnerKey(entry.owner) === ownerKey,
+    );
+    const record = store.records[index];
+    if (
+      record === undefined ||
+      (record.localContentHash ?? record.pipelineContentHash) !== expected
+    ) {
+      return false;
+    }
+    store.records[index] = { ...record, localContentHash: next };
+    await writeStore(storePath, store);
+    return true;
+  });
+}
+
 export async function removePipelinePackageInstall(
   storePath: string,
   localPipelineId: string,
@@ -427,12 +469,7 @@ export async function removeCapabilityPackageInstall(
     const records = store.records.filter(
       (record) => installOwnerKey(record.owner) !== ownerKey,
     );
-    if (records.length === store.records.length) return;
-    await writeStore(storePath, {
-      version: 1,
-      records,
-      unreadable: store.unreadable,
-      ...(store.unreadableFile ? { unreadableFile: true } : {}),
-    });
+    if (records.length === store.records.length && !store.newerVersion) return;
+    await writeStore(storePath, { ...store, records });
   });
 }

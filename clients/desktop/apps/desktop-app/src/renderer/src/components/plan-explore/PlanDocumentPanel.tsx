@@ -57,23 +57,19 @@ import { Button, TextArea } from '@canopy/ui-shared/components';
 /**
  * Map a comment to the shared review author shape, from the plan owner's
  * perspective on the desktop (CAN-393): their own comments are "You", a web
- * teammate uses their display name (avatar color keyed off their user id), and
+ * teammate uses their display name, and
  * the agent keeps its role.
  */
 function toReviewAuthor(comment: PlanComment): PlanReviewAuthor {
   switch (comment.author) {
     case 'user':
-      return { name: 'You', kind: 'user', isYou: true, colorKey: 'you' };
+      return { name: 'You', kind: 'user', isYou: true };
     case 'remote': {
       const name = comment.remoteAuthor?.displayName ?? 'Teammate';
-      return {
-        name,
-        kind: 'remote',
-        colorKey: comment.remoteAuthor?.userId ?? name,
-      };
+      return { name, kind: 'remote' };
     }
     case 'agent':
-      return { name: 'Agent', kind: 'agent', colorKey: 'agent' };
+      return { name: 'Agent', kind: 'agent' };
   }
 }
 

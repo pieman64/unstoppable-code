@@ -435,7 +435,8 @@ test('GitHub buttons open each repository through the host without toggling sele
   expect(buttons).toHaveLength(3);
   for (let index = 0; index < buttons.length; index++) {
     const name = ['setup-repo', 'second-repo', 'extra-repo'][index];
-    expect(buttons[index].title).toBe('Open on GitHub');
+    // The label is the tooltip and the accessible name, not a native title.
+    expect(buttons[index].hasAttribute('title')).toBe(false);
     expect(buttons[index].closest('label')).toBeNull();
     act(() => buttons[index].click());
     expect(openExternalUrl).toHaveBeenLastCalledWith(

@@ -79,6 +79,21 @@ function build(
           'worker.pipeline.execution.get': (): never => {
             throw new Error('Not exercised.');
           },
+          'worker.codeGraph.buildQueue.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.codeGraph.status.get': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.codeGraph.query': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.codeGraph.snapshot.export': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.codeGraph.languages.validate': (): never => {
+            throw new Error('Not exercised.');
+          },
         },
         instructions: {},
         streams: {},
@@ -106,6 +121,24 @@ it('copies validated requests, metadata and results and fixes the worker caller'
   expect(result).toEqual(roots);
   expect(result).not.toBe(roots);
 });
+it('fails pending calls with the worker half typed transport failure', async () => {
+  const binding = build();
+  // The pair closes both ends at once, so a close before the typed stop
+  // would fail the call as a bare disconnect.
+  pairs[pairs.length - 1].server.send.mockRejectedValueOnce(
+    new CanopyOperationError({
+      kind: 'resource_exhausted',
+      message: 'Frame too large.',
+      retry: { kind: 'never' },
+    }),
+  );
+  await expect(
+    binding.query('worker.filesystem.roots.list', params),
+  ).rejects.toMatchObject({
+    payload: { kind: 'resource_exhausted', retry: { kind: 'never' } },
+  });
+});
+
 it.each([
   new Date(),
   1n,

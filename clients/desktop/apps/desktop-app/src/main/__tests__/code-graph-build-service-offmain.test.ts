@@ -169,7 +169,7 @@ describe('code graph build service main-thread SQLite boundary', () => {
     await rm(mockTestRoot(), { recursive: true, force: true });
   });
 
-  it('checks completion and persists the stable fingerprint through the worker lane', async () => {
+  it('checks completion in the read lane and leaves the fingerprint write to the build host', async () => {
     const response = await runWorktreeCodeGraphBuild({
       projectId: 'canopy',
       worktreeId: 'stork',
@@ -179,17 +179,19 @@ describe('code graph build service main-thread SQLite boundary', () => {
 
     expect(response.ok).toBe(true);
     expect(mockSqliteConstructions).toEqual([]);
-    expect(mockRunCodeGraphWorkerRead).toHaveBeenCalledWith(
+    expect(mockRunCodeGraphWorkerBuild).toHaveBeenCalledWith(
+      'canopy/stork',
       expect.objectContaining({
-        key: 'canopy/stork',
-        request: {
-          dbPath: path.join(mockTestRoot(), 'graph.db'),
-          task: {
-            kind: 'persist-fingerprint',
-            fingerprint: 'stable-fingerprint',
-          },
-        },
+        dbPath: path.join(mockTestRoot(), 'graph.db'),
+        fingerprint: { start: 'stable-fingerprint' },
       }),
+      expect.any(Object),
     );
+    // The read lane only reads: no request there writes the graph.
+    for (const [input] of mockRunCodeGraphWorkerRead.mock.calls) {
+      expect(input).toMatchObject({
+        request: { task: { kind: 'fingerprint-metadata' } },
+      });
+    }
   }, 15_000);
 });

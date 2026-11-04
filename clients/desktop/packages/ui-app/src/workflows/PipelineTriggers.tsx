@@ -2,7 +2,7 @@
 
 import type { JSX, ReactNode } from 'react';
 import { ORCHESTRATOR_LABEL, REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
@@ -72,9 +72,9 @@ function Section({
   return (
     <section className="flex flex-col gap-2" aria-labelledby={headingId}>
       <div className="flex min-h-7 items-center gap-2">
-        <h2 id={headingId} className="text-s font-medium fg-primary">
+        <Heading level={2} variant="title" id={headingId}>
           {title}
-        </h2>
+        </Heading>
         {action ? <div className="ml-auto">{action}</div> : null}
       </div>
       {children}

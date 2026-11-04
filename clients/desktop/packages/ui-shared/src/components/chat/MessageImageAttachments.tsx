@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Tooltip } from '../Tooltip';
 
 export interface MessageImageAttachment {
   /** Stable React key (e.g. the attachment's path or id). */
@@ -72,17 +73,22 @@ export function MessageImageAttachments({
           </>
         );
         return image.onOpen ? (
-          <button
+          <Tooltip
             key={image.key}
-            type="button"
-            onClick={image.onOpen}
-            aria-label={`Open ${image.alt}`}
-            title={image.alt}
-            data-testid="message-image-attachment"
-            className={`focus-ring ${TILE_CLASS}`}
+            label={image.alt}
+            contentClassName="max-w-96 break-all"
+            replayBlock
           >
-            {picture}
-          </button>
+            <button
+              type="button"
+              onClick={image.onOpen}
+              aria-label={`Open ${image.alt}`}
+              data-testid="message-image-attachment"
+              className={`focus-ring ${TILE_CLASS}`}
+            >
+              {picture}
+            </button>
+          </Tooltip>
         ) : (
           <span
             key={image.key}

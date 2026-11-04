@@ -72,9 +72,10 @@ function LineageBreadcrumb({
           })
         }
         data-testid={`subagent-chat-breadcrumb-${tree.root.id}`}
-        title={tree.root.title}
       >
-        <span className={REPLAY_MASK_CLASS}>{tree.root.title}</span>
+        <span className={REPLAY_MASK_CLASS} title={tree.root.title}>
+          {tree.root.title}
+        </span>
       </button>
       {ancestors.map((ancestor) => (
         <span
@@ -104,9 +105,10 @@ function LineageBreadcrumb({
               })
             }
             data-testid={`subagent-chat-breadcrumb-${ancestor.id}`}
-            title={ancestor.title}
           >
-            <span className={REPLAY_MASK_CLASS}>{ancestor.title}</span>
+            <span className={REPLAY_MASK_CLASS} title={ancestor.title}>
+              {ancestor.title}
+            </span>
           </button>
         </span>
       ))}

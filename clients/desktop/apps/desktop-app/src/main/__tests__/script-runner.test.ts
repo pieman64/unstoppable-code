@@ -63,6 +63,11 @@ function emitMockPtyEvent(type: string, payload: MockPtyEventPayload): void {
   });
 }
 
+/** Let an interactive run load the worker's terminals and create its own. */
+async function flushTerminalStart(): Promise<void> {
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+}
+
 jest.mock('../terminal/worker-terminal', () => ({
   workerTerminal: {
     addEventListener: jest.fn((listener: MockPtyListener) => {
@@ -398,8 +403,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     expect(mockPtySpawn.mock.calls[0]?.[0]).toMatchObject({
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -474,8 +478,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
 
     expect(mockPtySpawn.mock.calls[0]?.[0]).toMatchObject({
       projectId: 'shared-container-viewer',
@@ -514,8 +517,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     emitMockPtyEvent('output', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -570,8 +572,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     const managedCommand = mockPtySpawn.mock.calls[0]?.[0].managedCommand;
     expect(managedCommand?.executable).toBe('/usr/sbin/taskpolicy');
     expect(managedCommand?.args).toEqual(
@@ -603,8 +604,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     expect(mockPtyLowerPriority).toHaveBeenCalledWith('interactive-terminal-1');
     emitMockPtyEvent('exit', {
       projectId: 'project-1',
@@ -629,8 +629,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -660,8 +659,7 @@ describe('script-runner', () => {
       tracking,
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     const stoppedPending = stopTrackedShellScript(tracking);
     expect(mockPtyKill).toHaveBeenCalledWith('interactive-terminal-1');
     emitMockPtyEvent('exit', {
@@ -696,8 +694,7 @@ describe('script-runner', () => {
       },
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     emitMockPtyEvent('exit', {
       projectId: 'project-1',
       worktreeId: 'wt-1',
@@ -762,8 +759,7 @@ describe('script-runner', () => {
       tracking: scriptTracking,
     });
 
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushTerminalStart();
     const stoppedPending = stopTrackedShellScript(scriptTracking);
     try {
       expect(mockPtyKill).toHaveBeenCalledTimes(1);

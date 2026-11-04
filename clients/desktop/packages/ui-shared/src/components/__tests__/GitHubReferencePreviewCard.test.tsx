@@ -408,13 +408,9 @@ describe('GitHubReferencePreviewCard status layout', () => {
     expect(rows[0]?.textContent).toBe('#1234');
     expect(rows[1]?.children).toHaveLength(2);
     expect(rows[2]?.className).toContain('h-5');
-    // Shared skeleton fill, still under reduced motion.
-    const bones = shape.querySelectorAll('[aria-hidden="true"].bg-muted');
+    // Shared skeleton blocks: skullet draws the fill and the pulse.
+    const bones = shape.querySelectorAll('[aria-hidden="true"][skullet-bar]');
     expect(bones.length).toBeGreaterThan(0);
-    for (const bone of Array.from(bones)) {
-      expect(bone.className).toContain('animate-pulse');
-      expect(bone.className).toContain('motion-reduce:animate-none');
-    }
   });
 
   it('keeps the text loading state without an item number or the status layout', () => {
@@ -485,19 +481,23 @@ describe('GitHubReferencePreviewCard status layout', () => {
     ).toBeNull();
   });
 
-  it('draws line icons with a 1.5px line at 14px', () => {
+  it('draws line icons with a 1.5px line, the person glyph at the avatar glyph size', () => {
     renderStatus({
       ...STATUS_PULL,
       authorAvatarUrl: null,
       pull: { ...FACTS, checks: 'failing' },
     });
-    for (const glyph of ['circle-x', 'user-round']) {
+    // The checks glyph is 14px; the person glyph sits in the 16px avatar's
+    // shell at 12px. 1.5px of an N-px box is 1.5 × 24 / N artwork units.
+    for (const [glyph, px] of [
+      ['circle-x', 14],
+      ['user-round', 12],
+    ] as const) {
       const svg = card().querySelector<SVGElement>(
         `svg[data-glyph="${glyph}"]`,
       );
       expect(svg).toBeInstanceOf(SVGElement);
-      // 1.5px of a 14px box is 1.5 × 24 / 14 units of the 24-unit artwork.
-      expect(Number(svg?.style.strokeWidth)).toBeCloseTo((1.5 * 24) / 14, 3);
+      expect(Number(svg?.style.strokeWidth)).toBeCloseTo((1.5 * 24) / px, 3);
     }
   });
 

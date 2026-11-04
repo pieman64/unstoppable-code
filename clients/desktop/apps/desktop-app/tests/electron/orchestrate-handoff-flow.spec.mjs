@@ -202,7 +202,9 @@ test('orchestrator hands off cowork and code work, wakes, reads reports and foll
         .fill(
           `[${ROOT_MARKER}] [Canopy-Mock-Request:${tag}] Execute the next handoff step.`,
         );
-      await panel.getByRole('button', { name: 'Send message' }).click();
+      await panel
+        .getByRole('button', { name: 'Send message', exact: true })
+        .click();
       await expect(panel.getByText(reply).first()).toBeVisible({
         timeout: 90_000,
       });

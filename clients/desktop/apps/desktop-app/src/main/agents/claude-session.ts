@@ -114,7 +114,6 @@ import {
   isClaudeCodeGraphOrientationCurrent,
   readClaudeCodeGraphToolAnswer,
   recordClaudeCodeGraphOrientation,
-  resolveClaudeCodeGraphWorktreeRoot,
 } from '../lib/claude-code-graph-orientation';
 import {
   detectClaudeQuotaReached,
@@ -4161,13 +4160,10 @@ export class ClaudeCodeProvider implements AgentProvider {
           codeGraphCustomSourceExtensionsThisTurn === undefined
         ) {
           codeGraphCustomSourceExtensionsThisTurn =
-            await loadConfiguredClaudeCodeGraphSourceExtensions(
-              resolveClaudeCodeGraphWorktreeRoot(
-                opts.projectId,
-                opts.worktreeId,
-                opts.cwd,
-              ),
-            );
+            await loadConfiguredClaudeCodeGraphSourceExtensions({
+              projectId: opts.projectId,
+              worktreeId: opts.worktreeId,
+            });
         }
         const graphScope = {
           projectId: opts.projectId,

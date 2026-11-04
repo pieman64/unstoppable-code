@@ -128,6 +128,14 @@ export const WorkerScriptExecuteParamsSchema = z
       .nullable(),
     /** `background` runs below the app's priority, for automatic work. */
     priority: z.enum(['normal', 'background']),
+    /**
+     * Run in a terminal the worker owns for the worktree, so the command can
+     * take typed input (CAN-5082). `title` names the terminal, defaulting to
+     * the recorded script's label. Needs a workspace, worktree and `record`.
+     */
+    terminal: z
+      .strictObject({ title: z.string().min(1).max(1024).optional() })
+      .optional(),
     /** Keep the run in the worktree's durable run log; gates omit it. */
     record: z
       .strictObject({
@@ -145,6 +153,12 @@ export const WorkerScriptExecuteParamsSchema = z
         code: 'custom',
         path: ['scope'],
         message: 'This run needs a workspace and worktree.',
+      });
+    if (params.terminal && !params.record)
+      context.addIssue({
+        code: 'custom',
+        path: ['terminal'],
+        message: 'A terminal-backed run is kept in the run log.',
       });
   });
 export type WorkerScriptExecuteParams = z.output<

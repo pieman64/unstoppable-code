@@ -12,6 +12,11 @@ import type {
   PortalTarget,
 } from '@canopy/protocol/portal';
 import { listWorkspacePortalEntities } from './workspace-portal-service';
+import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
+import { runW5ReadView } from '../lib/w5-commit-log-file-store';
+import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
+import { readWorkspaceConfigDetailed } from '../lib/workspace-persistence';
+import type { WorkspaceOwnerManifestRead } from './workspace-owner-projection';
 import {
   listStandaloneChats,
   projectStandaloneChatSnapshot,
@@ -39,9 +44,35 @@ export async function buildDesktopSessionSnapshot(
 ): Promise<PortalSessionShellState> {
   const { includeChatSummaries, ...scope } = args ?? {};
   const target = args === undefined ? undefined : scope;
+  const includeStandalone =
+    !target?.workspaceLocalId &&
+    !(includeChatSummaries === true && !isOverviewTarget(target));
   const workspaces: PortalSessionShellState['workspaces'] = [];
   const worktrees: PortalSessionShellState['worktrees'] = [];
+  // Share discovery, not composition: default-project provisioning and runtime
+  // decoration must run after the write-refusing view has closed.
+  const { sidebarSnapshot, ownerEvidence } = await runW5ReadView(
+    { files: [], discoverWorkspaces: true },
+    async (view) => {
+      if (view.status === 'uncaptured' && view.error) throw view.error;
+      const sidebarSnapshot = await readAllSidebarItemsSnapshot();
+      if (sidebarSnapshot.indexAuthority === 'unreadable')
+        throw workspaceStorageUnavailable(sidebarSnapshot.indexUnserved);
+      const ownerEvidence = new Map<string, WorkspaceOwnerManifestRead>();
+      if (includeStandalone) {
+        for (const item of sidebarSnapshot.file.items) {
+          if (item.type === 'cowork')
+            ownerEvidence.set(
+              item.id,
+              await readWorkspaceConfigDetailed(item.id),
+            );
+        }
+      }
+      return { sidebarSnapshot, ownerEvidence };
+    },
+  );
   await listWorkspacePortalEntities(target, {
+    sidebarSnapshot,
     statsSource: 'desktop-session-snapshot',
     onWorkspace: (workspace): void => {
       workspaces.push(workspace);
@@ -77,27 +108,27 @@ export async function buildDesktopSessionSnapshot(
       // Catalog availability must never prevent local session discovery.
     }
   }
-  let standaloneChats =
-    target?.workspaceLocalId ||
-    (includeChatSummaries === true && !isOverviewTarget(target))
-      ? []
-      : (
-          await listStandaloneChats(
-            includeChatSummaries === true
-              ? {
-                  strict: true,
-                  projectIds: workspaces
-                    .filter(
-                      (workspace) =>
-                        !workspace.hidden &&
-                        workspace.type === 'cowork' &&
-                        isActivityId(workspace.localId),
-                    )
-                    .map((workspace) => workspace.localId),
-                }
-              : undefined,
-          )
-        ).map(projectStandaloneChatSnapshot);
+  let standaloneChats = !includeStandalone
+    ? []
+    : (
+        await listStandaloneChats(
+          includeChatSummaries === true
+            ? {
+                sidebarSnapshot,
+                ownerEvidence,
+                strict: true,
+                projectIds: workspaces
+                  .filter(
+                    (workspace) =>
+                      !workspace.hidden &&
+                      workspace.type === 'cowork' &&
+                      isActivityId(workspace.localId),
+                  )
+                  .map((workspace) => workspace.localId),
+              }
+            : { sidebarSnapshot, ownerEvidence },
+        )
+      ).map(projectStandaloneChatSnapshot);
 
   let chatSummaries: PortalSessionShellState['chatSummaries'] = [];
   if (includeChatSummaries === true) {

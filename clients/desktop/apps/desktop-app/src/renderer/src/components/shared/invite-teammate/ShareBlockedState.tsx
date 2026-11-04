@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 
 export interface ShareBlockedStateProps {
   /**
@@ -54,7 +54,9 @@ export function ShareBlockedState({
       {(title || description) && (
         <div className={`space-y-3${header ? ' pt-2' : ''}`}>
           {title && (
-            <h3 className="text-base font-medium fg-primary">{title}</h3>
+            <Heading level={3} variant="section">
+              {title}
+            </Heading>
           )}
           {description && <p className="text-xs fg-secondary">{description}</p>}
         </div>

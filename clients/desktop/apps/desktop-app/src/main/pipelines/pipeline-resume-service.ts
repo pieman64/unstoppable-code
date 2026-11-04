@@ -1,31 +1,29 @@
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
 import { pipelineSpeedError } from './codex-speed';
+import { randomUUID } from 'node:crypto';
 import { access, stat } from 'node:fs/promises';
+import type {
+  WorkerPipelineControlOutcome,
+  WorkerPipelineExecutionResumeParams,
+} from '@canopy/protocol/canopy-core';
 import type { BrowserWindow } from 'electron';
 import { brandEnvName } from '@canopy/desktop-shared/brand/env';
-import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import {
   loadExecutionState,
-  resumePipeline,
   type ExecutionOptions,
   type ExecutionState,
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import type { PipelineScalar } from '@canopy/desktop-shared/types/pipeline';
 import { resolveEnvironmentForRuntime } from '@canopy/desktop-shared/lib/user-environment';
-import { sendToAllWindows } from '../lib/window-send';
 import { resolveLinearToken } from '../lib/linear-auth';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { readEnvironmentConfig } from '../lib/user-environment-store';
 import { getCachedClaudeAuthStatusObserved } from '../auth/provider-auth-state';
 import { getEffectiveClaudeWorkerModePreferences } from '../lib/claude-tui-workers';
-import { createDesktopPipelineObservabilityFeed } from '../observability/ingest';
 import { getResourceMonitorService } from '../resource-monitor';
 import { buildPipelinePreferenceEnv } from './preference-env';
 import { getPipelineAdvisorService } from './pipeline-advisor';
-import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
-import { noteAutomationPipelineEvent } from '../automations/pipeline-run-chat-sends';
-import { enqueueKnownPrFastRefresh } from '../lib/github-poller';
 import {
   getActiveExecutionHandle,
   hasActiveExecution,
@@ -34,13 +32,12 @@ import {
   trackExecution,
 } from './pipeline-execution-registry';
 import { buildPipelineBaseBranchEnv } from './worktree-base-branch-env';
-import { recordPipelineUsageEvent } from './pipeline-usage-events';
+import { cancelPendingTransientRetryTimer } from './transient-error-retry-scheduler';
 import {
-  cancelPendingTransientRetryTimer,
-  notePipelineExecutionEvent,
-} from './transient-error-retry-scheduler';
-import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
-import { followExecutionHandle } from './pipeline-worker-dispatch';
+  controlPipelineThroughLocalWorker,
+  followExecutionHandle,
+} from './pipeline-worker-dispatch';
+import { pipelineExecutorControls } from './pipeline-worker-host';
 
 export interface ResumePipelineExecutionFromMainRequest {
   executionId: string;
@@ -142,26 +139,107 @@ async function terminalMode(
   ).authenticated;
 }
 
+const RESUME_OUTCOMES = {
+  started: 'started',
+  'stale-noop': 'stale_noop',
+  'already-running': 'already_running',
+} as const satisfies Record<
+  ResumePipelineExecutionFromMainResult['status'],
+  WorkerPipelineControlOutcome
+>;
+
+function resumeStatusOf(
+  outcome: WorkerPipelineControlOutcome,
+): ResumePipelineExecutionFromMainResult['status'] {
+  if (outcome === 'stale_noop') return 'stale-noop';
+  if (outcome === 'already_running') return 'already-running';
+  return 'started';
+}
+
+/**
+ * Resume a paused execution, answering its pending inputs. Core records the
+ * resume and dispatches it to the local worker as
+ * `worker.pipeline.execution.resume` (CAN-4141); the pauses and answers it
+ * runs are the dispatched command's.
+ */
 export async function resumePipelineExecutionFromMain(
   request: ResumePipelineExecutionFromMainRequest,
 ): Promise<ResumePipelineExecutionFromMainResult> {
-  if (request.statusReasonIds) {
-    if (request.statusReasonIds.length === 0) {
+  validateStatusReasonIds(request.statusReasonIds);
+  const params: WorkerPipelineExecutionResumeParams = {
+    requestId: request.portalCommandId ?? randomUUID(),
+    executionId: request.executionId,
+    ...(request.statusReasonIds
+      ? { statusReasonIds: request.statusReasonIds }
+      : {}),
+    ...(request.pauseResponses?.length
+      ? {
+          pauseResponses: request.pauseResponses.map((response) => ({
+            ...(response.checkpoint_id !== undefined
+              ? { checkpointId: response.checkpoint_id }
+              : {}),
+            jobId: response.job_id,
+            stepId: response.step_id,
+            ...(response.answers ? { answers: response.answers } : {}),
+          })),
+        }
+      : {}),
+    ...(request.allowStaleNoop ? { allowStaleNoop: true } : {}),
+    initiationSource: request.initiationSource,
+    ...(request.persistInitiationSource
+      ? { persistInitiationSource: true }
+      : {}),
+  };
+  const settled = await controlPipelineThroughLocalWorker(
+    { operation: 'worker.pipeline.execution.resume', params },
+    async (control) => {
+      if (control.operation !== 'worker.pipeline.execution.resume')
+        throw new Error('Unexpected workflow control.');
+      const command = control.params;
+      const result = await resumeOnLocalWorker({
+        ...request,
+        statusReasonIds: command.statusReasonIds,
+        pauseResponses: command.pauseResponses?.map((response) => ({
+          ...(response.checkpointId !== undefined
+            ? { checkpoint_id: response.checkpointId }
+            : {}),
+          job_id: response.jobId,
+          step_id: response.stepId,
+          ...(response.answers ? { answers: response.answers } : {}),
+        })),
+        allowStaleNoop: command.allowStaleNoop,
+        initiationSource: command.initiationSource,
+        persistInitiationSource: command.persistInitiationSource,
+      });
+      return { outcome: RESUME_OUTCOMES[result.status], state: result.state };
+    },
+    request.initiationSource === 'automation' ? 'automation' : 'client',
+  );
+  return { status: resumeStatusOf(settled.outcome), state: settled.state };
+}
+
+function validateStatusReasonIds(statusReasonIds: string[] | undefined): void {
+  if (statusReasonIds) {
+    if (statusReasonIds.length === 0) {
       throw new Error('statusReasonIds must contain at least one reason ID');
     }
-    if (
-      new Set(request.statusReasonIds).size !== request.statusReasonIds.length
-    ) {
+    if (new Set(statusReasonIds).size !== statusReasonIds.length) {
       throw new Error('statusReasonIds must not contain duplicate reason IDs');
     }
     if (
-      request.statusReasonIds.some(
+      statusReasonIds.some(
         (reasonId) => !STATUS_REASON_ID_PATTERN.test(reasonId),
       )
     ) {
       throw new Error('statusReasonIds contains a malformed reason ID');
     }
   }
+}
+
+/** The local worker's side of a resume: the entry point as it always ran. */
+async function resumeOnLocalWorker(
+  request: ResumePipelineExecutionFromMainRequest,
+): Promise<ResumePipelineExecutionFromMainResult> {
   cancelPendingTransientRetryTimer(
     request.executionId,
     request.transientRetryOwnToken,
@@ -356,7 +434,7 @@ export async function resumePipelineExecutionFromMain(
     const secretEnv = { ...runtimeEnv.secretEnv };
     if (linearToken) secretEnv[brandEnvName('LINEAR_API_KEY')] = linearToken;
     const authorization = await authorizePipelineReplay(state);
-    const handle = await resumePipeline(request.executionId, {
+    const handle = await pipelineExecutorControls.resume(request.executionId, {
       ...authorization,
       cwd,
       statusReasonIds: selectedReasonIds,
@@ -379,42 +457,8 @@ export async function resumePipelineExecutionFromMain(
       },
       secretEnv: Object.keys(secretEnv).length ? secretEnv : undefined,
       runtime,
-      onEvent: (event) => {
-        notePipelineExecutionEvent(event, request.getWindow);
-        createDesktopPipelineObservabilityFeed().onExecutionEvent(event);
-        recordPipelineUsageEvent(event);
-        noteAutomationPipelineEvent(event);
-        if (
-          event.type === 'execution.paused' ||
-          event.state.status === 'success' ||
-          event.state.status === 'failure' ||
-          event.state.status === 'cancelled'
-        ) {
-          void Promise.resolve(
-            getAppAdvisorWatcherService().handlePipelineTerminalEvent(event),
-          ).catch(() => undefined);
-        }
-        if (
-          (event.type === 'execution.completed' ||
-            event.type === 'execution.failed') &&
-          (event.state.status === 'success' ||
-            event.state.status === 'failure') &&
-          event.state.project_id &&
-          event.state.worktree_id
-        ) {
-          void enqueueKnownPrFastRefresh(
-            event.state.project_id,
-            event.state.worktree_id,
-          ).catch(() => undefined);
-        }
-        broadcastPipelineExecutionEvent(event);
-        request.onEvent?.(event);
-      },
-      onStepOutput: (event) => {
-        createDesktopPipelineObservabilityFeed().onStepOutput(event);
-        sendToAllWindows(PIPELINE_CHANNELS.STEP_OUTPUT_EVENT, event);
-        request.onStepOutput?.(event);
-      },
+      onEvent: request.onEvent,
+      onStepOutput: request.onStepOutput,
     });
     trackExecution(handle);
     followExecutionHandle(handle);

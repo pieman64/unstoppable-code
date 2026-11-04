@@ -8,7 +8,7 @@
 <h1 align="center">Unstoppable Code</h1>
 
 <p align="center">
-  Run Claude, Codex, and local models side by side on your own projects.
+  Choose your agents. Combine models across providers. Keep work moving.
 </p>
 
 <p align="center">
@@ -16,18 +16,39 @@
   <img src="https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20iOS%20%7C%20Android-lightgrey" alt="Platforms: macOS, Windows, iOS, and Android">
 </p>
 
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="#building-from-source">Build from source</a> ·
+  <a href="https://unstoppable.ai/support">Docs</a>
+</p>
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/assets/hero-dark.png">
   <img src=".github/assets/hero-light.png" alt="The Unstoppable Code desktop app with an agent chat open and three projects in the sidebar">
 </picture>
 
-## What it is
+## Build with agents, your way
 
-Unstoppable Code is an app for working with AI coding agents, available for
-[desktop](https://unstoppable.ai/download),
-[iOS](https://apps.apple.com/us/app/unstoppable-ai/id6786961568), and
-[Android](https://unstoppable.ai/download). Bring your own agents: sign in to
-Claude or Codex, run a local model, or use AI credits from your account.
+Unstoppable Code brings Claude Code, Codex, Cursor, and local models into one
+app for your projects. Choose the provider and model for the task, then connect
+different models across the steps of a pipeline instead of committing your
+whole workflow to one provider.
+
+- **Combine models in one pipeline:** chain prompts, scripts, and checks into
+  repeatable workflows, choosing different models for different steps. Use Claude
+  and GPT models together for code review, or switch models as your needs change.
+- **Use subscriptions you already pay for:** connect a compatible Claude,
+  ChatGPT, or Cursor plan to run Claude Code, Codex, or Cursor. Your provider's
+  plan terms and usage limits still apply. You can also use local models or
+  choose hosted models with AI credits.
+- **Work in parallel:** give each task its own Git worktree so agents can work
+  on separate changes without sharing a working directory.
+- **Keep work moving from your phone:** use the mobile app to control work on
+  a connected desktop when you're away from your desk.
+
+The desktop and mobile clients are MIT-licensed;
+hosted services such as accounts and cloud features are not included in this
+repository.
 
 ## Download
 
@@ -46,21 +67,24 @@ Claude or Codex, run a local model, or use AI credits from your account.
   [Install the desktop app](https://unstoppable.ai/support/getting-started/install-the-app).
 
 > [!NOTE]
-> Agents need a model to run. Connect Claude, Codex, or a local model, or turn
-> on free daily AI credits in your account. See
+> Agents need a model to run. Connect Claude, Codex, or a local model, or buy
+> AI credits in your account. See
 > [Connect Claude, Codex, or a local model](https://unstoppable.ai/support/agents-and-models/connect-claude-codex-or-a-local-model).
 
-## Why is the source here?
+## Building from source
 
-We publish client source under the MIT License with every release and as
-development snapshots from main, so you can read it, audit it, build it, and
-fork it. Snapshots can be synced manually or daily. They may be stale when
-syncs are disabled, delayed, or failed.
+Each client builds on its own from a clone of this repository. Follow the README
+in [`clients/desktop`](clients/desktop/README.md) or
+[`clients/mobile`](clients/mobile/README.md) for what to install and which
+commands to run.
 
-This repository holds the desktop and mobile apps only. Our hosted services,
-like accounts and cloud features, stay closed source. See each client's build
-instructions for service configuration. We don't take pull requests here: we
-build every fix ourselves, so a clear issue is the best way to help.
+Desktop builds use stable hosted service defaults. Mobile connectivity depends
+on generated brand configuration and build settings. Follow each client's README
+for configuration; a successful build alone does not verify sign-in or cloud
+features.
+
+- [Desktop source and build instructions](clients/desktop/README.md)
+- [Mobile source and build instructions](clients/mobile/README.md)
 
 ## Documentation
 
@@ -86,17 +110,17 @@ or GitHub release. Tags named `source-desktop/<version>` and
 and can represent different revisions. Mobile source may appear before its first
 release tag.
 
-## Building from source
+## Source publishing and contributions
 
-Each client builds on its own from a clone of this repository. Follow the README
-in [`clients/desktop`](clients/desktop/README.md) or
-[`clients/mobile`](clients/mobile/README.md) for what to install and which
-commands to run.
+We publish client source under the MIT License with every release and as
+development snapshots from main, so you can read it, audit it, build it, and
+fork it. Snapshots can be synced manually or daily. They may be stale when
+syncs are disabled, delayed, or failed.
 
-Desktop builds use stable hosted service defaults. Mobile connectivity depends
-on generated brand configuration and build settings. Follow each client's README
-for configuration; a successful build alone does not verify sign-in or cloud
-features.
+This repository holds the desktop and mobile apps only. Our hosted services,
+like accounts and cloud features, stay closed source. See each client's build
+instructions for service configuration. We don't take pull requests here: we
+build every fix ourselves, so a clear issue is the best way to help.
 
 ## Getting help
 

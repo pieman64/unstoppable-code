@@ -47,6 +47,10 @@ export function expectSettingsCardShell(
   expect(card?.getAttribute('class')).toBe(SETTINGS_CARD_CLASS);
 }
 
+function classTokens(className: string | null | undefined): string[] {
+  return (className ?? '').split(/\s+/).filter(Boolean).sort();
+}
+
 /**
  * Assert exactly one `<h2>` renders `text` with the shared card title style.
  * Order-independent, and the count guards against a heading being rendered
@@ -61,7 +65,14 @@ export function expectSettingsCardHeading(
   );
 
   expect(headings).toHaveLength(1);
-  expect(headings[0]?.getAttribute('class')).toBe(SETTINGS_CARD_TITLE_CLASS);
+  // `Heading variant="section"` and a hand-rolled row with the exported class
+  // carry the same tokens in a different order. A card whose title takes focus
+  // on open (`tabIndex`) also carries `outline-none`: no focus ring.
+  expect(
+    classTokens(headings[0]?.getAttribute('class')).filter(
+      (token) => token !== 'outline-none',
+    ),
+  ).toEqual(classTokens(SETTINGS_CARD_TITLE_CLASS));
 }
 
 /**

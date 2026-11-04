@@ -9,7 +9,11 @@ import {
 import { brandText } from '@/lib/brand';
 import type { WindowsGitGateState } from '@/hooks/useWindowsGitRequirement';
 import { MonitorDownIcon as AppCatalogMonitorDownIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  ErrorBanner,
+  Heading,
+  ProgressBar,
+} from '@canopy/ui-shared/components';
 
 interface InstallDesktopIconProps {
   className?: string;
@@ -115,12 +119,9 @@ function MissingGitView({
   const linux = window.platform === 'linux';
   return (
     <>
-      <h1
-        className="text-xl font-semibold fg-primary"
-        data-testid="git-gate-title"
-      >
+      <Heading level={1} variant="page" data-testid="git-gate-title">
         Git installation is required
-      </h1>
+      </Heading>
       {linux ? (
         <>
           <p className="text-s fg-secondary">
@@ -231,22 +232,18 @@ interface InstallingViewProps {
 function InstallingView({ message }: InstallingViewProps): JSX.Element {
   return (
     <>
-      <h1
-        className="text-xl font-semibold fg-primary"
-        data-testid="git-gate-title"
-      >
+      <Heading level={1} variant="page" data-testid="git-gate-title">
         Installing Git
-      </h1>
-      {/* Indeterminate bar — winget output is not reliably percentage-able, so
-          there is no `aria-valuenow`. */}
-      <div
-        role="progressbar"
-        aria-label="Installing Git"
-        data-testid="git-gate-progress"
-        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
-      >
-        <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
-      </div>
+      </Heading>
+      {/* Indeterminate: winget output is not reliably percentage-able, so
+          the bar exposes no value. */}
+      <ProgressBar
+        value={0}
+        indeterminate
+        label="Installing Git"
+        hideLabel
+        dataTestId="git-gate-progress"
+      />
       <p
         className="text-s fg-secondary"
         data-testid="git-gate-progress-message"
@@ -300,12 +297,9 @@ function DetectedView({
 }: DetectedViewProps): JSX.Element {
   return (
     <>
-      <h1
-        className="text-xl font-semibold fg-primary"
-        data-testid="git-gate-title"
-      >
+      <Heading level={1} variant="page" data-testid="git-gate-title">
         Git is ready
-      </h1>
+      </Heading>
       <p
         className="text-s fg-secondary"
         data-testid="git-gate-detected-message"
@@ -357,11 +351,11 @@ export function WindowsGitRequiredScreen({
     return (
       <ScreenShell>
         <>
-          <h1 className="text-xl fg-primary" data-testid="git-gate-title">
+          <Heading level={1} variant="page" data-testid="git-gate-title">
             {waiting
               ? 'Waiting for install to finish'
               : 'Git installation is required'}
-          </h1>
+          </Heading>
           <p
             className="text-s fg-secondary"
             data-testid="git-gate-install-explanation"
@@ -479,9 +473,14 @@ export function WindowsGitRequiredScreen({
     default:
       return (
         <ScreenShell>
-          <h1 className="sr-only" data-testid="git-gate-title">
+          <Heading
+            level={1}
+            variant="page"
+            className="sr-only"
+            data-testid="git-gate-title"
+          >
             Checking Git
-          </h1>
+          </Heading>
         </ScreenShell>
       );
   }

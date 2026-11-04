@@ -310,16 +310,15 @@ describe('PickerMenu anatomy', () => {
     const skeleton = container.querySelector('[data-testid="picker-skeleton"]');
     expect(skeleton?.getAttribute('role')).toBe('status');
     expect(skeleton?.textContent).toBe('Loading branches');
-    const rows = skeleton?.querySelectorAll('[aria-hidden="true"]');
+    const rows = Array.from(skeleton?.children ?? []).filter(
+      (child) => child.getAttribute('aria-hidden') === 'true',
+    );
     expect(rows).toHaveLength(4);
     expect(rows?.[0]?.className.split(/\s+/)).toEqual(
       expect.arrayContaining(['h-8', 'px-2']),
     );
-    expect(
-      rows?.[0]?.querySelectorAll(
-        '.animate-pulse.motion-reduce\\:animate-none',
-      ),
-    ).toHaveLength(2);
+    // A leading icon and a label bar, both shared skeleton blocks.
+    expect(rows?.[0]?.querySelectorAll('[skullet-bar]')).toHaveLength(2);
   });
 
   it('early access: rows and the search field take the row menus’ small text', () => {

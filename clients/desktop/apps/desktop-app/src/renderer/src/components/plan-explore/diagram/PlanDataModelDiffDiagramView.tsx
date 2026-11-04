@@ -29,6 +29,7 @@ import {
   SegmentedControl,
   TextArea,
   ThinkingSpinner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type {
@@ -270,9 +271,9 @@ function SelectedEntityDetail({
               {style.label}
             </Badge>
           )}
-          <h4 className="min-w-0 truncate text-s font-semibold fg-primary">
+          <Heading level={4} variant="title" truncate className="min-w-0">
             {data.name}
-          </h4>
+          </Heading>
           {data.kind && <Badge size="compact">{data.kind}</Badge>}
         </div>
         <Button

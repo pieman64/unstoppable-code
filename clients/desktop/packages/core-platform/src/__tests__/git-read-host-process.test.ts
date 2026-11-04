@@ -464,7 +464,7 @@ posix('createGitReadHost: real processes (POSIX)', () => {
     );
   });
 
-  it('unsupported Linux architecture resolves git through the snapshot PATH only', async () => {
+  it('unsupported Linux architectures resolve git through the snapshot PATH only', async () => {
     const fake = fakeGit('snapshot-path');
     const ambient = process.env.PATH;
     expect(ambient?.split(':')).not.toContain(paths.dirname(fake.file));
@@ -476,7 +476,7 @@ posix('createGitReadHost: real processes (POSIX)', () => {
         }),
         probeDirectory: join(base, 'data'),
       },
-      { arch: 's390x' },
+      { arch: 'ppc64' },
     );
     await expect(check(target, fresh('root'), ['x'], '/ignored/saved')).resolves.toEqual(new Set(['snapshot-path'])); // prettier-ignore
     expect(lines(fake.log)).toEqual(['check-ignore']);

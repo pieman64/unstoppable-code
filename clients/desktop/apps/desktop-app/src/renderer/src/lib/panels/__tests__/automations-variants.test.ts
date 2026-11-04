@@ -18,16 +18,14 @@ describe('automations panel variants', () => {
     for (const variant of AUTOMATIONS_PANEL_VARIANTS) {
       expect(AUTOMATIONS_PANEL_VARIANT_LABELS[variant]).toBeTruthy();
     }
-    expect(AUTOMATIONS_PANEL_VARIANT_LABELS.full).toBe('Automations');
+    expect(AUTOMATIONS_PANEL_VARIANT_LABELS.full).toBe('Workflows');
     expect(AUTOMATIONS_PANEL_VARIANT_LABELS.upcoming).toBe(
-      'Automations (Upcoming)',
+      'Workflows (Schedule)',
     );
     expect(AUTOMATIONS_PANEL_VARIANT_LABELS.overview).toBe(
-      'Automations (Overview)',
+      'Workflows (Library)',
     );
-    expect(AUTOMATIONS_PANEL_VARIANT_LABELS.completed).toBe(
-      'Automations (Completed)',
-    );
+    expect(AUTOMATIONS_PANEL_VARIANT_LABELS.completed).toBe('Workflows (Runs)');
   });
 
   it('guards the closed variant union', () => {

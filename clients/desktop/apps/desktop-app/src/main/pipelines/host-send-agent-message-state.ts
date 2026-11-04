@@ -99,6 +99,11 @@ export function createSendFingerprint(parts: {
   inputs: unknown;
   owner: unknown;
   agentOrigin: unknown;
+  /**
+   * A converted agent automation's native grant (CAN-5479). Absent, it
+   * leaves the fingerprint of every other send as it was.
+   */
+  nativeGrant?: unknown;
 }): string {
   return createHash('sha256')
     .update(
@@ -107,6 +112,9 @@ export function createSendFingerprint(parts: {
         inputs: parts.inputs,
         owner: parts.owner,
         agentOrigin: parts.agentOrigin ?? null,
+        ...(parts.nativeGrant !== undefined
+          ? { nativeGrant: parts.nativeGrant }
+          : {}),
       }),
     )
     .digest('hex');

@@ -164,6 +164,15 @@ jest.mock('../code-graph/build-runner', () => ({
     ...args: Parameters<typeof CodeGraphBuildRunner.cancelBuild>
   ): Promise<void> => mockedCancelBuild(...args),
 }));
+const mockedDrainDaemonCodeGraph = jest.fn<Promise<void>, [string, string]>(
+  () => Promise.resolve(),
+);
+jest.mock('../code-graph/daemon-code-graph-route', () => ({
+  drainDaemonCodeGraphWorktree: (
+    workspaceId: string,
+    worktreeId: string,
+  ): Promise<void> => mockedDrainDaemonCodeGraph(workspaceId, worktreeId),
+}));
 const mockedCancelCodeGraphReads = jest.fn<Promise<void>, [string]>(
   (): Promise<void> => Promise.resolve(),
 );
@@ -699,6 +708,21 @@ describe('worktree-data-cleanup', () => {
     expect(cancelBuildOrder).toBeDefined();
     expect(closeOrder).toBeDefined();
     expect(cancelBuildOrder).toBeLessThan(closeOrder ?? 0);
+  });
+
+  it('drains the daemon builds it started before closing the engine', async () => {
+    await cleanupPersistedWorktreeData('project-1', 'wt-1');
+
+    // A daemon build host writes the same graph.db under the same lease
+    // (CAN-5089); one still running could recreate the removed graph.
+    expect(mockedDrainDaemonCodeGraph).toHaveBeenCalledWith(
+      'project-1',
+      'wt-1',
+    );
+    const drainOrder = mockedDrainDaemonCodeGraph.mock.invocationCallOrder[0];
+    const closeOrder = mockedCloseWorktree.mock.invocationCallOrder[0];
+    expect(drainOrder).toBeDefined();
+    expect(drainOrder).toBeLessThan(closeOrder ?? 0);
   });
 
   it('awaits matching read workers before closing and removing graph data', async () => {

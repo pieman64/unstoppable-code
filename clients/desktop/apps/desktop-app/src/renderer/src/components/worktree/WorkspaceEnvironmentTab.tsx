@@ -2,6 +2,7 @@ import { SecureStorageNotice } from '@/components/auth/SecureStorageNotice';
 import {
   Button,
   DialogFormField,
+  Heading,
   Notice,
   type SettingsSaveState,
 } from '@canopy/ui-shared/components';
@@ -21,8 +22,8 @@ import {
   useState,
 } from 'react';
 import type {
-  EnvironmentConfigData,
-  EnvironmentDefinition,
+  EnvironmentConfigView,
+  EnvironmentDefinitionView,
   EnvironmentRuntime,
   WorkspaceEnvironmentAssignment,
 } from '@canopy/desktop-shared/types';
@@ -108,7 +109,7 @@ function runtimeHelper(
 }
 
 function findAssignment(
-  data: EnvironmentConfigData,
+  data: EnvironmentConfigView,
   workspaceId: string,
 ): WorkspaceEnvironmentAssignment | undefined {
   return data.workspaceAssignments.find(
@@ -117,7 +118,7 @@ function findAssignment(
 }
 
 function getEffectiveEnvironmentId(
-  data: EnvironmentConfigData,
+  data: EnvironmentConfigView,
   assignment: WorkspaceEnvironmentAssignment | undefined,
   runtime: EnvironmentRuntime,
 ): string | null {
@@ -127,17 +128,17 @@ function getEffectiveEnvironmentId(
 }
 
 function getFallbackEnvironment(
-  data: EnvironmentConfigData,
+  data: EnvironmentConfigView,
   runtime: EnvironmentRuntime,
-): EnvironmentDefinition | undefined {
+): EnvironmentDefinitionView | undefined {
   const globalId = data.globalRuntimes[runtime];
   if (!globalId) return undefined;
   return data.environments.find((environment) => environment.id === globalId);
 }
 
 function sortEnvironments(
-  environments: ReadonlyArray<EnvironmentDefinition>,
-): EnvironmentDefinition[] {
+  environments: ReadonlyArray<EnvironmentDefinitionView>,
+): EnvironmentDefinitionView[] {
   return [...environments].sort(compareEnvironmentDefinitions);
 }
 
@@ -361,7 +362,7 @@ export function WorkspaceEnvironmentTab({
           updatedAt: now,
         });
       }
-      const nextConfig: EnvironmentConfigData = {
+      const nextConfig: EnvironmentConfigView = {
         ...persisted,
         workspaceAssignments: nextWorkspaceAssignments,
       };
@@ -575,7 +576,9 @@ export function WorkspaceEnvironmentTab({
     >
       {storageNotice}
       <div className="space-y-1">
-        <h3 className="text-s font-semibold fg-primary">Environment</h3>
+        <Heading level={3} variant="title">
+          Environment
+        </Heading>
         <p className="text-xs fg-secondary">
           Assign environments for{' '}
           <span className="font-medium fg-primary">{workspaceName}</span>.

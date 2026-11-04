@@ -7,6 +7,7 @@ import type {
 import {
   SegmentedControl,
   type SegmentedControlOption,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
@@ -234,9 +235,9 @@ export function StepDetailPanel({
             </FormField>
 
             <div>
-              <h4 className="text-xs font-medium fg-secondary mb-2">
+              <Heading level={4} variant="label" className="mb-2">
                 Inputs (with)
-              </h4>
+              </Heading>
               <KeyValueEditor
                 value={step.with || {}}
                 onChange={handleWithChange}
@@ -266,7 +267,9 @@ export function StepDetailPanel({
                 className="pt-2 border-t space-y-4"
                 data-testid="step-target-editor"
               >
-                <h4 className="text-xs font-medium fg-secondary ">Target</h4>
+                <Heading level={4} variant="label">
+                  Target
+                </Heading>
 
                 <FormField
                   label="Scope"
@@ -372,7 +375,9 @@ export function StepDetailPanel({
 
       {/* Common fields */}
       <div className="pt-2 border-t space-y-4">
-        <h4 className="text-xs font-medium fg-secondary ">Common settings</h4>
+        <Heading level={4} variant="label">
+          Common settings
+        </Heading>
 
         <FormField
           label="Condition (if)"
@@ -389,9 +394,9 @@ export function StepDetailPanel({
         </FormField>
 
         <div>
-          <h4 className="text-xs font-medium fg-secondary mb-2">
+          <Heading level={4} variant="label" className="mb-2">
             Environment variables
-          </h4>
+          </Heading>
           <KeyValueEditor
             value={step.env || {}}
             onChange={handleEnvChange}

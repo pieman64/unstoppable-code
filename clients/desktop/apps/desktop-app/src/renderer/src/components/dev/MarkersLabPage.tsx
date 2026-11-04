@@ -5,6 +5,7 @@ import {
   Chip,
   Count,
   Dot,
+  Heading,
   StatusGlyph,
   type BadgeSize,
   type BadgeTone,
@@ -99,7 +100,9 @@ function Panel({
       data-testid={`markers-lab-${id}`}
       className="flex flex-col gap-3"
     >
-      <h2 className="text-m font-medium fg-primary">{title}</h2>
+      <Heading level={2} variant="section">
+        {title}
+      </Heading>
       <div className="flex flex-col gap-3 rounded-lg bg-secondary p-4">
         {children}
       </div>
@@ -442,7 +445,9 @@ export function MarkersLabPage(): JSX.Element {
     <div className="min-h-screen bg-base fg-primary">
       <main className="mx-auto flex max-w-240 flex-col gap-8 px-4 py-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-lg font-medium">Markers lab</h1>
+          <Heading level={1} variant="page">
+            Markers lab
+          </Heading>
           <div className="flex flex-wrap items-center gap-1.5">
             <Button
               size="sm"

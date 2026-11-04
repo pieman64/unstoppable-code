@@ -21,6 +21,7 @@ import {
 } from './panelHarness.mjs';
 import { closeCanopy, getMainWindow, launchCanopy } from './launchCanopy.mjs';
 import { CanopyAppDriver, closePanelTab } from './canopyApp.mjs';
+import { chooseSettingsOption } from './helpers/settingsSelect.mjs';
 import {
   captureFixtureCatalog,
   closeServerWithBoundary,
@@ -5453,9 +5454,10 @@ terminalCleanupTest(
         )
         .toBe(true);
 
-      await window
-        .getByTestId('browser-profile-selection')
-        .selectOption(named.profileId);
+      await chooseSettingsOption(
+        window.getByTestId('browser-profile-selection'),
+        named.profileId,
+      );
       await window.getByTestId('browser-profile-set-default').click();
       await expect(window.getByTestId('browser-profile-menu')).toContainText(
         'Default updated',
@@ -6234,9 +6236,10 @@ terminalCleanupTest(
       await app.closeSettings();
       await app.openMainPage();
       await window.getByTestId('browser-profile-picker').click();
-      await window
-        .getByTestId('browser-profile-selection')
-        .selectOption(named.profileId);
+      await chooseSettingsOption(
+        window.getByTestId('browser-profile-selection'),
+        named.profileId,
+      );
       await window.getByTestId('browser-profile-new-tab').click();
       await expect(window.getByTestId('browser-profile-menu')).toHaveCount(0);
       const list = () =>
@@ -6270,9 +6273,10 @@ terminalCleanupTest(
         }, url);
       await expect.poll(cookies).toEqual([[], ['toolbar-source']]);
       await window.getByTestId('browser-profile-picker').last().click();
-      await window
-        .getByTestId('browser-profile-selection')
-        .selectOption('task');
+      await chooseSettingsOption(
+        window.getByTestId('browser-profile-selection'),
+        'task',
+      );
       await window.getByTestId('browser-profile-replace').click();
       await expect(window.getByTestId('browser-profile-menu')).toHaveCount(0);
       await expect

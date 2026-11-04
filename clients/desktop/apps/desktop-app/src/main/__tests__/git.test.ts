@@ -77,6 +77,8 @@ import {
   getRemoteUrlStrict,
   initLocalRepo,
   isAncestor,
+  isBranchNameAvailable,
+  validateBranchName,
   listBranches,
   listIgnoredPathEntries,
   listTrackedFiles,
@@ -468,6 +470,39 @@ function withPlatform(
       }
     });
 }
+
+describe('Linux branch validation failures', () => {
+  it('surfaces missing Git instead of treating every generated worktree name as unavailable', async () => {
+    await withPlatform('linux', async () => {
+      mockExecFile((_cmd, args, _opts, cb) => {
+        if (handleLoginShellPathMock(args, cb)) return;
+        cb?.(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }), {
+          stdout: '',
+          stderr: '',
+        });
+      });
+      await expect(isBranchNameAvailable('/repo', 'robin-123')).rejects.toThrow(
+        'spawn git ENOENT',
+      );
+    });
+  });
+
+  it.each(['linux', 'darwin', 'win32'] as const)(
+    'still reports an invalid branch name on %s',
+    async (platform) => {
+      await withPlatform(platform, async () => {
+        mockExecFile((_cmd, args, _opts, cb) => {
+          if (handleLoginShellPathMock(args, cb)) return;
+          cb?.(Object.assign(new Error('invalid branch name'), { code: 128 }), {
+            stdout: '',
+            stderr: '',
+          });
+        });
+        expect(await validateBranchName('/repo', 'bad..name')).toBe(false);
+      });
+    },
+  );
+});
 
 function worktreeAddKey(args: string): string {
   return `-c core.hooksPath=${devNull} worktree add ${args}`;

@@ -11,6 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import * as hostPlatform from '@canopy/core-platform/host-platform';
 import type {
   W5CommitRequest,
   W5Resource,
@@ -518,6 +519,9 @@ describe('record after Git', () => {
   ])(
     'refuses %s before Git or any decision, releasing a key',
     async (_label, newBranchName, reason) => {
+      // Exercise Linux's exit-code check on every host. Real subprocess errors
+      // come from outside Jest's realm and need not be instanceof Error here.
+      jest.spyOn(hostPlatform, 'hostOperatingSystem').mockReturnValue('linux');
       const refused = await observeRefusal(() =>
         rename({ newBranchName, idempotencyKey: 'key' }),
       );

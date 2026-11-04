@@ -27,7 +27,6 @@ import { WorkflowsPageHeader } from '../workflows/WorkflowsPageHeader';
 import { WorkflowsTabPanel } from '../workflows/WorkflowsTabPanel';
 import { PageContent } from '../shared/PageContent';
 import { useShallow } from 'zustand/react/shallow';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import type {
   AutomationAction,
   AutomationMutationResponse,
@@ -94,7 +93,12 @@ import {
   PickerMenuOptionDescription,
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
-  SortableColumnHeader,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
 } from '@canopy/ui-shared/components';
 import {
   cycleTriggeredSort,
@@ -1118,191 +1122,187 @@ function TriggeredActivitiesTable({
   const activeColumn = sort?.column ?? null;
   const direction = sort?.direction ?? null;
   return (
-    <div className="overflow-hidden rounded-lg border">
-      <table className="w-full text-left text-xs">
-        <thead className="bg-fg-primary/[0.03] text-2xs fg-secondary">
-          <tr>
-            <SortableColumnHeader
-              label="Name"
-              column="name"
-              activeColumn={activeColumn}
-              direction={direction}
-              onToggle={onSortToggle}
-              testId="automations-sort-name"
-            />
-            <th className="px-3 py-2">Trigger</th>
-            <th className="px-3 py-2">Action</th>
-            <SortableColumnHeader
-              label="Next trigger"
-              column="nextTrigger"
-              activeColumn={activeColumn}
-              direction={direction}
-              onToggle={onSortToggle}
-              testId="automations-sort-nextTrigger"
-            />
-            <SortableColumnHeader
-              label="Last result"
-              column="lastResult"
-              activeColumn={activeColumn}
-              direction={direction}
-              onToggle={onSortToggle}
-              testId="automations-sort-lastResult"
-            />
-            <SortableColumnHeader
-              label="Status"
-              column="status"
-              activeColumn={activeColumn}
-              direction={direction}
-              onToggle={onSortToggle}
-              className="w-35 whitespace-nowrap"
-              testId="automations-sort-status"
-            />
-            <th className="w-35 px-3 py-2 text-right whitespace-nowrap">
-              Actions
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {sortedRows.map(({ activity, nextRun }) => {
-            const isConfirmingDelete = activityDeleting === activity.id;
-            const persistedRunning = recentRuns.some(
-              (run) =>
-                run.activityId === activity.id && run.status === 'running',
-            );
-            const isRunning =
-              activityRunning === activity.id || persistedRunning;
-            const isRevealed = revealTarget?.activityId === activity.id;
-            const isSelected = selectedActivityId === activity.id || isRevealed;
-            const runsIn = describeRunsIn(activity);
-            return (
-              <tr
-                key={activity.id}
-                data-testid={`automations-activity-row-${activity.id}`}
-                {...(isRevealed
-                  ? { 'data-revealed': 'true', tabIndex: -1 }
-                  : {})}
-                onClick={(): void => {
-                  onSelect(activity.id);
-                  onView(activity);
-                }}
-                className={`cursor-pointer border-t align-middle transition-colors ${
-                  isSelected ? 'bg-accent-subtle' : 'hover:bg-fg-primary/[0.04]'
-                }`}
-              >
-                <td className="break-words px-3 py-2 fg-primary">
-                  {activity.name}
-                  {isRevealed && revealTarget !== null && (
-                    <span
-                      className="block fg-secondary"
-                      data-testid={`automations-activity-newly-installed-${activity.id}`}
-                    >
-                      {automationRevealRowCue(revealTarget.outcome)}
-                    </span>
-                  )}
-                  {runsIn !== null && (
-                    <span
-                      className="block fg-tertiary"
-                      data-testid={`automations-activity-runs-in-${activity.id}`}
-                    >
-                      {runsIn}
-                    </span>
-                  )}
-                </td>
-                <td className="break-words px-3 py-2 fg-secondary">
-                  {activity.schedule.kind === 'cron'
-                    ? `${getAutomationTriggerLabel(activity.schedule)} · ${activity.schedule.expression}`
-                    : `${getAutomationTriggerLabel(activity.schedule)} · ${new Date(activity.schedule.runAt).toLocaleString()}`}
-                </td>
-                {/* Prompt actions quote the prompt, so the cell is blocked. */}
-                <td
-                  className={`${POSTHOG_REPLAY_BLOCK_CLASS} break-words px-3 py-2 fg-secondary`}
-                  data-testid={`automations-activity-action-${activity.id}`}
-                >
-                  {describeAction(activity.action)}
-                </td>
-                <td className="px-3 py-2 fg-secondary">
-                  {formatNextRunPreview(nextRun) ?? '—'}
-                </td>
-                <td className="px-3 py-2 fg-secondary">
-                  {activity.lastResult
-                    ? `${activity.lastResult.status} · ${formatRelativeTime(activity.lastResult.completedAt)}`
-                    : '—'}
-                </td>
-                <td className="px-3 py-2">
-                  <StatusBadgeDropdown
-                    activity={activity}
-                    isRunning={isRunning}
-                    onToggleEnabled={onToggleEnabled}
-                  />
-                </td>
-                <td className="px-3 py-2">
-                  <TableActionsCell
-                    onFocusLeave={onDisarmDelete}
-                    onEscape={(): boolean => {
-                      if (!isConfirmingDelete) {
-                        return false;
-                      }
-                      onDisarmDelete();
-                      return true;
-                    }}
+    <DataTableFrame caption="Triggered automations">
+      <DataTableHead>
+        <DataTableHeaderCell
+          sort={{
+            direction: activeColumn === 'name' ? direction : null,
+            onToggle: (): void => onSortToggle('name'),
+            testId: 'automations-sort-name',
+          }}
+        >
+          Name
+        </DataTableHeaderCell>
+        <DataTableHeaderCell>Trigger</DataTableHeaderCell>
+        <DataTableHeaderCell>Action</DataTableHeaderCell>
+        <DataTableHeaderCell
+          sort={{
+            direction: activeColumn === 'nextTrigger' ? direction : null,
+            onToggle: (): void => onSortToggle('nextTrigger'),
+            testId: 'automations-sort-nextTrigger',
+          }}
+        >
+          Next trigger
+        </DataTableHeaderCell>
+        <DataTableHeaderCell
+          sort={{
+            direction: activeColumn === 'lastResult' ? direction : null,
+            onToggle: (): void => onSortToggle('lastResult'),
+            testId: 'automations-sort-lastResult',
+          }}
+        >
+          Last result
+        </DataTableHeaderCell>
+        <DataTableHeaderCell
+          width="8.75rem"
+          sort={{
+            direction: activeColumn === 'status' ? direction : null,
+            onToggle: (): void => onSortToggle('status'),
+            testId: 'automations-sort-status',
+          }}
+        >
+          Status
+        </DataTableHeaderCell>
+        <DataTableHeaderCell width="8.75rem" align="right">
+          Actions
+        </DataTableHeaderCell>
+      </DataTableHead>
+      <DataTableBody>
+        {sortedRows.map(({ activity, nextRun }) => {
+          const isConfirmingDelete = activityDeleting === activity.id;
+          const persistedRunning = recentRuns.some(
+            (run) => run.activityId === activity.id && run.status === 'running',
+          );
+          const isRunning = activityRunning === activity.id || persistedRunning;
+          const isRevealed = revealTarget?.activityId === activity.id;
+          const isSelected = selectedActivityId === activity.id || isRevealed;
+          const runsIn = describeRunsIn(activity);
+          return (
+            <DataTableRow
+              key={activity.id}
+              data-testid={`automations-activity-row-${activity.id}`}
+              data-revealed={isRevealed ? 'true' : undefined}
+              focusable={isRevealed}
+              selected={isSelected}
+              onActivate={(): void => {
+                onSelect(activity.id);
+                onView(activity);
+              }}
+            >
+              <DataTableCell tone="primary" overflow="wrap">
+                {activity.name}
+                {isRevealed && revealTarget !== null && (
+                  <span
+                    className="block fg-secondary"
+                    data-testid={`automations-activity-newly-installed-${activity.id}`}
                   >
-                    {activity.sharedPipelineReview && (
-                      <TableActionButton
-                        label="Review"
-                        onClick={(): void => onReview(activity)}
-                        testId={`automations-review-${activity.id}`}
-                      >
-                        <PipelineIcon width={14} height={14} />
-                      </TableActionButton>
-                    )}
+                    {automationRevealRowCue(revealTarget.outcome)}
+                  </span>
+                )}
+                {runsIn !== null && (
+                  <span
+                    className="block fg-tertiary"
+                    data-testid={`automations-activity-runs-in-${activity.id}`}
+                  >
+                    {runsIn}
+                  </span>
+                )}
+              </DataTableCell>
+              <DataTableCell overflow="wrap">
+                {activity.schedule.kind === 'cron'
+                  ? `${getAutomationTriggerLabel(activity.schedule)} · ${activity.schedule.expression}`
+                  : `${getAutomationTriggerLabel(activity.schedule)} · ${new Date(activity.schedule.runAt).toLocaleString()}`}
+              </DataTableCell>
+              {/* Prompt actions quote the prompt, so the cell is blocked. */}
+              <DataTableCell
+                overflow="wrap"
+                replay="block"
+                data-testid={`automations-activity-action-${activity.id}`}
+              >
+                {describeAction(activity.action)}
+              </DataTableCell>
+              <DataTableCell>
+                {formatNextRunPreview(nextRun) ?? '—'}
+              </DataTableCell>
+              <DataTableCell>
+                {activity.lastResult
+                  ? `${activity.lastResult.status} · ${formatRelativeTime(activity.lastResult.completedAt)}`
+                  : '—'}
+              </DataTableCell>
+              <DataTableCell>
+                <StatusBadgeDropdown
+                  activity={activity}
+                  isRunning={isRunning}
+                  onToggleEnabled={onToggleEnabled}
+                />
+              </DataTableCell>
+              <DataTableCell align="right">
+                <TableActionsCell
+                  onFocusLeave={onDisarmDelete}
+                  onEscape={(): boolean => {
+                    if (!isConfirmingDelete) {
+                      return false;
+                    }
+                    onDisarmDelete();
+                    return true;
+                  }}
+                >
+                  {activity.sharedPipelineReview && (
                     <TableActionButton
-                      label="Run now"
-                      onClick={(): void => {
-                        void onRunNow(activity);
-                      }}
-                      disabled={isRunning}
-                      testId={`automations-run-now-${activity.id}`}
+                      label="Review"
+                      onClick={(): void => onReview(activity)}
+                      testId={`automations-review-${activity.id}`}
                     >
-                      <PlayCircleIcon width={14} height={14} />
+                      <PipelineIcon width={14} height={14} />
                     </TableActionButton>
-                    <TableActionButton
-                      label="Edit"
-                      onClick={(): void => onEdit(activity)}
-                      testId={`automations-edit-${activity.id}`}
-                    >
-                      <DocumentPencilIcon width={14} height={14} />
-                    </TableActionButton>
-                    {/* Usage-limit resume rows are generated by the "Schedule
+                  )}
+                  <TableActionButton
+                    label="Run now"
+                    onClick={(): void => {
+                      void onRunNow(activity);
+                    }}
+                    disabled={isRunning}
+                    testId={`automations-run-now-${activity.id}`}
+                  >
+                    <PlayCircleIcon width={14} height={14} />
+                  </TableActionButton>
+                  <TableActionButton
+                    label="Edit"
+                    onClick={(): void => onEdit(activity)}
+                    testId={`automations-edit-${activity.id}`}
+                  >
+                    <DocumentPencilIcon width={14} height={14} />
+                  </TableActionButton>
+                  {/* Usage-limit resume rows are generated by the "Schedule
                         Resume" banner and bind to a local pipeline execution,
                         so they can never be shared — hide the affordance
                         rather than offer a dead end. */}
-                    {activity.action.type !== 'pipeline_execution_resume' && (
-                      <TableActionButton
-                        label="Share"
-                        onClick={(): void => onShare(activity)}
-                        testId={`automations-share-${activity.id}`}
-                      >
-                        <ShareIcon width={14} height={14} />
-                      </TableActionButton>
-                    )}
+                  {activity.action.type !== 'pipeline_execution_resume' && (
                     <TableActionButton
-                      label={isConfirmingDelete ? 'Confirm delete' : 'Delete'}
-                      onClick={(): void => {
-                        void onDelete(activity);
-                      }}
-                      testId={`automations-delete-${activity.id}`}
-                      tone={isConfirmingDelete ? 'destructive' : 'default'}
+                      label="Share"
+                      onClick={(): void => onShare(activity)}
+                      testId={`automations-share-${activity.id}`}
                     >
-                      <TrashIcon width={14} height={14} />
+                      <ShareIcon width={14} height={14} />
                     </TableActionButton>
-                  </TableActionsCell>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+                  )}
+                  <TableActionButton
+                    label={isConfirmingDelete ? 'Confirm delete' : 'Delete'}
+                    onClick={(): void => {
+                      void onDelete(activity);
+                    }}
+                    testId={`automations-delete-${activity.id}`}
+                    tone={isConfirmingDelete ? 'destructive' : 'default'}
+                  >
+                    <TrashIcon width={14} height={14} />
+                  </TableActionButton>
+                </TableActionsCell>
+              </DataTableCell>
+            </DataTableRow>
+          );
+        })}
+      </DataTableBody>
+    </DataTableFrame>
   );
 }
 

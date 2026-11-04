@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server';
-import { act, type ReactNode } from 'react';
+import { act, useEffect, type JSX, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Markdown,
@@ -231,6 +231,63 @@ describe('Markdown', () => {
         configurable: true,
         value: originalCancelAnimationFrame,
       });
+      globalThis.IS_REACT_ACT_ENVIRONMENT = originalActEnvironment;
+    }
+  });
+
+  it('keeps every link mounted while a streaming reply grows', () => {
+    const originalActEnvironment = globalThis.IS_REACT_ACT_ENVIRONMENT;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    let customMounts = 0;
+    const CustomLink = ({
+      children,
+      href,
+    }: {
+      children?: ReactNode;
+      href?: string;
+    }): JSX.Element => {
+      useEffect(() => {
+        customMounts += 1;
+      }, []);
+      return (
+        <a data-testid="custom-link" href={href}>
+          {children}
+        </a>
+      );
+    };
+    const customOptions = markdownOptions({ a: CustomLink });
+    const reply = '[docs](https://example.com/docs) then';
+    try {
+      for (const options of [undefined, customOptions]) {
+        act(() => {
+          root.render(
+            <Markdown options={options} streaming>
+              {reply}
+            </Markdown>,
+          );
+        });
+        const link = host.querySelector('a');
+        expect(link?.getAttribute('href')).toBe('https://example.com/docs');
+        // Each streamed frame renders the longer reply; the link that was
+        // already on screen keeps its element (and so its hover and focus).
+        for (const more of [' more', ' more text', ' more text arrives.']) {
+          act(() => {
+            root.render(
+              <Markdown options={options} streaming>
+                {`${reply}${more}`}
+              </Markdown>,
+            );
+          });
+          expect(host.querySelector('a')).toBe(link);
+        }
+      }
+      expect(customMounts).toBe(1);
+    } finally {
+      act(() => root.unmount());
+      host.remove();
       globalThis.IS_REACT_ACT_ENVIRONMENT = originalActEnvironment;
     }
   });

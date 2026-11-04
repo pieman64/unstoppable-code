@@ -26,8 +26,13 @@ const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
   ['preferences.last-good.json', 'preferences'],
   ['preferences.generation.json', 'preferences'],
   ['migrations.json', 'startup_migrations'],
+  ['migrations.last-good.json', 'startup_migrations'],
+  ['pipeline-plugin-preferences.json', 'pipeline_plugin_preferences'],
 ]);
 const PREFERENCES_BACKUP = /^preferences\.backup-.+\.json$/;
+const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
+const PIPELINE_PREFERENCES_DAMAGED =
+  /^pipeline-plugin-preferences\.json\.damaged-.+$/;
 const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 
@@ -37,7 +42,13 @@ const fold = (path: string): string => resolve(path).toLowerCase();
 function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
   return (
     DATA_ROOT_FILES.get(name) ??
-    (PREFERENCES_BACKUP.test(name) ? 'preferences' : undefined)
+    (PREFERENCES_BACKUP.test(name)
+      ? 'preferences'
+      : MIGRATIONS_DAMAGED.test(name)
+        ? 'startup_migrations'
+        : PIPELINE_PREFERENCES_DAMAGED.test(name)
+          ? 'pipeline_plugin_preferences'
+          : undefined)
   );
 }
 

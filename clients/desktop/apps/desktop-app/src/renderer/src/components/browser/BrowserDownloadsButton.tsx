@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { CircularProgress } from '@canopy/ui-shared';
+import { ProgressRing } from '@canopy/ui-shared';
 import { Count, HeaderActionButton } from '@canopy/ui-shared/components';
 import { DownloadIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -56,7 +56,7 @@ export function BrowserDownloadsButton({
     >
       {activeCount > 0 ? (
         <>
-          <CircularProgress percentage={percentage} tone="neutral" size={16} />
+          <ProgressRing value={percentage} tone="neutral" />
           <Count
             value={activeCount}
             placement="icon"

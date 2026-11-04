@@ -80,14 +80,44 @@ describe('ComponentsLabPage', () => {
       PENDING_UNIFICATIONS.length,
     );
     expect(
-      container.querySelector('[data-pending="overlays"]')?.textContent,
-    ).toContain('Merging now');
+      container.querySelector('[data-pending="menus"]')?.textContent,
+    ).toContain('Menus, listboxes and pickers');
 
     const buttonRow = Array.from(
       container.querySelectorAll<HTMLButtonElement>('nav button'),
     ).find((row) => (row.textContent ?? '').trim() === 'Button');
     if (!buttonRow) throw new Error('No Button catalog row');
     act(() => buttonRow.click());
+
+    expect(
+      container.querySelector('[data-testid="components-lab-button"]'),
+    ).not.toBeNull();
+    expect(window.location.search).toContain('component=button');
+  });
+
+  it('opens on an overview grid with one card per unified component', () => {
+    mount('?theme=light');
+    const grid = container.querySelector(
+      '[data-testid="components-lab-overview"]',
+    );
+    expect(grid).not.toBeNull();
+    // Only entries with a stage get a card; a bare specimen has nothing to show.
+    const unified = COMPONENTS_LAB_ENTRIES.filter(
+      (entry) => entry.group === 'Unified' && entry.Stage,
+    );
+    expect(
+      grid?.querySelectorAll('[data-testid^="components-lab-card-"]').length,
+    ).toBe(unified.length);
+    // The sheets are not mounted until a card is opened.
+    expect(
+      container.querySelector('[data-testid="components-lab-button"]'),
+    ).toBeNull();
+
+    const open = container.querySelector<HTMLButtonElement>(
+      '[data-testid="components-lab-card-button"] button[aria-label="Open the Button sheet"]',
+    );
+    if (!open) throw new Error('No Open sheet link on the Button card');
+    act(() => open.click());
 
     expect(
       container.querySelector('[data-testid="components-lab-button"]'),

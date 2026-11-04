@@ -229,6 +229,27 @@ test('shows the hosted-model download and retries a failed one', async () => {
     await expect(
       window.getByTestId('chat-model-gateway-catalog-loading'),
     ).toBeVisible();
+    // Each placeholder row is an icon and a label drawn as shared skeleton
+    // blocks: skullet bars on the muted token, pulsing.
+    expect(
+      await window
+        .getByTestId('chat-model-gateway-catalog-loading')
+        .evaluate((node) => {
+          const probe = document.createElement('span');
+          probe.style.backgroundColor = 'var(--bg-muted)';
+          node.append(probe);
+          const token = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          const bars = [...node.querySelectorAll('[skullet-bar]')];
+          return {
+            bars: bars.length,
+            tokenFill: bars.every(
+              (bar) => getComputedStyle(bar).backgroundColor === token,
+            ),
+            pulsing: bars.every((bar) => bar.getAnimations().length > 0),
+          };
+        }),
+    ).toEqual({ bars: 6, tokenFill: true, pulsing: true });
 
     await sendRegistry(
       electronApp,

@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
+import { Heading } from './Heading';
 
 export interface AgentDefinitionSummaryPlugin {
   key: string;
@@ -41,14 +42,18 @@ export function AgentDefinitionSummary({
       )}
 
       <section>
-        <h2 className="text-sm font-semibold">Instructions</h2>
+        <Heading level={2} variant="title">
+          Instructions
+        </Heading>
         <pre className="mt-2 whitespace-pre-wrap break-words rounded-xl border bg-card p-4 font-sans text-sm">
           {instructions || 'No additional instructions.'}
         </pre>
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold">{pluginsLabel}</h2>
+        <Heading level={2} variant="title">
+          {pluginsLabel}
+        </Heading>
         {plugins.length === 0 ? (
           <p className="mt-2 text-sm fg-secondary">{pluginsEmptyLabel}</p>
         ) : (

@@ -5,6 +5,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsChartSkeleton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import type { OrganizationMember } from '@canopy/protocol/settings';
 import { HeadlineCards } from '../statistics/HeadlineCards';
@@ -12,7 +13,6 @@ import { useMemberUsage } from './useMemberUsage';
 import { UsageRangeSelect } from './UsageRangeSelect';
 import { ProfileActivitySection } from './ProfileActivitySection';
 import { useSettingsPrivacy } from '../../host';
-import { joinClassNames } from '../join-class-names';
 
 interface ProfileOverviewSectionProps {
   orgId: string;
@@ -58,14 +58,13 @@ export function ProfileOverviewSection({
           data-testid="profile-overview-stats"
         >
           <div className="flex items-end justify-between gap-3">
-            <h2
-              className={joinClassNames(
-                'text-s font-semibold fg-primary',
-                blockClassName,
-              )}
-            >
-              Usage for {memberName}
-            </h2>
+            <Heading level={2} variant="title">
+              <span
+                className={blockClassName === '' ? undefined : blockClassName}
+              >
+                Usage for {memberName}
+              </span>
+            </Heading>
             <UsageRangeSelect
               rangeMs={rangeMs}
               onChange={setRangeMs}
@@ -102,7 +101,9 @@ export function ProfileOverviewSection({
         className="flex flex-col gap-3"
         data-testid="profile-overview-activity"
       >
-        <h2 className="text-s font-semibold fg-primary">Recent activity</h2>
+        <Heading level={2} variant="title">
+          Recent activity
+        </Heading>
         <ProfileActivitySection
           orgId={orgId}
           userId={userId}

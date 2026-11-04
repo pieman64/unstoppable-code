@@ -967,6 +967,12 @@ describe('AccountPanel / SecurityPanel', () => {
     expect(
       qrBlock?.querySelector('img[alt="Two-factor authentication QR code"]'),
     ).not.toBeNull();
+    const setupKeyToggle = container.querySelector(
+      '[data-testid="two-factor-setup-key-toggle"]',
+    );
+    expect(setupKeyToggle?.getAttribute('aria-expanded')).toBe('false');
+    await clickButtonAsync('Setup key');
+    expect(setupKeyToggle?.getAttribute('aria-expanded')).toBe('true');
     const setupKey = Array.from(container.querySelectorAll('code')).find(
       (code) => code.textContent?.includes('secret=ABC'),
     );

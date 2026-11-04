@@ -1004,14 +1004,15 @@ const REVIEWED_COST_HARNESS_HELPERS = Object.freeze({
 // serves the memory fact detail read; PR #6025 adds the account Labs route;
 // CAN-4693 (PR #6134) serves the strict authenticated auth-link mint; PR
 // #6467 reports the organization's GitHub connection in its bootstrap; PR
-// #6634 serves the Appearance page's account data.
+// #6634 serves the Appearance page's account data; PR #7366 seeds two billing
+// charges for the Account billing table flow.
 const REVIEWED_HOSTED_SETTINGS_HELPERS = Object.freeze({
   'apps/desktop-app/tests/electron/seeders/hostedSettingsCloud.mjs':
     '7727df3daf3f476fa3a8d1659dd4e853c703c0a92e7cc49347a6bf48199d3288',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings-fixtures.mjs':
     '76aa450ea4dd54fd07f20913ea18cd5f9ea5d4d882ae9e1e9cd97e8887f1a0a0',
   'apps/desktop-app/tests/electron/mock-server/routes/hosted-settings.mjs':
-    'd8d1c46708c7ace2ce376be7a05982bcaca8426f6a06406cf6013d6916f871b3',
+    'ba5c3b7c393b134d39c463813d14ae217b523eeac5c7c980669537aeb6afc79c',
 });
 // Sidebar reorder adds two helpers absent from the frozen study baseline.
 const REVIEWED_SIDEBAR_REORDER_HELPERS = Object.freeze({

@@ -28,6 +28,7 @@ import {
   findTrackedPrSnapshot,
   readCurrentPrTrackingSnapshot,
   resetPrPreviewIndexForTests,
+  settlePrTrackingState,
 } from '../lib/github-pr-hook-state';
 import { getGitHubPrStateDir } from '../lib/paths';
 
@@ -2642,4 +2643,227 @@ describe('sweep read sequences', () => {
     expect(snapshot?.issueComments).toEqual([comment(1, 'first')]);
     expect(snapshot?.checks?.items[0]?.conclusion).toBe('success');
   });
+});
+
+describe('PR advances committed with the hooks they fire (CAN-4145)', () => {
+  const location = {
+    projectId: 'commit-project',
+    worktreeId: 'commit-worktree',
+    repoStorageKey: 'project-root',
+  };
+  const stateDir = (): string =>
+    getGitHubPrStateDir(
+      location.projectId,
+      location.worktreeId,
+      location.repoStorageKey,
+    );
+  const advance = (
+    commit?: Parameters<typeof advancePrTrackingState>[0]['commit'],
+  ): ReturnType<typeof advancePrTrackingState> =>
+    advancePrTrackingState({
+      ...location,
+      branchName: 'feature',
+      currentSnapshot: buildSnapshot(),
+      ...(commit ? { commit } : {}),
+    });
+
+  beforeEach(async () => {
+    await rm(stateDir(), { recursive: true, force: true });
+    await advancePrTrackingState({
+      ...location,
+      branchName: 'feature',
+      currentSnapshot: null,
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('advances the snapshot only after the ledger accepted what it fired', async () => {
+    const accepted: string[] = [];
+    let current: PersistedPrSnapshotFileV1 | null | undefined;
+    const result = await advance({
+      committedHead: () => Promise.resolve(null),
+      accept: async (fired) => {
+        accepted.push(...fired.triggers);
+        expect(fired.subject).toBe(
+          'commit-project\0commit-worktree\0project-root',
+        );
+        current = (await readCurrentPrTrackingSnapshot(location)).snapshot;
+        return undefined;
+      },
+    });
+    expect(result.triggers).toContain('pr:create');
+    expect(accepted).toEqual(result.triggers);
+    expect(current).toBeNull();
+    expect((await readCurrentPrTrackingSnapshot(location)).snapshot).toEqual(
+      result.currentSnapshot,
+    );
+    expect((await readdir(stateDir())).sort()).toEqual([
+      'current.json',
+      'state.json',
+    ]);
+  });
+
+  it('leaves the snapshot where it was when the ledger write fails, so the triggers fire again', async () => {
+    await expect(
+      advance({
+        committedHead: () => Promise.resolve(null),
+        accept: () => Promise.reject(new Error('ledger unavailable')),
+      }),
+    ).rejects.toThrow('ledger unavailable');
+    expect((await readCurrentPrTrackingSnapshot(location)).snapshot).toBeNull();
+    expect((await readdir(stateDir())).sort()).toEqual(['state.json']);
+    const retried = await advance({
+      committedHead: () => Promise.resolve(null),
+      accept: () => Promise.resolve(),
+    });
+    expect(retried.triggers).toContain('pr:create');
+  });
+
+  it('settles an interrupted advance before an advance that fires no hooks', async () => {
+    const fs = jest.requireActual<typeof Fs>('node:fs/promises');
+    const realRename = fs.rename;
+    jest
+      .spyOn(fs, 'rename')
+      .mockImplementation(() => Promise.reject(new Error('process stopped')));
+    let head = '';
+    await advance({
+      committedHead: () => Promise.resolve(null),
+      accept: (fired) => {
+        head = fired.head;
+        return Promise.resolve();
+      },
+    });
+    jest.mocked(fs.rename).mockImplementation(realRename);
+    // Hook configuration could not be read: no commit, only the ledger head.
+    const newer = buildSnapshot({ capturedAt: '2026-04-09T01:00:00.000Z' });
+    await advancePrTrackingState({
+      ...location,
+      branchName: 'feature',
+      currentSnapshot: newer,
+      committedHead: () => Promise.resolve(head),
+    });
+    expect(await readdir(stateDir())).not.toContain('advance.next.json');
+    // A later settlement never brings the older advance back.
+    await settlePrTrackingState(location, () => Promise.resolve(head));
+    expect(
+      (await readCurrentPrTrackingSnapshot(location)).snapshot?.capturedAt,
+    ).toBe('2026-04-09T01:00:00.000Z');
+  });
+
+  it('keeps a staged advance when its marker cannot be read', async () => {
+    const fs = jest.requireActual<typeof Fs>('node:fs/promises');
+    const realRename = fs.rename;
+    jest
+      .spyOn(fs, 'rename')
+      .mockImplementation(() => Promise.reject(new Error('process stopped')));
+    let head = '';
+    await advance({
+      committedHead: () => Promise.resolve(null),
+      accept: (fired) => {
+        head = fired.head;
+        return Promise.resolve();
+      },
+    });
+    jest.mocked(fs.rename).mockImplementation(realRename);
+    const realReadFile = fs.readFile;
+    jest
+      .spyOn(fs, 'readFile')
+      .mockImplementation((...args: Parameters<typeof fs.readFile>) =>
+        typeof args[0] === 'string' && args[0].endsWith('advance.next.json')
+          ? Promise.reject(
+              Object.assign(new Error('I/O error'), { code: 'EIO' }),
+            )
+          : realReadFile(...args),
+      );
+    await expect(
+      advance({
+        committedHead: () => Promise.resolve(head),
+        accept: () => Promise.resolve(),
+      }),
+    ).rejects.toThrow('I/O error');
+    jest.mocked(fs.readFile).mockImplementation(realReadFile);
+    expect((await readdir(stateDir())).sort()).toContain('advance.next.json');
+    const settled = await advance({
+      committedHead: () => Promise.resolve(head),
+      accept: () => Promise.resolve(),
+    });
+    expect(settled.triggers).not.toContain('pr:create');
+  });
+
+  it('keeps an advance the ledger committed even when its acceptance reports a failure', async () => {
+    let head = '';
+    await expect(
+      advance({
+        committedHead: () => Promise.resolve(head),
+        accept: (fired) => {
+          head = fired.head;
+          return Promise.reject(new Error('delivery deadline passed'));
+        },
+      }),
+    ).rejects.toThrow('delivery deadline passed');
+    expect(
+      (await readCurrentPrTrackingSnapshot(location)).snapshot,
+    ).not.toBeNull();
+    const next = await advance({
+      committedHead: () => Promise.resolve(head),
+      accept: () => Promise.resolve(),
+    });
+    expect(next.triggers).not.toContain('pr:create');
+  });
+
+  it.each([
+    ['promotes', true],
+    ['discards', false],
+  ] as const)(
+    '%s an advance a crash interrupted after staging, by the head the ledger committed',
+    async (_label, committed) => {
+      const fs = jest.requireActual<typeof Fs>('node:fs/promises');
+      let head = '';
+      const realRename = fs.rename;
+      jest
+        .spyOn(fs, 'rename')
+        .mockImplementation(() => Promise.reject(new Error('process stopped')));
+      // The commit stands even when its files cannot be moved yet.
+      const committedAdvance = await advance({
+        committedHead: () => Promise.resolve(null),
+        accept: (fired) => {
+          head = fired.head;
+          return Promise.resolve();
+        },
+      });
+      expect(committedAdvance.triggers).toContain('pr:create');
+      // Its hooks read the accepted snapshot, not the canonical file.
+      expect(
+        JSON.parse(
+          await readFile(committedAdvance.currentSnapshotPath, 'utf8'),
+        ),
+      ).toEqual(committedAdvance.currentSnapshot);
+      jest.mocked(fs.rename).mockImplementation(realRename);
+      expect(
+        (await readCurrentPrTrackingSnapshot(location)).snapshot,
+      ).toBeNull();
+
+      const fired: HookTriggerName[][] = [];
+      const next = await advance({
+        committedHead: () => Promise.resolve(committed ? head : null),
+        accept: (advanced) => {
+          fired.push(advanced.triggers);
+          return Promise.resolve();
+        },
+      });
+      if (committed) {
+        // The interrupted advance already fired pr:create; it does not
+        // fire again.
+        expect(next.triggers).not.toContain('pr:create');
+      } else {
+        expect(next.triggers).toContain('pr:create');
+      }
+      expect(
+        (await readCurrentPrTrackingSnapshot(location)).snapshot,
+      ).not.toBeNull();
+    },
+  );
 });

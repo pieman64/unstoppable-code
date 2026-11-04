@@ -11,6 +11,17 @@ export * from './kernel/runtime-profile-manifest';
 export * from './kernel/runtime-profile-graph';
 export * from './kernel/core-events-module';
 export * from './runtime/in-process-worker-binding';
+export {
+  connectLocalWorkerBinding,
+  type ConnectLocalWorkerBindingOptions,
+  type LocalWorkerBindingClient,
+} from './runtime/local-worker-binding-client';
+export {
+  serveLocalWorkerBinding,
+  type LocalWorkerBindingServer,
+  type ServeLocalWorkerBindingOptions,
+} from './runtime/local-worker-binding-server';
+export * from './runtime/supervised-local-worker';
 export * from './runtime/local-worker-transport';
 export * from './runtime/request-metadata';
 export * from './runtime/worker-executor-receipts';

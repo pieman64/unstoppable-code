@@ -37,6 +37,7 @@ const BLOCKED_NAMES: ReadonlySet<string> = new Set([
   'x-canopy-worktree',
   'x-canopy-org-project',
   'x-canopy-work-owner',
+  'x-canopy-codex-multi-agent-v2',
 ]);
 
 export type McpExtraHeadersProblem =

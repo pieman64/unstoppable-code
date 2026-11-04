@@ -8,7 +8,8 @@ import {
 } from 'react';
 import {
   HeaderActionButton,
-  LinearProgress,
+  Heading,
+  ProgressBar,
   PanelSection,
 } from '@canopy/ui-shared/components';
 import {
@@ -175,22 +176,13 @@ function DemoBody({
         </p>
       )}
       {body.progress !== undefined && (
-        <div className="space-y-2.5">
-          <div className="flex items-center justify-between gap-3 text-2xs fg-secondary">
-            <span>{body.progressLabel ?? 'Progress'}</span>
-            <span className="tabular-nums">{body.progress}%</span>
-          </div>
-          <LinearProgress
-            percentage={body.progress}
-            barColor={
-              tone === 'warning' || tone === 'destructive'
-                ? 'bg-warning'
-                : tone === 'positive'
-                  ? 'bg-positive'
-                  : 'bg-accent'
-            }
-          />
-        </div>
+        <ProgressBar
+          value={body.progress}
+          label={body.progressLabel ?? 'Progress'}
+          tone={
+            tone === 'warning' || tone === 'destructive' ? 'warning' : 'accent'
+          }
+        />
       )}
       {body.rows && body.rows.length > 0 && (
         <ul className="space-y-1.5">
@@ -397,9 +389,9 @@ export function ActivityStateGalleryPage(): JSX.Element {
           }
         >
           <header className={view === 'chat' ? 'hidden' : 'space-y-2'}>
-            <h1 className="text-2xl font-semibold fg-primary">
+            <Heading level={1} variant="page">
               Activity States
-            </h1>
+            </Heading>
             <p className="max-w-4xl text-s leading-relaxed fg-secondary">
               Every Activity section and card phase, built from the shipping
               card, icon, tooltip, action-button, divider, and expand/collapse
@@ -468,9 +460,9 @@ export function ActivityStateGalleryPage(): JSX.Element {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <h2 className="text-sm font-semibold fg-primary">
+                        <Heading level={2} variant="title">
                           {section.title}
-                        </h2>
+                        </Heading>
                         <p className="mt-0.5 text-2xs fg-secondary">
                           {state.label} · {stateIndex + 1}/
                           {section.states.length}
@@ -537,9 +529,9 @@ export function ActivityStateGalleryPage(): JSX.Element {
                     <span className="inline-flex h-5 w-5 items-center justify-center fg-secondary">
                       <SectionIcon icon={section.icon} />
                     </span>
-                    <h2 className="text-sm font-semibold fg-primary">
+                    <Heading level={2} variant="title">
                       {section.title}
-                    </h2>
+                    </Heading>
                     <span className="text-2xs fg-secondary">
                       {section.states.length} states
                     </span>
@@ -552,9 +544,9 @@ export function ActivityStateGalleryPage(): JSX.Element {
                         className="space-y-2 rounded-xl border bg-base p-3"
                       >
                         <div>
-                          <h3 className="text-xs font-semibold fg-primary">
+                          <Heading level={3} variant="title">
                             {state.label}
-                          </h3>
+                          </Heading>
                           <p className="mt-0.5 min-h-8 text-2xs leading-relaxed fg-secondary">
                             {state.note}
                           </p>

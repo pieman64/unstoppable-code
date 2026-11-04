@@ -2315,22 +2315,29 @@ function worktreeValidationError(
 async function ensureBranchCanBeCreated(
   repoPaths: readonly string[],
   branchName: string,
+  attempt?: W5KeyedAttempt,
 ): Promise<void> {
-  for (const repoPath of repoPaths) {
-    const valid = await validateBranchName(repoPath, branchName);
-    if (!valid) {
-      throw new WorktreeCreationRefusedError(
-        'invalid-branch-name',
-        `Invalid branch name: "${branchName}"`,
-      );
+  try {
+    for (const repoPath of repoPaths) {
+      const valid = await validateBranchName(repoPath, branchName);
+      if (!valid) {
+        throw new WorktreeCreationRefusedError(
+          'invalid-branch-name',
+          `Invalid branch name: "${branchName}"`,
+        );
+      }
+      const available = await isBranchNameAvailable(repoPath, branchName);
+      if (!available) {
+        throw new WorktreeCreationRefusedError(
+          'branch-reserved',
+          `Branch name "${branchName}" is already in use`,
+        );
+      }
     }
-    const available = await isBranchNameAvailable(repoPath, branchName);
-    if (!available) {
-      throw new WorktreeCreationRefusedError(
-        'branch-reserved',
-        `Branch name "${branchName}" is already in use`,
-      );
-    }
+  } catch (error) {
+    // These Git probes are read-only. Preserve their actionable failure while
+    // allowing the owning keyed attempt to release its pre-effect reservation.
+    throw attempt?.validationError(normalizeError(error)) ?? error;
   }
 }
 
@@ -2913,7 +2920,11 @@ async function createAdmittedSingleRepoWorktree(
   const { explicitBranch, existingBranch, suggestedBranch } =
     requestedBranchNames(selection.branch);
   if (explicitBranch) {
-    await ensureBranchCanBeCreated([referenceRepoPath], explicitBranch);
+    await ensureBranchCanBeCreated(
+      [referenceRepoPath],
+      explicitBranch,
+      attempt,
+    );
   }
   const defaultBranchTimestamp = Date.now();
 
@@ -3601,6 +3612,7 @@ async function createAdmittedMultiRepoWorktree(
     await ensureBranchCanBeCreated(
       repoPaths.map((entry) => entry.repoPath),
       explicitBranch,
+      attempt,
     );
   }
   const defaultBranchTimestamp = Date.now();

@@ -39,14 +39,13 @@ export function PendingAttachmentRow({
           ) : null}
           <span className="truncate">{attachment.filename}</span>
           {attachment.state === 'error' ? (
-            <button
-              type="button"
-              className="focus-ring fg-destructive hover:underline"
+            <Button
+              variant="link"
               onClick={(): void => onRetry(attachment.localId)}
               aria-label={`Try again for ${attachment.filename}`}
             >
               Try again
-            </button>
+            </Button>
           ) : null}
           <Button
             variant="ghost"

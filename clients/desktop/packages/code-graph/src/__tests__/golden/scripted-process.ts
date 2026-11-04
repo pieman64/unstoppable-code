@@ -63,6 +63,11 @@ export class ScriptedProcessPool {
   public readonly events: ScriptedProcessEvent[] = [];
   /** Exit as soon as a kill lands, as a real process does. */
   public exitOnKill = true;
+  /**
+   * Leave each fork unlaunched until the scenario calls `launch`, as a host
+   * that is still starting refuses a kill until it has a pid.
+   */
+  public deferLaunch = false;
 
   public fork(): ScriptedProcess {
     const index = this.processes.length + 1;
@@ -75,7 +80,7 @@ export class ScriptedProcessPool {
     });
     this.processes.push(child);
     this.events.push({ event: 'fork', process: index });
-    child.launch();
+    if (!this.deferLaunch) child.launch();
     return child;
   }
 

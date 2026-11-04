@@ -95,8 +95,8 @@ function isWorkspaceAvailable(workspaceId: string): boolean {
  * Aims an untouched Home composer at the project whose post-import Cursor
  * rules were just turned on (CAN-4674), so an immediate task goes there.
  * Reads live state; leaves a protected or stale composer entirely unchanged.
- * Never navigates or changes context. Returns whether the visible target or
- * reason changed; a same-project Apply also advances selection identity.
+ * Never navigates or changes context. Returns whether the visible target
+ * changed; a same-project Apply also advances selection identity.
  */
 export function retargetHomeAfterRepoRulesApplied(
   origin: RepoRulesReviewOrigin,
@@ -109,9 +109,8 @@ export function retargetHomeAfterRepoRulesApplied(
   if (!isHomeComposerRetargetable(composer)) return false;
   if (!isWorkspaceAvailable(result.workspaceId)) return false;
   if (composer.workspaceId === result.workspaceId) {
-    const hadReason = composer.workspaceSelectionReason !== null;
-    composer.clearWorkspaceSelectionReason();
-    return hadReason;
+    composer.advanceWorkspaceSelectionGeneration();
+    return false;
   }
   composer.selectWorkspace(result.workspaceId, { explicit: false });
   return true;

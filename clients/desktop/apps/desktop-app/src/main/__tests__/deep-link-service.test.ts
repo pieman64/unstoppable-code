@@ -237,6 +237,55 @@ describe('deep-link buffering and delivery', () => {
   });
 });
 
+describe('CAN-3258 branded protocol activation', () => {
+  beforeEach(() => {
+    resetDeepLinkServiceForTests();
+  });
+
+  it.each([
+    ['canopy', 'unstoppable-code'],
+    ['unstoppable-code', 'canopy'],
+  ])(
+    '%s queues cold argv before sender wiring and ignores foreign or malformed URLs without losing the pending link',
+    (scheme, foreignScheme) => {
+      const send = jest.fn((): boolean => true);
+      handleProtocolArgv(
+        ['electron', '.', '--inspect=9229', `${scheme}://share/skills/${UUID}`],
+        scheme,
+      );
+      for (const url of [
+        `${foreignScheme}://share/pipelines/${UUID}`,
+        `${scheme}://share/skills/not-a-uuid`,
+        `${scheme}://user@share/pipelines/${UUID}`,
+        `${scheme}://share/pipelines/${UUID}/extra`,
+        `${scheme}://[`,
+        'not a URL',
+      ]) {
+        handleProtocolUrl(url, scheme);
+      }
+      setDeepLinkSender(send);
+      expect(send).not.toHaveBeenCalled();
+      notifyDeepLinkStartupUnlocked();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenLastCalledWith({
+        entity: 'skill',
+        externalId: UUID,
+        intent: 'install',
+      });
+      notifyDeepLinkStartupUnlocked();
+      expect(send).toHaveBeenCalledTimes(1);
+
+      // The same OS protocol adapter handles a warm activation after unlock.
+      handleProtocolArgv(['app', `${scheme}://settings/privacy`], scheme);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send).toHaveBeenLastCalledWith({
+        destination: 'settings',
+        section: 'privacy',
+      });
+    },
+  );
+});
+
 /**
  * CAN-4028 — returning from browser checkout. The link is a refresh hint for
  * the renderer and nothing more, so what matters here is that only a

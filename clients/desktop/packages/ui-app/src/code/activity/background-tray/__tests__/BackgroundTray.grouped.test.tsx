@@ -8,6 +8,7 @@ import {
   type BackgroundTrayRun,
 } from '../RunRow';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   GitPullRequestIcon,
   GitMergeQueueIcon,
@@ -625,7 +626,8 @@ describe('grouped background work', () => {
       ).toBeNull();
     },
   );
-  it('shows expanded PR metadata as a subtitle without an empty detail section', () => {
+  it('opens a pull request from its row, which shows only the pull request', () => {
+    const onOpen = jest.fn();
     act(() =>
       root.render(
         <BackgroundTray
@@ -641,23 +643,119 @@ describe('grouped background work', () => {
               queue: { position: 2 },
             }),
           ]}
+          onOpenRun={onOpen}
+        />,
+      ),
+    );
+    click('composer-work-drawer-toggle');
+    const row = container.querySelector(
+      '[data-testid="background-tray-run-pr"]',
+    );
+    expect(row?.textContent).not.toContain('example/canopy');
+    expect(row?.textContent).not.toContain('into develop');
+    expect(row?.textContent).toContain('In merge queue');
+    expect(
+      row?.querySelector('[data-testid="background-tray-row-toggle"]'),
+    ).toBeNull();
+    click('background-tray-row-open');
+    expect(onOpen).toHaveBeenCalledWith('pr');
+    expect(
+      container.querySelector('[data-testid="background-tray-inspector"]'),
+    ).toBeNull();
+  });
+  it('labels Resume, with Open run beside it, in the paused run’s time column', () => {
+    const onOpen = jest.fn();
+    const onResume = jest.fn();
+    act(() =>
+      root.render(
+        <BackgroundTray
+          presentation="grouped"
+          chatId="chat"
+          tasks={[]}
+          runs={[
+            { ...run('deploy', 'paused'), startedAt: Date.now() - 65_000 },
+          ]}
+          onOpenRun={onOpen}
+          onResumeRun={onResume}
+        />,
+      ),
+    );
+    click('composer-work-drawer-toggle');
+    const row = container.querySelector(
+      '[data-testid="background-tray-run-deploy"]',
+    );
+    const resume = row?.querySelector(
+      '[data-testid="background-tray-run-deploy-resume"]',
+    );
+    const open = row?.querySelector('[data-testid="background-tray-row-open"]');
+    // Not the same › as View completed: both actions say what they do.
+    // Screen readers tell the two actions, and the rows, apart.
+    expect(resume?.textContent).toBe('Resume deploy');
+    expect(open?.textContent).toBe('Open run deploy');
+    // The labels take the time's place, so the other rows' times stay put.
+    expect(row?.textContent).not.toContain('1m 5s');
+    click('background-tray-row-toggle');
+    expect(
+      container.querySelector('[data-testid="background-tray-inspector-open"]'),
+    ).toBeNull();
+    click('background-tray-row-open');
+    expect(onOpen).toHaveBeenCalledWith('deploy');
+    click('background-tray-run-deploy-resume');
+    expect(onResume).toHaveBeenCalledWith('deploy');
+  });
+  it('keeps run titles out of recorded attributes on the drawer’s labeled actions', () => {
+    act(() =>
+      root.render(
+        <BackgroundTray
+          presentation="grouped"
+          chatId="chat"
+          tasks={[]}
+          runs={[
+            { ...run('deploy', 'paused'), name: 'Private deploy' },
+            { ...run('plan', 'needs-input'), name: 'Private plan' },
+          ]}
+          onOpenRun={jest.fn()}
+          onResumeRun={jest.fn()}
+          onRespondRun={jest.fn()}
+        />,
+      ),
+    );
+    click('composer-work-drawer-toggle');
+    // Session replay records attributes verbatim and masks only text.
+    const labels = Array.from(
+      container.querySelectorAll('[aria-label]'),
+      (element) => element.getAttribute('aria-label') ?? '',
+    );
+    expect(labels.filter((label) => label.includes('Private'))).toEqual([]);
+    // The run's name still reaches a screen reader, as masked text.
+    for (const id of [
+      'background-tray-run-deploy-resume',
+      'background-tray-run-plan-respond',
+    ]) {
+      const button = container.querySelector(`[data-testid="${id}"]`);
+      expect(
+        button?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent,
+      ).toMatch(/^Private /);
+    }
+  });
+  it('labels Answer on a run awaiting input', () => {
+    act(() =>
+      root.render(
+        <BackgroundTray
+          presentation="grouped"
+          chatId="chat"
+          tasks={[]}
+          runs={[run('review', 'needs-input')]}
+          onRespondRun={jest.fn()}
         />,
       ),
     );
     click('composer-work-drawer-toggle');
     expect(
-      container.querySelector('[data-testid="background-tray-subtitle"]'),
-    ).toBeNull();
-    click('background-tray-row-toggle');
-    expect(
-      container.querySelector('[data-testid="background-tray-subtitle"]')
-        ?.textContent,
-    ).toBe('example/canopy · into develop · position 2 in the merge queue');
-    expect(
       container.querySelector(
-        '[data-testid="background-tray-inspector-section"]',
-      ),
-    ).toBeNull();
+        '[data-testid="background-tray-run-review-respond"]',
+      )?.textContent,
+    ).toBe('Answer review');
   });
   it('uses View as the only way to open a run awaiting input', () => {
     const onOpen = jest.fn();

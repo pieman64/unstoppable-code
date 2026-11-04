@@ -1385,10 +1385,10 @@ const REVIEWED_PR_RELEASE_HELPER_IDENTITIES = Object.freeze({
   'apps/desktop-app/tests/electron/launchCanopy.mjs':
     // CAN-4386 pins the hosted settings flag on in the E2E defaults.
     '9c185c5345361d44a33d7f7064e1c5b4fab3d3cf1e9c9f7ff0d17e1c9d4e49fc',
-  // The 120 Hz frame report (frame-smoothness scenario, frame windows,
-  // refresh-rate pairing) changes this helper; the frozen study pair stays.
+  // The 120 Hz frame report, then moving frame-budget runs onto the fastest
+  // display, change this helper; the frozen study pair stays.
   'apps/desktop-app/tests/performance/monitor.mjs':
-    'f1a2da5367253ac41fb590b607ee6fda8f2f2896f8e1912961377889410f376b',
+    '2305ebf67343ebd98139aeceae5c8a589f993e3f910982f3f4e75c77815e67ee',
 });
 
 // Later reviewed changes to study-owned helpers, keyed by the study's installed
@@ -1478,7 +1478,10 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
       // without a message; launch behavior is otherwise unchanged. The dry
       // run also counts a GA3 (CAN-5541) latched `daemon.bypassed` read as a
       // fallback.
-      '67459afa256fddb1626cf266f51783e324884768ea15c79ba26bc7ff278133fd',
+      // CAN-5088 and CAN-5089 pin the daemon terminals and code graph
+      // experiments to offered so ordinary E2E terminals and graph builds
+      // stay in the app; launch behavior is otherwise unchanged.
+      '190e52be99060a9cf07e8953b60cd5af0e1ec6958ffb355cd850c842be06b118',
   }),
   // CAN-3972 adds Home Getting Started checklist helpers to the app driver
   // while the sidebar card is hidden on Home. CAN-3980 adds Workflows tab and
@@ -1523,6 +1526,20 @@ const REVIEWED_CURRENT_RELEASE_HELPER_IDENTITIES = Object.freeze({
     Object.freeze({
       c632026c2fdd8c8230e16ca9d631ebbf9ed2bb224821935da5cf8bca8cfa75f8:
         '0ac5511365f2728dd6a2f7ba0ec1d6a1752e98d44c3d59060ade27fc694d1fec',
+    }),
+  // The profile dropdown is Canopy's menu (SettingsSelect) once ControlSelect
+  // is retired, so the named switch opens it and presses the option instead of
+  // selectOption on a native select.
+  'apps/desktop-app/tests/performance/browser-profiles-release-run.mjs':
+    Object.freeze({
+      a4c8f61e7752fbfa0869b1483fe957cc6ce43e09b5f9d97a27ab2981bd070a21:
+        '6fd76e3b66216b2ed4ec678c2a2795ce47682a08d99f89b65d97fcc560679029',
+    }),
+  // The same SettingsSelect change in the supplemental run's named switch.
+  'apps/desktop-app/tests/performance/browser-profiles-supplemental-run.mjs':
+    Object.freeze({
+      '6f93e54f524332e1a65f72e176712006a8615e5907a103a630ba4c51fdf3ac0e':
+        '8bd4d6c751bc1454e06d64fa9805338dbd10a1225ff7b4dad916d5835f6bcbff',
     }),
 });
 

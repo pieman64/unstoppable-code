@@ -53,12 +53,12 @@ describe('startChatSummaryView', () => {
   it('has nothing to show for an action that stays native', () => {
     expect(
       startChatSummaryView(
-        'Fast',
+        'Home task',
         {
-          type: 'standalone_prompt',
-          chatProjectId: 'cowork-1',
+          type: 'worktree_prompt',
+          workspaceId: 'workspace-1',
           prompt: 'x',
-          modelConfig: { speed: 'ultrafast' },
+          purpose: 'scheduled_task',
         },
         projectName,
       ),

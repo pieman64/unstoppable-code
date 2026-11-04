@@ -8,6 +8,7 @@ import {
   ExternalTextLink,
   SecurityAuditSummary,
   StatusLabel,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -87,9 +88,9 @@ export function MarketplaceSourceAddPreview({
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <h3 className={`text-s font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}>
-          {review.name}
-        </h3>
+        <Heading level={3} variant="title">
+          <span className={REPLAY_BLOCK_CLASS}>{review.name}</span>
+        </Heading>
         {review.revision && (
           <p
             className="break-all text-xs fg-secondary"

@@ -24,8 +24,8 @@ import {
   isOllamaServerVersionCompatible,
 } from '@canopy/desktop-shared/types';
 import {
-  AdvancedDisclosure,
   Button,
+  Disclosure,
   Notice,
   NoticeButton,
   NoticeList,
@@ -37,7 +37,7 @@ import {
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { brandText } from '@/lib/brand';
 import { OllamaIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { LinearProgress } from '@/components/shared/loading';
+import { ProgressBar } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   SettingsGroup,
@@ -212,7 +212,7 @@ export function OllamaModelCard({
         </Notice>
       )}
 
-      <AdvancedDisclosure
+      <Disclosure
         label="Details"
         dataTestId={`ollama-model-details-${model.rawModelId}`}
       >
@@ -322,7 +322,7 @@ export function OllamaModelCard({
             </ModelMetadataBlock>
           )}
         </div>
-      </AdvancedDisclosure>
+      </Disclosure>
     </SettingsRow>
   );
 }
@@ -952,14 +952,10 @@ export function OllamaTab(): JSX.Element {
                 data-testid="ollama-install-progress"
                 aria-live="polite"
               >
-                <p className="text-xs fg-secondary">
-                  {installProgress?.message ?? 'Installing Ollama…'}
-                </p>
-                <LinearProgress
-                  percentage={installProgressPercentage}
+                <ProgressBar
+                  value={installProgressPercentage}
                   indeterminate={!installProgressDeterminate}
-                  height="h-1.5"
-                  label="Installing Ollama"
+                  label={installProgress?.message ?? 'Installing Ollama…'}
                 />
               </div>
             </SettingsRow>
@@ -1280,13 +1276,10 @@ export function OllamaTab(): JSX.Element {
                   <span className="shrink-0 fg-secondary">{pull.status}</span>
                 </div>
                 {pull.total != null && pull.total > 0 && (
-                  <LinearProgress
-                    percentage={Math.min(
-                      100,
-                      ((pull.completed ?? 0) / pull.total) * 100,
-                    )}
-                    height="h-1.5"
+                  <ProgressBar
+                    value={((pull.completed ?? 0) / pull.total) * 100}
                     label={`Pulling ${pull.model}`}
+                    hideLabel
                   />
                 )}
               </div>

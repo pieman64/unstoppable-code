@@ -4,7 +4,6 @@ import { useId, type JSX, type ReactNode } from 'react';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { Count, Tooltip } from '@canopy/ui-shared';
-import { IN_APP_BROWSER_URL_PLACEHOLDER } from '@/lib/browserUrl';
 import { useBrowserBarActions } from './useBrowserBarActions';
 import {
   BackIcon,
@@ -41,6 +40,7 @@ export function BrowserBar({
     urlDraft,
     setUrlDraft,
     urlError,
+    urlPlaceholder,
     urlInputRef,
     handleKeyDown,
     back,
@@ -123,7 +123,7 @@ export function BrowserBar({
             data-testid="browser-url-input"
             value={urlDraft}
             spellCheck={false}
-            placeholder={IN_APP_BROWSER_URL_PLACEHOLDER}
+            placeholder={urlPlaceholder}
             onChange={(event): void => setUrlDraft(event.target.value)}
             onKeyDown={handleKeyDown}
             aria-label="Browser URL"

@@ -87,6 +87,18 @@ jest.mock('@canopy/desktop-shared/node/lib/atomic-file', () => ({
     return mockWriteFileAtomicallySync;
   },
 }));
+const mockPrunePipelinePreferenceSelections = jest.fn<
+  Promise<void>,
+  [(entries: Record<string, unknown>) => boolean, string]
+>(() => Promise.resolve());
+jest.mock(
+  '@canopy/desktop-shared/node/pipelines/plugin-collection-store',
+  () => ({
+    get prunePipelinePreferenceSelections(): typeof mockPrunePipelinePreferenceSelections {
+      return mockPrunePipelinePreferenceSelections;
+    },
+  }),
+);
 jest.mock('../lib/git', () => ({
   cloneRepo: jest.fn(),
   getHeadCommitSha: jest.fn(() => Promise.resolve(null)),
@@ -133,8 +145,6 @@ jest.mock('../lib/paths', () => ({
     () => '/mock/data/curated-plugins/sync-lock.json',
   ),
   getDataDir: jest.fn(() => '/mock/data'),
-  getPipelinePluginPreferencesFilePath: (): string =>
-    '/mock/data/pipeline-plugin-preferences.json',
   getPluginCacheDir: jest.fn(() => '/mock/data/plugin-cache'),
   getPreferencesFilePath: jest.fn(() => '/mock/data/preferences.json'),
   getWorkspaceChatHistoryMetaFilePath: (
@@ -5910,19 +5920,16 @@ describe('marketplace commands', () => {
       expect(getGlobalPluginDefaultsRevision()).toBe(before);
     });
 
-    it('prunes preferences through the preferences store first, never through the generic file loop', async () => {
+    it('prunes preferences and pipeline preferences through their stores, never through the generic file loop', async () => {
       const before = getGlobalPluginDefaultsRevision();
       await removeWith({
         '/mock/data/preferences.json': {
           globalPluginSelections: { pluginRefs: [acme, other] },
         },
-        '/mock/data/pipeline-plugin-preferences.json': {
-          pluginSelections: { pluginRefs: [acme, other] },
-        },
       });
 
-      // The generic loop reads and rewrites the files it is given; the
-      // preferences path never enters it.
+      // The generic loop reads and rewrites the files it is given; neither
+      // preference path enters it.
       expect(getPreferencesFilePathMock).not.toHaveBeenCalled();
       for (const mock of [readFileAsyncMock, writeFileAsyncMock])
         expect(mock.mock.calls.map(([target]) => target)).not.toContain(
@@ -5930,22 +5937,36 @@ describe('marketplace commands', () => {
         );
       expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
       expect(getGlobalPluginDefaultsRevision()).toBe(before + 1);
-      expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
-        '/mock/data/pipeline-plugin-preferences.json',
-      ]);
-      const pipelineRead = readFileAsyncMock.mock.calls.findIndex(
-        ([target]) => target === '/mock/data/pipeline-plugin-preferences.json',
-      );
+      expect(writeFileAsyncMock).not.toHaveBeenCalled();
+      expect(mockPrunePipelinePreferenceSelections).toHaveBeenCalledTimes(1);
+      const [prune, writer] =
+        mockPrunePipelinePreferenceSelections.mock.calls[0];
+      expect(writer).toBe('electron_main');
+      const entries = {
+        'file:/a.yaml': {
+          plugin_collections: {
+            tools: { extraSelections: { pluginRefs: [acme, other] } },
+          },
+        },
+      };
+      expect(prune(entries)).toBe(true);
+      expect(entries).toEqual({
+        'file:/a.yaml': {
+          plugin_collections: {
+            tools: { extraSelections: { pluginRefs: [other] } },
+          },
+        },
+      });
       expect(
         updatePreferencesFileMock.mock.invocationCallOrder[0],
       ).toBeLessThan(
-        readFileAsyncMock.mock.invocationCallOrder[pipelineRead] ?? 0,
+        mockPrunePipelinePreferenceSelections.mock.invocationCallOrder[0],
       );
     });
 
     it('keeps pruning the other files when the preferences prune fails', async () => {
       const files = {
-        '/mock/data/pipeline-plugin-preferences.json': {
+        '/mock/data/standalone-chat/projects.json': {
           pluginSelections: { pluginRefs: [acme, other] },
         },
       };
@@ -5955,11 +5976,15 @@ describe('marketplace commands', () => {
           code: 'PREFERENCES_RECOVERY_REQUIRED',
         }),
       );
+      mockPrunePipelinePreferenceSelections.mockRejectedValueOnce(
+        new Error('Timed out'),
+      );
       await removal;
 
       expect(updatePreferencesFileMock).toHaveBeenCalledTimes(1);
+      expect(mockPrunePipelinePreferenceSelections).toHaveBeenCalledTimes(1);
       expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
-        '/mock/data/pipeline-plugin-preferences.json',
+        '/mock/data/standalone-chat/projects.json',
       ]);
     });
   });
@@ -5979,7 +6004,7 @@ describe('marketplace commands', () => {
     chatStorageScopeIdsMock.mockResolvedValue([]);
     readFileAsyncMock.mockImplementation((target) =>
       target === '/mock/data/preferences.json' ||
-      target === '/mock/data/pipeline-plugin-preferences.json'
+      target === '/mock/data/standalone-chat/projects.json'
         ? Promise.resolve(Buffer.from(JSON.stringify(document)))
         : Promise.reject(
             Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
@@ -5993,9 +6018,15 @@ describe('marketplace commands', () => {
       readFileAsyncMock.mock.calls.map(([target]) => target),
     ).not.toContain('/mock/data/preferences.json');
     expect(writeFileAsyncMock.mock.calls.map(([target]) => target)).toEqual([
-      '/mock/data/pipeline-plugin-preferences.json',
+      '/mock/data/standalone-chat/projects.json',
     ]);
     expect(updatePreferencesFileMock).not.toHaveBeenCalled();
+    expect(mockPrunePipelinePreferenceSelections).toHaveBeenCalledTimes(1);
+    const [prune, writer] = mockPrunePipelinePreferenceSelections.mock.calls[0];
+    expect(writer).toBe('electron_main');
+    const entries = structuredClone(document);
+    expect(prune(entries)).toBe(true);
+    expect(entries.pluginSelections.pluginRefs).toEqual([]);
   });
 
   it('prunes marketplace refs from canonical v2 chat scopes without rewriting legacy chat files', async () => {

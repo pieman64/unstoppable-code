@@ -538,6 +538,42 @@ describe('HomeContinueSection attention rows', () => {
     ).not.toBeNull();
   });
 
+  it('tells App Advisor Last viewed is gone once Show more reveals its worktree', async () => {
+    act(() =>
+      useChatStore.setState({
+        worktreeChats: {
+          'ws/a': worktree(tab({ id: 'a1', unread: true, lastEventAt: 1 })),
+          'ws/b': worktree(
+            tab({ id: 'b0' }),
+            tab({ id: 'b1', title: 'Deploy' }),
+          ),
+          'ws/c': worktree(
+            ...[10, 9, 8, 7].map((at) =>
+              tab({ id: `c${at}`, unread: true, lastEventAt: at }),
+            ),
+          ),
+        },
+        unreadWorktreeKeys: new Set(['ws/a', 'ws/c']),
+      }),
+    );
+    await render();
+    const advisor = (): unknown =>
+      useCurrentUiStateStore.getState().slices['home.continueAttention'];
+    expect(rowOrder(container)).toHaveLength(6);
+    expect(rowOrder(container).at(-1)).toBe('last-viewed');
+    expect(advisor()).toMatchObject({ lastViewedVisible: true });
+
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="home-continue-show-more"]',
+        )
+        ?.click(),
+    );
+    expect(rowOrder(container)).not.toContain('last-viewed');
+    expect(advisor()).toMatchObject({ lastViewedVisible: false });
+  });
+
   it('collapses Getting started for attention alone and behaves as before without it', async () => {
     act(() => useStartupResumeStore.setState({ offer: null }));
     await render();

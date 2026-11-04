@@ -112,8 +112,7 @@ const NOTHING_PENDING: CodeGraphDeferredDerivedResult = {
  * with the same defensive catch), so the stored communities, flows and
  * memberships are identical. Each repository's rows are replaced in their
  * own short transaction; the reads before them hold no write lock, so a
- * reader or the end-of-build fingerprint write is never blocked for the
- * length of the analysis. Until the final transaction stamps `derived_at`,
+ * reader is never blocked for the length of the analysis. Until the final transaction stamps `derived_at`,
  * the graph reports its derived data as stale.
  *
  * The caller must be the graph's only writer of facts (the desktop runs this

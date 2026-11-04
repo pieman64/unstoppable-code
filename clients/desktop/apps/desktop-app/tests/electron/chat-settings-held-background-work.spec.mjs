@@ -308,6 +308,41 @@ test('changed settings hold a follow-up until native background work is stopped'
   );
 });
 
+test('a held compact row truncates its long reason before More actions and keeps the full text in its tooltip', async ({}, testInfo) => {
+  test.setTimeout(240_000);
+  await withBackgroundChat(testInfo, async ({ window, panel, log }) => {
+    await selectNextModel(window, panel, log);
+    const followup = 'held row with a long reason';
+    await send(panel, followup);
+    const drawer = await openBackgroundDrawer(panel);
+    const row = drawer
+      .getByTestId('queued-message-bubble')
+      .filter({ hasText: followup });
+    const reason = row.locator(BACKGROUND_REASON);
+    await expect(reason).toBeVisible({ timeout: 15_000 });
+    const more = row.getByTestId('queued-message-more');
+    await expect(more).toBeVisible();
+
+    // The reason ends before the row's actions and is cut, not overflowing.
+    const reasonBox = await reason.boundingBox();
+    const moreBox = await more.boundingBox();
+    expect(reasonBox).not.toBeNull();
+    expect(moreBox).not.toBeNull();
+    expect(reasonBox.x + reasonBox.width).toBeLessThanOrEqual(moreBox.x);
+    expect(
+      await reason.evaluate(
+        (element) => element.scrollWidth > element.clientWidth,
+      ),
+    ).toBe(true);
+
+    // The full text is one hover away.
+    await reason.hover();
+    await expect(window.getByRole('tooltip')).toHaveText(
+      'Sends when background work finishes, so your new settings can apply. Run now sends it without them.',
+    );
+  });
+});
+
 test('a message queued behind a reply warns what Interrupt does while new settings wait', async ({}, testInfo) => {
   test.setTimeout(240_000);
   await withBackgroundChat(testInfo, async ({ window, panel, stop, log }) => {

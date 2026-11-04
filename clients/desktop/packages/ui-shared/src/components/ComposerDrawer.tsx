@@ -11,7 +11,7 @@ export type ComposerDrawerEdge = 'top' | 'bottom';
 const EDGE_CLASS_NAMES: Record<ComposerDrawerEdge, string> = {
   // `-mb-4` + `pb-5` tuck the drawer under the elevated composer while
   // keeping a 4px visible inset (`p-1`) on every side of its content.
-  top: '-mb-4 rounded-t-2xl pb-5',
+  top: '-mb-4 rounded-t-drawer pb-5',
   bottom: 'rounded-b-2xl',
 };
 

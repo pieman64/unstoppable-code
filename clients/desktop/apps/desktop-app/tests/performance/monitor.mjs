@@ -1643,6 +1643,60 @@ export async function readDisplayRefreshRate(electronApp, timeoutMs = 5_000) {
   };
 }
 
+/**
+ * Moves the measured window, at its own size, onto the attached display with
+ * the highest refresh rate. A hidden window renders at the rate of the display
+ * it sits on, so with a 60 Hz external monitor beside a 120 Hz panel the same
+ * build can measure at either rate depending on where the window opened.
+ */
+export async function placeWindowOnFastestDisplay(
+  electronApp,
+  timeoutMs = 5_000,
+) {
+  const result = await raceWithTimeout(
+    Promise.resolve().then(() =>
+      electronApp.evaluate(({ BrowserWindow, screen }) => {
+        const [window] = BrowserWindow.getAllWindows();
+        if (!window) return { moved: false, reason: 'no window' };
+        const displays = screen.getAllDisplays();
+        const fastest = displays.reduce((best, candidate) =>
+          candidate.displayFrequency > best.displayFrequency ? candidate : best,
+        );
+        const bounds = window.getBounds();
+        const current = screen.getDisplayMatching(bounds);
+        const rates = displays.map((entry) => entry.displayFrequency);
+        if (current.id === fastest.id)
+          return {
+            moved: false,
+            refreshRateHz: fastest.displayFrequency,
+            rates,
+          };
+        const area = fastest.workArea;
+        window.setBounds({
+          x: area.x + Math.max(0, Math.floor((area.width - bounds.width) / 2)),
+          y:
+            area.y + Math.max(0, Math.floor((area.height - bounds.height) / 2)),
+          width: bounds.width,
+          height: bounds.height,
+        });
+        return {
+          moved: true,
+          fromRefreshRateHz: current.displayFrequency,
+          refreshRateHz: fastest.displayFrequency,
+          rates,
+        };
+      }),
+    ),
+    timeoutMs,
+  );
+  if (result?.timeout || result?.error || !result)
+    return {
+      moved: false,
+      error: result?.timeout ? 'timeout' : String(result?.error),
+    };
+  return result;
+}
+
 export async function startPerformanceMonitor({
   page,
   electronApp,
@@ -1673,8 +1727,14 @@ export async function startPerformanceMonitor({
   }
   // Frame budgets are opt-in, so other monitor callers keep their exact
   // renderer and main-process footprint.
+  const placement = frameBudgets
+    ? await placeWindowOnFastestDisplay(electronApp, probeTimeoutMs)
+    : null;
   const display = frameBudgets
-    ? await readDisplayRefreshRate(electronApp, probeTimeoutMs)
+    ? {
+        ...(await readDisplayRefreshRate(electronApp, probeTimeoutMs)),
+        placement,
+      }
     : null;
   await installRendererCollector(
     page,

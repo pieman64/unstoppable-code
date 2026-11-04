@@ -418,9 +418,25 @@ export async function listFileTreeRoots(
   return { roots: roots.map(toPublicRoot) };
 }
 
-/** The explorer index's entry cap, split evenly across a worktree's roots. */
-export function explorerIndexEntriesPerRoot(rootCount: number): number {
-  return Math.max(1, Math.floor(25_000 / Math.max(1, rootCount)));
+/**
+ * Whole-worktree index entry caps. The mentions index stays in the renderer
+ * for every worktree it was loaded for, so a repository with a large ignored
+ * tree must not grow it without bound: one with 1.5 million ignored files
+ * held 616 MiB there. Ignored directories are walked last, so a cap drops
+ * those first.
+ */
+const FILE_INDEX_ENTRY_CAPS = {
+  mentions: 100_000,
+  'file-explorer': 25_000,
+} as const;
+
+/** A purpose's index entry cap, split evenly across a worktree's roots. */
+export function fileIndexEntriesPerRoot(
+  purpose: FileIndexRequest['purpose'],
+  rootCount: number,
+): number {
+  const cap = FILE_INDEX_ENTRY_CAPS[purpose ?? 'mentions'];
+  return Math.max(1, Math.floor(cap / Math.max(1, rootCount)));
 }
 
 interface FileIndexBuildSlot {
@@ -524,10 +540,10 @@ async function walkFileIndexes(
     request.purpose === 'file-explorer'
       ? buildFileExplorerGlobMatcher()
       : buildFileGlobMatcher(preferences.fileIndexing);
-  const maxEntriesPerRoot =
-    request.purpose === 'file-explorer'
-      ? explorerIndexEntriesPerRoot(roots.length)
-      : Number.POSITIVE_INFINITY;
+  const maxEntriesPerRoot = fileIndexEntriesPerRoot(
+    request.purpose,
+    roots.length,
+  );
   return {
     repos: await Promise.all(
       roots.map(async (root) => {

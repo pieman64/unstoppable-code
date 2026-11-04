@@ -319,50 +319,25 @@ describe('homeComposerStore defaults', () => {
     expect(state.fileIndex).toBeNull();
     expect(state.fileIndexLoading).toBe(false);
     expect(state.scheduledSendDraft).toBeNull();
-    expect(state.workspaceSelectionReason).toBeNull();
   });
 });
 
-describe('homeComposerStore workspace selection reason (CAN-4674)', () => {
+describe('homeComposerStore workspace selection generation (CAN-4674)', () => {
   beforeEach(() => {
     useProjectsStore.setState({
       projects: [makeProject('proj-a'), makeProject('proj-b')],
     });
   });
 
-  it('records a reason and replaces it with the next selection', () => {
+  it('reset advances the selection generation', () => {
     const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
-    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBe(
-      'most-recent-import',
-    );
-    store.selectWorkspace('proj-b');
-    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
-  });
-
-  it('clears the reason when the same workspace is selected again', () => {
-    const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
-    store.selectWorkspace('proj-a', { explicit: true });
-    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
-  });
-
-  it('never keeps a reason without a selected workspace', () => {
-    const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
-    store.selectWorkspace(null, { reason: 'most-recent-import' });
-    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBeNull();
-  });
-
-  it('reset clears the reason and advances the selection generation', () => {
-    const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    store.selectWorkspace('proj-a');
     const generation =
       useHomeComposerStore.getState().workspaceSelectionGeneration;
     store.reset();
-    const state = useHomeComposerStore.getState();
-    expect(state.workspaceSelectionReason).toBeNull();
-    expect(state.workspaceSelectionGeneration).toBe(generation + 1);
+    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
+      generation + 1,
+    );
   });
 
   it('every selection advances the generation, even of the same workspace', () => {
@@ -376,38 +351,18 @@ describe('homeComposerStore workspace selection reason (CAN-4674)', () => {
     );
   });
 
-  it('invalidates older reviews when a same-project Apply clears provenance', () => {
+  it('advancing the generation keeps the selection and draft', () => {
     const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
-    const generation =
-      useHomeComposerStore.getState().workspaceSelectionGeneration;
-    store.clearWorkspaceSelectionReason();
-    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
-      generation + 1,
-    );
-    // A second successful review must supersede pending completions too,
-    // even after the hint has already gone.
-    store.clearWorkspaceSelectionReason();
-    expect(useHomeComposerStore.getState().workspaceSelectionGeneration).toBe(
-      generation + 2,
-    );
-  });
-
-  it('typing keeps the reason, and clearing it keeps the draft', () => {
-    const store = useHomeComposerStore.getState();
-    store.selectWorkspace('proj-a', { reason: 'most-recent-import' });
+    store.selectWorkspace('proj-a');
     store.setText('Fix the login flow');
-    expect(useHomeComposerStore.getState().workspaceSelectionReason).toBe(
-      'most-recent-import',
-    );
     const generation =
       useHomeComposerStore.getState().workspaceSelectionGeneration;
-    store.clearWorkspaceSelectionReason();
+    store.advanceWorkspaceSelectionGeneration();
+    store.advanceWorkspaceSelectionGeneration();
     const state = useHomeComposerStore.getState();
-    expect(state.workspaceSelectionReason).toBeNull();
     expect(state.text).toBe('Fix the login flow');
     expect(state.workspaceId).toBe('proj-a');
-    expect(state.workspaceSelectionGeneration).toBe(generation + 1);
+    expect(state.workspaceSelectionGeneration).toBe(generation + 2);
   });
 });
 

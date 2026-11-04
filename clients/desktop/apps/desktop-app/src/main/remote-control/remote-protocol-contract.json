@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 10,
+  "protocolVersion": 14,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -883,8 +883,6 @@
     "usage-limited-chats:resume",
     "usage-limited-sessions:list",
     "usage-limited-sessions:resume",
-    "user-environment:load",
-    "user-environment:save",
     "wake-lock:get-state",
     "wake-lock:state-changed",
     "work-entries:create",

@@ -26,6 +26,7 @@ import {
   Dot,
   StatusGlyph,
   StatusLabel,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -195,9 +196,9 @@ function LoginFailedView({
       style={{ height: TERMINAL_AREA_HEIGHT }}
     >
       <div>
-        <h3 className="text-m font-medium fg-primary">
+        <Heading level={3} variant="section">
           {providerLabel(provider)} sign-in did not complete
-        </h3>
+        </Heading>
         <p className="mt-1 text-s fg-secondary">
           The {providerLabel(provider)} sign-in process exited
           {exitCode !== null && exitCode !== 0

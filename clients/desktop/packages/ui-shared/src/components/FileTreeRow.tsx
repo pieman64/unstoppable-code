@@ -42,7 +42,7 @@ export interface FileTreeRowProps {
   secondaryLabel?: string;
   /** Mask the label text in session replays, for user-authored titles. */
   replayMaskLabel?: boolean;
-  /** Tooltip on the row (defaults to the label). */
+  /** Full text shown on the truncated label (defaults to the label). */
   title?: string;
   /** Click handler. */
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -121,8 +121,11 @@ export function FileTreeRow({
   touchTarget = false,
 }: FileTreeRowProps): JSX.Element {
   const paddingLeft = `${depth * 16 + 8}px`;
-  const tooltip =
-    title ?? (secondaryLabel ? `${label} — ${secondaryLabel}` : label);
+  // The full text rides on the truncated text as a native title, never on the
+  // row button (docs/design/interaction.md#tooltips).
+  const tooltip = replayMaskLabel
+    ? undefined
+    : (title ?? (secondaryLabel ? `${label} — ${secondaryLabel}` : label));
 
   // Sticky folder headers stack at the top of the scroll container: the root row
   // (depth 0) pins flush at the top, and each nested header pins directly below
@@ -182,6 +185,7 @@ export function FileTreeRow({
         <span
           className="min-w-0 truncate fg-secondary"
           data-testid="file-tree-row-secondary-label"
+          title={tooltip}
         >
           {secondaryLabel}
         </span>
@@ -202,7 +206,6 @@ export function FileTreeRow({
       onClick={onClick}
       onContextMenu={onContextMenu}
       disabled={rowDisabled}
-      title={replayMaskLabel ? undefined : tooltip}
       data-testid={dataTestId}
       data-path={dataPath}
       data-file-tree-id={dataNodeId}
@@ -237,6 +240,7 @@ export function FileTreeRow({
           {icon ?? folderIcon}
           <span
             className={secondaryLabel ? `${labelClass} shrink-0` : labelClass}
+            title={tooltip}
           >
             {label}
           </span>
@@ -248,6 +252,7 @@ export function FileTreeRow({
           {icon ?? fileIcon}
           <span
             className={secondaryLabel ? `${labelClass} shrink-0` : labelClass}
+            title={tooltip}
           >
             {label}
           </span>

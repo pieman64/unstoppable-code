@@ -470,8 +470,9 @@ describe('SubagentChatPanel', () => {
     const phaseBreadcrumb = container.querySelector<HTMLButtonElement>(
       '[data-testid="subagent-chat-breadcrumb-workflow-phase-node"]',
     );
-    expect(runBreadcrumb?.title).toBe('Panel workflow');
-    expect(phaseBreadcrumb?.title).toBe('Review');
+    // The full name sits on the masked label inside the button.
+    expect(runBreadcrumb?.querySelector('span')?.title).toBe('Panel workflow');
+    expect(phaseBreadcrumb?.querySelector('span')?.title).toBe('Review');
     const openButton = (): HTMLButtonElement | null =>
       container.querySelector<HTMLButtonElement>(
         '[data-testid="subagent-chat-open-workflow"]',

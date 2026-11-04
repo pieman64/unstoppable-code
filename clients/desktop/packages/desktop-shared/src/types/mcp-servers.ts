@@ -40,6 +40,7 @@ import type {
   UpdateAccountMcpConnectionRequest as ProtocolUpdateAccountMcpConnectionRequest,
 } from '@canopy/protocol/mcp-servers';
 import type { CuratedMcpServerListResponse } from '@canopy/protocol/mcp-catalog';
+import type { SecretValueInput } from './stored-secrets';
 import type { ChatTabPluginSelections } from '../types';
 
 export type {
@@ -129,6 +130,20 @@ export function isMcpServersIndexFile(
 export interface McpServerFile {
   version: 1;
   server: McpServerData;
+}
+
+/**
+ * MCP server shapes as they cross IPC to the renderer (CAN-4411). Header, env
+ * var and extra-header values, `authToken` and `oauth.clientSecret` are
+ * stored-secret values when non-empty; saves accept text or those values.
+ */
+export type McpServerDataView = McpServerData<SecretValueInput>;
+export type McpServerDefinitionView = McpServerDefinitionData<SecretValueInput>;
+export type McpServerConfigView = McpServerConfigData<SecretValueInput>;
+export type McpOAuthConfigView = McpOAuthConfigData<SecretValueInput>;
+export interface McpServerFileView {
+  version: 1;
+  server: McpServerDataView;
 }
 
 export function normalizeHttpAuthHandler(
@@ -427,7 +442,7 @@ export type AccountMcpConnectionSummary = Omit<
 >;
 
 /** Account binding belongs to the index, separate from the server definition. */
-export interface SaveMcpServerRequest extends McpServerData {
+export interface SaveMcpServerRequest extends McpServerDataView {
   accountConnectionId?: string;
   /** Explicit editor choice; omitted saves preserve index-owned routing. */
   accountRouting?: 'clear';
@@ -447,13 +462,18 @@ export type StartAccountMcpConnectionRequest = (
       /** Name for a new custom connection; the cloud falls back to its host. */
       displayName?: string;
       /** Extra upstream headers the cloud stores with the new connection. */
-      headers?: Record<string, string>;
+      headers?: Record<string, SecretValueInput>;
       serverKey?: never;
       endpointUrl?: never;
     }
 ) & {
   configId: string;
-  bearerToken?: string;
+  bearerToken?: SecretValueInput;
+  /**
+   * The device server whose stored secrets `headers` and `bearerToken` keep
+   * by reference. Main sends them only to that server's own URL origin.
+   */
+  secretSource?: AccountMcpSecretSource;
   oauthClient?: AccountMcpOAuthClientCredentials;
   /**
    * The cloud account id the caller was signed in as when it captured any
@@ -473,12 +493,26 @@ export type StartAccountMcpConnectionResponse =
       embeddedUrl?: string;
     };
 
+/** Names the device server a cloud request keeps stored secrets from. */
+export interface AccountMcpSecretSource {
+  serverId: string;
+}
+
 /** `mcp-servers:update-account`; edits a cloud connection in place. */
-export type UpdateAccountMcpConnectionRequest =
-  ProtocolUpdateAccountMcpConnectionRequest & {
-    /** See {@link StartAccountMcpConnectionRequest.expectedAccountId}. */
-    expectedAccountId?: string;
-  };
+export type UpdateAccountMcpConnectionRequest = Omit<
+  ProtocolUpdateAccountMcpConnectionRequest,
+  'headers' | 'bearerToken'
+> & {
+  headers?: Record<string, SecretValueInput>;
+  bearerToken?: SecretValueInput | null;
+  /** See {@link StartAccountMcpConnectionRequest.expectedAccountId}. */
+  expectedAccountId?: string;
+  /**
+   * The device server whose stored secrets the request keeps by reference;
+   * main sends them only to the connection that server is bound to.
+   */
+  secretSource?: AccountMcpSecretSource;
+};
 
 /** `mcp-servers:remove-account` answer. */
 export interface RemoveAccountMcpConnectionResponse {
@@ -612,8 +646,8 @@ export interface McpServersAPI {
     options?: { timeoutMs?: number },
   ): Promise<AccountMcpConnection | AccountMcpConnectionFailure>;
   loadIndex(): Promise<McpServersIndexFile>;
-  loadServer(id: string): Promise<McpServerFile>;
-  saveServer(server: SaveMcpServerRequest): Promise<McpServerFile>;
+  loadServer(id: string): Promise<McpServerFileView>;
+  saveServer(server: SaveMcpServerRequest): Promise<McpServerFileView>;
   listAccountConnections(): Promise<AccountMcpConnectionSummary[]>;
   deleteServer(id: string): Promise<void>;
   checkHealth(

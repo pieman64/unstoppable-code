@@ -3,6 +3,7 @@ import type {
   ChatSendMessageRequest,
   SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
+import { orderedSettingsHeldChanges } from '@canopy/protocol/portal';
 import {
   chatHasNativeBackgroundWork,
   canPreserveSessionCapabilitySnapshot,
@@ -171,31 +172,16 @@ const SETTINGS_HELD_CHANGE_BY_CAUSE: Readonly<
   organization: 'organization',
 };
 
-const SETTINGS_HELD_CHANGE_ORDER: readonly SettingsHeldChange[] = [
-  'model',
-  'agent',
-  'plan_mode',
-  'plugins',
-  'tools',
-  'instructions',
-  'approval_rules',
-  'delegation',
-  'codex_preferences',
-  'account',
-  'organization',
-];
-
 /** What a recycle would change, in display order; empty when not a recycle. */
 export function settingsHeldChanges(
   decision: TurnSessionReuseDecision,
 ): SettingsHeldChange[] {
   if (decision.kind !== 'recycle') return [];
-  const changes = new Set(
+  return orderedSettingsHeldChanges(
     [...decision.changedOptions, ...decision.recreateReasons].flatMap(
       (cause) => SETTINGS_HELD_CHANGE_BY_CAUSE[cause] ?? [],
     ),
   );
-  return SETTINGS_HELD_CHANGE_ORDER.filter((change) => changes.has(change));
 }
 
 /** A pre-commit refusal: the row stays queued until the work ends. */

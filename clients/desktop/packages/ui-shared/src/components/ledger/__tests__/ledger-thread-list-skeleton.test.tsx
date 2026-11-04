@@ -42,12 +42,11 @@ describe('LedgerThreadListSkeleton', () => {
     );
     expect(actions?.classList.contains('h-7')).toBe(true);
     expect(actions?.childElementCount).toBe(0);
-    // Every block pulses, except under reduced motion.
+    // Every block is a shared skeleton block, drawn and pulsed by skullet.
     for (const block of Array.from(
       region.querySelectorAll<HTMLElement>('[aria-hidden="true"]'),
     )) {
-      expect(block.classList.contains('animate-pulse')).toBe(true);
-      expect(block.classList.contains('motion-reduce:animate-none')).toBe(true);
+      expect(block.hasAttribute('skullet-bar')).toBe(true);
     }
   });
 

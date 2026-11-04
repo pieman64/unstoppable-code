@@ -226,6 +226,16 @@ const fireEvent = {
   },
 };
 
+/** Opens the Access ends dropdown and chooses the option with `value`. */
+async function chooseAccessEnds(value: string): Promise<void> {
+  await fireEvent.click(screen.getByTestId('external-agent-access-ends'));
+  const option = document.querySelector(
+    `[role="listbox"] [role="option"][data-value="${value}"]`,
+  );
+  if (!option) throw new Error(`missing Access ends option ${value}`);
+  await fireEvent.click(option);
+}
+
 afterEach((): void => {
   act((): void => roots.forEach((root) => root.unmount()));
   roots.length = 0;
@@ -919,9 +929,7 @@ describe('ExternalAgentPage', () => {
     await renderPage(client);
 
     await screen.findByTestId('external-agent-page');
-    await fireEvent.change(screen.getByTestId('external-agent-access-ends'), {
-      target: { value: '30' },
-    });
+    await chooseAccessEnds('30');
     await fireEvent.click(screen.getByTestId('external-agent-save'));
 
     expect(await screen.findByTestId('external-agent-outcome')).toHaveAttribute(
@@ -1475,9 +1483,7 @@ describe('ExternalAgentPage', () => {
     expect(
       await screen.findByTestId('external-agent-devices-empty'),
     ).toBeInTheDocument();
-    await fireEvent.change(screen.getByTestId('external-agent-access-ends'), {
-      target: { value: '30' },
-    });
+    await chooseAccessEnds('30');
     await fireEvent.click(screen.getByTestId('external-agent-save'));
 
     expect(client.updateAccess).toHaveBeenCalledWith(
@@ -1591,9 +1597,7 @@ describe('ExternalAgentPage', () => {
     await renderPage(client);
 
     await screen.findByTestId('external-agent-page');
-    await fireEvent.change(screen.getByTestId('external-agent-access-ends'), {
-      target: { value: '30' },
-    });
+    await chooseAccessEnds('30');
     await fireEvent.click(screen.getByTestId('external-agent-save'));
 
     const [connectionId, update] = client.updateAccess.mock.calls[0];

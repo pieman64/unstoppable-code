@@ -487,6 +487,114 @@ describe('PostHog background client and session authority', () => {
     });
   });
 
+  describe('background platform properties', () => {
+    const originalPlatform = process.platform;
+    const HOST_PLATFORM = { osVersion: '10.0.22631', cpuArchitecture: 'arm64' };
+
+    function setPlatform(platform: NodeJS.Platform): void {
+      Object.defineProperty(process, 'platform', { value: platform });
+    }
+
+    function startWithHostPlatform(
+      getHostPlatform: () => typeof HOST_PLATFORM,
+    ): ReturnType<typeof main.initializePostHogMain> {
+      return main.initializePostHogMain(
+        () => Promise.resolve(posthogId),
+        undefined,
+        undefined,
+        getHostPlatform,
+      );
+    }
+
+    function lastProperties(): Record<string, unknown> | undefined {
+      return mockPostHogCapture.mock.calls.at(-1)?.[0].properties;
+    }
+
+    afterEach(() => setPlatform(originalPlatform));
+
+    it.each([
+      ['darwin', 'Mac OS X'],
+      ['win32', 'Windows'],
+      ['linux', 'Linux'],
+    ] as const)(
+      'stamps %s on startup and forwarded operations',
+      async (platform, osName) => {
+        setPlatform(platform);
+        await startWithHostPlatform(() => HOST_PLATFORM);
+        const expected: unknown = expect.objectContaining({
+          $os: osName,
+          $os_version: '10.0.22631',
+          cpu_architecture: 'arm64',
+        });
+        expect(lastProperties()).toEqual(expected);
+
+        main.setDesktopPostHogOperationCaptureEnabled(true);
+        main.succeedDesktopOperation('canopy.chat_turn');
+        expect(mockPostHogCapture.mock.calls.at(-1)?.[0].event).toBe(
+          'chat:turn_end',
+        );
+        expect(lastProperties()).toEqual(expected);
+      },
+    );
+
+    it('does not let event context replace the platform properties', async () => {
+      setPlatform('win32');
+      await startWithHostPlatform(() => HOST_PLATFORM);
+      main.captureDesktopPostHogEvent('background_test', {
+        $os: 'spoofed',
+        $os_version: 'spoofed',
+        cpu_architecture: 'spoofed',
+      });
+      expect(lastProperties()).toEqual(
+        expect.objectContaining({
+          $os: 'Windows',
+          $os_version: '10.0.22631',
+          cpu_architecture: 'arm64',
+        }),
+      );
+    });
+
+    // A four-part version matches the sanitizer's IPv4 pattern, so an
+    // untrimmed WSL2 kernel would arrive as `<redacted-ip>-microsoft-...`.
+    it('keeps a four-part kernel version readable after sanitizing', async () => {
+      setPlatform('linux');
+      await startWithHostPlatform(() => ({
+        ...HOST_PLATFORM,
+        osVersion: '6.6.87.2-microsoft-standard-WSL2',
+      }));
+      expect(lastProperties()?.$os_version).toBe('6.6.87');
+    });
+
+    it('omits a version it cannot read and keeps the architecture', async () => {
+      await startWithHostPlatform(() => ({
+        ...HOST_PLATFORM,
+        osVersion: 'unknown',
+      }));
+      const properties = lastProperties();
+      expect(properties).not.toHaveProperty('$os_version');
+      expect(properties?.cpu_architecture).toBe('arm64');
+    });
+
+    it('omits the OS name on a platform the browser SDK does not name', async () => {
+      setPlatform('freebsd');
+      await startWithHostPlatform(() => HOST_PLATFORM);
+      expect(lastProperties()).not.toHaveProperty('$os');
+    });
+
+    it('still starts and names the OS when the host facts are unavailable', async () => {
+      setPlatform('darwin');
+      await expect(
+        startWithHostPlatform(() => {
+          throw new Error('host unavailable');
+        }),
+      ).resolves.toEqual({ enabled: true, provider: 'posthog' });
+      const properties = lastProperties();
+      expect(properties?.$os).toBe('Mac OS X');
+      expect(properties).not.toHaveProperty('$os_version');
+      expect(properties).not.toHaveProperty('cpu_architecture');
+    });
+  });
+
   it('uses the separate host identity and both privacy layers, overriding event-supplied session and identity', async () => {
     main.setDesktopInstrumentationUser(ANON_ID, 'private@example.test');
     await main.initializePostHogMain(() => Promise.resolve(posthogId));

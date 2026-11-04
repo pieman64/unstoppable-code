@@ -550,9 +550,6 @@ export function ChatBackgroundTray({
         return following.length === 0 ? null : (
           <WatcherManagementButton
             appearance="drawer"
-            actionLabel={
-              run.kind === 'pipeline' ? undefined : 'Manage watching'
-            }
             watchers={following}
             modalTitle="Pull request watchers"
             modalEmptyMessage="No active watchers for this pull request."

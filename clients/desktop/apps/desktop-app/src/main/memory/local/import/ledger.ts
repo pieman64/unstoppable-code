@@ -1,8 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, rename } from 'node:fs/promises';
+import { join } from 'node:path';
+import { isMemoryUlid } from '@canopy/protocol/memory-sync';
 import { isRecord } from '../../../lib/type-guards';
-import { ensureOwnerOnlyDir } from '../store';
+import { writeMemoryFileAtomically } from '../memory-files';
 import type { MemoryImportSourceTool } from '../input-budget';
 
 const IMPORT_STATE_FILENAME = 'import-state.json';
@@ -21,6 +21,8 @@ export interface ImportStateStagedEntry {
   modified?: string;
   consolidatedAt?: string;
   sourceTool?: MemoryImportSourceTool;
+  /** The import's note ID; its content stays verbatim, without front matter. */
+  noteId?: string;
 }
 
 export interface ImportStateSkipEntry {
@@ -66,7 +68,8 @@ function isImportStateStagedEntry(
     (value.consolidatedAt === undefined || isTimestamp(value.consolidatedAt)) &&
     (value.sourceTool === undefined ||
       value.sourceTool === 'claude-code' ||
-      value.sourceTool === 'codex')
+      value.sourceTool === 'codex') &&
+    (value.noteId === undefined || isMemoryUlid(value.noteId))
   );
 }
 
@@ -155,7 +158,11 @@ export async function writeImportStateRaw(
   scopeDir: string,
   raw: string,
 ): Promise<void> {
-  await writeLedgerFile(join(scopeDir, IMPORT_STATE_FILENAME), raw);
+  await writeMemoryFileAtomically(
+    scopeDir,
+    join(scopeDir, IMPORT_STATE_FILENAME),
+    raw,
+  );
 }
 
 export async function readImportState(scopeDir: string): Promise<ImportState> {
@@ -168,26 +175,12 @@ export async function readImportState(scopeDir: string): Promise<ImportState> {
   return inspection.state;
 }
 
-async function writeLedgerFile(
-  filePath: string,
-  content: string,
-): Promise<void> {
-  await ensureOwnerOnlyDir(dirname(filePath));
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporaryPath, filePath);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => undefined);
-    throw error;
-  }
-}
-
 export async function writeImportState(
   scopeDir: string,
   state: ImportState,
 ): Promise<void> {
-  await writeLedgerFile(
+  await writeMemoryFileAtomically(
+    scopeDir,
     join(scopeDir, IMPORT_STATE_FILENAME),
     `${JSON.stringify(state, null, 2)}\n`,
   );

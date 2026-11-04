@@ -41,6 +41,7 @@ import type { PreferencesData } from '@canopy/desktop-shared/types';
 import type {
   McpServerData,
   McpServerFile,
+  McpServerFileView,
   McpServerIndexEntry,
   McpServersIndexFile,
   McpProxyState,
@@ -1545,6 +1546,67 @@ describe('load server handler', () => {
 // ---------------------------------------------------------------------------
 // CRUD — save server handler
 // ---------------------------------------------------------------------------
+
+describe('stored-secret MCP server replies (CAN-4411)', () => {
+  const secretServer = (): McpServerData =>
+    makeServer({
+      configs: [makeConfig({ envVars: { API_KEY: 'sk-live-secret' } })],
+    });
+
+  it('loads and saves without returning the secret, keeping the stored value', async (): Promise<void> => {
+    const server = secretServer();
+    const files = useMcpDisk({
+      [MOCK_INDEX_PATH]: makeIndexFileJson([toIndexEntry(server)]),
+      [mockServerPath(server.definition.id)]: makeServerFileJson(server),
+    });
+    const loaded = (await getHandler(MCP_SERVER_CHANNELS.LOAD_SERVER)(
+      {},
+      server.definition.id,
+    )) as McpServerFileView;
+    expect(JSON.stringify(loaded)).not.toContain('sk-live-secret');
+
+    const saved = await getHandler(MCP_SERVER_CHANNELS.SAVE_SERVER)(
+      {},
+      {
+        ...loaded.server,
+        configs: loaded.server.configs.map((config) => ({
+          ...config,
+          name: 'Renamed',
+        })),
+      },
+    );
+    expect(JSON.stringify(saved)).not.toContain('sk-live-secret');
+    expect(files.get(mockServerPath(server.definition.id))).toContain(
+      '"API_KEY": "sk-live-secret"',
+    );
+  });
+
+  it('refuses a kept value when the command args change, writing nothing', async (): Promise<void> => {
+    const server = secretServer();
+    const before = makeServerFileJson(server);
+    const files = useMcpDisk({
+      [MOCK_INDEX_PATH]: makeIndexFileJson([toIndexEntry(server)]),
+      [mockServerPath(server.definition.id)]: before,
+    });
+    const loaded = (await getHandler(MCP_SERVER_CHANNELS.LOAD_SERVER)(
+      {},
+      server.definition.id,
+    )) as McpServerFileView;
+    await expect(
+      getHandler(MCP_SERVER_CHANNELS.SAVE_SERVER)(
+        {},
+        {
+          ...loaded.server,
+          definition: {
+            ...loaded.server.definition,
+            args: ['-y', 'other-pkg'],
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'stored_secret_destination_changed' });
+    expect(files.get(mockServerPath(server.definition.id))).toBe(before);
+  });
+});
 
 describe('save server handler', () => {
   it('persists the account binding while inheriting the global account handler', async (): Promise<void> => {
@@ -3228,6 +3290,83 @@ describe('account connection IPC validation', (): void => {
     ).rejects.toThrow();
     expect(update).not.toHaveBeenCalled();
   });
+  it.each([
+    ['mcp.example.test', true],
+    ['attacker.example.test', false],
+  ] as const)(
+    'sends kept device secrets to a bound connection only while its upstream is %s (CAN-4411)',
+    async (upstreamHost, allowed): Promise<void> => {
+      const id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const server = makeServer({
+        definition: {
+          type: 'http',
+          command: undefined,
+          args: undefined,
+          url: 'https://mcp.example.test/mcp',
+          headers: { 'X-Api-Key': 'device-header-secret' },
+        },
+      });
+      useMcpDisk({
+        [MOCK_INDEX_PATH]: makeIndexFileJson([
+          { ...toIndexEntry(server), accountConnectionId: id },
+        ]),
+        [mockServerPath(server.definition.id)]: makeServerFileJson(server),
+      });
+      const connection: accountConnections.AccountMcpConnection = {
+        id,
+        serverKey: 'custom:one',
+        configId: 'default',
+        displayName: 'Team tools',
+        status: 'CONNECTED',
+        kind: 'CUSTOM',
+        routeId: 'route',
+        enabledTools: null,
+        upstreamHost,
+      };
+      jest
+        .spyOn(accountConnections, 'getAccountMcpConnection')
+        .mockResolvedValue(connection);
+      const update = jest
+        .spyOn(accountConnections, 'updateAccountMcpConnection')
+        .mockResolvedValue(connection);
+      const loaded = (await getHandler(MCP_SERVER_CHANNELS.LOAD_SERVER)(
+        {},
+        server.definition.id,
+      )) as McpServerFileView;
+      const request = getHandler(MCP_SERVER_CHANNELS.UPDATE_ACCOUNT)({}, id, {
+        customUrl: 'https://mcp.example.test/mcp',
+        headers: loaded.server.definition.headers,
+        secretSource: { serverId: server.definition.id },
+      });
+      if (allowed) {
+        await request;
+        expect(update).toHaveBeenCalledWith(id, {
+          customUrl: 'https://mcp.example.test/mcp',
+          headers: { 'X-Api-Key': 'device-header-secret' },
+        });
+        // Without pinning the URL in the same edit, nothing is resolved.
+        await expect(
+          getHandler(MCP_SERVER_CHANNELS.UPDATE_ACCOUNT)({}, id, {
+            headers: loaded.server.definition.headers,
+            secretSource: { serverId: server.definition.id },
+          }),
+        ).rejects.toMatchObject({ code: 'stored_secret_destination_changed' });
+        await expect(
+          getHandler(MCP_SERVER_CHANNELS.UPDATE_ACCOUNT)({}, id, {
+            customUrl: 'https://mcp.example.test:8443/mcp',
+            headers: loaded.server.definition.headers,
+            secretSource: { serverId: server.definition.id },
+          }),
+        ).rejects.toMatchObject({ code: 'stored_secret_destination_changed' });
+        expect(update).toHaveBeenCalledTimes(1);
+      } else {
+        await expect(request).rejects.toMatchObject({
+          code: 'stored_secret_destination_changed',
+        });
+        expect(update).not.toHaveBeenCalled();
+      }
+    },
+  );
   it('removes a cloud connection', async (): Promise<void> => {
     const remove = jest
       .spyOn(accountConnections, 'removeAccountMcpConnection')

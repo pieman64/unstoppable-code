@@ -1,12 +1,19 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import type { UserEnvironmentEntry } from '@canopy/desktop-shared/types';
+import type {
+  UserEnvironmentEntry,
+  UserEnvironmentEntryView,
+} from '@canopy/desktop-shared/types';
 import { normalizeUserEnvironmentEntries } from '@canopy/desktop-shared/lib/user-environment';
 import { getSharedContainerRunEnvFilePath } from '../lib/paths';
 import { getSecretStoragePolicy } from '../lib/secure-storage-policy';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { isMissingFileError } from '../lib/fs-utils';
 import { isRecord } from '../lib/type-guards';
+import {
+  createStoredSecretResolver,
+  toStoredSecretValue,
+} from '../lib/stored-secrets';
 
 interface RunEnvFile {
   version: 1;
@@ -64,11 +71,10 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
-export async function readSharedContainerRunEnvironment(
+function decryptEntries(
+  containers: RunEnvFile['containers'],
   containerId: string,
-): Promise<UserEnvironmentEntry[]> {
-  if (!validContainerId(containerId)) return [];
-  const { containers } = await read();
+): UserEnvironmentEntry[] {
   if (!Object.prototype.hasOwnProperty.call(containers, containerId)) return [];
   const encrypted = containers[containerId];
   const value: unknown = JSON.parse(
@@ -79,17 +85,65 @@ export async function readSharedContainerRunEnvironment(
   return normalizeUserEnvironmentEntries(value);
 }
 
+/** Plaintext for the processes main launches; never reply with it over IPC. */
+export async function readSharedContainerRunEnvironment(
+  containerId: string,
+): Promise<UserEnvironmentEntry[]> {
+  if (!validContainerId(containerId)) return [];
+  return decryptEntries((await read()).containers, containerId);
+}
+
+/** The reply form: every non-empty value is a stored-secret value. */
+export function projectSharedContainerRunEnvironment(
+  containerId: string,
+  entries: readonly UserEnvironmentEntry[],
+): UserEnvironmentEntryView[] {
+  return entries.map((entry) => ({
+    ...entry,
+    value: toStoredSecretValue(
+      'shared_container.run_env',
+      containerId,
+      entry.key,
+      entry.value,
+    ),
+  }));
+}
+
+/**
+ * Saves the recipient's values. A stored-secret value keeps the value this
+ * container holds now; one naming nothing here refuses the whole save.
+ */
 export function writeSharedContainerRunEnvironment(
   containerId: string,
-  values: UserEnvironmentEntry[],
-): Promise<UserEnvironmentEntry[]> {
+  values: UserEnvironmentEntryView[],
+): Promise<UserEnvironmentEntryView[]> {
   if (!validContainerId(containerId))
     throw new Error('Invalid shared-container id');
   return enqueue(async () => {
-    const normalized = normalizeUserEnvironmentEntries(values).slice(0, 64);
     const policy = getSecretStoragePolicy();
     policy.assertCanWrite();
     const file = await read();
+    // Only a save that keeps values reads the old ones, so new values still
+    // replace a record this device can no longer decrypt.
+    const resolver = values.some((entry) => typeof entry.value !== 'string')
+      ? createStoredSecretResolver(
+          'shared_container.run_env',
+          containerId,
+          decryptEntries(file.containers, containerId).map((entry) => ({
+            slot: entry.key,
+            value: entry.value,
+          })),
+        )
+      : undefined;
+    const normalized = normalizeUserEnvironmentEntries(
+      values.map((entry) => ({
+        ...entry,
+        value:
+          resolver === undefined || typeof entry.value === 'string'
+            ? entry.value
+            : resolver.resolve(entry.value),
+      })),
+    ).slice(0, 64);
     const containers = new Map(Object.entries(file.containers));
     containers.set(
       containerId,
@@ -99,7 +153,7 @@ export function writeSharedContainerRunEnvironment(
       { version: 1, containers: Object.fromEntries(containers) },
       true,
     );
-    return normalized;
+    return projectSharedContainerRunEnvironment(containerId, normalized);
   });
 }
 

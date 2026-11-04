@@ -31,6 +31,7 @@ import {
   TextArea,
   TextInput,
   type ActionMenuItem,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { TeamPageHeaderActions } from './team-page-header-slot';
 import {
@@ -1170,9 +1171,9 @@ function ProjectList({
               heading sets them apart from the organization's projects. */}
           {showChecklist && (
             <div data-testid="team-projects-private-heading">
-              <h2 className="text-s font-medium fg-primary">
+              <Heading level={2} variant="title">
                 Only visible to you
-              </h2>
+              </Heading>
               <p className="text-s fg-secondary">
                 Projects you've added for yourself.
               </p>
@@ -1757,7 +1758,9 @@ function ProjectEditor({
               });
             }}
           >
-            <h3 className="text-s fg-primary">Definition</h3>
+            <Heading level={3} variant="title">
+              Definition
+            </Heading>
             <FormField label="Name">
               {(control) => (
                 <TextInput
@@ -1803,7 +1806,9 @@ function ProjectEditor({
             </LoadingButton>
           </form>
           <section className="flex flex-col gap-2 text-s">
-            <h3 className="fg-primary">Repository</h3>
+            <Heading level={3} variant="title">
+              Repository
+            </Heading>
             {project.repository ? (
               <>
                 <a
@@ -1828,9 +1833,9 @@ function ProjectEditor({
             )}
           </section>
           <section className="flex flex-col gap-3 text-s">
-            <h3 ref={grantsRef} tabIndex={-1} className="fg-primary">
+            <Heading level={3} variant="title" ref={grantsRef} tabIndex={-1}>
               Who can use it
-            </h3>
+            </Heading>
             <TeamProjectsGrantsEditor
               detail={detail}
               grants={grants}

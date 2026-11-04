@@ -14,6 +14,7 @@ import type {
   PipelinePluginCollection,
 } from '@canopy/desktop-shared/types/pipeline';
 import { PipelineModelAliasEditor } from './PipelineModelAliasEditor';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface PipelineModelAliasesSectionProps {
   aliases: PipelineModelAlias[];
@@ -42,7 +43,9 @@ export function PipelineModelAliasesSection({
       className="space-y-1.5"
       data-testid="pipeline-model-aliases-section"
     >
-      <h3 className="text-xs font-medium fg-secondary">Model aliases</h3>
+      <Heading level={3} variant="label">
+        Model aliases
+      </Heading>
       <p className="text-xs fg-secondary">
         Choose the model alias values agent steps will use. Workflow defaults
         are used as the baseline when available.

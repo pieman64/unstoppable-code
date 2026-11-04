@@ -7,6 +7,7 @@ import {
   type PipelineDefinition,
   type PipelineDefinitionDeleteResult,
   type PipelineDefinitionDuplicateResult,
+  type PipelineDefinitionImportResult,
   type PipelineDefinitionSetEnabledResult,
   PIPELINE_GRANTS,
   type PipelineDefinitionUpsertResult,
@@ -58,6 +59,10 @@ export interface CorePipelineDefinitionHandlers {
       'core.pipeline.definition.setEnabled',
       CanopyHandlerContext
     >;
+    'core.pipeline.definition.import': CanopyInstructionHandler<
+      'core.pipeline.definition.import',
+      CanopyHandlerContext
+    >;
   };
 }
 
@@ -100,8 +105,10 @@ export type PipelineDefinitionReplayReceipt =
        * set none and failed before answering.
        */
       readonly enabled?: boolean;
-      /** The definition a duplicate copied. */
+      /** The definition a duplicate copied or an import installed. */
       readonly sourceDefinitionId?: string;
+      /** The remote content hash an import installed. */
+      readonly remoteVersion?: string;
     }
   | ({ readonly kind: 'enablement' } & PipelineDefinitionPendingEnablement)
   | { readonly kind: 'result'; readonly result: Record<string, unknown> };
@@ -110,7 +117,8 @@ export type PipelineDefinitionWriteOperation =
   | 'core.pipeline.definition.upsert'
   | 'core.pipeline.definition.delete'
   | 'core.pipeline.definition.duplicate'
-  | 'core.pipeline.definition.setEnabled';
+  | 'core.pipeline.definition.setEnabled'
+  | 'core.pipeline.definition.import';
 
 export interface PipelineDefinitionReplayEntry {
   readonly operation: PipelineDefinitionWriteOperation;
@@ -499,6 +507,7 @@ async function restoreDefinition(
 function definitionReceipt(
   definition: PipelineDefinition,
   sourceDefinitionId?: string,
+  remoteVersion?: string,
 ): PipelineDefinitionReplayReceipt {
   return {
     kind: 'definition',
@@ -506,6 +515,7 @@ function definitionReceipt(
     revision: definition.revision,
     enabled: definition.enabled,
     ...(sourceDefinitionId === undefined ? {} : { sourceDefinitionId }),
+    ...(remoteVersion === undefined ? {} : { remoteVersion }),
   };
 }
 
@@ -549,6 +559,26 @@ export function createCorePipelineDefinitionHandlers(
         return {
           definition: await restoreDefinition(host, receipt, signal),
           sourceDefinitionId: receipt.sourceDefinitionId,
+        };
+      },
+    },
+  );
+  const replayImport = ledger.cache<PipelineDefinitionImportResult>(
+    'core.pipeline.definition.import',
+    {
+      receiptOf: ({ definition, remoteDefinitionId, remoteVersion }) =>
+        definitionReceipt(definition, remoteDefinitionId, remoteVersion),
+      restore: async (receipt, signal) => {
+        if (
+          receipt.kind !== 'definition' ||
+          !receipt.sourceDefinitionId ||
+          receipt.remoteVersion === undefined
+        )
+          throw receiptMismatch();
+        return {
+          definition: await restoreDefinition(host, receipt, signal),
+          remoteDefinitionId: receipt.sourceDefinitionId,
+          remoteVersion: receipt.remoteVersion,
         };
       },
     },
@@ -630,6 +660,14 @@ export function createCorePipelineDefinitionHandlers(
         replayDuplicate(context, params, async () => {
           assertServingAuthority(host, params.scope.authorityId);
           return (await host.load()).duplicate(params, context.signal);
+        }),
+      'core.pipeline.definition.import': (
+        params,
+        context,
+      ): Promise<PipelineDefinitionImportResult> =>
+        replayImport(context, params, async () => {
+          assertServingAuthority(host, params.targetScope.authorityId);
+          return (await host.load()).import(params, context.signal);
         }),
       'core.pipeline.definition.setEnabled': (
         params,

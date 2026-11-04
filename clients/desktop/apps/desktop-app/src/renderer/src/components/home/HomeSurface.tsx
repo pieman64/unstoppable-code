@@ -149,7 +149,6 @@ import { ModelGatewayKeyBanner } from '@/components/chat/ModelGatewayKeyBanner';
 import { resolveOrgGatewayOrganizationId } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
 import { HomeWorkspacePicker } from './HomeWorkspacePicker';
-import { HomeWorkspaceSelectionReason } from './HomeWorkspaceSelectionReason';
 import { HomeBranchPicker } from './HomeBranchPicker';
 import { HomeBaseBranchPicker } from './HomeBaseBranchPicker';
 import { HomeComposerControls } from './HomeComposerControls';
@@ -1423,13 +1422,6 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       onRestoreFocus={(): void => focusEditor(editor)}
                     />
                   )}
-                  {showWorkspacePicker && linkProjectPreview === null && (
-                    <HomeWorkspaceSelectionReason
-                      onSwitch={(): void =>
-                        setWorkspaceCommandOpenSignal((signal) => signal + 1)
-                      }
-                    />
-                  )}
                   {selectionPickersVisible && showBranchPicker && (
                     <HomeBranchPicker />
                   )}
@@ -1438,7 +1430,6 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       type="button"
                       data-testid="home-branch-picker-see-more"
                       aria-label={`${collapsedBranchSummary}. Choose a worktree or branch`}
-                      title={collapsedBranchSummary}
                       onClick={(): void =>
                         useHomeComposerStore
                           .getState()
@@ -1446,7 +1437,11 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       }
                       className="focus-ring inline-flex h-7 max-w-52 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs fg-secondary ring-1 ring-inset ring-line-base transition-colors hover:bg-subtle hover:fg-primary"
                     >
-                      <span className="truncate">{collapsedBranchSummary}</span>
+                      {/* The summary can be cut off: its text keeps a native
+                          title with the full value. */}
+                      <span className="truncate" title={collapsedBranchSummary}>
+                        {collapsedBranchSummary}
+                      </span>
                       <ChevronDownMediumIcon className="h-3.5 w-3.5 shrink-0" />
                     </button>
                   )}

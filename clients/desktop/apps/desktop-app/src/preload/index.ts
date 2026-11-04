@@ -2315,10 +2315,6 @@ const canopyApi: CanopyApi = {
       ipcRenderer.removeListener(IPC_CHANNELS.autoArchiveCompleted, handler);
     };
   },
-  loadUserEnvironment: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.userEnvironmentLoad),
-  saveUserEnvironment: (data) =>
-    ipcRenderer.invoke(IPC_CHANNELS.userEnvironmentSave, data),
   loadEnvironmentConfig: () =>
     ipcRenderer.invoke(IPC_CHANNELS.environmentConfigLoad),
   saveEnvironmentConfig: (data) =>

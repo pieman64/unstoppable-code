@@ -3,6 +3,12 @@
 import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
 import {
   Button,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
   EmptyState,
   PageSearchControls,
   PageSearchFilters,
@@ -235,29 +241,28 @@ export function WorkflowsLibraryTable({
   compact = false,
 }: WorkflowsLibraryTableProps): JSX.Element {
   return (
-    <div
-      className="overflow-hidden rounded-lg border"
-      data-testid="workflows-library-table"
+    <DataTableFrame
+      layout="fixed"
+      caption="Workflows"
+      testId="workflows-library-table"
     >
-      <table className="w-full table-fixed text-left text-s">
-        <WorkflowsLibraryTableHead compact={compact} />
-        <tbody>
-          {rows.map((row) => (
-            <WorkflowsLibraryTableRow
-              key={row.key}
-              row={row}
-              now={now}
-              locale={locale}
-              compact={compact}
-              busy={busyKeys?.has(row.key) === true}
-              highlighted={highlightKey === row.key}
-              onOpen={onOpen}
-              onAction={onAction}
-            />
-          ))}
-        </tbody>
-      </table>
-    </div>
+      <WorkflowsLibraryTableHead compact={compact} />
+      <DataTableBody>
+        {rows.map((row) => (
+          <WorkflowsLibraryTableRow
+            key={row.key}
+            row={row}
+            now={now}
+            locale={locale}
+            compact={compact}
+            busy={busyKeys?.has(row.key) === true}
+            highlighted={highlightKey === row.key}
+            onOpen={onOpen}
+            onAction={onAction}
+          />
+        ))}
+      </DataTableBody>
+    </DataTableFrame>
   );
 }
 
@@ -271,21 +276,19 @@ function WorkflowsLibraryTableHead({
   readonly compact: boolean;
 }): JSX.Element {
   return (
-    <thead className="text-xs fg-tertiary">
-      <tr>
-        <th className="px-4 py-2.5 font-normal">Workflow</th>
-        <th className={`${compact ? 'w-44' : 'w-52'} px-3 py-2.5 font-normal`}>
-          Trigger
-        </th>
-        <th className="w-48 px-3 py-2.5 font-normal">Last run</th>
-        {compact ? null : (
-          <th className="w-44 px-3 py-2.5 font-normal">Next run</th>
-        )}
-        <th className="w-32 px-3 py-2.5 text-right font-normal">
-          <span className="sr-only">On or off, and actions</span>
-        </th>
-      </tr>
-    </thead>
+    <DataTableHead>
+      <DataTableHeaderCell>Workflow</DataTableHeaderCell>
+      <DataTableHeaderCell width={compact ? '11rem' : '13rem'}>
+        Trigger
+      </DataTableHeaderCell>
+      <DataTableHeaderCell width="12rem">Last run</DataTableHeaderCell>
+      {compact ? null : (
+        <DataTableHeaderCell width="11rem">Next run</DataTableHeaderCell>
+      )}
+      <DataTableHeaderCell width="8rem" align="right" labelHidden>
+        On or off, and actions
+      </DataTableHeaderCell>
+    </DataTableHead>
   );
 }
 
@@ -326,18 +329,14 @@ export function WorkflowsLibraryTableSkeleton({
     Math.max(1, Math.min(SKELETON_ROWS.length, Math.floor(rows))),
   );
   return (
-    <div
-      role="status"
-      className="overflow-hidden rounded-lg border"
-      data-testid="workflows-library-skeleton"
-    >
+    <div role="status" data-testid="workflows-library-skeleton">
       <span className="sr-only">Loading workflows</span>
-      <table aria-hidden="true" className="w-full table-fixed text-left text-s">
+      <DataTableFrame layout="fixed" busy>
         <WorkflowsLibraryTableHead compact={compact} />
-        <tbody>
+        <DataTableBody>
           {shown.map((row) => (
-            <tr key={row.key} className="border-t align-middle">
-              <td className="px-4 py-3">
+            <DataTableRow key={row.key}>
+              <DataTableCell>
                 {/* The name and summary lines' own heights, so the row is
                     as tall as a loaded one. */}
                 <div className="flex min-w-0 flex-col gap-1">
@@ -348,34 +347,34 @@ export function WorkflowsLibraryTableSkeleton({
                     <SkeletonBlock height="meta" width={row.summary} />
                   </span>
                 </div>
-              </td>
-              <td className="px-3 py-3">
+              </DataTableCell>
+              <DataTableCell>
                 <span className="flex h-5 items-center">
                   <SkeletonBlock height="text" width={row.trigger} />
                 </span>
-              </td>
-              <td className="px-3 py-3">
+              </DataTableCell>
+              <DataTableCell>
                 <span className="flex h-5 items-center">
                   <SkeletonBlock height="text" width={row.run} />
                 </span>
-              </td>
+              </DataTableCell>
               {compact ? null : (
-                <td className="px-3 py-3">
+                <DataTableCell>
                   <span className="flex h-5 items-center">
                     <SkeletonBlock height="text" width="1/4" />
                   </span>
-                </td>
+                </DataTableCell>
               )}
-              <td className="px-3 py-3">
+              <DataTableCell>
                 {/* Where the switch sits; Run and More stay blank. */}
                 <span className="flex h-7 items-center justify-end pr-18">
                   <SkeletonBlock shape="toggle" />
                 </span>
-              </td>
-            </tr>
+              </DataTableCell>
+            </DataTableRow>
           ))}
-        </tbody>
-      </table>
+        </DataTableBody>
+      </DataTableFrame>
     </div>
   );
 }
@@ -414,34 +413,15 @@ export function WorkflowsLibraryTableRow({
   const canRun = row.actions.includes('run');
   const showRun = canRun || row.runUnavailableLabel !== undefined;
   return (
-    <tr
+    <DataTableRow
       data-testid="workflows-library-row"
       data-row-key={row.key}
       data-row-kind={row.kind}
       data-highlighted={highlighted ? 'true' : undefined}
-      tabIndex={0}
-      onClick={(event): void => {
-        // Portaled menus bubble through React to the row; only a press on the
-        // row's own cells opens it.
-        if (
-          event.target instanceof Node &&
-          event.currentTarget.contains(event.target)
-        ) {
-          onOpen(row);
-        }
-      }}
-      onKeyDown={(event): void => {
-        if (event.key !== 'Enter' || event.target !== event.currentTarget) {
-          return;
-        }
-        event.preventDefault();
-        onOpen(row);
-      }}
-      className={`focus-ring cursor-pointer border-t align-middle transition-colors ${
-        highlighted ? 'bg-subtle' : 'hover:bg-subtle'
-      }`}
+      selected={highlighted}
+      onActivate={(): void => onOpen(row)}
     >
-      <td className="px-4 py-3">
+      <DataTableCell tone={off ? 'tertiary' : 'primary'}>
         <div className="flex min-w-0 flex-col gap-1">
           <span
             className={`truncate ${off ? 'fg-tertiary' : 'fg-primary'} ${REPLAY_MASK_CLASS}`}
@@ -481,8 +461,8 @@ export function WorkflowsLibraryTableRow({
             </span>
           ) : null}
         </div>
-      </td>
-      <td className="px-3 py-3">
+      </DataTableCell>
+      <DataTableCell>
         <div className="flex min-w-0 flex-col gap-1">
           <span
             className="truncate fg-secondary"
@@ -496,19 +476,21 @@ export function WorkflowsLibraryTableRow({
             </span>
           ) : null}
         </div>
-      </td>
-      <td className="px-3 py-3 text-s" data-testid="workflows-library-last-run">
+      </DataTableCell>
+      <DataTableCell data-testid="workflows-library-last-run">
         <WorkflowLastRunText lastRun={row.lastRun} />
-      </td>
+      </DataTableCell>
       {compact ? null : (
-        <td
-          className="truncate px-3 py-3 tabular-nums fg-secondary"
+        <DataTableCell
+          overflow="truncate"
           data-testid="workflows-library-next-run"
         >
-          {nextRun ?? <span className="fg-quaternary">—</span>}
-        </td>
+          <span className="tabular-nums">
+            {nextRun ?? <span className="fg-quaternary">—</span>}
+          </span>
+        </DataTableCell>
       )}
-      <td className="px-3 py-3">
+      <DataTableCell align="right">
         <TableActionsCell testId="workflows-library-actions">
           <span className="flex items-center gap-2">
             {row.installable ? (
@@ -568,8 +550,8 @@ export function WorkflowsLibraryTableRow({
             />
           </span>
         </TableActionsCell>
-      </td>
-    </tr>
+      </DataTableCell>
+    </DataTableRow>
   );
 }
 

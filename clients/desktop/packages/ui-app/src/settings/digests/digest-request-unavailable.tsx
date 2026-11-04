@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface DigestRequestUnavailableProps {
   testIdPrefix: string;
@@ -23,7 +24,9 @@ export function DigestRequestUnavailable({
       className="rounded-xl border bg-depth p-5"
       data-testid={`${testIdPrefix}-digest-request-unavailable`}
     >
-      <h3 className="text-s font-semibold fg-primary">Request a digest</h3>
+      <Heading level={3} variant="title">
+        Request a digest
+      </Heading>
       <p className="mt-1 text-xs fg-secondary">
         Digest requests are temporarily unavailable. Refresh in a moment to try
         again — your existing digests are unaffected.

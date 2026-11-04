@@ -92,19 +92,31 @@ function stubApi(
 }
 
 /**
- * Drive the controlled `<select>` the way a user would.
- *
- * Plain assignment is enough here: React's change plugin treats `select` as a
- * `shouldUseChangeEvent` node and reads the target directly, so it does not go
- * through the value tracker that makes `input` need a native setter.
+ * Choose a profile the way a user would: open the dropdown, then press the
+ * option with that value in Canopy's menu.
  */
-async function choose(select: HTMLSelectElement, value: string): Promise<void> {
+async function choose(trigger: HTMLElement, value: string): Promise<void> {
   await act(() => {
-    select.value = value;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    trigger.click();
+    return Promise.resolve();
+  });
+  const option = document.body.querySelector<HTMLElement>(
+    `[role="listbox"] [role="option"][data-value="${value}"]`,
+  );
+  if (!option) throw new Error(`missing profile option ${value}`);
+  await act(() => {
+    option.click();
     return Promise.resolve();
   });
 }
+
+const selectionTrigger = (menu: HTMLElement): HTMLElement => {
+  const trigger = menu.querySelector<HTMLElement>(
+    '[data-testid="browser-profile-selection"]',
+  );
+  if (!trigger) throw new Error('missing profile dropdown');
+  return trigger;
+};
 
 const menuEl = (): HTMLElement | null =>
   document.body.querySelector('[data-testid="browser-profile-menu"]');
@@ -130,8 +142,8 @@ async function openMenu(container: HTMLElement): Promise<HTMLElement> {
  * These assertions pin the regressions this surface shipped with: an invented
  * `z-popover` tier that emitted no z-index, a toolbar outline no sibling
  * control has, hand-rolled square buttons, and Unicode characters standing in
- * for icons. They also pin the native `<select>`, which the Playwright suite
- * drives with `selectOption`.
+ * for icons. They also pin the shared dropdown, which keeps `data-value` on
+ * its trigger and options so the Playwright suite can choose by value.
  */
 describe('BrowserProfilePicker', () => {
   let container: HTMLElement;
@@ -168,10 +180,11 @@ describe('BrowserProfilePicker', () => {
     // The shared Popover's floating layer, never an invented tier.
     expect(menu.className).toContain('canopy-floating-menu');
     expect(menu.className).not.toContain('z-popover');
-    // Native select preserved for Playwright selectOption.
-    expect(
-      menu.querySelector('select[data-testid="browser-profile-selection"]'),
-    ).toBeTruthy();
+    // The shared Canopy dropdown, never the operating system's menu.
+    const selection = selectionTrigger(menu);
+    expect(selection.tagName).toBe('BUTTON');
+    expect(selection.getAttribute('role')).toBe('combobox');
+    expect(menu.querySelector('select')).toBeNull();
     // Close control is a real glyph button, not a text character.
     const close = menu.querySelector('button[aria-label="Close"]');
     expect(close?.querySelector('svg')).toBeTruthy();
@@ -224,10 +237,8 @@ describe('BrowserProfilePicker', () => {
 
   it('reveals the switch and default actions once the selection differs', async () => {
     const menu = await openMenu(container);
-    const select = menu.querySelector(
-      'select[data-testid="browser-profile-selection"]',
-    ) as HTMLSelectElement;
-    expect(select.value).toBe('p1');
+    const select = selectionTrigger(menu);
+    expect(select.getAttribute('data-value')).toBe('p1');
 
     await choose(select, 'task');
 
@@ -289,12 +300,7 @@ describe('BrowserProfilePicker while a switch is in flight', () => {
       return Promise.resolve();
     });
     const menu = await openMenu(container);
-    await choose(
-      menu.querySelector(
-        'select[data-testid="browser-profile-selection"]',
-      ) as HTMLSelectElement,
-      'task',
-    );
+    await choose(selectionTrigger(menu), 'task');
     await act(() => {
       inMenu('browser-profile-replace')?.click();
       return Promise.resolve();
@@ -357,7 +363,12 @@ describe('BrowserProfilePicker duplicate names', () => {
       root.render(<BrowserProfilePicker snapshot={snapshot} />);
       return Promise.resolve();
     });
-    await openMenu(container);
+    const menu = await openMenu(container);
+    // Open the profile dropdown so its options are drawn.
+    await act(() => {
+      selectionTrigger(menu).click();
+      return Promise.resolve();
+    });
   };
 
   afterEach(() => {
@@ -366,8 +377,8 @@ describe('BrowserProfilePicker duplicate names', () => {
   });
 
   const optionText = (value: string): string | undefined =>
-    Array.from(menuEl()?.querySelectorAll('option') ?? []).find(
-      (option) => option.value === value,
+    document.body.querySelector(
+      `[role="listbox"] [role="option"][data-value="${value}"]`,
     )?.textContent ?? undefined;
 
   it('qualifies only the colliding names', async () => {

@@ -27,7 +27,7 @@ import { setUiScale } from './uiScale.mjs';
 const LONG_PROJECT_NAME = 'unstoppable-domains-website-monorepo-production';
 const CAPTURE_DIR = process.env.HOME_CONTEXT_ROW_CAPTURE_DIR;
 
-test('CAN-4674 long project, hint and branch controls fit a narrow scaled window', async () => {
+test('CAN-4674 long project and branch controls fit a narrow scaled window', async () => {
   test.setTimeout(180_000);
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'can4674-row-'));
   const fixture = seedPostImportRulesFixture(
@@ -52,12 +52,9 @@ test('CAN-4674 long project, hint and branch controls fit a narrow scaled window
         (enabled) => document.documentElement.classList.toggle('dark', enabled),
         dark,
       );
-      const action = home.getByRole('button', {
-        name: 'Switch project',
-        exact: true,
-      });
-      await action.focus();
-      await expect(action).toBeFocused();
+      await expect(
+        home.getByRole('button', { name: 'Switch project', exact: true }),
+      ).toHaveCount(0);
       const geometry = await home
         .getByTestId('home-composer-context')
         .evaluate((row) => {

@@ -32,6 +32,12 @@ const CASES = [
     language: 'lean',
     marker: 'two_mul_sum_range',
   },
+  // Not a math language; Monaco's built-in grammar, mapped by file-language.ts.
+  {
+    fileName: 'main.tf',
+    language: 'hcl',
+    marker: 'canopy-fixture-bucket',
+  },
 ];
 
 /** Distinct Monaco token classes (`mtk<n>`) in the editor's rendered lines. */
@@ -48,7 +54,7 @@ async function renderedTokenClasses(editor) {
 }
 
 /**
- * CAN-5012: LaTeX, BibTeX and Lean files open in a desktop file tab with a
+ * CAN-5012: LaTeX, BibTeX, Lean (and Terraform) files open in a desktop file tab with a
  * registered Monaco language, so the rendered lines carry several token
  * classes instead of a single plain-text class.
  */

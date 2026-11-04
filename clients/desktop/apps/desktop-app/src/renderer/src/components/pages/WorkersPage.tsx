@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { PageTitlebar } from '../shared/PageTitlebar';
@@ -522,9 +522,9 @@ export function WorkersPage(): JSX.Element {
               <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-secondary fg-secondary">
                 <ClaudeLogo width={18} height={18} />
               </div>
-              <h2 className="text-s font-medium fg-primary">
+              <Heading level={2} variant="title">
                 No active workers
-              </h2>
+              </Heading>
               <p className="mt-1 text-s fg-secondary">
                 When {brandText.appName} runs background helpers or workflow
                 steps in Terminal mode, each appears here as a read-only
@@ -543,7 +543,9 @@ export function WorkersPage(): JSX.Element {
               {queuedWorkers.length > 0 && (
                 <section data-testid="workers-queued-section">
                   <div className="mb-3 flex items-baseline gap-2">
-                    <h2 className="text-s font-semibold fg-primary">Queued</h2>
+                    <Heading level={2} variant="title">
+                      Queued
+                    </Heading>
                     <span className="text-xs fg-secondary">
                       {queuedWorkers.length} waiting for an available slot
                     </span>
@@ -566,9 +568,9 @@ export function WorkersPage(): JSX.Element {
                 <section data-testid="workers-active-section">
                   {queuedWorkers.length > 0 && (
                     <div className="mb-3 flex items-baseline gap-2">
-                      <h2 className="text-s font-semibold fg-primary">
+                      <Heading level={2} variant="title">
                         Active
-                      </h2>
+                      </Heading>
                       <span className="text-xs fg-secondary">
                         {activeWorkers.length} running
                       </span>

@@ -9,6 +9,7 @@ import {
 } from './inherited-cursor-plugins';
 import { runSerializedPluginMutation } from './plugin-mutation-queue';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
+import { prunePipelinePreferenceSelections } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import {
   canonicalInstalledItemRef,
   installedItemKey,
@@ -41,7 +42,6 @@ import {
   getCuratedPluginsMarketplaceDir,
   getCodexCompatibilityCacheRootDir,
   getDataDir,
-  getPipelinePluginPreferencesFilePath,
   getPluginCacheDir,
   getWorkspaceChatHistoryMetaFilePath,
   getWorkspaceChatHistoryRootDir,
@@ -3826,11 +3826,10 @@ async function addStandaloneSelectionPruneTargets(
 }
 
 async function collectSelectionPruneTargets(): Promise<SelectionPruneTargets> {
-  // Callers prune preferences through the preferences store; the generic
-  // file loops must never receive its path (admitted writers, CAN-5152).
-  const targets = new Set<SelectionPruneTarget>([
-    getPipelinePluginPreferencesFilePath(),
-  ]);
+  // Callers prune preferences and pipeline preferences through their stores;
+  // the generic file loops must never receive their paths (admitted writers,
+  // CAN-5152 and CAN-4480).
+  const targets = new Set<SelectionPruneTarget>();
   const chatScopes: CanonicalChatScopePruneTarget[] = [];
   await settleAll([
     addWorkspaceSelectionPruneTargets(targets, chatScopes),
@@ -3960,6 +3959,14 @@ async function pruneSelectionRefsForMarketplace(
   } catch {
     // Best-effort cleanup should not block or fail marketplace removal.
   }
+  try {
+    await prunePipelinePreferenceSelections(
+      (entries) => pruneMarketplacePluginRefsFromValue(entries, marketplaceId),
+      'electron_main',
+    );
+  } catch {
+    // Best-effort cleanup should not block or fail marketplace removal.
+  }
   for (const target of targets.files) {
     await pruneSelectionRefsInFile(target, marketplaceId, fanOutRequestId);
   }
@@ -3973,6 +3980,10 @@ export async function pruneSelectionRefsForInstalledItem(
   ref: InstalledItemRef,
 ): Promise<void> {
   const targets = await collectSelectionPruneTargets();
+  await prunePipelinePreferenceSelections(
+    (entries) => pruneInstalledItemRefs(entries, ref),
+    'electron_main',
+  );
   for (const file of targets.files) {
     if (typeof file !== 'string') {
       await updateWorkspacePlugins({

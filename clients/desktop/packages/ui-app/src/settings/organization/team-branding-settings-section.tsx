@@ -118,7 +118,7 @@ export function TeamBrandingSettingsSection({
           <OrganizationLogo
             name={detail.name}
             logoUrl={detail.logoUrl}
-            size={28}
+            size="lg"
           />
           <Button
             size="compact"

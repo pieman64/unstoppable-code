@@ -5,7 +5,7 @@ import {
   HeaderActionButton,
   AnsiOutput,
   Button,
-  CompletedRunsDisclosure,
+  Disclosure,
   ExecutionActionButton,
   LoadingSpinner,
   PauseResumeIcon,
@@ -243,11 +243,6 @@ function HookCompletedRunCard({
     : isStopped
       ? 'fg-warning'
       : 'fg-destructive-strong';
-  const buttonClass = isSuccess
-    ? 'fg-success-strong/70 hover:fg-success-strong'
-    : isStopped
-      ? 'fg-warning/70 hover:fg-warning'
-      : 'fg-destructive-strong/70 hover:fg-destructive-strong';
   const statusText = isSuccess
     ? 'Success'
     : isStopped
@@ -262,14 +257,16 @@ function HookCompletedRunCard({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {onEnlarge && (
-            <button
-              type="button"
+            <HeaderActionButton
+              iconOnly
               onClick={onEnlarge}
-              className={`focus-ring rounded p-0.5 transition-colors ${buttonClass}`}
               aria-label="Enlarge output"
+              // The 28px control overhangs the card's text line rather than
+              // growing it.
+              className="-my-1.5"
             >
               <ExternalIcon size={14} />
-            </button>
+            </HeaderActionButton>
           )}
           <span className={`font-medium ${colorClass}`}>{run.label}</span>
         </div>
@@ -540,11 +537,12 @@ export function HooksSectionBody({
         </div>
       )}
       {completedRuns.length > 0 && (
-        <CompletedRunsDisclosure
-          count={completedRuns.length}
-          expanded={completedExpanded}
-          onToggle={(): void => setCompletedExpanded((previous) => !previous)}
-          dataTestId="activity-hooks-completed-toggle"
+        <Disclosure
+          label={`Completed (${completedRuns.length})`}
+          open={completedExpanded}
+          onOpenChange={setCompletedExpanded}
+          dataTestId="activity-hooks-completed"
+          toggleTestId="activity-hooks-completed-toggle"
         >
           {completedRuns.map(([hookKey, run]) => (
             <HookCompletedRunCard
@@ -557,7 +555,7 @@ export function HooksSectionBody({
               }
             />
           ))}
-        </CompletedRunsDisclosure>
+        </Disclosure>
       )}
       {enlargedKey !== null &&
         runs[enlargedKey] !== undefined &&

@@ -1,25 +1,29 @@
 /**
- * AutomationsPanel — the `automations` panel kind's surface: automations and
- * watchers scoped to the panel's workspace, in three sections:
+ * AutomationsPanel — the `automations` panel kind's surface, shown to people
+ * as the Workflows panel: workflows and watchers scoped to the panel's
+ * workspace, in three sections named after the Workflows page's tabs:
  *
- * - **Upcoming** — automation occurrences firing within the next 10 minutes,
- *   padded out to at least 5 entries with the next later fires.
- * - **Overview** — a simplified table mixing the workspace's automations and
- *   watchers, with type filtering and text search.
- * - **Completed** — recently finished automation runs merged with completed
- *   watcher fires, newest first.
+ * - **Schedule** (`upcoming`) — scheduled workflow occurrences firing within
+ *   the next 10 minutes, padded out to at least 5 entries with later fires.
+ * - **Library** (`overview`) — a simplified table of the workspace's
+ *   scheduled workflows, its own on-demand workflows (project pipelines) and
+ *   its watchers, with type filtering and text search.
+ * - **Runs** (`completed`) — the Workflows page's run feed for this
+ *   workspace: scheduled and on-demand workflow runs and watchers, with a
+ *   workflow's own pipeline run folded into its scheduled run.
  *
  * One component serves all four variants (`instance.variant`): `full` renders
  * every section with collapsible headers; `upcoming` / `overview` /
  * `completed` render exactly one section with no expand/collapse chrome.
  * Every variant shares the same toolbar: a worktree-scope icon toggle (code
- * workspaces only, on by default) and an add button that opens the automation
- * creation modal prefilled to this workspace (and worktree for code).
+ * workspaces only, on by default) and a New workflow button that opens a
+ * scheduled workflow draft prefilled to this workspace (and worktree for
+ * code).
  *
  * Entry clicks open the automation's runs in the Workflows edit shell
  * (CAN-4072), and the add button opens a new draft there, in the main window
- * even from a pop-out. Watcher clicks open the {@link WatcherManagementModal}
- * scoped to the clicked watcher.
+ * even from a pop-out. A pipeline run opens its run panel. Watcher clicks open
+ * the {@link WatcherManagementModal} scoped to the clicked watcher.
  */
 import {
   memo,
@@ -44,19 +48,38 @@ import {
   Button,
   Notice,
   NoticeButton,
+  DataTable,
   SearchField,
   SegmentedControl,
   Tooltip,
+  type DataTableColumn,
 } from '@canopy/ui-shared/components';
 import {
-  AutomationsIcon,
   BranchIcon,
+  BulletListIcon,
   ChevronDownIcon,
   ChevronRightIcon,
-  HistoryIcon,
+  PlayCircleIcon,
   PlusIcon,
   ScheduleIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { WORKFLOW_KIND_LABELS } from '@canopy/ui-shared/lib/workflow-labels';
+import {
+  describePipelineTriggers,
+  pipelineTriggerKinds,
+  WORKFLOW_RUN_STATUS_LABELS,
+  type WorkflowRunRow,
+  type WorkflowRunStatus,
+} from '@canopy/ui-app/workflows';
+import { useAutomationScope } from '@/hooks/useAutomationScope';
+import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
+import { executionIdForWorkflowRunRow } from '@/components/workflows/runs/WorkflowRunsList';
+import { useWorkflowRunFeed } from '@/components/workflows/runs/useWorkflowRunFeed';
+import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
+import { pipelineEditLinkFromLocator } from '@/lib/workflows/edit-target';
+import { pipelineInfoToDocumentLocator } from '@/lib/pipelineDocument';
+import { pipelineLibraryKey } from '@/lib/workflows/library-projection';
+import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -76,24 +99,22 @@ import { type AutomationsPanelVariant } from '@/lib/panels/automations-variants'
 import { bringMainWindowForward } from '@/lib/panels/main-window-focus';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
-  buildCompletedEntries,
+  buildLibraryRows,
   buildUpcomingEntries,
   filterActivitiesForScope,
   filterWatchersForScope,
   formatTimeUntil,
   getAutomationNextRun,
+  panelRunFeedPredicates,
+  RUNS_MAX_ROWS,
   type AutomationsPanelScope,
-  type CompletedEntry,
+  type LibraryRow,
+  type LibraryTypeFilter,
   type UpcomingEntry,
 } from './automations-panel-data';
+import { useWorkspaceProjectPipelines } from './useWorkspaceProjectPipelines';
 
 type SectionId = 'upcoming' | 'overview' | 'completed';
-
-type OverviewTypeFilter = 'all' | 'automations' | 'watchers';
-
-type OverviewRow =
-  | { kind: 'automation'; activity: ScheduledActivity }
-  | { kind: 'watcher'; watcher: AppAdvisorWatcherSummary };
 
 export interface AutomationsPanelProps {
   readonly panelId: string;
@@ -168,7 +189,7 @@ function UpcomingSection({
   onOpen: (activity: ScheduledActivity) => void;
 }): JSX.Element {
   if (entries.length === 0) {
-    return <EmptyRow label="No upcoming automation triggers." />;
+    return <EmptyRow label="No scheduled runs coming up." />;
   }
   return (
     <ul
@@ -187,7 +208,7 @@ function UpcomingSection({
               {formatTimeUntil(now, entry.occursAt)}
             </Badge>
             <span className="min-w-0 flex-1 truncate text-xs fg-primary">
-              {entry.activity.name || 'Untitled automation'}
+              {entry.activity.name || 'Untitled workflow'}
             </span>
             <span className="shrink-0 text-2xs fg-secondary">
               {entry.occursAt.toLocaleString()}
@@ -199,6 +220,70 @@ function UpcomingSection({
   );
 }
 
+const OVERVIEW_COLUMNS: ReadonlyArray<DataTableColumn<LibraryRow>> = [
+  {
+    key: 'name',
+    header: 'Name',
+    width: '45%',
+    overflow: 'truncate',
+    render: (row) => {
+      if (row.kind === 'automation') {
+        return row.activity.name || 'Untitled workflow';
+      }
+      if (row.kind === 'pipeline') {
+        return row.pipeline.name || 'Untitled workflow';
+      }
+      return row.watcher.label;
+    },
+  },
+  {
+    key: 'type',
+    header: 'Type',
+    width: '15%',
+    overflow: 'truncate',
+    render: (row) => WORKFLOW_KIND_LABELS[row.kind],
+  },
+  {
+    key: 'trigger',
+    header: 'Trigger',
+    width: '20%',
+    overflow: 'truncate',
+    render: (row) => {
+      if (row.kind === 'automation') {
+        return getAutomationTriggerLabel(row.activity.schedule);
+      }
+      if (row.kind === 'pipeline') {
+        return describePipelineTriggers(
+          pipelineTriggerKinds(row.pipeline.triggerTypes ?? []),
+        );
+      }
+      return triggerTitle(row.watcher.trigger);
+    },
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    width: '20%',
+    overflow: 'truncate',
+    render: (row) => {
+      if (row.kind === 'pipeline') return '';
+      if (row.kind === 'watcher') {
+        return watcherStatusLabelWithFailure(
+          row.watcher.status,
+          row.watcher.failureKind,
+        );
+      }
+      const activity = row.activity;
+      if (activity.sharedPipelineReview) {
+        return <span className="fg-warning">Review needed</span>;
+      }
+      if (!activity.enabled) return 'Disabled';
+      const nextRun = getAutomationNextRun(activity, new Date());
+      return nextRun ? nextRun.toLocaleString() : 'Enabled';
+    },
+  },
+];
+
 function OverviewSection({
   rows,
   typeFilter,
@@ -206,19 +291,22 @@ function OverviewSection({
   search,
   onSearchChange,
   onOpenActivity,
+  onOpenPipeline,
   onOpenWatcher,
 }: {
-  rows: OverviewRow[];
-  typeFilter: OverviewTypeFilter;
-  onTypeFilterChange: (filter: OverviewTypeFilter) => void;
+  rows: LibraryRow[];
+  typeFilter: LibraryTypeFilter;
+  onTypeFilterChange: (filter: LibraryTypeFilter) => void;
   search: string;
   onSearchChange: (value: string) => void;
   onOpenActivity: (activity: ScheduledActivity) => void;
+  onOpenPipeline: (pipeline: PipelineInfo) => void;
   onOpenWatcher: (watcher: AppAdvisorWatcherSummary) => void;
 }): JSX.Element {
-  const filters: Array<{ value: OverviewTypeFilter; label: string }> = [
+  const filters: Array<{ value: LibraryTypeFilter; label: string }> = [
     { value: 'all', label: 'All' },
-    { value: 'automations', label: 'Automations' },
+    { value: 'automations', label: WORKFLOW_KIND_LABELS.automation },
+    { value: 'pipelines', label: WORKFLOW_KIND_LABELS.pipeline },
     { value: 'watchers', label: 'Watchers' },
   ];
   return (
@@ -232,7 +320,7 @@ function OverviewSection({
             dataTestId: `automations-panel-filter-${filter.value}`,
           }))}
           onChange={onTypeFilterChange}
-          label="Overview type filter"
+          label="Library type filter"
           shape="capsule"
           width="content"
         />
@@ -246,163 +334,178 @@ function OverviewSection({
         />
       </div>
       {rows.length === 0 ? (
-        <EmptyRow label="No automations or watchers match." />
+        <EmptyRow label="No workflows or watchers match." />
       ) : (
-        <table className="w-full table-fixed border-collapse text-xs">
-          <thead>
-            <tr className="border-b text-left fg-secondary">
-              <th className="w-9/20 px-3 py-1.5 font-medium">Name</th>
-              <th className="w-3/20 px-1 py-1.5 font-medium">Type</th>
-              <th className="w-1/5 px-1 py-1.5 font-medium">Trigger</th>
-              <th className="w-1/5 px-1 py-1.5 font-medium">Status</th>
-            </tr>
-          </thead>
-          <tbody data-testid="automations-panel-overview-body">
-            {rows.map((row) => {
+        <div className="px-3">
+          <DataTable
+            layout="fixed"
+            caption="Workflows and watchers"
+            testId="automations-panel-overview-body"
+            rows={rows}
+            rowKey={(row) => {
               if (row.kind === 'automation') {
-                const activity = row.activity;
-                const nextRun = getAutomationNextRun(activity, new Date());
-                return (
-                  <tr
-                    key={`automation-${activity.id}`}
-                    data-testid={`automations-panel-overview-automation-${activity.id}`}
-                    onClick={(): void => onOpenActivity(activity)}
-                    className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
-                  >
-                    <td className="truncate px-3 py-1.5 fg-primary">
-                      {activity.name || 'Untitled automation'}
-                    </td>
-                    <td className="px-1 py-1.5 fg-secondary">Automation</td>
-                    <td className="truncate px-1 py-1.5 fg-secondary">
-                      {getAutomationTriggerLabel(activity.schedule)}
-                    </td>
-                    <td
-                      className={`truncate px-1 py-1.5 ${
-                        activity.sharedPipelineReview
-                          ? 'fg-warning'
-                          : 'fg-secondary'
-                      }`}
-                    >
-                      {activity.sharedPipelineReview
-                        ? 'Review needed'
-                        : !activity.enabled
-                          ? 'Disabled'
-                          : nextRun
-                            ? nextRun.toLocaleString()
-                            : 'Enabled'}
-                    </td>
-                  </tr>
-                );
+                return `automation-${row.activity.id}`;
               }
-              const watcher = row.watcher;
-              const target = watcherTargetDisplay(watcher.target);
-              return (
-                <tr
-                  key={`watcher-${watcher.id}`}
-                  data-testid={`automations-panel-overview-watcher-${watcher.id}`}
-                  onClick={(): void => onOpenWatcher(watcher)}
-                  className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
-                >
-                  <td
-                    className="truncate px-3 py-1.5 fg-primary"
-                    title={`${target.title} — ${target.subtitle}`}
-                  >
-                    {watcher.label}
-                  </td>
-                  <td className="px-1 py-1.5 fg-secondary">Watcher</td>
-                  <td className="truncate px-1 py-1.5 fg-secondary">
-                    {triggerTitle(watcher.trigger)}
-                  </td>
-                  <td className="truncate px-1 py-1.5 fg-secondary">
-                    {watcherStatusLabelWithFailure(
-                      watcher.status,
-                      watcher.failureKind,
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              if (row.kind === 'pipeline')
+                return pipelineLibraryKey(row.pipeline);
+              return `watcher-${row.watcher.id}`;
+            }}
+            rowAttributes={(row) => {
+              if (row.kind === 'automation') {
+                return {
+                  'data-testid': `automations-panel-overview-automation-${row.activity.id}`,
+                };
+              }
+              if (row.kind === 'pipeline') {
+                return {
+                  'data-testid': `automations-panel-overview-pipeline-${row.pipeline.id}`,
+                };
+              }
+              const target = watcherTargetDisplay(row.watcher.target);
+              return {
+                'data-testid': `automations-panel-overview-watcher-${row.watcher.id}`,
+                title: `${target.title} — ${target.subtitle}`,
+              };
+            }}
+            onRowActivate={(row): void => {
+              if (row.kind === 'automation') onOpenActivity(row.activity);
+              else if (row.kind === 'pipeline') onOpenPipeline(row.pipeline);
+              else onOpenWatcher(row.watcher);
+            }}
+            columns={OVERVIEW_COLUMNS}
+          />
+        </div>
       )}
     </div>
   );
 }
 
-function CompletedSection({
-  entries,
-  onOpenActivity,
-  onOpenWatcher,
+/** The status chip's colors, by how the run stands. */
+function runStatusClasses(status: WorkflowRunStatus): string {
+  switch (status) {
+    case 'failure':
+    case 'delivery-failed':
+      return 'bg-destructive-subtle fg-destructive';
+    case 'skipped':
+    case 'canceled':
+    case 'missed':
+      return 'bg-fg-primary/[0.06] fg-secondary';
+    case 'queued':
+    case 'running':
+    case 'waiting':
+    case 'watching':
+      return 'bg-accent-subtle fg-accent';
+    case 'success':
+    case 'fired':
+      return 'bg-success-subtle fg-success';
+  }
+}
+
+const RUN_COLUMNS: ReadonlyArray<DataTableColumn<WorkflowRunRow>> = [
+  {
+    key: 'name',
+    header: 'Name',
+    width: '40%',
+    overflow: 'truncate',
+    render: (row) => row.name,
+  },
+  {
+    key: 'type',
+    header: 'Type',
+    width: '20%',
+    overflow: 'truncate',
+    render: (row) => WORKFLOW_KIND_LABELS[row.kind],
+  },
+  {
+    key: 'result',
+    header: 'Result',
+    width: '15%',
+    render: (row) => (
+      <span
+        className={`inline-flex max-w-full truncate rounded-full px-1.5 py-0.5 text-2xs font-medium ${runStatusClasses(row.status)}`}
+      >
+        {WORKFLOW_RUN_STATUS_LABELS[row.status]}
+      </span>
+    ),
+  },
+  {
+    key: 'started',
+    header: 'Started',
+    width: '25%',
+    overflow: 'truncate',
+    // The feed sorts by when a run started, as the page does.
+    render: (row) => {
+      const at = row.startedAt ?? row.endedAt;
+      return at !== undefined ? new Date(at).toLocaleString() : '';
+    },
+  },
+];
+
+function RunsSection({
+  rows,
+  loading,
+  error,
+  onRetry,
+  onOpen,
 }: {
-  entries: CompletedEntry[];
-  onOpenActivity: (activity: ScheduledActivity) => void;
-  onOpenWatcher: (watcher: AppAdvisorWatcherSummary) => void;
+  rows: readonly WorkflowRunRow[];
+  /** The run history has not loaded yet; an empty list says nothing. */
+  loading: boolean;
+  /** The run history could not be listed. */
+  error: string | null;
+  onRetry: () => void;
+  onOpen: (row: WorkflowRunRow) => void;
 }): JSX.Element {
-  if (entries.length === 0) {
+  if (error !== null) {
     return (
-      <EmptyRow label="No completed automation runs or watcher fires yet." />
+      <div className="p-3">
+        <Notice
+          intent="destructive"
+          data-testid="automations-panel-runs-error"
+          title="Could not load workflow runs."
+          actions={
+            <NoticeButton
+              variant="primary"
+              data-testid="automations-panel-runs-retry"
+              onClick={onRetry}
+            >
+              Try again
+            </NoticeButton>
+          }
+        >
+          {error}
+        </Notice>
+      </div>
     );
   }
+  if (rows.length === 0 && loading) {
+    return (
+      <div
+        data-testid="automations-panel-runs-loading"
+        className="px-3 py-3 text-xs fg-secondary"
+      >
+        Loading runs…
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return <EmptyRow label="No workflow runs or watcher fires yet." />;
+  }
   return (
-    <table className="w-full table-fixed border-collapse text-xs">
-      <thead>
-        <tr className="border-b text-left fg-secondary">
-          <th className="w-9/20 px-3 py-1.5 font-medium">Name</th>
-          <th className="w-3/20 px-1 py-1.5 font-medium">Type</th>
-          <th className="w-3/20 px-1 py-1.5 font-medium">Result</th>
-          <th className="w-1/4 px-1 py-1.5 font-medium">Completed</th>
-        </tr>
-      </thead>
-      <tbody data-testid="automations-panel-completed-body">
-        {entries.map((entry) => {
-          const statusClasses =
-            entry.status === 'failure'
-              ? 'bg-destructive-subtle fg-destructive'
-              : entry.status === 'skipped' || entry.status === 'canceled'
-                ? 'bg-fg-primary/[0.06] fg-secondary'
-                : 'bg-success-subtle fg-success';
-          const statusLabel =
-            entry.status === 'failure'
-              ? 'Failed'
-              : entry.status === 'skipped'
-                ? 'Skipped'
-                : entry.status === 'canceled'
-                  ? 'Canceled'
-                  : entry.kind === 'watcher-fire'
-                    ? 'Fired'
-                    : 'Success';
-          return (
-            <tr
-              key={entry.key}
-              data-testid={`automations-panel-completed-${entry.key}`}
-              onClick={(): void => {
-                if (entry.kind === 'automation-run') {
-                  if (entry.activity) onOpenActivity(entry.activity);
-                } else {
-                  onOpenWatcher(entry.watcher);
-                }
-              }}
-              className="cursor-pointer border-b transition-colors hover:bg-fg-primary/[0.04]"
-            >
-              <td className="truncate px-3 py-1.5 fg-primary">{entry.name}</td>
-              <td className="px-1 py-1.5 fg-secondary">
-                {entry.kind === 'automation-run' ? 'Automation' : 'Watcher'}
-              </td>
-              <td className="px-1 py-1.5">
-                <span
-                  className={`inline-flex rounded-full px-1.5 py-0.5 text-2xs font-medium ${statusClasses}`}
-                >
-                  {statusLabel}
-                </span>
-              </td>
-              <td className="truncate px-1 py-1.5 fg-secondary">
-                {entry.completedAt.toLocaleString()}
-              </td>
-            </tr>
-          );
+    <div className="px-3">
+      <DataTable
+        layout="fixed"
+        caption="Workflow runs"
+        testId="automations-panel-completed-body"
+        rows={rows}
+        rowKey={(row) => row.key}
+        rowAttributes={(row) => ({
+          'data-testid': `automations-panel-completed-${row.key}`,
         })}
-      </tbody>
-    </table>
+        onRowActivate={onOpen}
+        columns={RUN_COLUMNS}
+      />
+    </div>
   );
 }
 
@@ -507,7 +610,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
   const [collapsedSections, setCollapsedSections] = useState<
     Record<SectionId, boolean>
   >({ upcoming: false, overview: false, completed: false });
-  const [typeFilter, setTypeFilter] = useState<OverviewTypeFilter>('all');
+  const [typeFilter, setTypeFilter] = useState<LibraryTypeFilter>('all');
   const [search, setSearch] = useState('');
   const [watcherDetailId, setWatcherDetailId] = useState<string | null>(null);
   const panelRootRef = useRef<HTMLDivElement | null>(null);
@@ -556,32 +659,47 @@ export const AutomationsPanel = memo(function AutomationsPanel({
     () => buildUpcomingEntries(scopedActivities, now),
     [scopedActivities, now],
   );
-  const completedEntries = useMemo(
-    () =>
-      buildCompletedEntries(
-        recentRuns,
-        scopedActivities,
-        scopedCompletedWatchers,
-      ),
-    [recentRuns, scopedActivities, scopedCompletedWatchers],
+  // Runs is the Workflows page's run feed, narrowed to this panel's scope.
+  const automationScope = useAutomationScope();
+  const runFeedPredicates = useMemo(
+    () => panelRunFeedPredicates(scope, activities),
+    [scope, activities],
   );
-  const overviewRows = useMemo<OverviewRow[]>(() => {
-    const needle = search.trim().toLowerCase();
-    const rows: OverviewRow[] = [];
-    if (typeFilter !== 'watchers') {
-      for (const activity of scopedActivities) {
-        if (needle && !activity.name.toLowerCase().includes(needle)) continue;
-        rows.push({ kind: 'automation', activity });
-      }
-    }
-    if (typeFilter !== 'automations') {
-      for (const watcher of scopedWatchers) {
-        if (needle && !watcher.label.toLowerCase().includes(needle)) continue;
-        rows.push({ kind: 'watcher', watcher });
-      }
-    }
-    return rows;
-  }, [scopedActivities, scopedWatchers, typeFilter, search]);
+  const runFeed = useWorkflowRunFeed({
+    activities,
+    recentRuns,
+    scope: automationScope,
+    automationsLoading: !automationsHydrated,
+    predicates: runFeedPredicates,
+  });
+  const runRows = useMemo(
+    () => runFeed.rows.slice(0, RUNS_MAX_ROWS),
+    [runFeed.rows],
+  );
+  // A run history that failed to load is reported in Runs, never shown as an
+  // empty list, and Try again lists it again.
+  const retryRuns = useCallback((): void => {
+    void useExecutionFeedStore.getState().load();
+  }, []);
+  // The workspace's own on-demand workflows live in its checkout.
+  const projectPipelines = useWorkspaceProjectPipelines(projectId, worktreeId);
+  const overviewRows = useMemo(
+    () =>
+      buildLibraryRows({
+        activities: scopedActivities,
+        pipelines: projectPipelines.pipelines,
+        watchers: scopedWatchers,
+        typeFilter,
+        search,
+      }),
+    [
+      projectPipelines.pipelines,
+      scopedActivities,
+      scopedWatchers,
+      typeFilter,
+      search,
+    ],
+  );
 
   // The edit shell lives in the main window, so a pop-out brings it forward.
   // When the shell holds unsaved edits on another item, its prompt asks
@@ -608,11 +726,54 @@ export const AutomationsPanel = memo(function AutomationsPanel({
     bringMainWindowForward(ownerDocument);
   }, [clearMutationError, projectId, worktreeId, isCowork]);
 
+  // A project pipeline opens in the Workflows edit shell, addressed by the
+  // checkout it was read from, as a Library row on the page does.
+  const { cwd: pipelinesCwd } = projectPipelines;
+  const openPipeline = useCallback(
+    (pipeline: PipelineInfo): void => {
+      const ownerDocument = panelRootRef.current?.ownerDocument;
+      useNavigationStore.getState().openPipelineEdit({
+        ...pipelineEditLinkFromLocator(
+          pipelineInfoToDocumentLocator(pipeline, pipelinesCwd),
+        ),
+        // This panel's checkout, which a pop-out's main window may not show.
+        worktree: { projectId, worktreeId },
+      });
+      bringMainWindowForward(ownerDocument);
+    },
+    [pipelinesCwd, projectId, worktreeId],
+  );
+
   const openWatcherDetail = useCallback(
     (watcher: AppAdvisorWatcherSummary): void => {
       setWatcherDetailId(watcher.id);
     },
     [],
+  );
+
+  // A run that has a pipeline opens its run panel, as on the Workflows page.
+  // Any other scheduled run opens its workflow's runs, like the other
+  // sections; a watcher keeps this panel's own modal.
+  const { executionsById } = runFeed;
+  const openRunRow = useCallback(
+    (row: WorkflowRunRow): void => {
+      if (row.kind === 'watcher') {
+        setWatcherDetailId(row.watcherId);
+        return;
+      }
+      const executionId = executionIdForWorkflowRunRow(row, executionsById);
+      if (executionId !== undefined) {
+        void openPipelineExecutionFromUi({ executionId });
+        bringMainWindowForward(panelRootRef.current?.ownerDocument);
+        return;
+      }
+      if (row.kind !== 'automation') return;
+      const activity = activities.find(
+        (candidate) => candidate.id === row.activityId,
+      );
+      if (activity) openRuns(activity);
+    },
+    [activities, executionsById, openRuns],
   );
 
   useCurrentUiStateReporter(`automations.panel.${panelId}`, {
@@ -636,8 +797,8 @@ export const AutomationsPanel = memo(function AutomationsPanel({
   const collapsible = variant === 'full';
 
   const worktreeToggleLabel = worktreeOnly
-    ? `Showing automations for this ${WORKTREE_UNIT_LABEL.toLowerCase()} only — click to show the whole project`
-    : `Showing all project automations — click to show only this ${WORKTREE_UNIT_LABEL.toLowerCase()}`;
+    ? `Showing workflows for this ${WORKTREE_UNIT_LABEL.toLowerCase()} only — click to show the whole project`
+    : `Showing all project workflows — click to show only this ${WORKTREE_UNIT_LABEL.toLowerCase()}`;
 
   return (
     <div
@@ -673,12 +834,12 @@ export const AutomationsPanel = memo(function AutomationsPanel({
             </Tooltip>
           )}
           {projectId !== APP_ADVISOR_PROJECT_ID && (
-            <Tooltip label="New automation">
+            <Tooltip label="New workflow">
               <Button
                 variant="ghost"
                 size="compact"
                 iconOnly
-                aria-label="New automation"
+                aria-label="New workflow"
                 onClick={openCreate}
                 data-testid="automations-panel-add"
               >
@@ -694,7 +855,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
             intent="destructive"
             data-testid="automations-panel-load-error"
             className="m-3"
-            title="Could not load automations."
+            title="Could not load workflows."
             actions={
               <NoticeButton
                 variant="primary"
@@ -712,14 +873,14 @@ export const AutomationsPanel = memo(function AutomationsPanel({
             data-testid="automations-panel-loading"
             className="flex h-full min-h-24 items-center justify-center px-3 py-6 text-xs fg-secondary"
           >
-            Loading automations…
+            Loading workflows…
           </div>
         ) : (
           <div className="divide-y">
             {showSection('upcoming') && (
               <PanelSectionShell
                 id="upcoming"
-                title="Upcoming"
+                title="Schedule"
                 icon={
                   <ScheduleIcon width={14} height={14} aria-hidden="true" />
                 }
@@ -738,9 +899,9 @@ export const AutomationsPanel = memo(function AutomationsPanel({
             {showSection('overview') && (
               <PanelSectionShell
                 id="overview"
-                title="Overview"
+                title="Library"
                 icon={
-                  <AutomationsIcon width={14} height={14} aria-hidden="true" />
+                  <BulletListIcon width={14} height={14} aria-hidden="true" />
                 }
                 count={overviewRows.length}
                 collapsible={collapsible}
@@ -754,6 +915,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
                   search={search}
                   onSearchChange={setSearch}
                   onOpenActivity={openRuns}
+                  onOpenPipeline={openPipeline}
                   onOpenWatcher={openWatcherDetail}
                 />
               </PanelSectionShell>
@@ -761,17 +923,21 @@ export const AutomationsPanel = memo(function AutomationsPanel({
             {showSection('completed') && (
               <PanelSectionShell
                 id="completed"
-                title="Completed"
-                icon={<HistoryIcon width={14} height={14} aria-hidden="true" />}
-                count={completedEntries.length}
+                title="Runs"
+                icon={
+                  <PlayCircleIcon width={14} height={14} aria-hidden="true" />
+                }
+                count={runRows.length}
                 collapsible={collapsible}
                 collapsed={collapsedSections.completed}
                 onToggle={toggleSection}
               >
-                <CompletedSection
-                  entries={completedEntries}
-                  onOpenActivity={openRuns}
-                  onOpenWatcher={openWatcherDetail}
+                <RunsSection
+                  rows={runRows}
+                  loading={runFeed.loading}
+                  error={runFeed.error}
+                  onRetry={retryRuns}
+                  onOpen={openRunRow}
                 />
               </PanelSectionShell>
             )}

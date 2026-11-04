@@ -638,26 +638,23 @@ export async function runManualLocalMemoryRebuild(
         };
     try {
       prepared = await withMemoryWriteLock(scopeDir, async () => {
-        try {
-          const plan = await planRebuild(request, scopeDir);
-          if (!plan.ok) return plan;
-          const executed = await executeRebuildPlan(scopeDir, plan);
-          return executed.ok
-            ? {
-                ok: true,
-                plan,
-                restored: executed.restored,
-                tracker: executed.tracker,
-              }
-            : {
-                ok: false,
-                status: 'failed',
-                reason: executed.reason,
-                snapshotId: plan.snapshotId,
-              };
-        } finally {
-          recordMemoryEdit(scopeDir);
-        }
+        await recordMemoryEdit(scopeDir);
+        const plan = await planRebuild(request, scopeDir);
+        if (!plan.ok) return plan;
+        const executed = await executeRebuildPlan(scopeDir, plan);
+        return executed.ok
+          ? {
+              ok: true,
+              plan,
+              restored: executed.restored,
+              tracker: executed.tracker,
+            }
+          : {
+              ok: false,
+              status: 'failed',
+              reason: executed.reason,
+              snapshotId: plan.snapshotId,
+            };
       });
     } catch (error) {
       return rebuildResult('failed', failureReason(error));

@@ -75,11 +75,18 @@ const STRUCTURAL: CodeGraphWorkerReadTask = {
   calls: [{ method: 'file-summary', target: 'fixture.ts' }],
 };
 
-const PERSIST_FINGERPRINT: CodeGraphWorkerReadTask = {
-  kind: 'persist-fingerprint',
-  fingerprint: 'fingerprint',
+const FINGERPRINT_METADATA: CodeGraphWorkerReadTask = {
+  kind: 'fingerprint-metadata',
 };
-const PERSISTED: CodeGraphWorkerReadResult = { kind: 'persist-fingerprint' };
+const METADATA: CodeGraphWorkerReadResult = {
+  kind: 'fingerprint-metadata',
+  value: {
+    fingerprint: null,
+    schemaVersion: null,
+    extractorVersion: null,
+    completed: false,
+  },
+};
 const DETECT_CHANGED_TASK: CodeGraphWorkerReadTask = {
   kind: 'detect-changed',
   repoId: 'repo',
@@ -99,7 +106,7 @@ const DETECT_CHANGED_RESULT: CodeGraphWorkerReadResult = {
 const COLD: ReadonlyArray<
   [string, CodeGraphWorkerReadTask, CodeGraphWorkerReadResult]
 > = [
-  ['persist-fingerprint', PERSIST_FINGERPRINT, PERSISTED],
+  ['fingerprint-metadata', FINGERPRINT_METADATA, METADATA],
   [
     'validate-base',
     {
@@ -532,7 +539,7 @@ describe('code-graph read worker pool', () => {
     it('keeps the strict cap when a maintenance request evicts an idle worker', async () => {
       await warmFourMixed(['one', 'two', 'three', 'four']);
 
-      const persist = read('five', PERSIST_FINGERPRINT);
+      const persist = read('five', FINGERPRINT_METADATA);
       persist.catch(() => undefined);
       // The least recently used tool reader makes room, as for any read.
       expect(children[0]?.kill).toHaveBeenCalledTimes(1);
@@ -543,8 +550,8 @@ describe('code-graph read worker pool', () => {
       expect(children).toHaveLength(5);
       expect(children.filter((child) => !child.exited)).toHaveLength(4);
 
-      children[4]?.answerWith(PERSISTED);
-      await expect(persist).resolves.toEqual({ ok: true, result: PERSISTED });
+      children[4]?.answerWith(METADATA);
+      await expect(persist).resolves.toEqual({ ok: true, result: METADATA });
       // The write's own worker retires instead of idling in the pool...
       expect(children[4]?.kill).toHaveBeenCalledTimes(1);
       for (const index of [1, 2, 3]) {
@@ -917,8 +924,8 @@ describe('code-graph read worker pool', () => {
       },
       maintenance: {
         key: 'proj/wt-1',
-        task: PERSIST_FINGERPRINT,
-        result: PERSISTED,
+        task: FINGERPRINT_METADATA,
+        result: METADATA,
       },
     };
     const AGED_ADMISSION_CASES: ReadonlyArray<{
@@ -931,7 +938,7 @@ describe('code-graph read worker pool', () => {
 
     it('skips an ineligible cold head for a warm same-key reader', async () => {
       const interactive = ['one', 'two', 'three'].map((key) => read(key));
-      const retiringMaintenance = read('four', PERSIST_FINGERPRINT);
+      const retiringMaintenance = read('four', FINGERPRINT_METADATA);
       for (const pending of [...interactive, retiringMaintenance]) {
         void pending.catch(() => undefined);
       }
@@ -940,13 +947,13 @@ describe('code-graph read worker pool', () => {
       // Three interactive owners and a cold maintenance owner fill the
       // 3-interactive + 1-maintenance mix. The cold worker retires but holds
       // its global slot until its process exits.
-      children[3]?.answerWith(PERSISTED);
+      children[3]?.answerWith(METADATA);
       await retiringMaintenance;
       expect(children[3]?.kill).toHaveBeenCalledTimes(1);
       expect(children[3]?.exited).toBe(false);
       expect(children.filter((child) => !child.exited)).toHaveLength(4);
 
-      const waitingMaintenance = read('five', PERSIST_FINGERPRINT);
+      const waitingMaintenance = read('five', FINGERPRINT_METADATA);
       const warmProbe = read('one');
       void waitingMaintenance.catch(() => undefined);
       void warmProbe.catch(() => undefined);
@@ -967,7 +974,7 @@ describe('code-graph read worker pool', () => {
       await settleMicrotasks();
       expect(children).toHaveLength(5);
       expect(children[4]?.postMessage).toHaveBeenCalledTimes(1);
-      children[4]?.answerWith(PERSISTED);
+      children[4]?.answerWith(METADATA);
       await waitingMaintenance;
       children[4]?.exit();
 
@@ -980,13 +987,13 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const comparison = read('three', COMPARISON_TASK);
-        const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+        const activeMaintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [...interactive, comparison, activeMaintenance]) {
           void pending.catch(() => undefined);
         }
         expect(children).toHaveLength(4);
 
-        const waitingMaintenance = read('five', PERSIST_FINGERPRINT);
+        const waitingMaintenance = read('five', FINGERPRINT_METADATA);
         void waitingMaintenance.catch(() => undefined);
         await jest.advanceTimersByTimeAsync(4_999);
         // Queue the interactive probe at the threshold, not at time zero, so
@@ -994,7 +1001,7 @@ describe('code-graph read worker pool', () => {
         const youngerInteractive = read('proj/wt-1');
         void youngerInteractive.catch(() => undefined);
 
-        children[3]?.answerWith(PERSISTED);
+        children[3]?.answerWith(METADATA);
         await activeMaintenance;
         children[3]?.exit();
         await settleMicrotasks();
@@ -1012,13 +1019,13 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const comparison = read('three', COMPARISON_TASK);
-        const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+        const activeMaintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [...interactive, comparison, activeMaintenance]) {
           void pending.catch(() => undefined);
         }
         expect(children).toHaveLength(4);
 
-        const agedMaintenance = read('five', PERSIST_FINGERPRINT);
+        const agedMaintenance = read('five', FINGERPRINT_METADATA);
         void agedMaintenance.catch(() => undefined);
         let agedMaintenanceSettled = false;
         void agedMaintenance.then(
@@ -1036,7 +1043,7 @@ describe('code-graph read worker pool', () => {
         const youngerInteractive = read('proj/wt-1');
         void youngerInteractive.catch(() => undefined);
         await jest.advanceTimersByTimeAsync(500);
-        const nextMaintenance = read('four', PERSIST_FINGERPRINT);
+        const nextMaintenance = read('four', FINGERPRINT_METADATA);
         void nextMaintenance.catch(() => undefined);
         expect(agedMaintenanceSettled).toBe(false);
         expect(children[0]?.kill).not.toHaveBeenCalled();
@@ -1046,7 +1053,7 @@ describe('code-graph read worker pool', () => {
 
         // The active maintenance owner must finish and its retiring process
         // must exit before the aged request is eligible; aging never preempts.
-        children[3]?.answerWith(PERSISTED);
+        children[3]?.answerWith(METADATA);
         await activeMaintenance;
         expect(children[3]?.kill).toHaveBeenCalledTimes(1);
         expect(children).toHaveLength(4);
@@ -1054,10 +1061,10 @@ describe('code-graph read worker pool', () => {
         await settleMicrotasks();
         expect(children).toHaveLength(5);
         expect(children[4]?.postMessage).toHaveBeenCalledWith(
-          request(PERSIST_FINGERPRINT),
+          request(FINGERPRINT_METADATA),
         );
 
-        children[4]?.answerWith(PERSISTED);
+        children[4]?.answerWith(METADATA);
         await agedMaintenance;
         children[4]?.exit();
         await settleMicrotasks();
@@ -1068,7 +1075,7 @@ describe('code-graph read worker pool', () => {
           request(STRUCTURAL),
         );
         expect(children[5]?.postMessage).not.toHaveBeenCalledWith(
-          request(PERSIST_FINGERPRINT),
+          request(FINGERPRINT_METADATA),
         );
       } finally {
         jest.useRealTimers();
@@ -1080,7 +1087,7 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const activeComparison = read('three', COMPARISON_TASK);
-        const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+        const activeMaintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [
           ...interactive,
           activeComparison,
@@ -1122,7 +1129,7 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const activeComparison = read('three', COMPARISON_TASK);
-        const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+        const activeMaintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [
           ...interactive,
           activeComparison,
@@ -1209,7 +1216,7 @@ describe('code-graph read worker pool', () => {
         try {
           const interactive = [read('one'), read('two')];
           const activeComparison = read('three', COMPARISON_TASK);
-          const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+          const activeMaintenance = read('four', FINGERPRINT_METADATA);
           for (const pending of [
             ...interactive,
             activeComparison,
@@ -1256,7 +1263,7 @@ describe('code-graph read worker pool', () => {
             );
           }
           answerChangeImpact(activeComparisonWorker);
-          activeMaintenanceWorker.answerWith(PERSISTED);
+          activeMaintenanceWorker.answerWith(METADATA);
           await Promise.all([activeComparison, activeMaintenance]);
           expect(activeComparisonWorker.kill).toHaveBeenCalledTimes(1);
           expect(activeMaintenanceWorker.kill).toHaveBeenCalledTimes(1);
@@ -1346,7 +1353,7 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const activeComparison = read('three', COMPARISON_TASK);
-        const activeMaintenance = read('four', PERSIST_FINGERPRINT);
+        const activeMaintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [
           ...interactive,
           activeComparison,
@@ -1420,7 +1427,7 @@ describe('code-graph read worker pool', () => {
         if (activeMaintenanceWorker === undefined) {
           throw new Error('The active maintenance worker was not created.');
         }
-        activeMaintenanceWorker.answerWith(PERSISTED);
+        activeMaintenanceWorker.answerWith(METADATA);
         await activeMaintenance;
         activeMaintenanceWorker.exit();
         await settleMicrotasks();
@@ -1453,7 +1460,7 @@ describe('code-graph read worker pool', () => {
       try {
         const interactive = [read('one'), read('two')];
         const comparison = read('three', COMPARISON_TASK);
-        const maintenance = read('four', PERSIST_FINGERPRINT);
+        const maintenance = read('four', FINGERPRINT_METADATA);
         for (const pending of [...interactive, comparison, maintenance]) {
           void pending.catch(() => undefined);
         }
@@ -1461,14 +1468,14 @@ describe('code-graph read worker pool', () => {
         children[0]?.answer();
         await interactive[0];
         expect(children[0]?.kill).not.toHaveBeenCalled();
-        children[3]?.answerWith(PERSISTED);
+        children[3]?.answerWith(METADATA);
         await maintenance;
         expect(children[3]?.kill).toHaveBeenCalledTimes(1);
         expect(children[3]?.exited).toBe(false);
 
         const queuedInteractive = read('five');
         const queuedComparison = read('proj/wt-1', COMPARISON_TASK);
-        const queuedMaintenance = read('proj/wt-2', PERSIST_FINGERPRINT);
+        const queuedMaintenance = read('proj/wt-2', FINGERPRINT_METADATA);
         for (const pending of [
           queuedInteractive,
           queuedComparison,

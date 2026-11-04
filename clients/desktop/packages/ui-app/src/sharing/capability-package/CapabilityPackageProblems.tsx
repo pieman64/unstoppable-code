@@ -1,5 +1,6 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import {
+  Disclosure,
   ErrorBanner,
   Notice,
   NoticeButton,
@@ -41,7 +42,7 @@ const CARD_CLASS =
 /** Lines a section up with the header copy: the 12px inset, 16px glyph, 8px gap. */
 const COPY_INSET_CLASS = 'pl-9 pr-3';
 const SECTION_CLASS = `border-t border-line-base py-2 ${COPY_INSET_CLASS}`;
-const DISCLOSURE_CLASS =
+const TEXT_ACTION_CLASS =
   'focus-ring rounded text-xs fg-secondary underline-offset-2 hover:fg-primary hover:underline';
 const INLINE_ACTION_CLASS =
   'focus-ring rounded fg-secondary underline underline-offset-2 hover:fg-primary disabled:cursor-not-allowed disabled:opacity-40';
@@ -142,7 +143,6 @@ export function CapabilityPackageProblems({
 }: CapabilityPackageProblemsProps): JSX.Element | null {
   const disabled = disabledInput || fixWithAIPending;
   const [expanded, setExpanded] = useState(false);
-  const [showDismissed, setShowDismissed] = useState(false);
   const dismissedInvocations = dismissedInput ?? [];
   const dismissedReferences = dismissedReferencesInput ?? [];
   const problems = buildCapabilityPackageProblems(blockers);
@@ -200,7 +200,7 @@ export function CapabilityPackageProblems({
               {...dismissProps}
             />
           </Notice>
-          <ProblemDisclosures
+          <ProblemExtras
             problem={single}
             bindingLabelFor={bindingLabelFor}
             testIdPrefix={testIdPrefix}
@@ -264,7 +264,7 @@ export function CapabilityPackageProblems({
             onClick={(): void => {
               setExpanded((open) => !open);
             }}
-            className={DISCLOSURE_CLASS}
+            className={TEXT_ACTION_CLASS}
           >
             {expanded
               ? SHOW_FEWER_LABEL
@@ -275,20 +275,13 @@ export function CapabilityPackageProblems({
 
       {dismissedInvocations.length > 0 && onRestore !== undefined && (
         <div
-          className={`space-y-1 ${SECTION_CLASS}`}
+          className={SECTION_CLASS}
           data-testid={`${testIdPrefix}-dependency-problems-dismissed-list`}
         >
-          <button
-            type="button"
-            aria-expanded={showDismissed}
-            onClick={(): void => {
-              setShowDismissed((open) => !open);
-            }}
-            className={DISCLOSURE_CLASS}
+          <Disclosure
+            label={`Marked as not commands (${String(dismissedInvocations.length)})`}
+            dataTestId={`${testIdPrefix}-dependency-problems-dismissed-list-disclosure`}
           >
-            Marked as not commands ({String(dismissedInvocations.length)})
-          </button>
-          {showDismissed && (
             <ul className="space-y-1">
               {dismissedInvocations.map((dismissal) => (
                 <li
@@ -307,14 +300,14 @@ export function CapabilityPackageProblems({
                     onClick={(): void => {
                       onRestore(dismissal);
                     }}
-                    className={`${DISCLOSURE_CLASS} disabled:opacity-40`}
+                    className={`${TEXT_ACTION_CLASS} disabled:opacity-40`}
                   >
                     {UNDO_LABEL}
                   </button>
                 </li>
               ))}
             </ul>
-          )}
+          </Disclosure>
         </div>
       )}
 
@@ -341,23 +334,15 @@ function DismissedReferenceList({
   onRestore: (dismissal: PipelinePackageReferenceDismissal) => void;
   testIdPrefix: string;
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
   return (
     <div
-      className={`space-y-1 ${SECTION_CLASS}`}
+      className={SECTION_CLASS}
       data-testid={`${testIdPrefix}-dependency-problems-dismissed-references`}
     >
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={(): void => {
-          setOpen((value) => !value);
-        }}
-        className={DISCLOSURE_CLASS}
+      <Disclosure
+        label={`Pipeline mentions left out (${String(dismissals.length)})`}
+        dataTestId={`${testIdPrefix}-dependency-problems-dismissed-references-disclosure`}
       >
-        Pipeline mentions left out ({String(dismissals.length)})
-      </button>
-      {open && (
         <ul className="space-y-1">
           {dismissals.map((dismissal) => {
             const slug = `${dismissal.kind === 'pipeline_reference' ? 'name' : 'child'}-${slugifyProblemPart(dismissal.token)}`;
@@ -377,7 +362,7 @@ function DismissedReferenceList({
                   onClick={(): void => {
                     onRestore(dismissal);
                   }}
-                  className={`${DISCLOSURE_CLASS} disabled:opacity-40`}
+                  className={`${TEXT_ACTION_CLASS} disabled:opacity-40`}
                 >
                   {UNDO_LABEL}
                 </button>
@@ -385,7 +370,7 @@ function DismissedReferenceList({
             );
           })}
         </ul>
-      )}
+      </Disclosure>
     </div>
   );
 }
@@ -482,7 +467,7 @@ function ProblemDetail({
   );
 }
 
-interface ProblemDisclosuresProps {
+interface ProblemExtrasProps {
   problem: CapabilityPackageProblem;
   bindingLabelFor: (binding: {
     jobId: string;
@@ -493,55 +478,37 @@ interface ProblemDisclosuresProps {
 }
 
 /** Where the problem is used, and the analyzer's own words, on request. */
-function ProblemDisclosures({
+function ProblemExtras({
   problem,
   bindingLabelFor,
   testIdPrefix,
   className,
-}: ProblemDisclosuresProps): JSX.Element {
-  const [showSteps, setShowSteps] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
+}: ProblemExtrasProps): JSX.Element {
   const locations = problem.occurrences
     .map(bindingLabelFor)
     .filter((label): label is string => label !== null);
 
   return (
-    <div className={`space-y-1 ${className}`}>
-      <div className="flex flex-wrap gap-3">
-        {locations.length > 0 && (
-          <button
-            type="button"
-            aria-expanded={showSteps}
-            data-testid={`${testIdPrefix}-dependency-problems-steps-${problem.slug}`}
-            onClick={(): void => {
-              setShowSteps((open) => !open);
-            }}
-            className={DISCLOSURE_CLASS}
-          >
-            {stepsLabel(locations.length)}
-          </button>
-        )}
-        <button
-          type="button"
-          aria-expanded={showDetails}
-          data-testid={`${testIdPrefix}-dependency-problems-details-${problem.slug}`}
-          onClick={(): void => {
-            setShowDetails((open) => !open);
-          }}
-          className={DISCLOSURE_CLASS}
+    <div className={`flex flex-wrap gap-x-3 gap-y-1 ${className}`}>
+      {locations.length > 0 && (
+        <Disclosure
+          label={stepsLabel(locations.length)}
+          dataTestId={`${testIdPrefix}-dependency-problems-used-in-${problem.slug}`}
+          toggleTestId={`${testIdPrefix}-dependency-problems-steps-${problem.slug}`}
         >
-          {DETAILS_LABEL}
-        </button>
-      </div>
-      {showSteps && locations.length > 0 && (
-        <p className="text-xs fg-secondary">Used in {locations.join(', ')}</p>
+          <p className="text-xs fg-secondary">Used in {locations.join(', ')}</p>
+        </Disclosure>
       )}
-      {showDetails && (
+      <Disclosure
+        label={DETAILS_LABEL}
+        dataTestId={`${testIdPrefix}-dependency-problems-analysis-${problem.slug}`}
+        toggleTestId={`${testIdPrefix}-dependency-problems-details-${problem.slug}`}
+      >
         <p className="text-xs fg-secondary">
           {problem.message}
           {problem.relativePath ? ` (${problem.relativePath})` : ''}
         </p>
-      )}
+      </Disclosure>
     </div>
   );
 }
@@ -582,7 +549,7 @@ function ProblemRow({
           {...(onDismissReference !== undefined ? { onDismissReference } : {})}
         />
       </p>
-      <ProblemDisclosures
+      <ProblemExtras
         problem={problem}
         bindingLabelFor={bindingLabelFor}
         testIdPrefix={testIdPrefix}

@@ -6,9 +6,12 @@ import {
   type PipelineDefinition,
   type PipelineDefinitionDeleteResult,
   type PipelineDefinitionDuplicateResult,
+  type PipelineDefinitionImportParams,
+  type PipelineDefinitionImportResult,
   type PipelineDefinitionUpsertParams,
   type PipelineDefinitionUpsertResult,
 } from '@canopy/protocol/canopy-core';
+import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import { createCanopyDispatcher } from '../../../runtime/dispatcher';
 import type { CanopyDispatcher } from '../../../runtime/types';
 import {
@@ -20,6 +23,8 @@ import {
   createPipelineDefinitionService,
   PipelineDefinitionSourceError,
   type PipelineDefinitionCopy,
+  type PipelineDefinitionInstall,
+  type PipelineDefinitionRemote,
   type PipelineDefinitionService,
   type PipelineDefinitionSourceDocument,
   type PipelineDefinitionSourcePort,
@@ -1213,5 +1218,283 @@ describe('pipeline definition writes', () => {
       definition: { definitionId: id, revision: 2, enabled: false },
     });
     expect(disabled.has(id)).toBe(true);
+  });
+});
+
+// CAN-5076: curated and shared definitions install as user definitions
+// through core, which reads the remote itself.
+describe('pipeline definition imports', () => {
+  const PACKAGED = VALID.replace('- run: echo ok', '- uses: project/review');
+  const MANIFEST: PipelinePackageManifestV1 = {
+    version: 1,
+    pipelineContentHash: 'sha256:packaged',
+    resources: [
+      {
+        id: 'project-review',
+        kind: 'pipeline_action',
+        displayName: 'project/review',
+        sourceLabel: 'project/review',
+        sourceVisibility: 'local',
+        invocationKeys: ['project/review'],
+        dependencyResourceIds: [],
+        trees: [],
+      },
+    ],
+    bindings: [
+      {
+        jobId: 'build',
+        stepId: '__auto_step_0',
+        resourceIds: ['project-review'],
+      },
+    ],
+    environmentRequirements: [],
+    totalFiles: 0,
+    totalBytes: 0,
+  };
+
+  interface Remote {
+    text: string;
+    version: string;
+    manifest?: PipelinePackageManifestV1;
+  }
+
+  function importSetup(remotes: Record<string, Remote>): {
+    dispatcher: WriteDispatcher;
+    store: ReturnType<typeof memoryWriter>;
+    installs: PipelineDefinitionInstall[];
+    prepared: string[];
+  } {
+    const store = memoryWriter();
+    const installs: PipelineDefinitionInstall[] = [];
+    const prepared: string[] = [];
+    const remotePort: PipelineDefinitionSourcePort = {
+      sources: ['curated', 'shared'],
+      optional: true,
+      list: () => Promise.resolve([]),
+      read: () => Promise.resolve(null),
+      remote: (
+        source,
+        definitionId,
+      ): Promise<PipelineDefinitionRemote | null> => {
+        const remote = remotes[definitionId];
+        if (!remote) return Promise.resolve(null);
+        return Promise.resolve({
+          document: {
+            ...storedDocument(definitionId, {
+              revision: 0,
+              text: remote.text,
+              name: `Remote ${definitionId}`,
+            }),
+            source,
+            readonly: true,
+            owner: null,
+          },
+          remoteVersion: remote.version,
+          packageManifest: (): Promise<
+            PipelinePackageManifestV1 | undefined
+          > => {
+            prepared.push(definitionId);
+            return Promise.resolve(remote.manifest);
+          },
+          install: (write): Promise<PipelineDefinitionSourceDocument> => {
+            installs.push(write);
+            const current = store.stored.get(write.definitionId);
+            const entry = {
+              revision: (current?.revision ?? 0) + 1,
+              text: write.text,
+              name: write.name,
+            };
+            store.stored.set(write.definitionId, entry);
+            return Promise.resolve(storedDocument(write.definitionId, entry));
+          },
+        });
+      },
+    };
+    let created = 0;
+    const service = createPipelineDefinitionService({
+      ports: [memoryPort(store.stored), remotePort],
+      createDefinitionId: () => `installed-${(created += 1)}`,
+      writer: store,
+    });
+    const handlers = createCorePipelineDefinitionHandlers({
+      authorityId: 'local-desktop',
+      load: () => Promise.resolve(service),
+    });
+    return {
+      store,
+      installs,
+      prepared,
+      dispatcher: createCanopyDispatcher({
+        profile: 'core',
+        definitions: {
+          queries: PIPELINE_DEFINITION_QUERY_DEFINITIONS,
+          instructions: PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
+          streams: {},
+        },
+        handlers: {
+          queries: handlers.queries,
+          instructions: handlers.instructions,
+          streams: {},
+        },
+      }),
+    };
+  }
+
+  function install(
+    dispatcher: WriteDispatcher,
+    key: string,
+    params: Partial<Omit<PipelineDefinitionImportParams, '_meta'>> & {
+      remoteDefinitionId: string;
+    },
+  ): Promise<PipelineDefinitionImportResult> {
+    return dispatcher.instruction(
+      'core.pipeline.definition.import',
+      {
+        targetScope: {},
+        expectedRemoteVersion: null,
+        nameOverride: null,
+        ...params,
+        _meta: { idempotencyKey: key },
+      },
+      { caller: writer, metadata: { idempotencyKey: key } },
+    );
+  }
+
+  it('installs a reviewed remote revision verbatim under the id core assigns, and replays its key', async () => {
+    const { dispatcher, installs } = importSetup({
+      'curated:review': { text: VALID, version: 'v1' },
+    });
+    const result = await install(dispatcher, 'add', {
+      remoteDefinitionId: 'curated:review',
+      expectedRemoteVersion: 'v1',
+    });
+    expect(result).toMatchObject({
+      remoteDefinitionId: 'curated:review',
+      remoteVersion: 'v1',
+      definition: {
+        definitionId: 'installed-1',
+        source: 'user',
+        readonly: false,
+        revision: 1,
+        name: 'Remote curated:review',
+        document: VALID,
+      },
+    });
+    expect(installs).toMatchObject([
+      { definitionId: 'installed-1', replaces: false, text: VALID },
+    ]);
+    expect(
+      await install(dispatcher, 'add', {
+        remoteDefinitionId: 'curated:review',
+        expectedRemoteVersion: 'v1',
+      }),
+    ).toEqual(result);
+    expect(installs).toHaveLength(1);
+  });
+
+  it('refuses a remote that changed since it was reviewed before preparing its package', async () => {
+    const { dispatcher, installs, prepared } = importSetup({
+      'curated:review': { text: VALID, version: 'v2' },
+    });
+    await expect(
+      install(dispatcher, 'stale', {
+        remoteDefinitionId: 'curated:review',
+        expectedRemoteVersion: 'v1',
+      }),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        code: 'core.pipeline.remoteVersionConflict',
+      },
+    });
+    expect(prepared).toEqual([]);
+    expect(installs).toEqual([]);
+  });
+
+  it('refuses a missing remote, a local id and an invalid document without installing', async () => {
+    const { dispatcher, installs } = importSetup({
+      'shared:canopy-cloud:broken': { text: UNKNOWN_DEPENDENCY, version: 'v1' },
+    });
+    await expect(
+      install(dispatcher, 'missing', {
+        remoteDefinitionId: 'shared:canopy-cloud:missing',
+      }),
+    ).rejects.toMatchObject({
+      payload: { kind: 'not_found', code: 'core.pipeline.remoteNotFound' },
+    });
+    await expect(
+      install(dispatcher, 'local', { remoteDefinitionId: 'bundled-review' }),
+    ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
+    await expect(
+      install(dispatcher, 'broken', {
+        remoteDefinitionId: 'shared:canopy-cloud:broken',
+      }),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.definitionInvalid' },
+    });
+    expect(installs).toEqual([]);
+  });
+
+  it("holds a curated revision to the catalog's package rule", async () => {
+    const { dispatcher, installs } = importSetup({
+      'curated:unbound': { text: PACKAGED, version: 'v1' },
+      'curated:bound': { text: PACKAGED, version: 'v1', manifest: MANIFEST },
+    });
+    await expect(
+      install(dispatcher, 'unbound', { remoteDefinitionId: 'curated:unbound' }),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.definitionInvalid' },
+    });
+    expect(installs).toEqual([]);
+    await install(dispatcher, 'bound', { remoteDefinitionId: 'curated:bound' });
+    expect(installs).toMatchObject([{ text: PACKAGED }]);
+  });
+
+  it('replaces a user definition with a share under its own name, and never a read-only one', async () => {
+    const { dispatcher, installs } = importSetup({
+      'shared:canopy-cloud:review': { text: VALID, version: 'v1' },
+    });
+    const { definition: existing } = await upsert(
+      dispatcher,
+      upsertParams('existing', { enabled: undefined }),
+    );
+    const { definition } = await install(dispatcher, 'replace', {
+      remoteDefinitionId: 'shared:canopy-cloud:review',
+      definitionId: existing.definitionId,
+      nameOverride: 'Kept name',
+    });
+    expect(definition).toMatchObject({
+      definitionId: existing.definitionId,
+      name: 'Kept name',
+      revision: 2,
+    });
+    expect(installs).toMatchObject([
+      { definitionId: existing.definitionId, replaces: true },
+    ]);
+    await expect(
+      install(dispatcher, 'read-only', {
+        remoteDefinitionId: 'shared:canopy-cloud:review',
+        definitionId: 'curated:review',
+      }),
+    ).rejects.toMatchObject({
+      payload: { code: 'core.pipeline.definitionReadOnly' },
+    });
+  });
+
+  it('installs a curated revision only as a new copy', async () => {
+    const { dispatcher, installs } = importSetup({
+      'curated:review': { text: VALID, version: 'v1' },
+    });
+    const { definition: existing } = await upsert(
+      dispatcher,
+      upsertParams('existing', { enabled: undefined }),
+    );
+    await expect(
+      install(dispatcher, 'over', {
+        remoteDefinitionId: 'curated:review',
+        definitionId: existing.definitionId,
+      }),
+    ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
+    expect(installs).toEqual([]);
   });
 });

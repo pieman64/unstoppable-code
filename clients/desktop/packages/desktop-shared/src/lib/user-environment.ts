@@ -5,8 +5,8 @@
 //   - the renderer's top-level Environments page, workspace Environment tabs,
 //     and shared variable editors (load/save, bulk<->key-value conversion,
 //     validation),
-//   - the main-process environment-config IPC handler and legacy compatibility
-//     wrappers (normalization on read/write),
+//   - the main-process environment-config IPC handler (normalization on
+//     read/write),
 //   - pipelines/config-paths.ts where `getEnhancedEnv()` merges the user
 //     values into the env handed to every spawned subprocess.
 //
@@ -20,6 +20,7 @@ import type {
   EnvironmentRuntime,
   EnvironmentRuntimeAssignments,
   EnvironmentUsage,
+  EnvironmentValue,
   ResolveEnvironmentRequest,
   ResolvedEnvironment,
   UserEnvironmentData,
@@ -119,9 +120,9 @@ export function getEnvironmentSortOrder(
     : Number.POSITIVE_INFINITY;
 }
 
-export function compareEnvironmentDefinitions(
-  a: EnvironmentDefinition,
-  b: EnvironmentDefinition,
+export function compareEnvironmentDefinitions<V extends EnvironmentValue>(
+  a: EnvironmentDefinition<V>,
+  b: EnvironmentDefinition<V>,
 ): number {
   const aOrder = getEnvironmentSortOrder(a);
   const bOrder = getEnvironmentSortOrder(b);
@@ -334,10 +335,10 @@ export function normalizeUserEnvironment(value: unknown): UserEnvironmentData {
  * be merged into `process.env`. Reserved keys (e.g. PATH) are dropped so they
  * cannot silently break Canopy's bundled-bin PATH handling.
  */
-export function toAppliedUserEnvironment(
-  entries: ReadonlyArray<UserEnvironmentEntry>,
-): Record<string, string> {
-  const applied: Record<string, string> = {};
+export function toAppliedUserEnvironment<V extends EnvironmentValue>(
+  entries: ReadonlyArray<UserEnvironmentEntry<V>>,
+): Record<string, V> {
+  const applied: Record<string, V> = {};
   for (const entry of entries) {
     if (isReservedUserEnvironmentKey(entry.key)) {
       continue;
@@ -347,14 +348,14 @@ export function toAppliedUserEnvironment(
   return applied;
 }
 
-export function splitAppliedUserEnvironment(
-  entries: ReadonlyArray<UserEnvironmentEntry>,
+export function splitAppliedUserEnvironment<V extends EnvironmentValue>(
+  entries: ReadonlyArray<UserEnvironmentEntry<V>>,
 ): {
-  publicApplied: Record<string, string>;
-  secretApplied: Record<string, string>;
+  publicApplied: Record<string, V>;
+  secretApplied: Record<string, V>;
 } {
-  const publicApplied: Record<string, string> = {};
-  const secretApplied: Record<string, string> = {};
+  const publicApplied: Record<string, V> = {};
+  const secretApplied: Record<string, V> = {};
   for (const entry of entries) {
     if (isReservedUserEnvironmentKey(entry.key)) {
       continue;
@@ -522,8 +523,8 @@ function normalizeWorkspaceAssignments(
   return Array.from(byWorkspaceId.values());
 }
 
-function findCycleEnvironmentIds(
-  environments: ReadonlyArray<EnvironmentDefinition>,
+function findCycleEnvironmentIds<V extends EnvironmentValue>(
+  environments: ReadonlyArray<EnvironmentDefinition<V>>,
 ): Set<string> {
   const byId = new Map(
     environments.map((environment) => [environment.id, environment]),
@@ -532,7 +533,7 @@ function findCycleEnvironmentIds(
 
   for (const environment of environments) {
     const seen = new Set<string>();
-    let current: EnvironmentDefinition | undefined = environment;
+    let current: EnvironmentDefinition<V> | undefined = environment;
     while (current?.parentId) {
       if (seen.has(current.id)) {
         for (const id of Array.from(seen)) {
@@ -652,10 +653,10 @@ export function normalizeEnvironmentConfig(
   return data;
 }
 
-export function resolveEnvironmentVariables(
-  config: EnvironmentConfigData,
+export function resolveEnvironmentVariables<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
   environmentId: string | null | undefined,
-): ResolvedEnvironment {
+): ResolvedEnvironment<V> {
   const byId = new Map(
     config.environments.map((environment) => [environment.id, environment]),
   );
@@ -672,16 +673,16 @@ export function resolveEnvironmentVariables(
     };
   }
 
-  const chain: EnvironmentDefinition[] = [];
+  const chain: EnvironmentDefinition<V>[] = [];
   const seen = new Set<string>();
-  let current: EnvironmentDefinition | undefined = leaf;
+  let current: EnvironmentDefinition<V> | undefined = leaf;
   while (current && !seen.has(current.id)) {
     chain.push(current);
     seen.add(current.id);
     current = current.parentId ? byId.get(current.parentId) : undefined;
   }
 
-  const byKey = new Map<string, UserEnvironmentEntry>();
+  const byKey = new Map<string, UserEnvironmentEntry<V>>();
   for (const environment of [...chain].reverse()) {
     for (const entry of environment.variables) {
       byKey.set(entry.key, entry);
@@ -705,10 +706,10 @@ export function resolveEnvironmentVariables(
   };
 }
 
-export function resolveEnvironmentForRuntime(
-  config: EnvironmentConfigData,
+export function resolveEnvironmentForRuntime<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
   request: ResolveEnvironmentRequest,
-): ResolvedEnvironment {
+): ResolvedEnvironment<V> {
   const workspaceAssignment = request.workspaceId
     ? config.workspaceAssignments.find(
         (assignment) => assignment.workspaceId === request.workspaceId,
@@ -720,8 +721,8 @@ export function resolveEnvironmentForRuntime(
   return resolveEnvironmentVariables(config, environmentId);
 }
 
-export function validateEnvironmentConfig(
-  config: EnvironmentConfigData,
+export function validateEnvironmentConfig<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
 ): { ok: true } | { ok: false; message: string } {
   if (!isRecord(config) || config.version !== 2) {
     return { ok: false, message: 'Invalid environment config version.' };
@@ -826,8 +827,8 @@ export function validateEnvironmentConfig(
   return { ok: true };
 }
 
-function isEnvironmentAssigned(
-  config: EnvironmentConfigData,
+function isEnvironmentAssigned<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
   environmentId: string,
 ): boolean {
   for (const runtime of RUNTIMES) {
@@ -847,8 +848,8 @@ function isEnvironmentAssigned(
   return false;
 }
 
-function isEnvironmentParent(
-  config: EnvironmentConfigData,
+function isEnvironmentParent<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
   environmentId: string,
 ): boolean {
   return config.environments.some(
@@ -856,9 +857,12 @@ function isEnvironmentParent(
   );
 }
 
-export function validateEnvironmentConfigUpdate(
-  previous: EnvironmentConfigData,
-  next: EnvironmentConfigData,
+export function validateEnvironmentConfigUpdate<
+  P extends EnvironmentValue,
+  N extends EnvironmentValue,
+>(
+  previous: EnvironmentConfigData<P>,
+  next: EnvironmentConfigData<N>,
 ): { ok: true } | { ok: false; message: string } {
   const nextIds = new Set(
     next.environments.map((environment) => environment.id),
@@ -888,8 +892,8 @@ export function validateEnvironmentConfigUpdate(
   return { ok: true };
 }
 
-export function getEnvironmentUsage(
-  config: EnvironmentConfigData,
+export function getEnvironmentUsage<V extends EnvironmentValue>(
+  config: EnvironmentConfigData<V>,
   workspaces: ReadonlyArray<{
     id?: string;
     workspaceId?: string;

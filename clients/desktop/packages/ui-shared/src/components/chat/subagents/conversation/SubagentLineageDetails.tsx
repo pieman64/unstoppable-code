@@ -8,6 +8,7 @@ import {
   subagentStatusDetail,
 } from '../subagent-copy';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
+import { Heading } from '../../../Heading';
 
 export type SubagentLineageTarget =
   | { readonly kind: 'root'; readonly id: string; readonly title: string }
@@ -45,9 +46,10 @@ function LineageButton({
         className="min-w-0 truncate text-left fg-secondary hover:fg-primary hover:underline"
         onClick={onClick}
         data-testid={`subagent-chat-lineage-${node.id}`}
-        title={node.title}
       >
-        <span className={REPLAY_MASK_CLASS}>{node.title}</span>
+        <span className={REPLAY_MASK_CLASS} title={node.title}>
+          {node.title}
+        </span>
       </button>
       <span className="shrink-0 fg-tertiary">{subagentStatusDetail(node)}</span>
     </li>
@@ -99,9 +101,10 @@ export function SubagentLineageDetails({
               })
             }
             data-testid={`subagent-chat-lineage-${tree.root.id}`}
-            title={tree.root.title}
           >
-            <span className={REPLAY_MASK_CLASS}>{tree.root.title}</span>
+            <span className={REPLAY_MASK_CLASS} title={tree.root.title}>
+              {tree.root.title}
+            </span>
           </button>
         </li>
         {ancestors.map((ancestor, index) => (
@@ -152,9 +155,9 @@ export function SubagentLineageDetails({
       </ol>
       {siblings.length > 0 ? (
         <div className="flex min-w-0 flex-col gap-1">
-          <h4 className="text-xs font-normal fg-tertiary">
+          <Heading level={4} variant="label">
             {SUBAGENT_LINEAGE_ALONGSIDE}
-          </h4>
+          </Heading>
           <ul
             className="flex min-w-0 list-none flex-col gap-1 p-0"
             data-testid="subagent-chat-lineage-alongside"

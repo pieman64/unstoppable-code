@@ -1,17 +1,15 @@
 import {
   IPC_CHANNELS,
-  type EnvironmentConfigData,
+  type EnvironmentConfigView,
   type LoadEnvironmentConfigResponse,
   type SaveEnvironmentConfigResponse,
   type SaveEnvironmentConfigSuccessResponse,
-  type UserEnvironmentData,
 } from '@canopy/desktop-shared/types';
 import {
-  readEnvironmentConfig,
-  readUserEnvironment,
+  readEnvironmentConfigView,
   writeEnvironmentConfig,
-  writeUserEnvironment,
 } from '../lib/user-environment-store';
+import { isStoredSecretError } from '../lib/stored-secrets';
 import {
   initializeUserEnvironmentRuntime,
   invalidateUserEnvironmentInjectionCache,
@@ -41,15 +39,11 @@ async function revokeDelegationsAfterEnvironmentChange(): Promise<void> {
 export function registerUserEnvironmentHandlers(): void {
   initializeUserEnvironmentRuntime();
 
-  registerIpcHandler(IPC_CHANNELS.userEnvironmentLoad, async () =>
-    readUserEnvironment(),
-  );
-
   registerIpcHandler(
     IPC_CHANNELS.environmentConfigLoad,
     async (): Promise<LoadEnvironmentConfigResponse> => {
       try {
-        return await readEnvironmentConfig();
+        return await readEnvironmentConfigView();
       } catch (error) {
         const secureStorageFailure = getSecureStorageFailure(error);
         return {
@@ -62,22 +56,10 @@ export function registerUserEnvironmentHandlers(): void {
   );
 
   registerIpcHandler(
-    IPC_CHANNELS.userEnvironmentSave,
-    async (_event, data: UserEnvironmentData) => {
-      const result = await writeUserEnvironment(data);
-      invalidateUserEnvironmentInjectionCache();
-      await revokeDelegationsAfterEnvironmentChange();
-      await destroySessionsByProvider('ollama');
-      await getOllamaService().handleUserEnvironmentChanged();
-      return result;
-    },
-  );
-
-  registerIpcHandler(
     IPC_CHANNELS.environmentConfigSave,
     async (
       _event,
-      data: EnvironmentConfigData,
+      data: EnvironmentConfigView,
     ): Promise<SaveEnvironmentConfigResponse> => {
       try {
         const result: SaveEnvironmentConfigSuccessResponse =
@@ -97,6 +79,13 @@ export function registerUserEnvironmentHandlers(): void {
         }
         return result;
       } catch (error) {
+        if (isStoredSecretError(error)) {
+          return {
+            ok: false,
+            error: error.message,
+            storedSecretError: error.code,
+          };
+        }
         const secureStorageFailure = getSecureStorageFailure(error);
         return {
           ok: false,

@@ -194,6 +194,8 @@ function loadModules(): {
       removeEventListener: (): void => {},
       dispatchEvent: documentDispatchEventMock,
       querySelector: documentQuerySelectorMock,
+      // skullet scans for existing skeleton nodes when ui-shared is imported.
+      querySelectorAll: (): readonly Element[] => [],
     },
   });
   Object.defineProperty(global, 'window', {

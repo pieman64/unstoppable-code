@@ -1,9 +1,10 @@
 import type { SecureStorageFailure } from '@canopy/desktop-shared/types/secure-storage';
 import { create } from 'zustand';
-import type {
-  EnvironmentConfigData,
-  LoadEnvironmentConfigResponse,
-  SaveEnvironmentConfigResponse,
+import {
+  isStoredSecretValue,
+  type EnvironmentConfigView,
+  type LoadEnvironmentConfigResponse,
+  type SaveEnvironmentConfigResponse,
 } from '@canopy/desktop-shared/types';
 
 export type EnvironmentsStoreStatus =
@@ -15,21 +16,70 @@ export type EnvironmentsStoreStatus =
 
 interface PendingEnvironmentSave {
   kind: 'environment' | 'workspaceAssignments';
-  data: EnvironmentConfigData;
+  data: EnvironmentConfigView;
   dataVersion: number;
   preserveLocal?: boolean;
 }
 
-export function environmentEditorBaseline(data: EnvironmentConfigData): string {
+export function environmentEditorBaseline(data: EnvironmentConfigView): string {
   return JSON.stringify({
     environments: data.environments,
     globalRuntimes: data.globalRuntimes,
   });
 }
 
+/**
+ * A save can rename a kept secret, which gives it a new reference: maps each
+ * reference the save submitted to the one it returned for the same
+ * environment and key.
+ */
+function renamedStoredSecretRefs(
+  submitted: EnvironmentConfigView,
+  saved: EnvironmentConfigView,
+): Map<string, string> {
+  const savedRefs = new Map<string, string>();
+  for (const environment of saved.environments) {
+    for (const entry of environment.variables) {
+      if (isStoredSecretValue(entry.value))
+        savedRefs.set(`${environment.id}\0${entry.key}`, entry.value.ref);
+    }
+  }
+  const renamed = new Map<string, string>();
+  for (const environment of submitted.environments) {
+    for (const entry of environment.variables) {
+      const savedRef = savedRefs.get(`${environment.id}\0${entry.key}`);
+      if (isStoredSecretValue(entry.value) && savedRef !== undefined)
+        renamed.set(entry.value.ref, savedRef);
+    }
+  }
+  return renamed;
+}
+
+/** Points every kept reference in `data` at its current reference. */
+function rebaseStoredSecretRefs(
+  data: EnvironmentConfigView,
+  renamed: ReadonlyMap<string, string>,
+): EnvironmentConfigView {
+  if (renamed.size === 0) return data;
+  return {
+    ...data,
+    environments: data.environments.map((environment) => ({
+      ...environment,
+      variables: environment.variables.map((entry) => {
+        const ref = isStoredSecretValue(entry.value)
+          ? renamed.get(entry.value.ref)
+          : undefined;
+        return ref === undefined
+          ? entry
+          : { ...entry, value: { kind: 'stored-secret', ref } };
+      }),
+    })),
+  };
+}
+
 function copyEnvironmentConfig(
-  data: EnvironmentConfigData,
-): EnvironmentConfigData {
+  data: EnvironmentConfigView,
+): EnvironmentConfigView {
   return {
     version: data.version,
     environments: data.environments.map((environment) => ({
@@ -45,7 +95,7 @@ function copyEnvironmentConfig(
 }
 
 interface EnvironmentsState {
-  data: EnvironmentConfigData | null;
+  data: EnvironmentConfigView | null;
   encryptionAvailable: boolean;
   status: EnvironmentsStoreStatus;
   error: string | null;
@@ -58,13 +108,13 @@ interface EnvironmentsState {
   dataVersion: number;
   environmentSaveVersion: number;
   environmentBaseline: string | null;
-  lastSavedEnvironmentData: EnvironmentConfigData | null;
+  lastSavedEnvironmentData: EnvironmentConfigView | null;
   load: () => Promise<void>;
-  save: (next: EnvironmentConfigData, preserveLocal?: boolean) => Promise<void>;
-  saveWorkspaceAssignments: (next: EnvironmentConfigData) => Promise<void>;
+  save: (next: EnvironmentConfigView, preserveLocal?: boolean) => Promise<void>;
+  saveWorkspaceAssignments: (next: EnvironmentConfigView) => Promise<void>;
   retryStorageFailure: () => Promise<void>;
   selectEnvironment: (id: string | null) => void;
-  setLocal: (next: EnvironmentConfigData) => void;
+  setLocal: (next: EnvironmentConfigView) => void;
 }
 
 /**
@@ -78,15 +128,34 @@ export const useEnvironmentsStore = create<EnvironmentsState>((set, get) => {
   let completedAssignmentVersion = 0;
   let baselineRequestSequence = 0;
   let completedBaselineRequest = 0;
-  let latestCompletedAssignments: EnvironmentConfigData['workspaceAssignments'] =
+  let latestCompletedAssignments: EnvironmentConfigView['workspaceAssignments'] =
     [];
+  // The references each completed save renamed, in order. A save applies
+  // only the renames that completed after it was submitted: references name
+  // slots, so an older rename must not move a key the user has since reused.
+  let renameLog: Map<string, string>[] = [];
+  let renameLogStart = 0;
+  let savesInFlight = 0;
+  const rebaseSince = (
+    data: EnvironmentConfigView,
+    mark: number,
+  ): EnvironmentConfigView =>
+    renameLog
+      .slice(Math.max(0, mark - renameLogStart))
+      .reduce(
+        (rebased, renamed) => rebaseStoredSecretRefs(rebased, renamed),
+        data,
+      );
   const persistSave = async (
-    next: EnvironmentConfigData,
+    next: EnvironmentConfigView,
     kind: PendingEnvironmentSave['kind'],
     preserveLocal = false,
     replayPendingSave = false,
   ): Promise<void> => {
     let submitted = copyEnvironmentConfig(next);
+    const renameMark = renameLogStart + renameLog.length;
+    let savedRenames = new Map<string, string>();
+    savesInFlight += 1;
     const baselineRequest = ++baselineRequestSequence;
     const assignmentVersion = completedAssignmentVersion;
     const dataVersion = get().dataVersion + 1;
@@ -131,13 +200,30 @@ export const useEnvironmentsStore = create<EnvironmentsState>((set, get) => {
             workspaceAssignments: latestCompletedAssignments,
           });
         }
-        return window.api.saveEnvironmentConfig(submitted);
+        submitted = rebaseSince(submitted, renameMark);
+        const sent = submitted;
+        return window.api.saveEnvironmentConfig(sent).then((saved) => {
+          if (saved.ok) {
+            savedRenames = renamedStoredSecretRefs(sent, saved.data);
+            renameLog.push(savedRenames);
+          }
+          return saved;
+        });
       },
     );
     writeQueue = write.then(
       () => undefined,
       () => undefined,
     );
+    void write
+      .finally((): void => {
+        savesInFlight -= 1;
+        if (savesInFlight === 0) {
+          renameLogStart += renameLog.length;
+          renameLog = [];
+        }
+      })
+      .catch((): void => undefined);
     try {
       const response: SaveEnvironmentConfigResponse = await write;
       if (response.ok === false) {
@@ -161,7 +247,9 @@ export const useEnvironmentsStore = create<EnvironmentsState>((set, get) => {
         // Durable environment saves settle their editor even when a newer
         // assignment save or read owns the shared request state.
         const projectedData = {
-          ...(state.data ?? response.data),
+          ...(state.data
+            ? rebaseStoredSecretRefs(state.data, savedRenames)
+            : response.data),
           workspaceAssignments: response.data.workspaceAssignments,
         };
         const environmentSaveState = {
@@ -361,7 +449,7 @@ export const useEnvironmentsStore = create<EnvironmentsState>((set, get) => {
     selectEnvironment: (id: string | null): void => {
       set({ selectedEnvironmentId: id });
     },
-    setLocal: (next: EnvironmentConfigData): void => {
+    setLocal: (next: EnvironmentConfigView): void => {
       const previousSelected = get().selectedEnvironmentId;
       const nextSelected =
         previousSelected &&

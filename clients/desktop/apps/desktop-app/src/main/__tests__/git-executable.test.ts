@@ -1170,17 +1170,17 @@ describe.each(['x64', 'arm64'])('Linux %s Git requirement', (arch) => {
     setArch(originalArch);
   });
 
-  it('requires Git on Linux x64 and arm64', async () => {
+  it('requires Git on supported Linux desktop architectures', async () => {
     const { getGitExecutablePlatformStatus } =
       await import('../lib/git-executable');
     expect(getGitExecutablePlatformStatus()).toEqual({
       platform: 'linux',
       required: true,
     });
-    setArch('arm64');
+    setArch('ppc64');
     expect(getGitExecutablePlatformStatus()).toEqual({
       platform: 'linux',
-      required: true,
+      required: false,
     });
   });
 
@@ -1203,6 +1203,30 @@ describe.each(['x64', 'arm64'])('Linux %s Git requirement', (arch) => {
     expect(status.error).toMatch(/Install Git/);
     expect(mockedExecFile).not.toHaveBeenCalled();
     expect(process.env.CANOPY_GIT_EXECUTABLE).toBeUndefined();
+    expect(mockWritePreferencesFile).not.toHaveBeenCalled();
+  });
+
+  it('reprobes after Git is restored on the same PATH without restarting', async () => {
+    loginPath = '/filtered/bin';
+    process.env.PATH = loginPath;
+    const { detectGitExecutableShared, getResolvedGitExecutableForSpawn } =
+      await import('../lib/git-executable');
+
+    const first = await detectGitExecutableShared({ force: true });
+    expect(first.status).toMatchObject({ ready: false, required: true });
+    await expect(getResolvedGitExecutableForSpawn()).rejects.toThrow(
+      'Git was not found',
+    );
+
+    install('/filtered/bin/git');
+    const retry = await detectGitExecutableShared({ force: true });
+    expect(retry).toMatchObject({
+      status: { ready: true, path: '/filtered/bin/git', source: 'login-path' },
+      issue: null,
+    });
+    expect(await getResolvedGitExecutableForSpawn()).toBe('/filtered/bin/git');
+    expect(probedFiles()).toContain('/filtered/bin/git');
+    expect(process.env.PATH).toBe('/filtered/bin');
     expect(mockWritePreferencesFile).not.toHaveBeenCalled();
   });
 
@@ -2051,8 +2075,8 @@ describe.each(['x64', 'arm64'])('Linux %s Git requirement', (arch) => {
   });
 
   describe('unsupported Linux architectures', () => {
-    it('keeps Git optional and unprobed on s390x', async () => {
-      setArch('s390x');
+    it('keeps Git optional and unprobed on ppc64', async () => {
+      setArch('ppc64');
       install(SYSTEM_GIT);
       const { detectGitExecutable } = await import('../lib/git-executable');
 
@@ -2068,8 +2092,8 @@ describe.each(['x64', 'arm64'])('Linux %s Git requirement', (arch) => {
       expect(prewarmLoginShellPathMock).not.toHaveBeenCalled();
     });
 
-    it('keeps bare git for spawns on s390x', async () => {
-      setArch('s390x');
+    it('keeps bare git for spawns on ppc64', async () => {
+      setArch('ppc64');
       const { getResolvedGitExecutableForSpawn } =
         await import('../lib/git-executable');
 

@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type {
   CodeGraphGenerationQueueSnapshot,
   CodeGraphIpcError,
@@ -14,10 +14,7 @@ import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
-import type {
-  ReadCodeGraphSummaryProjectionResult,
-  CodeGraphSummaryProjectionV1,
-} from '@canopy/code-graph/summary-projection';
+import type { CodeGraphSummaryProjectionV1 } from '@canopy/code-graph/summary-projection';
 import type {
   CodeGraphBuildState,
   CodeGraphReadFailure,
@@ -25,45 +22,49 @@ import type {
 
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import {
-  getCodeGraphGenerationQueueSnapshot,
   getCodeGraphSourceBuildState,
   isCodeGraphSummaryRepairActive,
   requestCodeGraphSummaryRepair,
-  reorderCodeGraphGenerationQueue,
   setCodeGraphGenerationQueueListener,
 } from '../code-graph/build-runner';
 import {
-  runCodeGraphWorkerRead,
+  buildCodeGraphThroughWorker,
+  readGenerationQueue,
+  reorderGenerationQueue,
+  type WorkerCodeGraphDispatcher,
+} from '../canopy-runtime/worker-code-graph-adapter';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import { CanopyClientError } from '@canopy/core-client';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import {
   CodeGraphReadFailureError,
   codeGraphReadFailure,
 } from '../code-graph/read-runner';
 import { recordCodeGraphSummaryFanoutDiagnostic } from '../lib/code-graph-telemetry';
 import {
+  readWorkspaceBaseCodeGraphSummaries,
+  readWorktreeCodeGraph,
+  type CodeGraphReadAnswer,
+} from '../code-graph/graph-reads';
+import { repairWorkspaceBaseCodeGraphSummary } from '../code-graph/graph-builds';
+import { withDaemonCodeGraphRoute } from '../code-graph/daemon-code-graph-route-context';
+import {
+  combinedCodeGraphBuildState,
+  selectDaemonCodeGraph,
+  type DaemonCodeGraphRouteContext,
+} from '../code-graph/daemon-code-graph-route';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import {
   CODE_GRAPH_UNAVAILABLE_MESSAGE,
   isCodeGraphAvailableForWorkspace,
 } from '../lib/code-graph-availability';
 import { isCodeGraphFeatureEnabled } from '../lib/code-graph-feature-flag';
-import {
-  describeCodeGraphBaseWorkspace,
-  requestCodeGraphBaseSummaryRepair,
-  maintainCodeGraphBasesForWorkspace,
-  resolveCodeGraphBaseWorkspaceFingerprint,
-  syncCodeGraphBaseRepositories,
-} from '../lib/code-graph-base-manager';
-import {
-  codeGraphBaseRunnerKey,
-  readCompatibleCodeGraphBase,
-} from '../lib/code-graph-base-store';
-import { runWorktreeCodeGraphBuild } from '../lib/code-graph-build-service';
+import { describeCodeGraphBaseWorkspace } from '../lib/code-graph-base-manager';
 import {
   isCodeGraphPerformanceSchedulerEnabled,
   runCodeGraphPerformanceBuild,
 } from '../lib/code-graph-scheduler';
-import { getHeadCommitSha } from '../lib/git';
-import { getRepoShadowDir } from '../lib/repo-shadow';
-import { resolveWorkspaceReferenceRepoPath } from '../lib/workspace-reference-repo';
 import { readAllSidebarItems } from '../lib/sidebar-items';
-import { getSidebarItemsPreserveWorkspaceIds } from '../lib/sidebar-items-preservation';
 import { sendToWindow } from '../lib/window-send';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
@@ -78,24 +79,6 @@ const ZERO_TOTALS = {
   flowCount: 0,
 };
 
-async function readCodeGraphSummaryOffMain(
-  key: string,
-  dbPath: string,
-  diagnosticOwner?: { projectId: string; worktreeId: string },
-): Promise<ReadCodeGraphSummaryProjectionResult> {
-  const response = await runCodeGraphWorkerRead({
-    key,
-    ...(diagnosticOwner === undefined ? {} : { diagnosticOwner }),
-    kind: 'ui-summary',
-    request: { dbPath, task: { kind: 'readonly-summary' } },
-  });
-  if (!response.ok) throw new CodeGraphReadFailureError(response.code);
-  if (response.result.kind !== 'readonly-summary') {
-    throw new CodeGraphReadFailureError('invalid-response');
-  }
-  return response.result.value;
-}
-
 function ipcError(
   code: CodeGraphIpcError['code'],
   message: string,
@@ -103,17 +86,25 @@ function ipcError(
   return { ok: false, code, message };
 }
 
-function safeMaintenanceMessage(message: string | undefined): string {
-  if (message === CODE_GRAPH_UNAVAILABLE_MESSAGE) {
-    return message;
-  }
-  if (
-    message !== undefined &&
-    /timeout|timed out|exceeded .* ms/i.test(message)
-  ) {
+function baseOutcomeMessage(
+  outcome: 'failed' | 'timed_out' | 'unavailable',
+): string {
+  if (outcome === 'unavailable') return CODE_GRAPH_UNAVAILABLE_MESSAGE;
+  if (outcome === 'timed_out') {
     return 'Generation timed out. Increase the timeout in Code Graph settings and try again.';
   }
   return 'Generation failed for this repository. Try again.';
+}
+
+/**
+ * The `worker.codeGraph.build` refusal code, when the build was refused, in
+ * process or by the daemon (CAN-5089).
+ */
+function workerBuildRefusal(error: unknown): string | undefined {
+  return error instanceof CanopyOperationError ||
+    error instanceof CanopyClientError
+    ? error.payload.code
+    : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -440,20 +431,44 @@ function completeRequiredRepositorySummary(
   };
 }
 
+/**
+ * The summary read, from the daemon when the renderer request is routed
+ * there (CAN-5089), or in process. An unreachable daemon reads in process.
+ */
+async function readWorktreeSummary(
+  request: CodeGraphWorktreeSummaryRequest,
+  routed: boolean,
+): Promise<{ answer: CodeGraphReadAnswer; daemon: boolean }> {
+  // The dispatcher's read takes the daemon route when it is selected.
+  const { value, daemon } = await withDaemonCodeGraphRoute(routed, () =>
+    readWorktreeCodeGraph(
+      { projectId: request.workspaceId, worktreeId: request.worktreeId },
+      'ui-summary',
+      { kind: 'summary' },
+    ),
+  );
+  return { answer: value, daemon };
+}
+
 async function loadWorktreeSummary(
   request: CodeGraphWorktreeSummaryRequest,
+  routed = false,
 ): Promise<CodeGraphUiSummaryResponse> {
   const { item } = await resolveWorkspace(request.workspaceId);
   if (!item.worktrees.some((worktree) => worktree.id === request.worktreeId))
     throw new Error('worktree-not-found');
   const key = `${request.workspaceId}/${request.worktreeId}`;
-  const dbPath = getWorktreeCodeGraphDbPath(
-    request.workspaceId,
-    request.worktreeId,
-  );
   try {
-    const read = await readCodeGraphSummaryOffMain(key, dbPath);
-    const state = getCodeGraphSourceBuildState(key);
+    const { answer, daemon } = await readWorktreeSummary(request, routed);
+    if (answer.result.kind !== 'readonly-summary')
+      throw new CodeGraphReadFailureError('invalid-response');
+    const read = answer.result.value;
+    const state = daemon
+      ? combinedCodeGraphBuildState(
+          getCodeGraphSourceBuildState(key),
+          answer.buildState,
+        )
+      : getCodeGraphSourceBuildState(key);
     if (read.state === 'error')
       return unavailableSummary(
         'read-error',
@@ -478,7 +493,10 @@ async function loadWorktreeSummary(
         key,
         projectId: request.workspaceId,
         worktreeId: request.worktreeId,
-        dbPath,
+        dbPath: getWorktreeCodeGraphDbPath(
+          request.workspaceId,
+          request.worktreeId,
+        ),
       }).catch(() => undefined);
       // Pending means a repair or a build is working on the summary. A repair
       // that was refused, or is cooling down after a failure, will not make it
@@ -536,99 +554,71 @@ async function loadWorkspaceSummary(
   refreshFailureMessages?: ReadonlyMap<string, string>,
 ): Promise<CodeGraphUiSummaryResponse> {
   const { item } = await resolveWorkspace(request.workspaceId);
-  const descriptor = describeCodeGraphBaseWorkspace(item);
-  if (descriptor === null)
+  if (describeCodeGraphBaseWorkspace(item) === null)
     return missingSummary('workspace-shadow', request.workspaceId, 'idle');
-  const fingerprint =
-    await resolveCodeGraphBaseWorkspaceFingerprint(descriptor);
+  const bases = await readWorkspaceBaseCodeGraphSummaries(request.workspaceId);
   const sourceStates: CodeGraphBuildState[] = [];
-  const outcomes = await Promise.all(
-    descriptor.repositories.map(
-      async (repository): Promise<RequiredRepositoryOutcome> => {
-        const repoId = repository.repoId;
-        // No fingerprint means Code Graph was never prepared for this
-        // project: an empty state, not a summary that is being prepared.
-        if (fingerprint === null)
-          return { state: 'missing', repoId, lastBuildAt: null };
-        try {
-          const canonicalRepoRoot = await resolveWorkspaceReferenceRepoPath(
-            repository.repoPath,
-          );
-          const identity = {
-            canonicalRepoRoot,
-            repoId,
-            customLanguagesFingerprint: fingerprint,
-          };
-          const key = codeGraphBaseRunnerKey(canonicalRepoRoot, identity);
-          const published = await readCompatibleCodeGraphBase(identity); // Manifest-only; no SQLite on main.
-          sourceStates.push(getCodeGraphSourceBuildState(key));
-          if (published === null)
-            return { state: 'missing', repoId, lastBuildAt: null };
-          const read = await readCodeGraphSummaryOffMain(
-            key,
-            published.dbPath,
-            { projectId: request.workspaceId, worktreeId: '' },
-          );
-          if (read.state === 'error')
-            return {
-              state: 'error',
-              repoId,
-              lastBuildAt: null,
-              readFailure:
-                read.classification === 'busy' ? 'busy' : 'database-error',
-            };
-          if (read.state === 'missing')
-            return { state: 'missing', repoId, lastBuildAt: null };
-          // No build or seed has committed: there is no summary to repair.
-          if (read.state === 'pending' && read.reason === 'build-incomplete')
-            return { state: 'missing', repoId, lastBuildAt: null };
-          if (read.state === 'pending') {
-            // Immutable generation: maintenance stages a successor through the existing base writer.
-            void requestCodeGraphBaseSummaryRepair(
-              request.workspaceId,
-              repoId,
-            ).catch(() => undefined);
-            return {
-              state: 'pending',
-              repoId,
-              lastBuildAt: read.observed.lastBuildAt,
-            };
-          }
-          const repo =
-            read.projection.repositories.length === 1
-              ? read.projection.repositories[0]
-              : undefined;
-          if (repo === undefined || repo.repoId !== repoId)
-            return {
-              state: 'error',
-              repoId,
-              lastBuildAt: read.projection.lastBuildAt,
-              readFailure: 'database-error',
-            };
-          const checkoutHead = await getHeadCommitSha(
-            `${getRepoShadowDir(canonicalRepoRoot)}/checkout`,
-          ).catch(() => null);
-          const stale =
-            checkoutHead !== null &&
-            published.manifest.gitHead !== null &&
-            checkoutHead !== published.manifest.gitHead;
-          return {
-            state: 'ready',
-            repoId,
-            projection: read.projection,
-            summary: repositorySummary(item, read.projection, repo, stale),
-          };
-        } catch (error) {
-          return {
-            state: 'error',
-            repoId,
-            lastBuildAt: null,
-            readFailure: codeGraphReadFailure(error),
-          };
-        }
-      },
-    ),
-  );
+  const outcomes = bases.repositories.map((base): RequiredRepositoryOutcome => {
+    const { repoId } = base;
+    if (base.buildState !== null) sourceStates.push(base.buildState);
+    if (base.state === 'failed')
+      return {
+        state: 'error',
+        repoId,
+        lastBuildAt: null,
+        readFailure: base.failure,
+      };
+    // Nothing is published, or Code Graph was never prepared for this
+    // project: an empty state, not a summary that is being prepared.
+    if (!base.published) return { state: 'missing', repoId, lastBuildAt: null };
+    const read = base.summary;
+    if (read.state === 'error')
+      return {
+        state: 'error',
+        repoId,
+        lastBuildAt: null,
+        readFailure: read.classification === 'busy' ? 'busy' : 'database-error',
+      };
+    if (read.state === 'missing')
+      return { state: 'missing', repoId, lastBuildAt: null };
+    // No build or seed has committed: there is no summary to repair.
+    if (read.state === 'pending' && read.reason === 'build-incomplete')
+      return { state: 'missing', repoId, lastBuildAt: null };
+    if (read.state === 'pending') {
+      // Immutable generation: maintenance stages a successor through the existing base writer.
+      void repairWorkspaceBaseCodeGraphSummary({
+        workspaceId: request.workspaceId,
+        repoId,
+      }).catch(() => undefined);
+      return {
+        state: 'pending',
+        repoId,
+        lastBuildAt: read.observed.lastBuildAt,
+      };
+    }
+    const repo =
+      read.projection.repositories.length === 1
+        ? read.projection.repositories[0]
+        : undefined;
+    if (repo === undefined || repo.repoId !== repoId)
+      return {
+        state: 'error',
+        repoId,
+        lastBuildAt: read.projection.lastBuildAt,
+        readFailure: 'database-error',
+      };
+    return {
+      state: 'ready',
+      repoId,
+      projection: read.projection,
+      summary: repositorySummary(
+        item,
+        read.projection,
+        repo,
+        base.behindCheckout,
+      ),
+    };
+  });
   const buildState: CodeGraphBuildState = sourceStates.includes('running')
     ? 'running'
     : sourceStates.includes('queued')
@@ -683,15 +673,50 @@ function broadcastQueue(snapshot: CodeGraphGenerationQueueSnapshot): void {
   }
 }
 
-export function registerCodeGraphHandlers(): void {
+export function registerCodeGraphHandlers(
+  runtime: {
+    dispatcher: WorkerCodeGraphDispatcher;
+    resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor;
+  },
+  windows: {
+    getMainWindow: () => BrowserWindow | null;
+    getAppAdvisorWindow: () => BrowserWindow | null;
+  } = {
+    getMainWindow: () => null,
+    getAppAdvisorWindow: () => null,
+  },
+): void {
   setCodeGraphGenerationQueueListener(broadcastQueue);
 
-  registerIpcHandler(IPC_CHANNELS.codeGraphGetWorktreeSummary, (_event, raw) =>
-    safeSummaryRequest(() => loadWorktreeSummary(validateWorktreeRequest(raw))),
+  // CAN-5089: only this app's own windows may build or read in the daemon;
+  // the remote-control bridge and Portal keep Electron main's graph hosts.
+  const routeContext = (
+    event: Pick<IpcMainInvokeEvent, 'sender'> | null | undefined,
+  ): DaemonCodeGraphRouteContext => ({
+    localWindow:
+      event !== null &&
+      event !== undefined &&
+      resolveRemoteBridgeSender(event.sender) === null &&
+      [windows.getMainWindow(), windows.getAppAdvisorWindow()].some(
+        (window) =>
+          window !== null &&
+          window.webContents === event.sender &&
+          !window.isDestroyed(),
+      ),
+  });
+
+  registerIpcHandler(IPC_CHANNELS.codeGraphGetWorktreeSummary, (event, raw) =>
+    safeSummaryRequest(() =>
+      loadWorktreeSummary(
+        validateWorktreeRequest(raw),
+        selectDaemonCodeGraph(routeContext(event)),
+      ),
+    ),
   );
   registerIpcHandler(
     IPC_CHANNELS.codeGraphBuildWorktree,
-    async (_event, raw) => {
+    // worker.codeGraph.build (CAN-4149).
+    async (event, raw) => {
       let request: CodeGraphWorktreeSummaryRequest;
       try {
         request = validateWorktreeRequest(raw);
@@ -713,25 +738,35 @@ export function registerCodeGraphHandlers(): void {
       if (!isCodeGraphAvailableForWorkspace(request.workspaceId)) {
         return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
       }
+      const graphScope = {
+        kind: 'worktree' as const,
+        workspaceId: request.workspaceId,
+        worktreeId: request.worktreeId,
+        mode: 'verified' as const,
+      };
       try {
-        const response = await runWorktreeCodeGraphBuild({
-          projectId: request.workspaceId,
-          worktreeId: request.worktreeId,
-          reason: 'manual',
-          options: { verifyContent: true },
-        });
-        if (!response.ok) {
+        // The dispatcher's build takes the daemon route when it is selected.
+        const { daemon } = await withDaemonCodeGraphRoute(
+          selectDaemonCodeGraph(routeContext(event)),
+          () =>
+            buildCodeGraphThroughWorker(
+              runtime.dispatcher,
+              runtime.resolveCaller(event),
+              graphScope,
+            ),
+        );
+        return await loadWorktreeSummary(request, daemon);
+      } catch (error) {
+        const code = workerBuildRefusal(error);
+        if (code === 'worker.codeGraph.unavailable') {
+          return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
+        }
+        if (code === 'worker.codeGraph.buildTimedOut') {
           return ipcError(
-            response.message === CODE_GRAPH_UNAVAILABLE_MESSAGE
-              ? 'unavailable'
-              : 'internal',
-            response.message === CODE_GRAPH_UNAVAILABLE_MESSAGE
-              ? CODE_GRAPH_UNAVAILABLE_MESSAGE
-              : 'The Code Graph build failed.',
+            'internal',
+            'Code Graph generation timed out. Increase the timeout in Code Graph settings and try again.',
           );
         }
-        return await loadWorktreeSummary(request);
-      } catch (error) {
         if (isRecord(error) && error.reason === 'unavailable') {
           return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
         }
@@ -786,17 +821,12 @@ export function registerCodeGraphHandlers(): void {
   );
   registerIpcHandler(
     IPC_CHANNELS.codeGraphBuildWorkspace,
-    async (_event, raw) => {
+    // worker.codeGraph.build (CAN-4149).
+    async (event, raw) => {
       let request: CodeGraphWorkspaceSummaryRequest;
-      let items: SidebarItem[];
-      let preservedWorkspaceIds: ReadonlySet<string>;
       try {
         request = validateWorkspaceRequest(raw);
-        const sidebarItems = await readAllSidebarItems();
-        ({ items } = sidebarItems);
-        preservedWorkspaceIds = new Set(
-          getSidebarItemsPreserveWorkspaceIds(sidebarItems),
-        );
+        const { items } = await readAllSidebarItems();
         if (
           !items.some(
             (item) => item.id === request.workspaceId && item.type !== 'cowork',
@@ -811,14 +841,16 @@ export function registerCodeGraphHandlers(): void {
         return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
       }
       try {
-        syncCodeGraphBaseRepositories(items, preservedWorkspaceIds);
-        const outcomes = await maintainCodeGraphBasesForWorkspace(
-          request.workspaceId,
-          { forceRefresh: true },
+        const result = await buildCodeGraphThroughWorker(
+          runtime.dispatcher,
+          runtime.resolveCaller(event),
+          { kind: 'workspace_base', workspaceId: request.workspaceId },
         );
-        if (outcomes.every((outcome) => !outcome.ok)) {
+        const outcomes =
+          result.kind === 'workspace_base' ? result.repositories : [];
+        if (outcomes.every((outcome) => outcome.outcome !== 'built')) {
           const unavailable = outcomes.some(
-            (outcome) => outcome.message === CODE_GRAPH_UNAVAILABLE_MESSAGE,
+            (outcome) => outcome.outcome === 'unavailable',
           );
           return ipcError(
             unavailable ? 'unavailable' : 'internal',
@@ -829,10 +861,10 @@ export function registerCodeGraphHandlers(): void {
         }
         const failures = new Map<string, string>();
         for (const outcome of outcomes)
-          if (!outcome.ok)
+          if (outcome.outcome !== 'built')
             failures.set(
-              outcome.repoId,
-              safeMaintenanceMessage(outcome.message),
+              outcome.repositoryId,
+              baseOutcomeMessage(outcome.outcome),
             );
         const summary = await loadWorkspaceSummary(request, failures);
         if ('ok' in summary) return summary;
@@ -851,6 +883,9 @@ export function registerCodeGraphHandlers(): void {
             : undefined,
         );
       } catch (error) {
+        if (workerBuildRefusal(error) === 'worker.codeGraph.unavailable') {
+          return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
+        }
         if (isRecord(error) && error.reason === 'unavailable') {
           return ipcError('unavailable', CODE_GRAPH_UNAVAILABLE_MESSAGE);
         }
@@ -858,15 +893,23 @@ export function registerCodeGraphHandlers(): void {
       }
     },
   );
-  registerIpcHandler(IPC_CHANNELS.codeGraphGetGenerationQueue, () => {
-    const snapshot = getCodeGraphGenerationQueueSnapshot();
-    return isCodeGraphFeatureEnabled()
-      ? snapshot
-      : { revision: snapshot.revision, entries: [] };
-  });
+  // worker.codeGraph.buildQueue.get (CAN-4149).
+  registerIpcHandler(
+    IPC_CHANNELS.codeGraphGetGenerationQueue,
+    async (event) => {
+      const snapshot = await readGenerationQueue(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+      );
+      return isCodeGraphFeatureEnabled()
+        ? snapshot
+        : { revision: snapshot.revision, entries: [] };
+    },
+  );
   registerIpcHandler(
     IPC_CHANNELS.codeGraphReorderGenerationQueue,
-    (_event, raw) => {
+    // worker.codeGraph.buildQueue.update (CAN-4149).
+    async (event, raw) => {
       if (!isCodeGraphFeatureEnabled()) {
         return ipcError('unavailable', 'Code Graph controls are unavailable.');
       }
@@ -890,10 +933,14 @@ export function registerCodeGraphHandlers(): void {
           'The queue reorder request is invalid.',
         );
       }
-      return reorderCodeGraphGenerationQueue({
-        revision: raw.revision,
-        orderedQueuedEntryIds: raw.orderedQueuedEntryIds,
-      });
+      return reorderGenerationQueue(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        {
+          revision: raw.revision,
+          orderedQueuedEntryIds: raw.orderedQueuedEntryIds,
+        },
+      );
     },
   );
 }

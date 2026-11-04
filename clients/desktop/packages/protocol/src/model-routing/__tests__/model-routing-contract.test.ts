@@ -394,3 +394,51 @@ describe('auto model routing contract', () => {
     ).toBeLessThanOrEqual(12_000);
   });
 });
+
+describe('approved gateway pricing', () => {
+  it.each([
+    ['kimi-k3.1-pro', 'moonshotai/kimi-k3.1-pro', 2, 10, 0.2],
+    ['minimax-m3.1-flash', 'minimax/minimax-m3.1-flash', 0.15, 0.6, 0.015],
+    ['mercury-3', 'inception/mercury-3', 0.1, 0.35, 0.01],
+  ] as const)(
+    'prices %s and its exact gateway identity consistently',
+    (id, gatewayId, input, output, cacheRead) => {
+      for (const modelId of [id, gatewayId]) {
+        for (const [usage, costUsd] of [
+          [
+            {
+              input: 1_000_000,
+              output: 0,
+              cacheReadInput: 0,
+              cacheCreationInput: 0,
+            },
+            input,
+          ],
+          [
+            {
+              input: 0,
+              output: 1_000_000,
+              cacheReadInput: 0,
+              cacheCreationInput: 0,
+            },
+            output,
+          ],
+          [
+            {
+              input: 0,
+              output: 0,
+              cacheReadInput: 1_000_000,
+              cacheCreationInput: 0,
+            },
+            cacheRead,
+          ],
+        ] as const) {
+          const price = priceModelRoutingUsage(modelId, usage);
+          expect(price.status).toBe('priced');
+          if (price.status === 'priced')
+            expect(price.costUsd).toBeCloseTo(costUsd);
+        }
+      }
+    },
+  );
+});

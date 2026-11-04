@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { ToggleSwitch } from '../ToggleSwitch';
+import { Heading } from '../Heading';
 
 /**
  * One section of an account or organization settings page, drawn the way
@@ -53,7 +54,7 @@ export const SETTINGS_CARD_GROUP_CLASS = `${SETTINGS_GROUP_SURFACE_CLASS} py-4 h
  * literal with the component.
  */
 export const SETTINGS_CARD_TITLE_CLASS =
-  'text-m font-medium text-balance fg-primary';
+  'text-m font-medium text-pretty fg-primary';
 /** The section explanation style, exported for the same reason. */
 export const SETTINGS_CARD_SUBTITLE_CLASS = 'text-xs text-pretty fg-secondary';
 
@@ -79,7 +80,9 @@ export function SettingsCard({
     <section className={SETTINGS_CARD_CLASS} data-testid={testId}>
       <div className="flex min-w-0 flex-col gap-1">
         {typeof title === 'string' ? (
-          <h2 className={SETTINGS_CARD_TITLE_CLASS}>{title}</h2>
+          <Heading level={2} variant="section">
+            {title}
+          </Heading>
         ) : (
           title
         )}

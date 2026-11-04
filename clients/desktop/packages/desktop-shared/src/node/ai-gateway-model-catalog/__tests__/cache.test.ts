@@ -27,7 +27,7 @@ import {
 const origin = 'https://cloud.example.com';
 const namespace = 'canopy';
 const response = {
-  version: 8,
+  version: 9,
   models: [
     {
       id: 'model-a',
@@ -80,7 +80,7 @@ describe('AI Gateway model catalog cache', () => {
     expect(cached).toMatchObject({
       freshness: 'stale',
       entry: {
-        cacheVersion: 8,
+        cacheVersion: 9,
         catalog: response,
       },
     });
@@ -120,14 +120,74 @@ describe('AI Gateway model catalog cache', () => {
     expect(cached).toMatchObject({
       freshness: 'stale',
       entry: {
-        cacheVersion: 8,
+        cacheVersion: 9,
         catalog: {
-          version: 8,
+          version: 9,
           models: [{ ...response.models[0], cursorModelId: 'model-a' }],
         },
       },
     });
     expect(cached.entry?.etag).toBeUndefined();
+  });
+
+  it('promotes a v8 cache as stale without retaining its representation ETag', async () => {
+    await writeFile(
+      cacheFilePath,
+      JSON.stringify({
+        cacheVersion: 8,
+        serverOrigin: origin,
+        brandApiNamespace: namespace,
+        fetchedAt: new Date().toISOString(),
+        etag: 'v8-etag',
+        catalog: { ...response, version: 8 },
+      }),
+    );
+    const cached = await readAiGatewayModelCatalogCache({
+      cacheFilePath,
+      serverOrigin: origin,
+      brandApiNamespace: namespace,
+    });
+    expect(cached.freshness).toBe('stale');
+    expect(cached.entry?.catalog.version).toBe(9);
+    expect(cached.entry?.etag).toBeUndefined();
+  });
+
+  it('fetches and caches exact effort metadata without inventing Off', async () => {
+    const exact = {
+      ...response,
+      models: [
+        {
+          ...response.models[0],
+          supportedThinkingLevels: ['low', 'high'],
+          thinkingLevelsExact: true,
+        },
+      ],
+    };
+    const fetchFn = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify(exact), {
+        status: 200,
+        headers: { ETag: 'v9-exact' },
+      }),
+    );
+    const refreshed = await refreshAiGatewayModelCatalog({
+      cacheFilePath,
+      serverOrigin: origin,
+      brandApiNamespace: namespace,
+      fetchFn,
+    });
+    expect(refreshed).toMatchObject({
+      status: 'updated',
+      cache: { catalog: exact },
+    });
+    const cached = await readAiGatewayModelCatalogCache({
+      cacheFilePath,
+      serverOrigin: origin,
+      brandApiNamespace: namespace,
+    });
+    expect(cached.entry?.catalog.models[0]).toMatchObject({
+      thinkingLevelsExact: true,
+      supportedThinkingLevels: ['low', 'high'],
+    });
   });
 
   it('ignores a cache whose catalog version does not match its cache version', async () => {
@@ -156,7 +216,7 @@ describe('AI Gateway model catalog cache', () => {
     await writeFile(
       cacheFilePath,
       JSON.stringify({
-        cacheVersion: 8,
+        cacheVersion: 9,
         serverOrigin: origin,
         brandApiNamespace: namespace,
         fetchedAt,
@@ -192,7 +252,7 @@ describe('AI Gateway model catalog cache', () => {
     await writeFile(
       cacheFilePath,
       JSON.stringify({
-        cacheVersion: 8,
+        cacheVersion: 9,
         serverOrigin: origin,
         brandApiNamespace: namespace,
         fetchedAt: '2026-07-29T12:00:00.000Z',
@@ -225,7 +285,7 @@ describe('AI Gateway model catalog cache', () => {
     });
 
     expect(fetchFn.mock.calls[0]?.[0]).toBe(
-      `${origin}/api/v1/${namespace}/ai-gateway/models?catalogVersion=8`,
+      `${origin}/api/v1/${namespace}/ai-gateway/models?catalogVersion=9`,
     );
   });
 
@@ -327,7 +387,7 @@ describe('AI Gateway model catalog cache', () => {
       serverOrigin: origin,
       brandApiNamespace: namespace,
       fetchFn: jest.fn().mockResolvedValue(
-        new Response(JSON.stringify({ version: 8, models: [] }), {
+        new Response(JSON.stringify({ version: 9, models: [] }), {
           status: 200,
         }),
       ),
@@ -335,7 +395,7 @@ describe('AI Gateway model catalog cache', () => {
 
     expect(result).toMatchObject({
       status: 'updated',
-      cache: { catalog: { version: 8, models: [] } },
+      cache: { catalog: { version: 9, models: [] } },
     });
   });
 
@@ -353,7 +413,7 @@ describe('AI Gateway model catalog cache', () => {
 
     expect(result).toMatchObject({
       status: 'updated',
-      cache: { cacheVersion: 8, catalog: response },
+      cache: { cacheVersion: 9, catalog: response },
     });
   });
 

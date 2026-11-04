@@ -36,6 +36,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useId,
   useMemo,
   useRef,
@@ -1334,6 +1335,27 @@ export function WorkspacesSidebarSections({
   const [pendingBaselines, setPendingBaselines] = useState<
     ReadonlyMap<string, ReadonlySet<string>>
   >(new Map());
+  // A create may select at registration, before persistence or its snapshot
+  // finishes. Never let a late receipt overwrite newer navigation, including
+  // away-and-back to the same target. Count committed structural changes only.
+  const selectionKey = selected
+    ? JSON.stringify([
+        selected.kind,
+        selected.workspaceLocalId,
+        selected.kind === 'worktree' ? selected.worktreeLocalId : null,
+      ])
+    : null;
+  const selectionRevision = useRef({ key: selectionKey, revision: 0 });
+  const pendingAttempts = useRef(
+    new Map<string, { selectionRevision: number }>(),
+  );
+  useLayoutEffect(() => {
+    if (selectionRevision.current.key === selectionKey) return;
+    selectionRevision.current = {
+      key: selectionKey,
+      revision: selectionRevision.current.revision + 1,
+    };
+  }, [selectionKey]);
   const mountedRef = useRef(true);
   const activeRevealTargetRef = useRef<string | null>(null);
   const revealedTargetRef = useRef<string | null>(null);
@@ -1486,11 +1508,18 @@ export function WorkspacesSidebarSections({
       if (newIds.length > 0) {
         resolvedWorkspaces.set(workspaceLocalId, newIds);
       }
-      if (newIds.length === 1) {
+      if (
+        newIds.length === 1 &&
+        pendingAttempts.current.get(workspaceLocalId)?.selectionRevision ===
+          selectionRevision.current.revision
+      ) {
         onSelectWorktree(workspaceLocalId, newIds[0]);
       }
     });
     if (resolvedWorkspaces.size > 0) {
+      // Release the pending row, but keep attempt ownership until its receipt
+      // settles or a newer create replaces it. An ambiguous snapshot cannot
+      // select, while the matching completion still knows the created id.
       // The model helper stays the single source of truth for baseline
       // resolution; gating on the precomputed result means it only runs
       // when something actually resolved instead of every snapshot cycle.
@@ -1587,6 +1616,11 @@ export function WorkspacesSidebarSections({
   const pendingGroupByWorkspace = pendingGroupByWorkspaceRef.current;
   const createWorktree = (workspaceLocalId: string, groupId?: string): void => {
     if (pendingBaselines.has(workspaceLocalId)) return;
+    const revision = selectionRevision.current.revision;
+    // Object identity owns cleanup: a snapshot can release A before its
+    // receipt arrives, allowing B to start in the same workspace.
+    const attempt = { selectionRevision: revision };
+    pendingAttempts.current.set(workspaceLocalId, attempt);
     const baseline =
       workspaceWorktreeIds(worktrees).get(workspaceLocalId) ?? new Set();
     setPendingBaselines((previous) => {
@@ -1596,25 +1630,29 @@ export function WorkspacesSidebarSections({
     });
     if (groupId) pendingGroupByWorkspace.set(workspaceLocalId, groupId);
     else pendingGroupByWorkspace.delete(workspaceLocalId);
+    const clearPendingAttempt = (): void => {
+      if (pendingAttempts.current.get(workspaceLocalId) !== attempt) return;
+      pendingAttempts.current.delete(workspaceLocalId);
+      setPendingBaselines((previous) => {
+        if (previous.get(workspaceLocalId) !== baseline) return previous;
+        const next = new Map(previous);
+        next.delete(workspaceLocalId);
+        return next;
+      });
+    };
     void onCreateWorktree(workspaceLocalId, groupId)
       .then((result) => {
         if (!mountedRef.current) return;
         if (result.status === 'completed') {
-          setPendingBaselines((previous) => {
-            const next = new Map(previous);
-            next.delete(workspaceLocalId);
-            return next;
-          });
-          onSelectWorktree(workspaceLocalId, result.worktreeId);
+          if (pendingAttempts.current.get(workspaceLocalId) !== attempt) return;
+          clearPendingAttempt();
+          if (selectionRevision.current.revision === revision)
+            onSelectWorktree(workspaceLocalId, result.worktreeId);
         }
       })
       .catch((error: unknown) => {
         if (!mountedRef.current) return;
-        setPendingBaselines((previous) => {
-          const next = new Map(previous);
-          next.delete(workspaceLocalId);
-          return next;
-        });
+        clearPendingAttempt();
         onCreationError?.(workspaceLocalId, error);
       });
   };

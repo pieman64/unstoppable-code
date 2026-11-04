@@ -227,3 +227,55 @@ describe('Codex AI Gateway model catalog', () => {
     expect(await readFile(firstPath, 'utf8')).toContain('openai/gpt-5.6-luna');
   });
 });
+
+it('uses a native Terra profile and standard Responses aliases for the four approved IDs', () => {
+  const ids = [
+    'openai/gpt-6.1-terra',
+    'moonshotai/kimi-k3.1-pro',
+    'minimax/minimax-m3.1-flash',
+    'inception/mercury-3',
+  ];
+  const native = {
+    slug: 'gpt-6.1-terra',
+    context_window: 500_000,
+    base_instructions: 'Native Terra instructions',
+    use_responses_lite: true,
+  };
+  const routes = ids.map((gatewayId) => ({
+    ...gatewayConfig,
+    modelId: gatewayId.split('/')[1] ?? '',
+    gatewayId,
+    family: gatewayId.startsWith('moonshotai/')
+      ? 'moonshot'
+      : (gatewayId.split('/')[0] ?? ''),
+    supportedThinkingLevels: [...gatewayConfig.supportedThinkingLevels],
+    gatewayOnly: gatewayId !== ids[0],
+    contextWindow: gatewayId === ids[0] ? 1_050_000 : 1_000_000,
+  }));
+  const catalog = buildGatewayCompatibleCodexCatalog(
+    { models: [native] },
+    routes,
+  );
+  expect(catalog?.models).toHaveLength(5);
+  expect(catalog?.models).toEqual(expect.arrayContaining([native]));
+  for (const route of routes) {
+    expect(catalog?.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          slug: route.gatewayId,
+          context_window: route.contextWindow,
+          use_responses_lite: false,
+          tool_mode: null,
+        }),
+      ]),
+    );
+  }
+  const withoutNative = buildGatewayCompatibleCodexCatalog(
+    { models: [{ slug: 'fallback', context_window: 272_000 }] },
+    routes,
+  );
+  expect(withoutNative?.models).toHaveLength(4);
+  expect(withoutNative?.models).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ slug: ids[0] })]),
+  );
+});

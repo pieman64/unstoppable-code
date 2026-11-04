@@ -32,11 +32,13 @@ export type ModelExecutionLane = 'provider_subscription' | 'ai_credits';
  * the standard, non-regional per-token values published by the Vercel AI
  * Gateway `/v1/models` catalog on 2026-10-07. OpenAI models the gateway does
  * not list use the OpenAI API Standard rates served by the web OpenAI pricing
- * payload, fetched 2026-10-27. Updating rates must change this revision so
+ * payload, fetched 2026-10-27. The three approved non-OpenAI additions use
+ * Gateway rates fetched 2026-10-29, including Mercury 3 launch pricing.
+ * Updating rates must change this revision so
  * persisted estimates retain their historical basis.
  */
 export const MODEL_ROUTING_PRICING_REVISION =
-  'vercel-ai-gateway:2026-10-07+openai-api:2026-10-27' as const;
+  'gateway:2026-10-07+openai:2026-10-27+approved:2026-10-29' as const;
 
 export interface ModelRoutingUsage {
   input: number;
@@ -171,6 +173,25 @@ const MODEL_ROUTING_STANDARD_TOKEN_RATES: Readonly<
       cacheCreationMultiplier: 2,
     },
   },
+  'moonshotai/kimi-k3.1-pro': {
+    input: 0.000002,
+    output: 0.00001,
+    cacheReadInput: 0.0000002,
+    cacheCreationInput: 0.000002,
+  },
+  'minimax/minimax-m3.1-flash': {
+    input: 0.00000015,
+    output: 0.0000006,
+    cacheReadInput: 0.000000015,
+    cacheCreationInput: 0.00000015,
+  },
+  // Launch discount; regular pricing is $0.20 input / $0.70 output per 1M.
+  'inception/mercury-3': {
+    input: 0.0000001,
+    output: 0.00000035,
+    cacheReadInput: 0.00000001,
+    cacheCreationInput: 0.0000001,
+  },
   'openai/gpt-6.1-terra': {
     input: 0.000001,
     output: 0.000005,
@@ -274,6 +295,9 @@ const MODEL_ROUTING_UNPRICED_MODELS: ReadonlySet<string> = new Set([
 ]);
 
 const MODEL_ROUTING_PRICING_ALIASES: Readonly<Record<string, string>> = {
+  'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro',
+  'minimax-m3.1-flash': 'minimax/minimax-m3.1-flash',
+  'mercury-3': 'inception/mercury-3',
   'claude-fable-5-1': 'anthropic/claude-fable-5.1',
   'claude-fable-5.1': 'anthropic/claude-fable-5.1',
   'claude-fable-5': 'anthropic/claude-fable-5',

@@ -11,9 +11,9 @@ import { desktopScriptWorker } from './script-runner';
 /*
  * The worker's durable script run log (CAN-4143), owned by
  * `@canopy/core-runtime/node/script/execution`. Runs started through
- * `lib/script-execution` write it on the worker; these entry points remain
- * for the host-run interactive scripts (CAN-5082), the pipeline's setup-log
- * snapshot and the worktree's data cleanup.
+ * `lib/script-execution`, interactive ones included, write it on the worker;
+ * these entry points remain for the pipeline's setup-log snapshot, the
+ * worktree's data cleanup and the caller suites' test double.
  */
 
 export type {

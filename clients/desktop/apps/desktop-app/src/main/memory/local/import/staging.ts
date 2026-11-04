@@ -1,7 +1,12 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { rename, unlink, writeFile } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
-import { ensureOwnerOnlyDir, redactMemoryContent } from '../store';
+import { createHash } from 'node:crypto';
+import { unlink } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
+import {
+  assertMemoryPathContained,
+  assertMemoryScopeLockHeld,
+  writeMemoryFileAtomically,
+} from '../memory-files';
+import { redactMemoryContent } from '../store';
 
 function slug(value: string, maximum: number): string {
   const normalized = value
@@ -50,37 +55,29 @@ export async function stageImportedMemory(options: {
   content: string;
   previousStagedAs?: string;
 }): Promise<string> {
-  const importedDir = join(options.scopeDir, 'imported');
-  await ensureOwnerOnlyDir(importedDir);
   const filename = stagedFilenameForSource(
     options.sourcePath,
     options.originalName,
     options.fileHash,
   );
   const stagedAs = `imported/${filename}`;
-  const destination = join(options.scopeDir, stagedAs);
-  const temporaryPath = `${destination}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, options.content, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-    await rename(temporaryPath, destination);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => undefined);
-    throw error;
-  }
+  await writeMemoryFileAtomically(
+    options.scopeDir,
+    join(options.scopeDir, stagedAs),
+    options.content,
+  );
   if (
     options.previousStagedAs !== undefined &&
     options.previousStagedAs !== stagedAs
   ) {
-    await unlink(join(options.scopeDir, options.previousStagedAs)).catch(
-      (error: unknown) => {
-        if (!isNodeError(error, 'ENOENT')) {
-          throw error;
-        }
-      },
-    );
+    const previous = join(options.scopeDir, options.previousStagedAs);
+    await assertMemoryPathContained(options.scopeDir, dirname(previous));
+    await assertMemoryScopeLockHeld();
+    await unlink(previous).catch((error: unknown) => {
+      if (!isNodeError(error, 'ENOENT')) {
+        throw error;
+      }
+    });
   }
   return stagedAs;
 }

@@ -7,9 +7,9 @@ import {
   type TerminalEngineHost,
   type TerminalEngineOptions,
   type TerminalResourceHandle,
+  type TerminalEnvironment,
   type TerminalShellHostPort,
   type WorkerTerminalEventType,
-  type WorkerTerminalPort,
 } from '@canopy/core-runtime/node/terminal';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
@@ -32,6 +32,7 @@ import {
 } from '../execution-accounting';
 import { getResourceMonitorService } from '../resource-monitor';
 import { terminalPersistenceStore } from './persistence';
+import { RoutedWorkerTerminal } from './routed-worker-terminal';
 
 /** The renderer IPC channel each terminal event is sent on. */
 export const TERMINAL_EVENT_CHANNELS = {
@@ -74,19 +75,35 @@ function runTerminalProbe(
 /** Shell selection for every desktop terminal, sharing one account-shell cache. */
 export const desktopTerminalShells = new TerminalShells(desktopShellHost);
 
+const desktopTerminalEnvironment: TerminalEngineHost['environment'] = {
+  base: () => getEnhancedEnv({ environment: false }),
+  worktree: (projectId, worktreeId) =>
+    buildWorktreeDataEnv(projectId, worktreeId, undefined, {
+      runtime: 'canopy',
+    }),
+  variable: (name) => process.env[name],
+};
+
+/**
+ * A user shell's whole environment for a worktree, as the engine merges it;
+ * daemon terminals receive it from main (CAN-5088).
+ */
+export function desktopTerminalEnvironmentFor(
+  projectId: string,
+  worktreeId: string,
+): TerminalEnvironment {
+  return {
+    ...desktopTerminalEnvironment.base(),
+    ...desktopTerminalEnvironment.worktree(projectId, worktreeId),
+  };
+}
+
 /** Electron main's host ports for the terminal engine. */
 export function createDesktopTerminalHost(): TerminalEngineHost {
   return {
     shells: desktopTerminalShells,
     pty: { spawn: spawnPty },
-    environment: {
-      base: () => getEnhancedEnv({ environment: false }),
-      worktree: (projectId, worktreeId) =>
-        buildWorktreeDataEnv(projectId, worktreeId, undefined, {
-          runtime: 'canopy',
-        }),
-      variable: (name) => process.env[name],
-    },
+    environment: desktopTerminalEnvironment,
     workspace: {
       worktreeCwd: (...args) => resolveWorktreeCwd(...args),
       assertStartAllowed: assertWorkspaceTargetRuntimeStartAllowed,
@@ -133,5 +150,11 @@ export function createDesktopTerminalEngine(
   );
 }
 
-/** The in-process `worker.terminal` port every main-process caller uses. */
-export const workerTerminal: WorkerTerminalPort = createDesktopTerminalEngine();
+/**
+ * The `worker.terminal` port every main-process caller uses: the in-process
+ * engine, and the terminals the daemon-terminals experiment placed in the
+ * daemon (CAN-5088).
+ */
+export const workerTerminal = new RoutedWorkerTerminal(
+  createDesktopTerminalEngine(),
+);

@@ -100,33 +100,43 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
 });
 
 /**
- * How a bubble shows a fired watcher that reached the chat as one message, as
- * a host that cannot hide context (a cloud chat) delivers it: the visible
- * notice under {@link WatcherFiredTitle}, on the info tint, without the
- * instruction block the model reads. Undefined for any other message.
+ * How a bubble shows a fired watcher's message: the visible notice, without
+ * any instruction block the message text still carries. Only the host's own
+ * marker (`watcherFired`, recorded where the host delivered the watcher)
+ * earns the watcher title and the info tint; a block in the text alone could
+ * have been typed by anyone, so it only loses the block. Undefined for a
+ * message that is neither.
  */
 export interface WatcherFiredPresentation {
   readonly text: string;
-  readonly title: JSX.Element;
-  readonly variant: 'info';
+  readonly title?: JSX.Element;
+  readonly variant: 'info' | 'default';
 }
 
 export function watcherFiredPresentation(
   text: string,
   layout: 'block' | 'inline' = 'block',
+  watcherFired?: ChatWatcherFiredInfo,
 ): WatcherFiredPresentation | undefined {
   const parts = visibleMessageParts(text);
-  const watcher = parts.find((part) => part.kind === 'watcher');
-  if (watcher?.kind !== 'watcher') return undefined;
   if (parts.some((part) => part.kind === 'steering_request')) return undefined;
+  const watcher = parts.find((part) => part.kind === 'watcher');
+  if (watcherFired === undefined && watcher?.kind !== 'watcher') {
+    return undefined;
+  }
   const notice = parts
     .flatMap((part) => (part.kind === 'text' ? [part.text] : []))
     .join('\n\n');
+  const shown =
+    notice.length > 0
+      ? notice
+      : watcher?.kind === 'watcher'
+        ? watcher.text
+        : text;
+  if (watcherFired === undefined) return { text: shown, variant: 'default' };
   return {
-    text: notice.length > 0 ? notice : watcher.text,
-    title: (
-      <WatcherFiredTitle watcherFired={watcher.watcherFired} layout={layout} />
-    ),
+    text: shown,
+    title: <WatcherFiredTitle watcherFired={watcherFired} layout={layout} />,
     variant: 'info',
   };
 }

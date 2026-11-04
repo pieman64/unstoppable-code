@@ -959,6 +959,24 @@ test('PostHog background and app windows share an anonymous identity and converg
             event.properties.$current_url === undefined,
         ),
     ).toBe(true);
+    const backgroundEvents = analyticsEvents(events).filter(
+      (event) => event.properties.$lib === 'posthog-node',
+    );
+    expect(backgroundEvents.map((event) => event.event)).toContain(
+      'desktop:app_start',
+    );
+    const osName = {
+      darwin: 'Mac OS X',
+      linux: 'Linux',
+      win32: 'Windows',
+    }[process.platform];
+    for (const event of backgroundEvents) {
+      expect(event.properties).toMatchObject({
+        $os: osName,
+        $os_version: expect.stringMatching(/^\d+(?:\.\d+){0,2}$/),
+        cpu_architecture: expect.stringMatching(/^(?:arm64|x64)$/),
+      });
+    }
     const wire = JSON.stringify(analyticsEvents(events));
     expect(wire).not.toContain(DATADOG_ID);
     expect(wire).not.toContain(apiKey);

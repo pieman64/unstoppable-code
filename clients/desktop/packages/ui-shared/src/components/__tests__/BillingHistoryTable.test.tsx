@@ -30,7 +30,7 @@ describe('BillingHistoryTable', () => {
       <BillingHistoryTable charges={[CHARGE]} formatDate={formatDate} />,
     );
     // sm+ table layout.
-    expect(html).toContain('sm:table');
+    expect(html).toContain('sm:block');
     // below-sm stacked list.
     expect(html).toContain('sm:hidden');
     // Table header labels.

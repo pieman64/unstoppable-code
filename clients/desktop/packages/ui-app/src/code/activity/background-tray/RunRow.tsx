@@ -19,7 +19,6 @@ import {
 import { PipelineIcon } from '@canopy/ui-shared/icons';
 import {
   GitHubIcon,
-  ChevronRightIcon,
   CirclePauseIcon,
   StopFilledIcon,
   GitPullRequestIcon,
@@ -384,7 +383,7 @@ const RUN_ACTION_VARIANTS = {
 } as const;
 
 /** One job of the open run: its glyph, its name and how long it took. */
-function RunJobRows({
+export function RunJobRows({
   run,
   dag,
   now,
@@ -526,6 +525,31 @@ export function RunRow({
             : 'open')
     ];
   const watcher = renderWatcher?.(run) ?? null;
+  // Resume and Answer say what they do, unlike the › that opens View
+  // completed, and take the time's place so the other rows' times stay put.
+  const actionLabel =
+    !redesigned || !handler
+      ? null
+      : action.suffix === 'resume'
+        ? 'Resume'
+        : action.suffix === 'respond'
+          ? 'Answer'
+          : null;
+  // Names the labeled actions for their run, so a screen reader tells the
+  // rows apart: as masked text, never an attribute, since session replay
+  // records attributes verbatim.
+  const actionRunName = (
+    <span className="sr-only">
+      {' '}
+      <span className={REPLAY_MASK_CLASS}>{run.name}</span>
+    </span>
+  );
+  // A paused run's way in sits beside Resume rather than under its jobs.
+  const openBesideAction =
+    actionLabel !== null && action.suffix === 'resume' && onOpen !== undefined;
+  // A pull request has nothing to unfold: its row opens it on GitHub.
+  const linkRow =
+    redesigned && run.kind === 'github-pr' && presentation !== 'modal';
   // The strip of job glyphs, then what the run waits on.
   const note =
     run.status === 'needs-input'
@@ -536,11 +560,7 @@ export function RunRow({
   const dots =
     run.dag === null || run.dag.tiers.length === 0 ? null : (
       <span className={REPLAY_BLOCK_CLASS}>
-        <DagProgressDots
-          tiers={run.dag.tiers}
-          jobs={run.dag.jobs}
-          appearance={redesigned ? 'tiny' : 'glyphs'}
-        />
+        <DagProgressDots tiers={run.dag.tiers} jobs={run.dag.jobs} />
       </span>
     );
   const details =
@@ -596,7 +616,9 @@ export function RunRow({
       running={run.status === 'running'}
       name={<span className={REPLAY_MASK_CLASS}>{run.name}</span>}
       headerAccessory={
-        redesigned && run.kind === 'pipeline' && presentation !== 'modal'
+        redesigned &&
+        (run.kind === 'pipeline' || linkRow) &&
+        presentation !== 'modal'
           ? watcher
           : undefined
       }
@@ -613,7 +635,9 @@ export function RunRow({
         )
       }
       trailing={
-        redesigned ? (
+        actionLabel !== null ? (
+          <span className="sr-only">{statusLabel}</span>
+        ) : redesigned ? (
           <>
             {elapsedLabel}
             {elapsedLabel !== statusLabel && (
@@ -635,8 +659,8 @@ export function RunRow({
         ) : undefined
       }
       openAction={
-        // View already opens this run to answer its pending question.
-        onOpen && !(handler && action.suffix === 'respond')
+        // Answer already opens this run to answer its pending question.
+        onOpen && !(handler && action.suffix === 'respond') && !openBesideAction
           ? {
               label: run.kind === 'pipeline' ? 'Open run' : 'Open on GitHub',
               onClick: (): void => onOpen(run.id),
@@ -645,7 +669,30 @@ export function RunRow({
       }
       attention={run.status === 'needs-input'}
       action={
-        redesigned ? (
+        actionLabel !== null && handler ? (
+          <span className="flex items-center gap-1">
+            {openBesideAction && (
+              <Button
+                variant="ghost-overlay"
+                size="compact"
+                data-testid="background-tray-row-open"
+                onClick={(): void => onOpen?.(run.id)}
+              >
+                Open run
+                {actionRunName}
+              </Button>
+            )}
+            <Button
+              variant={action.tone === 'accent' ? 'primary' : 'secondary'}
+              size="compact"
+              data-testid={`background-tray-run-${run.id}-${action.suffix}`}
+              onClick={(): void => handler(run.id)}
+            >
+              {actionLabel}
+              {actionRunName}
+            </Button>
+          </span>
+        ) : redesigned ? (
           handler && !isFinishedTrayRun(run.status) ? (
             <Tooltip label={action.label}>
               <Button
@@ -656,11 +703,7 @@ export function RunRow({
                 data-testid={`background-tray-run-${run.id}-${action.suffix}`}
                 onClick={(): void => handler(run.id)}
               >
-                {action.suffix === 'stop' ? (
-                  <StopFilledIcon size="xs" />
-                ) : (
-                  <ChevronRightIcon size={14} />
-                )}
+                <StopFilledIcon size="xs" />
               </Button>
             </Tooltip>
           ) : undefined
@@ -677,79 +720,87 @@ export function RunRow({
           </Button>
         ) : undefined
       }
-      inspector={{
-        open,
-        onToggle,
-        footer:
-          redesigned && watcher !== null && !isFinishedTrayRun(run.status) ? (
-            run.kind === 'pipeline' ? (
-              <p className="min-w-0 flex-1">
-                The result will be sent to this chat when it finishes.
-              </p>
-            ) : (
-              watcher
-            )
-          ) : undefined,
-        render: (): JSX.Element => (
-          <>
-            {redesigned &&
-              run.status === 'needs-input' &&
-              run.question !== null && (
-                <InspectorSubtitle>
-                  <p
-                    className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words`}
-                    data-testid="background-tray-run-question"
-                  >
-                    {run.question}
-                  </p>
-                </InspectorSubtitle>
-              )}
-            {redesigned && details !== null && (
-              <InspectorSubtitle>{details}</InspectorSubtitle>
-            )}
-            {run.dag !== null &&
-              run.dag.tiers.some((tier) => tier.length > 0) && (
-                <InspectorSection>
-                  <RunJobRows
-                    run={run}
-                    dag={run.dag}
-                    now={now}
-                    onJobClick={onJobClick}
-                  />
-                </InspectorSection>
-              )}
-            {!redesigned && watcher !== null && !watcherOnDetails && (
-              <div className="flex min-w-0 items-center">{watcher}</div>
-            )}
-            {!redesigned &&
-              run.status === 'needs-input' &&
-              run.question !== null && (
-                // Pipeline authors write the question; it may quote the run's
-                // inputs.
-                <p
-                  className={`${REPLAY_BLOCK_CLASS} line-clamp-3 fg-secondary`}
-                  data-testid="background-tray-run-question"
-                >
-                  {run.question}
-                </p>
-              )}
-            {watcherOnDetails ? (
-              <div className="flex min-w-0 items-center gap-2">
-                {details}
-                {watcher}
-              </div>
-            ) : (
-              !redesigned && details
-            )}
-            {!redesigned && onOpen && (
-              <InspectorOpenAction
-                label={run.kind === 'pipeline' ? 'Open run' : 'Open on GitHub'}
-                onClick={(): void => onOpen(run.id)}
-              />
-            )}
-          </>
-        ),
-      }}
+      inspector={
+        linkRow
+          ? undefined
+          : {
+              open,
+              onToggle,
+              footer:
+                redesigned &&
+                watcher !== null &&
+                !isFinishedTrayRun(run.status) ? (
+                  run.kind === 'pipeline' ? (
+                    <p className="min-w-0 flex-1">
+                      The result will be sent to this chat when it finishes.
+                    </p>
+                  ) : (
+                    watcher
+                  )
+                ) : undefined,
+              render: (): JSX.Element => (
+                <>
+                  {redesigned &&
+                    run.status === 'needs-input' &&
+                    run.question !== null && (
+                      <InspectorSubtitle>
+                        <p
+                          className={`${REPLAY_BLOCK_CLASS} whitespace-pre-wrap break-words`}
+                          data-testid="background-tray-run-question"
+                        >
+                          {run.question}
+                        </p>
+                      </InspectorSubtitle>
+                    )}
+                  {redesigned && details !== null && (
+                    <InspectorSubtitle>{details}</InspectorSubtitle>
+                  )}
+                  {run.dag !== null &&
+                    run.dag.tiers.some((tier) => tier.length > 0) && (
+                      <InspectorSection>
+                        <RunJobRows
+                          run={run}
+                          dag={run.dag}
+                          now={now}
+                          onJobClick={onJobClick}
+                        />
+                      </InspectorSection>
+                    )}
+                  {!redesigned && watcher !== null && !watcherOnDetails && (
+                    <div className="flex min-w-0 items-center">{watcher}</div>
+                  )}
+                  {!redesigned &&
+                    run.status === 'needs-input' &&
+                    run.question !== null && (
+                      // Pipeline authors write the question; it may quote the run's
+                      // inputs.
+                      <p
+                        className={`${REPLAY_BLOCK_CLASS} line-clamp-3 fg-secondary`}
+                        data-testid="background-tray-run-question"
+                      >
+                        {run.question}
+                      </p>
+                    )}
+                  {watcherOnDetails ? (
+                    <div className="flex min-w-0 items-center gap-2">
+                      {details}
+                      {watcher}
+                    </div>
+                  ) : (
+                    !redesigned && details
+                  )}
+                  {!redesigned && onOpen && (
+                    <InspectorOpenAction
+                      label={
+                        run.kind === 'pipeline' ? 'Open run' : 'Open on GitHub'
+                      }
+                      onClick={(): void => onOpen(run.id)}
+                    />
+                  )}
+                </>
+              ),
+            }
+      }
       listRef={listRef}
       topInset={topInset}
     />

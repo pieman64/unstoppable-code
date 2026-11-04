@@ -75,7 +75,6 @@ import {
   InlineTextInput,
   Tooltip,
   type WorktreeRowPrStatus,
-  LoadingIndicator,
 } from '@canopy/ui-shared/components';
 import {
   BranchIcon,
@@ -118,6 +117,7 @@ import {
   PickerMenuOptionTrailing,
   PickerMenuSearchHeader,
   PickerMenuSearchInput,
+  PickerMenuSkeleton,
   PickerMenuState,
 } from '@canopy/ui-shared';
 import {
@@ -635,9 +635,7 @@ function BaseBranchDropdownPortal({
         aria-label="Base branch options"
       >
         {loading ? (
-          <PickerMenuState>
-            <LoadingIndicator text="Loading…" />
-          </PickerMenuState>
+          <PickerMenuSkeleton rows={4} label="Loading branches" />
         ) : filtered.length === 0 ? (
           <PickerMenuState>No branches found</PickerMenuState>
         ) : (

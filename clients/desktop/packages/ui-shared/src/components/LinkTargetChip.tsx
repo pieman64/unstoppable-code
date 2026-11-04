@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 
 import { BranchIcon, CloseMediumIcon, WarningIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
+import { Tooltip } from './Tooltip';
 
 /**
  * Where a pasted link would send the draft. Hosts decide the state; this
@@ -101,16 +102,17 @@ export function LinkTargetChip({
         </button>
       ))}
       {onDismiss && (
-        <button
-          type="button"
-          data-testid={`${testId}-dismiss`}
-          aria-label={dismissLabel}
-          title={dismissLabel}
-          onClick={onDismiss}
-          className="focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full fg-secondary hover:bg-subtle hover:fg-primary"
-        >
-          <CloseMediumIcon width={12} height={12} aria-hidden />
-        </button>
+        <Tooltip label={dismissLabel}>
+          <button
+            type="button"
+            data-testid={`${testId}-dismiss`}
+            aria-label={dismissLabel}
+            onClick={onDismiss}
+            className="focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full fg-secondary hover:bg-subtle hover:fg-primary"
+          >
+            <CloseMediumIcon width={12} height={12} aria-hidden />
+          </button>
+        </Tooltip>
       )}
     </div>
   );

@@ -2,6 +2,7 @@ import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   getHookActionLogLabel,
+  getHookTriggerDisplayName,
   interpolateHookPrompt,
   type ChatHookAction,
   type PipelineHookAction,
@@ -10,10 +11,11 @@ import { setBrandEnv } from '@canopy/desktop-shared/brand/env';
 import type { PersistedPrSnapshotFileV1 } from '@canopy/desktop-shared/types/github';
 import { buildPrQueueHookVariables } from '@canopy/desktop-shared/lib/pr-merge-queue';
 import type { BrowserWindow } from 'electron';
-import type {
-  HookDescriptor,
-  HookRunResponse,
-  HookStopRequest,
+import {
+  IPC_CHANNELS,
+  type HookDescriptor,
+  type HookRunResponse,
+  type HookStopRequest,
 } from '@canopy/desktop-shared/types';
 import { buildWorktreeDataEnv } from './worktree-data-env';
 import {
@@ -25,14 +27,32 @@ import {
 import { getHookInvocationDir } from './paths';
 import { runShellScript } from './script-runner';
 import type { PipelineTriggerSource } from '@canopy/desktop-shared/node/pipelines/executor';
-import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
+import type {
+  HookFirePreparation,
+  HookFireResult,
+  HookPausePolicy,
+  InitiatedWorkClientPresence,
+  InitiatedWorkRequest,
+  InitiatedWorkRunControl,
+  LiveHookRun,
+} from '@canopy/core-runtime/node/initiated-work';
+import {
+  initiatedWorkNoClientPolicy,
+  type InitiatedWorkGate,
+  type InitiatedWorkRunResult,
+} from '@canopy/protocol/canopy-core';
+import {
+  getHookFiring,
+  getHookInitiatedWork,
+  hookIdentity,
+  type HookIdentity,
+} from './hook-initiated-work';
+import { sendToWindow } from './window-send';
 
 interface ActiveHookRun {
   projectId: string;
   worktreeId: string;
-  hook: HookDescriptor;
-  targetKey: string;
-  abortController: AbortController;
+  hook: HookIdentity;
   running: boolean;
   waitForExit: Promise<HookRunResponse>;
 }
@@ -43,11 +63,28 @@ export interface RunHookOptions {
   hook: HookDescriptor;
   cwd: string;
   invocation: 'automatic' | 'manual';
+  /**
+   * Whether the worktree's pause applies. Automatic firings enforce it; a
+   * manual run bypasses it explicitly.
+   */
+  pause: HookPausePolicy;
   timeoutSeconds?: number | null;
   currentSnapshot?: PersistedPrSnapshotFileV1;
   currentSnapshotPath?: string;
   previousSnapshotPath?: string;
   env?: NodeJS.ProcessEnv;
+  /** The firing's stable identity; a repeat returns the recorded run. */
+  occurrenceKey?: string;
+  /**
+   * The run's operation when its firing was already accepted with the state
+   * that fired it (CAN-4145); the run starts under it instead of a new one.
+   */
+  acceptedOperationId?: string;
+  /**
+   * Whether a client is connected. A hook whose actions defer without a
+   * client (a hook chat) waits for one; without this the run never waits.
+   */
+  clientPresence?: InitiatedWorkClientPresence;
   getWindow: () => BrowserWindow | null;
   onEnqueued?: () => void;
   onStarted?: (hook: HookDescriptor, ref: HookRunLogRef) => void;
@@ -66,8 +103,6 @@ export interface RunHookOptions {
 
 const activeHookRuns = new Map<string, ActiveHookRun[]>();
 const activeHookRunListeners = new Set<() => void>();
-const targetQueues = new Map<string, Promise<void>>();
-const targetCancellationGenerations = new Map<string, number>();
 
 function notifyActiveHookRunsChanged(): void {
   activeHookRunListeners.forEach((listener): void => {
@@ -110,34 +145,6 @@ function buildActiveKey(
   hookKey: string,
 ): string {
   return `${projectId}\0${worktreeId}\0${hookKey}`;
-}
-
-function buildTargetKey(
-  projectId: string,
-  worktreeId: string,
-  hook: HookDescriptor,
-): string {
-  return buildTargetScopeKey(projectId, worktreeId, hook.target, hook.repoId);
-}
-
-function buildTargetScopeKey(
-  projectId: string,
-  worktreeId: string,
-  target: HookDescriptor['target'],
-  repoId?: string,
-): string {
-  return `${projectId}\0${worktreeId}\0${target}\0${repoId ?? ''}`;
-}
-
-function getTargetCancellationGeneration(targetKey: string): number {
-  return targetCancellationGenerations.get(targetKey) ?? 0;
-}
-
-function cancelQueuedHooksForTarget(targetKey: string): void {
-  targetCancellationGenerations.set(
-    targetKey,
-    getTargetCancellationGeneration(targetKey) + 1,
-  );
 }
 
 function buildCancelledHookRunResponse(message: string): HookRunResponse {
@@ -235,11 +242,20 @@ async function runChatIfCommand(args: {
     activeActionIndex?: number,
   ) => void;
   activeActionIndex: number;
+  control: InitiatedWorkRunControl;
 }): Promise<HookRunResponse | null> {
   const ifCommand = args.action['if-command'];
   if (!ifCommand) {
     return null;
   }
+  const recordGate = (
+    decision: 'passed' | 'skipped' | 'failed' | 'cancelled',
+    message?: string,
+  ): void =>
+    args.control.recordGate('commandGate', decision, {
+      actionIndex: args.activeActionIndex,
+      ...(message !== undefined ? { message } : {}),
+    });
 
   await emitHookOutput({
     ref: args.logRef,
@@ -276,6 +292,7 @@ async function runChatIfCommand(args: {
 
   const durationMs = Date.now() - startedAt;
   if (gateResult.success) {
+    recordGate('passed');
     return null;
   }
 
@@ -284,6 +301,7 @@ async function runChatIfCommand(args: {
       result: gateResult,
       durationMs,
     });
+    recordGate('skipped', stoppedResult.output);
     if (stoppedResult.output !== gateResult.output) {
       await emitHookOutput({
         ref: args.logRef,
@@ -300,6 +318,7 @@ async function runChatIfCommand(args: {
     result: gateResult,
     durationMs,
   });
+  recordGate(args.signal.aborted ? 'cancelled' : 'failed', failedResult.output);
   if (failedResult.output !== gateResult.output) {
     await emitHookOutput({
       ref: args.logRef,
@@ -328,6 +347,7 @@ async function runPipelineAction(args: {
     ref?: HookRunLogRef,
     activeActionIndex?: number,
   ) => void;
+  control: InitiatedWorkRunControl;
 }): Promise<HookRunResponse> {
   const { launchHookPipeline } = await import('./hook-pipeline');
   const startedAt = Date.now();
@@ -356,6 +376,12 @@ async function runPipelineAction(args: {
     triggerSource,
     getWindow: args.getWindow,
   });
+  if (launched.status === 'started')
+    args.control.recordArtifact({
+      kind: 'pipelineExecution',
+      id: launched.executionId,
+      actionIndex: args.actionIndex,
+    });
   const line =
     launched.status === 'started'
       ? `Started workflow "${launched.pipelineName}".`
@@ -470,277 +496,545 @@ async function prepareInvocationSnapshotFiles(args: {
   };
 }
 
-async function executeHook(options: RunHookOptions): Promise<HookRunResponse> {
-  assertWorkspaceTargetRuntimeStartAllowed(
-    options.projectId,
-    options.worktreeId,
-  );
-  const abortController = new AbortController();
-  const activeKey = buildActiveKey(
-    options.projectId,
-    options.worktreeId,
-    options.hook.hookKey,
-  );
-  const targetKey = buildTargetKey(
-    options.projectId,
-    options.worktreeId,
-    options.hook,
-  );
-  const queueGeneration = getTargetCancellationGeneration(targetKey);
-  const registeredRun: ActiveHookRun = {
-    projectId: options.projectId,
-    worktreeId: options.worktreeId,
-    hook: options.hook,
-    targetKey,
-    abortController,
-    running: false,
-    get waitForExit(): Promise<HookRunResponse> {
-      return queuedExecution;
-    },
+function toRunResult(response: HookRunResponse): InitiatedWorkRunResult {
+  return {
+    status: response.timedOut
+      ? 'timedOut'
+      : response.success
+        ? 'succeeded'
+        : response.stopped
+          ? 'stopped'
+          : 'failed',
+    exitCode: response.exitCode,
+    durationMs: Math.max(0, Math.round(response.durationMs)),
+  };
+}
+
+/** Runs an accepted hook's actions in order; the engine owns its queue. */
+async function executeHookActions(
+  options: RunHookOptions,
+  control: InitiatedWorkRunControl,
+  registeredRun: ActiveHookRun,
+): Promise<HookRunResponse> {
+  const { signal } = control;
+  registeredRun.running = true;
+  notifyActiveHookRunsChanged();
+
+  let hookLogRef: Awaited<ReturnType<typeof startHookRunLog>> | null = null;
+  let stoppedBy: 'commandGate' | undefined;
+
+  let finalResult: HookRunResponse = {
+    success: true,
+    stopped: false,
+    exitCode: 0,
+    output: '',
+    timedOut: false,
+    durationMs: 0,
   };
 
-  const execute = async (): Promise<HookRunResponse> => {
-    if (
-      abortController.signal.aborted ||
-      getTargetCancellationGeneration(targetKey) !== queueGeneration
-    ) {
-      return buildCancelledHookRunResponse('Hook run cancelled before start.');
+  try {
+    const logRef = await startHookRunLog({
+      projectId: options.projectId,
+      worktreeId: options.worktreeId,
+      hook: options.hook,
+      invocation: options.invocation,
+      operationId: control.operationId,
+    });
+    hookLogRef = logRef;
+    control.recordArtifact({ kind: 'runLog', id: logRef.runId });
+    const copiedSnapshots = options.currentSnapshot
+      ? await prepareInvocationSnapshotFiles({
+          projectId: options.projectId,
+          worktreeId: options.worktreeId,
+          runId: logRef.runId,
+          currentSnapshot: options.currentSnapshot,
+          currentSnapshotPath: options.currentSnapshotPath,
+          previousSnapshotPath: options.previousSnapshotPath,
+        })
+      : undefined;
+    options.onStarted?.(options.hook, logRef);
+
+    const totalActions = options.hook.actions.length;
+    const env = buildHookEnv(
+      options.projectId,
+      options.worktreeId,
+      options.hook,
+      options.currentSnapshot,
+      copiedSnapshots?.currentSnapshotPath,
+      copiedSnapshots?.previousSnapshotPath,
+      options.env,
+    );
+
+    if (signal.aborted) {
+      finalResult = buildCancelledHookRunResponse('Hook run cancelled.');
+      return finalResult;
     }
-    registeredRun.running = true;
-    notifyActiveHookRunsChanged();
 
-    let hookLogRef: Awaited<ReturnType<typeof startHookRunLog>> | null = null;
+    for (let index = 0; index < totalActions; index++) {
+      const action = options.hook.actions[index];
+      const boundary = `$ [${index + 1}/${totalActions}] ${getHookActionLogLabel(action)}`;
+      await emitHookOutput({
+        ref: logRef,
+        hook: options.hook,
+        lines: [boundary],
+        onOutput: options.onOutput,
+        activeActionIndex: index,
+      });
 
-    let finalResult: HookRunResponse = {
-      success: true,
+      let result: HookRunResponse;
+      if (action.type === 'command') {
+        result = toHookRunResponse(
+          await runShellScript({
+            script: action.command,
+            cwd: options.cwd,
+            shell: action.shell,
+            timeoutSeconds:
+              action.interactive === true ? null : options.timeoutSeconds,
+            signal,
+            env,
+            interactive: action.interactive === true,
+            terminalTitle: options.hook.label,
+            focusOnSpawn: options.invocation === 'manual',
+            onChunk: (lines: string[]): void => {
+              void emitHookOutput({
+                ref: logRef,
+                hook: options.hook,
+                lines,
+                onOutput: options.onOutput,
+                activeActionIndex: index,
+              }).catch(() => {});
+            },
+            tracking: {
+              projectId: options.projectId,
+              worktreeId: options.worktreeId,
+              scriptKey: options.hook.hookKey,
+              kind: 'hook',
+            },
+          }),
+        );
+      } else if (action.type === 'chat') {
+        result = await (async (): Promise<HookRunResponse> => {
+          if (signal.aborted) {
+            return buildCancelledHookRunResponse('Hook run cancelled.');
+          }
+
+          const ifCommandResult = await runChatIfCommand({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+            hook: options.hook,
+            action,
+            cwd: options.cwd,
+            timeoutSeconds: options.timeoutSeconds,
+            signal,
+            env,
+            logRef,
+            onOutput: options.onOutput,
+            activeActionIndex: index,
+            control,
+          });
+          if (ifCommandResult) {
+            if (
+              ifCommandResult.stopped &&
+              ifCommandResult.exitCode === 2 &&
+              !ifCommandResult.timedOut
+            )
+              stoppedBy = 'commandGate';
+            return ifCommandResult;
+          }
+
+          const { launchHookChat } = await import('./hook-chat');
+          const startedAt = Date.now();
+          await launchHookChat({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+            action,
+            prompt: action.promptReferences?.length
+              ? action.prompt
+              : interpolateHookPrompt(action.prompt, env),
+            ...(action.promptReferences?.length
+              ? {
+                  interpolateText: (text: string): string =>
+                    interpolateHookPrompt(text, env),
+                }
+              : {}),
+            triggerName: options.hook.triggerName,
+            getWindow: options.getWindow,
+            ...(options.hook.target === 'workspace-repo' && options.hook.repoId
+              ? { selectedRepoId: options.hook.repoId }
+              : {}),
+          });
+          return {
+            success: true,
+            stopped: false,
+            exitCode: 0,
+            output: '',
+            timedOut: false,
+            durationMs: Date.now() - startedAt,
+          };
+        })();
+      } else {
+        if (signal.aborted) {
+          result = buildCancelledHookRunResponse('Hook run cancelled.');
+        } else {
+          result = await runPipelineAction({
+            projectId: options.projectId,
+            worktreeId: options.worktreeId,
+            hook: options.hook,
+            action,
+            actionIndex: index,
+            cwd: options.cwd,
+            env,
+            getWindow: options.getWindow,
+            logRef,
+            onOutput: options.onOutput,
+            control,
+          });
+        }
+      }
+      finalResult = result;
+      if (!result.success) {
+        break;
+      }
+    }
+  } catch (error) {
+    finalResult = {
+      success: false,
       stopped: false,
-      exitCode: 0,
-      output: '',
+      exitCode: 1,
+      output: error instanceof Error ? error.message : String(error),
       timedOut: false,
       durationMs: 0,
     };
-
-    try {
-      const logRef = await startHookRunLog({
-        projectId: options.projectId,
-        worktreeId: options.worktreeId,
-        hook: options.hook,
-        invocation: options.invocation,
-      });
-      hookLogRef = logRef;
-      const copiedSnapshots = options.currentSnapshot
-        ? await prepareInvocationSnapshotFiles({
-            projectId: options.projectId,
-            worktreeId: options.worktreeId,
-            runId: logRef.runId,
-            currentSnapshot: options.currentSnapshot,
-            currentSnapshotPath: options.currentSnapshotPath,
-            previousSnapshotPath: options.previousSnapshotPath,
-          })
-        : undefined;
-      options.onStarted?.(options.hook, logRef);
-
-      const totalActions = options.hook.actions.length;
-      const env = buildHookEnv(
-        options.projectId,
-        options.worktreeId,
-        options.hook,
-        options.currentSnapshot,
-        copiedSnapshots?.currentSnapshotPath,
-        copiedSnapshots?.previousSnapshotPath,
-        options.env,
-      );
-
-      if (abortController.signal.aborted) {
-        finalResult = buildCancelledHookRunResponse('Hook run cancelled.');
-        return finalResult;
-      }
-
-      for (let index = 0; index < totalActions; index++) {
-        const action = options.hook.actions[index];
-        const boundary = `$ [${index + 1}/${totalActions}] ${getHookActionLogLabel(action)}`;
-        await emitHookOutput({
-          ref: logRef,
-          hook: options.hook,
-          lines: [boundary],
-          onOutput: options.onOutput,
-          activeActionIndex: index,
-        });
-
-        let result: HookRunResponse;
-        if (action.type === 'command') {
-          result = toHookRunResponse(
-            await runShellScript({
-              script: action.command,
-              cwd: options.cwd,
-              shell: action.shell,
-              timeoutSeconds:
-                action.interactive === true ? null : options.timeoutSeconds,
-              signal: abortController.signal,
-              env,
-              interactive: action.interactive === true,
-              terminalTitle: options.hook.label,
-              focusOnSpawn: options.invocation === 'manual',
-              onChunk: (lines: string[]): void => {
-                void emitHookOutput({
-                  ref: logRef,
-                  hook: options.hook,
-                  lines,
-                  onOutput: options.onOutput,
-                  activeActionIndex: index,
-                }).catch(() => {});
-              },
-              tracking: {
-                projectId: options.projectId,
-                worktreeId: options.worktreeId,
-                scriptKey: options.hook.hookKey,
-                kind: 'hook',
-              },
-            }),
-          );
-        } else if (action.type === 'chat') {
-          result = await (async (): Promise<HookRunResponse> => {
-            if (abortController.signal.aborted) {
-              return buildCancelledHookRunResponse('Hook run cancelled.');
-            }
-
-            const ifCommandResult = await runChatIfCommand({
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              hook: options.hook,
-              action,
-              cwd: options.cwd,
-              timeoutSeconds: options.timeoutSeconds,
-              signal: abortController.signal,
-              env,
-              logRef,
-              onOutput: options.onOutput,
-              activeActionIndex: index,
-            });
-            if (ifCommandResult) {
-              return ifCommandResult;
-            }
-
-            const { launchHookChat } = await import('./hook-chat');
-            const startedAt = Date.now();
-            await launchHookChat({
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              action,
-              prompt: action.promptReferences?.length
-                ? action.prompt
-                : interpolateHookPrompt(action.prompt, env),
-              ...(action.promptReferences?.length
-                ? {
-                    interpolateText: (text: string): string =>
-                      interpolateHookPrompt(text, env),
-                  }
-                : {}),
-              triggerName: options.hook.triggerName,
-              getWindow: options.getWindow,
-              ...(options.hook.target === 'workspace-repo' &&
-              options.hook.repoId
-                ? { selectedRepoId: options.hook.repoId }
-                : {}),
-            });
-            return {
-              success: true,
-              stopped: false,
-              exitCode: 0,
-              output: '',
-              timedOut: false,
-              durationMs: Date.now() - startedAt,
-            };
-          })();
-        } else {
-          if (abortController.signal.aborted) {
-            result = buildCancelledHookRunResponse('Hook run cancelled.');
-          } else {
-            result = await runPipelineAction({
-              projectId: options.projectId,
-              worktreeId: options.worktreeId,
-              hook: options.hook,
-              action,
-              actionIndex: index,
-              cwd: options.cwd,
-              env,
-              getWindow: options.getWindow,
-              logRef,
-              onOutput: options.onOutput,
-            });
-          }
-        }
-        finalResult = result;
-        if (!result.success) {
-          break;
-        }
-      }
-    } catch (error) {
-      finalResult = {
-        success: false,
-        stopped: false,
-        exitCode: 1,
-        output: error instanceof Error ? error.message : String(error),
-        timedOut: false,
-        durationMs: 0,
-      };
-      if (hookLogRef) {
-        await appendHookRunLogLines({
-          ref: hookLogRef,
-          lines: [finalResult.output],
-        }).catch(() => {});
-      }
-      options.onOutput?.(
-        options.hook,
-        [finalResult.output],
-        hookLogRef ?? undefined,
-      );
-    } finally {
-      if (hookLogRef) {
-        await completeHookRunLog({
-          ref: hookLogRef,
-          response: finalResult,
-        }).catch(() => {});
-        options.onComplete?.(options.hook, finalResult, hookLogRef);
-      }
-      const registeredRuns = activeHookRuns.get(activeKey);
-      if (registeredRuns) {
-        const registeredIndex = registeredRuns.indexOf(registeredRun);
-        if (registeredIndex >= 0) {
-          registeredRuns.splice(registeredIndex, 1);
-        }
-      }
-      if (registeredRuns?.length === 0) {
-        activeHookRuns.delete(activeKey);
-      }
-      notifyActiveHookRunsChanged();
+    if (hookLogRef) {
+      await appendHookRunLogLines({
+        ref: hookLogRef,
+        lines: [finalResult.output],
+      }).catch(() => {});
     }
-
-    return finalResult;
-  };
-
-  const prior = targetQueues.get(targetKey) ?? Promise.resolve();
-  const queuedExecution = prior.catch(() => {}).then(execute);
-  const queueTail = queuedExecution.then(
-    (): void => undefined,
-    (): void => undefined,
-  );
-  targetQueues.set(targetKey, queueTail);
-  const registeredRuns = activeHookRuns.get(activeKey) ?? [];
-  registeredRuns.push(registeredRun);
-  activeHookRuns.set(activeKey, registeredRuns);
-  options.onEnqueued?.();
-  void queueTail.then((): void => {
-    if (targetQueues.get(targetKey) === queueTail) {
-      targetQueues.delete(targetKey);
+    options.onOutput?.(
+      options.hook,
+      [finalResult.output],
+      hookLogRef ?? undefined,
+    );
+  } finally {
+    if (hookLogRef) {
+      await completeHookRunLog({
+        ref: hookLogRef,
+        response: finalResult,
+        ...(stoppedBy && finalResult.stopped ? { stoppedBy } : {}),
+      }).catch(() => {});
+      options.onComplete?.(options.hook, finalResult, hookLogRef);
     }
-  });
+  }
 
-  return queuedExecution;
+  return finalResult;
 }
 
+/** A repeated firing answers with the run its first firing recorded. */
+async function recordedHookRunResponse(
+  operationId: string,
+): Promise<HookRunResponse> {
+  const operation = await getHookInitiatedWork().waitForRun(operationId);
+  const result = operation.result;
+  return {
+    success: operation.status === 'completed' && result?.status === 'succeeded',
+    stopped: operation.status === 'cancelled' || result?.status === 'stopped',
+    exitCode: result?.exitCode ?? null,
+    output: '',
+    timedOut: result?.status === 'timedOut',
+    durationMs: result?.durationMs ?? 0,
+  };
+}
+
+function toHookRunResponseFromFiring(
+  firing: HookFireResult<HookRunResponse>,
+): Promise<HookRunResponse> {
+  switch (firing.disposition) {
+    case 'unconfigured':
+      return Promise.resolve(firing.value);
+    case 'ran':
+      return Promise.resolve(firing.value);
+    case 'cancelled':
+      return Promise.resolve(
+        buildCancelledHookRunResponse('Hook run cancelled before start.'),
+      );
+    case 'refused':
+      return Promise.reject(
+        firing.cause instanceof Error
+          ? firing.cause
+          : new Error(firing.failure.message),
+      );
+    case 'skipped':
+      return Promise.resolve({
+        success: false,
+        stopped: true,
+        exitCode: null,
+        output: firing.message,
+        timedOut: false,
+        durationMs: 0,
+      });
+    case 'duplicate':
+      return recordedHookRunResponse(firing.operation.operationId);
+    case 'held':
+      return Promise.resolve(
+        buildCancelledHookRunResponse(
+          'Hook run kept queued until the app starts again.',
+        ),
+      );
+  }
+}
+
+/** Tells the window a paused hook's firing was recorded as skipped. */
+export function announceHookSkippedPaused(args: {
+  projectId: string;
+  worktreeId: string;
+  hook: HookDescriptor;
+  window: BrowserWindow | null;
+}): void {
+  sendToWindow(args.window, IPC_CHANNELS.hookSkippedPaused, {
+    projectId: args.projectId,
+    worktreeId: args.worktreeId,
+    hook: args.hook,
+    triggerDisplayName: getHookTriggerDisplayName(args.hook.triggerName),
+  });
+}
+
+function hookNeedsClient(hook: HookDescriptor): boolean {
+  return hook.actions.some(
+    (action) => initiatedWorkNoClientPolicy('hook', action.type) === 'defer',
+  );
+}
+
+/** What the engine runs for a prepared hook: its client policy and actions. */
+function hookRunBody(
+  options: RunHookOptions,
+  registeredRun: ActiveHookRun | null,
+): Pick<
+  InitiatedWorkRequest<HookRunResponse>,
+  'client' | 'onQueued' | 'execute'
+> {
+  return {
+    ...(options.clientPresence && hookNeedsClient(options.hook)
+      ? { client: options.clientPresence }
+      : {}),
+    onQueued: () => {
+      options.onEnqueued?.();
+    },
+    execute: async (control) => {
+      if (!registeredRun) throw new Error('This hook run is not registered.');
+      const value = await executeHookActions(options, control, registeredRun);
+      return { value, result: toRunResult(value) };
+    },
+  };
+}
+
+function hookPreparation(
+  options: RunHookOptions,
+  registeredRun: ActiveHookRun | null,
+): HookFirePreparation<HookRunResponse> {
+  return {
+    kind: 'ready',
+    actions: options.hook.actions,
+    ...(options.currentSnapshot
+      ? {
+          pullRequest: {
+            repository: options.currentSnapshot.repository.fullName,
+            number: options.currentSnapshot.pr.number,
+          },
+        }
+      : {}),
+    ...hookRunBody(options, registeredRun),
+  };
+}
+
+function registerHookRun(
+  base: { projectId: string; worktreeId: string; hook: HookIdentity },
+  execution: () => Promise<HookRunResponse>,
+): { run: ActiveHookRun; unregister: () => void } {
+  const activeKey = buildActiveKey(
+    base.projectId,
+    base.worktreeId,
+    base.hook.hookKey,
+  );
+  const run: ActiveHookRun = {
+    projectId: base.projectId,
+    worktreeId: base.worktreeId,
+    hook: hookIdentity(base.hook),
+    running: false,
+    get waitForExit(): Promise<HookRunResponse> {
+      return execution();
+    },
+  };
+  const registeredRuns = activeHookRuns.get(activeKey) ?? [];
+  registeredRuns.push(run);
+  activeHookRuns.set(activeKey, registeredRuns);
+  return {
+    run,
+    unregister: (): void => {
+      const runs = activeHookRuns.get(activeKey);
+      if (runs) {
+        const index = runs.indexOf(run);
+        if (index >= 0) runs.splice(index, 1);
+      }
+      if (runs?.length === 0) activeHookRuns.delete(activeKey);
+      if (run.running) notifyActiveHookRunsChanged();
+    },
+  };
+}
+
+/** What a firing names before its hook's configuration is read. */
+export interface HookFiringRequest {
+  projectId: string;
+  worktreeId: string;
+  hook: HookIdentity;
+  invocation: 'automatic' | 'manual';
+  pause: HookPausePolicy;
+  occurrenceKey?: string;
+  acceptedOperationId?: string;
+  getWindow: () => BrowserWindow | null;
+  /** The hook the window is told about when its pause skips the firing. */
+  describedHook?: HookDescriptor;
+}
+
+/** A source's answer once a firing's configuration-free gates let it in. */
+export type HookRunPreparation =
+  | { kind: 'unconfigured'; response: HookRunResponse }
+  | { kind: 'refused'; gate: InitiatedWorkGate; error: Error }
+  | { kind: 'ready'; options: RunHookOptions };
+
+/**
+ * Fire a hook through the core hook source, which decides its pause, split
+ * lock, deletion fence and owner gates. `prepare` reads the hook's
+ * configuration once the gates that need none let it in. Hooks for one repo
+ * target of a worktree run one at a time in the order they were fired. The
+ * promise rejects with the host's error for a refused run.
+ */
+export function fireHook(
+  request: HookFiringRequest,
+  prepare: () => Promise<HookRunPreparation>,
+): Promise<HookRunResponse> {
+  let execution: Promise<HookRunResponse> = Promise.resolve(
+    buildCancelledHookRunResponse('Hook run cancelled before start.'),
+  );
+  // Registered at once, so a stop reaches a firing whose gates are still
+  // being decided; a stopped or refused firing unregisters when it settles.
+  const registered = registerHookRun(request, () => execution);
+  let firing: Promise<HookFireResult<HookRunResponse>>;
+  try {
+    firing = getHookFiring().fire<HookRunResponse>({
+      workspaceId: request.projectId,
+      worktreeId: request.worktreeId,
+      hook: hookIdentity(request.hook),
+      invocation: request.invocation,
+      pause: request.pause,
+      ...(request.occurrenceKey !== undefined
+        ? { occurrenceKey: request.occurrenceKey }
+        : {}),
+      ...(request.acceptedOperationId !== undefined
+        ? { acceptedOperationId: request.acceptedOperationId }
+        : {}),
+      prepare: async () => {
+        const prepared = await prepare();
+        if (prepared.kind === 'unconfigured')
+          return { kind: 'unconfigured', value: prepared.response };
+        if (prepared.kind === 'refused')
+          return {
+            kind: 'refused',
+            gate: prepared.gate,
+            failure: {
+              kind: 'failed_precondition',
+              message: prepared.error.message,
+              retry: { kind: 'never' },
+            },
+            cause: prepared.error,
+          };
+        return hookPreparation(prepared.options, registered.run);
+      },
+    });
+  } catch (error) {
+    registered.unregister();
+    return Promise.reject(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  }
+  execution = firing
+    .then((result) => {
+      if (
+        result.disposition === 'skipped' &&
+        result.gate === 'pause' &&
+        request.describedHook
+      )
+        announceHookSkippedPaused({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          hook: request.describedHook,
+          window: request.getWindow(),
+        });
+      return toHookRunResponseFromFiring(result);
+    })
+    .finally(registered.unregister);
+  return execution;
+}
+
+/** Fire a hook whose configuration the source already read. */
 export function runHook(options: RunHookOptions): Promise<HookRunResponse> {
-  return executeHook(options);
+  return fireHook({ ...options, describedHook: options.hook }, () =>
+    Promise.resolve({ kind: 'ready', options }),
+  );
+}
+
+/**
+ * The body of a hook run a restart interrupted before it started, rebuilt
+ * from its current configuration (CAN-4145). The engine runs it under its
+ * recorded operation, after the gates the core hook source decides again.
+ */
+export function resumedHookRunBody(
+  options: RunHookOptions,
+): Pick<
+  InitiatedWorkRequest<HookRunResponse>,
+  'client' | 'onQueued' | 'execute'
+> {
+  return {
+    ...hookRunBody(options, null),
+    // Registered only once it starts: a stop before then reaches it through
+    // the engine, which ends it without running it.
+    execute: async (control) => {
+      let execution: Promise<HookRunResponse> = Promise.resolve(
+        buildCancelledHookRunResponse('Hook run cancelled.'),
+      );
+      const registered = registerHookRun(options, () => execution);
+      try {
+        execution = executeHookActions(options, control, registered.run);
+        const value = await execution;
+        return { value, result: toRunResult(value) };
+      } finally {
+        registered.unregister();
+      }
+    },
+  };
+}
+
+const HOOK_STOP_PRINCIPAL = 'desktop-core';
+
+/** Cancel the selected runs through their operations and wait for them. */
+async function cancelHookRuns(
+  select: (run: LiveHookRun) => boolean,
+  runs: readonly ActiveHookRun[],
+  reason: string,
+): Promise<void> {
+  await getHookFiring().cancelWhere(select, {
+    reason,
+    requestedBy: HOOK_STOP_PRINCIPAL,
+  });
+  await Promise.all(runs.map((run) => run.waitForExit.catch(() => {})));
+}
+
+function registeredRunsWhere(
+  select: (run: ActiveHookRun) => boolean,
+): ActiveHookRun[] {
+  return Array.from(activeHookRuns.values()).flatMap((runs) =>
+    runs.filter(select),
+  );
 }
 
 export async function stopRunningHook(
@@ -751,15 +1045,18 @@ export async function stopRunningHook(
     request.worktreeId,
     request.hookKey,
   );
-  const registeredRuns = activeHookRuns.get(activeKey);
-  if (!registeredRuns?.length) {
-    return null;
-  }
-
-  const runs = Array.from(registeredRuns);
-  for (const run of runs) {
-    run.abortController.abort();
-  }
+  const runs = Array.from(activeHookRuns.get(activeKey) ?? []);
+  // Runs a restart recovered are stopped through the engine even before
+  // they start and register here.
+  await cancelHookRuns(
+    (run) =>
+      run.scope.workspaceId === request.projectId &&
+      run.scope.worktreeId === request.worktreeId &&
+      run.hookKey === request.hookKey,
+    runs,
+    'Stopped from the hooks panel.',
+  );
+  if (runs.length === 0) return null;
   const results = await Promise.all(runs.map((run) => run.waitForExit));
   return results[results.length - 1] ?? null;
 }
@@ -769,65 +1066,63 @@ export async function stopHooksForRepoTarget(args: {
   worktreeId: string;
   repoId: string;
 }): Promise<void> {
-  cancelQueuedHooksForTarget(
-    buildTargetScopeKey(
-      args.projectId,
-      args.worktreeId,
-      'workspace-repo',
-      args.repoId,
-    ),
+  const runs = registeredRunsWhere(
+    (run) =>
+      run.projectId === args.projectId &&
+      run.worktreeId === args.worktreeId &&
+      run.hook.repoId === args.repoId,
   );
-
-  const activeRuns: ActiveHookRun[] = [];
-  for (const runs of Array.from(activeHookRuns.values())) {
-    for (const run of runs) {
-      if (
-        run.projectId === args.projectId &&
-        run.worktreeId === args.worktreeId &&
-        run.hook.repoId === args.repoId
-      ) {
-        activeRuns.push(run);
-      }
-    }
-  }
-
-  for (const run of activeRuns) {
-    run.abortController.abort();
-    await run.waitForExit.catch(() => {});
-  }
+  await cancelHookRuns(
+    (run) =>
+      run.scope.workspaceId === args.projectId &&
+      run.scope.worktreeId === args.worktreeId &&
+      run.scope.repoId === args.repoId,
+    runs,
+    'The repository was removed from this worktree.',
+  );
 }
 
 export async function stopHooksForWorktree(args: {
   projectId: string;
   worktreeId: string;
 }): Promise<void> {
-  const targetPrefix = `${args.projectId}\0${args.worktreeId}\0`;
-  for (const targetKey of Array.from(targetQueues.keys())) {
-    if (targetKey.startsWith(targetPrefix)) {
-      cancelQueuedHooksForTarget(targetKey);
-    }
-  }
-
-  const worktreeRuns = Array.from(activeHookRuns.values()).flatMap((runs) =>
-    runs.filter(
-      (run) =>
-        run.projectId === args.projectId && run.worktreeId === args.worktreeId,
-    ),
+  const runs = registeredRunsWhere(
+    (run) =>
+      run.projectId === args.projectId && run.worktreeId === args.worktreeId,
   );
-  for (const run of worktreeRuns) {
-    run.abortController.abort();
-  }
-  await Promise.all(worktreeRuns.map((run) => run.waitForExit.catch(() => {})));
+  await cancelHookRuns(
+    (run) =>
+      run.scope.workspaceId === args.projectId &&
+      run.scope.worktreeId === args.worktreeId,
+    runs,
+    'The worktree is closing.',
+  );
 }
 
 export function stopAllRunningHooks(): void {
-  for (const targetKey of Array.from(targetQueues.keys())) {
-    cancelQueuedHooksForTarget(targetKey);
-  }
+  const runs = registeredRunsWhere(() => true);
+  if (runs.length === 0) return;
+  void cancelHookRuns(() => true, runs, 'The app is shutting down.').catch(
+    () => {},
+  );
+}
 
-  for (const runs of Array.from(activeHookRuns.values())) {
-    for (const run of runs) {
-      run.abortController.abort();
-    }
+/**
+ * At app shutdown, start no more hooks and stop the ones that started.
+ * Accepted runs that have not started stay queued in the ledger and resume
+ * after the restart (CAN-4145).
+ */
+export function holdHooksForShutdown(): void {
+  try {
+    getHookInitiatedWork().stopStarting();
+  } catch {
+    // No runtime is accepting work, so nothing can start.
   }
+  const runs = registeredRunsWhere((run) => run.running);
+  if (runs.length === 0) return;
+  void cancelHookRuns(
+    (run) => run.started,
+    runs,
+    'The app is shutting down.',
+  ).catch(() => {});
 }

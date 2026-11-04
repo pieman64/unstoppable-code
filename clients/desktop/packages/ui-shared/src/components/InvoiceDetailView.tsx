@@ -37,6 +37,7 @@ import {
 import { BADGE_BASE_CLASS, BADGE_TONE_CLASS } from '../lib/badge';
 import { BILLING_STATUS_TONE_CLASSES } from '../lib/billing-status-tone';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Heading } from './Heading';
 
 /** One charge rendered as an invoice line item. Enums widened to `string`. */
 export interface InvoiceDetailLineItem {
@@ -230,7 +231,9 @@ function CreditsSection({
       className="mt-6 rounded-lg bg-muted p-4"
       data-testid="invoice-credits"
     >
-      <h2 className="text-s font-semibold fg-primary">AI credit activity</h2>
+      <Heading level={2} variant="title">
+        AI credit activity
+      </Heading>
       {/*
         Says WHY the credits are not in the total, not just THAT they aren't.
         A reader looking at `Credit purchases · 12 credits` here while
@@ -352,7 +355,7 @@ export function InvoiceDetailView({
   headingLevel = 'h1',
   blockBillToFromReplay = false,
 }: InvoiceDetailViewProps): JSX.Element {
-  const Heading = headingLevel;
+  const numberLevel = headingLevel === 'h1' ? 1 : 2;
   return (
     <div className="flex flex-col" data-testid="invoice-detail">
       {backLink ? <div className="mb-4">{backLink}</div> : null}
@@ -361,7 +364,8 @@ export function InvoiceDetailView({
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <Heading
-              className="text-lg font-semibold fg-primary"
+              level={numberLevel}
+              variant="page"
               data-testid="invoice-detail-number"
             >
               {invoice.number}
@@ -425,7 +429,9 @@ export function InvoiceDetailView({
         )}
 
         <section className="mt-4">
-          <h2 className="text-xs font-medium fg-secondary">Billed to</h2>
+          <Heading level={2} variant="label">
+            Billed to
+          </Heading>
           <p
             className={
               blockBillToFromReplay
@@ -449,7 +455,9 @@ export function InvoiceDetailView({
         </section>
 
         <section className="mt-6">
-          <h2 className="text-s font-semibold fg-primary">Line items</h2>
+          <Heading level={2} variant="title">
+            Line items
+          </Heading>
           {invoice.lineItems.length === 0 ? (
             <p
               className="mt-2 text-s fg-secondary"

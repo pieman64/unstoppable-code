@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import type { PipelineDefinitionRemote } from '@canopy/core-runtime/node/pipeline';
 import {
   mkdir,
   readFile,
@@ -367,7 +369,108 @@ export async function getCuratedPipeline(
   return detail;
 }
 
-/** Adds a new editable copy. No existing pipeline, preferences or execution are changed. */
+/**
+ * A reviewed curated revision to install as an editable copy, read live from
+ * the catalog rather than its managed cache. Core pins its content hash and
+ * validates it; the package downloads only once the pin has passed.
+ */
+export async function readCuratedPipelineRemote(
+  id: string,
+): Promise<PipelineDefinitionRemote> {
+  if (!id.startsWith('curated:'))
+    throw new Error('Invalid curated pipeline id.');
+  const key = id.slice('curated:'.length);
+  validateKey(key);
+  const context = await resolveCanopyCloudCredentialContext();
+  const detail = await fetchDetail(key, context);
+  const packageRef = detail.package
+    ? { version: detail.package.version, digest: detail.package.digest }
+    : undefined;
+  let pipelinePackage: ManagedCuratedPipelineData['pipelinePackage'];
+  return {
+    document: {
+      source: 'curated',
+      definitionId: id,
+      name: detail.name,
+      description: detail.shortDescription,
+      icon: detail.icon,
+      readonly: true,
+      revision: 0,
+      owner: null,
+      createdAt: detail.createdAt,
+      updatedAt: detail.updatedAt,
+      format: 'yaml',
+      text: detail.rawPipeline,
+    },
+    remoteVersion: detail.contentHash,
+    packageManifest: async () => {
+      pipelinePackage = await installCuratedPipelinePackage(
+        detail.key,
+        detail.rawPipeline,
+        packageRef,
+      );
+      return pipelinePackage?.manifest;
+    },
+    install: async (write) => {
+      await assertCurrentCredentials(context);
+      const result = savePipeline(
+        {
+          name: write.name,
+          description: write.description,
+          icon: write.icon,
+          content: write.pipeline,
+          rawContent: write.text,
+          curatedOrigin: {
+            key: detail.key,
+            contentHash: detail.contentHash,
+            revision: detail.revision,
+            importedAt: new Date().toISOString(),
+          },
+        },
+        { id: write.definitionId },
+      );
+      if (!result.success || !result.data)
+        throw new Error(result.error ?? 'Failed to add curated workflow.');
+      const saved = result.data;
+      if (pipelinePackage) {
+        try {
+          await upsertPipelinePackageInstall(
+            getPipelinePackageInstallStorePath(),
+            {
+              localPipelineId: saved.id,
+              originExternalId: `curated:${detail.key}`,
+              pipelineContentHash: pipelinePackage.manifest.pipelineContentHash,
+              packageDigest: pipelinePackage.digest,
+              installedAt: new Date().toISOString(),
+            },
+          );
+        } catch (error) {
+          deletePipeline(saved.id);
+          throw error;
+        }
+      }
+      return {
+        source: 'user',
+        definitionId: saved.id,
+        name: saved.name,
+        description: saved.description,
+        icon: saved.icon,
+        readonly: false,
+        revision: saved.revision ?? 0,
+        owner: null,
+        createdAt: saved.createdAt,
+        updatedAt: saved.updatedAt,
+        format: 'yaml',
+        text: write.text,
+      };
+    },
+  };
+}
+
+/**
+ * Adds a new editable copy through core. No existing pipeline, preferences
+ * or execution are changed.
+ */
 export async function importCuratedPipeline(
   input: ImportCuratedPipelineRequest,
 ): Promise<PipelineInfo> {
@@ -383,69 +486,32 @@ export async function importCuratedPipeline(
   const identity = `${credentialIdentity(context)}:${input.key}:${input.expectedContentHash}`;
   const pending = imports.get(identity);
   if (pending) return pending;
+  const { expectedContentHash, key } = input;
   const operation = (async (): Promise<PipelineInfo> => {
-    const detail = await fetchDetail(input.key, context);
-    if (detail.contentHash !== input.expectedContentHash)
-      throw new Error(
-        'This curated workflow changed. Refresh its preview before adding it.',
-      );
-    const packageRef = detail.package
-      ? { version: detail.package.version, digest: detail.package.digest }
-      : undefined;
-    const pipelinePackage = await installCuratedPipelinePackage(
-      detail.key,
-      detail.rawPipeline,
-      packageRef,
-    );
-    validateCuratedPipeline(detail.rawPipeline, {
-      packageManifest: pipelinePackage?.manifest,
-    });
-    const content = parsePipelineText(detail.rawPipeline);
-    await assertCurrentCredentials(context);
-    const result = savePipeline({
-      name: detail.name,
-      description: detail.shortDescription,
-      icon: detail.icon,
-      content,
-      rawContent: detail.rawPipeline,
-      curatedOrigin: {
-        key: detail.key,
-        contentHash: detail.contentHash,
-        revision: detail.revision,
-        importedAt: new Date().toISOString(),
-      },
-    });
-    if (!result.success || !result.data)
-      throw new Error(result.error ?? 'Failed to add curated workflow.');
-    if (pipelinePackage) {
-      try {
-        await upsertPipelinePackageInstall(
-          getPipelinePackageInstallStorePath(),
-          {
-            localPipelineId: result.data.id,
-            originExternalId: `curated:${detail.key}`,
-            pipelineContentHash: pipelinePackage.manifest.pipelineContentHash,
-            packageDigest: pipelinePackage.digest,
-            installedAt: new Date().toISOString(),
-          },
-        );
-      } catch (error) {
-        deletePipeline(result.data.id);
-        throw error;
-      }
+    const { importRemotePipeline } =
+      await import('../canopy-runtime/pipeline-definition-dispatch');
+    let imported: PipelineInfo;
+    try {
+      imported = await importRemotePipeline({
+        remoteDefinitionId: `curated:${key}`,
+        expectedRemoteVersion: expectedContentHash,
+        nameOverride: null,
+      });
+    } catch (error) {
+      throw curatedImportError(error);
     }
     // A curated import keeps the owner it was added in. The import has
     // already been saved, so a missing owner is backfilled on first use
     // rather than failing it.
     try {
-      recordUserPipelineOwner(result.data.id, await selectedOwnerContext());
+      recordUserPipelineOwner(imported.id, await selectedOwnerContext());
     } catch (error) {
       logMainProcessWarn(
         '[curated-pipelines] could not record the owner of an imported pipeline',
         error,
       );
     }
-    return result.data;
+    return imported;
   })();
   imports.set(identity, operation);
   void operation
@@ -454,6 +520,17 @@ export async function importCuratedPipeline(
     })
     .catch(() => undefined);
   return operation;
+}
+
+/** Core's refusal in the words the catalog's callers have always shown. */
+function curatedImportError(error: unknown): Error {
+  if (!(error instanceof CanopyOperationError))
+    return error instanceof Error ? error : new Error(String(error));
+  if (error.payload.code === 'core.pipeline.remoteVersionConflict')
+    return new Error(
+      'This curated workflow changed. Refresh its preview before adding it.',
+    );
+  return new Error(error.payload.message);
 }
 
 /** Catalog identity is independent of downloads and cannot collide with local UUIDs. */
@@ -862,7 +939,11 @@ export async function readManagedCuratedPipeline(
   return operation;
 }
 
-/** Only previously downloaded keys are synchronized; undiscovered bodies stay remote. */
+/**
+ * Only previously downloaded keys are synchronized; undiscovered bodies stay
+ * remote. Each refresh is a core read of the curated definition, so core's
+ * curated source decides what is downloaded and validates the revision.
+ */
 export function syncManagedCuratedPipelines(): Promise<void> {
   if (syncing) return syncing;
   const operation = (async (): Promise<void> => {
@@ -873,12 +954,16 @@ export function syncManagedCuratedPipelines(): Promise<void> {
     } catch {
       return;
     }
+    const { getPipelineDefinition, PIPELINE_DEFINITION_DESKTOP_CALLER } =
+      await import('../canopy-runtime/pipeline-definition-dispatch');
     for (const key of keys) {
       await assertCurrentCredentials(context);
       if (isCuratedCatalogKey(key))
-        await getManagedCuratedPipeline(`curated:${key}`).catch(
-          () => undefined,
-        );
+        await getPipelineDefinition(
+          `curated:${key}`,
+          {},
+          PIPELINE_DEFINITION_DESKTOP_CALLER,
+        ).catch(() => undefined);
     }
   })();
   syncing = operation;

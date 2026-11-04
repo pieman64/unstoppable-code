@@ -85,6 +85,13 @@ jest.mock('../creation-model', () => ({
   resolveCreationModelSeed: (...args: unknown[]): unknown =>
     mockModelSeed(...args),
 }));
+// A native send's explicit approval mode is the chat's (CAN-5479).
+jest.mock('../turn-override', () => ({
+  resolveAutomationApprovalMode: (
+    _projectId: string,
+    mode: string | undefined,
+  ): Promise<string> => Promise.resolve(mode ?? 'default'),
+}));
 jest.mock('../../portal/adapters/chat-adapter', () => ({
   resolveRemoteCreateTabSeed: (...args: unknown[]): unknown =>
     mockDefaults(...args),
@@ -1116,6 +1123,185 @@ describe('pipeline creations', () => {
         turnOverride: { version: 1 },
       }),
     ).rejects.toMatchObject({ code: 'validation_failed' });
+  });
+});
+
+// CAN-5479: a converted agent automation's run keeps the settings its native
+// action had, through the grant its send step verified; nothing else.
+describe('a converted agent automation’s native grant (CAN-5479)', () => {
+  const grantedRun: Extract<TrustedSendCaller, { kind: 'pipeline' }> = {
+    kind: 'pipeline',
+    source: {
+      ...pipelineSource,
+      automation: { automationId: 'automation-1', automationName: 'Nightly' },
+      agentOrigin,
+    },
+  };
+  const create = {
+    type: 'projects.create_task_chat' as const,
+    projectId: target.projectId,
+    taskId: target.taskId,
+    initialMessage: 'Report',
+  };
+  const pluginSelections = {
+    collectionIds: [],
+    skillRefs: [{ sourceId: 'builtin:app', skillName: 'review' }],
+    pluginRefs: [],
+  };
+  const startAdmission = jest.fn();
+  const admission = jest.fn();
+
+  beforeEach(() => {
+    tabs = [];
+    startAdmission.mockResolvedValue({ approvalMode: 'ask' });
+    admission.mockRejectedValue(
+      new AgentChatSendError('authorization_conflict', 'Broader approvals.'),
+    );
+  });
+
+  it('starts the chat with the granted approvals and plugins, as the native send did', async () => {
+    const seed = { approvalMode: 'full-access' as const, pluginSelections };
+    await dispatchAgentChatCreation(create, {
+      caller: grantedRun,
+      startAdmission,
+      admission,
+      newChatSeed: seed,
+      nativeGrant: seed,
+    });
+    expect(mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'chat.create_tab',
+          approvalMode: 'full-access',
+          pluginSelections,
+        }),
+      }),
+      expect.any(Object),
+    );
+    // The native send had no agent admission; the run's agent still has to
+    // be current and keep the run's owner.
+    expect(startAdmission).not.toHaveBeenCalled();
+    expect(admission).not.toHaveBeenCalled();
+    expect(mockOriginCheck).toHaveBeenCalledWith(
+      agentOrigin,
+      pipelineSource.owner,
+      target.projectId,
+    );
+    expect(sentCommand()).toMatchObject({ text: 'Report' });
+  });
+
+  it('reaches the creation through the pipeline entry the send step uses', async () => {
+    const seed = { approvalMode: 'full-access' as const };
+    const receipt = await runPipelineProjectBotAction(create, grantedRun, {
+      newChatSeed: seed,
+      nativeGrant: seed,
+    });
+    expect(receipt).toMatchObject({ chatCreated: true });
+    expect(mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'chat.create_tab',
+          approvalMode: 'full-access',
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('keeps the agent’s approvals for a grant of plugins alone', async () => {
+    admission.mockResolvedValue({
+      check: (): undefined => undefined,
+      refusal: (): undefined => undefined,
+    });
+    await dispatchAgentChatCreation(create, {
+      caller: grantedRun,
+      startAdmission,
+      admission,
+      newChatSeed: { pluginSelections },
+      nativeGrant: { pluginSelections },
+    });
+    expect(startAdmission).toHaveBeenCalledTimes(1);
+    expect(admission).toHaveBeenCalledTimes(1);
+    expect(mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'chat.create_tab',
+          approvalMode: 'ask',
+          pluginSelections,
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
+  it('refuses a seed the grant does not cover exactly (D11)', async () => {
+    for (const newChatSeed of [
+      { approvalMode: 'full-access' as const },
+      { approvalMode: 'full-access' as const, pluginSelections },
+      { pluginSelections },
+    ])
+      await expect(
+        dispatchAgentChatCreation(create, {
+          caller: grantedRun,
+          startAdmission,
+          newChatSeed,
+          nativeGrant: { approvalMode: 'auto' },
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_conflict' });
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('ignores a grant for a step no automation started', async () => {
+    const seed = { approvalMode: 'full-access' as const };
+    await expect(
+      dispatchAgentChatCreation(create, {
+        caller: agentRun,
+        startAdmission,
+        newChatSeed: seed,
+        nativeGrant: seed,
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_conflict' });
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps an Orchestrator chat’s granted model, plugins and approvals', async () => {
+    const botChat = {
+      type: 'bots.create_task_chat' as const,
+      botId: 'app_advisor',
+      taskId: 'advisor-task',
+      initialMessage: 'Review',
+    };
+    const grant = {
+      model: 'gpt-5.5',
+      approvalMode: 'full-access' as const,
+      pluginSelections,
+    };
+    await dispatchAgentChatCreation(botChat, {
+      caller: grantedRun,
+      newChatSeed: { ...grant, providerType: 'codex', planMode: true },
+      nativeGrant: grant,
+    });
+    expect(mockDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          type: 'chat.create_tab',
+          ...grant,
+          providerType: 'codex',
+          planMode: true,
+        }),
+      }),
+      expect.any(Object),
+    );
+    mockDispatch.mockClear();
+    // Another model than the granted one is still refused.
+    await expect(
+      dispatchAgentChatCreation(botChat, {
+        caller: grantedRun,
+        newChatSeed: { ...grant, model: 'sonnet' },
+        nativeGrant: grant,
+      }),
+    ).rejects.toMatchObject({ code: 'unsupported_action' });
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 });
 

@@ -14,7 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, totalmem } from 'node:os';
 import * as path from 'node:path';
 import type * as NodeEventsModule from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
@@ -41,7 +41,15 @@ jest.mock('electron', () => {
 });
 
 import { utilityProcess } from 'electron';
-import { EXECUTION_HOST_LIMIT_EXIT_CODES } from '@canopy/core-platform/execution-host/port';
+import {
+  EXECUTION_HOST_LIMIT_EXIT_CODES,
+  type ExecutionHostLaunchRequest,
+} from '@canopy/core-platform/execution-host/port';
+import { codeGraphHostBudget } from '@canopy/code-graph/host/budgets';
+import {
+  getExecutionHostPort,
+  setExecutionHostPort,
+} from '../execution-host/utility-process-host';
 import { getExecutionAccounting } from '../execution-accounting';
 import {
   CODE_GRAPH_FIRST_BUILD_OVERTAKE_LIMIT,
@@ -232,6 +240,34 @@ describe('code-graph build runner (mocked utilityProcess)', () => {
     await expect(promise).rejects.toMatchObject({ reason: 'worker-exit' });
     await new Promise((resolve) => setImmediate(resolve));
     expect(active()).toBe(before);
+  });
+
+  it('launches each build host through getExecutionHostPort().launch with the build entry and budget', async () => {
+    const utility = getExecutionHostPort();
+    const launches: ExecutionHostLaunchRequest[] = [];
+    setExecutionHostPort({
+      probe: (probeRequest) => utility.probe(probeRequest),
+      launch: (launchRequest) => {
+        launches.push(launchRequest);
+        return utility.launch(launchRequest);
+      },
+    });
+    try {
+      const promise = runCodeGraphWorkerBuild('ws/budget', makeRequest());
+      expect(launches).toEqual([
+        {
+          entry: 'code-graph-build-worker.js',
+          serviceName: 'code-graph-build',
+          budget: codeGraphHostBudget('build', {
+            totalMemoryBytes: totalmem(),
+          }),
+        },
+      ]);
+      forkedChild(0).emit('message', okResponse());
+      await promise;
+    } finally {
+      setExecutionHostPort(undefined);
+    }
   });
 
   it('stamps the queue wait into a build request that carries a timing prelude', async () => {

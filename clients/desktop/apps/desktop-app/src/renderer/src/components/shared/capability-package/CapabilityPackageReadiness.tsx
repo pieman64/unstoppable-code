@@ -11,7 +11,7 @@ import {
 } from '@canopy/ui-shared/lib/pipeline-package-display';
 import { Button } from '@/components/shared/Button';
 import type { PipelinePackageReadiness as PipelinePackageReadinessData } from '@canopy/desktop-shared/types/pipeline';
-import { StatusLabel } from '@canopy/ui-shared/components';
+import { StatusLabel, Heading } from '@canopy/ui-shared/components';
 
 /**
  * Local readiness of a pipeline's packaged content, shown before Run
@@ -110,9 +110,9 @@ export function CapabilityPackageReadiness({
     >
       {includedResources.length > 0 && (
         <div data-testid="capability-package-included-resources">
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {PIPELINE_PACKAGE_INCLUDED_HEADING}
-          </h3>
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             {`These capabilities are included with this ${subjectNoun}.`}
           </p>
@@ -141,9 +141,9 @@ export function CapabilityPackageReadiness({
       {showReadinessReview && (
         <div className={includedResources.length > 0 ? 'mt-3' : undefined}>
           <div className="flex items-center justify-between gap-2">
-            <h3 className="text-s font-medium fg-primary">
+            <Heading level={3} variant="title">
               {PIPELINE_PACKAGE_SETUP_HEADING}
-            </h3>
+            </Heading>
             <Button
               variant="secondary"
               size="compact"
@@ -213,9 +213,9 @@ export function CapabilityPackageReadiness({
           }
           data-testid="pipeline-package-publisher-notes"
         >
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {PIPELINE_PACKAGE_NOT_INCLUDED_HEADING}
-          </h3>
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             {PIPELINE_PACKAGE_PUBLISHER_NOTE}
           </p>

@@ -14,6 +14,7 @@ import {
 // `string | null` shape existing callers expect.
 
 export {
+  classifyBrowserBarInput,
   classifyInAppBrowserInput,
   isAllowedInAppBrowserUrl,
   isFileBrowserUrl,
@@ -46,8 +47,13 @@ export const IN_APP_BROWSER_LOCAL_ONLY_URL_MESSAGE =
 export const IN_APP_BROWSER_NETWORK_PATH_URL_MESSAGE =
   'Enter a path on this computer, not a network share.';
 
-/** Placeholder shown in the Browser bar URL input. */
-export const IN_APP_BROWSER_URL_PLACEHOLDER = 'http://localhost:3000/';
+/**
+ * Placeholder shown in the Browser bar URL input, naming the search engine
+ * that keywords go to.
+ */
+export function browserBarPlaceholder(searchEngineName: string): string {
+  return `Search ${searchEngineName} or type a URL`;
+}
 
 /**
  * The user-facing message for a refused Browser-bar value. `ok` verdicts have

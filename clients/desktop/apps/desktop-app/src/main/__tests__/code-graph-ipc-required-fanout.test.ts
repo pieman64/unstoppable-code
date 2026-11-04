@@ -17,9 +17,10 @@ jest.mock('../ipc/register', () => ({
 }));
 const mockRead = jest.fn<Promise<CodeGraphWorkerReadResponse>, [unknown]>();
 const mockDiagnostic = jest.fn<void, [unknown]>();
-const mockRepair = jest.fn<Promise<unknown>, [unknown]>(() =>
-  Promise.resolve({ state: 'ready' }),
-);
+const mockRepair = jest.fn<
+  Promise<unknown>,
+  [{ workspaceId: string; repoId: string }]
+>(({ repoId }) => Promise.resolve({ repoId, ok: true }));
 const mockFingerprint = jest.fn<Promise<string | null>, []>();
 const mockAvailable = jest.fn<boolean, []>();
 jest.mock('electron', () => ({
@@ -168,6 +169,20 @@ async function readSummary(): Promise<unknown> {
   if (handler === undefined) throw new Error('Missing handler');
   return handler({}, { workspaceId: 'workspace' });
 }
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+import { installCodeGraphBuildDispatcherForTests } from './helpers/code-graph-build-dispatcher';
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
+  installCodeGraphBuildDispatcherForTests();
+});
+
+/** The repair is dispatched without waiting; let it reach the base manager. */
+async function repairsSettled(): Promise<void> {
+  for (let turn = 0; turn < 50 && mockRepair.mock.calls.length === 0; turn++)
+    await new Promise((resolve) => setImmediate(resolve));
+}
+
 describe('required repository read fanout', () => {
   beforeEach(() => {
     handlers.clear();
@@ -178,7 +193,17 @@ describe('required repository read fanout', () => {
     mockFingerprint.mockResolvedValue('none');
     mockAvailable.mockReset();
     mockAvailable.mockReturnValue(true);
-    registerCodeGraphHandlers();
+    registerCodeGraphHandlers({
+      dispatcher: {
+        query: (): Promise<never> =>
+          Promise.reject(new Error('Not exercised.')),
+        instruction: (): Promise<never> =>
+          Promise.reject(new Error('Not exercised.')),
+      },
+      resolveCaller: () => {
+        throw new Error('Not exercised.');
+      },
+    });
   });
   it('one ready plus a real rejected read returns public error, not synthetic partial totals', async () => {
     mockRead
@@ -234,6 +259,7 @@ describe('required repository read fanout', () => {
       snapshotState: 'summary-pending',
     });
     expect(result).not.toHaveProperty('totals');
+    await repairsSettled();
     expect(mockRepair).toHaveBeenCalledWith({
       workspaceId: 'workspace',
       repoId: 'b',
@@ -262,6 +288,7 @@ describe('required repository read fanout', () => {
     });
     expect(result).not.toHaveProperty('ok');
     expect(mockRead).not.toHaveBeenCalled();
+    await repairsSettled();
     expect(mockRepair).not.toHaveBeenCalled();
     expect(mockDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -293,6 +320,7 @@ describe('required repository read fanout', () => {
       },
     });
     await readSummary();
+    await repairsSettled();
     expect(mockRepair).not.toHaveBeenCalled();
     expect(mockDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({

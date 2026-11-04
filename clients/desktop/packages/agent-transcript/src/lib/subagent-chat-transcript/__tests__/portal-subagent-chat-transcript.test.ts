@@ -150,6 +150,19 @@ describe('buildPortalSubagentChatTranscript', () => {
                 agentSentProjectLabel: 'App Advisor',
               },
             },
+            {
+              kind: 'text',
+              data: {
+                text: 'Cloud chat sender',
+                delegationAuthorKind: 'user',
+                agentSentSenderKind: 'cloud_chat',
+                agentSentProjectId: 'cloud-project',
+                agentSentTaskId: 'cloud-task',
+                agentSentChatId: 'cloud-chat',
+                agentSentChatTitle: 'Cloud chat',
+                agentSentProjectLabel: 'Cloud project',
+              },
+            },
           ],
           subBlocksTruncated: false,
           omittedSubBlocks: 0,
@@ -195,6 +208,22 @@ describe('buildPortalSubagentChatTranscript', () => {
           },
           chatTitle: 'Advisor chat',
           projectLabel: 'App Advisor',
+        },
+      },
+      {
+        kind: 'user',
+        key: 'run-1-text-3',
+        text: 'Cloud chat sender',
+        steering: false,
+        agentSent: {
+          sender: {
+            kind: 'cloud_chat',
+            projectId: 'cloud-project',
+            taskId: 'cloud-task',
+            chatId: 'cloud-chat',
+          },
+          chatTitle: 'Cloud chat',
+          projectLabel: 'Cloud project',
         },
       },
     ]);

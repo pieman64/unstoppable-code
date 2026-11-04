@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { getGitExecutableDetectionMode } from '@canopy/core-runtime/node';
 import { isHostAbsolute } from '../git-read/commands';
 import {
   createWorld,
@@ -99,6 +100,10 @@ const DIVERGENT: Readonly<
       attempts: ['C:\\Program Files\\Git\\cmd\\git.exe'],
     },
   },
+  'Linux ppc64 uses the environment override': {
+    divergence: 'other-linux-snapshot-path',
+    daemon: { resolved: '/env/git', attempts: [] },
+  },
   'macOS saved symlink retargeted to another Git › the saved symlink now points at another Git':
     {
       divergence: 'overlay-keying-and-ttl',
@@ -125,7 +130,9 @@ function desktopExpectation(
 }
 
 const linuxDiscovery = (scenario: Scenario): boolean =>
-  scenario.os !== 'linux' || ['x64', 'arm64'].includes(scenario.arch ?? 'x64');
+  scenario.os !== 'linux' ||
+  getGitExecutableDetectionMode(scenario.os, scenario.arch ?? 'x64') ===
+    'linux';
 
 /**
  * Desktop's first detection as a spawn resolution. Overlay keying stats an

@@ -74,14 +74,12 @@ describe('parseCreateProjectEntryInputs', () => {
     expect(JSON.stringify(parsed)).not.toContain('xxxxx');
   });
 
-  it('rejects group "none", which only move-to-group understands', () => {
+  // CAN-5479: creating never removes a group, so `none` is a name like any
+  // other; only move-to-group reads it as "remove".
+  it('joins a group named None', () => {
     expect(
       parseCreateProjectEntryInputs({ project_id: 'p', group: 'None' }),
-    ).toEqual({
-      ok: false,
-      message:
-        'create-project-entry "group" names a group to join; use move-to-group to remove one',
-    });
+    ).toEqual({ ok: true, value: { projectId: 'p', group: 'None' } });
   });
 });
 
@@ -112,7 +110,10 @@ describe('parseCreateBotEntryInputs', () => {
       ok: false,
       message: 'create-bot-entry "title" must be at most 200 characters',
     });
-    expect(parseCreateBotEntryInputs({ group: 'none' }).ok).toBe(false);
+    expect(parseCreateBotEntryInputs({ group: 'none' })).toEqual({
+      ok: true,
+      value: { botId: 'app_advisor', group: 'none' },
+    });
   });
 });
 

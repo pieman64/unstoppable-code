@@ -77,10 +77,6 @@ const CHANGE_IMPACT_TASK: CodeGraphWorkerReadTask = {
 const FINGERPRINT_METADATA_TASK: CodeGraphWorkerReadTask = {
   kind: 'fingerprint-metadata',
 };
-const PERSIST_FINGERPRINT_TASK: CodeGraphWorkerReadTask = {
-  kind: 'persist-fingerprint',
-  fingerprint: 'fingerprint',
-};
 const VALIDATE_BASE_TASK: CodeGraphWorkerReadTask = {
   kind: 'validate-base',
   identity: {
@@ -155,17 +151,13 @@ function comparisonTaskAt(index: number): CodeGraphWorkerReadTask {
 }
 
 function maintenanceTaskAt(index: number): CodeGraphWorkerReadTask {
-  const kind = index % 3;
-  if (kind === 0) return FINGERPRINT_METADATA_TASK;
-  if (kind === 1) return PERSIST_FINGERPRINT_TASK;
-  return VALIDATE_BASE_TASK;
+  return index % 2 === 0 ? FINGERPRINT_METADATA_TASK : VALIDATE_BASE_TASK;
 }
 
 function telemetryKindAt(index: number): TelemetryKind {
   const kinds: TelemetryKind[] = [
     'context',
     'fingerprint-metadata',
-    'fingerprint-persist',
     'base-validation',
     'query',
     'ui-summary',
@@ -277,9 +269,9 @@ describe('code-graph read admission', () => {
     const persist = observeRead(
       ledger,
       readInput(
-        'maintenance-persist',
-        PERSIST_FINGERPRINT_TASK,
-        'fingerprint-persist',
+        'maintenance-metadata',
+        FINGERPRINT_METADATA_TASK,
+        'fingerprint-metadata',
       ),
     );
     const validate = observeRead(
@@ -363,8 +355,8 @@ describe('code-graph read admission', () => {
       ledger,
       readInput(
         'queue-maintenance-overflow',
-        PERSIST_FINGERPRINT_TASK,
-        'fingerprint-persist',
+        FINGERPRINT_METADATA_TASK,
+        'fingerprint-metadata',
       ),
     );
 
@@ -486,7 +478,7 @@ describe('code-graph read admission', () => {
       ledger,
       readInput(
         'maintenance-expiry-target',
-        PERSIST_FINGERPRINT_TASK,
+        FINGERPRINT_METADATA_TASK,
         'context',
       ),
     );

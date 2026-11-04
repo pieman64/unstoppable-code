@@ -312,7 +312,15 @@ test('the Plugins card adds the device server and keeps only Disconnect for an o
     ).toHaveText('Desktop only');
     await expect(
       window.getByTestId('plugins-entry-menu-mcp-catalog:canva'),
+    ).toBeVisible();
+    await window.getByTestId('plugins-entry-menu-mcp-catalog:canva').click();
+    await expect(
+      window.getByTestId('plugins-entry-menu-mcp-catalog:canva-details'),
+    ).toHaveText('Open details');
+    await expect(
+      window.getByTestId('plugins-entry-menu-mcp-catalog:canva-connect'),
     ).toHaveCount(0);
+    await window.keyboard.press('Escape');
     await window.getByTestId('plugins-entry-add-mcp-catalog:canva').click();
 
     // Add creates the server on this device, never a cloud connection.

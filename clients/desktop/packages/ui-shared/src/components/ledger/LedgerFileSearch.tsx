@@ -2,7 +2,7 @@
 
 import type { JSX } from 'react';
 import type { LedgerViewFileCandidate } from '@canopy/protocol/ledger-view';
-import { TextInput } from '../Field';
+import { SearchField } from '../SearchField';
 
 export interface LedgerFileSearchProps {
   query: string;
@@ -30,14 +30,14 @@ export function LedgerFileSearch({
   const showResults = query.trim().length > 0;
   return (
     <div className="flex flex-col gap-1">
-      <TextInput
-        type="search"
+      <SearchField
         aria-label="Find a file"
         value={query}
         disabled={disabled}
         placeholder="Find a file"
         data-testid="ledger-file-search"
-        onChange={(event) => onQueryChange(event.target.value)}
+        onValueChange={onQueryChange}
+        clearLabel="Clear file search"
         className="w-full"
       />
       {showResults && (
@@ -51,11 +51,15 @@ export function LedgerFileSearch({
               <button
                 type="button"
                 data-testid="ledger-file-search-result"
-                title={`${file.rootName}: ${file.path}`}
                 onClick={() => onPick(file)}
                 className="focus-ring flex w-full min-w-0 items-baseline gap-2 rounded px-2 py-1 text-left text-xs hover:bg-subtle"
               >
-                <span className="truncate font-mono fg-primary">
+                {/* The root shows beside it; the cut-off path keeps its full
+                    value as a native title. */}
+                <span
+                  className="truncate font-mono fg-primary"
+                  title={file.path}
+                >
                   {file.path}
                 </span>
                 <span className="shrink-0 fg-tertiary">{file.rootName}</span>

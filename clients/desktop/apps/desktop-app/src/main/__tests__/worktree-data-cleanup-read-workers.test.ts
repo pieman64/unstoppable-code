@@ -22,9 +22,20 @@ class FakeUtilityProcess extends EventEmitter {
     });
   }
 
-  public answerPersist(): void {
+  public answerMetadata(): void {
     this.emit('message', {
-      data: { ok: true, result: { kind: 'persist-fingerprint' } },
+      data: {
+        ok: true,
+        result: {
+          kind: 'fingerprint-metadata',
+          value: {
+            fingerprint: null,
+            schemaVersion: null,
+            extractorVersion: null,
+            completed: false,
+          },
+        },
+      },
     });
   }
 
@@ -181,13 +192,13 @@ function read(key = KEY): ReturnType<typeof runCodeGraphWorkerRead> {
   });
 }
 
-function persistFingerprint(): ReturnType<typeof runCodeGraphWorkerRead> {
+function readFingerprintMetadata(): ReturnType<typeof runCodeGraphWorkerRead> {
   return runCodeGraphWorkerRead({
     key: KEY,
-    kind: 'fingerprint-persist',
+    kind: 'fingerprint-metadata',
     request: {
       dbPath: '/mock/worktree-data/wt-1/code-graph/graph.db',
-      task: { kind: 'persist-fingerprint', fingerprint: 'fingerprint' },
+      task: { kind: 'fingerprint-metadata' },
     },
   });
 }
@@ -295,10 +306,10 @@ describe('worktree removal with long-lived read workers', () => {
     ]);
   });
 
-  it('awaits a reader retiring after an end-of-build write before close and rm', async () => {
-    const persist = persistFingerprint();
-    children[0]?.answerPersist();
-    await persist;
+  it('awaits a reader retiring after a staleness read before close and rm', async () => {
+    const metadata = readFingerprintMetadata();
+    children[0]?.answerMetadata();
+    await metadata;
     // A maintenance-only reader is killed once it answers; it has not exited.
     expect(children[0]?.kill).toHaveBeenCalledTimes(1);
 

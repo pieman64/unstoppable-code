@@ -961,10 +961,6 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     maxDepth: z.number().int().min(1).max(MAX_MANAGED_DELEGATION_DEPTH),
   }),
   z.object({
-    type: z.literal('settings.set_daily_credit_drip'),
-    enabled: z.boolean(),
-  }),
-  z.object({
     type: z.literal('workspace_context.switch'),
     context: z.union([
       z.object({ kind: z.literal('personal') }),

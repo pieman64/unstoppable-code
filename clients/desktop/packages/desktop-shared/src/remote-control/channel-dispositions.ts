@@ -1182,8 +1182,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     workerStarted: 'tunnel',
     workerUpdated: 'tunnel',
     workerExited: 'tunnel',
-    userEnvironmentLoad: 'tunnel',
-    userEnvironmentSave: 'tunnel',
     environmentConfigLoad: 'tunnel',
     environmentConfigSave: 'tunnel',
     codeGraphBuildStatusChanged: 'tunnel',

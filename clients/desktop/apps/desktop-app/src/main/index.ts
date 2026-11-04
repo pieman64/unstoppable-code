@@ -133,6 +133,7 @@ import {
 } from './notifications/campaigns/wiring';
 import { broadcastPipelineExecutionEvent } from './pipelines/pipeline-execution-event-broadcaster';
 import { pauseAllActivePipelineExecutions } from './pipelines/pipeline-execution-registry';
+import { checkpointPipelinesThroughLocalWorker } from './pipelines/pipeline-worker-dispatch';
 import {
   getRemoteControlRuntime,
   initializeRemoteControl,
@@ -278,6 +279,7 @@ import {
   subscribeConfirmedProviderAuth,
 } from './auth/provider-auth-state';
 import { migrateAutomationRunArchive } from './automations/run-archive-migration';
+import { startChatAutomationMigration } from './automations/chat-automation-migration';
 import { getAutomationsService } from './automations/service';
 import {
   openLinkInBuiltInBrowser,
@@ -423,12 +425,15 @@ import { migrateCoworkChatsToWorkEntries } from './lib/cowork-work-entry-migrati
 import { migrateDefaultCoworkWorkspaceName } from './lib/default-cowork-workspace-name-migration';
 import { startProviderAccountConnectTelemetry } from './lib/desktop-telemetry';
 import { getGitHubBroker } from './lib/github-broker';
-import { stopAllRunningHooks } from './lib/hook-runner';
+import { holdHooksForShutdown } from './lib/hook-runner';
 import {
   disposeInstrumentationKeepalive,
   startInstrumentationKeepalive,
 } from './lib/instrumentation-keepalive';
-import { recoverInterruptedWorkAtStartup } from './lib/interrupted-work-recovery';
+import {
+  recoverInterruptedWorkAtStartup,
+  sweepInterruptedPipelinesAtStartup,
+} from './lib/interrupted-work-recovery';
 import { sweepOrphanedMacosWorktreeDirectories } from './lib/macos-worktree-directory-cleanup';
 import { startMainEventLoopMonitor } from './lib/main-event-loop-monitor';
 import { buildMainEventLoopStallDiagnostic } from './lib/main-event-loop-stall-diagnostic';
@@ -667,59 +672,68 @@ import { workerTerminal } from './terminal/worker-terminal';
 import { startUpdater, stopUpdater } from './updater';
 import { getVoiceService } from './voice/service';
 import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
+import { recordDesktopInstanceEvent } from './lifecycle/desktop-instance-diagnostics';
 import type { W5StoreArmHandle } from './e2e-fixtures/w5-daemon-record-store-arm';
 
-initializeMainProcessLogging();
-installDesktopCodeGraphResources();
-
-getChatStateService().subscribeChildSearchDirty((event): void => {
-  getChatSearchService().childSearchDirty(event);
+const hasSingleInstanceLock = __CANOPY_E2E__ || app.requestSingleInstanceLock();
+recordDesktopInstanceEvent({
+  event: hasSingleInstanceLock ? 'owner-acquired' : 'contender-rejected',
 });
 
-setChatTabsRequiredDurabilityObserver(async (projectId, worktreeId) => {
-  // A canonical chat command holds the target reservation until this durable
-  // watermark completes, so Auto Delete cannot enter between the journal
-  // commit and its activity update.
-  await touchWorkspaceTargetAfterCommit(projectId, worktreeId);
-});
+if (hasSingleInstanceLock) {
+  configureLinuxDesktopIdentity(app);
+  initializeMainProcessLogging();
+  installDesktopCodeGraphResources();
 
-setChatTabsWriteObserver(
-  createChatTabsAuxiliaryProjectionObserver({
-    // Partial persistence identifies exactly which tabs changed. Applying the
-    // same delta to search avoids rebuilding FTS for large, unchanged
-    // transcripts while keeping concurrent rename/close operations correct.
-    indexSearch: (projectId, worktreeId, data, delta, isCurrent) =>
-      getChatSearchService().projectLiveTabs(
-        projectId,
-        worktreeId,
-        data,
-        delta,
-        isCurrent,
-      ),
-    // Keep the worktree's persisted chat badge summary current so sidebar
-    // badges render at startup without hydrating full transcripts.
-    syncBadges: syncWorktreeChatBadgesFromWrite,
-    syncWorkEntrySummary: syncWorkEntrySummaryFromWrite,
-    logRetry: logMainProcessWarn,
-    publishRuntimeStatus: handleChatTabsWritten,
-    // Portal chat-summary/todo/MCP projections and the cowork sidebar nudge
-    // follow every canonical materialization (throttled per scope) now that
-    // the renderer-driven save choke point is gone.
-    publishScope: (projectId, worktreeId, data, delta) =>
-      projectChatTabsMaterialization(
-        () => mainWindow,
-        projectId,
-        worktreeId,
-        data,
-        delta,
-      ),
-    nudgeSummary: (projectId) =>
-      nudgeCoworkWorkEntrySidebar(() => mainWindow, projectId),
-  }),
-);
+  getChatStateService().subscribeChildSearchDirty((event): void => {
+    getChatSearchService().childSearchDirty(event);
+  });
 
-// Observability's first initialization prunes audit days; install its reader first.
-registerCostRetentionGuard();
+  setChatTabsRequiredDurabilityObserver(async (projectId, worktreeId) => {
+    // A canonical chat command holds the target reservation until this durable
+    // watermark completes, so Auto Delete cannot enter between the journal
+    // commit and its activity update.
+    await touchWorkspaceTargetAfterCommit(projectId, worktreeId);
+  });
+
+  setChatTabsWriteObserver(
+    createChatTabsAuxiliaryProjectionObserver({
+      // Partial persistence identifies exactly which tabs changed. Applying the
+      // same delta to search avoids rebuilding FTS for large, unchanged
+      // transcripts while keeping concurrent rename/close operations correct.
+      indexSearch: (projectId, worktreeId, data, delta, isCurrent) =>
+        getChatSearchService().projectLiveTabs(
+          projectId,
+          worktreeId,
+          data,
+          delta,
+          isCurrent,
+        ),
+      // Keep the worktree's persisted chat badge summary current so sidebar
+      // badges render at startup without hydrating full transcripts.
+      syncBadges: syncWorktreeChatBadgesFromWrite,
+      syncWorkEntrySummary: syncWorkEntrySummaryFromWrite,
+      logRetry: logMainProcessWarn,
+      publishRuntimeStatus: handleChatTabsWritten,
+      // Portal chat-summary/todo/MCP projections and the cowork sidebar nudge
+      // follow every canonical materialization (throttled per scope) now that
+      // the renderer-driven save choke point is gone.
+      publishScope: (projectId, worktreeId, data, delta) =>
+        projectChatTabsMaterialization(
+          () => mainWindow,
+          projectId,
+          worktreeId,
+          data,
+          delta,
+        ),
+      nudgeSummary: (projectId) =>
+        nudgeCoworkWorkEntrySidebar(() => mainWindow, projectId),
+    }),
+  );
+
+  // Observability's first initialization prunes audit days; install its reader first.
+  registerCostRetentionGuard();
+}
 
 let mainWindow: BrowserWindow | null = null;
 let mainWindowRendererReady = false;
@@ -868,6 +882,7 @@ let uninstallFeatureFlagRecoveryTriggers: (() => void) | null = null;
 let disposeTurnFeedbackFlush: (() => void) | null = null;
 let disposeSharedItemSubscriptionFlush: (() => void) | null = null;
 let stopArchivedContainerRetention: (() => void) | null = null;
+let stopChatAutomationMigration: (() => void) | null = null;
 let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
   null;
 let disposeCuratedMcpRefresh: (() => void) | null = null;
@@ -1736,6 +1751,12 @@ function startDesktopInstrumentation(): void {
         }),
     },
     getPostHogInstallLaunch,
+    () => ({
+      osVersion: process.getSystemVersion(),
+      cpuArchitecture: app.runningUnderARM64Translation
+        ? 'arm64'
+        : process.arch,
+    }),
   ).then((result) => {
     if (!result.enabled && result.reason && result.reason !== 'disabled') {
       getObservabilityService().recordAppDiagnostic({
@@ -1907,6 +1928,12 @@ function unlockStartupWork(): void {
     .then((): Promise<void> => getAutomationsService().start())
     .then((): void => {
       recordRealisticStartupPerformanceEvent('startup:automations:completed');
+      // CAN-5479: converts the remaining chat automations once released.
+      if (!appIsQuitting)
+        stopChatAutomationMigration = startChatAutomationMigration({
+          service: getAutomationsService(),
+          labs: getLabsExperimentsService(),
+        });
     })
     .catch((error: unknown): void => {
       recordRealisticStartupPerformanceEvent('startup:automations:failed');
@@ -2220,21 +2247,26 @@ async function cleanupRuntimeResources(
       stages.run('auto-archive', () => autoArchiveScheduler?.stopScheduling()),
     );
     // Stop schedulers before closing admission and checkpointing active work.
+    stopChatAutomationMigration?.();
+    stopChatAutomationMigration = null;
     getAutomationsService().stop();
     getAppAdvisorWatcherService().shutdown();
     const localWatcherShutdown = settleBestEffortCleanup(
       stages.run('watcher-drain', () => getAppAdvisorWatcherService().drain()),
     );
-    stopAllRunningHooks();
+    holdHooksForShutdown();
     cancelStartupBackgroundTasks?.();
     cancelStartupBackgroundTasks = null;
     if (startupRecoveryPromise)
       await deferPreparationFailure(
         stages.run('startup-recovery', () => startupRecoveryPromise),
       );
-    const pipelinePause = stages.run(
-      'pipeline-recovery',
-      pauseAllActivePipelineExecutions,
+    // The checkpoint goes through core while its runtime still runs; with
+    // none, nothing could have started a run, so only admission closes.
+    const pipelinePause = stages.run('pipeline-recovery', () =>
+      desktopCanopyRuntime
+        ? checkpointPipelinesThroughLocalWorker()
+        : pauseAllActivePipelineExecutions(),
     );
     const splitBackgroundDrain = stages
       .run('split-background', drainSplitTemporaryWorkspaceBackgroundPhases)
@@ -2373,6 +2405,10 @@ async function cleanupRuntimeResources(
     // grid mutation survives the restart.
     panelLayoutPersistenceStore.flushAllSync();
     workerTerminal.killAll();
+    // D4: daemon terminals end before this app's daemon session closes.
+    const daemonTerminalsTeardown = stages
+      .run('daemon-terminals', () => workerTerminal.daemonTerminals?.killAll())
+      .catch(() => undefined);
     cancelPortalStructuralSync();
     getDesktopInventorySyncService().dispose();
     void stopCanopyPortal('app_shutdown').catch(() => undefined);
@@ -2425,6 +2461,7 @@ async function cleanupRuntimeResources(
     }
     desktopCanopyRuntime = null;
     setDesktopCanopyRuntime(null);
+    await daemonTerminalsTeardown;
     await stages.bestEffort(
       'electron-daemon-connections',
       disposeElectronDaemonFiles,
@@ -2601,57 +2638,59 @@ function exitAfterSignalCleanup(exitCode: number): void {
   })();
 }
 
-process.on('unhandledRejection', (reason: unknown): void => {
-  // eslint-disable-next-line no-console
-  console.error('Unhandled rejection in main process:', reason);
-  recordMainProcessError(
-    getObservabilityService(),
-    'main_unhandled_rejection',
-    reason,
-  );
-});
-
-process.on('uncaughtException', (error: Error): void => {
-  // EPIPE occurs when the Claude CLI subprocess dies and the SDK tries to write
-  // to its closed stdin pipe. This is safe to continue after — the session's
-  // normal error handling will detect the dead subprocess and clean up.
-  if (getErrorCode(error) === 'EPIPE' && getErrorSyscall(error) === 'write') {
+if (hasSingleInstanceLock) {
+  process.on('unhandledRejection', (reason: unknown): void => {
     // eslint-disable-next-line no-console
-    console.warn('Ignored EPIPE from dead subprocess pipe:', error.message);
-    return;
-  }
+    console.error('Unhandled rejection in main process:', reason);
+    recordMainProcessError(
+      getObservabilityService(),
+      'main_unhandled_rejection',
+      reason,
+    );
+  });
 
-  // For all other uncaught exceptions, log and crash (default Node.js behavior).
-  // Once an uncaughtException handler is registered, Node.js no longer terminates
-  // automatically — we must call process.exit for truly fatal errors.
-  // eslint-disable-next-line no-console
-  console.error('Fatal uncaught exception in main process:', error);
-  recordMainProcessError(
-    getObservabilityService(),
-    'main_uncaught_exception',
-    error,
-  );
-  void (async (): Promise<void> => {
-    try {
-      await Promise.race([
-        cleanupRuntimeResources('fatal-exit').catch(() => undefined),
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, 1000);
-        }),
-      ]);
-    } finally {
-      process.exit(1);
+  process.on('uncaughtException', (error: Error): void => {
+    // EPIPE occurs when the Claude CLI subprocess dies and the SDK tries to write
+    // to its closed stdin pipe. This is safe to continue after — the session's
+    // normal error handling will detect the dead subprocess and clean up.
+    if (getErrorCode(error) === 'EPIPE' && getErrorSyscall(error) === 'write') {
+      // eslint-disable-next-line no-console
+      console.warn('Ignored EPIPE from dead subprocess pipe:', error.message);
+      return;
     }
-  })();
-});
 
-process.on('SIGINT', (): void => {
-  exitAfterSignalCleanup(130);
-});
+    // For all other uncaught exceptions, log and crash (default Node.js behavior).
+    // Once an uncaughtException handler is registered, Node.js no longer terminates
+    // automatically — we must call process.exit for truly fatal errors.
+    // eslint-disable-next-line no-console
+    console.error('Fatal uncaught exception in main process:', error);
+    recordMainProcessError(
+      getObservabilityService(),
+      'main_uncaught_exception',
+      error,
+    );
+    void (async (): Promise<void> => {
+      try {
+        await Promise.race([
+          cleanupRuntimeResources('fatal-exit').catch(() => undefined),
+          new Promise<void>((resolve) => {
+            setTimeout(resolve, 1000);
+          }),
+        ]);
+      } finally {
+        process.exit(1);
+      }
+    })();
+  });
 
-process.on('SIGTERM', (): void => {
-  exitAfterSignalCleanup(143);
-});
+  process.on('SIGINT', (): void => {
+    exitAfterSignalCleanup(130);
+  });
+
+  process.on('SIGTERM', (): void => {
+    exitAfterSignalCleanup(143);
+  });
+}
 
 function getIconPath(): string {
   if (is.dev) {
@@ -3898,6 +3937,13 @@ function createWindowWithState(preferences: PreferencesData): void {
 
   mainWindowRendererReady = false;
   mainWindow = new BrowserWindow(windowOptions);
+  const createdWindow = mainWindow;
+  createdWindow.on('focus', (): void => {
+    recordDesktopInstanceEvent({
+      event: 'window-focused',
+      windowId: createdWindow.id,
+    });
+  });
   primaryWindowFocus.track(mainWindow);
   registerIpcSurface(mainWindow.webContents, 'main');
   overlayLayerHost.observeWindow(mainWindow);
@@ -4518,6 +4564,12 @@ const DEEP_LINK_SCHEMES: readonly string[] = Array.from(
 
 function focusMainWindowForDeepLink(): void {
   focusMainWindow();
+  if (mainWindow?.isFocused()) {
+    recordDesktopInstanceEvent({
+      event: 'window-focused',
+      windowId: mainWindow.id,
+    });
+  }
 }
 
 /**
@@ -4616,7 +4668,6 @@ function registerDeepLinkProtocolClient(): void {
 // userData dir, which E2E only redirects per-run *after* ready (see the
 // `__CANOPY_E2E__` block inside whenReady), so parallel harness instances
 // would collide on the default OS profile here.
-const hasSingleInstanceLock = __CANOPY_E2E__ || app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
   // Losing the lock means another instance owns this profile: quit without
@@ -4625,12 +4676,14 @@ if (!hasSingleInstanceLock) {
   // below stays gated on `hasSingleInstanceLock`.
   app.quit();
 } else {
-  if (!__CANOPY_E2E__) {
-    app.on('second-instance', (_event, argv): void => {
-      focusMainWindowForDeepLink();
-      handleProtocolArgv(argv, DEEP_LINK_SCHEMES);
+  app.on('second-instance', (_event, argv): void => {
+    recordDesktopInstanceEvent({
+      event: 'second-instance',
+      windowId: mainWindow?.id ?? null,
     });
-  }
+    focusMainWindowForDeepLink();
+    handleProtocolArgv(argv, DEEP_LINK_SCHEMES);
+  });
 
   app.on('will-finish-launching', (): void => {
     app.on('open-url', (event, url): void => {
@@ -4694,6 +4747,11 @@ if (!hasSingleInstanceLock) {
           link.section,
         );
       }
+      recordDesktopInstanceEvent({
+        event: 'link-delivered',
+        windowId: window.id,
+        destination: 'settings',
+      });
       return true;
     }
     if ('destination' in link) {
@@ -4771,20 +4829,21 @@ if (!hasSingleInstanceLock) {
 
 // -------------------------------------------------------------------------
 
-configureLinuxDesktopIdentity(app);
-
 // Before ready: agent visuals run in their own process, not the app's.
-pinIsolateSandboxedIframes(app.commandLine);
-configureLinuxSecureStorage(app.commandLine, {
-  platform: hostOperatingSystem(),
-  isTestHarness: __CANOPY_E2E__,
-  passwordStoreOverride: __CANOPY_E2E__
-    ? process.env.CANOPY_LINUX_PASSWORD_STORE
-    : undefined,
-});
+if (hasSingleInstanceLock) {
+  pinIsolateSandboxedIframes(app.commandLine);
+  configureLinuxSecureStorage(app.commandLine, {
+    platform: hostOperatingSystem(),
+    isTestHarness: __CANOPY_E2E__,
+    passwordStoreOverride: __CANOPY_E2E__
+      ? process.env.CANOPY_LINUX_PASSWORD_STORE
+      : undefined,
+  });
+}
 
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
+  recordDesktopInstanceEvent({ event: 'app-ready' });
   // TRANSITIONAL (CAN-3797): joins the W5 host cohort before any W5 I/O.
   // Remove when the W5 rows move to `daemon` and the legacy Electron writers
   // are deleted (CAN-3795 / CAN-3802).
@@ -4930,6 +4989,10 @@ void app.whenReady().then(async (): Promise<void> => {
   // A leftover app-server holds the shared Codex state DB and wedges every
   // app-server this run spawns (chat sessions and marketplace calls alike).
   // PIDs are verified to still be Codex app-servers before being killed.
+  recordDesktopInstanceEvent({
+    event: 'provider-cleanup-started',
+    provider: 'codex',
+  });
   enableCodexAppServerPidPersistence();
   const staleCodexCleanup = reapStaleCodexAppServerProcesses().catch(
     (error: unknown): void => {
@@ -4939,6 +5002,10 @@ void app.whenReady().then(async (): Promise<void> => {
   );
   // Reap Claude CLIs a crashed run left behind (they run detached). Each PID
   // must still match its recorded start time and executable before a kill.
+  recordDesktopInstanceEvent({
+    event: 'provider-cleanup-started',
+    provider: 'claude',
+  });
   enableClaudeProcessPidPersistence();
   void reapStaleClaudeProcesses()
     .then((reaped): void => {
@@ -5467,6 +5534,19 @@ void app.whenReady().then(async (): Promise<void> => {
     daemonFilesRoute: getDesktopDaemonFilesRoute,
   });
   setDesktopCanopyRuntime(desktopCanopyRuntime);
+  // The orphan sweep goes through core, so it waits for the runtime; nothing
+  // can start a pipeline before the handlers below are registered.
+  startupRecoveryPromise = sweepInterruptedPipelinesAtStartup();
+  if (startupRecoveryPromise) {
+    startupRecoveryPromise = startupRecoveryPromise.catch(
+      (error: unknown): void => {
+        // eslint-disable-next-line no-console
+        console.error('Failed to recover interrupted workflow runs:', error);
+      },
+    );
+    await startupRecoveryPromise;
+    if (appIsQuitting) return;
+  }
   if (__CANOPY_E2E__) {
     // Selected Windows acceptance fixtures only. Activation shares startup's
     // existing service registration; no diagnostic transport request is added.
@@ -6783,46 +6863,48 @@ void app.whenReady().then(async (): Promise<void> => {
   });
 });
 
-app.on('before-quit', (event): void => {
-  if (appIsQuitting) {
-    if (drainedProcessExitGuard?.handleRepeatedQuit()) return;
-    if (!runtimeCleanupComplete) event.preventDefault();
-    return;
-  }
+if (hasSingleInstanceLock) {
+  app.on('before-quit', (event): void => {
+    if (appIsQuitting) {
+      if (drainedProcessExitGuard?.handleRepeatedQuit()) return;
+      if (!runtimeCleanupComplete) event.preventDefault();
+      return;
+    }
 
-  // Before cleanup crosses its one-way gates, give unsaved workflow edits a
-  // chance. The updater's quit-and-install and fatal exits run cleanup first,
-  // so they arrive here already quitting and are never held.
-  if (
-    unsavedCloseGuard.intercept(
-      event,
-      'quit',
-      { quitting: appIsQuitting, hidingToTray: false },
-      (): void => {
-        app.quit();
-      },
-    )
-  ) {
-    return;
-  }
+    // Before cleanup crosses its one-way gates, give unsaved workflow edits a
+    // chance. The updater's quit-and-install and fatal exits run cleanup first,
+    // so they arrive here already quitting and are never held.
+    if (
+      unsavedCloseGuard.intercept(
+        event,
+        'quit',
+        { quitting: appIsQuitting, hidingToTray: false },
+        (): void => {
+          app.quit();
+        },
+      )
+    ) {
+      return;
+    }
 
-  getObservabilityService().recordAppDiagnostic({
-    version: 1,
-    timestamp: new Date().toISOString(),
-    kind: 'before_quit',
-  });
-
-  event.preventDefault();
-  void cleanupRuntimeResources('app-quit')
-    .then((): void => {
-      app.quit();
-    })
-    .catch(() => {
-      // Cleanup closes one-way admission gates and tears down process-lifetime
-      // services. Continuing to run would leave a permanently wedged window.
-      app.exit(0);
+    getObservabilityService().recordAppDiagnostic({
+      version: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'before_quit',
     });
-});
+
+    event.preventDefault();
+    void cleanupRuntimeResources('app-quit')
+      .then((): void => {
+        app.quit();
+      })
+      .catch(() => {
+        // Cleanup closes one-way admission gates and tears down process-lifetime
+        // services. Continuing to run would leave a permanently wedged window.
+        app.exit(0);
+      });
+  });
+}
 
 /**
  * One-time notice: a user who closes the window and sees nothing reasonably
@@ -6848,20 +6930,21 @@ function maybeDiscloseCloseToTray(): void {
     .catch(() => undefined);
 }
 
-app.on('window-all-closed', () => {
-  // Windows historically quit here, which meant a closed window ended every
-  // scheduled campaign and background task. Close-to-tray keeps the app
-  // resident; macOS is unchanged and never quits on this event.
-  if (
-    shouldQuitOnAllWindowsClosed({
-      platform: process.platform,
-      closeToTray: isCloseToTrayEnabled(),
-    })
-  ) {
-    app.quit();
-    return;
-  }
-  // No disclosure here: whenever close-to-tray is active the window's `close`
-  // handler prevents the close, so this event never fires in that state. Every
-  // other non-darwin case quit above.
-});
+if (hasSingleInstanceLock)
+  app.on('window-all-closed', () => {
+    // Windows historically quit here, which meant a closed window ended every
+    // scheduled campaign and background task. Close-to-tray keeps the app
+    // resident; macOS is unchanged and never quits on this event.
+    if (
+      shouldQuitOnAllWindowsClosed({
+        platform: process.platform,
+        closeToTray: isCloseToTrayEnabled(),
+      })
+    ) {
+      app.quit();
+      return;
+    }
+    // No disclosure here: whenever close-to-tray is active the window's `close`
+    // handler prevents the close, so this event never fires in that state. Every
+    // other non-darwin case quit above.
+  });

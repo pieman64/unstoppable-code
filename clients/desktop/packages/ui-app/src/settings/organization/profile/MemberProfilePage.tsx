@@ -8,7 +8,7 @@ import {
   Newspaper,
   Workflow,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { TabBar } from '@canopy/ui-shared/components';
+import { TabBar, Heading } from '@canopy/ui-shared/components';
 import type { MemberProfileHeader } from '@canopy/protocol/team';
 import type { OrganizationMember } from '@canopy/protocol/settings';
 import {
@@ -265,9 +265,9 @@ export function MemberProfilePage({
                 data-testid="profile-sessions-tab"
               >
                 <section className="flex flex-col gap-3">
-                  <h2 className="text-s font-semibold fg-primary">
+                  <Heading level={2} variant="title">
                     Shared sessions
-                  </h2>
+                  </Heading>
                   <ProfileSharedRunsSection
                     orgId={org.id}
                     userId={member.id}
@@ -288,9 +288,9 @@ export function MemberProfilePage({
                 data-testid="profile-plans-tab"
               >
                 <section className="flex flex-col gap-3">
-                  <h2 className="text-s font-semibold fg-primary">
+                  <Heading level={2} variant="title">
                     Shared plans
-                  </h2>
+                  </Heading>
                   <ProfilePlansSection
                     orgId={org.id}
                     userId={member.id}
@@ -298,9 +298,9 @@ export function MemberProfilePage({
                   />
                 </section>
                 <section className="flex flex-col gap-3">
-                  <h2 className="text-s font-semibold fg-primary">
+                  <Heading level={2} variant="title">
                     Implemented plans
-                  </h2>
+                  </Heading>
                   <ProfileApprovedPlansSection
                     orgId={org.id}
                     userId={member.id}

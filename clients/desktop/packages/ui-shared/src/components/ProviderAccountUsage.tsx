@@ -11,7 +11,7 @@ import {
 } from './UsageGroup';
 import { ProviderUsageAccountRow } from './ProviderUsageAccountRow';
 import type { UsageIndicatorAccountSummaryProps } from './UsageIndicator';
-import { ChevronRightMediumIcon } from '../icons/AppIcons';
+import { Disclosure } from './Disclosure';
 
 const PASSIVE_SOURCE_LABEL = 'Reported by the account proxy';
 
@@ -233,17 +233,9 @@ export function ProviderAccountUsageDetails({
   return (
     <div className="mt-2 space-y-1">
       {collapsible ? (
-        <details className="group/account-usage">
-          <summary className="focus-ring flex w-fit cursor-pointer list-none items-center gap-1 rounded-md text-xs font-medium fg-secondary hover:fg-primary [&::-webkit-details-marker]:hidden">
-            <ChevronRightMediumIcon
-              size={14}
-              aria-hidden="true"
-              className="shrink-0 group-open/account-usage:rotate-90"
-            />
-            Usage
-          </summary>
-          <div className="mt-1">{usage}</div>
-        </details>
+        <Disclosure label="Usage" dataTestId="provider-account-usage">
+          <div>{usage}</div>
+        </Disclosure>
       ) : (
         usage
       )}

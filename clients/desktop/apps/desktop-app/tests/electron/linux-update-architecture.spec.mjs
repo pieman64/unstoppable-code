@@ -335,6 +335,7 @@ test('unsupported Linux package offers no APT command or reinstall action', asyn
     viewportSize: null,
     env: { CANOPY_E2E_PLATFORM: 'linux' },
   });
+  const brand = loadBrand(process.env.CANOPY_BRAND ?? 'canopy');
   try {
     const window = await electronApp.firstWindow();
     const driver = new CanopyAppDriver(window);
@@ -346,7 +347,7 @@ test('unsupported Linux package offers no APT command or reinstall action', asyn
     try {
       await ui.clickVisibleControl(window.getByTestId('settings-update-check'));
       await expect(window.getByTestId('settings-update-status')).toContainText(
-        'installed x64 or arm64 .deb',
+        `Linux update checks need ${brand.displayName} installed from its official .deb or pacman package on x64 or arm64. Other installs and architectures are not supported.`,
       );
       await expect(
         window.getByTestId('settings-linux-update-guidance'),

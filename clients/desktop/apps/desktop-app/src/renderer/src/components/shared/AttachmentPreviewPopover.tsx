@@ -7,7 +7,11 @@ import {
   type JSX,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Markdown } from '@canopy/ui-shared/components';
+import {
+  Markdown,
+  SkeletonBlock,
+  useSkeletonBone,
+} from '@canopy/ui-shared/components';
 import { getDocument, getWindow } from '@canopy/ui-shared/panels';
 import type { FilePreviewResponse } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -75,13 +79,17 @@ function computePopoverPosition(
 // Sub-components
 // ---------------------------------------------------------------------------
 
+/** Holds the image's place, at the preview's height, until it decodes. */
+function ImageSkeleton(): JSX.Element {
+  const bone = useSkeletonBone<HTMLSpanElement>();
+  return <span {...bone} className="block h-30 w-full rounded" />;
+}
+
 function ImagePreview({ src }: { src: string }): JSX.Element {
   const [loaded, setLoaded] = useState(false);
   return (
     <div className="flex items-center justify-center bg-fg-primary/[0.02] p-2">
-      {!loaded && (
-        <div className="h-30 w-full animate-pulse rounded bg-fg-primary/[0.06]" />
-      )}
+      {!loaded && <ImageSkeleton />}
       <img
         src={src}
         alt=""
@@ -144,10 +152,11 @@ function UnsupportedPreview(): JSX.Element {
 
 function LoadingSkeleton(): JSX.Element {
   return (
-    <div className="space-y-2 p-3">
-      <div className="h-3 w-3/4 animate-pulse rounded bg-fg-primary/[0.06]" />
-      <div className="h-3 w-1/2 animate-pulse rounded bg-fg-primary/[0.06]" />
-      <div className="h-3 w-2/3 animate-pulse rounded bg-fg-primary/[0.06]" />
+    <div role="status" className="space-y-2 p-3">
+      <span className="sr-only">Loading preview</span>
+      <SkeletonBlock width="3/4" />
+      <SkeletonBlock width="1/2" />
+      <SkeletonBlock width="2/3" />
     </div>
   );
 }

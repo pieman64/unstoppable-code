@@ -1,5 +1,3 @@
-const mockReadUserEnvironment = jest.fn();
-const mockWriteUserEnvironment = jest.fn();
 const mockReadEnvironmentConfig = jest.fn();
 const mockWriteEnvironmentConfig = jest.fn();
 const mockInitializeUserEnvironmentRuntime = jest.fn();
@@ -19,17 +17,11 @@ jest.mock('../agents/delegation/lifecycle', () => ({
 }));
 
 jest.mock('../lib/user-environment-store', () => ({
-  get readEnvironmentConfig(): typeof mockReadEnvironmentConfig {
+  get readEnvironmentConfigView(): typeof mockReadEnvironmentConfig {
     return mockReadEnvironmentConfig;
-  },
-  get readUserEnvironment(): typeof mockReadUserEnvironment {
-    return mockReadUserEnvironment;
   },
   get writeEnvironmentConfig(): typeof mockWriteEnvironmentConfig {
     return mockWriteEnvironmentConfig;
-  },
-  get writeUserEnvironment(): typeof mockWriteUserEnvironment {
-    return mockWriteUserEnvironment;
   },
 }));
 
@@ -67,12 +59,12 @@ jest.mock('../lib/main-process-logging', () => ({
 import {
   IPC_CHANNELS,
   type EnvironmentConfigData,
-  type UserEnvironmentData,
 } from '@canopy/desktop-shared/types';
 import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
 import { registerUserEnvironmentHandlers } from '../ipc/user-environment';
 import { registerIpcHandler } from '../ipc/register';
 import { SecureStorageOperationError } from '../lib/secure-storage-policy';
+import { StoredSecretError } from '../lib/stored-secrets';
 
 const mockedRegisterIpcHandler = jest.mocked(registerIpcHandler);
 
@@ -93,14 +85,6 @@ describe('user environment IPC', () => {
     jest.clearAllMocks();
     mockHasDelegationLifecycle.mockReturnValue(false);
     mockRevokeDelegationLifecycle.mockResolvedValue(undefined);
-    mockReadUserEnvironment.mockResolvedValue({
-      data: { uiMode: 'key-value', variables: [] },
-      encryptionAvailable: true,
-    });
-    mockWriteUserEnvironment.mockResolvedValue({
-      data: { uiMode: 'key-value', variables: [] },
-      encryptionAvailable: true,
-    });
     const defaultConfig = createDefaultEnvironmentConfig(
       '2026-05-29T00:00:00.000Z',
     );
@@ -120,14 +104,13 @@ describe('user environment IPC', () => {
     registerUserEnvironmentHandlers();
 
     expect(mockInitializeUserEnvironmentRuntime).toHaveBeenCalledTimes(1);
-    expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
-      IPC_CHANNELS.userEnvironmentLoad,
-      expect.any(Function),
-    );
-    expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
-      IPC_CHANNELS.userEnvironmentSave,
-      expect.any(Function),
-    );
+    // The version-1 user-environment channels are retired (CAN-4411).
+    expect(
+      mockedRegisterIpcHandler.mock.calls.map(([channel]) => channel),
+    ).toEqual([
+      IPC_CHANNELS.environmentConfigLoad,
+      IPC_CHANNELS.environmentConfigSave,
+    ]);
     expect(mockedRegisterIpcHandler).toHaveBeenCalledWith(
       IPC_CHANNELS.environmentConfigLoad,
       expect.any(Function),
@@ -136,24 +119,6 @@ describe('user environment IPC', () => {
       IPC_CHANNELS.environmentConfigSave,
       expect.any(Function),
     );
-  });
-
-  it('refreshes Ollama processes after saving user environment variables', async () => {
-    registerUserEnvironmentHandlers();
-    const handler = getRegisteredHandler(IPC_CHANNELS.userEnvironmentSave);
-    const data: UserEnvironmentData = {
-      uiMode: 'key-value',
-      variables: [{ key: 'CUSTOM_OLLAMA_ENV', value: 'enabled' }],
-    };
-
-    await handler({}, data);
-
-    expect(mockWriteUserEnvironment).toHaveBeenCalledWith(data);
-    expect(mockInvalidateUserEnvironmentInjectionCache).toHaveBeenCalledTimes(
-      1,
-    );
-    expect(mockDestroySessionsByProvider).toHaveBeenCalledWith('ollama');
-    expect(mockHandleUserEnvironmentChanged).toHaveBeenCalledTimes(1);
   });
 
   it('refreshes Ollama processes after saving environment config assignments', async () => {
@@ -210,48 +175,50 @@ describe('user environment IPC', () => {
     expect(mockHandleUserEnvironmentChanged).not.toHaveBeenCalled();
   });
 
-  it.each([
-    IPC_CHANNELS.userEnvironmentSave,
-    IPC_CHANNELS.environmentConfigSave,
-  ])(
-    'revokes active delegated routes after a successful environment save (%s)',
-    async (channel) => {
-      mockHasDelegationLifecycle.mockReturnValue(true);
-      registerUserEnvironmentHandlers();
-      await getRegisteredHandler(channel)(
+  it('revokes active delegated routes after a successful environment save', async () => {
+    mockHasDelegationLifecycle.mockReturnValue(true);
+    registerUserEnvironmentHandlers();
+    await getRegisteredHandler(IPC_CHANNELS.environmentConfigSave)(
+      {},
+      createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z'),
+    );
+    expect(mockRevokeDelegationLifecycle).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refreshes Ollama when delegation revocation fails', async () => {
+    mockHasDelegationLifecycle.mockReturnValue(true);
+    mockRevokeDelegationLifecycle.mockRejectedValueOnce(
+      new Error('revocation failed'),
+    );
+    registerUserEnvironmentHandlers();
+
+    const result = await getRegisteredHandler(
+      IPC_CHANNELS.environmentConfigSave,
+    )({}, createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z'));
+
+    expect(result).toMatchObject({ encryptionAvailable: true });
+    expect(mockDestroySessionsByProvider).toHaveBeenCalledWith('ollama');
+    expect(mockHandleUserEnvironmentChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a refused stored secret by code, without save side effects', async () => {
+    mockWriteEnvironmentConfig.mockRejectedValueOnce(
+      new StoredSecretError('stored_secret_unknown', 'Reload and try again.'),
+    );
+    registerUserEnvironmentHandlers();
+    await expect(
+      getRegisteredHandler(IPC_CHANNELS.environmentConfigSave)(
         {},
-        channel === IPC_CHANNELS.userEnvironmentSave
-          ? { uiMode: 'key-value', variables: [] }
-          : createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z'),
-      );
-      expect(mockRevokeDelegationLifecycle).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it.each([
-    IPC_CHANNELS.userEnvironmentSave,
-    IPC_CHANNELS.environmentConfigSave,
-  ])(
-    'still refreshes Ollama when delegation revocation fails (%s)',
-    async (channel) => {
-      mockHasDelegationLifecycle.mockReturnValue(true);
-      mockRevokeDelegationLifecycle.mockRejectedValueOnce(
-        new Error('revocation failed'),
-      );
-      registerUserEnvironmentHandlers();
-
-      const result = await getRegisteredHandler(channel)(
-        {},
-        channel === IPC_CHANNELS.userEnvironmentSave
-          ? { uiMode: 'key-value', variables: [] }
-          : createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z'),
-      );
-
-      expect(result).toMatchObject({ encryptionAvailable: true });
-      expect(mockDestroySessionsByProvider).toHaveBeenCalledWith('ollama');
-      expect(mockHandleUserEnvironmentChanged).toHaveBeenCalledTimes(1);
-    },
-  );
+        createDefaultEnvironmentConfig('now'),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      error: 'Reload and try again.',
+      storedSecretError: 'stored_secret_unknown',
+    });
+    expect(mockInvalidateUserEnvironmentInjectionCache).not.toHaveBeenCalled();
+    expect(mockRevokeDelegationLifecycle).not.toHaveBeenCalled();
+  });
 
   it.each([
     'SECURE_STORAGE_READ_UNAVAILABLE',

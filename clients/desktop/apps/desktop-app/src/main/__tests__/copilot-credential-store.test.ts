@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as AtomicFile from '../lib/atomic-file';
@@ -21,7 +22,32 @@ const safeStorageMock: SafeStorageMock = {
     encrypted.toString('utf8').replace(/^encrypted:/, ''),
   ),
 };
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+let mockWindowsRoundTrip = false;
 let root = '';
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  return {
+    ...actual,
+    open: async (
+      ...args: Parameters<typeof FsPromises.open>
+    ): ReturnType<typeof FsPromises.open> => {
+      if (
+        mockWindowsRoundTrip &&
+        originalPlatform?.value !== 'win32' &&
+        args[0] === root &&
+        args[1] === 'r+'
+      ) {
+        // A simulated Windows directory flush cannot use POSIX's real r+
+        // directory open. Stub only that handle's flush; file syncs stay real.
+        const directory = await actual.open(args[0], 'r', args[2]);
+        directory.sync = async (): Promise<void> => {};
+        return directory;
+      }
+      return actual.open(...args);
+    },
+  };
+});
 jest.mock('electron', () => ({
   app: { isReady: (): boolean => true },
   safeStorage: {
@@ -126,10 +152,13 @@ function failDirectorySyncAfterRename(afterRename?: () => Promise<void>): void {
 describe('Copilot credential store', () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'copilot-credential-'));
+    mockWindowsRoundTrip = false;
     safeStorageMock.encryptionAvailable = true;
     jest.clearAllMocks();
   });
   afterEach(async () => {
+    if (originalPlatform)
+      Object.defineProperty(process, 'platform', originalPlatform);
     await rm(root, { recursive: true, force: true });
   });
 
@@ -139,27 +168,35 @@ describe('Copilot credential store', () => {
     });
   });
 
-  it('round-trips an encrypted credential with an owner-only file', async () => {
-    const created = await createCopilotCredential(grant);
-    expect(created.entryId).toMatch(ENTRY_ID);
-    expect(created).toEqual({
-      version: 1,
-      ...grant,
-      entryId: created.entryId,
-      revision: 1,
-    });
-    const raw = await readFile(filePath());
-    // The fake encryptor keeps the payload visible; what matters is that the
-    // file holds exactly the encryptor's output, never the raw JSON.
-    expect(raw.toString('utf8').startsWith('encrypted:')).toBe(true);
-    expect(safeStorageMock.encryptString).toHaveBeenCalledWith(
-      JSON.stringify(created),
-    );
-    await expect(readCopilotCredential()).resolves.toEqual({
-      status: 'present',
-      credential: created,
-    });
-  });
+  it.each(['darwin', 'win32', 'linux'])(
+    'round-trips an encrypted credential with an owner-only file on %s',
+    async (platform) => {
+      mockWindowsRoundTrip = platform === 'win32';
+      Object.defineProperty(process, 'platform', {
+        value: platform,
+        configurable: true,
+      });
+      const created = await createCopilotCredential(grant);
+      expect(created.entryId).toMatch(ENTRY_ID);
+      expect(created).toEqual({
+        version: 1,
+        ...grant,
+        entryId: created.entryId,
+        revision: 1,
+      });
+      const raw = await readFile(filePath());
+      // The fake encryptor keeps the payload visible; what matters is that the
+      // file holds exactly the encryptor's output, never the raw JSON.
+      expect(raw.toString('utf8').startsWith('encrypted:')).toBe(true);
+      expect(safeStorageMock.encryptString).toHaveBeenCalledWith(
+        JSON.stringify(created),
+      );
+      await expect(readCopilotCredential()).resolves.toEqual({
+        status: 'present',
+        credential: created,
+      });
+    },
+  );
 
   it('saves durably and syncs the directory after a delete', async () => {
     const created = await createCopilotCredential(grant);

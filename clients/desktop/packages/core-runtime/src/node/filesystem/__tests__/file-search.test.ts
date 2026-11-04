@@ -292,6 +292,43 @@ describe('createFilesystemSearchEngine', () => {
     expect(source.listings).toEqual([rootPath]);
   });
 
+  it('walks ignored directories after everything else, so a cap keeps tracked files', async () => {
+    // `build/` sorts before `src/`; a large ignored tree there used to fill
+    // a capped index before any tracked file was reached.
+    await put('build/gen/a.js');
+    await put('build/gen/b.js');
+    const engine = createFilesystemSearchEngine();
+    const source = host({
+      matcher: MENTIONS,
+      listIgnoredPathEntries: () => Promise.resolve(['build/']),
+    });
+    const capped = await engine.search(
+      params({ purpose: 'mentions', limit: 5 }),
+      source,
+    );
+    expect(capped.result.matches.map((match) => match.path)).toEqual([
+      'src/lib/util.ts',
+      'src/index.ts',
+      'A.md',
+      'b-link.txt',
+      'b.txt',
+    ]);
+    expect(capped.result.truncated).toBe(true);
+    const rest = await engine.search(
+      params({
+        purpose: 'mentions',
+        ...(capped.result.nextCursor && { cursor: capped.result.nextCursor }),
+      }),
+      source,
+    );
+    expect(
+      rest.result.matches.map(({ path, isIgnored }) => ({ path, isIgnored })),
+    ).toEqual([
+      { path: 'build/gen/a.js', isIgnored: true },
+      { path: 'build/gen/b.js', isIgnored: true },
+    ]);
+  });
+
   it('refuses content and symbol modes before resolving a root', async () => {
     const engine = createFilesystemSearchEngine();
     const source = host();

@@ -30,7 +30,10 @@ inputs:
     description: Thinking effort for this turn. Optional.
     required: false
   fast_mode:
-    description: "'true' or 'false'. Optional."
+    description: "'true' or 'false'. Optional; fails with speed."
+    required: false
+  speed:
+    description: standard, fast or ultrafast, for this turn or the new chat. Regular on a model without Codex speeds. Optional; fails with fast_mode.
     required: false
   plan_mode:
     description: "'true' or 'false'. Optional."
@@ -41,6 +44,9 @@ inputs:
   plugins:
     description: JSON array of shareable plugin references to turn on. Optional.
     required: false
+  plugin_selections:
+    description: JSON object of local plugin selections to turn on, as a chat automation stores them. Optional.
+    required: false
   interface_mode:
     description: canopy, claude-code or auto, for a new chat only. Optional; fails with chat_id.
     required: false
@@ -49,6 +55,18 @@ inputs:
     required: false
   attachments:
     description: JSON array of file paths inside the step's working folder to attach. Needs chat_id. Optional.
+    required: false
+  attachment_paths:
+    description: JSON array of absolute paths of files in the task's attachments folder to attach, as a chat automation stores them. Needs chat_id; fails with attachments. Optional.
+    required: false
+  attachment_prompt_contexts:
+    description: JSON array of attachment prompt contexts for the attached files. Needs chat_id. Optional.
+    required: false
+  file_references:
+    description: JSON array of legacy composer file references. Needs chat_id; refused in agent-started runs. Optional.
+    required: false
+  input_mode:
+    description: typed or voice. Needs chat_id. Optional.
     required: false
   literal_text:
     description: "'true' to send text and text_references exactly as written, without evaluating expressions in them. Needs text. Optional."

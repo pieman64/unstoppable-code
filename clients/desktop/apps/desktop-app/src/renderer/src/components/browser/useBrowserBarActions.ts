@@ -13,10 +13,12 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   pendingBrowserNavigationUrl,
+  selectActiveSearchEngine,
   useBrowserStore,
 } from '@/stores/browserStore';
 import {
-  classifyInAppBrowserInput,
+  browserBarPlaceholder,
+  classifyBrowserBarInput,
   inAppBrowserInputMessage,
   isFileBrowserUrl,
 } from '@/lib/browserUrl';
@@ -29,6 +31,8 @@ export interface BrowserBarActions {
   readonly urlDraft: string;
   readonly setUrlDraft: (value: string) => void;
   readonly urlError: string | null;
+  /** Names the search engine that typed keywords go to. */
+  readonly urlPlaceholder: string;
   readonly urlInputRef: RefObject<HTMLInputElement | null>;
   readonly handleKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
   readonly back: () => void;
@@ -63,6 +67,7 @@ export function useBrowserBarActions(
   const setInspectorOpen = useBrowserStore((s) => s.setInspectorOpen);
   const setInspectorTab = useBrowserStore((s) => s.setInspectorTab);
   const localServersOnly = useBrowserStore((s) => s.localServersOnly);
+  const searchEngine = useBrowserStore(selectActiveSearchEngine);
 
   const { projectId, worktreeId } = snapshot;
   const [urlDraft, setUrlDraft] = useState(snapshot.url);
@@ -114,7 +119,12 @@ export function useBrowserBarActions(
   const handleNavigate = useCallback((): void => {
     // One classifier, shared with main, picks both the verdict and the copy —
     // the bar no longer re-parses the scheme to guess which message to show.
-    const verdict = classifyInAppBrowserInput(urlDraft, localServersOnly);
+    // Keywords search with the engine chosen in Settings → Browser.
+    const verdict = classifyBrowserBarInput(
+      urlDraft,
+      localServersOnly,
+      searchEngine.urlTemplate,
+    );
     if (verdict.kind !== 'ok') {
       setUrlError(inAppBrowserInputMessage(verdict));
       return;
@@ -146,7 +156,15 @@ export function useBrowserBarActions(
       useBrowserStore.getState().clearPendingNavigation(browserId);
       await run(() => window.api.browser.navigate({ browserId, url }));
     })();
-  }, [browserId, localServersOnly, projectId, run, urlDraft, worktreeId]);
+  }, [
+    browserId,
+    localServersOnly,
+    projectId,
+    run,
+    searchEngine.urlTemplate,
+    urlDraft,
+    worktreeId,
+  ]);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLInputElement>): void => {
@@ -271,6 +289,7 @@ export function useBrowserBarActions(
     urlDraft,
     setUrlDraft,
     urlError,
+    urlPlaceholder: browserBarPlaceholder(searchEngine.name),
     urlInputRef,
     handleKeyDown,
     back,

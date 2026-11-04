@@ -1,24 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import {
-  chmod,
-  mkdir,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from 'node:path';
+import { readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import {
   redactSecrets as redactSharedSecrets,
   SECRET_ASSIGNMENT_KEYS_SOURCE,
@@ -29,6 +10,20 @@ import {
   LOCAL_MEMORY_MORE_MARKER,
   type BoundaryClip,
 } from './boundary-truncation';
+import { withMemoryWriteLock } from './edit-coordination';
+import {
+  ensureOwnerOnlyMemoryDir,
+  isMemoryMarkdownFileName,
+  isNodeError,
+  writeNewMemoryFile,
+} from './memory-files';
+import {
+  memoryNoteFileName,
+  memoryNoteIdAt,
+  withMemoryNoteId,
+} from './note-identity';
+import { LocalMemoryScopeLockLostError } from './scope-lock';
+import { LocalMemoryScopeReadOnlyError } from './scope-manifest';
 
 const MEMORY_INDEX_MAX_LINES = 200;
 const MEMORY_INDEX_MAX_BYTES = 25 * 1024;
@@ -41,12 +36,6 @@ const READ_MEMORY_TRUNCATION_NOTICE =
   '\n\n[Memory content truncated at 24 KiB.]';
 const MAX_SOURCE_FIELD_CHARS = 500;
 const MAX_NOTE_TEXT_CHARS = 2_000;
-const MANIFEST_CONTENT = `${JSON.stringify({ version: 1 }, null, 2)}\n`;
-// Owner-only permissions for memory data at rest. Node accepts `mode` on all
-// platforms; on Windows it is effectively a no-op, which is the intended
-// graceful degradation (no chmod calls that could throw there).
-const MEMORY_DIR_MODE = 0o700;
-const MEMORY_FILE_MODE = 0o600;
 
 function normalizeText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/\0/g, '').trim();
@@ -162,94 +151,6 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-function noteSlug(text: string): string {
-  const slug = text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48)
-    .replace(/-+$/g, '');
-  return slug || 'note';
-}
-
-function filenameTimestamp(date: Date): string {
-  return date.toISOString().slice(0, 19).replace(/:/g, '-');
-}
-
-function isFileExistsError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === 'EEXIST'
-  );
-}
-
-export async function ensureOwnerOnlyDir(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: MEMORY_DIR_MODE });
-  // mkdir's mode only applies on creation; tighten pre-existing directories
-  // (e.g. created by the open-memory-folder flow) to owner-only too.
-  try {
-    await chmod(directory, MEMORY_DIR_MODE);
-  } catch (error) {
-    // Windows has no POSIX modes; keep the directory as created there. On
-    // POSIX platforms fail closed instead of writing memory data into a
-    // directory whose permissions could not be tightened.
-    if (process.platform !== 'win32') throw error;
-  }
-}
-
-/** Replaces a memory file owner-only through a sibling temp file and rename. */
-export async function writeMemoryFileAtomically(
-  filePath: string,
-  content: string,
-): Promise<void> {
-  await ensureOwnerOnlyDir(dirname(filePath));
-  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, content, {
-      encoding: 'utf8',
-      mode: MEMORY_FILE_MODE,
-    });
-    await rename(temporaryPath, filePath);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => undefined);
-    throw error;
-  }
-}
-
-async function ensureManifest(scopeDir: string): Promise<void> {
-  const manifestPath = join(scopeDir, 'manifest.json');
-  await ensureOwnerOnlyDir(scopeDir);
-  try {
-    await writeFile(manifestPath, MANIFEST_CONTENT, {
-      encoding: 'utf8',
-      flag: 'wx',
-      mode: MEMORY_FILE_MODE,
-    });
-    return;
-  } catch (error) {
-    if (!isFileExistsError(error)) throw error;
-  }
-  try {
-    const parsed: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'version' in parsed &&
-      parsed.version === 1
-    ) {
-      return;
-    }
-  } catch {
-    // Normalize a corrupt or incompatible manifest below.
-  }
-  await writeFile(manifestPath, MANIFEST_CONTENT, {
-    encoding: 'utf8',
-    mode: MEMORY_FILE_MODE,
-  });
-}
-
 async function readNormalizedFile(path: string): Promise<string> {
   try {
     return normalizeText(await readFile(path, 'utf8'));
@@ -277,15 +178,6 @@ export function normalizeTopicName(topic: string): string | undefined {
     return undefined;
   }
   return name;
-}
-
-/**
- * Memory files are `.md` exactly; the check is case-sensitive everywhere
- * (listing, consolidation input, pending-note counts) so a `NOTE.MD` is
- * consistently ignored rather than counted in one place and skipped in another.
- */
-export function isMemoryMarkdownFileName(name: string): boolean {
-  return name.endsWith('.md');
 }
 
 async function listMarkdownFiles(directory: string): Promise<string[]> {
@@ -509,39 +401,71 @@ export async function readMemoryFile(
   }
 }
 
+const MAX_NOTE_NAME_ATTEMPTS = 100;
+
+/** Writes a new note create-only and whole, under the next free name. */
+async function writeNewInboxNote(
+  scopeDir: string,
+  filename: string,
+  content: string,
+): Promise<string> {
+  const inboxDir = join(scopeDir, 'inbox');
+  const stem = filename.slice(0, -'.md'.length);
+  for (let attempt = 1; attempt <= MAX_NOTE_NAME_ATTEMPTS; attempt += 1) {
+    const name = attempt === 1 ? filename : `${stem}-${attempt}.md`;
+    try {
+      await writeNewMemoryFile(scopeDir, join(inboxDir, name), content);
+      return `inbox/${name}`;
+    } catch (error) {
+      if (!isNodeError(error, 'EEXIST')) throw error;
+    }
+  }
+  return '';
+}
+
+/**
+ * Saves a note into the scope's inbox under a new ID and returns its file
+ * key, or '' when it could not be written. A scope a newer build made
+ * read-only rejects with `LocalMemoryScopeReadOnlyError`, and a scope lock
+ * another process took over before the note was written with
+ * `LocalMemoryScopeLockLostError`.
+ */
 export async function appendInboxNote(
   scopeDir: string,
   note: { text: string; source: MemorySource },
 ): Promise<string> {
-  try {
-    // Normalize BEFORE redacting: normalization strips NUL and other control
-    // bytes, so redacting first would let an obfuscated key like
-    // `api\0_key=...` slip past the redaction regexes and be reconstituted
-    // into a well-formed secret assignment afterwards. Both the persisted
-    // body and the filename slug derive from this single normalized-then-
-    // redacted value.
-    const redactedText = redactSecrets(normalizeText(note.text)).slice(
-      0,
-      MAX_NOTE_TEXT_CHARS,
-    );
-    if (!redactedText) return '';
-    const redactedSource = normalizeSource({
-      provider: redactSecrets(normalizeText(note.source.provider)),
-      chatId: redactSecrets(normalizeText(note.source.chatId)),
-      ...(note.source.sessionId !== undefined
-        ? { sessionId: redactSecrets(normalizeText(note.source.sessionId)) }
-        : {}),
-    });
-    const created = new Date().toISOString();
-    const sourceLines = [
-      'source:',
-      `  provider: ${yamlString(redactedSource.provider)}`,
-      `  chatId: ${yamlString(redactedSource.chatId)}`,
-      ...(redactedSource.sessionId
-        ? [`  sessionId: ${yamlString(redactedSource.sessionId)}`]
-        : []),
-    ];
-    const fileContent = redactSecrets(
+  // Normalize BEFORE redacting: normalization strips NUL and other control
+  // bytes, so redacting first would let an obfuscated key like
+  // `api\0_key=...` slip past the redaction regexes and be reconstituted
+  // into a well-formed secret assignment afterwards. Both the persisted
+  // body and the filename slug derive from this single normalized-then-
+  // redacted value.
+  const redactedText = redactSecrets(normalizeText(note.text)).slice(
+    0,
+    MAX_NOTE_TEXT_CHARS,
+  );
+  if (!redactedText) return '';
+  const redactedSource = normalizeSource({
+    provider: redactSecrets(normalizeText(note.source.provider)),
+    chatId: redactSecrets(normalizeText(note.source.chatId)),
+    ...(note.source.sessionId !== undefined
+      ? { sessionId: redactSecrets(normalizeText(note.source.sessionId)) }
+      : {}),
+  });
+  const createdMs = Date.now();
+  const noteId = memoryNoteIdAt(createdMs);
+  const created = new Date(createdMs).toISOString();
+  const sourceLines = [
+    'source:',
+    `  provider: ${yamlString(redactedSource.provider)}`,
+    `  chatId: ${yamlString(redactedSource.chatId)}`,
+    ...(redactedSource.sessionId
+      ? [`  sessionId: ${yamlString(redactedSource.sessionId)}`]
+      : []),
+  ];
+  // The ID goes in after redaction, which must never rewrite it.
+  const fileContent = withMemoryNoteId(
+    redactSecrets(
       [
         '---',
         ...sourceLines,
@@ -553,29 +477,27 @@ export async function appendInboxNote(
         redactedText,
         '',
       ].join('\n'),
-    );
-    const inboxDir = join(scopeDir, 'inbox');
-    await ensureOwnerOnlyDir(inboxDir);
-    await ensureManifest(scopeDir);
-    const stem = `${filenameTimestamp(new Date(created))}-${noteSlug(redactedText)}`;
-    for (let attempt = 1; attempt <= 10_000; attempt += 1) {
-      const suffix = attempt === 1 ? '' : `-${attempt}`;
-      const filename = `${stem}${suffix}.md`;
-      try {
-        await writeFile(join(inboxDir, filename), fileContent, {
-          encoding: 'utf8',
-          flag: 'wx',
-          mode: MEMORY_FILE_MODE,
-        });
-        return `inbox/${filename}`;
-      } catch (error) {
-        if (!isFileExistsError(error)) return '';
-      }
+    ),
+    noteId,
+  );
+  try {
+    return await withMemoryWriteLock(scopeDir, async () => {
+      await ensureOwnerOnlyMemoryDir(scopeDir, join(scopeDir, 'inbox'));
+      return writeNewInboxNote(
+        scopeDir,
+        memoryNoteFileName(createdMs, redactedText, noteId),
+        fileContent,
+      );
+    });
+  } catch (error) {
+    if (
+      error instanceof LocalMemoryScopeReadOnlyError ||
+      error instanceof LocalMemoryScopeLockLostError
+    ) {
+      throw error;
     }
-  } catch {
     return '';
   }
-  return '';
 }
 
 export interface RecentInboxNote {

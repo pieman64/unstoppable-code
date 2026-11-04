@@ -102,6 +102,11 @@
         ]
       },
       {
+        "from": ".cache/bin/darwin-${arch}/node_modules",
+        "to": "bin/node_modules",
+        "filter": ["**/*"]
+      },
+      {
         "from": ".cache/cli/darwin-${arch}",
         "to": "cli",
         "filter": ["**/*"]
@@ -179,6 +184,11 @@
           "!canopy-dictate.exe",
           "!.canopy-dictate-version"
         ]
+      },
+      {
+        "from": ".cache/bin/linux-${arch}/node_modules",
+        "to": "bin/node_modules",
+        "filter": ["**/*"]
       },
       {
         "from": ".cache/cli/linux-${arch}",

@@ -6,7 +6,11 @@ import { Button } from '@canopy/ui-shared';
 import { BrandLogo } from '@/components/BrandLogo';
 import { brandText } from '@/lib/brand';
 import { useCanopyLegalUrls } from '@/hooks/useCanopyLegalUrls';
-import { ChoiceField, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  ChoiceField,
+  ErrorBanner,
+  Heading,
+} from '@canopy/ui-shared/components';
 
 export interface LegalConsentGateProps {
   /**
@@ -101,9 +105,9 @@ export function LegalConsentGate({
           <div className="flex flex-col items-center gap-4 text-center">
             <BrandLogo size={72} className="select-none fg-accent" />
             <div className="flex flex-col items-center gap-2">
-              <h1 className="text-2xl font-semibold">
+              <Heading level={1} variant="page">
                 Welcome to {brandText.appName}
-              </h1>
+              </Heading>
               <p className="text-s fg-secondary">
                 Before you get started, please review and accept our terms.
               </p>

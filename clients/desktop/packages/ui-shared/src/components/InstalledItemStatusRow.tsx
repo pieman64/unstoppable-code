@@ -16,6 +16,7 @@ import {
 } from '../lib/installed-item-status';
 import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
 import { Button } from './Button';
+import { SkeletonBlock } from './SkeletonBlock';
 import { DetailPageActions } from './DetailActionBar';
 import { DetailMoreMenuRows, useDetailMoreItems } from './DetailMoreMenu';
 import { DropdownMenuItem } from './DropdownMenu';
@@ -28,6 +29,7 @@ import { Notice } from './Notice';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
+import { Heading } from './Heading';
 
 /**
  * Installed-item status surfaces (CAN-4255).
@@ -79,10 +81,12 @@ export function InstalledItemStatusControl({
   if (state.kind === 'loading')
     return (
       <span
+        role="status"
         data-testid={testId ? `${testId}-loading` : undefined}
-        className={QUIET_STATUS_CLASS}
+        className="inline-flex shrink-0"
       >
-        Loading…
+        <span className="sr-only">Loading status</span>
+        <SkeletonBlock shape="control" />
       </span>
     );
   if (state.kind === 'read-only')
@@ -357,7 +361,9 @@ export function InstalledItemStatusRow({
         className="flex flex-wrap items-center gap-x-3 gap-y-1"
         data-testid={`${testId}-line`}
       >
-        <h3 className="text-s font-medium fg-primary">Status</h3>
+        <Heading level={3} variant="title">
+          Status
+        </Heading>
         {body}
         {describedStatus && (
           <p

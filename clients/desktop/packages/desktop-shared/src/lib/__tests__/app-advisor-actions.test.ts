@@ -3030,6 +3030,15 @@ it('discovers the privacy opt-in review as a confirmation-only action', (): void
   expect(entry?.notes?.join(' ')).toContain('Nothing is saved');
 });
 
+it('omits the retired daily credit drip action from the catalog and revision-agnostic list', () => {
+  expect(APP_ADVISOR_ACTION_CATALOG.map((action) => action.type)).not.toContain(
+    'settings.set_daily_credit_drip',
+  );
+  expect(APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES).not.toContain(
+    'settings.set_daily_credit_drip',
+  );
+});
+
 it.each([
   'turn on free daily credits',
   'daily free AI Credits',
@@ -3037,43 +3046,16 @@ it.each([
   'free daily AI Credits',
   'turn on free daily AI Credits',
   'stop free daily AI Credits',
-])('finds the daily credit drip action for %s', (query: string) => {
-  const result = searchAppAdvisorActions({ query });
+])(
+  'does not rediscover the retired daily credit drip action for %s',
+  (query) => {
+    const result = searchAppAdvisorActions({ query });
 
-  expect(result.actions).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        type: 'settings.set_daily_credit_drip',
-        category: 'settings',
-        requiredFields: ['enabled'],
-        summary:
-          'Turn free daily AI Credits on or off for the connected cloud account.',
-      }),
-    ]),
-  );
-  expect(APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES).toEqual(
-    expect.arrayContaining(['settings.set_daily_credit_drip']),
-  );
-});
-
-it('describes the free daily AI Credits choice with the current Settings label', () => {
-  const entry = APP_ADVISOR_ACTION_CATALOG.find(
-    (action) => action.type === 'settings.set_daily_credit_drip',
-  );
-
-  expect(entry?.fields).toEqual([
-    expect.objectContaining({
-      name: 'enabled',
-      type: 'boolean',
-      required: true,
-      description:
-        'True to opt in to free daily AI Credits; false to stop them.',
-    }),
-  ]);
-  expect(entry?.notes?.join(' ')).toContain(
-    'the Free daily AI Credits toggle in Settings',
-  );
-});
+    expect(result.actions.map((action) => action.type)).not.toContain(
+      'settings.set_daily_credit_drip',
+    );
+  },
+);
 
 describe('searchAppAdvisorActions ranking characterization', () => {
   type SearchInput = NonNullable<Parameters<typeof searchAppAdvisorActions>[0]>;

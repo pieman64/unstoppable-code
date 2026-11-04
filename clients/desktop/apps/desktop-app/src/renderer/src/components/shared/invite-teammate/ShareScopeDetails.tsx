@@ -3,10 +3,14 @@ import type { SharedContainerSharePreview } from '@canopy/desktop-shared/types';
 import type { SharedContainerType } from '@canopy/protocol/shared-containers';
 import { CHAT_LABEL } from '@canopy/protocol';
 import { getScriptDisplayName } from '@canopy/desktop-shared/scripts';
-import { AdvancedDisclosure, ChoiceField } from '@canopy/ui-shared/components';
+import { ChoiceField, Disclosure } from '@canopy/ui-shared/components';
 import { formatCapabilityPackageShareNote } from '@canopy/ui-shared/sharing';
 import { brandText } from '@/lib/brand';
-import { containerNoun, snapshotRepositoryDisclosure } from './shareCopy';
+import {
+  ADVANCED_LABEL,
+  containerNoun,
+  snapshotRepositoryDisclosure,
+} from './shareCopy';
 import {
   MAX_PUBLISHABLE_RUN_SCRIPTS,
   type CandidateDirectoryGroup,
@@ -113,7 +117,10 @@ export function ShareScopeDetails({
   );
 
   return (
-    <AdvancedDisclosure dataTestId="shared-container-invite-modal-scope-details">
+    <Disclosure
+      label={ADVANCED_LABEL}
+      dataTestId="shared-container-invite-modal-scope-details"
+    >
       <p
         className="text-xs fg-primary"
         data-testid="shared-container-invite-modal-scope-summary"
@@ -478,6 +485,6 @@ export function ShareScopeDetails({
           )}
         </fieldset>
       )}
-    </AdvancedDisclosure>
+    </Disclosure>
   );
 }

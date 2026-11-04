@@ -426,7 +426,9 @@ function agentSentWireFields(
           agentSentProjectType: sender.projectType,
           agentSentProjectId: sender.projectId,
         }
-      : { agentSentBotId: sender.botId }),
+      : sender.kind === 'cloud_chat'
+        ? { agentSentProjectId: sender.projectId }
+        : { agentSentBotId: sender.botId }),
     agentSentTaskId: sender.taskId,
     agentSentChatId: sender.chatId,
     agentSentChatTitle: info.chatTitle,

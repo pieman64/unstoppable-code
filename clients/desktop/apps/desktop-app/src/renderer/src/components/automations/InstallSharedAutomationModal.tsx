@@ -56,11 +56,13 @@ import {
 import { Button } from '@canopy/ui-shared';
 import {
   AutomationPipelineTaskField,
+  Disclosure,
   FormField,
   isAutomationPipelineTaskStale,
   Select,
   TextArea,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   pipelineAutomationTaskId,
@@ -2036,9 +2038,9 @@ function InstallSharedAutomationForm({
           className="space-y-1.5"
           data-testid="install-automation-packaged-pipelines"
         >
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {PACKAGED_PIPELINES_HEADING}
-          </h3>
+          </Heading>
           <p className="text-xs fg-secondary">{PACKAGED_PIPELINES_NOTE}</p>
           <ul className="divide-y divide-line-base">
             {packagedPipelineRows.map((row) => (
@@ -2078,20 +2080,17 @@ function InstallSharedAutomationForm({
                   </ul>
                 )}
                 {row.rawPipeline !== undefined && (
-                  <details className="mt-1">
-                    <summary
-                      className="cursor-pointer text-xs fg-secondary"
-                      data-testid={`install-automation-packaged-pipeline-${row.key}-review`}
-                    >
-                      {PACKAGED_PIPELINE_REVIEW_LABEL}
-                    </summary>
-                    <div className="mt-1">
-                      <InlinePipelineYamlPreview
-                        rawPipeline={row.rawPipeline}
-                        testId={`install-automation-packaged-pipeline-${row.key}-yaml`}
-                      />
-                    </div>
-                  </details>
+                  <Disclosure
+                    label={PACKAGED_PIPELINE_REVIEW_LABEL}
+                    className="mt-1"
+                    dataTestId={`install-automation-packaged-pipeline-${row.key}-review-disclosure`}
+                    toggleTestId={`install-automation-packaged-pipeline-${row.key}-review`}
+                  >
+                    <InlinePipelineYamlPreview
+                      rawPipeline={row.rawPipeline}
+                      testId={`install-automation-packaged-pipeline-${row.key}-yaml`}
+                    />
+                  </Disclosure>
                 )}
               </li>
             ))}

@@ -1,37 +1,4 @@
-import {
-  formatPlanCommentTime,
-  planCommentAvatarColor,
-  planCommentInitials,
-} from '../plan-comments';
-
-describe('planCommentInitials', () => {
-  it('uses first + last word initials for multi-word names', () => {
-    expect(planCommentInitials('Aaron Quirk')).toBe('AQ');
-    expect(planCommentInitials('  ada  beatrice  lovelace ')).toBe('AL');
-  });
-
-  it('uses the first two letters of a single-word name', () => {
-    expect(planCommentInitials('teammate')).toBe('TE');
-  });
-
-  it('falls back to "?" for empty input', () => {
-    expect(planCommentInitials('   ')).toBe('?');
-  });
-});
-
-describe('planCommentAvatarColor', () => {
-  it('is deterministic for the same key', () => {
-    expect(planCommentAvatarColor('user-42')).toEqual(
-      planCommentAvatarColor('user-42'),
-    );
-  });
-
-  it('returns white text on an hsl background', () => {
-    const color = planCommentAvatarColor('user-7');
-    expect(color.color).toBe('hsl(0 0% 100%)');
-    expect(color.backgroundColor).toMatch(/^hsl\(\d+ 52% 42%\)$/);
-  });
-});
+import { formatPlanCommentTime } from '../plan-comments';
 
 describe('formatPlanCommentTime', () => {
   const now = Date.UTC(2026, 5, 19, 18, 0, 0);

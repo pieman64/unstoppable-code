@@ -1,7 +1,14 @@
 import { useEffect, useState, type JSX } from 'react';
-import { ListRow, SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ListRow,
+  SegmentedControl,
+} from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
-import { LabColorModeContext } from './componentsLabStageContext';
+import {
+  LabColorModeContext,
+  LabOverviewContext,
+} from './componentsLabStageContext';
 import {
   COMPONENTS_LAB_ENTRIES,
   COMPONENTS_LAB_GROUPS,
@@ -16,6 +23,8 @@ import {
  * and a light / dark switch. Specimens mount only the real shared
  * components; nothing here restyles them.
  *
+ * With no `?component` the lab opens on the overview: one card per unified
+ * component in a grid, each with its live stage, linking to its sheet.
  * `?component=<id>` opens one entry, `?component=all` every unified sheet in
  * one scroll (the capture view), `?width=phone` the 358px column, and
  * `?theme=dark` (or a dark system preference, when no theme is given)
@@ -26,6 +35,7 @@ type ColorMode = 'light' | 'dark';
 type PreviewWidth = 'desktop' | 'phone';
 
 const ALL = 'all';
+const OVERVIEW = 'overview';
 // A 390px phone viewport with 16px gutters: the 358px column stageshow
 // designs its compact layouts for.
 const PHONE_VIEWPORT_PX = 390;
@@ -51,7 +61,7 @@ function initialSelection(): string {
   if (id === ALL) return ALL;
   return COMPONENTS_LAB_ENTRIES.some((entry) => entry.id === id) && id
     ? id
-    : (COMPONENTS_LAB_ENTRIES[0]?.id ?? ALL);
+    : OVERVIEW;
 }
 
 function Caption({
@@ -88,6 +98,38 @@ function Sheet({ entry }: { readonly entry: ComponentsLabEntry }): JSX.Element {
   );
 }
 
+function OverviewCard({
+  entry,
+  onOpen,
+}: {
+  readonly entry: ComponentsLabEntry;
+  readonly onOpen: (id: string) => void;
+}): JSX.Element {
+  const { Stage } = entry;
+  return (
+    <div
+      data-testid={`components-lab-card-${entry.id}`}
+      className="flex min-w-0 flex-col items-center gap-3"
+    >
+      <div
+        data-ss-fill
+        className="pointer-events-none aspect-4/3 w-full overflow-hidden rounded-row"
+      >
+        <LabOverviewContext.Provider value>
+          {Stage ? <Stage /> : null}
+        </LabOverviewContext.Provider>
+      </div>
+      <Button
+        variant="link"
+        aria-label={`Open the ${entry.name} sheet`}
+        onClick={(): void => onOpen(entry.id)}
+      >
+        {entry.name}
+      </Button>
+    </div>
+  );
+}
+
 export function ComponentsLabPage(): JSX.Element {
   const [colorMode, setColorMode] = useState<ColorMode>(initialColorMode);
   const [width, setWidth] = useState<PreviewWidth>(initialWidth);
@@ -106,8 +148,10 @@ export function ComponentsLabPage(): JSX.Element {
     window.history.replaceState(null, '', url);
   }, [selected, colorMode, width]);
 
-  const visible =
-    selected === ALL
+  const overview = selected === OVERVIEW;
+  const visible = overview
+    ? []
+    : selected === ALL
       ? COMPONENTS_LAB_ENTRIES.filter((entry) => entry.group === 'Unified')
       : COMPONENTS_LAB_ENTRIES.filter((entry) => entry.id === selected);
 
@@ -118,6 +162,13 @@ export function ComponentsLabPage(): JSX.Element {
         className="sticky top-0 flex h-screen w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r px-2 py-4"
       >
         <h1 className="px-2 text-s font-medium">Components</h1>
+        <ListRow
+          selected={selected === OVERVIEW}
+          aria-current={selected === OVERVIEW ? 'page' : undefined}
+          onClick={(): void => setSelected(OVERVIEW)}
+        >
+          Overview
+        </ListRow>
         <ListRow
           selected={selected === ALL}
           aria-current={selected === ALL ? 'page' : undefined}
@@ -175,6 +226,7 @@ export function ComponentsLabPage(): JSX.Element {
         <main
           id="components-lab-preview"
           className={`flex flex-col gap-12 py-6 ${width === 'phone' ? 'px-4' : 'px-6'}`}
+          data-view={overview ? 'overview' : 'sheets'}
           style={
             width === 'phone'
               ? { width: PHONE_VIEWPORT_PX, maxWidth: '100%' }
@@ -182,6 +234,22 @@ export function ComponentsLabPage(): JSX.Element {
           }
         >
           <LabColorModeContext.Provider value={colorMode}>
+            {overview ? (
+              <div
+                data-testid="components-lab-overview"
+                className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,22rem),1fr))] gap-x-8 gap-y-10"
+              >
+                {COMPONENTS_LAB_ENTRIES.filter(
+                  (entry) => entry.group === 'Unified' && entry.Stage,
+                ).map((entry) => (
+                  <OverviewCard
+                    key={entry.id}
+                    entry={entry}
+                    onOpen={setSelected}
+                  />
+                ))}
+              </div>
+            ) : null}
             {visible.map((entry) => (
               <Sheet key={entry.id} entry={entry} />
             ))}

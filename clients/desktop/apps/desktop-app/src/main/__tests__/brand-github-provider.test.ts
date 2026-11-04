@@ -20,6 +20,7 @@ function createProvider(
   allowPrerelease = false,
   releaseFlavor: 'internal' | 'rc' = 'internal',
   targetReleaseTag?: string,
+  platform: 'darwin' | 'win32' = 'darwin',
 ): BrandedPrivateGitHubProvider {
   return new BrandedPrivateGitHubProvider(
     {
@@ -33,7 +34,7 @@ function createProvider(
     },
     { allowPrerelease },
     {
-      platform: 'darwin',
+      platform,
       isUseMultipleRangeRequest: true,
       executor: { request } as never,
     },
@@ -427,6 +428,119 @@ describe('branded private GitHub updater provider', () => {
         requestPath(options).endsWith('/releases/assets/internal'),
       ),
     ).toBe(false);
+  });
+
+  it.each([
+    {
+      platform: 'darwin',
+      channelFile: 'somebrand-mac.yml',
+      otherChannel: 'somebrand.yml',
+    },
+    {
+      platform: 'win32',
+      channelFile: 'somebrand.yml',
+      otherChannel: 'somebrand-mac.yml',
+    },
+  ] as const)(
+    'selects the newest RC built for $platform when newer RCs omit its channel',
+    async ({ platform, channelFile, otherChannel }) => {
+      const releases = [
+        {
+          tag_name: 'v1.4.0-rc.3',
+          prerelease: true,
+          assets: [
+            {
+              name: otherChannel,
+              url: 'https://api.github.com/releases/assets/other',
+            },
+          ],
+        },
+        {
+          tag_name: 'v1.4.0-rc.1',
+          prerelease: true,
+          assets: [
+            {
+              name: channelFile,
+              url: 'https://api.github.com/releases/assets/older',
+            },
+          ],
+        },
+        {
+          tag_name: 'v1.4.0-rc.2',
+          prerelease: true,
+          assets: [
+            {
+              name: channelFile,
+              url: 'https://api.github.com/releases/assets/selected',
+            },
+          ],
+        },
+      ];
+      const request = jest.fn(
+        (options: RequestOptions): Promise<string | null> => {
+          if (requestPath(options).endsWith('/releases')) {
+            return Promise.resolve(JSON.stringify(releases));
+          }
+          if (requestPath(options).endsWith('/releases/assets/selected')) {
+            return Promise.resolve(
+              'version: 1.4.0-rc.2\npath: SomeBrand.zip\nsha512: test-checksum',
+            );
+          }
+          throw new Error(`Unexpected request path: ${requestPath(options)}`);
+        },
+      );
+      const provider = createProvider(request, true, 'rc', undefined, platform);
+
+      await expect(provider.getLatestVersion()).resolves.toMatchObject({
+        version: '1.4.0-rc.2',
+      });
+    },
+  );
+
+  it('fails when no RC contains the branded platform channel instead of using another flavor', async () => {
+    const request = jest.fn<Promise<string | null>, [RequestOptions]>(
+      (): Promise<string | null> =>
+        Promise.resolve(
+          JSON.stringify([
+            {
+              tag_name: 'v1.4.0-rc.2',
+              prerelease: true,
+              assets: [
+                {
+                  name: 'somebrand.yml',
+                  url: 'https://api.github.com/releases/assets/windows',
+                },
+              ],
+            },
+            {
+              tag_name: 'v1.4.0',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'somebrand-mac.yml',
+                  url: 'https://api.github.com/releases/assets/stable',
+                },
+              ],
+            },
+            {
+              tag_name: 'internal-200',
+              prerelease: true,
+              assets: [
+                {
+                  name: 'somebrand-mac.yml',
+                  url: 'https://api.github.com/releases/assets/internal',
+                },
+              ],
+            },
+          ]),
+        ),
+    );
+    const provider = createProvider(request, true, 'rc');
+
+    await expect(provider.getLatestVersion()).rejects.toMatchObject({
+      code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND',
+    });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it('does not fall back to a stable release when prerelease updates are allowed', async () => {

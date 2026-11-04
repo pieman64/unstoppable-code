@@ -702,16 +702,34 @@ describe('InputDeliveryList fired watcher', () => {
     'Dark mode plan finished',
   ].join('\n');
 
-  it('shows the short notice under the watcher title, never the payload', () => {
+  it('titles a row the host marked as a fired watcher', () => {
+    const html = renderToString(
+      <InputDeliveryList
+        rows={[
+          {
+            ...row('pending'),
+            text: 'Canopy watcher fired.\nDark mode plan finished',
+            watcherFired: { kind: 'Dark mode plan finished' },
+          },
+        ]}
+        onAction={async () => {}}
+      />,
+    );
+    expect(html).toContain('data-testid="watcher-fired-title"');
+    expect(html).toContain('Canopy watcher fired.');
+    expect(html).toContain(BUBBLE_INFO_SURFACE_CLASS);
+  });
+
+  it('shows an unmarked watcher block as its plain notice, never the payload', () => {
     const html = renderToString(
       <InputDeliveryList
         rows={[{ ...row('pending'), text: FIRED }]}
         onAction={async () => {}}
       />,
     );
-    expect(html).toContain('data-testid="watcher-fired-title"');
+    expect(html).not.toContain('data-testid="watcher-fired-title"');
     expect(html).toContain('Canopy watcher fired.');
     expect(html).not.toContain('canopy_watcher_event');
-    expect(html).toContain(BUBBLE_INFO_SURFACE_CLASS);
+    expect(html).not.toContain(BUBBLE_INFO_SURFACE_CLASS);
   });
 });

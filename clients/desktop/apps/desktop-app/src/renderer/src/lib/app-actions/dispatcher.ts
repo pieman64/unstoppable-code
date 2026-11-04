@@ -277,7 +277,6 @@ import {
   type WorktreePanelLayout,
 } from '@/stores/panelLayoutStore';
 import { saveCurrentLayoutAsDefault } from '@/lib/panels/default-layout-save';
-import { saveDailyCreditDripChoice } from '@/lib/daily-credit-drip';
 import { setWorkspacePanelLayoutMode } from '@/lib/panels/workspace-layout-mode-actions';
 import { addEmptyFileTabPanelToGroup } from '@/lib/panels/addChatPanel';
 import {
@@ -1814,10 +1813,20 @@ export async function dispatchAppAction(
 
   const actionValidation = validateAppAdvisorAction(request.action);
   if (!actionValidation.ok) {
-    return cacheAndReturn(
+    const response = buildInvalidPayloadResponse(
       request,
-      buildInvalidPayloadResponse(request, actionValidation.message),
+      actionValidation.message,
     );
+    if (
+      isRecord(request.action) &&
+      request.action.type === 'settings.set_daily_credit_drip'
+    ) {
+      response.error = {
+        code: 'unsupported_action',
+        message: actionValidation.message,
+      };
+    }
+    return cacheAndReturn(request, response);
   }
 
   const { signal, ...wireRequest } = request;
@@ -2236,7 +2245,6 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
     case 'settings.personalCatalog.set':
     case 'remote_control.set_allow_incoming':
     case 'settings.set_local_memory_enabled':
-    case 'settings.set_daily_credit_drip':
     case 'settings.set_ledger_agent_recording_enabled':
     case 'settings.set_skill_suggestions_enabled':
     case 'settings.set_launch_at_login':
@@ -13512,33 +13520,6 @@ async function routeAction(
               error instanceof Error
                 ? error.message
                 : 'Failed to update the local memory preference.',
-          },
-        };
-      }
-    }
-    case 'settings.set_daily_credit_drip': {
-      try {
-        // The shared helper broadcasts the saved choice so the Settings
-        // toggle and Home card sync, and refreshes every AI-credits cache in
-        // the background; the action does not wait for that refresh.
-        const { result } = await saveDailyCreditDripChoice(action.enabled);
-        return {
-          ok: true,
-          result: {
-            dailyCreditDripEnabled: result.enabled,
-            capCredits: result.capCredits,
-            ...(result.granted > 0 ? { granted: result.granted } : {}),
-          },
-        };
-      } catch (error: unknown) {
-        return {
-          ok: false,
-          error: {
-            code: 'execution_failed',
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to update the daily free AI Credits preference.',
           },
         };
       }

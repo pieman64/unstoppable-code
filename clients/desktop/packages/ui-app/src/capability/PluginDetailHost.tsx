@@ -29,6 +29,7 @@ import {
   type PluginHarnessConnectionRow,
   type MarkdownProps,
   type PluginDetailReadComponent,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   DetailActionBar,
@@ -347,9 +348,9 @@ function BuiltInInstallPanel({
       className="rounded-lg border p-4"
       data-testid="built-in-install-panel"
     >
-      <h3 className="text-s font-medium fg-primary">
+      <Heading level={3} variant="title">
         Install in provider apps
-      </h3>
+      </Heading>
       <p className="text-xs fg-secondary mt-1">
         This plugin is available inside {brandName}. Install it to Claude or
         Codex to use it directly outside {brandName}.

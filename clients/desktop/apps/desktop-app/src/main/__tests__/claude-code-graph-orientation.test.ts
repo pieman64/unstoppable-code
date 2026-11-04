@@ -29,11 +29,27 @@ jest.mock('@canopy/desktop-shared/node/code-graph/worktree-paths', () => ({
   getWorktreeCodeGraphDbPath: (): string => mockGraphDbPath,
 }));
 const mockBuildStamp = jest.fn<Promise<string | null>, [string, string]>();
-jest.mock('../lib/code-graph-worktree-fingerprint', () => ({
-  readCodeGraphBuildStampUncached: (
-    dbPath: string,
-    key: string,
-  ): Promise<string | null> => mockBuildStamp(dbPath, key),
+// The stamp is read through `worker.codeGraph.query` on the read hosts.
+jest.mock('../code-graph/read-runner', () => ({
+  runCodeGraphWorkerRead: async (input: {
+    key: string;
+    request: { dbPath: string };
+  }): Promise<unknown> => ({
+    ok: true,
+    result: {
+      kind: 'fingerprint-metadata',
+      value: {
+        fingerprint: null,
+        schemaVersion: null,
+        extractorVersion: null,
+        completed: false,
+        lastBuildAt: await mockBuildStamp(input.request.dbPath, input.key),
+      },
+    },
+  }),
+}));
+jest.mock('../code-graph/build-runner', () => ({
+  getCodeGraphSourceBuildState: (): string => 'idle',
 }));
 const mockResolveWorktreeCwd = jest.fn<string, [string, string]>();
 jest.mock('../lib/resolve-worktree', () => ({
@@ -99,6 +115,12 @@ beforeEach(() => {
 afterEach(() => {
   resetClaudeCodeGraphOrientationForTests();
   rmSync(root, { recursive: true, force: true });
+});
+
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
 });
 
 describe('Claude code-graph orientation', () => {

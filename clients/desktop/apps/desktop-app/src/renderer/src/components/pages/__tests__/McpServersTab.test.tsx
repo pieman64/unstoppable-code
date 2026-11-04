@@ -6,9 +6,9 @@ import type {
   CanopyServerAccountInfo,
 } from '@canopy/desktop-shared/types';
 import type {
-  McpServerData,
+  McpServerDataView,
   SaveMcpServerRequest,
-  McpServerFile,
+  McpServerFileView,
   McpServerStatusEntry,
   McpServerIndexEntry,
   McpServersIndexFile,
@@ -36,7 +36,7 @@ jest.mock('../../shared/DialogModal', (): object => ({
     <div>{children}</div>
   ),
 }));
-const server: McpServerData = {
+const server: McpServerDataView = {
   definition: {
     id: 'server',
     name: 'Account server',
@@ -85,10 +85,10 @@ function cloudAccountState(
     ...(account === undefined ? {} : { account }),
   };
 }
-const loadServer = jest.fn<Promise<McpServerFile>, [string]>();
+const loadServer = jest.fn<Promise<McpServerFileView>, [string]>();
 const loadIndex = jest.fn<Promise<McpServersIndexFile>, []>();
-const saveServer = jest.fn<Promise<McpServerFile>, [SaveMcpServerRequest]>(
-  (savedServer): Promise<McpServerFile> =>
+const saveServer = jest.fn<Promise<McpServerFileView>, [SaveMcpServerRequest]>(
+  (savedServer): Promise<McpServerFileView> =>
     Promise.resolve({ version: 1, server: savedServer }),
 );
 const loadPreferences = jest.fn<Promise<unknown>, []>();

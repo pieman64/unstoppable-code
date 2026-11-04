@@ -5,8 +5,8 @@ import type { PlatformOperatingSystem } from '@canopy/core-runtime';
 import {
   GitIgnoreHostError,
   type GitIgnoreHostFailureCode,
-  getLinuxGitCandidates,
   getGitExecutableDetectionMode,
+  getLinuxGitCandidates,
   getMacGitCandidates,
   getWindowsGitCandidates,
   isMacGitShim,
@@ -72,7 +72,7 @@ export interface SelectionAccount {
 
 export interface SelectionOptions {
   readonly os: PlatformOperatingSystem;
-  /** `process.arch`; Linux x64/arm64 share the desktop discovery eligibility policy. */
+  /** `process.arch`; Linux discovery eligibility follows the shared Git policy. */
   readonly arch: string;
   /** The validated startup snapshot. */
   readonly environment: GitReadEnvironment;
@@ -507,7 +507,7 @@ export function createGitSelection(options: SelectionOptions): GitSelection {
     return loginPath ?? loginPathFallback();
   }
 
-  /** Linux x64/arm64: desktop awaits `prewarmLoginShellPath` before discovery. */
+  /** Linux: desktop awaits `prewarmLoginShellPath` before discovery. */
   async function awaitedLoginPath(scope: Scope): Promise<string> {
     if (!loginPathFresh()) await scoped(scope, refreshLoginPath);
     return loginPath ?? loginPathFallback();

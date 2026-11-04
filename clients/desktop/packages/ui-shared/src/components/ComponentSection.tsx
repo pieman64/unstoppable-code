@@ -1,11 +1,11 @@
 import type { JSX, ReactNode } from 'react';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
-import { ChevronDownIcon } from '../icons/AppIcons';
+import { Disclosure } from './Disclosure';
 
 /**
- * Titled bordered section wrapping a plugin component list (skills, agents,
- * commands, …) in the plugin detail view. The outline groups the heading
- * with its content without adding another border around the inner table.
+ * Titled section wrapping a plugin component list (skills, agents,
+ * commands, …) in the plugin detail view: the heading, then the list's
+ * DataTable card. The collapsible variant is a Disclosure box.
  */
 export function ComponentSection({
   title,
@@ -18,27 +18,25 @@ export function ComponentSection({
 }): JSX.Element {
   if (collapsible) {
     return (
-      <details className="group/component min-w-0 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30">
-        <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-4 py-3 [&::-webkit-details-marker]:hidden">
+      <Disclosure
+        variant="box"
+        label={
           <PluginDetailSectionHeading as="span">
             {title}
           </PluginDetailSectionHeading>
-          <ChevronDownIcon
-            size={14}
-            className="shrink-0 fg-secondary group-open/component:rotate-180"
-            aria-hidden="true"
-          />
-        </summary>
-        <div className="overflow-x-auto rounded-b-lg border-t">{children}</div>
-      </details>
+        }
+        dataTestId="component-section"
+      >
+        <div className="min-w-0 overflow-x-auto">{children}</div>
+      </Disclosure>
     );
   }
+  // The table under the heading is the card (a DataTable), so the section
+  // draws no outline of its own.
   return (
-    <section className="min-w-0 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30">
-      <div className="px-4 py-3">
-        <PluginDetailSectionHeading>{title}</PluginDetailSectionHeading>
-      </div>
-      <div className="overflow-x-auto rounded-b-lg border-t">{children}</div>
+    <section className="flex min-w-0 flex-col gap-2">
+      <PluginDetailSectionHeading>{title}</PluginDetailSectionHeading>
+      {children}
     </section>
   );
 }

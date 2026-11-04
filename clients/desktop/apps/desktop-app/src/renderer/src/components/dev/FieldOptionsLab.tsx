@@ -1,5 +1,10 @@
 import { useState, type JSX, type ReactNode } from 'react';
-import { Select, TextArea, TextInput } from '@canopy/ui-shared/components';
+import {
+  PageHeader,
+  Select,
+  TextArea,
+  TextInput,
+} from '@canopy/ui-shared/components';
 
 /**
  * The shared `TextInput`, `TextArea`, and `Select` (question forms lab,
@@ -64,13 +69,11 @@ export function FieldOptionsLab(): JSX.Element {
       className="flex flex-col gap-6 p-6 text-pretty"
       data-testid="field-options-lab"
     >
-      <header className="flex flex-col gap-1">
-        <h1 className="text-m fg-primary">Fields</h1>
-        <p className="text-s fg-tertiary">
-          The shared TextInput, TextArea, and Select. Tab through them, or click
-          one, to see the neutral focus state.
-        </p>
-      </header>
+      <PageHeader
+        inset="none"
+        title="Fields"
+        description="The shared TextInput, TextArea, and Select. Tab through them, or click one, to see the neutral focus state."
+      />
       <div className="flex flex-col gap-3 md:flex-row">
         <Surface
           label="In the question card"

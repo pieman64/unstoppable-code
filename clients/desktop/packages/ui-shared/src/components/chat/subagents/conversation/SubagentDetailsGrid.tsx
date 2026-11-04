@@ -13,6 +13,7 @@ import { SubagentLineageDetails } from './SubagentLineageDetails';
 import { SubagentSetupDetails } from './SubagentSetupDetails';
 import { SubagentWorktreeDetails } from './SubagentWorktreeDetails';
 import { SubagentWorkflowDetails } from './SubagentWorkflowDetails';
+import { Heading } from '../../../Heading';
 
 export interface SubagentDetailsGridProps {
   readonly layout: 'columns' | 'stacked';
@@ -69,9 +70,9 @@ export function SubagentDetailsGrid({
         data-testid="subagent-chat-details-setup"
         className="flex min-w-0 flex-col gap-2"
       >
-        <h3 className="text-xs font-medium fg-primary">
+        <Heading level={3} variant="label">
           {SUBAGENT_DETAILS_SETUP}
-        </h3>
+        </Heading>
         <SubagentSetupDetails
           node={node}
           executionMode={executionMode}
@@ -83,9 +84,9 @@ export function SubagentDetailsGrid({
           data-testid="subagent-chat-details-cost"
           className="flex min-w-0 flex-col gap-2"
         >
-          <h3 className="text-xs font-medium fg-primary">
+          <Heading level={3} variant="label">
             {SUBAGENT_DETAILS_COST}
-          </h3>
+          </Heading>
           {cost}
         </section>
       ) : null}
@@ -93,9 +94,9 @@ export function SubagentDetailsGrid({
         data-testid="subagent-chat-details-lineage"
         className="flex min-w-0 flex-col gap-2"
       >
-        <h3 className="text-xs font-medium fg-primary">
+        <Heading level={3} variant="label">
           {SUBAGENT_DETAILS_LINEAGE}
-        </h3>
+        </Heading>
         <SubagentLineageDetails
           tree={tree}
           node={node}
@@ -108,9 +109,9 @@ export function SubagentDetailsGrid({
           data-testid="subagent-chat-details-workflow"
           className="flex min-w-0 flex-col gap-2"
         >
-          <h3 className="text-xs font-medium fg-primary">
+          <Heading level={3} variant="label">
             {SUBAGENT_DETAILS_WORKFLOW}
-          </h3>
+          </Heading>
           <SubagentWorkflowDetails
             tree={tree}
             node={node}
@@ -123,9 +124,9 @@ export function SubagentDetailsGrid({
           data-testid="subagent-chat-details-worktree"
           className="flex min-w-0 flex-col gap-2"
         >
-          <h3 className="text-xs font-medium fg-primary">
+          <Heading level={3} variant="label">
             {SUBAGENT_DETAILS_WORKTREE}
-          </h3>
+          </Heading>
           <SubagentWorktreeDetails
             state={worktree}
             onShowChanges={onShowChanges}

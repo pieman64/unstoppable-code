@@ -1,5 +1,6 @@
 import {
   access,
+  link,
   mkdir,
   mkdtemp,
   readdir,
@@ -15,6 +16,7 @@ import {
   writeImportState,
   type ImportState,
 } from '../memory/local/import/ledger';
+import { memoryNoteIdAt } from '../memory/local/note-identity';
 import { countPendingSources } from '../memory/local/pending-sources';
 import {
   clearConsolidatedMemory,
@@ -44,6 +46,8 @@ import {
   type LocalMemoryState,
 } from '../memory/local/snapshots';
 import { memoryEditRevision } from '../memory/local/edit-coordination';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
+import { nextMemoryRevision } from './helpers/local-memory-scope/revision';
 
 const PROFILE_LINE =
   '- [Chat history profile](topics/chat-history-profile.md): Role: Engineer.';
@@ -162,6 +166,40 @@ describe('local memory rebuild', () => {
       expect(
         await pathExists(join(scopeDir, 'inbox/.consolidated/same.md')),
       ).toBe(true);
+    });
+
+    it('finishes a restore a crash cut short, leaving each identified note in one file', async () => {
+      const ids = new Map<string, string>();
+      const note = (body: string): string => {
+        const id =
+          ids.get(body) ??
+          memoryNoteIdAt(Date.parse('2026-09-01T00:00:00.000Z'));
+        ids.set(body, id);
+        return `---\nid: "${id}"\n---\n${body}\n`;
+      };
+      // Linked into the inbox, crashed before the archived name went.
+      await write(scopeDir, 'inbox/.consolidated/linked.md', note('Linked'));
+      await link(
+        join(scopeDir, 'inbox/.consolidated/linked.md'),
+        join(scopeDir, 'inbox/linked.md'),
+      );
+      // Copied whole where hard links are unavailable, same crash.
+      await write(scopeDir, 'inbox/.consolidated/copied.md', note('Copied'));
+      await write(scopeDir, 'inbox/copied.md', note('Copied'));
+
+      const restored = await restoreSources(scopeDir);
+
+      expect(restored.inboxNotes).toBe(2);
+      expect(await readdir(join(scopeDir, 'inbox', '.consolidated'))).toEqual(
+        [],
+      );
+      expect(await read(scopeDir, 'inbox/linked.md')).toBe(note('Linked'));
+      expect(await read(scopeDir, 'inbox/copied.md')).toBe(note('Copied'));
+      expect((await readdir(join(scopeDir, 'inbox'))).sort()).toEqual([
+        '.consolidated',
+        'copied.md',
+        'linked.md',
+      ]);
     });
 
     it('restores the newest suffixed import copy under its ledger name and marks it pending', async () => {
@@ -688,7 +726,8 @@ describe('local memory snapshots', () => {
     await rm(join(scopeDir, 'topics', 'travel.md'));
     await write(scopeDir, 'topics/new.md', 'New');
     await write(scopeDir, 'topics/chat-history-profile.md', 'New profile');
-    const revision = memoryEditRevision(scopeDir);
+    await prepareMemoryScopeForWrite(scopeDir);
+    const revision = await memoryEditRevision(scopeDir);
 
     const { previousSnapshotId } = await restoreLocalMemorySnapshot(
       scopeDir,
@@ -705,7 +744,9 @@ describe('local memory snapshots', () => {
     expect(await read(scopeDir, 'topics/chat-history-profile.md')).toBe(
       'New profile',
     );
-    expect(memoryEditRevision(scopeDir)).toBe(revision + 1);
+    expect(await memoryEditRevision(scopeDir)).toBe(
+      nextMemoryRevision(revision),
+    );
     expect(previousSnapshotId).not.toBeNull();
     const previous = await readLocalMemorySnapshot(
       scopeDir,

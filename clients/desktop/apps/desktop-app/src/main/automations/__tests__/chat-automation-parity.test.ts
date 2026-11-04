@@ -15,6 +15,11 @@
  * - the reply wait is capped at 720 minutes;
  * - an Orchestrator entry keeps the title it was converted with after the
  *   automation is renamed.
+ *
+ * The CAN-5479 cases (`*_selections`, `*_expressions`, `*_composer`,
+ * `*_agent`) cover what used to stay native: local plugin selections and Ultra
+ * fast, expressions in a title with a group named None, an attachment with
+ * voice input, and an Agent through the pipeline's model alias.
  */
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
@@ -23,6 +28,7 @@ import {
   ownedPipelineToChatAction,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import type { PipelineAgentModelAliasPreference } from '@canopy/desktop-shared/types/pipeline';
 
 const FIXTURE = path.resolve(
   __dirname,
@@ -33,6 +39,7 @@ interface FixtureCase {
   activity: Pick<ScheduledActivity, 'name' | 'action'>;
   pipeline: unknown;
   inputs: Record<string, string>;
+  modelAliasPreferences?: Record<string, PipelineAgentModelAliasPreference>;
 }
 
 function fixtureCases(): Array<[string, FixtureCase]> {
@@ -49,16 +56,24 @@ describe('converted chat automation parity fixture', () => {
   it('covers every chat action the flow compares', () => {
     expect(fixtureCases().map(([key]) => key)).toEqual([
       'cowork',
+      'cowork_selections',
       'orchestrator',
+      'orchestrator_expressions',
       'session',
+      'session_composer',
       'worktree',
+      'worktree_agent',
     ]);
   });
 
   it.each(fixtureCases())(
     'holds the converter output for the %s case',
-    (_key, { activity, pipeline, inputs }) => {
-      expect(chatAutomationToPipeline(activity)).toEqual({ pipeline, inputs });
+    (_key, { activity, pipeline, inputs, modelAliasPreferences }) => {
+      expect(chatAutomationToPipeline(activity)).toEqual({
+        pipeline,
+        inputs,
+        ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
+      });
     },
   );
 
@@ -71,6 +86,7 @@ describe('converted chat automation parity fixture', () => {
           converted.pipeline,
           converted.inputs,
           () => activity.action.type === 'standalone_prompt',
+          converted.modelAliasPreferences,
         ),
       ).toEqual(activity.action);
     },

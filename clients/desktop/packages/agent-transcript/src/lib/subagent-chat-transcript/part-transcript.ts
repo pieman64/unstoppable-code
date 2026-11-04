@@ -23,7 +23,7 @@ function partText(part: PortalChatPart): string | undefined {
 
 /**
  * Rebuild the public agent-sender attribution from its compact, string-safe
- * wire fields (see `agentSentWireFields`). Malformed or mixed project/bot/pipeline
+ * wire fields (see `agentSentWireFields`). Malformed or mixed sender-kind
  * fields yield no attribution.
  */
 function partAgentSent(part: PortalChatPart): ChatAgentSentInfo | undefined {
@@ -39,6 +39,22 @@ function partAgentSent(part: PortalChatPart): ChatAgentSentInfo | undefined {
         taskId: data['agentSentTaskId'],
         chatId: data['agentSentChatId'],
         ...('agentSentBotId' in data ? { botId: data['agentSentBotId'] } : {}),
+      },
+      chatTitle: data['agentSentChatTitle'],
+      projectLabel: data['agentSentProjectLabel'],
+    });
+  }
+  if (senderKind === 'cloud_chat') {
+    return parseChatAgentSentInfo({
+      sender: {
+        kind: 'cloud_chat',
+        projectId: data['agentSentProjectId'],
+        taskId: data['agentSentTaskId'],
+        chatId: data['agentSentChatId'],
+        ...('agentSentBotId' in data ? { botId: data['agentSentBotId'] } : {}),
+        ...('agentSentProjectType' in data
+          ? { projectType: data['agentSentProjectType'] }
+          : {}),
       },
       chatTitle: data['agentSentChatTitle'],
       projectLabel: data['agentSentProjectLabel'],

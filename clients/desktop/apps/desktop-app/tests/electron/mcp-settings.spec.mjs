@@ -531,9 +531,7 @@ test('Settings → MCP tab keeps its labels while values load, then fills them i
     // Only the values pulse, once the shared delay has passed.
     const values = page.getByTestId('settings-mcp-loading-value');
     await expect(values.first()).toBeVisible();
-    await expect(
-      values.first().locator('.animate-pulse').first(),
-    ).toBeVisible();
+    await expect(values.first().locator('[skullet-bar]').first()).toBeVisible();
     await expect(page.getByTestId('slow-load-note')).toHaveText('');
 
     await electronApp.evaluate(() => globalThis.releasePreferences());

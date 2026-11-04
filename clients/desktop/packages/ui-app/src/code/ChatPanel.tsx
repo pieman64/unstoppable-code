@@ -925,6 +925,7 @@ export function ChatPanel({
                     ? subagentReference.body
                     : message.text
                 }
+                watcherFired={message.watcherFired}
                 label={
                   message.agentSent ? (
                     <AgentSentTitle
@@ -959,6 +960,7 @@ export function ChatPanel({
                   thread?.steeringCapabilities?.steer === true &&
                   message.steerBlockedByCapabilityChange === true
                 }
+                settingsHeld={message.restartHeldChanges}
                 // Send now runs whichever force the row offers: interrupt,
                 // retry or run now.
                 onInterrupt={

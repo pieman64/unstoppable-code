@@ -11,6 +11,8 @@ import {
   SettingsChartSkeleton,
   SettingsFormSkeleton,
   SettingsListSkeleton,
+  Skeleton,
+  SKELETON_KEEP,
   SkeletonBlock,
   SlowLoadNote,
   type SpinnerTone,
@@ -29,6 +31,28 @@ const SPINNER_TONES: readonly SpinnerTone[] = [
   'warning',
   'destructive',
 ];
+
+function SampleAgentCard(): JSX.Element {
+  return (
+    <div className="flex w-full flex-col gap-3 rounded-lg border p-4">
+      <h3 {...SKELETON_KEEP} className="text-s font-medium fg-primary">
+        Connected agents
+      </h3>
+      {['Release notes writer', 'Support triage'].map((name) => (
+        <div key={name} className="flex items-center gap-3">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-xs fg-accent">
+            {name.slice(0, 1)}
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="text-s fg-primary">{name}</span>
+            <span className="text-xs fg-secondary">Last run 2 hours ago</span>
+          </div>
+          <Button size="compact">Open</Button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function LoadingSpecimen(): JSX.Element {
   const [busy, setBusy] = useState(true);
@@ -65,6 +89,20 @@ export function LoadingSpecimen(): JSX.Element {
             daemon.
           </p>
         </SpecimenCell>
+      </SpecimenPanel>
+      <SpecimenPanel title="Skeleton: measured by skullet from the content's own layout">
+        <SpecimenGrid min={300}>
+          <SpecimenCell label="Loading (sample data, the heading kept)">
+            <Skeleton loading className="w-full">
+              <SampleAgentCard />
+            </Skeleton>
+          </SpecimenCell>
+          <SpecimenCell label="Loaded">
+            <Skeleton loading={false} className="w-full">
+              <SampleAgentCard />
+            </Skeleton>
+          </SpecimenCell>
+        </SpecimenGrid>
       </SpecimenPanel>
       <SpecimenPanel title="Settings skeletons">
         <SpecimenGrid min={260}>

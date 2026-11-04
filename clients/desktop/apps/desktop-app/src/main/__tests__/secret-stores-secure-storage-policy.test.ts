@@ -1,7 +1,7 @@
 /**
  * CAN-3209 consumer integration: only Electron, filesystem, and unrelated
- * orchestration are faked. The policy, CAN-3187 wrapper, migration, and stores
- * run together. These fixtures are synthetic; this is not native keyring proof.
+ * orchestration and live Secret Service are faked. The policy, CAN-3187
+ * wrapper, migration, and stores run together. These fixtures are synthetic; this is not native keyring proof.
  */
 import type {
   EnvironmentConfigData,
@@ -14,6 +14,11 @@ const mockReadErrors = new Map<string, Error>();
 let mockBackend = 'gnome_libsecret';
 let mockPlatform = 'linux';
 let mockAvailable = true;
+let mockSecretServiceState: 'secure' | 'unavailable' | 'locked' = 'secure';
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    mockSecretServiceState,
+}));
 let mockDecryptFails = false;
 const mockNativeDiagnostic = 'FAKE native diagnostic containing fixture-secret';
 const mockEncrypt = jest.fn(
@@ -628,6 +633,7 @@ beforeEach(() => {
   mockBackend = 'gnome_libsecret';
   mockPlatform = 'linux';
   mockAvailable = true;
+  mockSecretServiceState = 'secure';
   mockDecryptFails = false;
   mockProbe.mockImplementation(() => mockAvailable);
   mockEncrypt.mockImplementation((text) =>
@@ -701,6 +707,7 @@ describe.each(stores)('$name through real policy + native wrapper', (store) => {
       clearEffects();
       mockBackend = backend.backend;
       mockAvailable = backend.available;
+      mockSecretServiceState = backend.state === 'locked' ? 'locked' : 'secure';
       if (backend.missing) delete mockElectron.safeStorage;
       expect(getSafeStorageStatus().state).toBe(backend.state);
       const failure = await failureOf(() => store.save(REPLACEMENT));
@@ -714,6 +721,7 @@ describe.each(stores)('$name through real policy + native wrapper', (store) => {
       expect(mockRefreshContext).not.toHaveBeenCalled();
       mockBackend = 'gnome_libsecret';
       mockAvailable = true;
+      mockSecretServiceState = 'secure';
       mockElectron.safeStorage = {
         isEncryptionAvailable: mockProbe,
         getSelectedStorageBackend: (): string => mockBackend,
@@ -753,8 +761,10 @@ describe.each(stores)('$name through real policy + native wrapper', (store) => {
       await store.save(SECRET);
       const before = snapshot();
       clearEffects();
-      if (mode === 'locked') mockAvailable = false;
-      else if (mode === 'unavailable') delete mockElectron.safeStorage;
+      if (mode === 'locked') {
+        mockAvailable = false;
+        mockSecretServiceState = 'locked';
+      } else if (mode === 'unavailable') delete mockElectron.safeStorage;
       else if (mode === 'unavailable-libsecret') {
         mockBackend = 'unknown';
         mockAvailable = false;
@@ -768,6 +778,7 @@ describe.each(stores)('$name through real policy + native wrapper', (store) => {
       expectNoMutation(before);
       expect(mockPurge).not.toHaveBeenCalled();
       mockAvailable = true;
+      mockSecretServiceState = 'secure';
       mockDecryptFails = false;
       mockBackend = 'gnome_libsecret';
       mockElectron.safeStorage = {
@@ -1042,8 +1053,10 @@ describe('status-aware caches recover with unchanged bytes and mtime', () => {
       const before = snapshot();
       clearEffects();
       invalidateCanopyCloudAccountCache();
-      if (mode === 'locked') mockAvailable = false;
-      else if (mode === 'unavailable') delete mockElectron.safeStorage;
+      if (mode === 'locked') {
+        mockAvailable = false;
+        mockSecretServiceState = 'locked';
+      } else if (mode === 'unavailable') delete mockElectron.safeStorage;
       else mockDecryptFails = true;
 
       const decryptFailure = mode === 'native-decrypt-failure';
@@ -1173,6 +1186,7 @@ describe('remote identity through the held real policy', () => {
       clearEffects();
       mockBackend = backend.backend;
       mockAvailable = backend.available;
+      mockSecretServiceState = backend.state === 'locked' ? 'locked' : 'secure';
       if (backend.missing) delete mockElectron.safeStorage;
       await expect(failureOf(() => store.identity())).resolves.toMatchObject({
         code: 'SECURE_STORAGE_WRITE_REFUSED',
@@ -1182,6 +1196,7 @@ describe('remote identity through the held real policy', () => {
       expectNoMutation(before);
       expect(mockEncrypt).not.toHaveBeenCalled();
       mockAvailable = true;
+      mockSecretServiceState = 'secure';
       mockBackend = 'gnome_libsecret';
       mockElectron.safeStorage = {
         isEncryptionAvailable: mockProbe,
@@ -1213,8 +1228,10 @@ describe('remote identity through the held real policy', () => {
       const store = remoteStore();
       const before = snapshot();
       clearEffects();
-      if (mode === 'locked') mockAvailable = false;
-      else if (mode === 'unavailable') delete mockElectron.safeStorage;
+      if (mode === 'locked') {
+        mockAvailable = false;
+        mockSecretServiceState = 'locked';
+      } else if (mode === 'unavailable') delete mockElectron.safeStorage;
       else if (mode === 'unavailable-libsecret') {
         mockBackend = 'unknown';
         mockAvailable = false;
@@ -1226,6 +1243,7 @@ describe('remote identity through the held real policy', () => {
       expectNoMutation(before);
       expect(mockEncrypt).not.toHaveBeenCalled();
       mockAvailable = true;
+      mockSecretServiceState = 'secure';
       mockDecryptFails = false;
       mockBackend = 'gnome_libsecret';
       mockElectron.safeStorage = {

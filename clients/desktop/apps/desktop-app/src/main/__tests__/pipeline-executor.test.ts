@@ -63,7 +63,7 @@ import {
   listTrackedPlans,
   updateTrackedPlan,
 } from '../lib/plan-persistence';
-import { savePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
+import { savePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import {
   computePipelinePackageDigestSync,
   hashPipelinePackageYaml,
@@ -636,17 +636,23 @@ describe('pipeline-executor', () => {
         source: 'user',
         value: 'plugin-merge-test',
       };
-      savePipelinePluginCollectionPreferences(locator, {
-        saved_collection: {
-          disabledDefaultKeys: [],
-          extraSelections: {
-            collectionIds: [],
-            skillRefs: [{ sourceId: 'saved-source', skillName: 'saved-skill' }],
-            pluginRefs: [],
-            mcpServerRefs: [],
+      await savePipelinePluginCollectionPreferences(
+        locator,
+        {
+          saved_collection: {
+            disabledDefaultKeys: [],
+            extraSelections: {
+              collectionIds: [],
+              skillRefs: [
+                { sourceId: 'saved-source', skillName: 'saved-skill' },
+              ],
+              pluginRefs: [],
+              mcpServerRefs: [],
+            },
           },
         },
-      });
+        'electron_main',
+      );
       const runtimeWithResolver: ExecutionRuntime = {
         ...runtime,
         resolvePipelinePluginCollections: (_collections, preferences) =>

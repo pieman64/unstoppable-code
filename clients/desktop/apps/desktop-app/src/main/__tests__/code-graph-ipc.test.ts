@@ -45,8 +45,8 @@ const mockGetQueueSnapshot = jest.fn<CodeGraphGenerationQueueSnapshot, []>(
     ],
   }),
 );
-const mockReorder = jest.fn<CodeGraphGenerationQueueSnapshot, [unknown]>(() =>
-  mockGetQueueSnapshot(),
+const mockReorder = jest.fn<CodeGraphReorderGenerationQueueResult, [unknown]>(
+  () => mockGetQueueSnapshot(),
 );
 const mockSetQueueListener = jest.fn<void, [unknown]>();
 const mockRequestSummaryRepair = jest.fn<Promise<unknown>, [unknown]>(() =>
@@ -63,11 +63,6 @@ jest.mock('../code-graph/build-runner', () => ({
     mockSummaryRepairActive(key),
   requestCodeGraphSummaryRepair: (input: unknown): Promise<unknown> =>
     mockRequestSummaryRepair(input),
-  getCodeGraphGenerationQueueSnapshot: (): CodeGraphGenerationQueueSnapshot =>
-    mockGetQueueSnapshot(),
-  reorderCodeGraphGenerationQueue: (
-    request: unknown,
-  ): CodeGraphGenerationQueueSnapshot => mockReorder(request),
   setCodeGraphGenerationQueueListener: (listener: unknown): void => {
     mockSetQueueListener(listener);
   },
@@ -285,14 +280,123 @@ jest.mock('../lib/workspace-reference-repo', () => ({
     mockResolveWorkspaceReferenceRepoPath(repoPath),
 }));
 jest.mock('../lib/window-send', () => ({ sendToWindow: jest.fn() }));
+const mockSelectDaemon = jest.fn<boolean, [unknown]>(() => false);
+const mockBuildInDaemon = jest.fn<Promise<unknown>, [unknown]>();
+const mockQueryInDaemon = jest.fn<Promise<unknown>, [unknown]>();
+const mockNoteDaemonFallback = jest.fn<boolean, [unknown]>(() => false);
+jest.mock('../code-graph/daemon-code-graph-route', () => ({
+  ...jest.requireActual<object>('../code-graph/daemon-code-graph-route'),
+  selectDaemonCodeGraph: (context: unknown): boolean =>
+    mockSelectDaemon(context),
+  buildCodeGraphInDaemon: (scope: unknown): Promise<unknown> =>
+    mockBuildInDaemon(scope),
+  queryCodeGraphInDaemon: (params: unknown): Promise<unknown> =>
+    mockQueryInDaemon(params),
+  noteDaemonCodeGraphFallback: (error: unknown): boolean =>
+    mockNoteDaemonFallback(error),
+}));
+jest.mock('../remote-control/host/bridge-window', () => ({
+  resolveRemoteBridgeSender: (): null => null,
+}));
 
+import {
+  createCanopyDispatcher,
+  createWorkerExecutorReceipts,
+} from '@canopy/core-runtime';
+import { createWorkerCodeGraphHandlers } from '@canopy/core-runtime/node/code-graph';
+import {
+  WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+  WORKER_CODE_GRAPH_QUERY_DEFINITIONS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import type { CodeGraphReorderGenerationQueueResult } from '@canopy/code-graph/host/build-scheduler';
+import {
+  createDesktopCodeGraphBuildQueueWorker,
+  createWorkerCodeGraphAdapter,
+  type DesktopCodeGraphBuildQueue,
+} from '../canopy-runtime/worker-code-graph-adapter';
+import { buildCodeGraph } from '../lib/code-graph-worker-builds';
 import { registerCodeGraphHandlers } from '../ipc/code-graph';
+import { CanopyClientError } from '@canopy/core-client';
+
+// The queue channels dispatch the worker's queue controls over the scheduler
+// the build-runner mock stands in for.
+const desktopQueue = (): DesktopCodeGraphBuildQueue => ({
+  queueStatus: () => {
+    const snapshot = mockGetQueueSnapshot();
+    return {
+      revision: snapshot.revision,
+      entries: snapshot.entries.map((entry) => ({
+        ...entry,
+        priority: 'worktree' as const,
+      })),
+    };
+  },
+  reorderQueue: (request) => mockReorder(request),
+  cancelQueueItem: () => Promise.resolve(null),
+  cancelWorktree: () => Promise.resolve(0),
+  build: buildCodeGraph,
+});
+const queueHandlers = createWorkerCodeGraphHandlers(
+  createDesktopCodeGraphBuildQueueWorker(desktopQueue()),
+);
+const queueDispatcher = createCanopyDispatcher({
+  profile: 'core+worker',
+  definitions: {
+    queries: WORKER_CODE_GRAPH_QUERY_DEFINITIONS,
+    instructions: WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+    streams: {},
+  },
+  handlers: {
+    queries: queueHandlers.queries,
+    instructions: createWorkerExecutorReceipts(
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+    ).wrap(queueHandlers.instructions),
+    streams: {},
+  },
+});
+// Electron main's production adapter, which takes the daemon route.
+const adapterHandlers = createWorkerCodeGraphAdapter(() =>
+  Promise.resolve(desktopQueue()),
+);
+const adapterDispatcher = createCanopyDispatcher({
+  profile: 'core+worker',
+  definitions: {
+    queries: WORKER_CODE_GRAPH_QUERY_DEFINITIONS,
+    instructions: WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+    streams: {},
+  },
+  handlers: {
+    queries: adapterHandlers.queries,
+    instructions: createWorkerExecutorReceipts(
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+    ).wrap(adapterHandlers.instructions),
+    streams: {},
+  },
+});
+const rendererCaller: CanopyCallerDescriptor = {
+  principalId: 'renderer',
+  clientInstanceId: 'main-window',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: [],
+};
 
 function handler(channel: string): Handler {
   const registered = handlers.get(channel);
   if (registered === undefined) throw new Error(`Missing handler ${channel}`);
   return registered;
 }
+
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
+});
+
+// The generation's cancellation signal and queued callback.
+const ANY_SIGNAL: unknown = expect.any(AbortSignal);
+const ANY_CALLBACK: unknown = expect.any(Function);
 
 describe('Code Graph IPC handlers', () => {
   beforeEach(() => {
@@ -317,7 +421,10 @@ describe('Code Graph IPC handlers', () => {
     mockGetHeadCommitSha.mockReset();
     mockGetRepoShadowDir.mockReset();
     mockResolveWorkspaceReferenceRepoPath.mockReset();
-    registerCodeGraphHandlers();
+    registerCodeGraphHandlers({
+      dispatcher: queueDispatcher,
+      resolveCaller: () => rendererCaller,
+    });
   });
 
   it('rejects malformed and cross-workspace worktree requests without accepting paths', async () => {
@@ -426,6 +533,8 @@ describe('Code Graph IPC handlers', () => {
       worktreeId: 'worktree-a',
       reason: 'manual',
       options: { verifyContent: true },
+      signal: ANY_SIGNAL,
+      onQueued: ANY_CALLBACK,
     });
   });
 
@@ -481,14 +590,20 @@ describe('Code Graph IPC handlers', () => {
       state: 'ready',
       totals: { fileCount: 2, symbolCount: 3, edgeCount: 4 },
     });
-    expect(mockRunCodeGraphWorkerRead).toHaveBeenCalledWith({
-      key: 'workspace-a/worktree-a',
-      kind: 'ui-summary',
-      request: {
-        dbPath: '/private/graph.db',
-        task: { kind: 'readonly-summary' },
-      },
-    });
+    expect(mockRunCodeGraphWorkerRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'workspace-a/worktree-a',
+        kind: 'ui-summary',
+        request: {
+          dbPath: '/private/graph.db',
+          task: { kind: 'readonly-summary' },
+        },
+      }),
+    );
+    // The dispatcher's request signal cancels the read.
+    expect(mockRunCodeGraphWorkerRead.mock.lastCall?.[0].signal).toBeInstanceOf(
+      AbortSignal,
+    );
     expect(mockRunWorktreeBuild).not.toHaveBeenCalled();
   });
 
@@ -713,16 +828,24 @@ describe('Code Graph IPC handlers', () => {
     expect(mockRunPerformanceBuild).not.toHaveBeenCalled();
   });
 
-  it('returns an empty queue while the feature flag is off', () => {
+  it('returns an empty queue while the feature flag is off', async () => {
     mockFeatureEnabled.mockReturnValue(false);
-    expect(handler(IPC_CHANNELS.codeGraphGetGenerationQueue)({})).toEqual({
+    await expect(
+      handler(IPC_CHANNELS.codeGraphGetGenerationQueue)({}),
+    ).resolves.toEqual({
       revision: 7,
       entries: [],
     });
   });
 
-  it('validates reorder payloads before passing only IDs and revision to the runner', () => {
-    expect(
+  it('reads the generation queue through the worker queue unchanged', async () => {
+    await expect(
+      handler(IPC_CHANNELS.codeGraphGetGenerationQueue)({}),
+    ).resolves.toEqual(mockGetQueueSnapshot());
+  });
+
+  it('validates reorder payloads before passing only IDs and revision to the runner', async () => {
+    await expect(
       handler(IPC_CHANNELS.codeGraphReorderGenerationQueue)(
         {},
         {
@@ -731,12 +854,12 @@ describe('Code Graph IPC handlers', () => {
           path: '/ignored',
         },
       ),
-    ).toEqual(mockGetQueueSnapshot());
+    ).resolves.toEqual(mockGetQueueSnapshot());
     expect(mockReorder).toHaveBeenCalledWith({
       revision: 7,
       orderedQueuedEntryIds: ['opaque-id'],
     });
-    expect(
+    await expect(
       handler(IPC_CHANNELS.codeGraphReorderGenerationQueue)(
         {},
         {
@@ -744,8 +867,8 @@ describe('Code Graph IPC handlers', () => {
           orderedQueuedEntryIds: [],
         },
       ),
-    ).toMatchObject({ ok: false, code: 'invalid-request' });
-    expect(
+    ).resolves.toMatchObject({ ok: false, code: 'invalid-request' });
+    await expect(
       handler(IPC_CHANNELS.codeGraphReorderGenerationQueue)(
         {},
         {
@@ -753,8 +876,48 @@ describe('Code Graph IPC handlers', () => {
           orderedQueuedEntryIds: ['../internal-runner-key'],
         },
       ),
-    ).toMatchObject({ ok: false, code: 'invalid-request' });
+    ).resolves.toMatchObject({ ok: false, code: 'invalid-request' });
     expect(mockReorder).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a stale reorder with a conflict and the current queue', async () => {
+    mockReorder.mockReturnValueOnce({
+      ok: false,
+      code: 'conflict',
+      message: 'The generation queue changed. Reload it and try again.',
+      snapshot: mockGetQueueSnapshot(),
+    });
+
+    await expect(
+      handler(IPC_CHANNELS.codeGraphReorderGenerationQueue)(
+        {},
+        { revision: 6, orderedQueuedEntryIds: ['opaque-id'] },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'conflict',
+      message: 'The generation queue changed. Reload it and try again.',
+      snapshot: mockGetQueueSnapshot(),
+    });
+  });
+
+  it("keeps the scheduler's message for an invalid order", async () => {
+    mockReorder.mockReturnValueOnce({
+      ok: false,
+      code: 'invalid-request',
+      message: 'The reorder contains an unknown or non-queued generation.',
+    });
+
+    await expect(
+      handler(IPC_CHANNELS.codeGraphReorderGenerationQueue)(
+        {},
+        { revision: 7, orderedQueuedEntryIds: ['other-id'] },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      code: 'invalid-request',
+      message: 'The reorder contains an unknown or non-queued generation.',
+    });
   });
 
   it('aggregates independent project repositories and reports stale and missing states', async () => {
@@ -1242,5 +1405,138 @@ describe('Code Graph IPC handlers', () => {
       code: 'unavailable',
       message: 'Code graph tools are not available for this project.',
     });
+  });
+});
+
+describe('Code Graph IPC daemon route (CAN-5089)', () => {
+  const sender = { id: 1 };
+  const mainWindow = { webContents: sender, isDestroyed: (): boolean => false };
+  const request = { workspaceId: 'workspace-a', worktreeId: 'worktree-a' };
+  const missing = {
+    presence: 'absent',
+    buildState: 'running',
+    result: { kind: 'readonly-summary', value: { state: 'missing' } },
+  };
+
+  beforeEach(() => {
+    handlers.clear();
+    jest.clearAllMocks();
+    mockAvailable.mockReturnValue(true);
+    mockFeatureEnabled.mockReturnValue(true);
+    mockSourceBuildState.mockReturnValue('idle');
+    mockReadSidebar.mockResolvedValue({ version: 1, items: [workspace] });
+    mockSelectDaemon.mockReturnValue(true);
+    mockBuildInDaemon.mockResolvedValue({
+      kind: 'worktree',
+      filesScanned: 2,
+      filesParsed: 2,
+      filesUnchanged: 0,
+      filesSkipped: 0,
+      filesRemoved: 0,
+      parseFailures: 0,
+      symbolCount: 3,
+      edgeCount: 1,
+      durationMs: 5,
+      lastBuildAt: '2026-11-03T08:00:00.000Z',
+      derivedPending: true,
+      customLanguageDiagnostics: null,
+      derivedWarnings: null,
+    });
+    mockQueryInDaemon.mockResolvedValue(missing);
+    mockNoteDaemonFallback.mockReturnValue(false);
+    registerCodeGraphHandlers(
+      { dispatcher: adapterDispatcher, resolveCaller: () => rendererCaller },
+      {
+        getMainWindow: () => mainWindow as never,
+        getAppAdvisorWindow: () => null,
+      },
+    );
+  });
+
+  it('sends code-graph:build-worktree as worker.codeGraph.build and its summary as worker.codeGraph.query to the daemon, not in process', async () => {
+    await expect(
+      handler(IPC_CHANNELS.codeGraphBuildWorktree)({ sender }, request),
+    ).resolves.toMatchObject({ scope: 'worktree', buildState: 'running' });
+    expect(mockSelectDaemon).toHaveBeenCalledWith({ localWindow: true });
+    expect(mockBuildInDaemon).toHaveBeenCalledWith({
+      kind: 'worktree',
+      workspaceId: 'workspace-a',
+      worktreeId: 'worktree-a',
+      mode: 'verified',
+    });
+    expect(mockQueryInDaemon).toHaveBeenCalledWith({
+      scope: { workspaceId: 'workspace-a', worktreeId: 'worktree-a' },
+      queryKind: 'ui-summary',
+      read: { kind: 'summary' },
+    });
+    expect(mockRunWorktreeBuild).not.toHaveBeenCalled();
+  });
+
+  it('marks another window or no sender as not local', async () => {
+    mockSelectDaemon.mockReturnValue(false);
+    mockRunWorktreeBuild.mockResolvedValue({ ok: false, message: 'failed' });
+    await handler(IPC_CHANNELS.codeGraphBuildWorktree)(
+      { sender: { id: 2 } },
+      request,
+    );
+    await handler(IPC_CHANNELS.codeGraphGetWorktreeSummary)(null, request);
+    expect(mockSelectDaemon.mock.calls).toEqual([
+      [{ localWindow: false }],
+      [{ localWindow: false }],
+    ]);
+    expect(mockBuildInDaemon).not.toHaveBeenCalled();
+  });
+
+  it('builds code-graph:build-worktree in process when worker.codeGraph.build cannot reach the daemon', async () => {
+    const unreachable = new Error('unreachable');
+    mockBuildInDaemon.mockRejectedValue(unreachable);
+    mockNoteDaemonFallback.mockReturnValue(true);
+    mockRunWorktreeBuild.mockResolvedValue({ ok: false, message: 'failed' });
+    await handler(IPC_CHANNELS.codeGraphBuildWorktree)({ sender }, request);
+    expect(mockNoteDaemonFallback).toHaveBeenCalledWith(unreachable);
+    expect(mockRunWorktreeBuild).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a reached daemon's refusal as the answer, with no in-process build", async () => {
+    mockBuildInDaemon.mockRejectedValue(
+      new CanopyClientError({
+        kind: 'deadline_exceeded',
+        code: 'worker.codeGraph.buildTimedOut',
+        message: 'Code graph generation timed out.',
+        retry: { kind: 'never' },
+      }),
+    );
+    await expect(
+      handler(IPC_CHANNELS.codeGraphBuildWorktree)({ sender }, request),
+    ).resolves.toMatchObject({ ok: false, code: 'internal' });
+    expect(mockRunWorktreeBuild).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reached daemon's worker.codeGraph.query refusal kind for code-graph:get-worktree-summary", async () => {
+    mockQueryInDaemon.mockRejectedValue(
+      new CanopyClientError({
+        kind: 'resource_exhausted',
+        code: 'worker.codeGraph.read.busy',
+        message: 'The retained Code Graph could not be read. Try again.',
+        retry: { kind: 'same_request' },
+      }),
+    );
+    await expect(
+      handler(IPC_CHANNELS.codeGraphGetWorktreeSummary)({ sender }, request),
+    ).resolves.toMatchObject({
+      ok: false,
+      snapshotState: 'read-error',
+      readFailure: 'busy',
+    });
+    expect(mockNoteDaemonFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads code-graph:get-worktree-summary in process when worker.codeGraph.query cannot reach the daemon', async () => {
+    mockQueryInDaemon.mockRejectedValue(new Error('unreachable'));
+    mockNoteDaemonFallback.mockReturnValue(true);
+    await expect(
+      handler(IPC_CHANNELS.codeGraphGetWorktreeSummary)({ sender }, request),
+    ).resolves.toMatchObject({ scope: 'worktree' });
+    expect(mockQueryInDaemon).toHaveBeenCalledTimes(1);
   });
 });

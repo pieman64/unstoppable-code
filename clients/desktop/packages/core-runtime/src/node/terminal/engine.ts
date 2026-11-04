@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path, { basename } from 'node:path';
 import {
   TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
+  TERMINAL_CONNECTION_LOST_SIGNAL,
   TERMINAL_WORKTREE_CLEANUP_SIGNAL,
   type PersistedTerminalEntry,
   type TerminalAttachResponse,
@@ -66,7 +67,8 @@ const INITIAL_COMMAND_SUPPRESSION_MAX_BYTES = 64 * 1024;
 const INITIAL_COMMAND_READY_DEBOUNCE_MS = 100;
 const INITIAL_COMMAND_FALLBACK_MS = 1000;
 const TRUNCATION_MARKER = '\r\n\x1b[33m[output truncated]\x1b[0m\r\n';
-const TRUNCATION_MARKER_BYTES = Buffer.from(TRUNCATION_MARKER, 'utf8');
+/** Prefixes a restored terminal's replay once older bytes left its window. */
+export const TRUNCATION_MARKER_BYTES = Buffer.from(TRUNCATION_MARKER, 'utf8');
 const RESTORE_MARKER = '[Terminal restarted]';
 const CTRL_C = '\x03';
 const ANSI_ESCAPE_PATTERN = new RegExp(
@@ -300,17 +302,23 @@ function normalizeSignal(signal: number | undefined): string | null {
   return `${signal}`;
 }
 
-function isRestorableExitSignal(signal: string | null): boolean {
+/**
+ * Whether a persisted shell may be restarted. A terminal whose host process
+ * ended under it (CAN-5088) restarts like one the app quit under.
+ */
+export function isRestorableExitSignal(signal: string | null): boolean {
   return (
     signal === null ||
     signal === '0' ||
     signal === 'app-quit' ||
     signal === 'fatal-exit' ||
-    signal === 'pipe-error'
+    signal === 'pipe-error' ||
+    signal === TERMINAL_CONNECTION_LOST_SIGNAL
   );
 }
 
-function buildRestoreMarker(hasReplay: boolean): Buffer {
+/** The marker a restored terminal's replay and scrollback end with. */
+export function buildRestoreMarker(hasReplay: boolean): Buffer {
   const prefix = hasReplay ? '\r\n' : '';
   return Buffer.from(`${prefix}\x1b[2m${RESTORE_MARKER}\x1b[0m\r\n`, 'utf8');
 }
@@ -773,7 +781,12 @@ export class TerminalEngine
       ...processEnv,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
-      LANG: this.host.environment.variable('LANG') ?? DEFAULT_LANG,
+      // A caller-supplied environment keeps its locale (a daemon's own may
+      // differ); in process both are the app's.
+      LANG:
+        options.environmentOverride?.LANG ??
+        this.host.environment.variable('LANG') ??
+        DEFAULT_LANG,
       ...shellEnv,
       ...(managedCommand?.env ?? {}),
     };
@@ -927,6 +940,7 @@ export class TerminalEngine
       managedCommand: request.managedCommand,
       cwd: request.cwd,
       terminalProfileId: request.profileId,
+      restoredShell: request.shell,
       initialCommand: request.initialCommand,
       environmentOverride: request.environment,
     });
@@ -977,7 +991,8 @@ export class TerminalEngine
         persistedEntry.session.worktreeId,
         persistedEntry.session.cwd,
       ),
-      restoredShell: this.host.shells.persisted(persistedEntry.session),
+      restoredShell:
+        request.shell ?? this.host.shells.persisted(persistedEntry.session),
       initialCommand: persistedEntry.session.initialCommand,
       environmentOverride,
     });

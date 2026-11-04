@@ -351,6 +351,33 @@ test('the scope picker switches between the account and an organization, keeping
   }
 });
 
+test('billing history lists card charges in the shared table', async () => {
+  const apiKey = 'csk_hosted_account_settings_billing_history';
+  const { app, electronApp, userDataDir, window } = await launchSignedIn(
+    apiKey,
+    'hosted-settings-signed-in',
+  );
+  try {
+    await app.openSettings();
+    await app.openAccountSettingsPage('billing');
+    const history = window.getByTestId('billing-history');
+    const table = history.getByRole('table', { name: 'Billing history' });
+    await expect(table).toBeVisible();
+    await expect(
+      table.getByRole('columnheader', { name: 'Amount' }),
+    ).toBeVisible();
+    await expect(table.locator('tbody tr')).toHaveCount(2);
+    await expect(
+      table.getByTestId('billing-history-row-chg_mock_topup'),
+    ).toContainText('AI credits top-up');
+    await expect(
+      table.getByTestId('billing-history-row-chg_mock_topup'),
+    ).toContainText('$25.00');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('the Timeline sharing hint saves in place instead of handing off to the desktop app', async () => {
   test.setTimeout(120_000);
   const apiKey = 'csk_hosted_account_settings_timeline_opt_in';

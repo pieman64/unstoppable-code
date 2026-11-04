@@ -10,6 +10,7 @@ import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { Heading } from './Heading';
 
 /** One share in the Past shares list, removed or accepted. */
 export interface PastShareItem {
@@ -76,7 +77,13 @@ function OwnerLine({ name }: { name: string | undefined }): JSX.Element | null {
 }
 
 function GroupHeading({ children }: { children: ReactNode }): JSX.Element {
-  return <h3 className="px-2 pb-1 pt-2 text-2xs fg-secondary">{children}</h3>;
+  return (
+    <div className="px-2 pb-1 pt-2">
+      <Heading level={3} variant="label">
+        {children}
+      </Heading>
+    </div>
+  );
 }
 
 /**

@@ -27,8 +27,8 @@ const valid = {
 };
 
 describe('AI Gateway model catalog contract', () => {
-  it('serves catalog version 8', () => {
-    expect(AI_GATEWAY_MODEL_CATALOG_VERSION).toBe(8);
+  it('serves catalog version 9', () => {
+    expect(AI_GATEWAY_MODEL_CATALOG_VERSION).toBe(9);
   });
 
   it('promotes a frozen v7 response to the current version', () => {
@@ -215,4 +215,28 @@ describe('AI Gateway model catalog contract', () => {
       ),
     ).toBe(false);
   });
+});
+
+it('preserves v9 exact-thinking metadata and refuses it in frozen older shapes', () => {
+  const exact = {
+    ...valid,
+    models: [{ ...valid.models[0], thinkingLevelsExact: true }],
+  };
+  expect(parseAiGatewayModelCatalogResponse(exact)).toEqual(exact);
+  for (const version of [6, 7, 8]) {
+    expect(() =>
+      parseAiGatewayModelCatalogResponse({ ...exact, version }),
+    ).toThrow();
+    expect(parseAiGatewayModelCatalogResponse({ ...valid, version })).toEqual(
+      valid,
+    );
+  }
+  for (const thinkingLevelsExact of [false, 'true', null, 1]) {
+    expect(
+      isAiGatewayModelCatalogResponse({
+        ...valid,
+        models: [{ ...valid.models[0], thinkingLevelsExact }],
+      }),
+    ).toBe(false);
+  }
 });

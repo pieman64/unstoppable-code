@@ -79,9 +79,23 @@ describe('buildNoBillingSourceError', () => {
     // Assert the title, the message AND each remedy label so a reworded
     // remedy fails here instead of quietly diverging. (Matching only the bare
     // token `AI Credits` was too weak to catch drift.)
-    expect(banner).toContain('title: `Not signed in to ${providerLabel}`');
-    expect(banner).toContain(
-      'message: `You have no ${brandText.appName} AI Credits to cover this chat either.`',
+    // CAN-4764: the banner's words live in the shared recovery copy, so trace
+    // main -> shared copy -> banner.
+    const recoveryCopy = readFileSync(
+      path.resolve(
+        __dirname,
+        '../../../ui-shared/src/components/creditsRecoveryCopy.ts',
+      ),
+      'utf8',
+    );
+    expect(recoveryCopy).toContain(
+      'title: `Not signed in to ${providerLabel}`',
+    );
+    expect(recoveryCopy).toContain(
+      'message: `You have no ${appName} AI Credits to cover this chat either.`',
+    );
+    expect(banner).toMatch(
+      /import \{[^}]*\bnotSignedInCopy\b[^}]*\} from '@canopy\/ui-shared\/components';/,
     );
     // The sign-in label gains "instead" while a credits hand-off is visible
     // (`visibleHandoff !== null`); both variants must keep the same remedy.

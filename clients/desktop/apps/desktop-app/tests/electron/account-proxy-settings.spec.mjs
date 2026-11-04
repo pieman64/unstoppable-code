@@ -90,7 +90,7 @@ test('opting in, connecting to a server, and managing its accounts', async () =>
     const accounts = window.getByTestId('account-proxy-accounts');
     await accounts
       .getByTestId('account-proxy-account-a1f3c2d4a1f3c2d4')
-      .locator('summary')
+      .getByTestId('provider-account-usage-toggle')
       .click();
     await expect(
       accounts.getByTestId('account-proxy-account-a1f3c2d4a1f3c2d4'),

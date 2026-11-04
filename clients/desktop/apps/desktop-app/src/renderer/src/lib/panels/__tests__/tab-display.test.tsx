@@ -185,7 +185,7 @@ const KIND_TITLES: Record<PanelKind, string> = {
   'file-explorer': 'File Explorer',
   'activity-card': 'Activity card',
   usage: 'Usage',
-  automations: 'Automations',
+  automations: 'Workflows',
   'pipeline-execution': 'Workflow run',
   plan: 'Plan',
   'plan-diagram': 'Plan diagram',
@@ -491,6 +491,50 @@ describe('early-access sentence-case names', () => {
         instance: { sectionId: 'pipeline-runs' },
       }),
     ).toBe('Workflow runs');
+  });
+
+  it.each([
+    { variant: 'full', stored: 'Automations', shown: 'Workflows' },
+    {
+      variant: 'upcoming',
+      stored: 'Automations (Upcoming)',
+      shown: 'Workflows (Schedule)',
+    },
+    {
+      variant: 'overview',
+      stored: 'Automations (Overview)',
+      shown: 'Workflows (Library)',
+    },
+    {
+      variant: 'completed',
+      stored: 'Automations (Completed)',
+      shown: 'Workflows (Runs)',
+    },
+  ])(
+    'shows a $variant workflows panel saved as "$stored" as "$shown"',
+    ({ variant, stored, shown }) => {
+      // Layouts saved before the Workflows rename persist the old labels.
+      const savedTab: PanelTabModel = {
+        panelId: `panel-automations-${variant}`,
+        kind: 'automations',
+        title: stored,
+        instance: { variant },
+      };
+      expect(panelTabDisplayTitle(savedTab)).toBe(shown);
+      expect(renderPanelTabLabel(savedTab)).toBe(shown);
+      expect(panelTabDisplayTitle({ ...savedTab, title: shown })).toBe(shown);
+    },
+  );
+
+  it('keeps a workflows panel title that is not one of its names', () => {
+    expect(
+      panelTabDisplayTitle({
+        panelId: 'panel-automations-overview',
+        kind: 'automations',
+        title: 'Automations (Upcoming)',
+        instance: { variant: 'overview' },
+      }),
+    ).toBe('Automations (Upcoming)');
   });
 
   it('leaves own titles untouched with early access on', () => {

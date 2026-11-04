@@ -30,6 +30,20 @@ export interface ChatAgentSentPipelineSender {
   automationId?: string;
 }
 
+/**
+ * A cloud chat's send, captured by the hosted server from the calling chat
+ * (REG-3118). Core stores the cloud project (workspace), task and chat
+ * external ids; a cloud chat can reach only its owner's chats. A host's
+ * display projection may name the project by its own id for it, as the web
+ * names a cloud project by its `cloud:ws:` local id.
+ */
+export interface ChatAgentSentCloudChatSender {
+  kind: 'cloud_chat';
+  projectId: string;
+  taskId: string;
+  chatId: string;
+}
+
 /** Display-only attribution for a user message accepted from another agent. */
 export interface ChatAgentSentInfo {
   sender:
@@ -46,7 +60,8 @@ export interface ChatAgentSentInfo {
         taskId: string;
         chatId: string;
       }
-    | ChatAgentSentPipelineSender;
+    | ChatAgentSentPipelineSender
+    | ChatAgentSentCloudChatSender;
   /**
    * Sender chat title captured when the message was accepted. For a pipeline
    * sender, the automation name when `automationId` is set, otherwise the
@@ -434,6 +449,27 @@ export function parseChatAgentSentInfo(
       sender: {
         kind: 'bot',
         botId: sender.botId,
+        taskId: sender.taskId,
+        chatId: sender.chatId,
+      },
+      chatTitle: value.chatTitle,
+      projectLabel: value.projectLabel,
+    };
+  }
+
+  if (sender.kind === 'cloud_chat') {
+    if (
+      'botId' in sender ||
+      'projectType' in sender ||
+      !isNonBlankString(sender.projectId) ||
+      !isNonBlankString(sender.taskId) ||
+      !isNonBlankString(sender.chatId)
+    )
+      return undefined;
+    return {
+      sender: {
+        kind: 'cloud_chat',
+        projectId: sender.projectId,
         taskId: sender.taskId,
         chatId: sender.chatId,
       },

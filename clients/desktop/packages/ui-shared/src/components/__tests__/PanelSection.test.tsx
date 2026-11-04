@@ -135,7 +135,7 @@ describe('PanelSection', () => {
     expect(action?.className).toContain('fg-accent');
     expect(action?.className).not.toContain('fg-secondary');
     expect(title?.className).toContain('text-s');
-    expect(title?.className).toContain('font-semibold');
+    expect(title?.className).toContain('font-medium');
     expect(title?.className).toContain('truncate');
 
     expect(titleRow).toBeInstanceOf(HTMLButtonElement);

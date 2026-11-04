@@ -210,7 +210,8 @@ test('file pills and authored markdown replay whole-line reveals and replace ran
       .getByTestId('chat-local-file-link')
       .filter({ hasText: 'Authored source label' });
     await expect(markdown).toHaveText('Authored source label');
-    await expect(markdown).toHaveAttribute('title', `${FILE}:170:2-175:8`);
+    await markdown.hover();
+    await expect(window.getByRole('tooltip')).toHaveText(`${FILE}:170:2-175:8`);
     await revealLink(markdown, 170, 6);
     await revealLink(
       chat.getByRole('button', { name: `Open ${FILE}#L155`, exact: true }),

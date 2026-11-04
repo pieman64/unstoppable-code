@@ -152,7 +152,7 @@ export function BrowserAddressBar({
             data-testid="browser-url-input"
             value={editing ? actions.urlDraft : summary}
             spellCheck={false}
-            placeholder="Type URL"
+            placeholder={actions.urlPlaceholder}
             onFocus={(event): void => {
               setFocused(true);
               // The field swaps the host for the full address on focus;

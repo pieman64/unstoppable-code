@@ -25,6 +25,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { injectSecureStorageFault } from './secureStorageFixture.mjs';
+import { captureCloudCredentialDiagnostics } from './cloudCredentialDiagnostics.mjs';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 // The benefit row renders the raw constant (CloudAuthPanel.tsx). If the
@@ -147,13 +148,18 @@ for (const scenario of [
   });
 }
 
-test('CAN-3220 pending key survives an inconclusive account-changed read before Retry', async () => {
+test('CAN-3220 pending key survives an inconclusive account-changed read before Retry', async ({}, testInfo) => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir } = await launchCanopy({
     env: BILLING_ENABLED_ENV,
   });
+  let diagnostics;
   let restore;
   try {
+    diagnostics = await captureCloudCredentialDiagnostics(
+      electronApp,
+      testInfo,
+    );
     const window = await electronApp.firstWindow();
     await new CanopyAppDriver(window).waitForShell();
     await openSidebarSignIn(window);
@@ -196,6 +202,7 @@ test('CAN-3220 pending key survives an inconclusive account-changed read before 
     try {
       await restore?.();
     } finally {
+      await diagnostics?.finish();
       await closeCanopy(electronApp, userDataDir);
     }
   }
@@ -282,23 +289,36 @@ test('CAN-3220 storage loss during a pending Settings save releases validation a
     const input = section.getByTestId(
       'settings-account-canopy-cloud-api-key-input',
     );
+    await window.clock.install();
+    await window.clock.pauseAt(new Date(Date.now() + 1_000));
     restore = await injectSecureStorageFault(electronApp, 'unavailable');
     await input.fill(TEST_API_KEY);
     await window.evaluate(() =>
       window.dispatchEvent(new Event('canopy:cloud-account-changed')),
     );
     await expect(section.getByTestId('secure-storage-notice')).toBeVisible();
-    // The notice proves the read failure landed before the 600 ms save fires.
+    // Freeze the debounce until the read failure has reached the editor.
     await expect(section.getByTestId('secure-storage-notice')).toHaveAttribute(
       'data-storage-state',
       'unavailable',
     );
+    await window.clock.runFor(600);
     await expect(
       section.getByTestId('settings-account-canopy-cloud-api-key'),
     ).not.toContainText('Validating');
     await expect(input).toHaveValue(TEST_API_KEY);
     await restore();
     await section.getByTestId('secure-storage-retry').click();
+    await window.clock.resume();
+    // Retry completes asynchronously; an enabled editor alone does not prove
+    // the credential write has committed. Wait for the actual encrypted record.
+    await expect
+      .poll(() =>
+        existsSync(
+          path.join(`${userDataDir}-secure`, 'canopy-cloud-account.enc'),
+        ),
+      )
+      .toBe(true);
     await expect(input).toBeEnabled();
     await expect(section.getByTestId('secure-storage-notice')).toHaveCount(0);
     await expectPersistedCloudKey(electronApp, userDataDir);
@@ -311,133 +331,200 @@ test('CAN-3220 storage loss during a pending Settings save releases validation a
   }
 });
 
-test('CAN-3220 Settings unmount saves newer key B after in-flight key A settles', async () => {
-  test.setTimeout(120_000);
-  const keyA = 'csk_unmount_order_a_e2e';
-  const keyB = 'csk_unmount_order_b_e2e';
-  const accountRequests = [];
-  let released = false;
-  let releaseA;
-  const barrier = new Promise((resolve) => {
-    releaseA = () => {
-      released = true;
-      resolve();
-    };
-  });
-  // Delay only the real validation HTTP response. IPC, renderer handlers and
-  // native encryption stay untouched, including the unmount cleanup writer.
-  const proxy = createServer((request, response) => {
-    void (async () => {
-      const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
-      const authorization = request.headers.authorization;
-      if (pathname.endsWith('/account')) {
-        if (authorization === `Bearer ${keyA}`) {
-          accountRequests.push({ key: 'A', afterRelease: released });
-          await barrier;
-        } else if (authorization === `Bearer ${keyB}`) {
-          accountRequests.push({ key: 'B', afterRelease: released });
-        }
-      }
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      const upstream = await fetch(
-        new URL(request.url, DEFAULT_MOCK_BASE_URL),
-        {
-          method: request.method,
-          headers: {
-            ...(authorization ? { Authorization: authorization } : {}),
-            'Content-Type': 'application/json',
-          },
-          ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
-        },
-      );
-      response.writeHead(upstream.status, {
-        'Content-Type': 'application/json',
-      });
-      response.end(await upstream.text());
-    })().catch(() => {
-      response.writeHead(500);
-      response.end();
+for (const [title, expireMountedDebounce] of [
+  [
+    'CAN-3220 Settings unmount saves newer key B after in-flight key A settles',
+    false,
+  ],
+  [
+    'CAN-3220 Settings queues a mounted newer key B behind in-flight key A',
+    true,
+  ],
+]) {
+  test(title, async ({}, testInfo) => {
+    test.setTimeout(120_000);
+    const keyA = 'csk_unmount_order_a_e2e';
+    const keyB = 'csk_unmount_order_b_e2e';
+    const accountRequests = [];
+    let diagnostics;
+    let released = false;
+    let releaseA;
+    const barrier = new Promise((resolve) => {
+      releaseA = () => {
+        released = true;
+        resolve();
+      };
     });
-  });
-  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
-  let electronApp;
-  let userDataDir;
-  try {
-    ({ electronApp, userDataDir } = await launchCanopy({
-      env: {
-        ...BILLING_ENABLED_ENV,
-        CANOPY_E2E_CLOUD_BASE_URL: `http://127.0.0.1:${proxy.address().port}`,
-      },
-    }));
-    const window = await electronApp.firstWindow();
-    const app = new CanopyAppDriver(window);
-    await app.waitForShell();
-    await app.openSettings();
-    await app.openAccountSettingsPage('account');
-    const section = window.getByTestId('settings-account-canopy-cloud-section');
-    await section
-      .getByTestId('settings-account-canopy-cloud-mode-api-key')
-      .click();
-    const input = section.getByTestId(
-      'settings-account-canopy-cloud-api-key-input',
-    );
-    await input.fill(keyA);
-    await expect
-      .poll(() => accountRequests.some(({ key }) => key === 'A'))
-      .toBe(true);
-    await expect(input).toBeEnabled();
-    await input.fill(keyB);
-    await expect(input).toHaveValue(keyB);
-    await app.closeSettings();
-    await expect(section).toHaveCount(0);
-    expect(accountRequests.filter(({ key }) => key === 'B')).toEqual([]);
-    releaseA();
-    await expect
-      .poll(() => accountRequests.some(({ key }) => key === 'B'))
-      .toBe(true);
-    expect(accountRequests.find(({ key }) => key === 'A').afterRelease).toBe(
-      false,
-    );
-    expect(
-      accountRequests
-        .filter(({ key }) => key === 'B')
-        .every(({ afterRelease }) => afterRelease),
-    ).toBe(true);
-    const filename = path.join(
-      `${userDataDir}-secure`,
-      'canopy-cloud-account.enc',
-    );
-    await expect
-      .poll(async () => {
-        if (!existsSync(filename)) return false;
-        const ciphertext = readFileSync(filename);
-        return electronApp.evaluate(
-          ({ safeStorage }, { base64, expectedKey }) =>
-            JSON.parse(safeStorage.decryptString(Buffer.from(base64, 'base64')))
-              .apiKey === expectedKey,
-          { base64: ciphertext.toString('base64'), expectedKey: keyB },
+    let releaseB;
+    const newerBarrier = new Promise((resolve) => {
+      releaseB = resolve;
+    });
+    // Delay only the real validation HTTP response. IPC, renderer handlers and
+    // native encryption stay untouched, including the unmount cleanup writer.
+    const proxy = createServer((request, response) => {
+      void (async () => {
+        const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
+        const authorization = request.headers.authorization;
+        diagnostics?.mark('proxy-request', {
+          path: pathname,
+          candidate:
+            authorization === `Bearer ${keyA}`
+              ? 'A'
+              : authorization === `Bearer ${keyB}`
+                ? 'B'
+                : 'other',
+        });
+        if (pathname.endsWith('/account')) {
+          if (authorization === `Bearer ${keyA}`) {
+            accountRequests.push({ key: 'A', afterRelease: released });
+            await barrier;
+          } else if (authorization === `Bearer ${keyB}`) {
+            accountRequests.push({ key: 'B', afterRelease: released });
+            if (expireMountedDebounce) await newerBarrier;
+          }
+        }
+        const chunks = [];
+        for await (const chunk of request) chunks.push(chunk);
+        const upstream = await fetch(
+          new URL(request.url, DEFAULT_MOCK_BASE_URL),
+          {
+            method: request.method,
+            headers: {
+              ...(authorization ? { Authorization: authorization } : {}),
+              'Content-Type': 'application/json',
+            },
+            ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
+          },
         );
-      })
-      .toBe(true);
-    const ciphertext = readFileSync(filename);
-    expect(ciphertext.includes(Buffer.from(keyA))).toBe(false);
-    expect(ciphertext.includes(Buffer.from(keyB))).toBe(false);
-    // Reopen through the ordinary UI: the unmounted A completion must not have
-    // reverted the user's newer draft or supplied a false connected snapshot.
-    await app.openSettings();
-    await app.openAccountSettingsPage('account');
-    await expect(input).toHaveValue(keyB);
-  } finally {
-    releaseA();
+        diagnostics?.mark('proxy-response', {
+          path: pathname,
+          status: upstream.status,
+        });
+        response.writeHead(upstream.status, {
+          'Content-Type': 'application/json',
+        });
+        response.end(await upstream.text());
+      })().catch(() => {
+        response.writeHead(500);
+        response.end();
+      });
+    });
+    await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    let electronApp;
+    let userDataDir;
     try {
-      if (electronApp) await closeCanopy(electronApp, userDataDir);
+      ({ electronApp, userDataDir } = await launchCanopy({
+        env: {
+          ...BILLING_ENABLED_ENV,
+          CANOPY_E2E_CLOUD_BASE_URL: `http://127.0.0.1:${proxy.address().port}`,
+        },
+      }));
+      diagnostics = await captureCloudCredentialDiagnostics(
+        electronApp,
+        testInfo,
+      );
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell();
+      await app.openSettings();
+      await app.openAccountSettingsPage('account');
+      const section = window.getByTestId(
+        'settings-account-canopy-cloud-section',
+      );
+      await section
+        .getByTestId('settings-account-canopy-cloud-mode-api-key')
+        .click();
+      const input = section.getByTestId(
+        'settings-account-canopy-cloud-api-key-input',
+      );
+      await input.fill(keyA);
+      await expect
+        .poll(() => accountRequests.some(({ key }) => key === 'A'))
+        .toBe(true);
+      await expect(input).toBeEnabled();
+      if (expireMountedDebounce) await window.clock.install();
+      await input.fill(keyB);
+      await expect(input).toHaveValue(keyB);
+      if (expireMountedDebounce) await window.clock.runFor(600);
+      await app.closeSettings();
+      await expect(section).toHaveCount(0);
+      expect(accountRequests.filter(({ key }) => key === 'B')).toEqual([]);
+      diagnostics.mark('release-a');
+      releaseA();
+      if (expireMountedDebounce) {
+        await window.clock.resume();
+        // Keep B's HTTP response held until the real A ciphertext is durable.
+        // Concurrent submissions capture the same expected-account snapshot;
+        // B would then lose the main-process compare-and-swap after A commits.
+        await expect
+          .poll(async () => {
+            const filename = path.join(
+              `${userDataDir}-secure`,
+              'canopy-cloud-account.enc',
+            );
+            if (!existsSync(filename)) return false;
+            return electronApp.evaluate(
+              ({ safeStorage }, base64) =>
+                JSON.parse(
+                  safeStorage.decryptString(Buffer.from(base64, 'base64')),
+                ).apiKey === 'csk_unmount_order_a_e2e',
+              readFileSync(filename).toString('base64'),
+            );
+          })
+          .toBe(true);
+        releaseB();
+      }
+      await expect
+        .poll(() => accountRequests.some(({ key }) => key === 'B'))
+        .toBe(true);
+      expect(accountRequests.find(({ key }) => key === 'A').afterRelease).toBe(
+        false,
+      );
+      expect(
+        accountRequests
+          .filter(({ key }) => key === 'B')
+          .every(({ afterRelease }) => afterRelease),
+      ).toBe(true);
+      const filename = path.join(
+        `${userDataDir}-secure`,
+        'canopy-cloud-account.enc',
+      );
+      await expect
+        .poll(async () => {
+          if (!existsSync(filename)) return false;
+          const ciphertext = readFileSync(filename);
+          return electronApp.evaluate(
+            ({ safeStorage }, { base64, expectedKey }) =>
+              JSON.parse(
+                safeStorage.decryptString(Buffer.from(base64, 'base64')),
+              ).apiKey === expectedKey,
+            { base64: ciphertext.toString('base64'), expectedKey: keyB },
+          );
+        })
+        .toBe(true);
+      const ciphertext = readFileSync(filename);
+      expect(ciphertext.includes(Buffer.from(keyA))).toBe(false);
+      expect(ciphertext.includes(Buffer.from(keyB))).toBe(false);
+      // Reopen through the ordinary UI: the unmounted A completion must not have
+      // reverted the user's newer draft or supplied a false connected snapshot.
+      await app.openSettings();
+      await app.openAccountSettingsPage('account');
+      await expect(input).toHaveValue(keyB);
     } finally {
-      proxy.closeAllConnections();
-      await new Promise((resolve) => proxy.close(resolve));
+      releaseA();
+      releaseB();
+      try {
+        if (electronApp) {
+          await diagnostics?.finish();
+          await closeCanopy(electronApp, userDataDir);
+        }
+      } finally {
+        proxy.closeAllConnections();
+        await new Promise((resolve) => proxy.close(resolve));
+      }
     }
-  }
-});
+  });
+}
 
 test('cancels browser sign-in while the guest link is still being prepared', async () => {
   const fixture = await startCloudOAuthLoopbackFixture();

@@ -670,6 +670,101 @@ describe('PanelAddTabMenu', () => {
     }
   });
 
+  describe('focus after adding a terminal', () => {
+    const session = {
+      id: 'terminal-focus',
+      projectId: PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+      shell: '/bin/zsh',
+      shellBasename: 'zsh',
+      cwd: '/tmp',
+      createdAt: 1,
+    };
+    let previousApi: typeof window.api;
+
+    beforeEach(() => {
+      previousApi = window.api;
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: {
+          loadPreferences: jest.fn().mockResolvedValue({
+            disabledTerminalShellProfileIds: [],
+            terminalPresets: [],
+          }),
+          terminal: {
+            listProfiles: jest
+              .fn()
+              .mockResolvedValue([
+                { id: 'default', label: 'zsh', isDefault: true },
+              ]),
+            spawn: jest.fn().mockResolvedValue(session),
+            kill: jest.fn().mockResolvedValue(undefined),
+            saveWorktreeState: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+      });
+    });
+
+    afterEach(() => {
+      useTerminalStore
+        .getState()
+        .removeTerminal(PROJECT_ID, WORKTREE_ID, session.id);
+      Object.defineProperty(window, 'api', {
+        configurable: true,
+        value: previousApi,
+      });
+    });
+
+    async function addDefaultShell(): Promise<void> {
+      await act(async () => {
+        render();
+        await Promise.resolve();
+      });
+      openTerminalSubmenu();
+      const shellRow = document.querySelector<HTMLElement>(
+        '[data-testid="panel-add-menu-item-terminal"]',
+      );
+      if (shellRow === null) throw new Error('shell row not rendered');
+      shellRow.focus();
+      await act(async () => {
+        shellRow.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    it('leaves the caret in the new terminal once it claims it', async () => {
+      // Stand-in for the mounted pane redeeming the spawn's focus request as
+      // soon as its panel lands in the layout.
+      const terminalCaret = document.createElement('textarea');
+      document.body.append(terminalCaret);
+      const unsubscribe = usePanelLayoutStore.subscribe(() => {
+        const bound = findPanelByInstanceKey(KEY, `terminal:${session.id}`);
+        if (bound !== null && document.activeElement !== terminalCaret) {
+          terminalCaret.focus();
+        }
+      });
+      try {
+        await addDefaultShell();
+
+        expect(onClose).toHaveBeenCalled();
+        expect(document.activeElement).toBe(terminalCaret);
+      } finally {
+        unsubscribe();
+        terminalCaret.remove();
+      }
+    });
+
+    it('returns the caret to `+` when nothing else claimed it', async () => {
+      await addDefaultShell();
+
+      expect(onClose).toHaveBeenCalled();
+      expect(document.activeElement).toBe(
+        document.querySelector('[data-testid="panel-add-test-trigger"]'),
+      );
+    });
+  });
+
   it('shows terminal launch progress only on the selected preset', async () => {
     const previousApi = window.api;
     let resolveSpawn:
@@ -1219,20 +1314,20 @@ describe('PanelAddTabMenu', () => {
     ).not.toBeNull();
   });
 
-  it('offers the four automations variants inside the Automations submenu', () => {
+  it('offers the four automations variants inside the Workflows submenu', () => {
     render();
     const trigger = menuElement().querySelector(
       '[data-testid="panel-add-menu-automations-submenu"]',
     );
     expect(trigger).not.toBeNull();
-    expect(trigger?.textContent).toContain('Automations');
+    expect(trigger?.textContent).toContain('Workflows');
     openAutomationsSubmenu();
 
     const group = document.body.querySelector(
       '[data-testid="panel-add-menu-automations-group"]',
     );
     expect(group).not.toBeNull();
-    expect(group?.getAttribute('aria-label')).toBe('Automations');
+    expect(group?.getAttribute('aria-label')).toBe('Workflows');
     for (const variant of ['full', 'upcoming', 'overview', 'completed']) {
       expect(
         group?.querySelector(
@@ -1256,14 +1351,14 @@ describe('PanelAddTabMenu', () => {
     });
     expect(onSelect).toHaveBeenCalledWith('automations', {
       instance: { variant: 'upcoming' },
-      title: 'Automations (Upcoming)',
+      title: 'Workflows (Schedule)',
     });
   });
 
   it('drops an automations variant already open from the add menu', () => {
     usePanelLayoutStore.getState().addTab(KEY, 'group-chat', 'automations', {
       panelId: 'panel-automations-full',
-      title: 'Automations',
+      title: 'Workflows',
       instance: { variant: 'full' },
     });
     render();

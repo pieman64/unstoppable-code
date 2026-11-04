@@ -2566,43 +2566,237 @@ describe('WorkspacesSidebarSections', () => {
     });
   });
 
-  it('dispatches once, renders pending, and selects a completed result', async () => {
-    let resolveCommand:
-      | ((value: { status: 'completed'; worktreeId: string }) => void)
-      | undefined;
-    const command = jest.fn(
-      () =>
-        new Promise<{ status: 'completed'; worktreeId: string }>((resolve) => {
-          resolveCommand = resolve;
-        }),
-    );
-    const onSelect = jest.fn();
-    act(() => {
-      root.render(
-        <WorkspacesSidebarSections
-          state={state}
-          capabilities={capabilities}
-          selected={null}
-          onSelectWorktree={onSelect}
-          creationEnabled
-          onCreateWorktree={command}
-        />,
+  it.each([false, true])(
+    'dispatches once and selects completion with equivalent selection objects (%s)',
+    async (hasSelection) => {
+      let resolveCommand:
+        | ((value: { status: 'completed'; worktreeId: string }) => void)
+        | undefined;
+      const command = jest.fn(
+        () =>
+          new Promise<{ status: 'completed'; worktreeId: string }>(
+            (resolve) => {
+              resolveCommand = resolve;
+            },
+          ),
       );
-    });
-    const add = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Create worktree for Workspace"]',
-    );
-    act(() => add?.click());
-    act(() => add?.click());
-    expect(command).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('Creating worktree…');
-    await act(async () => {
-      resolveCommand?.({ status: 'completed', worktreeId: 'created' });
-      await Promise.resolve();
-    });
-    expect(onSelect).toHaveBeenCalledWith('workspace', 'created');
-    expect(container.textContent).not.toContain('Creating worktree…');
-  });
+      const onSelect = jest.fn();
+      const render = (): void => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={state}
+            capabilities={capabilities}
+            selected={
+              hasSelection
+                ? {
+                    kind: 'worktree',
+                    workspaceLocalId: 'workspace',
+                    worktreeLocalId: 'visible',
+                  }
+                : null
+            }
+            onSelectWorktree={onSelect}
+            creationEnabled
+            onCreateWorktree={command}
+          />,
+        );
+      };
+      act(render);
+      const add = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Create worktree for Workspace"]',
+      );
+      act(() => add?.click());
+      act(() => add?.click());
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('Creating worktree…');
+      // An ordinary re-render may recreate the same selection DTO.
+      act(render);
+      await act(async () => {
+        resolveCommand?.({ status: 'completed', worktreeId: 'created' });
+        await Promise.resolve();
+      });
+      expect(onSelect).toHaveBeenCalledWith('workspace', 'created');
+      expect(container.textContent).not.toContain('Creating worktree…');
+    },
+  );
+
+  it.each(['home', 'another worktree'])(
+    'preserves navigation back to %s before a delayed creation snapshot and completion',
+    async (destination) => {
+      let complete:
+        | ((value: { status: 'completed'; worktreeId: string }) => void)
+        | undefined;
+      const command = (): Promise<{
+        status: 'completed';
+        worktreeId: string;
+      }> =>
+        new Promise<{ status: 'completed'; worktreeId: string }>((resolve) => {
+          complete = resolve;
+        });
+      const onSelect = jest.fn();
+      const initial: WorkspacesSidebarSectionsProps['selected'] =
+        destination === 'home'
+          ? null
+          : {
+              kind: 'worktree',
+              workspaceLocalId: 'workspace',
+              worktreeLocalId: 'visible',
+            };
+      let selected = initial;
+      const render = (): void =>
+        root.render(
+          <WorkspacesSidebarSections
+            state={state}
+            capabilities={capabilities}
+            selected={selected}
+            onSelectWorktree={onSelect}
+            creationEnabled
+            onCreateWorktree={command}
+          />,
+        );
+      act(render);
+      const add = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Create worktree for Workspace"]',
+      );
+      act(() => add?.click());
+      expect(container.textContent).toContain('Creating worktree…');
+      // Registration selects immediately; the user then returns to the exact
+      // starting destination while the host is still persisting the worktree.
+      selected = {
+        kind: 'worktree',
+        workspaceLocalId: 'workspace',
+        worktreeLocalId: 'created',
+      };
+      act(render);
+      selected = initial;
+      act(render);
+      state = {
+        ...state,
+        worktrees: [
+          ...state.worktrees,
+          {
+            localId: 'created',
+            workspaceLocalId: 'workspace',
+            branch: 'created',
+          },
+        ],
+      };
+      act(render);
+      expect(onSelect).not.toHaveBeenCalled();
+      await act(async () => {
+        complete?.({ status: 'completed', worktreeId: 'created' });
+        await Promise.resolve();
+      });
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(container.textContent).not.toContain('Creating worktree…');
+      expect(add?.disabled).toBe(false);
+    },
+  );
+
+  it.each(['completed', 'rejected'] as const)(
+    'keeps a newer same-workspace creation pending after an older %s receipt',
+    async (receipt) => {
+      type Completion = { status: 'completed'; worktreeId: string };
+      const attempts: {
+        resolve: (value: Completion) => void;
+        reject: (error: Error) => void;
+      }[] = [];
+      const command = jest.fn(
+        () =>
+          new Promise<Completion>((resolve, reject) => {
+            attempts.push({ resolve, reject });
+          }),
+      );
+      const onSelect = jest.fn();
+      const onCreationError = jest.fn();
+      let selected: WorkspacesSidebarSectionsProps['selected'] = null;
+      const render = (): void =>
+        root.render(
+          <WorkspacesSidebarSections
+            state={state}
+            capabilities={capabilities}
+            selected={selected}
+            onSelectWorktree={onSelect}
+            onCreationError={onCreationError}
+            creationEnabled
+            onCreateWorktree={command}
+          />,
+        );
+      const addSnapshot = (worktreeId: string): void => {
+        state = {
+          ...state,
+          worktrees: [
+            ...state.worktrees,
+            {
+              localId: worktreeId,
+              workspaceLocalId: 'workspace',
+              branch: worktreeId,
+            },
+          ],
+        };
+        act(render);
+      };
+      act(render);
+      const add = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Create worktree for Workspace"]',
+      );
+      expect(add).not.toBeNull();
+      act(() => add?.click());
+      expect(command).toHaveBeenCalledTimes(1);
+
+      // A's snapshot releases its pending row before A's receipt arrives.
+      addSnapshot('created-a');
+      expect(onSelect).toHaveBeenLastCalledWith('workspace', 'created-a');
+      // Keep the selection revision unchanged: attempt ownership itself must
+      // prevent A's late completion from selecting again while B is pending.
+      expect(container.textContent).not.toContain('Creating worktree…');
+      expect(add?.disabled).toBe(false);
+      act(() => add?.click());
+      expect(command).toHaveBeenCalledTimes(2);
+      expect(container.textContent).toContain('Creating worktree…');
+
+      const error = new Error('A persistence failed after its snapshot');
+      await act(async () => {
+        if (receipt === 'completed') {
+          attempts[0]?.resolve({
+            status: 'completed',
+            worktreeId: 'created-a',
+          });
+        } else {
+          attempts[0]?.reject(error);
+        }
+        await Promise.resolve();
+      });
+      expect(container.textContent).toContain('Creating worktree…');
+      expect(add?.disabled).toBe(true);
+      act(() => add?.click());
+      expect(command).toHaveBeenCalledTimes(2);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      if (receipt === 'rejected') {
+        expect(onCreationError).toHaveBeenCalledWith('workspace', error);
+      } else {
+        expect(onCreationError).not.toHaveBeenCalled();
+      }
+
+      // B's own snapshot must still have its baseline AND selection revision.
+      addSnapshot('created-b');
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(onSelect).toHaveBeenLastCalledWith('workspace', 'created-b');
+      selected = {
+        kind: 'worktree',
+        workspaceLocalId: 'workspace',
+        worktreeLocalId: 'created-b',
+      };
+      act(render);
+      await act(async () => {
+        attempts[1]?.resolve({ status: 'completed', worktreeId: 'created-b' });
+        await Promise.resolve();
+      });
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(container.textContent).not.toContain('Creating worktree…');
+      expect(add?.disabled).toBe(false);
+    },
+  );
 
   // A new worktree is inserted at the top of the unpinned rows, so its
   // placeholder has to sit there already or it jumps when the create resolves.
@@ -2796,6 +2990,57 @@ describe('WorkspacesSidebarSections', () => {
     act(renderSections);
     expect(onSelect).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain('Creating worktree…');
+  });
+
+  it('selects the known completion after an ambiguous snapshot releases pending', async () => {
+    let complete:
+      | ((value: { status: 'completed'; worktreeId: string }) => void)
+      | undefined;
+    const command = jest.fn(
+      () =>
+        new Promise<{ status: 'completed'; worktreeId: string }>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const onSelect = jest.fn();
+    const render = (): void =>
+      root.render(
+        <WorkspacesSidebarSections
+          state={state}
+          capabilities={capabilities}
+          selected={null}
+          onSelectWorktree={onSelect}
+          creationEnabled
+          onCreateWorktree={command}
+        />,
+      );
+    act(render);
+    const add = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Create worktree for Workspace"]',
+    );
+    act(() => add?.click());
+    state = {
+      ...state,
+      worktrees: [
+        ...state.worktrees,
+        ...['created-a', 'unrelated'].map((localId) => ({
+          localId,
+          workspaceLocalId: 'workspace',
+          branch: localId,
+        })),
+      ],
+    };
+    act(render);
+    expect(container.textContent).not.toContain('Creating worktree…');
+    expect(add?.disabled).toBe(false);
+    expect(onSelect).not.toHaveBeenCalled();
+    await act(async () => {
+      complete?.({ status: 'completed', worktreeId: 'created-a' });
+      await Promise.resolve();
+    });
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith('workspace', 'created-a');
   });
 
   it('clears pending and reports a rejected creation', async () => {

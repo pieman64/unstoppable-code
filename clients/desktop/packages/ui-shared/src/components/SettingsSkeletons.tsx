@@ -1,7 +1,8 @@
-import type { JSX, ReactNode } from 'react';
+import { useRef, type JSX, type ReactNode } from 'react';
 import {
-  SKELETON_BLOCK_CLASS,
   SkeletonBlock,
+  useSkeletonBone,
+  useSkeletonMotion,
   type SkeletonBarWidth,
 } from './SkeletonBlock';
 
@@ -219,6 +220,14 @@ const CHART_BAR_HEIGHTS = [
   '60%',
 ] as const;
 
+/** One bar of the chart silhouette, at its fixed share of the chart height. */
+function ChartBarBone({ height }: { readonly height: string }): JSX.Element {
+  const bone = useSkeletonBone<HTMLSpanElement>();
+  return (
+    <span {...bone} className="block flex-1 rounded-t-sm" style={{ height }} />
+  );
+}
+
 function ChartBarsSkeleton({ className }: { className: string }): JSX.Element {
   return (
     <SkeletonStatus
@@ -239,12 +248,7 @@ function ChartBarsSkeleton({ className }: { className: string }): JSX.Element {
       <div className="rounded-lg border p-4">
         <div className="flex h-48 items-end gap-2 border-b">
           {CHART_BAR_HEIGHTS.map((height) => (
-            <span
-              key={height}
-              aria-hidden="true"
-              className={`${SKELETON_BLOCK_CLASS} flex-1 rounded-t-sm`}
-              style={{ height }}
-            />
+            <ChartBarBone key={height} height={height} />
           ))}
         </div>
       </div>
@@ -268,49 +272,58 @@ const GRAPH_CROSS_EDGES = [
 ] as const;
 
 function ChartGraphSkeleton({ className }: { className: string }): JSX.Element {
+  const graph = useRef<HTMLDivElement>(null);
+  useSkeletonMotion(graph);
   return (
     <SkeletonStatus
       testId="settings-skeleton-chart-graph"
       className={`flex min-h-80 flex-1 rounded-lg border p-4 ${className}`}
     >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 400 240"
-        preserveAspectRatio="xMidYMid meet"
-        className="min-h-0 w-full flex-1 animate-pulse motion-reduce:animate-none"
-      >
-        <g className="stroke-muted" strokeWidth={2}>
-          {GRAPH_NODES.map((node) => (
-            <line
-              key={`center-${node.x}-${node.y}`}
-              x1={GRAPH_CENTER.x}
-              y1={GRAPH_CENTER.y}
-              x2={node.x}
-              y2={node.y}
-            />
-          ))}
-          {GRAPH_CROSS_EDGES.map(([from, to]) => (
-            <line
-              key={`edge-${from.x}-${to.x}`}
-              x1={from.x}
-              y1={from.y}
-              x2={to.x}
-              y2={to.y}
-            />
-          ))}
-        </g>
-        <g className="fill-muted">
-          <circle cx={GRAPH_CENTER.x} cy={GRAPH_CENTER.y} r={GRAPH_CENTER.r} />
-          {GRAPH_NODES.map((node) => (
+      {/* The wrapper carries the pulse: skullet animates HTML elements. */}
+      <div ref={graph} className="flex min-h-0 w-full flex-1">
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 400 240"
+          preserveAspectRatio="xMidYMid meet"
+          className="min-h-0 w-full flex-1"
+        >
+          <g className="stroke-muted" strokeWidth={2}>
+            {GRAPH_NODES.map((node) => (
+              <line
+                key={`center-${node.x}-${node.y}`}
+                x1={GRAPH_CENTER.x}
+                y1={GRAPH_CENTER.y}
+                x2={node.x}
+                y2={node.y}
+              />
+            ))}
+            {GRAPH_CROSS_EDGES.map(([from, to]) => (
+              <line
+                key={`edge-${from.x}-${to.x}`}
+                x1={from.x}
+                y1={from.y}
+                x2={to.x}
+                y2={to.y}
+              />
+            ))}
+          </g>
+          <g className="fill-muted">
             <circle
-              key={`node-${node.x}-${node.y}`}
-              cx={node.x}
-              cy={node.y}
-              r={node.r}
+              cx={GRAPH_CENTER.x}
+              cy={GRAPH_CENTER.y}
+              r={GRAPH_CENTER.r}
             />
-          ))}
-        </g>
-      </svg>
+            {GRAPH_NODES.map((node) => (
+              <circle
+                key={`node-${node.x}-${node.y}`}
+                cx={node.x}
+                cy={node.y}
+                r={node.r}
+              />
+            ))}
+          </g>
+        </svg>
+      </div>
     </SkeletonStatus>
   );
 }

@@ -80,9 +80,10 @@ jest.mock('../lib/code-graph-worktree-fingerprint', () => ({
   ): Promise<PersistedCodeGraphWorktreeFingerprintRead> =>
     mockReadSnapshot(dbPath, key),
 }));
-jest.mock('../lib/code-graph-build-service', () => ({
-  runWorktreeCodeGraphBuild: (input: unknown): Promise<unknown> =>
+jest.mock('../code-graph/scheduled-builds', () => ({
+  startScheduledCodeGraphBuild: (input: unknown): Promise<unknown> =>
     mockRunBuild(input),
+  cancelScheduledCodeGraphBuilds: jest.fn(),
 }));
 jest.mock('../lib/code-graph-telemetry', () => ({
   recordCodeGraphRefreshTelemetry: (event: {

@@ -1,10 +1,11 @@
 /**
  * UI still waiting to be unified, from the standardization audit of develop
- * at 0ba22ed2518 (2026-11-01), in priority order. Status as of 2026-11-01:
- * the overlays ratchet is merging; headings, disclosure, avatars, search
- * fields and progress are being migrated. Update it as each family
- * converges: drop the item and add a sheet for its shared component in
- * `componentsLabCatalog.tsx`.
+ * at 2f66024cd23 (2026-11-03), in priority order. The first round of families
+ * (overlays, headings, disclosure, tables, tooltips, progress, avatars,
+ * skeletons, search fields) all merged on 2026-11-02 and 2026-11-03 and are
+ * pinned by their ratchets below. What is left has no shared component, or no
+ * ratchet, yet. Update it as each family converges: drop the item and add a
+ * sheet for its shared component in `componentsLabCatalog.tsx`.
  */
 
 /** Where a family's unification stands today. */
@@ -46,179 +47,128 @@ const UI_APP = 'packages/ui-app/src';
 
 export const PENDING_UNIFICATIONS: readonly PendingUnification[] = [
   {
-    id: 'overlays',
-    status: 'merging',
-    name: 'Overlays: dialogs and popovers',
+    id: 'menus',
+    status: 'waiting',
+    name: 'Menus, listboxes and pickers',
     count:
-      '27 hand-built backdrops · 62 own portals · 15 bespoke popover shells',
-    shared: [
-      'DialogModal (140 files)',
-      'ConfirmDialog (47)',
-      'FloatingMenu (70)',
-      'Sheet',
-      'RichHoverTooltip',
-    ],
+      'own menu, listbox or option roles in about 47 files outside ui-shared · about 25 domain pickers inside it',
+    shared: ['FloatingMenu', 'PickList (3 files)', 'Popover (3 files)'],
     copies: [
-      `${DESKTOP}/chat/ScheduleMessageModal.tsx`,
-      `${DESKTOP}/chat/ChatPluginsModal.tsx`,
-      `${DESKTOP}/activity/PipelineExecutionDetailModal.tsx`,
-      `${DESKTOP}/worktree/WorktreeBranchInfoDialog.tsx`,
-      `${DESKTOP}/browser/BrowserSignInDialog.tsx`,
-      `${DESKTOP}/shared/linear/LinearTicketPickerModal.tsx`,
-      `${DESKTOP}/chat/ArchivedChatsPopover.tsx`,
-      `${DESKTOP}/shared/AttachmentPreviewPopover.tsx`,
-      `${DESKTOP}/chat/TurnDiffPopover.tsx`,
-      `${DESKTOP}/resource-diagnostics/ResourceDiagnosticsPopover.tsx`,
-      `${DESKTOP}/code-review/ReviewCommentPopover.tsx`,
-      `${UI_SHARED}/PipelineStatusPopover.tsx`,
-      `${UI_SHARED}/TerminalStatusPopover.tsx`,
+      `${UI_APP}/code/composer/CommandsPopup.tsx`,
+      `${UI_APP}/code/composer/PortalDirectoryPicker.tsx`,
+      `${UI_APP}/sharing/InviteTeammateDialog.tsx`,
+      `${DESKTOP}/watchers/WatcherRecipientPicker.tsx`,
+      `${DESKTOP}/shared/invite-teammate/LinkSharingSection.tsx`,
     ],
     planned:
-      'DialogModal, FloatingMenu and one shared Popover shell, plus an overlay ratchet',
-    note: 'Backdrops are fixed inset-0 overlays built by hand; portals are createPortal calls outside ui-shared.',
+      'FloatingMenu, PickList and Popover everywhere, then a menu ratchet',
+    note: 'Highest risk: the model picker, the command palette and the composer pickers. Measure performance first.',
   },
   {
-    id: 'headings',
-    status: 'in-progress',
-    name: 'Page and section headings',
-    count:
-      '60 files with their own <h1> · 206 with local <h2>–<h4> · 9 section-header variants',
-    shared: ['PageHeader (18 files)', 'SettingsRowsSection (11)'],
-    copies: [
-      `${DESKTOP}/worktree/FormSectionHeading.tsx`,
-      `${DESKTOP}/overview/WorkspaceReadinessOverview.tsx: OverviewSectionHeader`,
-      `${DESKTOP}/chat/ProxyAccountUsage.tsx: UsageSectionHeader`,
-      `${UI_SHARED}/WorkspaceSectionHeader.tsx`,
-      `${UI_SHARED}/ModelGroupHeader.tsx`,
-      `${UI_SHARED}/PluginDetailSectionHeading.tsx`,
-      `${DESKTOP}/sidebar/SidebarCoworkWorkspaceRow.tsx: SidebarItemGroupHeader`,
-      `${DESKTOP}/home/HomeBranchPicker.tsx: PickerMenuSectionLabel`,
-    ],
-    planned: 'PageHeader and SettingsRowsSection, plus a heading ratchet',
-  },
-  {
-    id: 'tooltips',
+    id: 'list-rows',
     status: 'waiting',
-    name: 'Tooltips',
-    count: 'native title= in 528 files',
-    shared: ['Tooltip (176 files)', 'ActionTooltip'],
-    copies: ['title= attributes across desktop, web and the shared packages'],
-    planned: 'Tooltip and ActionTooltip',
-    note: 'Needs a split: controls move to Tooltip; truncated text may keep title.',
-  },
-  {
-    id: 'tables',
-    status: 'waiting',
-    name: 'Tables',
-    count:
-      '21 files with a raw <table> · UnifiedTable in 5 · ResourceTable unused',
-    shared: ['UnifiedTable (plugins and MCP only)', 'ResourceTable (unused)'],
+    name: 'List rows',
+    count: 'about 229 local *Row components in 195 files',
+    shared: ['ListRow (5 files)'],
     copies: [
-      `${DESKTOP}/pipeline/PipelineListView.tsx`,
-      `${DESKTOP}/panels/automations/AutomationsPanel.tsx`,
-      `${DESKTOP}/pages/McpServersTab.tsx`,
-      `${DESKTOP}/pages/usage/MetricsBreakdownPanel.tsx`,
-      `${UI_APP}/settings/organization/statistics/StatTable.tsx`,
-      `${UI_APP}/settings/memory/OpsView.tsx`,
-      `${UI_APP}/workflows/WorkflowsLibrary.tsx`,
-      `${UI_APP}/workflows/WorkflowsRuns.tsx`,
-      `${UI_SHARED}/InvoicesTable.tsx`,
-      `${UI_SHARED}/CreditLedgerTable.tsx`,
-      `${UI_SHARED}/BillingHistoryTable.tsx`,
+      `${DESKTOP}/worktree/WorktreeItem.tsx`,
+      `${DESKTOP}/worktree/OrgProjectPlaceholderRow.tsx`,
     ],
-    planned: 'One shared DataTable',
-    note: 'docs/design/layout.md lists the generic table as a known gap.',
+    planned:
+      'ListRow with sizes, a link form, disabled and trailing actions, then a ratchet',
+    note: 'ListRow only renders as a button today; that gap is why most local rows exist.',
   },
   {
-    id: 'disclosure',
-    status: 'in-progress',
-    name: 'Disclosure',
-    count: 'raw <details> in 21 files · 7 disclosure components',
+    id: 'toggles',
+    status: 'waiting',
+    name: 'Switches, checkboxes and radios',
+    count:
+      '28 local *Toggle, *Switch or *Checkbox components · hand-made role="switch", "checkbox" or "radio" in about 15 files',
+    shared: ['ToggleSwitch (70 files)', 'Checkbox', 'Radio'],
+    copies: [
+      `${UI_APP}/settings/billing/billing-toggle-panel.tsx`,
+      `${UI_APP}/settings/digests/digest-share-controls.tsx`,
+      `${UI_APP}/capability/McpServerReadDetail.tsx`,
+      `${UI_APP}/feedback/FeedbackDialog.tsx`,
+    ],
+    planned:
+      'ToggleSwitch with a public lg size and busy and disabled tests, then extend the fields ratchet to switch, checkbox and radio roles',
+  },
+  {
+    id: 'slider',
+    status: 'waiting',
+    name: 'Sliders',
+    count: 'two hand-made effort controls, no shared Slider',
     shared: [],
     copies: [
-      `${UI_SHARED}/AdvancedDisclosure.tsx`,
-      `${UI_SHARED}/CompletedRunsDisclosure.tsx`,
-      `${UI_SHARED}/HiddenItemsDisclosureRow.tsx`,
-      `${DESKTOP}/settings/FileLabelsSection.tsx: SectionDisclosureButton`,
-      `${DESKTOP}/settings/TelemetryDisclosure.tsx`,
-      `${UI_SHARED}/UsageIndicator.tsx: UsageDisclosureChevron`,
-      `${UI_SHARED}/PanelSection.tsx (collapsible)`,
+      `${UI_SHARED}/ThinkingLevelControl.tsx`,
+      `${DESKTOP}/settings/ModelThinkingPreferenceRow.tsx`,
+      `${DESKTOP}/chat/ThinkingLevelButton.tsx`,
     ],
-    planned: 'One Disclosure',
+    planned: 'A shared Slider with keyboard, disabled and value states',
   },
   {
-    id: 'avatars',
-    status: 'in-progress',
-    name: 'Avatars',
-    count: 'DisplayAvatar in 4 files · 6 components draw their own',
-    shared: ['DisplayAvatar (4 files)'],
-    copies: [
-      `${UI_SHARED}/PlanReviewThread.tsx: CommentAvatar`,
-      `${UI_SHARED}/ledger/LedgerActorAvatar.tsx`,
-      `${UI_APP}/settings/organization/MemberAvatar.tsx`,
-      `${UI_APP}/code/shell/SidebarAccountFooter.tsx: SidebarPersonAvatar`,
-      `${UI_SHARED}/ProjectAvatarBadge.tsx`,
-      'apps/web/src/components/team/profile/ProfileIdentityEditor.tsx: AvatarEditor',
-    ],
-    planned: 'DisplayAvatar with its sizes and shapes',
-  },
-  {
-    id: 'search-fields',
-    status: 'in-progress',
-    name: 'Search fields and selects',
+    id: 'cards',
+    status: 'waiting',
+    name: 'Cards and surfaces',
     count:
-      '4 search fields that skip SearchField · 5 ControlSelect callers left',
-    shared: ['SearchField', 'SettingsSelect'],
-    copies: [
-      `${UI_SHARED}/MarketplaceSearchField.tsx`,
-      `${UI_APP}/local-memory/MemoryPanel.tsx: MemorySearchField`,
-      `${UI_APP}/workflows/WorkflowsLibrary.tsx: WorkflowsSearchField`,
-      `${UI_APP}/capability/CustomizeSearchRow.tsx`,
-      `${UI_SHARED}/ControlSelect.tsx (deprecated)`,
-    ],
-    planned: 'SearchField and SettingsSelect',
-  },
-  {
-    id: 'progress',
-    status: 'in-progress',
-    name: 'Progress',
-    count: '5 progress components',
+      'about 510 class strings that pair a large radius with a border, ring or shadow in 306 files · 121 local *Card components',
     shared: [],
     copies: [
-      `${UI_SHARED}/CircularProgress.tsx`,
-      `${UI_SHARED}/LinearProgress.tsx`,
-      `${UI_SHARED}/DagProgressBar.tsx`,
-      `${UI_APP}/code/activity/pipeline/PipelineRunDetail.tsx: PipelineRunDagProgressBar`,
-      `${UI_APP}/code/activity/background-tray/RunRow.tsx: DagProgressDots`,
+      `${DESKTOP}/settings/SettingsLayout.tsx`,
+      `${DESKTOP}/settings/OllamaTab.tsx`,
     ],
-    planned: 'One progress set',
+    planned: 'A shared Card, then a ratchet',
+    note: 'Needs a design decision first: docs/design/layout.md assumes a card primitive that does not exist.',
+  },
+  {
+    id: 'code-blocks',
+    status: 'waiting',
+    name: 'Code blocks',
+    count: '<pre> in about 59 files',
+    shared: ['MarkdownCodeBlock', 'AnsiOutput'],
+    copies: [],
+    planned: 'One exported CodeBlock for Markdown, ANSI and plain output',
+  },
+  {
+    id: 'charts',
+    status: 'waiting',
+    name: 'Charts',
+    count: 'two chart kits, desktop and ui-app',
+    shared: [],
+    copies: [
+      `${DESKTOP}/pages/usage/chart-primitives.tsx`,
+      `${UI_APP}/settings/organization/statistics/charts.tsx`,
+    ],
+    planned:
+      'One chart kit, which also gives the last 4 progress bars their segments bar',
   },
 ];
 
 export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
   {
     family: 'Spacing',
-    remaining: 2623,
-    breakdown: '753 space-between, 1870 margin',
+    remaining: 2558,
+    breakdown: '739 space-between, 1819 margin',
     baseline: 'docs/design/legacy-spacing.baseline.json',
   },
   {
     family: 'Icons',
-    remaining: 892,
+    remaining: 874,
     breakdown:
-      '611 dimension props, 135 size classes, 43 off-scale, 103 local wrappers',
+      '596 dimension props, 133 size classes, 43 off-scale, 102 local wrappers',
     baseline: 'docs/design/legacy-icons.baseline.json',
   },
   {
     family: 'Buttons',
-    remaining: 666,
-    breakdown: '650 raw buttons, 16 role="button", across 404 files',
+    remaining: 635,
+    breakdown: '619 raw buttons, 16 role="button", across 392 files',
     baseline: 'docs/design/legacy-buttons.baseline.json',
   },
   {
     family: 'Markers',
-    remaining: 232,
-    breakdown: '100 pills, 80 dots, 52 components',
+    remaining: 229,
+    breakdown: '99 pills, 79 dots, 51 components',
     baseline: 'docs/design/legacy-markers.baseline.json',
   },
   {
@@ -230,16 +180,59 @@ export const RATCHET_BACKLOG: readonly RatchetBacklog[] = [
   },
   {
     family: 'Loading',
-    remaining: 76,
+    remaining: 50,
     breakdown:
-      '10 LoadingPlaceholder, 20 loading-text strings, 46 raw pulse classes',
+      '10 LoadingPlaceholder, 16 loading-text strings, 24 raw pulse classes',
     baseline: 'docs/design/legacy-loading.baseline.json',
+  },
+  {
+    family: 'Progress',
+    remaining: 4,
+    breakdown: '4 stacked chart bars waiting for a shared segments bar',
+    baseline: 'docs/design/legacy-progress.baseline.json',
   },
   {
     family: 'Facts',
     remaining: 10,
     breakdown: '10 <dl> elements',
     baseline: 'docs/design/legacy-facts.baseline.json',
+  },
+  {
+    family: 'Tables',
+    remaining: 2,
+    breakdown: '1 raw <table> element, 1 hand-made role="grid"',
+    baseline: 'docs/design/legacy-tables.baseline.json',
+  },
+  {
+    family: 'Avatars',
+    remaining: 4,
+    breakdown: '3 profile pictures, 1 local avatar, all on marketing pages',
+    baseline: 'docs/design/legacy-avatars.baseline.json',
+  },
+  {
+    family: 'Overlays',
+    remaining: 55,
+    breakdown:
+      '11 backdrops, 14 body portals, 7 role="dialog", 23 absolute menus',
+    baseline: 'docs/design/legacy-overlays.baseline.json',
+  },
+  {
+    family: 'Disclosures',
+    remaining: 22,
+    breakdown: '5 <details>, 13 chevron toggles, 4 local disclosure components',
+    baseline: 'docs/design/legacy-disclosures.baseline.json',
+  },
+  {
+    family: 'Headings',
+    remaining: 33,
+    breakdown: '33 raw <h1>…<h6>, across 27 files',
+    baseline: 'docs/design/legacy-headings.baseline.json',
+  },
+  {
+    family: 'Tooltips',
+    remaining: 1,
+    breakdown: '1 native title on a control',
+    baseline: 'docs/design/legacy-tooltips.baseline.json',
   },
   {
     family: 'Fields',

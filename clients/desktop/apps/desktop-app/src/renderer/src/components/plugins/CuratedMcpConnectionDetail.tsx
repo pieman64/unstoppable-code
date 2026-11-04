@@ -19,7 +19,7 @@ import type { AccountMcpClientSetup } from '@canopy/protocol/mcp-servers';
 import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
 import type {
   AccountMcpConnection,
-  McpServerData,
+  McpServerDataView,
   McpServerIndexEntry,
   McpServerStatusEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
@@ -209,7 +209,7 @@ interface DeviceReplacement extends CuratedMcpReplacedDeviceServer {
 
 function deviceServerOf(
   entry: CuratedMcpServerEntry,
-  server: McpServerData,
+  server: McpServerDataView,
 ): CuratedMcpDeviceServer {
   return {
     id: server.definition.id,
@@ -395,7 +395,7 @@ function AppMcpConnectionDetail({
     foldedPlugin,
     installFoldedPluginRequest,
   );
-  const [server, setServer] = useState<McpServerData | null>(null);
+  const [server, setServer] = useState<McpServerDataView | null>(null);
   const [status, setStatus] = useState<McpServerStatusEntry | undefined>();
   const [editorOpen, setEditorOpen] = useState(false);
   const [moveConnection, setMoveConnection] = useState<AccountMcpConnection>();
@@ -679,7 +679,7 @@ function AppMcpConnectionDetail({
    * connection is reused) and the device server is replaced once connected.
    */
   const signInThroughAccount = useCallback(
-    async (current: McpServerData): Promise<boolean> => {
+    async (current: McpServerDataView): Promise<boolean> => {
       if (!entry) return false;
       const target = curatedMcpAddTarget(entry, {
         accountConnectionsEnabled,

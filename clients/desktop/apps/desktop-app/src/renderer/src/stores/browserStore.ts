@@ -32,13 +32,19 @@ import type {
   BrowserNetworkEntry,
   BrowserRecordingResult,
   BrowserRecordingStep,
+  BrowserSearchEngine,
   BrowserSessionSnapshot,
   BrowserThemeMode,
   BrowserTransfer,
   BrowserTransferCommand,
   BrowserTransferCommandResult,
   LoadWorktreeBrowserStateResponse,
+  PreferencesData,
 } from '@canopy/desktop-shared/types';
+import {
+  DEFAULT_BROWSER_SEARCH_ENGINE_ID,
+  resolveBrowserSearchEngine,
+} from '@canopy/desktop-shared/lib/browser-search-engines';
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
 
 // ---------------------------------------------------------------------------
@@ -133,6 +139,10 @@ interface BrowserState {
   openAppLinksInBuiltInBrowser: boolean;
   /** Asks the OS to make this app the default browser for other apps' links. */
   useAsSystemDefaultBrowser: boolean;
+  /** The Browser bar's search engine: a built-in id or a custom engine's. */
+  searchEngineId: string;
+  /** Search engines the user added in Settings → Browser. */
+  customSearchEngines: readonly BrowserSearchEngine[];
   browserPreferencesLoaded: boolean;
   /** Keyed by `${projectId}/${worktreeId}`. */
   worktrees: Record<string, WorktreeBrowserBucket>;
@@ -189,6 +199,13 @@ interface BrowserState {
   setLocalServersOnly: (enabled: boolean) => void;
   setOpenAppLinksInBuiltInBrowser: (enabled: boolean) => void;
   setUseAsSystemDefaultBrowser: (enabled: boolean) => void;
+  /** Mirrors the saved search engine choice and the user's own engines. */
+  applySearchPreferences: (
+    preferences: Pick<
+      PreferencesData,
+      'inAppBrowserSearchEngineId' | 'inAppBrowserCustomSearchEngines'
+    >,
+  ) => void;
 
   // -- Session lifecycle -----------------------------------------------------
   /**
@@ -560,6 +577,30 @@ function activeSelectionCoordinatorFor(
   return coordinator;
 }
 
+function browserSearchPreferences(
+  preferences: Pick<
+    PreferencesData,
+    'inAppBrowserSearchEngineId' | 'inAppBrowserCustomSearchEngines'
+  >,
+): Pick<BrowserState, 'searchEngineId' | 'customSearchEngines'> {
+  return {
+    searchEngineId:
+      preferences.inAppBrowserSearchEngineId ??
+      DEFAULT_BROWSER_SEARCH_ENGINE_ID,
+    customSearchEngines: preferences.inAppBrowserCustomSearchEngines ?? [],
+  };
+}
+
+/** The engine the Browser bar searches with, falling back to Google. */
+export function selectActiveSearchEngine(
+  state: Pick<BrowserState, 'searchEngineId' | 'customSearchEngines'>,
+): BrowserSearchEngine {
+  return resolveBrowserSearchEngine(
+    state.searchEngineId,
+    state.customSearchEngines,
+  );
+}
+
 function worktreeKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
 }
@@ -721,6 +762,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
   localServersOnly: false,
   openAppLinksInBuiltInBrowser: true,
   useAsSystemDefaultBrowser: false,
+  searchEngineId: DEFAULT_BROWSER_SEARCH_ENGINE_ID,
+  customSearchEngines: [],
   browserPreferencesLoaded: false,
   worktrees: {},
   consoleEntries: {},
@@ -752,6 +795,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
           preferences.openAppLinksInBuiltInBrowser === true,
         useAsSystemDefaultBrowser:
           preferences.useAsSystemDefaultBrowser === true,
+        ...browserSearchPreferences(preferences),
         browserPreferencesLoaded: true,
       });
     } catch {
@@ -775,6 +819,10 @@ export const useBrowserStore = create<BrowserState>((set, get) => ({
       useAsSystemDefaultBrowser: enabled,
       browserPreferencesLoaded: true,
     });
+  },
+
+  applySearchPreferences: (preferences): void => {
+    set(browserSearchPreferences(preferences));
   },
 
   hydrateWorktree: async (projectId, worktreeId): Promise<void> => {

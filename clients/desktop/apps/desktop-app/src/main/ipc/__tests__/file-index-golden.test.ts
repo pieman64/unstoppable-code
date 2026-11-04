@@ -248,8 +248,8 @@ describe('single-repository worktree', () => {
     if (!repoRoot || !attachmentsRoot) throw new Error('missing roots');
     const expected: FileIndexResponse = {
       repos: [
+        // The ignored `build/` directory is walked after everything else.
         repo(repoRoot, [
-          file(repoPath, 'build/out.js', true),
           file(repoPath, 'docs/zeta/deep.txt'),
           file(repoPath, 'docs/guide.md'),
           file(repoPath, 'src/index.ts'),
@@ -258,6 +258,7 @@ describe('single-repository worktree', () => {
           file(repoPath, 'B.md'),
           file(repoPath, 'debug.log', true),
           file(repoPath, 'link-to-a.ts'),
+          file(repoPath, 'build/out.js', true),
         ]),
         repo(attachmentsRoot, [file(attachmentsPath, 'note.txt')]),
       ],
@@ -269,10 +270,9 @@ describe('single-repository worktree', () => {
     expect(getFileBrowserRoots).toHaveBeenCalledWith('project-1', 'wt-1');
   });
 
-  it('defers dependency trees to the end of the explorer walk', async () => {
+  it('defers ignored and dependency trees to the end of the explorer walk', async () => {
     const result = await getIndex({ ...target, purpose: 'file-explorer' });
     expect(paths(result.repos[0])).toEqual([
-      'build/out.js',
       'docs/zeta/deep.txt',
       'docs/guide.md',
       'src/index.ts',
@@ -281,6 +281,7 @@ describe('single-repository worktree', () => {
       'B.md',
       'debug.log',
       'link-to-a.ts',
+      'build/out.js',
       'node_modules/pkg/index.js',
       'target/out.bin',
     ]);
@@ -288,7 +289,7 @@ describe('single-repository worktree', () => {
       result.repos[0]?.files
         .filter((entry) => entry.isIgnored)
         .map((entry) => entry.relativePath),
-    ).toEqual(['build/out.js', 'debug.log']);
+    ).toEqual(['debug.log', 'build/out.js']);
     expect(result.repos.map((entry) => entry.truncated)).toEqual([
       false,
       false,
@@ -305,7 +306,6 @@ describe('single-repository worktree', () => {
     });
     const mentions = await getIndex({ ...target, purpose: 'mentions' });
     expect(paths(mentions.repos[0])).toEqual([
-      'build/out.js',
       'node_modules/pkg/index.js',
       'src/index.ts',
       '.gitignore',
@@ -313,6 +313,7 @@ describe('single-repository worktree', () => {
       'B.md',
       'debug.log',
       'link-to-a.ts',
+      'build/out.js',
     ]);
     const explorer = await getIndex({ ...target, purpose: 'file-explorer' });
     expect(paths(explorer.repos[0])).toContain('docs/guide.md');
@@ -482,9 +483,9 @@ describe('multi-repository worktree', () => {
           file(workspace, 'README.md'),
         ]),
         repo(apiRoot, [
-          file(api, 'dist/bundle.js', true),
           file(api, '.gitignore'),
           file(api, 'server.ts'),
+          file(api, 'dist/bundle.js', true),
         ]),
         repo(webRoot, [file(web, 'dist/bundle.js'), file(web, 'app.tsx')]),
         repo(attachmentsRoot, [file(attachments, 'shot.png')]),
@@ -666,7 +667,8 @@ describe('explorer entry cap', () => {
         expect(empty.truncated).toBe(false);
       }
 
-      // Mentions are uncapped, and keep the user's dependency exclusions.
+      // Mentions stay under their own cap, and keep the user's dependency
+      // exclusions.
       const mentions = await getIndex(target);
       expect(mentions.repos[2]?.files).toHaveLength(251);
       expect(paths(mentions.repos[0])).toHaveLength(60);
@@ -678,7 +680,7 @@ describe('explorer entry cap', () => {
   );
 
   it(
-    'caps a single root at 25,000 while mentions return every file',
+    'caps a single root at 25,000 while mentions, under their cap, return every file',
     async () => {
       expect(bulkRoots).toHaveLength(1);
       setRoots(bulkRoots);

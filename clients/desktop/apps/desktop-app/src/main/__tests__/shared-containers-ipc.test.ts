@@ -17,6 +17,7 @@ import type * as AcceptanceStore from '../shared-containers/acceptance-store';
 import type * as CanopyServerClient from '../shared-containers/canopy-server-client';
 import type * as PublicationState from '../shared-containers/publication-state';
 import type * as RunCopy from '../shared-containers/run/run-copy';
+import { storedSecretRef } from '../lib/stored-secrets';
 import type * as RunEnvironmentStore from '../shared-containers/run-env-store';
 import type * as ScriptRunner from '../lib/script-runner';
 import type * as ScriptsService from '../services/scripts-service';
@@ -384,6 +385,9 @@ const removeRunEnvironmentMock = jest.fn<
   Parameters<typeof RunEnvironmentStore.removeSharedContainerRunEnvironment>
 >(() => Promise.resolve());
 jest.mock('../shared-containers/run-env-store', () => ({
+  projectSharedContainerRunEnvironment: jest.requireActual<
+    typeof RunEnvironmentStore
+  >('../shared-containers/run-env-store').projectSharedContainerRunEnvironment,
   readSharedContainerRunEnvironment: (
     ...args: Parameters<
       typeof RunEnvironmentStore.readSharedContainerRunEnvironment
@@ -1450,7 +1454,7 @@ describe('shared-container IPC handlers', () => {
     expect(refreshRunCopyMock).toHaveBeenCalledTimes(1);
   });
 
-  it('returns only current declared env values and reports stale/running copy state', async () => {
+  it('returns only current declared env names, never their values, and reports stale/running copy state', async () => {
     acceptedContainerIds.add('container-1');
     runAllowedContainerIds.add('container-1');
     readRunEnvironmentMock.mockResolvedValue([
@@ -1463,13 +1467,25 @@ describe('shared-container IPC handlers', () => {
     });
     hasWorktreeTerminalsMock.mockReturnValue(true);
 
-    await expect(
-      handlers.get(IPC_CHANNELS.sharedContainersRunStatus)?.(
-        {},
-        { containerId: 'container-1', revisionId: 'revision-1' },
-      ),
-    ).resolves.toMatchObject({
-      values: [{ key: 'DATABASE_URL', value: 'postgres://local' }],
+    const status = await handlers.get(IPC_CHANNELS.sharedContainersRunStatus)?.(
+      {},
+      { containerId: 'container-1', revisionId: 'revision-1' },
+    );
+    expect(JSON.stringify(status)).not.toContain('postgres://local');
+    expect(status).toMatchObject({
+      values: [
+        {
+          key: 'DATABASE_URL',
+          value: {
+            kind: 'stored-secret',
+            ref: storedSecretRef(
+              'shared_container.run_env',
+              'container-1',
+              'DATABASE_URL',
+            ),
+          },
+        },
+      ],
       unsetRequiredEnv: [],
       runCopyNeedsRefresh: true,
       hasRunningProcesses: true,

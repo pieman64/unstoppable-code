@@ -3,9 +3,9 @@
  */
 import { renderToStaticMarkup } from 'react-dom/server';
 import { Button, type ButtonVariant } from '../Button';
-import { ControlSelect } from '../ControlSelect';
 import { HeaderActionButton } from '../HeaderActionButton';
 import { PickerTrigger } from '../PickerMenu';
+import { SettingsSelect } from '../SettingsSelect';
 
 const VARIANTS: readonly ButtonVariant[] = [
   'primary',
@@ -51,15 +51,16 @@ describe('the shared press', () => {
     for (const markup of [
       renderToStaticMarkup(<HeaderActionButton>Open</HeaderActionButton>),
       renderToStaticMarkup(
-        <ControlSelect aria-label="Model" value="a" onChange={() => {}}>
-          <option value="a">A</option>
-        </ControlSelect>,
+        <SettingsSelect
+          aria-label="Model"
+          options={[{ value: 'a', label: 'A' }]}
+          value="a"
+          onValueChange={() => {}}
+        />,
       ),
       renderToStaticMarkup(<PickerTrigger variant="field">Pick</PickerTrigger>),
     ]) {
-      const pressing = tokens(
-        markup.slice(markup.search(/<(button|select)\b/)),
-      );
+      const pressing = tokens(markup.slice(markup.search(/<button\b/)));
       expect(pressing.some((token) => token.includes('scale-97'))).toBe(true);
       expect(easesItsPress(pressing)).toBe(true);
     }

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat, unlink } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import { getUserMemoryDir, getWorkspaceMemoryDir } from '../../../lib/paths';
 import {
@@ -8,6 +8,12 @@ import {
   logicalMemorySourcePath,
   type MemoryImportSourceTool,
 } from '../input-budget';
+import { withMemoryWriteLock } from '../edit-coordination';
+import {
+  assertMemoryPathContained,
+  assertMemoryScopeLockHeld,
+} from '../memory-files';
+import { memoryNoteIdAt } from '../note-identity';
 import { redactMemoryContent } from '../store';
 import { resolveLocalMemoryPolicy } from '../policy';
 import {
@@ -22,6 +28,7 @@ import {
   writeImportState,
   type ImportSkipReason,
   type ImportState,
+  type ImportStateEntry,
   type ImportStateStagedEntry,
 } from './ledger';
 import {
@@ -217,7 +224,7 @@ function stagedImportFitsBudget(options: {
   });
 }
 
-/** The ledger entry for a source just staged as `stagedAs`. */
+/** The ledger entry for a source just staged as `stagedAs`, with a new note ID. */
 function stagedImportEntry(options: {
   sourceTool: MemoryImportSourceTool;
   fileHash: string;
@@ -227,9 +234,11 @@ function stagedImportEntry(options: {
   workspaceId?: string;
   modified: string;
 }): ImportStateStagedEntry {
+  const importedMs = Date.now();
   return {
     fileHash: options.fileHash,
-    importedAt: new Date().toISOString(),
+    importedAt: new Date(importedMs).toISOString(),
+    noteId: memoryNoteIdAt(importedMs),
     checkedAt: options.checkedAt,
     stagedAs: options.stagedAs,
     ...(options.repo ? { repo: options.repo } : {}),
@@ -237,6 +246,44 @@ function stagedImportEntry(options: {
     modified: options.modified,
     ...(options.sourceTool === 'codex' ? { sourceTool: 'codex' } : {}),
   };
+}
+
+/**
+ * Stages one source and records it in the ledger as it is now, in one
+ * critical section. When another run already staged these bytes under this
+ * name, its entry, note ID included, stays and nothing is staged again.
+ * Callers hold the scope's write lock.
+ */
+async function stageAndRecordImport(options: {
+  scopeDir: string;
+  source: LocalMemorySourceFile;
+  stagedFilename: string;
+  fileHash: string;
+  content: string;
+  entry: (stagedAs: string) => ImportStateStagedEntry;
+}): Promise<{ entry: ImportStateStagedEntry; staged: boolean }> {
+  const { scopeDir, source, fileHash } = options;
+  const ledger = await readImportState(scopeDir);
+  const current = ledger.sources[source.sourcePath];
+  const previous = current && 'stagedAs' in current ? current : undefined;
+  if (
+    previous?.fileHash === fileHash &&
+    previous.stagedAs === `imported/${options.stagedFilename}`
+  ) {
+    return { entry: previous, staged: false };
+  }
+  const stagedAs = await stageImportedMemory({
+    scopeDir,
+    sourcePath: source.sourcePath,
+    originalName: source.originalName,
+    fileHash,
+    content: options.content,
+    ...(previous ? { previousStagedAs: previous.stagedAs } : {}),
+  });
+  const entry = options.entry(stagedAs);
+  ledger.sources[source.sourcePath] = entry;
+  await writeImportState(scopeDir, ledger);
+  return { entry, staged: true };
 }
 
 function newResult(): ClaudeMemoryImportResult {
@@ -249,6 +296,37 @@ function newResult(): ClaudeMemoryImportResult {
     deferred: 0,
     errors: [],
   };
+}
+
+/** A run's change to one ledger entry: a new entry, or only a fresh check time. */
+type ImportStateChange = ImportStateEntry | { checkedAt: string; touch: true };
+
+/**
+ * Applies a run's ledger changes over the ledger as it is now, under the
+ * scope's write lock, so entries another writer changed since the run read
+ * the ledger (a consolidation stamping an import) are kept.
+ */
+async function writeImportStateChanges(
+  scopeDir: string,
+  changes: ReadonlyMap<string, ImportStateChange>,
+): Promise<void> {
+  await withMemoryWriteLock(scopeDir, async () => {
+    const latest = await readImportState(scopeDir);
+    for (const [sourcePath, change] of Array.from(changes)) {
+      if (!('touch' in change)) {
+        latest.sources[sourcePath] = change;
+        continue;
+      }
+      const current = latest.sources[sourcePath];
+      if (current) {
+        latest.sources[sourcePath] = {
+          ...current,
+          checkedAt: change.checkedAt,
+        };
+      }
+    }
+    await writeImportState(scopeDir, latest);
+  });
 }
 
 async function runLocalMemoryImport(
@@ -285,7 +363,17 @@ async function runLocalMemoryImport(
   }
 
   const states = new Map<string, ImportState>();
-  const dirtyScopeDirs = new Set<string>();
+  const changes = new Map<string, Map<string, ImportStateChange>>();
+  const recordChange = (
+    scopeDir: string,
+    sourcePath: string,
+    change: ImportStateChange,
+  ): void => {
+    const scopeChanges =
+      changes.get(scopeDir) ?? new Map<string, ImportStateChange>();
+    scopeChanges.set(sourcePath, change);
+    changes.set(scopeDir, scopeChanges);
+  };
   const ioUnavailableScopeDirs = new Set<string>();
   const stateForScope = async (
     scopeDir: string,
@@ -321,16 +409,21 @@ async function runLocalMemoryImport(
     }
     const previous = state.sources[sourcePath];
     if (previous && 'stagedAs' in previous) {
-      try {
-        await unlink(join(scopeDir, previous.stagedAs));
-      } catch (error) {
-        if (!isNodeError(error, 'ENOENT')) {
-          throw error;
+      await withMemoryWriteLock(scopeDir, async () => {
+        try {
+          const stagedPath = join(scopeDir, previous.stagedAs);
+          await assertMemoryPathContained(scopeDir, dirname(stagedPath));
+          await assertMemoryScopeLockHeld();
+          await unlink(stagedPath);
+        } catch (error) {
+          if (!isNodeError(error, 'ENOENT')) {
+            throw error;
+          }
         }
-      }
+      });
     }
     state.sources[sourcePath] = { checkedAt, skipReason };
-    dirtyScopeDirs.add(scopeDir);
+    recordChange(scopeDir, sourcePath, state.sources[sourcePath]);
   };
 
   const oversizeScopes: Array<'user' | 'workspace'> = scopeFilter
@@ -395,7 +488,7 @@ async function runLocalMemoryImport(
           ...existingEntry,
           checkedAt,
         };
-        dirtyScopeDirs.add(scopeDir);
+        recordChange(scopeDir, source.sourcePath, { checkedAt, touch: true });
       }
       const stagedPath = join(scopeDir, existingEntry.stagedAs);
       if (
@@ -469,30 +562,39 @@ async function runLocalMemoryImport(
       }
       continue;
     }
-    const previous = item.state.sources[item.source.sourcePath];
     try {
-      const stagedAs = await stageImportedMemory({
-        scopeDir: item.scopeDir,
-        sourcePath: item.source.sourcePath,
-        originalName: item.source.originalName,
-        fileHash: item.fileHash,
-        content: item.stagedContent,
-        ...(previous && 'stagedAs' in previous
-          ? { previousStagedAs: previous.stagedAs }
-          : {}),
-      });
-      item.state.sources[item.source.sourcePath] = stagedImportEntry({
-        sourceTool: provider.sourceTool,
-        fileHash: item.fileHash,
-        checkedAt,
-        stagedAs,
-        ...(repoId ? { repo: repoId } : {}),
-        ...(originWorkspaceId ? { workspaceId: originWorkspaceId } : {}),
-        modified: item.modified,
-      });
-      dirtyScopeDirs.add(item.scopeDir);
+      const recorded = await withMemoryWriteLock(item.scopeDir, () =>
+        stageAndRecordImport({
+          scopeDir: item.scopeDir,
+          source: item.source,
+          stagedFilename,
+          fileHash: item.fileHash,
+          content: item.stagedContent,
+          entry: (stagedAs) =>
+            stagedImportEntry({
+              sourceTool: provider.sourceTool,
+              fileHash: item.fileHash,
+              checkedAt,
+              stagedAs,
+              ...(repoId ? { repo: repoId } : {}),
+              ...(originWorkspaceId ? { workspaceId: originWorkspaceId } : {}),
+              modified: item.modified,
+            }),
+        }),
+      );
+      item.state.sources[item.source.sourcePath] = recorded.entry;
       stagedBytes += contentBytes;
-      result.staged += 1;
+      if (recorded.staged) {
+        result.staged += 1;
+      } else {
+        result.skippedUnchanged += 1;
+        if (recorded.entry.checkedAt !== checkedAt) {
+          recordChange(item.scopeDir, item.source.sourcePath, {
+            checkedAt,
+            touch: true,
+          });
+        }
+      }
     } catch (error) {
       result.errors.push(`${item.source.sourcePath}: ${errorMessage(error)}`);
     }
@@ -504,13 +606,9 @@ async function runLocalMemoryImport(
     );
   }
 
-  for (const scopeDir of Array.from(dirtyScopeDirs)) {
-    const state = states.get(scopeDir);
-    if (!state) {
-      continue;
-    }
+  for (const [scopeDir, scopeChanges] of Array.from(changes)) {
     try {
-      await writeImportState(scopeDir, state);
+      await writeImportStateChanges(scopeDir, scopeChanges);
     } catch (error) {
       result.errors.push(`${scopeDir}: ${errorMessage(error)}`);
     }

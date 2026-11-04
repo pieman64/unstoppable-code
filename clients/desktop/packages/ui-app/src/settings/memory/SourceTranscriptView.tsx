@@ -10,6 +10,7 @@ import {
   useMemorySettingsSlots,
   type MemoryTranscriptMessageProps,
 } from './memory-settings-slots';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface SourceTranscriptViewProps {
   transcript: ExplorerSourceTranscript;
@@ -62,9 +63,9 @@ export function SourceTranscriptView({
   if (transcript.restricted) {
     return (
       <section className="rounded-xl border bg-card p-5">
-        <h2 className="text-base font-semibold fg-primary">
+        <Heading level={2} variant="section">
           Private source transcript
-        </h2>
+        </Heading>
         <p className="mt-2 text-s leading-6 fg-secondary">
           This source is privately owned. Organization administrators can see
           the extracted evidence and source metadata, but not the private
@@ -88,9 +89,9 @@ export function SourceTranscriptView({
     <section className="rounded-xl border bg-card p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold fg-primary">
+          <Heading level={2} variant="section">
             Source transcript
-          </h2>
+          </Heading>
           <p
             className={withPrivacyClass(
               'mt-1 text-xs fg-secondary',

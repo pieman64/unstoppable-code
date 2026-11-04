@@ -151,7 +151,7 @@ test('background child output remains attached after the next user turn', async 
       }),
     ).toBeVisible();
     await expect(agent.locator('button[aria-expanded]').first()).toContainText(
-      'error',
+      'Failed',
     );
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);

@@ -11,11 +11,13 @@ import {
   pipelinePackageKindLabel,
   pipelinePackageRequirementKindLabel,
 } from '../lib/pipeline-package-display';
+import { Disclosure } from './Disclosure';
 import { ErrorBanner } from './StatusBlocks';
 import { Button } from './Button';
 import { TextInput } from './Field';
 import { SearchField } from './SearchField';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
+import { Heading } from './Heading';
 
 export interface CuratedPipelineCatalogProps {
   cloudDisplayName: string;
@@ -93,9 +95,9 @@ export function CuratedPipelineCatalog(
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold fg-primary">
+          <Heading level={2} variant="section">
             Workflow templates
-          </h2>
+          </Heading>
           <p className="mt-1 text-sm fg-secondary">
             Ready-made workflows you can add and customize.
           </p>
@@ -132,9 +134,9 @@ export function CuratedPipelineCatalog(
           {detail && (
             <>
               <div className="min-w-0 space-y-2">
-                <h3 className="break-words text-lg font-semibold fg-primary">
+                <Heading level={3} variant="section" className="break-words">
                   {detail.name}
-                </h3>
+                </Heading>
                 <p className="break-words text-sm fg-secondary">
                   {detail.shortDescription}
                 </p>
@@ -168,19 +170,18 @@ export function CuratedPipelineCatalog(
                 </Button>
               )}
               {detail.package && (
-                <details
-                  className="rounded-lg ring-1 ring-inset ring-line-base p-3"
-                  data-testid="curated-pipeline-package-summary"
+                <Disclosure
+                  variant="box"
+                  label="Included dependencies"
+                  meta={formatPipelinePackageFileSummary(
+                    detail.package.totalFiles,
+                    detail.package.totalBytes,
+                  )}
+                  keepMounted
+                  dataTestId="curated-pipeline-package-summary"
                 >
-                  <summary className="cursor-pointer text-sm font-medium fg-primary">
-                    Included dependencies ·{' '}
-                    {formatPipelinePackageFileSummary(
-                      detail.package.totalFiles,
-                      detail.package.totalBytes,
-                    )}
-                  </summary>
                   {detail.package.resources.length > 0 && (
-                    <ul className="mt-3 space-y-2">
+                    <ul className="space-y-2">
                       {detail.package.resources.map((resource) => (
                         <li key={resource.id} className="text-sm fg-primary">
                           {resource.displayName}
@@ -192,7 +193,7 @@ export function CuratedPipelineCatalog(
                     </ul>
                   )}
                   {detail.package.environmentRequirements.length > 0 && (
-                    <div className="mt-3">
+                    <div>
                       <p className="text-xs font-medium fg-secondary">
                         Setup required
                       </p>
@@ -213,19 +214,20 @@ export function CuratedPipelineCatalog(
                       </ul>
                     </div>
                   )}
-                </details>
+                </Disclosure>
               )}
-              <details className="min-w-0">
-                <summary className="cursor-pointer text-sm font-medium fg-primary">
-                  View workflow YAML
-                </summary>
+              <Disclosure
+                label="View workflow YAML"
+                keepMounted
+                dataTestId="curated-pipeline-yaml-disclosure"
+              >
                 <pre
-                  className="mt-2 max-h-80 overflow-auto rounded-md ring-1 ring-inset ring-line-base bg-secondary p-3 text-xs fg-primary"
+                  className="max-h-80 overflow-auto rounded-md ring-1 ring-inset ring-line-base bg-secondary p-3 text-xs fg-primary"
                   data-testid="curated-pipeline-yaml"
                 >
                   {detail.rawPipeline}
                 </pre>
-              </details>
+              </Disclosure>
               <p className="text-sm fg-secondary">
                 Adds an editable copy to your workflows. Review its commands and
                 required tools before running. Future catalog changes do not
@@ -325,9 +327,9 @@ export function CuratedPipelineCatalog(
             {props.rows.map((row) => (
               <li key={row.key} className="flex min-w-0 items-center gap-4 p-4">
                 <div className="min-w-0 flex-1">
-                  <h3 className="break-words text-sm font-semibold fg-primary">
+                  <Heading level={3} variant="title" className="break-words">
                     {row.name}
-                  </h3>
+                  </Heading>
                   <p className="mt-1 break-words text-sm fg-secondary">
                     {row.shortDescription}
                   </p>

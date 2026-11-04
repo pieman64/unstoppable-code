@@ -1,7 +1,12 @@
 import { projectSidebarItemGroups } from './sidebar-item-groups-service';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { getPrMergeProgress } from './pr-merge-progress';
-import { readAllSidebarItems } from '../lib/sidebar-items';
+import {
+  readAllSidebarItemsSnapshot,
+  type SidebarItemsSnapshot,
+} from '../lib/sidebar-items';
+import { runW5ReadView } from '../lib/w5-commit-log-file-store';
+import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 import { isWorkspaceTargetRemovalPending } from '../lib/workspace-target-exclusion';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
@@ -382,6 +387,8 @@ async function loadPortalSidebarPreferences(): Promise<PortalSidebarPreferences>
 export async function listWorkspacePortalEntities(
   target?: PortalTarget,
   options?: {
+    /** Discovery already captured by the enclosing session snapshot. */
+    sidebarSnapshot?: SidebarItemsSnapshot;
     includeDiffStats?: boolean;
     statsSource?: WorktreeStatsRequestSource;
     onTiming?: (section: 'workspaces_list' | 'worktrees', ms: number) => void;
@@ -394,7 +401,15 @@ export async function listWorkspacePortalEntities(
   },
 ): Promise<PortalEntityEnvelope[]> {
   const workspaceListStartedAt = performance.now();
-  const { items: persistedItems } = await readAllSidebarItems();
+  const sidebarSnapshot =
+    options?.sidebarSnapshot ??
+    (await runW5ReadView({ files: [], discoverWorkspaces: true }, (view) => {
+      if (view.status === 'uncaptured' && view.error) throw view.error;
+      return readAllSidebarItemsSnapshot();
+    }));
+  if (sidebarSnapshot.indexAuthority === 'unreadable')
+    throw workspaceStorageUnavailable(sidebarSnapshot.indexUnserved);
+  const { items: persistedItems } = sidebarSnapshot.file;
   // Decided on the persisted rows: a temporary workspace whose last worktree
   // is still being removed is not retired yet.
   const retiredWorkspaceIds = new Set(

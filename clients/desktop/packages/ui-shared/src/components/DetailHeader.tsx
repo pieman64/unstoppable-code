@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Heading } from './Heading';
 
 export interface DetailHeaderProps {
   title: ReactNode;
@@ -46,13 +47,15 @@ export function DetailHeader({
         {/* The title shares its line with the actions; the description and
             meta run the full width under both. */}
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          <h1
+          <Heading
+            level={1}
+            variant="page"
             id={titleId}
-            className="min-w-0 break-words text-lg font-semibold fg-primary"
+            className="min-w-0"
             data-testid={`${dataTestId}-title`}
           >
             {title}
-          </h1>
+          </Heading>
           {actions ? (
             <div
               className="flex shrink-0 flex-wrap items-center justify-end gap-2"

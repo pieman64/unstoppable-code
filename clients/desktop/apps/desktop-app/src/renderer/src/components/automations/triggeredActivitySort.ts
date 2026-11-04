@@ -6,7 +6,7 @@
 // stored value means "unsorted", which keeps the order the store returns.
 
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
-import type { SortDirection } from '@canopy/ui-shared/components';
+import type { DataTableSortDirection as SortDirection } from '@canopy/ui-shared/components';
 
 export type TriggeredSortColumn =
   | 'name'

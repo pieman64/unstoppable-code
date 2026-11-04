@@ -147,7 +147,7 @@ test('Marketplace blends shared and curated pipelines in one filtered inventory 
       curatedEntry.getByTestId(
         'plugins-pipeline-source-pipeline:curated:curated-review-0',
       ),
-    ).toHaveText('Curated');
+    ).toHaveCount(0);
     await window.getByTestId('plugins-search').fill('Curated review workflow');
     await expect(
       window.getByTestId('plugins-section-workflows'),

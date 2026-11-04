@@ -26,6 +26,10 @@ import {
   SettingsSelect,
   TabBar,
   type SegmentedControlOption,
+  Heading,
+  DataTable,
+  type DataTableColumn,
+  type DataTableColumnGroup,
 } from '@canopy/ui-shared/components';
 import { getTelemetryToolCategoryLabel } from '@canopy/ui-shared/lib/telemetry-tool-category';
 import { formatImpactScore } from '@canopy/ui-shared/lib';
@@ -67,7 +71,6 @@ import { memberProfileHref } from '../profile-links';
 import { formatProviderLabel } from './run-display';
 import { HeadlineCards } from './HeadlineCards';
 import { RoutingBacktestCard } from './RoutingBacktestCard';
-import { StatTable, type StatColumn, type StatColumnGroup } from './StatTable';
 import {
   costBucketTotal,
   formatCount,
@@ -721,11 +724,15 @@ function TabContent({
       return (
         <div className="flex flex-col gap-6">
           <section className="flex flex-col gap-4">
-            <h2 className="text-m font-semibold fg-primary">Key metrics</h2>
+            <Heading level={2} variant="section">
+              Key metrics
+            </Heading>
             <HeadlineCards cards={usage.headline} />
           </section>
           <section className="flex flex-col gap-4">
-            <h2 className="text-m font-semibold fg-primary">Usage details</h2>
+            <Heading level={2} variant="section">
+              Usage details
+            </Heading>
             <Panel
               title="Usage over time"
               action={
@@ -744,7 +751,7 @@ function TabContent({
               />
             </Panel>
             <Panel title={`Usage by ${costDim}`}>
-              <StatTable
+              <DataTable
                 testId="cost-breakdown-table"
                 rows={costBreakdown}
                 rowKey={(row) => row.key}
@@ -763,7 +770,7 @@ function TabContent({
                 subtitle="Estimated subscription billing grouped by provider and plan type."
               >
                 <>
-                  <StatTable
+                  <DataTable
                     testId="subscriptions-table"
                     rows={usage.billedCost.plans}
                     rowKey={(row) => `${row.provider}:${row.planKey}`}
@@ -825,7 +832,7 @@ function TabContent({
             />
           </Panel>
           <Panel title={`Tokens by ${tokenDim}`}>
-            <StatTable
+            <DataTable
               testId="tokens-breakdown-table"
               rows={tokenBreakdown}
               rowKey={(row) => row.key}
@@ -862,13 +869,12 @@ function TabContent({
               />
             }
           >
-            <StatTable
+            <DataTable
               testId="people-table"
               rows={usage.byUser}
               rowKey={(row) => row.userId ?? 'unknown'}
               emptyLabel="No attributed usage for this range."
-              defaultSortKey="impact"
-              defaultSortDir="desc"
+              defaultSort={{ key: 'impact', direction: 'desc' }}
               columnGroups={
                 peopleDetailed
                   ? PEOPLE_COLUMN_GROUPS_DETAILED
@@ -879,13 +885,12 @@ function TabContent({
           </Panel>
           {peopleDetailed ? (
             <Panel title="Workflows">
-              <StatTable
+              <DataTable
                 testId="people-pipelines-table"
                 rows={pipelinePeopleRows}
                 rowKey={(row) => row.userId ?? 'unknown'}
                 emptyLabel="No completed workflow runs for this range."
-                defaultSortKey="agentSteps"
-                defaultSortDir="desc"
+                defaultSort={{ key: 'agentSteps', direction: 'desc' }}
                 columns={pipelinePeopleColumns}
               />
             </Panel>
@@ -896,7 +901,7 @@ function TabContent({
     case 'pipelines':
       return (
         <Panel title="Workflow usage">
-          <StatTable
+          <DataTable
             testId="pipelines-table"
             rows={usage.pipelines}
             rowKey={(row) => row.clientPipelineId}
@@ -965,7 +970,7 @@ function TabContent({
     case 'activity':
       return (
         <Panel title="Turns by event type & status">
-          <StatTable
+          <DataTable
             testId="activity-table"
             rows={usage.eventTypeStatusCounts}
             rowKey={(row, index) => `${row.eventType}-${row.status}-${index}`}
@@ -1025,7 +1030,7 @@ function aggregateTokenBreakdown(
 
 function tokenBreakdownColumns(
   dim: 'provider' | 'model',
-): Array<StatColumn<TokenBreakdownRow>> {
+): Array<DataTableColumn<TokenBreakdownRow>> {
   return [
     { key: 'key', header: dim, render: (row) => row.key },
     {
@@ -1069,8 +1074,8 @@ function aggregateCostBreakdown(
 function costBreakdownColumns(
   dim: 'provider' | 'model',
   billedByKey?: ReadonlyMap<string, number>,
-): Array<StatColumn<CostBreakdownRow>> {
-  const columns: Array<StatColumn<CostBreakdownRow>> = [
+): Array<DataTableColumn<CostBreakdownRow>> {
+  const columns: Array<DataTableColumn<CostBreakdownRow>> = [
     { key: 'key', header: dim, render: (row) => row.key },
     {
       key: 'total',
@@ -1100,7 +1105,7 @@ function costBreakdownColumns(
 }
 
 function subscriptionPlanColumns(): Array<
-  StatColumn<SubscriptionPlanUsageRow>
+  DataTableColumn<SubscriptionPlanUsageRow>
 > {
   return [
     { key: 'plan', header: 'Plan', render: (row) => row.label },
@@ -1140,7 +1145,7 @@ const IMPACT_TOOLTIP =
   'and a soft-capped bonus for agent turns weighted by the tools they used.';
 
 /** Grouped header row spanning the full (detailed) leaderboard columns. */
-const PEOPLE_COLUMN_GROUPS_DETAILED: ReadonlyArray<StatColumnGroup> = [
+const PEOPLE_COLUMN_GROUPS_DETAILED: ReadonlyArray<DataTableColumnGroup> = [
   { label: 'Person', span: 1 },
   { label: 'Impact', span: 1 },
   { label: 'Activity', span: 13 },
@@ -1154,7 +1159,7 @@ const PEOPLE_COLUMN_GROUPS_DETAILED: ReadonlyArray<StatColumnGroup> = [
  * to `COMPACT_PEOPLE_COLUMN_KEYS.length` — asserted by the People table test so
  * adding a column cannot silently desync the group header from the body.
  */
-const PEOPLE_COLUMN_GROUPS_COMPACT: ReadonlyArray<StatColumnGroup> = [
+const PEOPLE_COLUMN_GROUPS_COMPACT: ReadonlyArray<DataTableColumnGroup> = [
   { label: 'Person', span: 1 },
   { label: 'Impact', span: 1 },
   { label: 'Activity', span: 4 },
@@ -1228,8 +1233,8 @@ function peopleColumns(
   orgId: string,
   detailed: boolean,
   blockClassName: string,
-): Array<StatColumn<TelemetryUserLeaderboardRow>> {
-  const columns: Array<StatColumn<TelemetryUserLeaderboardRow>> = [
+): Array<DataTableColumn<TelemetryUserLeaderboardRow>> {
+  const columns: Array<DataTableColumn<TelemetryUserLeaderboardRow>> = [
     {
       key: 'user',
       header: 'Person',
@@ -1468,7 +1473,7 @@ function peopleColumns(
 function peoplePipelineColumns(
   orgId: string,
   blockClassName: string,
-): Array<StatColumn<TelemetryUserLeaderboardRow>> {
+): Array<DataTableColumn<TelemetryUserLeaderboardRow>> {
   return [
     {
       key: 'user',
@@ -1965,7 +1970,9 @@ function Panel({
     <div className="rounded-xl bg-card p-4 shadow-sm" data-testid={testId}>
       <div className="mb-3 flex items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
-          <h3 className="text-s font-semibold fg-primary">{title}</h3>
+          <Heading level={3} variant="title">
+            {title}
+          </Heading>
           {subtitle ? <p className="text-xs fg-secondary">{subtitle}</p> : null}
         </div>
         {action}

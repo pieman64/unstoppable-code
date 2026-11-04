@@ -3,7 +3,7 @@
 import { type JSX, useState } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineIcon } from '@canopy/ui-shared';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
 
@@ -54,9 +54,9 @@ export function PipelineReadDetail({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold fg-primary">
+              <Heading level={1} variant="page">
                 {definition.name}
-              </h1>
+              </Heading>
               {definition.version && (
                 <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
                   v{definition.version}
@@ -100,12 +100,13 @@ export function PipelineReadDetail({
 
       <section aria-labelledby="pipeline-read-detail-jobs-heading">
         <div className="mb-3 flex items-center justify-between">
-          <h2
+          <Heading
+            level={2}
+            variant="title"
             id="pipeline-read-detail-jobs-heading"
-            className="text-s font-semibold fg-primary"
           >
             Jobs ({definition.jobs.length})
-          </h2>
+          </Heading>
           {definition.canonicalYaml !== undefined && (
             <Button
               type="button"

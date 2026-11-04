@@ -170,7 +170,7 @@ export function ProfileSection({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <MemberAvatar name={name} image={image} size={28} />
+          <MemberAvatar name={name} image={image} size="lg" />
           <Button
             size="compact"
             variant="secondary"

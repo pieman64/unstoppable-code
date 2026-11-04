@@ -47,6 +47,7 @@ export async function seedLinuxCliPackage(root, version) {
   );
   for (const file of [
     'w5-commit-log-worker.js',
+    'execution-hosts/terminal-host.js',
     'node-pty/package.json',
     'node-pty/build/Release/pty.node',
   ])

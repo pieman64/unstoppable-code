@@ -98,9 +98,12 @@ jest.mock('../pipelines/instrumentation', () => ({
     (_context: unknown, operation: () => unknown) => operation(),
   ),
 }));
-jest.mock('../pipelines/plugin-collection-store', () => ({
-  deletePipelinePluginCollectionPreferences: jest.fn(),
-}));
+jest.mock(
+  '@canopy/desktop-shared/node/pipelines/plugin-collection-store',
+  () => ({
+    deletePipelinePluginCollectionPreferences: jest.fn(),
+  }),
+);
 jest.mock('../plugins/invocable-inventory-service', () => ({
   refreshInvocableInventoryAfterMutation: jest.fn(),
 }));

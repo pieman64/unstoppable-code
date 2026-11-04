@@ -8,30 +8,23 @@ import {
   SummaryIcon,
   type AppIcon,
 } from '../../icons/AppIcons';
-import {
-  planCommentAvatarColor,
-  planCommentInitials,
-} from '../../lib/plan-comments';
+import { ICON_SIZE_PX } from '../../icons/icon-size';
 import { SubagentIcon } from '../chat/subagents/common/SubagentIcon';
-import { ledgerActorReplayClass } from './ledger-entry-attribution';
+import {
+  DISPLAY_AVATAR_GLYPH_SIZE,
+  DisplayAvatar,
+  type DisplayAvatarSize,
+} from '../DisplayAvatar';
 
 /** `large` beside a Feed row (32px); `small` in the panel and on replies. */
 export type LedgerActorAvatarSize = 'large' | 'small';
 
-/** An avatar disc's box and type size, shared by every Ledger avatar. */
-export const LEDGER_AVATAR_SIZE_CLASS_NAMES: Readonly<
-  Record<LedgerActorAvatarSize, string>
+/** The shared avatar step for each Ledger avatar size. */
+export const LEDGER_DISPLAY_AVATAR_SIZE: Readonly<
+  Record<LedgerActorAvatarSize, DisplayAvatarSize>
 > = {
-  large: 'h-8 w-8 text-2xs',
-  small: 'h-6 w-6 text-3xs',
-};
-
-/** The glyph an avatar disc of each size holds, in pixels. */
-export const LEDGER_AVATAR_GLYPH_SIZES: Readonly<
-  Record<LedgerActorAvatarSize, number>
-> = {
-  large: 16,
-  small: 13,
+  large: 'lg',
+  small: 'md',
 };
 
 /**
@@ -87,10 +80,10 @@ export interface LedgerActorAvatarProps {
 
 /**
  * Who wrote a reply or is writing an entry, at a glance: a person's initials
- * on their color (the person glyph for You), or an agent's glyph on a quiet
- * disc. A main entry's avatar is its type instead (`LedgerEntryTypeAvatar`),
- * and its author's glyph sits beside the author's name. Decorative: the name
- * always shows beside it.
+ * (the person glyph for You), or an agent's glyph, in the shared avatar. A
+ * main entry's avatar is its type instead (`LedgerEntryTypeAvatar`), and its
+ * author's glyph sits beside the author's name. Decorative: the name always
+ * shows beside it.
  */
 export function LedgerActorAvatar({
   kind,
@@ -98,38 +91,23 @@ export function LedgerActorAvatar({
   size,
   localUser = false,
 }: LedgerActorAvatarProps): JSX.Element {
-  const sizeClassName = LEDGER_AVATAR_SIZE_CLASS_NAMES[size];
-  if (kind === 'user') {
-    const color = planCommentAvatarColor(name);
-    return (
-      <span
-        aria-hidden="true"
-        data-testid="ledger-actor-avatar"
-        data-actor-kind={kind}
-        style={{ backgroundColor: color.backgroundColor, color: color.color }}
-        // A teammate's initials are blocked from replay; You's glyph is not.
-        className={`${ledgerActorReplayClass(kind, localUser)} flex ${sizeClassName} shrink-0 items-center justify-center rounded-full font-medium`}
-      >
-        {/* The person on this device is "You", which has no initials. */}
-        {localUser ? (
-          <LedgerActorGlyph
-            kind={kind}
-            size={LEDGER_AVATAR_GLYPH_SIZES[size]}
-          />
-        ) : (
-          planCommentInitials(name)
-        )}
-      </span>
+  const avatarSize = LEDGER_DISPLAY_AVATAR_SIZE[size];
+  // A teammate shows initials (blocked from replay); You and every agent
+  // show their kind's glyph, which replay records.
+  const glyph =
+    kind === 'user' && !localUser ? undefined : (
+      <LedgerActorGlyph
+        kind={kind}
+        size={ICON_SIZE_PX[DISPLAY_AVATAR_GLYPH_SIZE[avatarSize]]}
+      />
     );
-  }
   return (
-    <span
-      aria-hidden="true"
-      data-testid="ledger-actor-avatar"
+    <DisplayAvatar
+      name={name}
+      size={avatarSize}
+      glyph={glyph}
+      testId="ledger-actor-avatar"
       data-actor-kind={kind}
-      className={`flex ${sizeClassName} shrink-0 items-center justify-center rounded-full bg-secondary fg-secondary`}
-    >
-      <LedgerActorGlyph kind={kind} size={LEDGER_AVATAR_GLYPH_SIZES[size]} />
-    </span>
+    />
   );
 }

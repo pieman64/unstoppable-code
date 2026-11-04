@@ -13,6 +13,16 @@ import {
 import { Button } from './Button';
 import { ClickableName } from './ClickableName';
 import { ComponentSection } from './ComponentSection';
+import {
+  DataTable,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+} from './DataTable';
+import { Disclosure } from './Disclosure';
 import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
@@ -370,39 +380,28 @@ function ReadmeSection({
   };
 
   return (
-    <section className="min-w-0 rounded-lg ring-[length:var(--border-hairline)] ring-line-base bg-secondary/30">
-      <button
-        type="button"
-        onClick={() => void handleToggle()}
-        aria-expanded={expanded}
-        className="focus-ring flex w-full items-center justify-between gap-3 rounded-lg px-4 py-3 text-left"
-      >
+    <Disclosure
+      variant="box"
+      label={
         <PluginDetailSectionHeading as="span">
           README
         </PluginDetailSectionHeading>
-        <ChevronDownIcon
-          size={14}
-          className={`shrink-0 fg-secondary ${expanded ? 'rotate-180' : ''}`}
-          aria-hidden="true"
-        />
-      </button>
-      {expanded && (
-        <div className="border-t px-4 py-3">
-          {loading && (
-            <p className="text-s fg-secondary">Loading README&hellip;</p>
-          )}
-          <ErrorBanner className="" error={error} />
-          {content !== null && !loading && (
-            <div
-              className={`${REPLAY_BLOCK_CLASS} prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_code]:bg-secondary [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-s [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-s [&_h3]:font-medium [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
-            >
-              <Markdown options={markdownOptions}>{content}</Markdown>
-            </div>
-          )}
-          {content !== null && !loading && truncated && <TruncatedNotice />}
+      }
+      open={expanded}
+      onOpenChange={() => void handleToggle()}
+      dataTestId="plugin-detail-readme"
+    >
+      {loading && <p className="text-s fg-secondary">Loading README&hellip;</p>}
+      <ErrorBanner className="" error={error} />
+      {content !== null && !loading && (
+        <div
+          className={`${REPLAY_BLOCK_CLASS} prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_code]:bg-secondary [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:text-s [&_h2]:font-semibold [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-s [&_h3]:font-medium [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
+        >
+          <Markdown options={markdownOptions}>{content}</Markdown>
         </div>
       )}
-    </section>
+      {content !== null && !loading && truncated && <TruncatedNotice />}
+    </Disclosure>
   );
 }
 
@@ -887,286 +886,156 @@ export function PluginDetailContent({
             <>
               {displayDetails.skills.length > 0 && (
                 <ComponentSection title="Skills">
-                  <table className="w-full table-fixed text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Description
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.skills
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((s) => (
-                          <tr key={s.path} className="border-b last:border-b-0">
-                            <td className="px-4 py-2 break-words align-top">
-                              <ClickableName
-                                name={s.name}
-                                onClick={() =>
-                                  setViewingComponent({
-                                    name: s.name,
-                                    componentType: 'skill',
-                                    file: `${s.path}/SKILL.md`,
-                                  })
-                                }
-                              />
-                            </td>
-                            <td className="px-4 py-2 align-top fg-secondary">
-                              <ComponentDescription
-                                name={s.name}
-                                description={s.description}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <NameDescriptionTable
+                    caption="Skills"
+                    items={displayDetails.skills.map((s) => ({
+                      key: s.path,
+                      name: s.name,
+                      description: s.description,
+                      onOpen: () =>
+                        setViewingComponent({
+                          name: s.name,
+                          componentType: 'skill',
+                          file: `${s.path}/SKILL.md`,
+                        }),
+                    }))}
+                  />
                 </ComponentSection>
               )}
 
               {displayDetails.agents.length > 0 && (
                 <ComponentSection title="Agents">
-                  <table className="w-full table-fixed text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Description
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.agents
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((a, i) => (
-                          <tr
-                            key={a.filePath || i}
-                            className="border-b last:border-b-0"
-                          >
-                            <td className="px-4 py-2 break-words align-top">
-                              {a.filePath ? (
-                                <ClickableName
-                                  name={a.name}
-                                  onClick={() =>
-                                    setViewingComponent({
-                                      name: a.name,
-                                      componentType: 'agent',
-                                      file: a.filePath,
-                                    })
-                                  }
-                                />
-                              ) : (
-                                <span className="fg-primary font-medium">
-                                  {a.name}
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2 align-top fg-secondary">
-                              <ComponentDescription
-                                name={a.name}
-                                description={a.description}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <NameDescriptionTable
+                    caption="Agents"
+                    items={displayDetails.agents.map((a, i) => ({
+                      key: a.filePath || String(i),
+                      name: a.name,
+                      description: a.description,
+                      onOpen: a.filePath
+                        ? () =>
+                            setViewingComponent({
+                              name: a.name,
+                              componentType: 'agent',
+                              file: a.filePath,
+                            })
+                        : undefined,
+                    }))}
+                  />
                 </ComponentSection>
               )}
 
               {displayDetails.commands.length > 0 && (
                 <ComponentSection title="Commands">
-                  <table className="w-full table-fixed text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Description
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.commands
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((c, i) => (
-                          <tr
-                            key={c.filePath || i}
-                            className="border-b last:border-b-0"
-                          >
-                            <td className="px-4 py-2 break-words align-top">
-                              {c.filePath ? (
-                                <ClickableName
-                                  name={c.name}
-                                  onClick={() =>
-                                    setViewingComponent({
-                                      name: c.name,
-                                      componentType: 'command',
-                                      file: c.filePath,
-                                    })
-                                  }
-                                />
-                              ) : (
-                                <span className="fg-primary font-medium">
-                                  {c.name}
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2 align-top fg-secondary">
-                              <ComponentDescription
-                                name={c.name}
-                                description={c.description}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <NameDescriptionTable
+                    caption="Commands"
+                    items={displayDetails.commands.map((c, i) => ({
+                      key: c.filePath || String(i),
+                      name: c.name,
+                      description: c.description,
+                      onOpen: c.filePath
+                        ? () =>
+                            setViewingComponent({
+                              name: c.name,
+                              componentType: 'command',
+                              file: c.filePath,
+                            })
+                        : undefined,
+                    }))}
+                  />
                 </ComponentSection>
               )}
 
               {(displayDetails.apps?.length ?? 0) > 0 && (
                 <ComponentSection title="Apps">
-                  <table className="w-full table-fixed text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Description
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(displayDetails.apps ?? [])
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((a, i) => (
-                          <tr
-                            key={a.filePath || i}
-                            className="border-b last:border-b-0"
-                          >
-                            <td className="px-4 py-2 break-words align-top">
-                              {a.filePath ? (
-                                <ClickableName
-                                  name={a.name}
-                                  onClick={() =>
-                                    setViewingComponent({
-                                      name: a.name,
-                                      componentType: 'app',
-                                      file: a.filePath,
-                                    })
-                                  }
-                                />
-                              ) : (
-                                <span className="fg-primary font-medium">
-                                  {a.name}
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2 align-top fg-secondary">
-                              <ComponentDescription
-                                name={a.name}
-                                description={a.description}
-                              />
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <NameDescriptionTable
+                    caption="Apps"
+                    items={(displayDetails.apps ?? []).map((a, i) => ({
+                      key: a.filePath || String(i),
+                      name: a.name,
+                      description: a.description,
+                      onOpen: a.filePath
+                        ? () =>
+                            setViewingComponent({
+                              name: a.name,
+                              componentType: 'app',
+                              file: a.filePath,
+                            })
+                        : undefined,
+                    }))}
+                  />
                 </ComponentSection>
               )}
 
               {displayDetails.hooks.length > 0 && (
                 <ComponentSection title="Hooks">
-                  <table className="w-full text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Event
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Matcher
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Type
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.hooks
-                        .slice()
-                        .sort((a, b) => a.event.localeCompare(b.event))
-                        .map((h, i) => (
-                          <tr
-                            key={`${h.event}-${i}`}
-                            className="border-b last:border-b-0"
-                          >
-                            <td className="px-4 py-2 fg-primary font-medium whitespace-nowrap">
-                              {h.event}
-                            </td>
-                            <td className="px-4 py-2 fg-secondary font-mono text-xs">
-                              {h.matcher || '—'}
-                            </td>
-                            <td className="px-4 py-2 fg-secondary whitespace-nowrap">
-                              {h.hookType}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <DataTable
+                    caption="Hooks"
+                    rows={displayDetails.hooks
+                      .slice()
+                      .sort((a, b) => a.event.localeCompare(b.event))}
+                    rowKey={(h, i) => `${h.event}-${i}`}
+                    columns={[
+                      {
+                        key: 'event',
+                        header: 'Event',
+                        render: (h) => h.event,
+                      },
+                      {
+                        key: 'matcher',
+                        header: 'Matcher',
+                        overflow: 'wrap',
+                        render: (h) => (
+                          <span className="font-mono text-xs">
+                            {h.matcher || '—'}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'type',
+                        header: 'Type',
+                        render: (h) => h.hookType,
+                      },
+                    ]}
+                  />
                 </ComponentSection>
               )}
 
               {displayDetails.lspServers.length > 0 && (
                 <ComponentSection title="LSP servers" collapsible>
-                  <table className="w-full text-s">
-                    <thead>
-                      <tr className="bg-secondary/50 border-b">
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Name
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Command
-                        </th>
-                        <th className="text-left px-4 py-2 font-medium fg-secondary">
-                          Languages
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {displayDetails.lspServers
-                        .slice()
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((s) => (
-                          <tr key={s.name} className="border-b last:border-b-0">
-                            <td className="px-4 py-2 fg-primary font-medium whitespace-nowrap">
-                              {s.name}
-                            </td>
-                            <td
-                              className={`${REPLAY_BLOCK_CLASS} px-4 py-2 fg-secondary font-mono text-xs`}
-                            >
-                              {s.command}
-                              {s.args?.length ? ` ${s.args.join(' ')}` : ''}
-                            </td>
-                            <td className="px-4 py-2 fg-secondary">
-                              {s.languages?.join(', ') || '—'}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
+                  <DataTable
+                    caption="LSP servers"
+                    rows={displayDetails.lspServers
+                      .slice()
+                      .sort((a, b) => a.name.localeCompare(b.name))}
+                    rowKey={(server) => server.name}
+                    columns={[
+                      {
+                        key: 'name',
+                        header: 'Name',
+                        render: (server) => server.name,
+                      },
+                      {
+                        key: 'command',
+                        header: 'Command',
+                        overflow: 'wrap',
+                        replay: 'block',
+                        render: (server) => (
+                          <span className="font-mono text-xs">
+                            {server.command}
+                            {server.args?.length
+                              ? ` ${server.args.join(' ')}`
+                              : ''}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'languages',
+                        header: 'Languages',
+                        overflow: 'wrap',
+                        render: (server) => server.languages?.join(', ') || '—',
+                      },
+                    ]}
+                  />
                 </ComponentSection>
               )}
             </>
@@ -1182,6 +1051,58 @@ export function PluginDetailContent({
 
       {relatedContent}
     </div>
+  );
+}
+
+interface NameDescriptionItem {
+  readonly key: string;
+  readonly name: string;
+  readonly description?: string;
+  /** Opens the component's file; without it the name is plain text. */
+  readonly onOpen?: () => void;
+}
+
+/** A plugin's skills, agents, commands or apps: name and description, A to Z. */
+function NameDescriptionTable({
+  caption,
+  items,
+}: {
+  caption: string;
+  items: readonly NameDescriptionItem[];
+}): JSX.Element {
+  return (
+    <DataTable
+      caption={caption}
+      layout="fixed"
+      verticalAlign="top"
+      rows={items.slice().sort((a, b) => a.name.localeCompare(b.name))}
+      rowKey={(item) => item.key}
+      columns={[
+        {
+          key: 'name',
+          header: 'Name',
+          width: '33%',
+          overflow: 'wrap',
+          render: (item) =>
+            item.onOpen ? (
+              <ClickableName name={item.name} onClick={item.onOpen} />
+            ) : (
+              <span className="font-medium">{item.name}</span>
+            ),
+        },
+        {
+          key: 'description',
+          header: 'Description',
+          overflow: 'wrap',
+          render: (item) => (
+            <ComponentDescription
+              name={item.name}
+              description={item.description}
+            />
+          ),
+        },
+      ]}
+    />
   );
 }
 
@@ -1216,21 +1137,17 @@ function McpServersSection({
 }): JSX.Element {
   return (
     <ComponentSection title="MCP servers">
-      <table className="w-full table-fixed text-s">
-        <thead>
-          <tr className="bg-secondary/50 border-b">
-            <th className="w-1/3 text-left px-4 py-2 font-medium fg-secondary">
-              Name
-            </th>
-            <th className="text-left px-4 py-2 font-medium fg-secondary">
-              Status
-            </th>
-            <th className="w-0 p-0">
-              <span className="sr-only">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
+      <DataTableFrame caption="MCP servers" layout="fixed">
+        <DataTableHead>
+          <DataTableHeaderCell width="33%">Name</DataTableHeaderCell>
+          <DataTableHeaderCell>Status</DataTableHeaderCell>
+          {/* The status cell spans this column: its controls (Test
+              connection) sit at the row's end under an Actions header. */}
+          <DataTableHeaderCell width="0" labelHidden>
+            Actions
+          </DataTableHeaderCell>
+        </DataTableHead>
+        <DataTableBody>
           {servers
             .slice()
             .sort((a, b) => a.name.localeCompare(b.name))
@@ -1244,18 +1161,18 @@ function McpServersSection({
                 : undefined;
               const status = renderStatus?.(s);
               return (
-                <tr
+                <DataTableRow
                   key={s.name}
-                  className="border-b last:border-b-0"
-                  tabIndex={-1}
+                  focusable
+                  verticalAlign="top"
                   data-mcp-member={s.name}
                   ref={(node): void => {
                     if (node) rowRefs.current.set(s.name, node);
                     else rowRefs.current.delete(s.name);
                   }}
                 >
-                  <td className="px-4 py-2 align-top">
-                    <div className="fg-primary font-medium break-words">
+                  <DataTableCell tone="primary" overflow="wrap">
+                    <div className="font-medium">
                       {row && onOpenEntryId ? (
                         <span
                           data-testid={`plugin-detail-mcp-server-settings-${s.name}`}
@@ -1282,8 +1199,8 @@ function McpServersSection({
                           : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`}
                       </span>
                     </div>
-                  </td>
-                  <td colSpan={2} className="px-4 py-2 align-top">
+                  </DataTableCell>
+                  <DataTableCell overflow="wrap" colSpan={2}>
                     {status ?? (
                       <span
                         data-testid="plugin-detail-mcp-status-unavailable"
@@ -1292,12 +1209,12 @@ function McpServersSection({
                         {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
                       </span>
                     )}
-                  </td>
-                </tr>
+                  </DataTableCell>
+                </DataTableRow>
               );
             })}
-        </tbody>
-      </table>
+        </DataTableBody>
+      </DataTableFrame>
     </ComponentSection>
   );
 }

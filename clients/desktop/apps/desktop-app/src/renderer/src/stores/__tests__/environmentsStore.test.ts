@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import type {
-  EnvironmentConfigData,
+  EnvironmentConfigView,
   LoadEnvironmentConfigResponse,
   SaveEnvironmentConfigResponse,
   SecureStorageFailure,
@@ -20,7 +20,7 @@ interface TestApi {
   loadEnvironmentConfig: jest.Mock<Promise<LoadEnvironmentConfigResponse>, []>;
   saveEnvironmentConfig: jest.Mock<
     Promise<SaveEnvironmentConfigResponse>,
-    [EnvironmentConfigData]
+    [EnvironmentConfigView]
   >;
 }
 
@@ -36,7 +36,7 @@ function mockSaveEnvironmentConfig(
 ): TestApi['saveEnvironmentConfig'] {
   return jest.fn<
     Promise<SaveEnvironmentConfigResponse>,
-    [EnvironmentConfigData]
+    [EnvironmentConfigView]
   >(implementation);
 }
 
@@ -64,6 +64,181 @@ describe('environmentsStore', () => {
     resetStore();
   });
 
+  it('sends a save queued behind a rename with the reference the rename returned (CAN-4411)', async () => {
+    const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
+    const oldRef = { kind: 'stored-secret', ref: 'ssr1_old' } as const;
+    const newRef = { kind: 'stored-secret', ref: 'ssr1_new' } as const;
+    const withVariables = (
+      variables: EnvironmentConfigView['environments'][number]['variables'],
+    ): EnvironmentConfigView => ({
+      ...config,
+      environments: config.environments.map((environment) =>
+        environment.id === 'default-overall'
+          ? { ...environment, variables }
+          : environment,
+      ),
+    });
+    let finishRename: (() => void) | undefined;
+    const saveEnvironmentConfig = jest
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRename = (): void =>
+              resolve({
+                ok: true,
+                data: withVariables([
+                  { key: 'RENAMED', value: newRef, secret: true },
+                ]),
+                encryptionAvailable: true,
+              });
+          }),
+      )
+      .mockImplementationOnce((data) =>
+        Promise.resolve({ ok: true, data, encryptionAvailable: true }),
+      );
+    installApi({
+      loadEnvironmentConfig: jest.fn<
+        Promise<LoadEnvironmentConfigResponse>,
+        []
+      >(),
+      saveEnvironmentConfig,
+    });
+
+    const rename = useEnvironmentsStore
+      .getState()
+      .save(withVariables([{ key: 'RENAMED', value: oldRef, secret: true }]));
+    const queued = useEnvironmentsStore.getState().save(
+      withVariables([
+        { key: 'RENAMED', value: oldRef, secret: true },
+        { key: 'LATER', value: 'edit' },
+      ]),
+    );
+    while (finishRename === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    finishRename();
+    await rename;
+    await queued;
+
+    expect(
+      saveEnvironmentConfig.mock.calls[1]?.[0].environments.find(
+        (environment) => environment.id === 'default-overall',
+      )?.variables,
+    ).toEqual([
+      { key: 'RENAMED', value: newRef, secret: true },
+      { key: 'LATER', value: 'edit' },
+    ]);
+  });
+
+  it('leaves a reference alone once its key is reused after an earlier rename (CAN-4411)', async () => {
+    const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
+    const oldRef = { kind: 'stored-secret', ref: 'ssr1_old' } as const;
+    const newRef = { kind: 'stored-secret', ref: 'ssr1_new' } as const;
+    const withVariables = (
+      variables: EnvironmentConfigView['environments'][number]['variables'],
+    ): EnvironmentConfigView => ({
+      ...config,
+      environments: config.environments.map((environment) =>
+        environment.id === 'default-overall'
+          ? { ...environment, variables }
+          : environment,
+      ),
+    });
+    const saveEnvironmentConfig = jest
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
+      .mockResolvedValueOnce({
+        ok: true,
+        data: withVariables([{ key: 'RENAMED', value: newRef, secret: true }]),
+        encryptionAvailable: true,
+      })
+      .mockImplementation((data) =>
+        Promise.resolve({ ok: true, data, encryptionAvailable: true }),
+      );
+    installApi({
+      loadEnvironmentConfig: jest.fn<
+        Promise<LoadEnvironmentConfigResponse>,
+        []
+      >(),
+      saveEnvironmentConfig,
+    });
+
+    await useEnvironmentsStore
+      .getState()
+      .save(withVariables([{ key: 'RENAMED', value: oldRef, secret: true }]));
+    // The old key was added again and now holds a new value under oldRef.
+    const reused = withVariables([
+      { key: 'RENAMED', value: newRef, secret: true },
+      { key: 'OLD', value: oldRef, secret: true },
+    ]);
+    await useEnvironmentsStore.getState().save(reused);
+
+    expect(saveEnvironmentConfig.mock.calls[1]?.[0]).toEqual(reused);
+  });
+
+  it('points a draft edited during a save at the reference the save returned for a renamed secret (CAN-4411)', async () => {
+    const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
+    const oldRef = { kind: 'stored-secret', ref: 'ssr1_old' } as const;
+    const newRef = { kind: 'stored-secret', ref: 'ssr1_new' } as const;
+    const withVariables = (
+      variables: EnvironmentConfigView['environments'][number]['variables'],
+    ): EnvironmentConfigView => ({
+      ...config,
+      environments: config.environments.map((environment) =>
+        environment.id === 'default-overall'
+          ? { ...environment, variables }
+          : environment,
+      ),
+    });
+    const submitted = withVariables([
+      { key: 'RENAMED', value: oldRef, secret: true },
+    ]);
+    let finish: (() => void) | undefined;
+    installApi({
+      loadEnvironmentConfig: jest.fn<
+        Promise<LoadEnvironmentConfigResponse>,
+        []
+      >(),
+      saveEnvironmentConfig: mockSaveEnvironmentConfig(
+        () =>
+          new Promise((resolve) => {
+            finish = (): void =>
+              resolve({
+                ok: true,
+                data: withVariables([
+                  { key: 'RENAMED', value: newRef, secret: true },
+                ]),
+                encryptionAvailable: true,
+              });
+          }),
+      ),
+    });
+
+    const saving = useEnvironmentsStore.getState().save(submitted);
+    useEnvironmentsStore.getState().setLocal(
+      withVariables([
+        { key: 'RENAMED', value: oldRef, secret: true },
+        { key: 'LATER', value: 'edit' },
+      ]),
+    );
+    while (finish === undefined) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    finish();
+    await saving;
+
+    expect(
+      useEnvironmentsStore
+        .getState()
+        .data?.environments.find(
+          (environment) => environment.id === 'default-overall',
+        )?.variables,
+    ).toEqual([
+      { key: 'RENAMED', value: newRef, secret: true },
+      { key: 'LATER', value: 'edit' },
+    ]);
+  });
+
   it('preserves an existing draft when an environment read returns a storage failure', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
     const failure: SecureStorageFailure = {
@@ -84,7 +259,7 @@ describe('environmentsStore', () => {
         }),
       saveEnvironmentConfig: jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >(),
     });
     useEnvironmentsStore.setState({
@@ -108,7 +283,7 @@ describe('environmentsStore', () => {
         .fn<Promise<LoadEnvironmentConfigResponse>, []>()
         .mockRejectedValue(new Error('Transport failed.')),
       saveEnvironmentConfig: jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockRejectedValue(new Error('Transport failed.')),
     });
     const failure = {
@@ -175,7 +350,7 @@ describe('environmentsStore', () => {
       retryable: true,
     };
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Storage failed.',
@@ -210,7 +385,7 @@ describe('environmentsStore', () => {
 
   it('does not advance the load version after a save', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const savedConfig: EnvironmentConfigData = {
+    const savedConfig: EnvironmentConfigView = {
       ...config,
       environments: config.environments.map((environment) =>
         environment.id === 'default-overall'
@@ -252,7 +427,7 @@ describe('environmentsStore', () => {
 
   it('tracks environment edits after an assignment save first populates the unloaded store', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const assigned: EnvironmentConfigData = {
+    const assigned: EnvironmentConfigView = {
       ...config,
       workspaceAssignments: [
         {
@@ -285,7 +460,7 @@ describe('environmentsStore', () => {
       lastSavedEnvironmentData: null,
       environmentBaseline: environmentEditorBaseline(assigned),
     });
-    const edited: EnvironmentConfigData = {
+    const edited: EnvironmentConfigView = {
       ...assigned,
       environments: assigned.environments.map((environment) =>
         environment.id === 'default-overall'
@@ -310,7 +485,7 @@ describe('environmentsStore', () => {
 
   it('merges project assignment saves without replacing local drafts', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const draft: EnvironmentConfigData = {
+    const draft: EnvironmentConfigView = {
       ...config,
       environments: [
         ...config.environments,
@@ -326,7 +501,7 @@ describe('environmentsStore', () => {
         },
       ],
     };
-    const savedConfig: EnvironmentConfigData = {
+    const savedConfig: EnvironmentConfigView = {
       ...config,
       workspaceAssignments: [
         {
@@ -398,7 +573,7 @@ describe('environmentsStore', () => {
       retryable: true,
     };
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Storage failed.',
@@ -433,14 +608,14 @@ describe('environmentsStore', () => {
     'retains environment payload A and draft B after a retry has a %s',
     async (retryFailure) => {
       const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-      const submitted: EnvironmentConfigData = {
+      const submitted: EnvironmentConfigView = {
         ...config,
         environments: config.environments.map((environment) => ({
           ...environment,
           variables: [{ key: 'DRAFT', value: 'A' }],
         })),
       };
-      const laterDraft: EnvironmentConfigData = {
+      const laterDraft: EnvironmentConfigView = {
         ...submitted,
         environments: submitted.environments.map((environment) => ({
           ...environment,
@@ -456,7 +631,7 @@ describe('environmentsStore', () => {
         retryable: true,
       };
       const saveEnvironmentConfig = jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockResolvedValueOnce({
           ok: false,
           error: 'Storage failed.',
@@ -511,7 +686,7 @@ describe('environmentsStore', () => {
     const submitted = createDefaultEnvironmentConfig(
       '2026-05-29T00:00:00.000Z',
     );
-    const laterDraft: EnvironmentConfigData = {
+    const laterDraft: EnvironmentConfigView = {
       ...submitted,
       workspaceAssignments: [
         {
@@ -530,7 +705,7 @@ describe('environmentsStore', () => {
       retryable: true,
     };
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Storage failed.',
@@ -601,7 +776,7 @@ describe('environmentsStore', () => {
       retryable: true,
     };
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Storage failed.',
@@ -691,7 +866,7 @@ describe('environmentsStore', () => {
       ),
       saveEnvironmentConfig: jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >(),
     });
     const pending = useEnvironmentsStore.getState().load();
@@ -721,7 +896,7 @@ describe('environmentsStore', () => {
       ),
       saveEnvironmentConfig: jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >(),
     });
     const pending = useEnvironmentsStore.getState().load();
@@ -852,7 +1027,7 @@ describe('environmentsStore', () => {
       const submitted = createDefaultEnvironmentConfig(
         '2026-05-29T00:00:00.000Z',
       );
-      const assignment: EnvironmentConfigData = {
+      const assignment: EnvironmentConfigView = {
         ...submitted,
         workspaceAssignments: [
           {
@@ -862,7 +1037,7 @@ describe('environmentsStore', () => {
           },
         ],
       };
-      const laterDraft: EnvironmentConfigData = {
+      const laterDraft: EnvironmentConfigView = {
         ...submitted,
         globalRuntimes: { ...submitted.globalRuntimes, agent: 'newer-draft' },
       };
@@ -886,7 +1061,7 @@ describe('environmentsStore', () => {
         assignmentStarted = resolve;
       });
       const saveEnvironmentConfig = jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockImplementationOnce(
           () =>
             new Promise((resolve) => {
@@ -993,7 +1168,7 @@ describe('environmentsStore', () => {
         retryable: true,
       };
       const saveEnvironmentConfig = jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockImplementationOnce(() =>
           environmentOutcome === 'transport failure'
             ? Promise.reject(new Error('Environment transport failed.'))
@@ -1052,7 +1227,7 @@ describe('environmentsStore', () => {
         .mockResolvedValueOnce({ data: config, encryptionAvailable: true });
       const saveEnvironmentConfig = jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >();
       installApi({ loadEnvironmentConfig, saveEnvironmentConfig });
       // WorkspaceEnvironmentTab's preliminary read fails before a write is submitted.
@@ -1093,7 +1268,7 @@ describe('environmentsStore', () => {
 
   it('preserves a newer local draft when the preliminary assignment read retry completes late', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const laterDraft: EnvironmentConfigData = {
+    const laterDraft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, agent: 'newer-draft' },
     };
@@ -1110,7 +1285,7 @@ describe('environmentsStore', () => {
     );
     const saveEnvironmentConfig = jest.fn<
       Promise<SaveEnvironmentConfigResponse>,
-      [EnvironmentConfigData]
+      [EnvironmentConfigView]
     >();
     installApi({ loadEnvironmentConfig, saveEnvironmentConfig });
     useEnvironmentsStore.setState({
@@ -1147,7 +1322,7 @@ describe('environmentsStore', () => {
 
   it('settles a durable environment save without clearing a newer read failure', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const laterDraft: EnvironmentConfigData = {
+    const laterDraft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, agent: 'newer-draft' },
     };
@@ -1171,7 +1346,7 @@ describe('environmentsStore', () => {
         }),
       saveEnvironmentConfig: jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >(
         () =>
           new Promise((resolve) => {
@@ -1201,7 +1376,7 @@ describe('environmentsStore', () => {
 
   it('reads persisted environment fields at queued assignment execution instead of overwriting them with an earlier snapshot', async () => {
     const original = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const environment: EnvironmentConfigData = {
+    const environment: EnvironmentConfigView = {
       ...original,
       environments: original.environments.map((item) => ({
         ...item,
@@ -1209,7 +1384,7 @@ describe('environmentsStore', () => {
       })),
       globalRuntimes: { ...original.globalRuntimes, agent: 'default-overall' },
     };
-    const assignment: EnvironmentConfigData = {
+    const assignment: EnvironmentConfigView = {
       ...original,
       workspaceAssignments: [
         {
@@ -1219,14 +1394,14 @@ describe('environmentsStore', () => {
         },
       ],
     };
-    let persisted = original;
+    let persisted: EnvironmentConfigView = original;
     let resolveEnvironment: () => void = () => undefined;
     const loadEnvironmentConfig = jest.fn<
       Promise<LoadEnvironmentConfigResponse>,
       []
     >(() => Promise.resolve({ data: persisted, encryptionAvailable: true }));
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockImplementationOnce(
         (data) =>
           new Promise((resolve) => {
@@ -1283,7 +1458,7 @@ describe('environmentsStore', () => {
         )
         .mockResolvedValueOnce({ data: config, encryptionAvailable: true });
       const saveEnvironmentConfig = jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockResolvedValue({
           ok: true,
           data: config,
@@ -1324,7 +1499,7 @@ describe('environmentsStore', () => {
 
   it('refreshes external environment fields when retrying the original failed assignment intent', async () => {
     const original = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const submitted: EnvironmentConfigData = {
+    const submitted: EnvironmentConfigView = {
       ...original,
       workspaceAssignments: [
         {
@@ -1334,7 +1509,7 @@ describe('environmentsStore', () => {
         },
       ],
     };
-    const external: EnvironmentConfigData = {
+    const external: EnvironmentConfigView = {
       ...original,
       globalRuntimes: { ...original.globalRuntimes, agent: 'default-overall' },
     };
@@ -1351,7 +1526,7 @@ describe('environmentsStore', () => {
       .mockResolvedValueOnce({ data: original, encryptionAvailable: true })
       .mockResolvedValueOnce({ data: external, encryptionAvailable: true });
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Assignment write failed.',
@@ -1398,7 +1573,7 @@ describe('environmentsStore', () => {
         name: 'Removable',
         isDefault: false,
       });
-      const assignment: EnvironmentConfigData = {
+      const assignment: EnvironmentConfigView = {
         ...original,
         workspaceAssignments: [
           {
@@ -1409,14 +1584,14 @@ describe('environmentsStore', () => {
         ],
       };
       // Use a normalized response distinct from the caller snapshot.
-      const completedAssignment: EnvironmentConfigData = {
+      const completedAssignment: EnvironmentConfigView = {
         ...assignment,
         workspaceAssignments: assignment.workspaceAssignments.map((item) => ({
           ...item,
           updatedAt: '2026-05-30T00:00:00.000Z',
         })),
       };
-      const environment: EnvironmentConfigData = {
+      const environment: EnvironmentConfigView = {
         ...original,
         environments:
           outcome === 'deleted environment'
@@ -1435,7 +1610,7 @@ describe('environmentsStore', () => {
         backend: null,
         retryable: true,
       };
-      let persisted = original;
+      let persisted: EnvironmentConfigView = original;
       let finishAssignment: () => void = () => undefined;
       let assignmentStarted: () => void = () => undefined;
       const started = new Promise<void>((resolve) => {
@@ -1446,7 +1621,7 @@ describe('environmentsStore', () => {
         []
       >(() => Promise.resolve({ data: persisted, encryptionAvailable: true }));
       const saveEnvironmentConfig = jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockImplementationOnce(
           () =>
             new Promise((resolve, reject) => {
@@ -1515,7 +1690,7 @@ describe('environmentsStore', () => {
         assignmentResult,
         environmentResult,
       ]);
-      const expected: EnvironmentConfigData = {
+      const expected: EnvironmentConfigView = {
         ...environment,
         workspaceAssignments: outcome.startsWith('assignment')
           ? []
@@ -1563,7 +1738,7 @@ describe('environmentsStore', () => {
 
   it('leaves an explicit environment payload alone when assignments completed before its request', async () => {
     const original = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const assignment: EnvironmentConfigData = {
+    const assignment: EnvironmentConfigView = {
       ...original,
       workspaceAssignments: [
         {
@@ -1577,7 +1752,7 @@ describe('environmentsStore', () => {
       .fn<Promise<LoadEnvironmentConfigResponse>, []>()
       .mockResolvedValue({ data: original, encryptionAvailable: true });
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockImplementation((data) =>
         Promise.resolve({ ok: true, data, encryptionAvailable: true }),
       );
@@ -1590,7 +1765,7 @@ describe('environmentsStore', () => {
 
   it('projects completed assignments through a superseded response and newer environment drafts so a later save retains them', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const assignment: EnvironmentConfigData = {
+    const assignment: EnvironmentConfigView = {
       ...config,
       workspaceAssignments: [
         {
@@ -1600,11 +1775,11 @@ describe('environmentsStore', () => {
         },
       ],
     };
-    const firstDraft: EnvironmentConfigData = {
+    const firstDraft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, agent: 'default-overall' },
     };
-    const newerDraft: EnvironmentConfigData = {
+    const newerDraft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, pipeline: 'default-overall' },
     };
@@ -1619,7 +1794,7 @@ describe('environmentsStore', () => {
       startedEnvironment = resolve;
     });
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockImplementationOnce(
         (data) =>
           new Promise((resolve) => {
@@ -1687,7 +1862,7 @@ describe('environmentsStore', () => {
 
   it('retains a failed assignment replay through repeated queued read failures and store-only retry', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const submitted: EnvironmentConfigData = {
+    const submitted: EnvironmentConfigView = {
       ...config,
       workspaceAssignments: [
         {
@@ -1721,7 +1896,7 @@ describe('environmentsStore', () => {
       .mockRejectedValueOnce(new Error('Replay transport failed.'))
       .mockResolvedValueOnce({ data: config, encryptionAvailable: true });
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Assignment write locked.',
@@ -1769,7 +1944,7 @@ describe('environmentsStore', () => {
 
   it('keeps the draft and refreshes encryption availability after failed read recovery', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const draft: EnvironmentConfigData = {
+    const draft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, agent: 'default-overall' },
     };
@@ -1794,7 +1969,7 @@ describe('environmentsStore', () => {
       loadEnvironmentConfig,
       saveEnvironmentConfig: jest.fn<
         Promise<SaveEnvironmentConfigResponse>,
-        [EnvironmentConfigData]
+        [EnvironmentConfigView]
       >(),
     });
     await useEnvironmentsStore.getState().load();
@@ -1829,7 +2004,7 @@ describe('environmentsStore', () => {
 
   it('records a successful superseded read baseline without losing an edit made while it was pending', async () => {
     const config = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const draft: EnvironmentConfigData = {
+    const draft: EnvironmentConfigView = {
       ...config,
       globalRuntimes: { ...config.globalRuntimes, agent: 'default-overall' },
     };
@@ -1847,7 +2022,7 @@ describe('environmentsStore', () => {
     installApi({
       loadEnvironmentConfig,
       saveEnvironmentConfig: jest
-        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+        .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
         .mockImplementation((data) =>
           Promise.resolve({ ok: true, data, encryptionAvailable: true }),
         ),
@@ -1877,7 +2052,7 @@ describe('environmentsStore', () => {
       retryable: true,
     };
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockResolvedValueOnce({
         ok: false,
         error: 'Failed.',
@@ -1903,15 +2078,15 @@ describe('environmentsStore', () => {
 
   it('reads after an in-flight environment write before adopting data and canonical baseline', async () => {
     const original = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-    const submitted: EnvironmentConfigData = {
+    const submitted: EnvironmentConfigView = {
       ...original,
       globalRuntimes: { ...original.globalRuntimes, agent: 'default-overall' },
     };
-    let persisted = original;
+    let persisted: EnvironmentConfigView = original;
     let finishSave: () => void = () => undefined;
     const saveEnvironmentConfig = jest.fn<
       Promise<SaveEnvironmentConfigResponse>,
-      [EnvironmentConfigData]
+      [EnvironmentConfigView]
     >(
       (data) =>
         new Promise((resolve) => {
@@ -1949,7 +2124,7 @@ describe('environmentsStore', () => {
     'keeps the newest successful read baseline when two reads complete newer-first: %s',
     async (newerFirst) => {
       const older = createDefaultEnvironmentConfig('2026-05-29T00:00:00.000Z');
-      const newer: EnvironmentConfigData = {
+      const newer: EnvironmentConfigView = {
         ...older,
         globalRuntimes: { ...older.globalRuntimes, agent: 'default-overall' },
       };
@@ -1975,7 +2150,7 @@ describe('environmentsStore', () => {
         loadEnvironmentConfig,
         saveEnvironmentConfig: jest.fn<
           Promise<SaveEnvironmentConfigResponse>,
-          [EnvironmentConfigData]
+          [EnvironmentConfigView]
         >(),
       });
       const first = useEnvironmentsStore.getState().load();
@@ -2011,7 +2186,7 @@ describe('environmentsStore', () => {
     let resolveFirst: (value: SaveEnvironmentConfigResponse) => void = () =>
       undefined;
     const saveEnvironmentConfig = jest
-      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigData]>()
+      .fn<Promise<SaveEnvironmentConfigResponse>, [EnvironmentConfigView]>()
       .mockImplementationOnce(
         () =>
           new Promise((resolve) => {

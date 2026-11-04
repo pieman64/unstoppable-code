@@ -6,6 +6,15 @@ import {
 } from '@canopy/desktop-instrumentation/electron/main';
 import type { PostHogSessionState } from '@canopy/desktop-shared/types/observability';
 import {
+  CORE_OBSERVABILITY_GRANTS,
+  ObservabilityAuditTranscriptGetParamsSchema,
+  type CanopyCallerDescriptor,
+  type CanopyQueryName,
+  type CanopyQueryParams,
+  type CanopyQueryResult,
+} from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
   IPC_CHANNELS,
   SINGLE_REPO_USAGE_REPO_ID,
   type AgentAuditHistoryRequest,
@@ -32,6 +41,8 @@ import {
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { sendToAllWindows, sendToWindow } from '../lib/window-send';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import { registerRendererDiagnosticsHandler } from './renderer-diagnostics';
 
@@ -120,8 +131,37 @@ function validateDesktopInstrumentationInitFailureRequest(
   }
 }
 
+type ObservabilityQueryName = Extract<
+  CanopyQueryName,
+  `core.observability.${string}`
+>;
+
+/**
+ * The audit and usage channels are compatibility projections over
+ * `core.observability.*` (CAN-4137). A failed read rejects with the error the
+ * read itself raised, as the channels did before they went through core.
+ */
+export async function queryObservability<Name extends ObservabilityQueryName>(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
+  caller: CanopyCallerDescriptor,
+  name: Name,
+  params: CanopyQueryParams<Name>,
+): Promise<CanopyQueryResult<Name>> {
+  try {
+    return await dispatcher.query(name, params, {
+      caller: { ...caller, grants: [CORE_OBSERVABILITY_GRANTS.read] },
+    });
+  } catch (error) {
+    if (!(error instanceof CanopyOperationError)) throw error;
+    if (error.runtimeCause instanceof Error) throw error.runtimeCause;
+    throw new Error(error.payload.message);
+  }
+}
+
 export function registerObservabilityHandlers(
   getWindow: () => BrowserWindow | null,
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query'>,
+  resolveCaller: DesktopIpcCallerResolver,
 ): void {
   const service = getObservabilityService();
   registerRendererDiagnosticsHandler(service);
@@ -130,27 +170,44 @@ export function registerObservabilityHandlers(
     sendToWindow(getWindow(), IPC_CHANNELS.observabilityEvent, event);
   });
 
+  // Provider account usage stays with the desktop host (CAN-4180); core
+  // serves the audit part of the snapshot.
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadSnapshot,
-    (): Promise<AgentObservabilitySnapshot> =>
-      Promise.resolve(service.loadSnapshot()),
+    async (event): Promise<AgentObservabilitySnapshot> => {
+      const summary = await queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.summary.get',
+        { kind: 'overview' },
+      );
+      if (summary.kind !== 'overview') {
+        throw new Error('The audit overview could not be read.');
+      }
+      return { ...summary.overview, usage: service.getUsageOverview() };
+    },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadHistory,
     (
-      _event,
+      event,
       request: AgentAuditHistoryRequest,
     ): Promise<AgentAuditHistoryResponse> => {
       validateHistoryRequestIds(request);
-      return service.loadHistory(request);
+      return queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.audit.list',
+        request,
+      );
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadUsageTimeseries,
-    (
-      _event,
+    async (
+      event,
       request: UsageTimeseriesRequest,
     ): Promise<UsageTimeseriesResponse> => {
       const startTime = parseUsageTimeseriesDate(
@@ -170,13 +227,25 @@ export function registerObservabilityHandlers(
           new Error(`Invalid bucket: ${String(request.bucket)}`),
         );
       }
-      return service.loadUsageTimeseries(request);
+      const usage = await queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.usage.query',
+        { kind: 'timeseries', request },
+      );
+      if (usage.kind !== 'timeseries') {
+        throw new Error('The usage time series could not be read.');
+      }
+      return usage.result;
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadUsageMetrics,
-    (_event, request: UsageMetricsRequest): Promise<UsageMetricsResponse> => {
+    async (
+      event,
+      request: UsageMetricsRequest,
+    ): Promise<UsageMetricsResponse> => {
       const startTime = parseUsageTimeseriesDate(
         request?.startDate,
         'startDate',
@@ -195,14 +264,23 @@ export function registerObservabilityHandlers(
       }
       validateUsageMetricProvider(request.provider);
       validateUsageMetricInitiationSource(request.initiationSource);
-      return service.loadUsageMetrics(request);
+      const usage = await queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.usage.query',
+        { kind: 'metrics', request },
+      );
+      if (usage.kind !== 'metrics') {
+        throw new Error('The usage metrics could not be read.');
+      }
+      return usage.result;
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadUsageMetricsView,
-    (
-      _event,
+    async (
+      event,
       request: UsageMetricsViewRequest,
     ): Promise<UsageMetricsViewResponse> => {
       validateUsageTabId(request?.tab);
@@ -226,38 +304,65 @@ export function registerObservabilityHandlers(
         parseUsageTimeseriesDate(window.start, 'window.start');
         parseUsageTimeseriesDate(window.end, 'window.end');
       }
-      return service.loadUsageMetricsView(request);
+      const usage = await queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.usage.query',
+        { kind: 'view', request },
+      );
+      if (usage.kind !== 'view') {
+        throw new Error('The usage metric view could not be read.');
+      }
+      return usage.result;
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadUsageTabSummary,
-    (
-      _event,
+    async (
+      event,
       request: UsageTabSummaryRequest,
     ): Promise<UsageTabSummaryResponse> => {
       validateUsageTabId(request?.tab);
-      return service.loadUsageTabSummary(request);
+      const summary = await queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.summary.get',
+        { kind: 'tab', request: { tab: request.tab } },
+      );
+      if (summary.kind !== 'tab') {
+        throw new Error('The usage summary could not be read.');
+      }
+      return summary.result;
     },
   );
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityLoadTranscript,
     (
-      _event,
+      event,
       request: AgentAuditTranscriptRequest,
     ): Promise<AgentAuditTranscriptResponse> => {
       const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T[\d:.Z+-]+$/;
+      const params = ObservabilityAuditTranscriptGetParamsSchema.safeParse({
+        id: request?.id,
+        eventType: request?.eventType,
+        startedAt: request?.startedAt,
+      });
       if (
-        typeof request.startedAt !== 'string' ||
-        !ISO_DATE_RE.test(request.startedAt) ||
-        typeof request.id !== 'string' ||
-        request.id.length === 0
+        !params.success ||
+        !ISO_DATE_RE.test(params.data.startedAt) ||
+        params.data.id.length === 0
       ) {
         const result: AgentAuditTranscriptResponse = { type: 'not_available' };
         return Promise.resolve(result);
       }
-      return service.loadTranscript(request);
+      return queryObservability(
+        dispatcher,
+        resolveCaller(event),
+        'core.observability.audit.transcript.get',
+        params.data,
+      );
     },
   );
 

@@ -6,6 +6,8 @@ const PRIVATE_FOLLOW_UP_DESCRIPTION =
   'The follow-up instruction delivered privately to the independent forked chat.';
 const VISIBLE_FOLLOW_UP_DESCRIPTION =
   'The follow-up instruction posted to the independent forked chat as its first visible message.';
+const BOUNDED_PRIVATE_FOLLOW_UP_DESCRIPTION =
+  'The follow-up instruction delivered privately to the independent forked chat; one longer than about 7,800 characters is posted as its first visible message instead.';
 
 export const startSplitAgentInputSchema = z
   .object({
@@ -43,7 +45,10 @@ export const START_SPLIT_AGENT_JSON_SCHEMA: AgentJsonSchema =
 export function startSplitAgentJsonSchema(
   capabilities?: AgentActionDescriptionCapabilities,
 ): AgentJsonSchema {
-  return capabilities?.hiddenInstructions === false
-    ? splitAgentJsonSchema(VISIBLE_FOLLOW_UP_DESCRIPTION)
+  if (capabilities?.hiddenInstructions === false) {
+    return splitAgentJsonSchema(VISIBLE_FOLLOW_UP_DESCRIPTION);
+  }
+  return capabilities?.watcherTargetScope === 'current_workspace'
+    ? splitAgentJsonSchema(BOUNDED_PRIVATE_FOLLOW_UP_DESCRIPTION)
     : START_SPLIT_AGENT_JSON_SCHEMA;
 }

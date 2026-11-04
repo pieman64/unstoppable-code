@@ -468,6 +468,35 @@ describe('portal protocol contract', () => {
     );
   });
 
+  // REG-3118: a cloud chat's send, captured by the hosted server.
+  it('parses a cloud chat sender and refuses one mixed with another kind', () => {
+    const cloudInfo = {
+      sender: {
+        kind: 'cloud_chat',
+        projectId: 'workspace-1',
+        taskId: 'task-1',
+        chatId: 'chat-1',
+      },
+      chatTitle: 'Billing fix',
+      projectLabel: 'Payments',
+    };
+    expect(parseChatAgentSentInfo(cloudInfo)).toEqual(cloudInfo);
+    for (const extra of [{ botId: 'app_advisor' }, { projectType: 'code' }]) {
+      expect(
+        parseChatAgentSentInfo({
+          ...cloudInfo,
+          sender: { ...cloudInfo.sender, ...extra },
+        }),
+      ).toBeUndefined();
+    }
+    expect(
+      parseChatAgentSentInfo({
+        ...cloudInfo,
+        sender: { ...cloudInfo.sender, chatId: '' },
+      }),
+    ).toBeUndefined();
+  });
+
   it('adds agent-sent metadata to message, view, and queued display contracts', () => {
     const agentSent: ChatAgentSentInfo = {
       sender: {

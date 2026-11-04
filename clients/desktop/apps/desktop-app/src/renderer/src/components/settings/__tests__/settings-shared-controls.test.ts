@@ -7,7 +7,7 @@ import { join, relative } from 'node:path';
 // Desktop Settings pages draw their controls with the shared parts, so a
 // checkbox, a radio, a disclosure and a text area look the same on every
 // page and on the web: `Checkbox` / `Radio` (neutral marks, no accent),
-// `AdvancedDisclosure`, and `TextArea` / `SettingsTextArea`. Rows keep the
+// `Disclosure`, and `TextArea` / `SettingsTextArea`. Rows keep the
 // settings row height (`min-h-10`, 64px with the group's row inset), so no
 // page draws the dense 28px row (`min-h-7`) inside a settings group. Dialog
 // actions go in `DialogModal`'s footer, never `topRightActions`.
@@ -41,7 +41,7 @@ const RULES: readonly { readonly pattern: RegExp; readonly use: string }[] = [
     pattern: /SETTINGS_CHECK_INPUT_CLASS_NAME/,
     use: 'the shared Checkbox or Radio',
   },
-  { pattern: /<details(?=[\s>])/, use: 'AdvancedDisclosure' },
+  { pattern: /<details(?=[\s>])/, use: 'the shared Disclosure' },
   { pattern: /<textarea(?=[\s>])/, use: 'TextArea or SettingsTextArea' },
   { pattern: /\bmin-h-7\b/, use: 'the settings row height (min-h-10)' },
   // A dialog's actions sit in its footer at the bottom right, never beside

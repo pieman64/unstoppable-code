@@ -5,7 +5,6 @@ import {
   PIPELINE_EDITOR_WORKTREE_ID,
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
-import { existsSync } from 'node:fs';
 import type {
   CodeGraphCommunityRecord,
   CodeGraphCustomLanguagesReport,
@@ -17,7 +16,6 @@ import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-gra
 import { getMergeBase, isSafeGitRef } from '@canopy/code-graph/git/diff';
 import { type ChangedSymbol } from '@canopy/code-graph/impact/changed-symbols';
 import type { ChangeImpactHit } from '@canopy/code-graph/impact/change-impact';
-import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { isRecord } from '../lib/type-guards';
 import {
   CODE_GRAPH_CHANGE_DETAIL_MAX_ITEMS,
@@ -58,7 +56,6 @@ import {
   type DetectChangedSymbolsResult,
   type GetReviewContextRequest,
   type GetReviewContextResult,
-  collectCodeGraphDerivedBuildWarnings,
 } from '@canopy/desktop-shared/types/code-graph-tools';
 import { CODE_GRAPH_AGENT_BUILD_WAIT_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import {
@@ -69,20 +66,27 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
-  CodeGraphWorkerBuildError,
   getCodeGraphSourceBuildState,
   requestCodeGraphSummaryRepair,
 } from '../code-graph/build-runner';
 import {
-  runCodeGraphWorkerRead,
   CodeGraphReadFailureError,
   CodeGraphWorkerReadError,
   codeGraphReadFailure,
   type CodeGraphReadCall,
   type CodeGraphWorkerReadResult,
-  type CodeGraphWorkerReadTask,
 } from '../code-graph/read-runner';
-import { runWorktreeCodeGraphBuild } from '../lib/code-graph-build-service';
+import type { CodeGraphServiceRead } from '@canopy/code-graph/host/read-service';
+import {
+  readWorktreeCodeGraph,
+  readWorktreeCodeGraphStatus,
+} from '../code-graph/graph-reads';
+import { buildWorktreeCodeGraphForAgent } from '../code-graph/graph-builds';
+import {
+  codeGraphBuildRefusalOf,
+  type CodeGraphBuildRefusal,
+} from '@canopy/core-runtime/node/code-graph';
+import type { WorkerCodeGraphBuildFailure } from '@canopy/protocol/canopy-core';
 
 export interface CodeGraphToolRuntime {
   projectId: string;
@@ -102,10 +106,10 @@ class AgentBuildWaitTimeoutError extends Error {
   }
 }
 
-async function waitForAgentBuild(
-  build: ReturnType<typeof runWorktreeCodeGraphBuild>,
+async function waitForAgentBuild<T>(
+  build: Promise<T>,
   timeoutMs = CODE_GRAPH_AGENT_BUILD_WAIT_TIMEOUT_MS,
-): Promise<Awaited<ReturnType<typeof runWorktreeCodeGraphBuild>>> {
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(
@@ -281,10 +285,17 @@ async function resolveBaseRef(
   return { baseRef: 'HEAD' };
 }
 
-function hasCodeGraph(runtime: CodeGraphToolRuntime): boolean {
-  return existsSync(
-    getWorktreeCodeGraphDbPath(runtime.projectId, runtime.worktreeId),
-  );
+/**
+ * Whether the worker reports a graph for the worktree. A status read that
+ * fails proceeds to the read, which reports its own failure honestly.
+ */
+async function hasCodeGraph(runtime: CodeGraphToolRuntime): Promise<boolean> {
+  try {
+    const status = await readWorktreeCodeGraphStatus(runtime);
+    return status.presence === 'present';
+  } catch {
+    return true;
+  }
 }
 
 async function runReadTask(
@@ -298,18 +309,9 @@ async function runReadTask(
     | 'detect-changed'
     | 'compare-impact'
     | 'review-context',
-  task: CodeGraphWorkerReadTask,
+  read: CodeGraphServiceRead,
 ): Promise<CodeGraphWorkerReadResult> {
-  const response = await runCodeGraphWorkerRead({
-    key: `${runtime.projectId}/${runtime.worktreeId}`,
-    kind,
-    request: {
-      dbPath: getWorktreeCodeGraphDbPath(runtime.projectId, runtime.worktreeId),
-      task,
-    },
-  });
-  if (!response.ok) throw new CodeGraphReadFailureError(response.code);
-  return response.result;
+  return (await readWorktreeCodeGraph(runtime, kind, read)).result;
 }
 
 async function runReadCalls(
@@ -952,6 +954,7 @@ function unavailableContext(
 
 function pendingContext(
   runtime: CodeGraphToolRuntime,
+  hasGraph: boolean,
   lastBuildAt: number | null = null,
 ): CodeGraphContextResult {
   const buildState = getCodeGraphSourceBuildState(
@@ -964,7 +967,7 @@ function pendingContext(
     status: 'ok',
     snapshotState: 'summary-pending',
     buildState,
-    hasGraph: hasCodeGraph(runtime),
+    hasGraph,
     lastBuildAt,
     suggestedNextTools: ['GetCodeGraphContext', 'BuildOrUpdateCodeGraph'],
   };
@@ -1077,7 +1080,7 @@ export async function getCodeGraphContext(
   );
   if (rejection !== null) return unavailableContext(rejection);
   const key = `${runtime.projectId}/${runtime.worktreeId}`;
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     const buildState = getCodeGraphSourceBuildState(key);
     return {
       ...unavailableContext(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS),
@@ -1086,7 +1089,7 @@ export async function getCodeGraphContext(
   }
   try {
     const result = await runReadTask(runtime, 'context', {
-      kind: 'readonly-summary',
+      kind: 'summary',
     });
     if (result.kind !== 'readonly-summary')
       throw new CodeGraphReadFailureError('invalid-response');
@@ -1103,7 +1106,11 @@ export async function getCodeGraphContext(
     if (read.state === 'pending' && read.reason === 'build-incomplete') {
       // No build or seed has committed, so a repair has nothing to publish.
       // Unless a build is already under way, only a build makes this ready.
-      const pending = pendingContext(runtime, read.observed.lastBuildAt);
+      const pending = pendingContext(
+        runtime,
+        await hasCodeGraph(runtime),
+        read.observed.lastBuildAt,
+      );
       return pending.buildState === 'idle'
         ? {
             ...pending,
@@ -1126,7 +1133,11 @@ export async function getCodeGraphContext(
         ),
       }).catch(() => undefined);
       return {
-        ...pendingContext(runtime, read.observed.lastBuildAt),
+        ...pendingContext(
+          runtime,
+          await hasCodeGraph(runtime),
+          read.observed.lastBuildAt,
+        ),
         diagnostics: read.diagnostics,
       };
     }
@@ -1178,7 +1189,7 @@ export async function getCodeGraphContext(
       snapshotState: 'read-error',
       buildState: getCodeGraphSourceBuildState(key),
       readFailure: codeGraphReadFailure(error),
-      hasGraph: hasCodeGraph(runtime),
+      hasGraph: await hasCodeGraph(runtime),
     };
   }
 }
@@ -1207,28 +1218,18 @@ export async function buildOrUpdateCodeGraph(
   }
 
   try {
-    // Builds and request-time reads both run in utility processes. WAL keeps
-    // a read worker's snapshot consistent while this build commits, without
-    // putting synchronous SQLite or graph traversal on Electron main.
-    const response = await waitForAgentBuild(
-      runWorktreeCodeGraphBuild({
+    // The build runs through `worker.codeGraph.build` in a build host; reads
+    // run in read hosts. WAL keeps a read host's snapshot consistent while
+    // this build commits.
+    const result = await waitForAgentBuild(
+      buildWorktreeCodeGraphForAgent({
         projectId: runtime.projectId,
         worktreeId: runtime.worktreeId,
-        reason: 'tool-request',
-        options: { verifyContent: true },
       }),
     );
-    if (!response.ok) {
-      if (response.message === CODE_GRAPH_UNAVAILABLE_MESSAGE) {
-        return unavailableBuild(CODE_GRAPH_UNAVAILABLE_MESSAGE);
-      }
-      return errorBuild(`Failed to build code graph: ${response.message}`);
-    }
-
-    const result = response.result;
     const buildResult: CodeGraphBuildToolResult = {
       status: 'ok',
-      summary: `Built code graph: ${result.filesParsed} parsed, ${result.filesUnchanged} unchanged, ${result.filesRemoved} removed${result.parseFailures > 0 ? `, ${result.parseFailures} parse failure(s)` : ''} in ${result.durationMs}ms.${result.derivedDeferred === true ? ' Derived analysis (communities, flows) is still running; until it completes, those results are reported as stale.' : ''}`,
+      summary: `Built code graph: ${result.filesParsed} parsed, ${result.filesUnchanged} unchanged, ${result.filesRemoved} removed${result.parseFailures > 0 ? `, ${result.parseFailures} parse failure(s)` : ''} in ${result.durationMs}ms.${result.derivedPending ? ' Derived analysis (communities, flows) is still running; until it completes, those results are reported as stale.' : ''}`,
       truncated: false,
       suggestedNextTools: ['GetCodeGraphContext', 'QueryCodeGraph'],
       filesScanned: result.filesScanned,
@@ -1239,41 +1240,59 @@ export async function buildOrUpdateCodeGraph(
       parseFailures: result.parseFailures,
       durationMs: result.durationMs,
     };
-    if (result.lastBuildAt !== undefined) {
-      buildResult.lastBuildAt = result.lastBuildAt;
+    if (result.lastBuildAt !== null) {
+      buildResult.lastBuildAt = Date.parse(result.lastBuildAt);
     }
-    if (result.customLanguages !== null) {
-      buildResult.customLanguageWarnings =
-        result.customLanguages.diagnostics.map((diagnostic) =>
+    if (result.customLanguageDiagnostics !== null) {
+      buildResult.customLanguageWarnings = result.customLanguageDiagnostics.map(
+        (diagnostic) =>
           diagnostic.entryId === null
             ? diagnostic.message
             : `${diagnostic.entryId}: ${diagnostic.message}`,
-        );
-    }
-    if (result.derived.length > 0) {
-      buildResult.derivedWarnings = collectCodeGraphDerivedBuildWarnings(
-        result.derived,
       );
+    }
+    if (result.derivedWarnings !== null) {
+      buildResult.derivedWarnings = result.derivedWarnings;
     }
     return buildResult;
   } catch (error) {
     if (error instanceof AgentBuildWaitTimeoutError) {
       return errorBuild(error.message);
     }
-    if (error instanceof CodeGraphWorkerBuildError) {
-      if (error.reason === 'unavailable') {
-        return unavailableBuild(CODE_GRAPH_UNAVAILABLE_MESSAGE);
-      }
-      // Names the cause (timeout / canceled / worker-exit / spawn-failed /
-      // post-failed / malformed-response) via `error.reason` so the agent
-      // (and anyone reading the audit trail) can distinguish e.g. a
-      // user-driven cancel from a genuine build failure.
-      return errorBuild(
-        `Failed to build code graph (${error.reason}): ${error.message}`,
-      );
+    const refusal = codeGraphBuildRefusalOf(error);
+    if (refusal === null) {
+      return errorBuild(`Failed to build code graph: ${errorMessage(error)}`);
     }
-    return errorBuild(`Failed to build code graph: ${errorMessage(error)}`);
+    if (refusal.code === 'worker.codeGraph.unavailable') {
+      return unavailableBuild(CODE_GRAPH_UNAVAILABLE_MESSAGE);
+    }
+    // Names the cause (timeout / canceled / worker-exit / spawn-failed /
+    // post-failed / malformed-response) so the agent (and anyone reading the
+    // audit trail) can tell e.g. a user-driven cancel from a genuine build
+    // failure. The build host's own message stays with the worker.
+    const cause = buildRefusalCause(refusal);
+    return errorBuild(
+      cause === null
+        ? `Failed to build code graph: ${refusal.message}`
+        : `Failed to build code graph (${cause}): ${refusal.message}`,
+    );
   }
+}
+
+const BUILD_FAILURE_CAUSES: Partial<
+  Record<WorkerCodeGraphBuildFailure, string>
+> = {
+  worker_exit: 'worker-exit',
+  spawn_failed: 'spawn-failed',
+  post_failed: 'post-failed',
+  malformed_response: 'malformed-response',
+};
+
+function buildRefusalCause(refusal: CodeGraphBuildRefusal): string | null {
+  if (refusal.code === 'worker.codeGraph.buildTimedOut') return 'timeout';
+  if (refusal.code === 'worker.codeGraph.buildCanceled') return 'canceled';
+  if (refusal.failure === undefined) return null;
+  return BUILD_FAILURE_CAUSES[refusal.failure] ?? null;
 }
 
 function isPathResult(value: unknown): value is CodeGraphPathResult {
@@ -1361,7 +1380,7 @@ export async function queryCodeGraph(
     };
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableQuery(
       request.mode,
       target,
@@ -1720,7 +1739,7 @@ export async function searchCodeGraph(
     return unavailableSearch(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableSearch(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -1785,7 +1804,7 @@ export async function explainCodeSymbol(
     return unavailableExplain(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableExplain(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -1904,7 +1923,7 @@ export async function getImpactRadius(
     return unavailableImpact(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableImpact(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -1993,7 +2012,7 @@ export async function detectChangedSymbols(
     return unavailableDetect(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableDetect(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -2023,7 +2042,6 @@ export async function detectChangedSymbols(
     const result = await runReadTask(runtime, 'detect-changed', {
       kind: 'detect-changed',
       repoId: repository.repoId,
-      rootPath: repository.rootPath,
       baseRef,
     });
     if (result.kind !== 'detect-changed') {
@@ -2079,7 +2097,7 @@ export async function compareChangeImpact(
     return unavailableCompare(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableCompare(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -2116,10 +2134,8 @@ export async function compareChangeImpact(
     const result = await runReadTask(runtime, 'compare-impact', {
       kind: 'change-impact',
       repoId: repository.repoId,
-      rootPath: repository.rootPath,
       baseRef,
       maxDepth,
-      resourcesDir: getBundledCodeGraphDir(),
     });
     if (result.kind !== 'change-impact') {
       throw new Error('Code graph read worker returned an unexpected result');
@@ -2213,7 +2229,7 @@ export async function getReviewContext(
     return unavailableReview(rejection);
   }
 
-  if (!hasCodeGraph(runtime)) {
+  if (!(await hasCodeGraph(runtime))) {
     return unavailableReview(NO_GRAPH_MESSAGE, NO_GRAPH_SUGGESTIONS);
   }
 
@@ -2244,9 +2260,7 @@ export async function getReviewContext(
     const result = await runReadTask(runtime, 'review-context', {
       kind: 'change-impact',
       repoId: repository.repoId,
-      rootPath: repository.rootPath,
       baseRef,
-      resourcesDir: getBundledCodeGraphDir(),
     });
     if (result.kind !== 'change-impact') {
       throw new Error('Code graph read worker returned an unexpected result');

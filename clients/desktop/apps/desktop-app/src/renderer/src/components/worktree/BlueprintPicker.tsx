@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import type { DesktopBlueprintCatalogEntry } from '@canopy/desktop-shared/types';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER } from '@canopy/protocol';
+import { StartingPointChip } from '@canopy/ui-shared/components';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
 import { FormSectionHeading } from './FormSectionHeading';
 
@@ -38,13 +39,8 @@ export interface BlueprintPickerProps {
  * onboarding role — leaving that read out is what keeps it from drifting back
  * into a preselect.
  *
- * These are toggle buttons rather than radios because the selection is
- * optional and clicking the active chip clears it, which a radio group cannot
- * express.
- *
- * Selected state uses `inset-ring-*` rather than a `border-<color>` utility:
- * `canopy-tokens.css` declares an unlayered `* { border-color: var(--line-base) }`
- * that makes every border-color utility inert (CAN-2734).
+ * Each chip is the shared `StartingPointChip`, the same toggle the web
+ * Add workspace dialog renders.
  */
 export function BlueprintPicker({
   blueprints,
@@ -84,22 +80,17 @@ export function BlueprintPicker({
             {visible.map((blueprint) => {
               const active = selectedExternalId === blueprint.externalId;
               return (
-                <button
+                <StartingPointChip
                   key={blueprint.externalId}
-                  type="button"
-                  data-testid={`add-workspace-blueprint-${blueprint.externalId}`}
-                  aria-pressed={active}
+                  name={blueprint.document.name}
+                  description={blueprint.document.description}
+                  selected={active}
                   disabled={disabled}
-                  title={blueprint.document.description}
-                  onClick={() => onSelect(active ? null : blueprint.externalId)}
-                  className={`focus-ring inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs transition-colors disabled:opacity-60 ${
-                    active
-                      ? 'bg-secondary fg-primary inset-ring-1 inset-ring-line-accent'
-                      : 'bg-secondary/40 fg-secondary hover:fg-primary'
-                  }`}
-                >
-                  {blueprint.document.name}
-                </button>
+                  onToggle={() =>
+                    onSelect(active ? null : blueprint.externalId)
+                  }
+                  data-testid={`add-workspace-blueprint-${blueprint.externalId}`}
+                />
               );
             })}
           </div>
@@ -118,22 +109,15 @@ export function BlueprintPicker({
                   );
                   const active = selectedExternalId === selectionId;
                   return (
-                    <button
+                    <StartingPointChip
                       key={template.externalId}
-                      type="button"
-                      aria-pressed={active}
+                      name={template.name}
+                      description={template.description}
+                      selected={active}
                       disabled={disabled}
-                      title={template.description}
-                      onClick={() => onSelect(active ? null : selectionId)}
+                      onToggle={() => onSelect(active ? null : selectionId)}
                       data-testid={`add-workspace-shared-template-${template.externalId}`}
-                      className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors disabled:opacity-60 ${
-                        active
-                          ? 'bg-secondary fg-primary inset-ring-1 inset-ring-line-accent'
-                          : 'bg-secondary/40 fg-secondary hover:fg-primary'
-                      }`}
-                    >
-                      {template.name}
-                    </button>
+                    />
                   );
                 })}
               </div>

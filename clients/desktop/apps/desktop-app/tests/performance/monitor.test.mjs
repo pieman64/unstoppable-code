@@ -2141,17 +2141,40 @@ async function loafRendererPage() {
   return { page, observers };
 }
 
+/**
+ * A main process with a 60 Hz external display at x >= 0 and a 120 Hz panel
+ * to its left; the window opens on the external one.
+ */
 function displayMainProcess() {
+  const external = {
+    id: 2,
+    displayFrequency: 60,
+    scaleFactor: 1,
+    workArea: { x: 0, y: 0, width: 2560, height: 1440 },
+  };
+  const panel = {
+    id: 1,
+    displayFrequency: 120,
+    scaleFactor: 2,
+    workArea: { x: -1728, y: 0, width: 1728, height: 1084 },
+  };
+  let bounds = { x: 100, y: 100, width: 1400, height: 900 };
+  const window = {
+    getBounds: () => bounds,
+    setBounds: (next) => {
+      bounds = next;
+    },
+  };
   const context = createContext({
     performance: { now: () => 1 },
+    Math,
     electron: {
       app: { getAppMetrics: () => [] },
-      BrowserWindow: {
-        getAllWindows: () => [{ getBounds: () => ({ x: 0, y: 0 }) }],
-      },
+      BrowserWindow: { getAllWindows: () => [window] },
       screen: {
-        getDisplayMatching: () => ({ displayFrequency: 120, scaleFactor: 2 }),
-        getPrimaryDisplay: () => ({ displayFrequency: 60, scaleFactor: 1 }),
+        getAllDisplays: () => [external, panel],
+        getDisplayMatching: (rect) => (rect.x < 0 ? panel : external),
+        getPrimaryDisplay: () => external,
       },
     },
   });
@@ -2197,10 +2220,18 @@ test('frame budgets are opt-in: Long Animation Frames and the refresh rate are r
     ],
   });
   const { raw, summary } = await monitor.stop();
+  // The window moved, at its own size, from the 60 Hz display to the
+  // 120 Hz one before the rate was read.
   assert.deepEqual(plain(raw.display), {
     source: 'electron-screen',
     refreshRateHz: 120,
     scaleFactor: 2,
+    placement: {
+      moved: true,
+      fromRefreshRateHz: 60,
+      refreshRateHz: 120,
+      rates: [60, 120],
+    },
   });
   assert.equal(raw.renderer.longAnimationFrameObserverAvailable, true);
   assert.equal(raw.renderer.longAnimationFrames.length, 1);

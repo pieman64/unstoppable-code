@@ -1,10 +1,17 @@
 import { memo, type JSX } from 'react';
 import { subordinateSteeringRequest } from '@canopy/agent-transcript';
-import type { AgentSentInfo, ToolMessageSender } from '@canopy/protocol/portal';
+import type {
+  AgentSentInfo,
+  ChatWatcherFiredInfo,
+  ToolMessageSender,
+} from '@canopy/protocol/portal';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { AgentSentMarker } from './AgentSentMarker';
 import { SubagentIcon } from './subagents/common/SubagentIcon';
-import { watcherFiredPresentation } from './WatcherFiredTitle';
+import {
+  watcherFiredPresentation,
+  type WatcherFiredPresentation,
+} from './WatcherFiredTitle';
 import {
   SUBAGENT_STEERING_REQUEST_LABEL,
   subagentSteeringRequestFromLabel,
@@ -84,17 +91,19 @@ export function steeringRequestPresentation(
 }
 
 /**
- * How a bubble shows a host message that reached the chat as its own text: a
- * delegate's steering request or a fired watcher, each as its readable part
- * under its title on the info tint. Undefined for an ordinary message. A
- * message with a trusted sender is never a watcher; see
+ * How a bubble shows a host message: a delegate's steering request, or a
+ * fired watcher (see {@link watcherFiredPresentation}), each as its readable
+ * part, under its title on the info tint when the host vouches for it.
+ * `watcherFired` is the host's marker on the message. Undefined for an
+ * ordinary message. A message with a trusted sender is never a watcher; see
  * {@link steeringRequestPresentation}.
  */
 export function hostMessagePresentation(
   text: string,
   agentSent?: AgentSentInfo,
   layout: 'block' | 'inline' = 'block',
-): SteeringRequestPresentation | undefined {
+  watcherFired?: ChatWatcherFiredInfo,
+): SteeringRequestPresentation | WatcherFiredPresentation | undefined {
   // Only a managed delegate's recorded request keeps a text-derived
   // presentation; a Canopy chat or an external agent controls its own text.
   if (agentSent)
@@ -103,6 +112,6 @@ export function hostMessagePresentation(
       : undefined;
   return (
     steeringRequestPresentation(text, undefined, layout) ??
-    watcherFiredPresentation(text, layout)
+    watcherFiredPresentation(text, layout, watcherFired)
   );
 }

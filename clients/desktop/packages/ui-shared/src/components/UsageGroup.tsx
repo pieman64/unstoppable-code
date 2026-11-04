@@ -6,11 +6,12 @@ import { ModelProviderIcon } from './ModelProviderIcon';
 import { NoticeShapeProvider } from './Notice';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import { Button } from './Button';
-import { LinearProgress } from './LinearProgress';
+import { ProgressBar, type ProgressTone } from './Progress';
 import { RefreshSpinner } from './RefreshSpinner';
 import { Tooltip } from './Tooltip';
 import { formatCreditsLeft } from './UsageIndicator';
 import { formatUsagePercent } from './usage-indicator-meter';
+import { Heading } from './Heading';
 
 /** One displayable plan limit window, as every usage surface receives it. */
 export interface UsageLimitCard {
@@ -67,10 +68,10 @@ export function usageLevel(usedPercent: number): UsageLevel {
   return 'normal';
 }
 
-const METER_BAR_CLASS: Record<UsageLevel, string> = {
-  normal: 'bg-fg-tertiary',
-  warning: 'bg-warning',
-  danger: 'bg-destructive',
+const METER_TONE: Record<UsageLevel, ProgressTone> = {
+  normal: 'neutral',
+  warning: 'warning',
+  danger: 'destructive',
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -207,12 +208,13 @@ function UsageLevelMeter({
   return (
     <>
       <span className="relative w-14 shrink-0 @md/usage-group:w-33">
-        <LinearProgress
-          percentage={usedPercent}
-          barColor={METER_BAR_CLASS[level]}
-          height="h-1"
+        <ProgressBar
+          value={usedPercent}
+          tone={METER_TONE[level]}
+          size="compact"
           label={label}
           valueText={valueText}
+          hideLabel
         />
         {elapsedPercent === undefined ? null : (
           <svg
@@ -506,30 +508,31 @@ export function UsageGroupHeading({
   // The mark is a flex item centred on the line box, not inline text, so it
   // never sits on the baseline below the words' centre.
   return (
-    <h2
-      id={headingId}
-      className="mb-3 flex h-6 min-w-0 items-center gap-1.5 px-0.5 text-xs fg-secondary"
-    >
-      {provider ? (
-        <ModelProviderIcon
-          provider={provider}
-          width={14}
-          height={14}
-          aria-hidden="true"
-          className="block shrink-0 fg-primary"
-          data-testid="usage-group-provider-mark"
-        />
-      ) : null}
-      <span className="min-w-0 truncate">
-        <span className="font-medium fg-primary">{title}</span>
-        {plan ? (
-          <>
-            <UsageSeparator />
-            <span data-testid={planTestId}>{plan}</span>
-          </>
-        ) : null}
-      </span>
-    </h2>
+    <div className="mb-3 flex h-6 min-w-0 items-center px-0.5">
+      <Heading level={2} variant="label" id={headingId} className="min-w-0">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {provider ? (
+            <ModelProviderIcon
+              provider={provider}
+              width={14}
+              height={14}
+              aria-hidden="true"
+              className="block shrink-0 fg-primary"
+              data-testid="usage-group-provider-mark"
+            />
+          ) : null}
+          <span className="min-w-0 truncate font-normal">
+            <span className="font-medium fg-primary">{title}</span>
+            {plan ? (
+              <>
+                <UsageSeparator />
+                <span data-testid={planTestId}>{plan}</span>
+              </>
+            ) : null}
+          </span>
+        </span>
+      </Heading>
+    </div>
   );
 }
 

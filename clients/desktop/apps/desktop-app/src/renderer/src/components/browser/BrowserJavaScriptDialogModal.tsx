@@ -9,7 +9,7 @@ import {
 import type { BrowserJavaScriptDialog } from '@canopy/desktop-shared/types/browser';
 import { Button } from '@/components/shared/Button';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { ErrorBanner, TextInput } from '@canopy/ui-shared/components';
+import { ErrorBanner, TextInput, Heading } from '@canopy/ui-shared/components';
 
 interface BrowserJavaScriptDialogModalProps {
   browserId: string;
@@ -135,13 +135,15 @@ export function BrowserJavaScriptDialogModal({
         onSubmit={handleSubmit}
       >
         <div className="border-b px-5 py-4">
-          <h2
+          <Heading
+            level={2}
+            variant="title"
+            truncate
             id={`browser-dialog-title-${dialog.id}`}
-            className="truncate text-s font-semibold fg-primary"
             title={dialog.url}
           >
             {dialogOrigin(dialog.url)}
-          </h2>
+          </Heading>
         </div>
         <div className="flex flex-col gap-4 px-5 py-4">
           {/* The page writes this message, so it is blocked like the page. */}

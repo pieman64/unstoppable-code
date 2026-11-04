@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import { ScriptActionsReview } from '@canopy/ui-app/script-actions';
 import { useChatStore } from '@/stores/chatStore';
 import { useDesktopScriptActionsReviewProps } from './desktopScriptActions';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface ScriptActionsSettingsSectionProps {
   readonly projectId: string;
@@ -34,7 +35,9 @@ export function ScriptActionsSettingsSection({
         data-testid="script-actions-settings-no-worktree"
       >
         {surface === 'card' && (
-          <h3 className="text-s font-medium fg-primary">Detected scripts</h3>
+          <Heading level={3} variant="title">
+            Detected scripts
+          </Heading>
         )}
         <p className="text-xs fg-secondary">
           Open a worktree in this project to review the scripts found in it.

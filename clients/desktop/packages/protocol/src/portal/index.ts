@@ -98,6 +98,7 @@ import type {
   ChatTurnPhase,
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
+  SettingsHeldChange,
 } from './turn-phase';
 import type { OrgProjectPlaceholderState } from '../org-projects';
 /**
@@ -114,6 +115,10 @@ export type {
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
   SettingsHeldChange,
+} from './turn-phase';
+export {
+  SETTINGS_HELD_CHANGES,
+  orderedSettingsHeldChanges,
 } from './turn-phase';
 export {
   parseInputDeliveryViews,
@@ -9097,6 +9102,8 @@ export interface PortalQueuedMessage {
   turnPhase?: ChatTurnPhase;
   /** Agent-sender display attribution; never includes hidden instructions. */
   agentSent?: AgentSentInfo;
+  /** Host-owned marker for a queued message a fired watcher posted. */
+  watcherFired?: ChatWatcherFiredInfo;
   lastErrorMessage?: string;
   /**
    * This row's local delivery failed or is uncertain, so its force action
@@ -9123,6 +9130,12 @@ export interface PortalQueuedMessage {
   steerBlockedByCapabilityChange?: boolean;
   /** Transient: why the host is holding this row. Absent on older hosts. */
   waitingReason?: QueuedMessageWaitingReason;
+  /**
+   * Transient: sending this row now would wait for background work, because
+   * these settings differ from the ones it runs with; empty when the host
+   * cannot name them. Absent when it would not wait or the host cannot tell.
+   */
+  restartHeldChanges?: readonly SettingsHeldChange[];
   /**
    * Host user-message id this accepted queue row stands for (REG-2981).
    *

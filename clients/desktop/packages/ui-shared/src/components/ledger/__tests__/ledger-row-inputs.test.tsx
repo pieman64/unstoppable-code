@@ -317,7 +317,6 @@ describe('LedgerActorAvatar', () => {
     const self = byTestId('ledger-actor-avatar');
     expect(self.textContent).toBe('');
     expect(self.querySelector('svg')).not.toBeNull();
-    expect(self.getAttribute('style')).toContain('background-color');
 
     act(() =>
       root.render(
@@ -325,7 +324,7 @@ describe('LedgerActorAvatar', () => {
       ),
     );
     expect(byTestId('ledger-actor-avatar').querySelector('svg')).not.toBeNull();
-    expect(byTestId('ledger-actor-avatar').className).toContain('bg-secondary');
+    expect(byTestId('ledger-actor-avatar').textContent).toBe('');
   });
 });
 
@@ -442,14 +441,17 @@ describe('LedgerComposerPrompt', () => {
   });
 
   it('explains a disabled prompt and changes the avatar size by density', () => {
+    const onOpen = jest.fn();
     renderPrompt({
       disabledReason: 'Open a project or task to add it.',
+      onOpen,
     });
     const prompt = byTestId('ledger-composer-prompt');
-    expect(prompt).toHaveProperty('disabled', true);
-    expect(prompt.getAttribute('title')).toBe(
-      'Open a project or task to add it.',
-    );
+    // Focusable so the shared tooltip can explain it, but inert.
+    expect(prompt.getAttribute('aria-disabled')).toBe('true');
+    expect(prompt.hasAttribute('title')).toBe(false);
+    act(() => prompt.click());
+    expect(onOpen).not.toHaveBeenCalled();
     const describedBy = prompt.getAttribute('aria-describedby');
     expect(document.getElementById(describedBy ?? '')?.textContent).toBe(
       'Open a project or task to add it.',
@@ -587,14 +589,14 @@ describe('LedgerEntryForm shared fields', () => {
       ),
     );
 
-    const fieldIds = [
-      'ledger-entry-form-title',
-      'ledger-entry-form-content',
-      'ledger-file-search',
-    ];
+    const fieldIds = ['ledger-entry-form-title', 'ledger-entry-form-content'];
     for (const fieldId of fieldIds) {
       expect(byTestId(fieldId).className).toContain('shadow-field');
     }
+    // The file search is the shared SearchField: its box carries the edge.
+    expect(
+      byTestId('ledger-file-search').closest('[data-search-field]')?.className,
+    ).toContain('shadow-field');
     const highlight = document.querySelector(
       '[data-testid="ledger-entry-form-highlight"]',
     );

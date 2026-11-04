@@ -10,6 +10,7 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   ErrorState,
+  Heading,
   SettingsSelect,
 } from '@canopy/ui-shared/components';
 import { ChartErrorBoundary } from '@/components/shared/ChartErrorBoundary';
@@ -307,7 +308,9 @@ export function MetricsChart({
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-s font-semibold fg-primary">{title}</h2>
+          <Heading level={2} variant="title">
+            {title}
+          </Heading>
           <p className="text-xs fg-secondary">
             {mode === 'counts'
               ? countView.description

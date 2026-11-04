@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type JSX } from 'react';
 import {
   ContinueSection,
+  useContinueAttentionPaging,
   buildContinueSectionModel,
   countContinueAttentionByKind,
   resolveLastViewedNames,
@@ -618,11 +619,14 @@ export function HomeContinueSection({
     [interruptedVisible, summary, projects, worktreeName],
   );
 
+  // Shared with the section so App Advisor sees the rows on screen.
+  const attentionPaging = useContinueAttentionPaging();
   const model = buildContinueSectionModel({
     attention,
     lastViewed,
     interruptedVisible,
     interruptedTarget: interruptedSession?.mergeTarget ?? null,
+    shownAttentionRows: attentionPaging.shownRows,
   });
 
   return (
@@ -633,6 +637,7 @@ export function HomeContinueSection({
         onOpenAttention={openAttentionTarget}
         lastViewed={lastViewed}
         onOpenLastViewed={openLastViewed}
+        attentionPaging={attentionPaging}
         interrupted={
           interruptedVisible
             ? {

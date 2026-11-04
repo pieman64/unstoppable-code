@@ -1506,7 +1506,13 @@ function readRepairingWorktrees(
     );
     if (filteredWorktrees === worktrees)
       return { worktrees, authority, ...named };
-    if (options?.persistRemovalCleanup !== false) {
+    if (
+      options?.persistRemovalCleanup !== false &&
+      // Re-read after closure so cleanup cannot overwrite a newer list.
+      !deferUntilW5ReadViewCloses(() =>
+        readWorkspaceWorktreesDetailed(workspaceId, options),
+      )
+    ) {
       await writeWorkspaceWorktreesFile(
         workspaceId,
         filteredWorktrees,

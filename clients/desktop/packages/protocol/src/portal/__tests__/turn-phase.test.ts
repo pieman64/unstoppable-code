@@ -1,3 +1,4 @@
+import { orderedSettingsHeldChanges } from '../index';
 import type {
   ChatTurnPhase,
   PortalQueuedMessage,
@@ -50,5 +51,21 @@ describe('chat turn phase contract', () => {
     expect(phases).toEqual(['idle', 'background', 'foreground']);
     expect(portalRow.retryBlockedReason).toBe('insufficient_credits');
     expect(typeChecks).toEqual([true, true, true, true, true, true]);
+  });
+});
+
+describe('settings-held change names', () => {
+  it('orders known names for display, once each, and drops names it does not know', () => {
+    expect(
+      orderedSettingsHeldChanges([
+        'organization',
+        'reasoning_mode',
+        'plugins',
+        'thinking_level',
+        'model',
+        'plugins',
+      ]),
+    ).toEqual(['model', 'thinking_level', 'plugins', 'organization']);
+    expect(orderedSettingsHeldChanges([])).toEqual([]);
   });
 });

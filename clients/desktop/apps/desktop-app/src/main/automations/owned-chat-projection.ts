@@ -27,6 +27,7 @@ export function projectOwnedChatAutomation(
     stored.data.content,
     action.inputs ?? {},
     isCoworkWorkspace,
+    action.modelAliasPreferences,
   );
   return chatAction
     ? {

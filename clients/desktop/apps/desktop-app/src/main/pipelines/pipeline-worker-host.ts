@@ -1,13 +1,17 @@
 import {
   PipelineDrainTimeoutError,
+  pipelineCheckpointFailedError,
+  pipelineControlFailedError,
   pipelineExecutionNotFoundError,
   pipelineLaunchUnavailableError,
   pipelineStartFailedError,
+  type PipelineControlRequest,
   type PipelineExecutionObserver,
   type PipelineExecutionWorker,
 } from '@canopy/core-runtime/node/pipeline';
 import {
   WORKER_PIPELINE_ERROR_MAX_LENGTH,
+  type WorkerPipelineControlOutcome,
   type WorkerPipelineExecution,
 } from '@canopy/protocol/canopy-core';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
@@ -15,8 +19,14 @@ import {
   cancelPipelineExecution,
   executePipeline,
   loadExecutionState,
+  rerunPipelineExecution,
+  resumePipeline,
+  retryMatrixJobExecution,
+  retryPipelineExecution,
+  type ExecutionEvent,
   type ExecutionHandle,
   type ExecutionOptions,
+  type StepOutputEvent,
 } from '@canopy/desktop-shared/node/pipelines/executor';
 import { requestExecutionCancellation } from '@canopy/desktop-shared/node/pipelines/executor/execution-state';
 import type { ExecutionRuntime } from '@canopy/desktop-shared/node/pipelines/executor/types';
@@ -24,7 +34,12 @@ import type {
   ExecutionState,
   Pipeline,
 } from '@canopy/desktop-shared/types/pipeline';
-import { getActiveExecutionHandle } from './pipeline-execution-registry';
+import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
+import {
+  getActiveExecutionHandle,
+  getActivePipelineExecutionCount,
+  pauseAllActivePipelineExecutions,
+} from './pipeline-execution-registry';
 
 /*
  * The desktop's local pipeline worker (CAN-4140): `worker.pipeline.execution.*`
@@ -40,6 +55,23 @@ export interface PipelineLaunch {
   readonly pipeline: Pipeline;
   readonly options: ExecutionOptions;
 }
+
+/** What one recovery control did on the host. */
+export interface PipelineControlSettlement {
+  readonly outcome: WorkerPipelineControlOutcome;
+  readonly state: ExecutionState;
+}
+
+/**
+ * What core prepared for one recovery control (CAN-4141): the host side of
+ * the existing entry point, which still holds what isn't portable yet (the
+ * environment, secrets, working folder and observers). It acts on the
+ * command it is given, which is the dispatched one.
+ */
+export type PipelineControlLaunch = (
+  control: PipelineControlRequest,
+  signal: AbortSignal,
+) => Promise<PipelineControlSettlement>;
 
 /** Host-side results of a dispatched request, for the legacy callers. */
 interface HostCapture {
@@ -138,17 +170,186 @@ export function attachPipelineHandle(handle: ExecutionHandle): void {
     attachSubscriber(subscriber, handle);
 }
 
-let broadcastCancel: (state: ExecutionState) => void = () => undefined;
+/**
+ * How the desktop's windows, watchers and observers see the executions this
+ * worker runs, whichever caller started them (CAN-4142).
+ */
+export interface PipelineExecutionFanOut {
+  /** Every execution event, nested runs' included, as the executor reports it. */
+  onEvent(event: ExecutionEvent): void;
+  onStepOutput(event: StepOutputEvent): void;
+  /**
+   * Each pause as reported, and each terminal outcome once, in the state
+   * the execution store settled it with.
+   */
+  onSettled(event: ExecutionEvent): void;
+}
+
+let fanOut: PipelineExecutionFanOut | null = null;
+
+export function setPipelineExecutionFanOut(
+  next: PipelineExecutionFanOut,
+): void {
+  fanOut = next;
+}
+
+/** The outcome each execution last settled with, the oldest dropped first. */
+const settledOutcomes = new Map<string, string>();
+const SETTLED_OUTCOMES_MAX = 256;
+
+function outcomeKey(state: ExecutionState): string {
+  return `${state.status}:${state.completed_at ?? ''}`;
+}
 
 /**
- * How a settled cancel reaches the desktop's windows and watchers. Every
- * cancel goes through this worker, whichever client sent it, so the
- * broadcast happens here, once per cancel.
+ * The state an ended execution settled with: the stored terminal state wins
+ * over the one a handle reported, as it does for `get`, since a forced
+ * cancel persists its outcome while the handle still runs.
  */
-export function setPipelineCancelBroadcast(
-  broadcast: (state: ExecutionState) => void,
-): void {
-  broadcastCancel = broadcast;
+async function canonicalTerminalState(
+  state: ExecutionState,
+  executionsDir: string | undefined,
+): Promise<ExecutionState> {
+  const stored = await loadExecutionState(
+    state.id,
+    executionsDir ?? (await monitoredRuntime()).executionsDir,
+  ).catch(() => null);
+  return stored && TERMINAL_STATUSES.has(stored.status) ? stored : state;
+}
+
+function deliverSettled(event: ExecutionEvent): void {
+  const key = outcomeKey(event.state);
+  if (settledOutcomes.get(event.executionId) === key) return;
+  settledOutcomes.delete(event.executionId);
+  settledOutcomes.set(event.executionId, key);
+  for (const id of Array.from(settledOutcomes.keys())) {
+    if (settledOutcomes.size <= SETTLED_OUTCOMES_MAX) break;
+    settledOutcomes.delete(id);
+  }
+  fanOut?.onSettled(event);
+}
+
+/** Where a reported state came from, for {@link settlePipelineExecutionEvent}. */
+export interface SettledEventSource {
+  /** The execution store the execution lives in, when the caller knows it. */
+  readonly executionsDir?: string;
+  /** The state is the one the store settled, as a cancel's is. */
+  readonly stored?: boolean;
+}
+
+/**
+ * Hand a pause or terminal event to the fan-out's settled channel. A
+ * terminal outcome is delivered once, in its canonical state: a cancel's
+ * broadcast and the cancelled handle's own report are one outcome.
+ */
+export async function settlePipelineExecutionEvent(
+  event: ExecutionEvent,
+  source: SettledEventSource = {},
+): Promise<void> {
+  if (!TERMINAL_STATUSES.has(event.state.status)) {
+    if (event.type === 'execution.paused') fanOut?.onSettled(event);
+    return;
+  }
+  if (source.stored) {
+    deliverSettled(event);
+    return;
+  }
+  const state = await canonicalTerminalState(event.state, source.executionsDir);
+  deliverSettled(state === event.state ? event : { ...event, state });
+}
+
+function deliverEvent(event: ExecutionEvent, source: SettledEventSource): void {
+  // An observer's failure never reaches the executor or the cancel.
+  try {
+    fanOut?.onEvent(event);
+  } catch {
+    // Reported by the observer itself.
+  }
+  void settlePipelineExecutionEvent(event, source).catch(() => undefined);
+}
+
+/**
+ * The options a launch runs with: the desktop fan-out sees every event
+ * first, then the caller's own observers do.
+ */
+function withFanOut<
+  Options extends Pick<
+    ExecutionOptions,
+    'onEvent' | 'onStepOutput' | 'runtime'
+  >,
+>(options: Options): Options {
+  const { onEvent, onStepOutput } = options;
+  const executionsDir = options.runtime.executionsDir;
+  return {
+    ...options,
+    onEvent: (event) => {
+      deliverEvent(event, { executionsDir });
+      onEvent?.(event);
+    },
+    onStepOutput: (event) => {
+      try {
+        fanOut?.onStepOutput(event);
+      } catch {
+        // Reported by the observer itself.
+      }
+      onStepOutput?.(event);
+    },
+  };
+}
+
+/**
+ * The executor's recovery entry points, for the launches of the controls
+ * core dispatches to this worker (CAN-4141). Each runs with the desktop
+ * fan-out, as a start does.
+ */
+export const pipelineExecutorControls = {
+  resume: (
+    executionId: string,
+    options: Parameters<typeof resumePipeline>[1],
+  ): ReturnType<typeof resumePipeline> =>
+    resumePipeline(executionId, withFanOut(options)),
+  retry: (
+    executionId: string,
+    options: Parameters<typeof retryPipelineExecution>[1],
+  ): ReturnType<typeof retryPipelineExecution> =>
+    retryPipelineExecution(executionId, withFanOut(options)),
+  retryMatrixJob: (
+    request: Parameters<typeof retryMatrixJobExecution>[0],
+    options: Parameters<typeof retryMatrixJobExecution>[1],
+  ): ReturnType<typeof retryMatrixJobExecution> =>
+    retryMatrixJobExecution(request, withFanOut(options)),
+  rerun: (
+    executionId: string,
+    options: Parameters<typeof rerunPipelineExecution>[1],
+  ): ReturnType<typeof rerunPipelineExecution> =>
+    rerunPipelineExecution(executionId, withFanOut(options)),
+};
+
+function cancelEventType(
+  status: ExecutionState['status'],
+): ExecutionEvent['type'] | null {
+  if (status === 'cancelled') return 'execution.cancelled';
+  return status === 'success' || status === 'failure'
+    ? 'execution.updated'
+    : null;
+}
+
+/**
+ * Every cancel goes through this worker, whichever client sent it, so its
+ * settled state reaches the fan-out here, once per cancel.
+ */
+function broadcastCancel(state: ExecutionState): void {
+  const type = cancelEventType(state.status);
+  if (type === null) return;
+  deliverEvent(
+    {
+      executionId: state.id,
+      type,
+      state,
+      timestamp: new Date().toISOString(),
+    },
+    { stored: true },
+  );
 }
 
 function notifySubscribers(executionId: string, state: ExecutionState): void {
@@ -206,6 +407,62 @@ export function stagePipelineLaunch(
   };
 }
 
+const controlLaunches = new Map<string, PipelineControlLaunch>();
+interface ControlCapture {
+  settlement?: PipelineControlSettlement;
+  error?: unknown;
+}
+const controlCaptures = new Map<string, ControlCapture>();
+
+/**
+ * Stage the launch of the control dispatched as `requestId`. The worker
+ * takes it once; `take` returns what it produced and forgets the launch. A
+ * control core replayed from its record never runs its launch again.
+ */
+export function stagePipelineControl(
+  requestId: string,
+  launch: PipelineControlLaunch,
+): { take(): ControlCapture } {
+  controlLaunches.set(requestId, launch);
+  controlCaptures.delete(requestId);
+  return {
+    take: (): ControlCapture => {
+      controlLaunches.delete(requestId);
+      const capture = controlCaptures.get(requestId) ?? {};
+      controlCaptures.delete(requestId);
+      return capture;
+    },
+  };
+}
+
+/** What a startup sweep or shutdown checkpoint left on the host. */
+interface RecoveryCapture {
+  /** The sweep's per-execution messages, which may name host paths. */
+  errors?: string[];
+  /** The checkpoint's own error. */
+  error?: unknown;
+}
+const recoveryCaptures = new Map<string, RecoveryCapture>();
+
+/** The host-side outcome of the sweep or checkpoint dispatched as `requestId`. */
+export function takePipelineRecoveryCapture(
+  requestId: string,
+): RecoveryCapture {
+  const capture = recoveryCaptures.get(requestId) ?? {};
+  recoveryCaptures.delete(requestId);
+  return capture;
+}
+
+/** An execution's stored state, as the store holds it now. */
+export async function readStoredPipelineExecution(
+  executionId: string,
+): Promise<ExecutionState | null> {
+  return loadExecutionState(
+    executionId,
+    (await monitoredRuntime()).executionsDir,
+  );
+}
+
 /**
  * A mark to pass to {@link readPipelineCancelCapture} before cancelling
  * `executionId`; a cancel already in flight, which this one will join, counts.
@@ -242,11 +499,7 @@ function runCancel(executionId: string): Promise<CancelCapture> {
     cancelled.set(executionId, capture);
     if (capture.state) {
       notifySubscribers(executionId, capture.state);
-      try {
-        broadcastCancel(capture.state);
-      } catch {
-        // A broadcast failure never fails the cancel.
-      }
+      broadcastCancel(capture.state);
     }
     for (const key of Array.from(cancelled.keys())) {
       if (cancelled.size <= CANCEL_CAPTURES_MAX) break;
@@ -409,7 +662,10 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     captures.set(params.executionId, capture);
     let handle: ExecutionHandle;
     try {
-      handle = await executePipeline(launch.pipeline, launch.options);
+      handle = await executePipeline(
+        launch.pipeline,
+        withFanOut(launch.options),
+      );
     } catch (error) {
       capture.error = error;
       throw pipelineStartFailedError(error);
@@ -432,6 +688,58 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
       });
     }
     return projectPipelineExecution(state);
+  },
+  async control(request, signal) {
+    const { requestId, executionId } = request.params;
+    const prepared = controlLaunches.get(requestId);
+    if (!prepared) throw pipelineLaunchUnavailableError();
+    controlLaunches.delete(requestId);
+    const capture: ControlCapture = {};
+    controlCaptures.set(requestId, capture);
+    if (signal.aborted) {
+      capture.error = new Error('The workflow control was cancelled.');
+      throw pipelineControlFailedError(capture.error);
+    }
+    let settlement: PipelineControlSettlement;
+    try {
+      settlement = await prepared(request, signal);
+    } catch (error) {
+      capture.error = error;
+      if (
+        error instanceof Error &&
+        error.message === `Execution "${executionId}" not found`
+      )
+        throw pipelineExecutionNotFoundError();
+      throw pipelineControlFailedError(error);
+    }
+    capture.settlement = settlement;
+    // Core cancelled the control while its host side was starting the run.
+    if (signal.aborted && settlement.outcome === 'started')
+      void getActiveExecutionHandle(settlement.state.id)
+        ?.cancel()
+        .catch(() => undefined);
+    return {
+      outcome: settlement.outcome,
+      execution: projectPipelineExecution(settlement.state),
+    };
+  },
+  async sweep({ requestId, executionIds }) {
+    const errors = await recoverOrphanedPipelineExecutions(
+      executionIds,
+      (await monitoredRuntime()).executionsDir,
+    );
+    recoveryCaptures.set(requestId, { errors });
+    return { failureCount: errors.length };
+  },
+  async checkpoint({ requestId }) {
+    const checkpointedCount = getActivePipelineExecutionCount();
+    try {
+      await pauseAllActivePipelineExecutions();
+    } catch (error) {
+      recoveryCaptures.set(requestId, { error });
+      throw pipelineCheckpointFailedError(error);
+    }
+    return { checkpointedCount };
   },
   async get(executionId) {
     const stored = await loadExecutionState(

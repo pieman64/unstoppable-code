@@ -3,8 +3,8 @@ import { utilityProcess } from 'electron';
 import { getAppWorkspacesRootDir, getWorkspacesRootDir } from './paths';
 import { getChatStateService } from '../services/chat-state-service';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
-import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
 import { configureDesktopPipelineOwnerFence } from '../pipelines/pipeline-owner-fence';
+import { sweepOrphanedPipelinesThroughLocalWorker } from '../pipelines/pipeline-worker-dispatch';
 import type { InterruptedWorkScan } from './interrupted-work-scan-worker';
 
 function scan(executionsDir: string): Promise<InterruptedWorkScan> {
@@ -47,7 +47,15 @@ function scan(executionsDir: string): Promise<InterruptedWorkScan> {
   });
 }
 
-/** Complete recovery before the first window can admit new work. Each item is retryable. */
+/** Executions the startup scan found, for the orphan sweep once core runs. */
+let interruptedPipelineIds: string[] = [];
+
+/**
+ * Recover interrupted chats before the first window can admit new work, and
+ * find the pipeline executions the orphan sweep checks. The sweep runs
+ * through core once the desktop runtime exists, still before any pipeline
+ * can start (`sweepInterruptedPipelinesAtStartup`). Each item is retryable.
+ */
 export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   const runtime = createElectronExecutionRuntime();
   // The inspector is installed before recovery; this process's own start
@@ -55,6 +63,7 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
   // only their PID.
   configureDesktopPipelineOwnerFence().catch(() => undefined);
   const found = await scan(runtime.executionsDir);
+  interruptedPipelineIds = found.pipelineIds;
   const errors = [...found.errors];
   for (const scope of found.chatScopes) {
     try {
@@ -65,11 +74,21 @@ export async function recoverInterruptedWorkAtStartup(): Promise<void> {
       );
     }
   }
-  errors.push(
-    ...(await recoverOrphanedPipelineExecutions(
-      found.pipelineIds,
-      runtime.executionsDir,
-    )),
-  );
   if (errors.length) throw new Error(errors.join('\n'));
+}
+
+/**
+ * The startup orphan sweep through core and the local worker (CAN-4141),
+ * over the executions startup recovery found. `null` when there are none, so
+ * a clean start neither waits nor opens a ledger.
+ */
+export function sweepInterruptedPipelinesAtStartup(): Promise<void> | null {
+  const pipelineIds = interruptedPipelineIds;
+  interruptedPipelineIds = [];
+  if (pipelineIds.length === 0) return null;
+  return sweepOrphanedPipelinesThroughLocalWorker(pipelineIds).then(
+    (errors) => {
+      if (errors.length) throw new Error(errors.join('\n'));
+    },
+  );
 }

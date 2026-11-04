@@ -11,6 +11,7 @@ import type {
   CodeGraphWorkerEagerSeedRequest,
   CodeGraphWorkerEagerSeedResponse,
 } from '@canopy/code-graph/host/build-protocol';
+import { getGitExecutableCommand } from '@canopy/desktop-shared/lib/git-executable';
 import { installDesktopCodeGraphResources } from '@canopy/desktop-shared/node/code-graph/resources';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { connectExecutionHostChannel } from '@canopy/desktop-shared/node/execution-host/channel';
@@ -62,5 +63,6 @@ if (channel) {
   serveCodeGraphBuildHost(channel, {
     openFilesBlockReplacement: OPEN_FILES_BLOCK_REPLACEMENT,
     cpuProfileDirectory: codeGraphWorkerCpuProfileDirectory(),
+    gitExecutable: getGitExecutableCommand(process.env),
   });
 }

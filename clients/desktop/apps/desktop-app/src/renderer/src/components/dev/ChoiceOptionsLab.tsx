@@ -3,6 +3,7 @@ import {
   Checkbox,
   ChoiceField,
   ChoiceMark,
+  PageHeader,
   Radio,
 } from '@canopy/ui-shared/components';
 
@@ -120,13 +121,11 @@ export function ChoiceOptionsLab(): JSX.Element {
       className="flex flex-col gap-6 p-6 text-pretty"
       data-testid="choice-options-lab"
     >
-      <header className="flex flex-col gap-1">
-        <h1 className="text-m fg-primary">Checkbox and radio</h1>
-        <p className="text-s fg-tertiary">
-          The shared Checkbox, Radio, and ChoiceMark. Click the rows to toggle
-          them, or Tab to see the focus halo.
-        </p>
-      </header>
+      <PageHeader
+        inset="none"
+        title="Checkbox and radio"
+        description="The shared Checkbox, Radio, and ChoiceMark. Click the rows to toggle them, or Tab to see the focus halo."
+      />
       <div className="flex flex-col gap-3 md:flex-row">
         <Surface
           label="In the question card"

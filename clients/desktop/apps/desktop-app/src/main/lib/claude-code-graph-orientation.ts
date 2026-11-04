@@ -9,8 +9,9 @@
  * stamp, read in the code-graph read worker after every graph tool call,
  * before a graph tool whose answer does not report the stamp, and after the
  * database or WAL `stat` changed. The `stat` only detects activity; the stamp
- * identifies the build. Electron main never opens the graph database here,
- * and HEADs are read from `.git` files without spawning git.
+ * identifies the build, read through the worker's `worker.codeGraph.query`.
+ * Electron main never opens the graph database here, and HEADs are read from
+ * `.git` files without spawning git.
  */
 
 import { readFile, stat } from 'node:fs/promises';
@@ -20,7 +21,7 @@ import {
   type CanopyInjectedToolKey,
 } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
-import { readCodeGraphBuildStampUncached } from './code-graph-worktree-fingerprint';
+import { readWorktreeCodeGraph } from '../code-graph/graph-reads';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { resolveWorktreeCodeGraphRepositories } from './worktree-repo-entries';
 
@@ -290,15 +291,30 @@ async function resolveRepositoryRoots(
   return repositories.map((repository) => repository.rootPath);
 }
 
+/** The build stamp the worker reads from the graph; `null` if unreadable. */
+async function readBuildStamp(
+  projectId: string,
+  worktreeId: string,
+): Promise<string | null> {
+  try {
+    const { result } = await readWorktreeCodeGraph(
+      { projectId, worktreeId },
+      'fingerprint-metadata',
+      { kind: 'build-stamp' },
+    );
+    return result.kind === 'fingerprint-metadata'
+      ? (result.value.lastBuildAt ?? null)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 const defaultReaders: ClaudeCodeGraphOrientationReaders = {
   resolveRepositoryRoots,
   readGraphIdentity,
   readHeadIdentity,
-  readBuildStamp: (projectId, worktreeId) =>
-    readCodeGraphBuildStampUncached(
-      getWorktreeCodeGraphDbPath(projectId, worktreeId),
-      `${projectId}/${worktreeId}`,
-    ),
+  readBuildStamp,
 };
 
 let readers: ClaudeCodeGraphOrientationReaders = defaultReaders;

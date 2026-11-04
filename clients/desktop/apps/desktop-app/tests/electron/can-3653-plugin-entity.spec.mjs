@@ -48,12 +48,12 @@ test('Customize excludes the claimed Slack catalog card and manages servers from
     const search = window.getByTestId('plugins-search');
     await search.fill('slack');
 
-    // All: the available Claude plugin in Browse with its source and Add.
+    // CAN-4847: Browse uses the same compact metadata as Installed.
     await expect(
       browse.getByTestId(`plugins-entry-${CLAUDE_SLACK_ENTRY}`),
     ).toBeVisible();
     await expect(
-      browse.getByTestId(`plugins-card-source-${CLAUDE_SLACK_ENTRY}`),
+      browse.getByTestId(`customize-row-source-${CLAUDE_SLACK_ENTRY}`),
     ).toHaveText('Claude · slackapi');
     await expect(
       browse.getByTestId(`plugins-entry-add-${CLAUDE_SLACK_ENTRY}`),
@@ -75,9 +75,9 @@ test('Customize excludes the claimed Slack catalog card and manages servers from
         `customize-row-source-${CODEX_SLACK_ENTRY}`,
       ],
       [
-        `plugins-card-title-${CLAUDE_SLACK_ENTRY}`,
-        `plugins-card-meta-${CLAUDE_SLACK_ENTRY}`,
-        `plugins-card-source-${CLAUDE_SLACK_ENTRY}`,
+        `customize-row-name-line-${CLAUDE_SLACK_ENTRY}`,
+        `customize-row-subtitle-${CLAUDE_SLACK_ENTRY}`,
+        `customize-row-source-${CLAUDE_SLACK_ENTRY}`,
       ],
     ]) {
       const title = window.getByTestId(titleId);
@@ -91,14 +91,16 @@ test('Customize excludes the claimed Slack catalog card and manages servers from
         const type = line.querySelector('[data-testid*="-type-"]');
         if (!name || !type) throw new Error('Missing plugin name or type');
         return {
-          nameFits: name.scrollWidth <= name.clientWidth,
+          contained:
+            name.getBoundingClientRect().right <=
+            line.getBoundingClientRect().right,
           inline:
             Math.abs(
               name.getBoundingClientRect().y - type.getBoundingClientRect().y,
             ) < 5,
         };
       });
-      expect(geometry).toEqual({ nameFits: true, inline: true });
+      expect(geometry).toEqual({ contained: true, inline: true });
     }
     await window.setViewportSize({ width: 1400, height: 900 });
     // The server the Codex plugin brought is listed as that plugin.

@@ -221,15 +221,19 @@ export function OrgProjectSetupDialog({
                 variant="secondary"
                 disabled={!loaded}
                 onClick={browse}
-                title={destination || undefined}
                 // A path is long and its tail is the part that identifies it, so
                 // the control keeps one line and truncates from the left rather
                 // than wrapping a temp directory across the dialog.
                 className="w-full justify-between text-left"
               >
                 {/* The path's own margin plus the button's 6px gap keeps 12px
-                between the truncated tail and the action label. */}
-                <span className="mr-1.5 min-w-0 truncate font-mono" dir="rtl">
+                between the truncated tail and the action label. The truncated
+                path keeps a native title with its full value. */}
+                <span
+                  className="mr-1.5 min-w-0 truncate font-mono"
+                  dir="rtl"
+                  title={destination || undefined}
+                >
                   <bdi dir="ltr">{destination || 'Choose folder'}</bdi>
                 </span>
                 <span className="shrink-0 fg-secondary">Change</span>

@@ -34,6 +34,12 @@ import {
   searchMemory,
 } from '../memory/local/store';
 import { LOCAL_MEMORY_MORE_MARKER } from '../memory/local/boundary-truncation';
+import { parseMemoryNoteIdentity } from '../memory/local/note-identity';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
+import {
+  MemoryManifestFileSchema,
+  memoryUlidTime,
+} from '@canopy/protocol/memory-sync';
 
 describe('local memory store', () => {
   let rootDir: string;
@@ -121,7 +127,7 @@ describe('local memory store', () => {
     ).resolves.toBeUndefined();
   });
 
-  it('redacts secrets, writes provenance and the manifest, and retries collisions create-new-only', async () => {
+  it('redacts secrets, writes provenance, identity and the manifest, and never reuses a name', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-08-05T12:00:00.000Z'));
     const note = {
@@ -137,13 +143,23 @@ describe('local memory store', () => {
       appendInboxNote(rootDir, note),
       appendInboxNote(rootDir, note),
     ]);
-    expect(new Set([firstKey, secondKey])).toEqual(
-      new Set([
-        'inbox/2026-08-05T12-00-00-deploy-with-bearer-redacted-and-api-key-token.md',
-        'inbox/2026-08-05T12-00-00-deploy-with-bearer-redacted-and-api-key-token-2.md',
-      ]),
-    );
+    // Same text in the same second: the ID suffix still names them apart.
+    for (const key of [firstKey, secondKey]) {
+      expect(key).toMatch(
+        /^inbox\/2026-08-05T12-00-00-deploy-with-bearer-redacted-and-api-key-token-[0-9a-hjkmnp-tv-z]{6}\.md$/,
+      );
+    }
+    expect(firstKey).not.toBe(secondKey);
     const content = await readFile(join(rootDir, firstKey), 'utf8');
+    const identity = parseMemoryNoteIdentity(content);
+    expect(identity).not.toBeNull();
+    expect(content.startsWith(`---\nid: "${identity?.id}"\n`)).toBe(true);
+    expect(
+      firstKey.endsWith(`-${identity?.id.slice(-6).toLowerCase()}.md`),
+    ).toBe(true);
+    expect(memoryUlidTime(identity?.id ?? '')).toBe(
+      Date.parse('2026-08-05T12:00:00.000Z'),
+    );
     expect(content).toContain('source:\n  provider: "claude"');
     expect(content).toContain('created: "2026-08-05T12:00:00.000Z"');
     expect(content).toContain('modified: "2026-08-05T12:00:00.000Z"');
@@ -152,9 +168,16 @@ describe('local memory store', () => {
     expect(content).toContain('api_key=<redacted>');
     expect(content).not.toContain('abcdefghijklmnopqrstuvwxyz');
     expect(content).not.toContain('anothersecretvalue');
-    await expect(
-      readFile(join(rootDir, 'manifest.json'), 'utf8'),
-    ).resolves.toBe('{\n  "version": 1\n}\n');
+    const manifest = MemoryManifestFileSchema.parse(
+      JSON.parse(await readFile(join(rootDir, 'manifest.json'), 'utf8')),
+    );
+    expect(manifest).toMatchObject({
+      version: 2,
+      minWriterFormat: 2,
+      binding: null,
+      migratedTo: [],
+    });
+    expect(manifest.backfilledAt).not.toBeNull();
   });
 
   it('redacts quoted secret assignments, including short values (shared pass)', async () => {
@@ -543,6 +566,8 @@ describe('local memory explorer', () => {
   let directory: string;
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'memory-explorer-'));
+    // Already given note identities: listing then reads the fixtures as written.
+    await prepareMemoryScopeForWrite(directory);
   });
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });

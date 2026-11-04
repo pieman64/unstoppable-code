@@ -223,6 +223,17 @@ It runs over a `LocalWorkerTransport`: Electron main's direct call
 (`localWorkerTransportOf`, exposed as the graph's `localWorker`), and both
 write identical records.
 
+The binding has two halves (CAN-5073): `connectLocalWorkerBinding` is the
+core end and `serveLocalWorkerBinding` the worker end, each over one framed
+connection; `createInProcessWorkerBinding` joins both over a pair. A split
+host passes `supervisedWorker` to `createRuntimeProfileGraph` with its worker
+modules' definitions and a `createSupervisedLocalWorker` route, which its
+supervisor attaches to each worker process's binding. While no worker is
+attached, calls fail as `unavailable`, and a receipt for a keyed instruction
+sent to a worker that has gone answers `unavailable`, never "not started". A
+`worker` profile graph records executor receipts and exposes its maps as
+`executor`, for the binding's worker end.
+
 ## Script execution
 
 `@canopy/core-runtime/node/script/execution` (CAN-4143) is the worker side of
@@ -237,6 +248,18 @@ non-interactive process runner, and `createWorkerScriptHandlers` serves
 creates no process: process creation and its kill, drain and priority, the
 run-log location and durability, and the projection of a scope and context
 onto a checkout and environment are host ports.
+
+## Initiated work
+
+`@canopy/core-runtime/node/initiated-work` (CAN-4144) holds
+`InitiatedWorkEngine`, the common engine for work a source starts on its own
+behalf (hooks first). Each occurrence is a `core.initiatedWork.run` operation
+(restart class `lost`) with the source's admission gates, deduplication by
+the origin's `occurrenceKey`, one run at a time per target key, and
+cancellation through `core.operation.cancel`; the run record lists every gate
+outcome, the artifacts and the result. `HookInvocationStore` is the hook
+source's owned `hook_invocations` run log. Sources supply the gates and the
+executor; the store's directory and atomic writer are host ports.
 
 ## Execution accounting
 

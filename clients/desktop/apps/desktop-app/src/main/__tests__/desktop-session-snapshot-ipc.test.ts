@@ -10,6 +10,18 @@ jest.mock('../ipc/register', () => ({
 jest.mock('../services/workspace-portal-service', () => ({
   listWorkspacePortalEntities: jest.fn(),
 }));
+jest.mock('../lib/sidebar-items', () => ({
+  readAllSidebarItemsSnapshot: jest.fn(() =>
+    Promise.resolve({
+      file: { version: 1, items: [] },
+      authority: 'ok',
+      indexAuthority: 'ok',
+      indexedWorkspaceIds: [],
+      workspaceReads: new Map(),
+      storedFields: [],
+    }),
+  ),
+}));
 
 jest.mock('../services/chat-service', () => ({
   listWorktreeChatSummaries: jest.fn(),

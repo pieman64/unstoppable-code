@@ -470,34 +470,6 @@ describe('code graph read worker serving loop', () => {
       }
     });
 
-    it('releases its connection before writing the fingerprint', async () => {
-      const dbPath = path.join(dir, 'graph.db');
-      await buildGraph(
-        path.join(dir, 'src'),
-        dbPath,
-        'export function alpha(){}\n',
-      );
-      const port = new FakeParentPort();
-      serveCodeGraphReads(port);
-      await port.ask(searchRequest(dbPath, 'alpha'));
-
-      await expect(
-        port.ask({
-          dbPath,
-          task: { kind: 'persist-fingerprint', fingerprint: 'end-digest' },
-        }),
-      ).resolves.toEqual({ ok: true, result: { kind: 'persist-fingerprint' } });
-      // The fingerprint writer closed as the only connection, so it
-      // checkpointed and removed its WAL, as with one-shot readers.
-      expect(existsSync(`${dbPath}-wal`)).toBe(false);
-      await expect(
-        port.ask({ dbPath, task: { kind: 'fingerprint-metadata' } }),
-      ).resolves.toMatchObject({
-        ok: true,
-        result: { value: { fingerprint: 'end-digest', completed: true } },
-      });
-    });
-
     it('does not keep a build WAL on disk while it idles', async () => {
       const dbPath = path.join(dir, 'graph.db');
       const root = path.join(dir, 'src');

@@ -4,7 +4,6 @@ import {
 } from '@canopy/protocol/workspace-context';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { navigateAfterRepositoryWorkspaceCreated } from '@/lib/postWorkspaceCreateNavigation';
-import type { HomeWorkspaceSelectionReason } from '@/stores/homeComposerStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
 /** The sidebar context when an import of Claude or Codex projects started. */
@@ -29,13 +28,11 @@ export function captureProjectImportSubmission(): ProjectImportSubmission {
  * Opens a project imported from Claude or Codex. Imports are Personal, so an
  * organization sidebar switches to Personal first; if the account or context
  * changed while the import ran, the member's newer choice wins and nothing
- * opens. `reason` explains the landing on Home when the caller chose among
- * several imports.
+ * opens.
  */
 export async function openImportedProject(
   submission: ProjectImportSubmission,
   workspaceId: string,
-  reason?: HomeWorkspaceSelectionReason,
 ): Promise<void> {
   const current = useWorkspaceContextStore.getState();
   const stillCurrent =
@@ -46,5 +43,5 @@ export async function openImportedProject(
   if (submission.sidebarContext?.kind === 'organization') {
     await current.setContext({ kind: 'personal' });
   }
-  navigateAfterRepositoryWorkspaceCreated(workspaceId, reason);
+  navigateAfterRepositoryWorkspaceCreated(workspaceId);
 }

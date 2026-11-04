@@ -85,8 +85,8 @@ test('Customize rows name their source and remove an item from the row menu', as
     ).toBeVisible();
     await expect(
       installed.getByTestId(`customize-row-subtitle-${skillId}`),
-      // CAN-4844: the approved custom skill subtitle shows its updated age.
-    ).toHaveText(/^Updated\s\d+[smhd] ago$/);
+      // CAN-4847: custom rows name their creator without an updated age.
+    ).toHaveText('You');
 
     // The kind chip names the kind only where the tab does not.
     await window.getByTestId('plugins-type-tab-all').click();

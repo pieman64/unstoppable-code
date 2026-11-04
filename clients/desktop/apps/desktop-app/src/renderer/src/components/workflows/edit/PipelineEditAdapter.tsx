@@ -162,10 +162,14 @@ export function PipelineEditAdapter({
 }: PipelineEditAdapterProps): JSX.Element {
   const capabilities = useCapabilities();
   const projectContext = pipelines.projectContext;
+  // The opener's own worktree wins: a pop-out panel knows its checkout even
+  // while the main window shows another one.
   const contextWorktree =
-    target.cwd !== undefined && target.cwd === projectContext?.cwd
-      ? projectContext.worktree
-      : undefined;
+    target.cwd !== undefined && target.worktree !== undefined
+      ? target.worktree
+      : target.cwd !== undefined && target.cwd === projectContext?.cwd
+        ? projectContext.worktree
+        : undefined;
   // The worktree the pipeline opened in. The editor stays open when another
   // worktree is selected, and Share still needs this checkout's identity.
   const [openedWorktree] = useState(contextWorktree);

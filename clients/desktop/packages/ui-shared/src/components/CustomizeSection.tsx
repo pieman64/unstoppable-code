@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Heading } from './Heading';
 
 export interface CustomizeSectionProps {
   /** Stable DOM id; also the target of `#customize-section-<id>` anchors. */
@@ -30,20 +31,26 @@ export function CustomizeSection({
       className="scroll-mt-6"
     >
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b pb-2">
-        <h2
-          id={headingId}
-          className="inline-flex h-7 min-w-0 items-center gap-2 text-m font-medium fg-primary"
-        >
-          <span className="truncate">{title}</span>
-          {count !== undefined && (
-            <span
-              data-testid={`${domId}-count`}
-              className="shrink-0 text-s font-normal fg-tertiary"
-            >
-              {count}
+        <div className="flex h-7 min-w-0 items-center">
+          <Heading
+            level={2}
+            variant="section"
+            id={headingId}
+            className="min-w-0"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate">{title}</span>
+              {count !== undefined && (
+                <span
+                  data-testid={`${domId}-count`}
+                  className="shrink-0 text-s font-normal fg-tertiary"
+                >
+                  {count}
+                </span>
+              )}
             </span>
-          )}
-        </h2>
+          </Heading>
+        </div>
         {actions}
       </div>
       {children}

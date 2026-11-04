@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface LazyLoadErrorBoundaryProps {
   children: ReactNode;
@@ -63,9 +64,9 @@ export class LazyLoadErrorBoundary extends Component<
         >
           <div className="space-y-3">
             <div>
-              <h2 className="text-s font-semibold fg-primary">
+              <Heading level={2} variant="title">
                 {label} could not be loaded
-              </h2>
+              </Heading>
               <p className="mt-1 text-xs fg-secondary">
                 {error.message || error.name || 'Unknown loading error'}
               </p>

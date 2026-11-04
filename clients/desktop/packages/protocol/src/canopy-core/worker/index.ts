@@ -1,3 +1,5 @@
+export * from './code-graph';
+export * from './code-graph-reads';
 export * from './filesystem';
 export * from './filesystem-writes';
 export * from './git';
@@ -10,3 +12,4 @@ export * from './pipeline';
 export * from './pipeline-host-values';
 export * from './registry';
 export * from './script';
+export * from './terminal';

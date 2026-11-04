@@ -69,6 +69,7 @@ import {
   resetPreferencesLoadErrorForTests,
   updatePreferencesFile,
 } from '../lib/preferences-store';
+import { MigrationLedgerUnavailableError } from '../lib/migrations';
 
 initClaudeModels([
   { id: 'opus[1m]', label: 'Opus 4.8 1M' },
@@ -1545,6 +1546,39 @@ describe('preference migrations', () => {
       cowork: 'ask',
       appAdvisor: 'ask',
     });
+  });
+
+  it('never reruns the Full Access reset over a later Ask choice when the ledger is damaged', async () => {
+    const preferencesPath = join(tempDir, 'preferences.json');
+    const migrationsPath = join(tempDir, 'migrations.json');
+    await writeFixture(
+      preferencesPath,
+      preferencesFile({
+        approvalDefaults: { worktree: 'ask', cowork: 'ask', appAdvisor: 'ask' },
+      }),
+    );
+    await migrateApprovalDefaultsToFullAccess();
+    const askLater = preferencesFile({
+      ...(await readPreferences(tempDir)),
+      approvalDefaults: { worktree: 'ask', cowork: 'ask', appAdvisor: 'ask' },
+    });
+    await writeFixture(preferencesPath, askLater);
+    const truncated = '{"version": 1, "approval_defaults_full';
+
+    await writeFixture(migrationsPath, truncated);
+    await migrateApprovalDefaultsToFullAccess();
+    await expect(readFile(preferencesPath, 'utf8')).resolves.toBe(askLater);
+    await expect(readFile(migrationsPath, 'utf8')).resolves.toContain(
+      `"${APPROVAL_DEFAULTS_FULL_ACCESS_MIGRATION_KEY}": true`,
+    );
+
+    await writeFixture(migrationsPath, truncated);
+    await rm(join(tempDir, 'migrations.last-good.json'));
+    await expect(migrateApprovalDefaultsToFullAccess()).rejects.toBeInstanceOf(
+      MigrationLedgerUnavailableError,
+    );
+    await expect(readFile(preferencesPath, 'utf8')).resolves.toBe(askLater);
+    await expect(readFile(migrationsPath, 'utf8')).resolves.toBe(truncated);
   });
 
   it('keeps Ask defaults for a new user and records the migration as not applicable', async () => {

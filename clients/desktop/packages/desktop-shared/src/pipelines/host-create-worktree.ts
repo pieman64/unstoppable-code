@@ -227,13 +227,9 @@ export function parseCreateWorktreeInputs(
   if (!restoreClaudeMd.ok) return restoreClaudeMd;
   const setup = parseSetupMode(inputs);
   if (!setup.ok) return setup;
+  // Creating never removes a group: `none` is a name to join here, and means
+  // "remove" only to move-to-group (CAN-5479).
   const group = presentInput(inputs, 'group');
-  if (group?.toLowerCase() === 'none') {
-    return {
-      ok: false,
-      message: `${ACTION} "group" can't be none; leave it out to skip grouping`,
-    };
-  }
   return {
     ok: true,
     value: {

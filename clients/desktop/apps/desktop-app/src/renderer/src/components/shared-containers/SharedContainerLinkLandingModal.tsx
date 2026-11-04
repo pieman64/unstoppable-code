@@ -9,6 +9,7 @@ import {
   SHARED_CONTAINER_ACCEPT_CONSENT,
   SHARED_CONTAINER_READ_ONLY_NOTICE,
   SharedContainerAcceptSummary,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { useSharedContainersStore } from '@/stores/sharedContainersStore';
 import { openSharedContainerInOwningContext } from '@/lib/openSharedContainerInOwningContext';
@@ -245,7 +246,9 @@ export function SharedContainerLinkLandingModal({
     body = (
       <div className="space-y-4" data-testid={`${TEST_ID}-summary`}>
         <section className="space-y-1">
-          <h3 className="text-s font-medium fg-primary">What’s inside</h3>
+          <Heading level={3} variant="title">
+            What’s inside
+          </Heading>
           <ul className="space-y-0.5" data-testid={`${TEST_ID}-contents`}>
             {items.map((item) => (
               <li key={item} className="truncate text-s fg-secondary">

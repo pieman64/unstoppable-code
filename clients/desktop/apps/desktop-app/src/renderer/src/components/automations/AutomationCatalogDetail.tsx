@@ -4,6 +4,7 @@ import {
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsValue,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { type JSX, useEffect, useRef, useState } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
@@ -125,9 +126,9 @@ export function AutomationCatalogDetail({
           fit="contain"
         />
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold fg-primary">
+          <Heading level={2} variant="section">
             {activity.name}
-          </h2>
+          </Heading>
           <p
             className="mt-0.5 text-xs fg-secondary"
             data-testid="automation-catalog-origin"
@@ -557,7 +558,9 @@ export function CuratedAutomationMarketplaceDetail({
           fit="contain"
         />
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold fg-primary">{detail.name}</h2>
+          <Heading level={2} variant="section">
+            {detail.name}
+          </Heading>
           <p className="mt-0.5 text-xs fg-secondary">
             {detail.authorName ? `Curated · ${detail.authorName}` : 'Curated'}
           </p>

@@ -11,9 +11,10 @@ import {
   type AppIcon,
 } from '../../icons/AppIcons';
 import { LEDGER_ENTRY_TYPE_LABELS } from '../../lib/ledger-display';
+import { ICON_SIZE_PX } from '../../icons/icon-size';
+import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from '../DisplayAvatar';
 import {
-  LEDGER_AVATAR_GLYPH_SIZES,
-  LEDGER_AVATAR_SIZE_CLASS_NAMES,
+  LEDGER_DISPLAY_AVATAR_SIZE,
   type LedgerActorAvatarSize,
 } from './LedgerActorAvatar';
 
@@ -85,22 +86,27 @@ export interface LedgerEntryTypeAvatarProps {
 }
 
 /**
- * A main entry's avatar: its type's glyph on a quiet disc, so a column of
- * rows reads by what kind of entry each is. Decorative: the row names the
- * type beside it.
+ * A main entry's avatar: its type's glyph in the shared avatar shell, so a
+ * column of rows reads by what kind of entry each is. Decorative: the row
+ * names the type beside it.
  */
 export function LedgerEntryTypeAvatar({
   type,
   size,
 }: LedgerEntryTypeAvatarProps): JSX.Element {
+  const avatarSize = LEDGER_DISPLAY_AVATAR_SIZE[size];
   return (
-    <span
-      aria-hidden="true"
-      data-testid="ledger-entry-type-avatar"
+    <DisplayAvatar
+      name={LEDGER_ENTRY_TYPE_LABELS[type]}
+      size={avatarSize}
+      testId="ledger-entry-type-avatar"
       data-type={type}
-      className={`flex ${LEDGER_AVATAR_SIZE_CLASS_NAMES[size]} shrink-0 items-center justify-center rounded-full bg-secondary fg-secondary`}
-    >
-      <LedgerEntryTypeIcon type={type} size={LEDGER_AVATAR_GLYPH_SIZES[size]} />
-    </span>
+      glyph={
+        <LedgerEntryTypeIcon
+          type={type}
+          size={ICON_SIZE_PX[DISPLAY_AVATAR_GLYPH_SIZE[avatarSize]]}
+        />
+      }
+    />
   );
 }

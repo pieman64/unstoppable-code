@@ -43,13 +43,41 @@ jest.mock('../lib/preferences-store', () => ({
   readPreferencesFile: (): Promise<Record<string, unknown>> =>
     mockPreferences(),
 }));
+jest.mock('../automations/owned-pipeline-package', () => ({
+  ownedPipelineSendPackageOverlay: jest.fn(),
+}));
 jest.mock('@canopy/desktop-shared/types', () => ({
   ...jest.requireActual<object>('@canopy/desktop-shared/types'),
   resolveKnownModel: jest.fn(),
   getProviderForModel: jest.fn(),
+  isInheritingAgentModel: jest.fn(),
+}));
+jest.mock('../lib/default-model-lane-resolver', () => ({
+  resolveAppAdvisorDefaultModel: jest.fn(),
+  resolveOptionalLaneAwareDefaultSelection: jest.fn(),
+}));
+jest.mock('../agents/agent-default-model', () => ({
+  pinInheritingAgentToDestination: jest.fn(),
+}));
+jest.mock('../lib/claude-tui-chats', () => ({
+  getPersistedClaudeChatInterfaceMode: jest.fn(),
+}));
+const mockAttachmentsDir = jest.fn<string, [string, string]>();
+jest.mock('../lib/agent-attachments', () => ({
+  resolveAgentAttachmentsDir: (projectId: string, worktreeId: string): string =>
+    mockAttachmentsDir(projectId, worktreeId),
 }));
 
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type {
@@ -66,6 +94,7 @@ import {
 } from '@canopy/desktop-shared/pipelines/host-send-agent-message';
 import {
   getProviderForModel,
+  isInheritingAgentModel,
   resolveKnownModel,
   type ChatTabsFile,
   type CoworkWorkEntriesFile,
@@ -77,6 +106,9 @@ import {
   resolveChatTurnOverride,
 } from '../agent-messaging/turn-override';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
+import { getPersistedClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
+import { resolveOptionalLaneAwareDefaultSelection } from '../lib/default-model-lane-resolver';
+import { pinInheritingAgentToDestination } from '../agents/agent-default-model';
 import { resolveConfiguredPrompt } from '../lib/configured-prompt-resolution';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
@@ -84,7 +116,9 @@ import {
   readWorkspaceConfigDetailed,
   readWorkspaceWorktreesDetailed,
 } from '../lib/workspace-persistence';
+import { ownedPipelineSendPackageOverlay } from '../automations/owned-pipeline-package';
 import { createDesktopPipelineHostActions } from '../pipelines/host-actions';
+import type { PipelineNativeGrant } from '../pipelines/pipeline-local-metadata-store';
 import {
   readSendJournal,
   SEND_JOURNAL_FILE,
@@ -120,6 +154,10 @@ const resolvePrompt = jest.mocked(resolveConfiguredPrompt);
 const authorize = jest.mocked(authorizeBackgroundExecution);
 const knownModel = jest.mocked(resolveKnownModel);
 const providerFor = jest.mocked(getProviderForModel);
+const inheriting = jest.mocked(isInheritingAgentModel);
+const laneDefault = jest.mocked(resolveOptionalLaneAwareDefaultSelection);
+const pinAgent = jest.mocked(pinInheritingAgentToDestination);
+const persistedMode = jest.mocked(getPersistedClaudeChatInterfaceMode);
 
 function config(
   type: WorkspaceConfigFile['type'],
@@ -791,6 +829,13 @@ describe('settings', () => {
         approval_mode: { approvalMode: 'auto' as const },
         model: { model: 'opus' },
         plan_mode: { planMode: true },
+        plugin_selections: {
+          pluginSelections: {
+            collectionIds: ['col-1'],
+            skillRefs: [],
+            pluginRefs: [],
+          },
+        },
         plugins: {
           plugins: [
             {
@@ -830,7 +875,6 @@ describe('settings', () => {
       { projectId: 'p', worktreeId: 't', chatId: 'c' },
       {},
       { model: 'opus' },
-      undefined,
     );
     expect(lastOptions().turnOverride).toEqual({ version: 1, model: 'opus' });
   });
@@ -1000,7 +1044,11 @@ describe('settings', () => {
     resolvePrompt.mockResolvedValue({
       prompt: 'resolved',
       fileReferences,
-      referencedPluginSelections: { collectionIds: ['col-2'] },
+      referencedPluginSelections: {
+        collectionIds: ['col-2'],
+        skillRefs: [],
+        pluginRefs: [],
+      },
     } as unknown as Awaited<ReturnType<typeof resolveConfiguredPrompt>>);
 
     await send(
@@ -1026,7 +1074,10 @@ describe('settings', () => {
       fileReferences,
       attachmentPaths: ['/abs/work/a.txt'],
     });
-    expect(resolveOverride.mock.calls[0]?.[3]).toEqual({
+    // The prompt binds after the override, as the native session send does,
+    // so its plugins join the override then.
+    expect(resolveOverride.mock.calls[0]?.[3]).toBeUndefined();
+    expect(lastOptions().turnOverride?.pluginSelections).toMatchObject({
       collectionIds: ['col-2'],
     });
   });
@@ -1632,6 +1683,74 @@ describe('a run an automation started', () => {
     expect(lastOptions()).not.toHaveProperty('automationDispatch');
   });
 
+  // CAN-5479: a converted capability package install's new chat carries the
+  // package its native prompt applied, resolved again for each send.
+  describe('a converted capability package install', () => {
+    const packageOverlay = {
+      packageDigest: `pp:v1:${'A'.repeat(43)}`,
+      resources: [],
+    };
+    const overlayFor = jest.mocked(ownedPipelineSendPackageOverlay);
+    const newChat = inputs({
+      target: { kind: 'project', projectId: 'p', taskId: 't' },
+      replaceEmptyChat: true,
+    });
+
+    it('applies the package to the chat it creates', async () => {
+      overlayFor.mockResolvedValue(packageOverlay);
+      await send(newChat, { caller: automation() });
+      expect(overlayFor.mock.calls[0]?.[0]).toMatchObject({
+        executionId: 'exec-1',
+        pipelineId: 'pipe-1',
+        stepId: 'send',
+        initiator: { kind: 'automation', automationId: 'auto-1' },
+      });
+      expect(lastOptions().automationDispatch).toEqual({
+        version: 1,
+        automationName: 'auto-1',
+        presentation: 'foreground',
+        executionContext: 'personal',
+        packageOverlay,
+      });
+      // The run's journal never holds the package's paths.
+      expect(journalText()).not.toContain(packageOverlay.packageDigest);
+    });
+
+    it('fails the step, sending nothing, when the package isn’t intact', async () => {
+      overlayFor.mockRejectedValue(
+        new Error(
+          'The installed automation capability package is missing or invalid. Reinstall the automation.',
+        ),
+      );
+      await expect(send(newChat, { caller: automation() })).resolves.toEqual(
+        expect.objectContaining({
+          status: 'failure',
+          failureReason: 'target_not_ready',
+          error:
+            'The installed automation capability package is missing or invalid. Reinstall the automation.',
+        }),
+      );
+      expect(chat.calls).toEqual([]);
+    });
+
+    // A session prompt never carried its install's package natively.
+    it('applies none to a chat it sends to', async () => {
+      overlayFor.mockResolvedValue(packageOverlay);
+      await send(inputs(), { caller: automation() });
+      expect(overlayFor).not.toHaveBeenCalled();
+      expect(lastOptions().automationDispatch).not.toHaveProperty(
+        'packageOverlay',
+      );
+    });
+
+    it('applies none to a run no automation started', async () => {
+      overlayFor.mockResolvedValue(packageOverlay);
+      await send(newChat);
+      expect(overlayFor).not.toHaveBeenCalled();
+      expect(lastOptions()).not.toHaveProperty('automationDispatch');
+    });
+  });
+
   it('replaces an empty first chat only in a run an automation started', async () => {
     const newChat = inputs({
       target: { kind: 'project', projectId: 'p', taskId: 't' },
@@ -1736,5 +1855,592 @@ describe('a run an automation started', () => {
     );
     expect(lastOptions().newChat).toBe(true);
     expect(lastOptions()).not.toHaveProperty('newChatSeed');
+  });
+});
+
+// CAN-5479: what a chat automation's remaining settings need from the step.
+describe('a converted chat automation’s settings', () => {
+  const automation = (
+    overrides: Partial<PipelineHostActionCaller> = {},
+  ): Partial<PipelineHostActionCaller> => ({
+    initiator: { kind: 'automation', automationId: 'auto-1' },
+    ...overrides,
+  });
+  const newProjectChat = (
+    overrides: Partial<ResolvedSendAgentMessageInputs> = {},
+  ): ResolvedSendAgentMessageInputs =>
+    inputs({
+      target: { kind: 'project', projectId: 'p', taskId: 't' },
+      ...overrides,
+    });
+  const selections = {
+    collectionIds: ['col-1'],
+    skillRefs: [],
+    pluginRefs: [],
+  };
+  beforeEach(() => {
+    mockPreferences.mockResolvedValue({});
+  });
+
+  const pluginReference = {
+    kind: 'plugin' as const,
+    textStart: 0,
+    displayText: '@review',
+    plugin: {
+      kind: 'portable' as const,
+      ref: {
+        type: 'skill' as const,
+        source: { type: 'builtin' as const, id: 'app' },
+        skill_name: 'review',
+      },
+    },
+  };
+
+  it('passes local plugin selections into an existing chat’s override', async () => {
+    await send(inputs({ settings: { pluginSelections: selections } }));
+    expect(resolveOverride).toHaveBeenCalledWith(
+      { projectId: 'p', worktreeId: 't', chatId: 'c' },
+      {},
+      { pluginSelections: selections },
+    );
+  });
+
+  it('seeds a new chat with local plugin selections', async () => {
+    resolvePlugins.mockResolvedValue(selections);
+    await send(newProjectChat({ settings: { pluginSelections: selections } }));
+    expect(resolvePlugins).toHaveBeenCalledWith(
+      undefined,
+      undefined,
+      selections,
+    );
+    expect(lastOptions().newChatSeed?.pluginSelections).toEqual(selections);
+  });
+
+  it('seeds Ultra fast for a Codex chat and Regular for any other', async () => {
+    knownModel.mockImplementation((model) => model);
+    providerFor.mockImplementation((model) =>
+      model === 'gpt-x' ? 'codex' : 'claude',
+    );
+    await send(
+      newProjectChat({ settings: { model: 'gpt-x', speed: 'ultrafast' } }),
+    );
+    expect(lastOptions().newChatSeed?.modelConfig).toEqual({
+      speed: 'ultrafast',
+      fastMode: false,
+    });
+    await send(
+      newProjectChat({ settings: { model: 'opus', speed: 'ultrafast' } }),
+      { caller: { idempotencyKey: `${key}-2` } },
+    );
+    expect(lastOptions().newChatSeed?.modelConfig).toEqual({
+      speed: 'standard',
+      fastMode: false,
+    });
+  });
+
+  it('asks an existing chat’s override for the speed', async () => {
+    await send(inputs({ settings: { speed: 'ultrafast' } }));
+    expect(resolveOverride.mock.calls[0]?.[2]).toEqual({
+      modelConfig: { speed: 'ultrafast', fastMode: false },
+    });
+  });
+
+  it('binds a plugin reference to the runtime an existing chat’s turn runs on', async () => {
+    resolveOverride.mockResolvedValue({
+      version: 1,
+      model: 'gpt-x',
+      providerType: 'codex',
+      executionHarness: 'codex',
+      resetRuntime: true,
+    });
+    resolvePrompt.mockResolvedValue({
+      prompt: '@review',
+      referencedPluginSelections: selections,
+    });
+    await send(inputs({ text: '@review', textReferences: [pluginReference] }));
+    expect(resolvePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerType: 'codex',
+        executionHarness: 'codex',
+      }),
+    );
+    expect(lastOptions().turnOverride?.pluginSelections).toMatchObject(
+      selections,
+    );
+  });
+
+  it('binds a plugin reference in a new chat with no model to the default model’s runtime', async () => {
+    laneDefault.mockResolvedValue({
+      selection: { model: 'gpt-x', thinkingLevel: 'high' },
+      requireModel: () => ({ model: 'gpt-x', thinkingLevel: 'high' }),
+    });
+    providerFor.mockReturnValue('codex');
+    resolvePrompt.mockResolvedValue({ prompt: '@review' });
+    await send(
+      newProjectChat({ text: '@review', textReferences: [pluginReference] }),
+    );
+    expect(laneDefault).toHaveBeenCalledWith(expect.anything(), 'chat', {
+      workspaceId: 'p',
+    });
+    expect(resolvePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({ providerType: 'codex' }),
+    );
+    // The default only decides the binding; the chat still takes its own.
+    expect(lastOptions()).not.toHaveProperty('newChatSeed');
+  });
+
+  it('pins an Agent that inherits the default model to the destination’s default', async () => {
+    knownModel.mockReturnValue('agent_model_inherit');
+    inheriting.mockReturnValue(true);
+    pinAgent.mockResolvedValue('agent_model_inherit@opus');
+    providerFor.mockImplementation((model) =>
+      model === 'agent_model_inherit@opus' ? 'claude' : undefined,
+    );
+    const result = await send(
+      newProjectChat({ settings: { model: 'agent_model_inherit' } }),
+    );
+    expect(result.status).toBe('success');
+    expect(pinAgent).toHaveBeenCalledWith('agent_model_inherit', 'p');
+    // Project chat creation takes the Agent itself, never a route, and pins
+    // it to the project's default; the route only decides the provider.
+    expect(lastOptions().newChatSeed).toMatchObject({
+      model: 'agent_model_inherit',
+      providerType: 'claude',
+    });
+  });
+
+  it('keeps an interface mode with no model only when the default chat is Claude’s', async () => {
+    readConfig.mockResolvedValue(config('single-repo'));
+    readWorktrees.mockResolvedValue({
+      worktrees: [{ id: 't' }],
+      authority: 'ok',
+    } as unknown as Awaited<ReturnType<typeof readWorkspaceWorktreesDetailed>>);
+    persistedMode.mockImplementation((mode) =>
+      mode === 'canopy' ? undefined : mode,
+    );
+    laneDefault.mockResolvedValue({
+      selection: { model: 'opus', thinkingLevel: 'high' },
+      requireModel: () => ({ model: 'opus', thinkingLevel: 'high' }),
+    });
+    providerFor.mockImplementation((model) =>
+      model === 'opus' ? 'claude' : 'codex',
+    );
+    const request = newProjectChat({
+      settings: { interfaceMode: 'claude-code' },
+    });
+    await send(request, { caller: automation() });
+    expect(laneDefault).toHaveBeenCalledWith(expect.anything(), 'worktree', {
+      workspaceId: 'p',
+    });
+    expect(lastOptions().newChatSeed).toEqual({ interfaceMode: 'claude-code' });
+
+    laneDefault.mockResolvedValue({
+      selection: { model: 'gpt-x', thinkingLevel: 'high' },
+      requireModel: () => ({ model: 'gpt-x', thinkingLevel: 'high' }),
+    });
+    await send(request, {
+      caller: automation({ idempotencyKey: `${key}-2` }),
+    });
+    expect(lastOptions()).not.toHaveProperty('newChatSeed');
+  });
+
+  it('drops an interface mode for a model that isn’t Claude, as the native send does', async () => {
+    knownModel.mockReturnValue('gpt-x');
+    providerFor.mockReturnValue('codex');
+    const result = await send(
+      newProjectChat({ settings: { model: 'gpt-x', interfaceMode: 'canopy' } }),
+      { caller: automation() },
+    );
+    expect(result.status).toBe('success');
+    expect(lastOptions().newChatSeed).not.toHaveProperty('interfaceMode');
+  });
+
+  describe('attachment_paths', () => {
+    let root: string;
+    let attachments: string;
+
+    beforeEach(() => {
+      root = mkdtempSync(path.join(os.tmpdir(), 'canopy-send-attachments-'));
+      attachments = path.join(root, 'attachments', 't');
+      mkdirSync(path.join(attachments, 'nested'), { recursive: true });
+      writeFileSync(path.join(attachments, 'shot.png'), 'png');
+      writeFileSync(path.join(attachments, 'nested', 'doc.txt'), 'doc');
+      writeFileSync(path.join(root, 'secret.txt'), 'secret');
+      symlinkSync(
+        path.join(root, 'secret.txt'),
+        path.join(attachments, 'escape.txt'),
+      );
+      mockAttachmentsDir.mockImplementation((projectId, worktreeId) =>
+        projectId === 'p' ? path.join(root, 'attachments', worktreeId) : root,
+      );
+    });
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+    });
+
+    it('sends files in the task’s attachments folder with their composer payload', async () => {
+      const shot = path.join(attachments, 'shot.png');
+      const doc = path.join(attachments, 'nested', 'doc.txt');
+      const fileReferences = [
+        { displayPath: 'a.ts', absolutePath: '/repo/a.ts' },
+      ];
+      const result = await send(
+        inputs({
+          attachmentPaths: [shot, doc],
+          attachmentPromptContexts: [
+            { attachmentPath: shot, promptKind: 'linear-ticket' },
+          ],
+          fileReferences,
+          inputMode: 'voice',
+        }),
+      );
+      expect(result.status).toBe('success');
+      expect(mockAttachmentsDir).toHaveBeenCalledWith('p', 't');
+      expect(lastOptions().composition).toEqual({
+        attachmentPaths: [shot, doc],
+        attachmentPromptContexts: [
+          { attachmentPath: shot, promptKind: 'linear-ticket' },
+        ],
+        fileReferences,
+        inputMode: 'voice',
+      });
+    });
+
+    // A text-only send names no files, so a task with no attachments folder
+    // yet still sends.
+    it('sends an empty list without an attachments folder', async () => {
+      rmSync(path.join(root, 'attachments'), { recursive: true, force: true });
+      const result = await send(inputs({ attachmentPaths: [] }));
+      expect(result.status).toBe('success');
+    });
+
+    // The Orchestrator's and Cowork's chats keep attachments in their managed
+    // folders, which chat delivery reads; the worktree folder is not theirs.
+    it.each([
+      [
+        'an Orchestrator chat',
+        {
+          kind: 'bot' as const,
+          botId: 'app_advisor',
+          taskId: 't',
+          chatId: 'c',
+        },
+        'orchestrator-home',
+      ],
+      [
+        'a Cowork chat',
+        {
+          kind: 'project' as const,
+          projectId: 'cowork-1',
+          taskId: 't',
+          chatId: 'c',
+        },
+        'cowork-root',
+      ],
+    ])(
+      'contains %s’s attachments to its managed folder',
+      async (_label, target, folder) => {
+        const managed = path.join(root, folder, 'attachments');
+        mkdirSync(managed, { recursive: true });
+        writeFileSync(path.join(managed, 'shot.png'), 'png');
+        mockAttachmentsDir.mockImplementation((projectId) =>
+          projectId === 'p' ? attachments : managed,
+        );
+        if (target.kind === 'project') {
+          readConfig.mockResolvedValue(config('single-repo'));
+          readWorktrees.mockResolvedValue({
+            worktrees: [{ id: 't' }],
+            authority: 'ok',
+          } as unknown as Awaited<
+            ReturnType<typeof readWorkspaceWorktreesDetailed>
+          >);
+        }
+        const sent = await send(
+          inputs({ target, attachmentPaths: [path.join(managed, 'shot.png')] }),
+        );
+        expect(sent).toMatchObject({ status: 'success' });
+        expect(mockAttachmentsDir).toHaveBeenCalledWith(
+          target.kind === 'bot' ? APP_ADVISOR_PROJECT_ID : 'cowork-1',
+          't',
+        );
+
+        key = `${key}-next`;
+        const refused = await send(
+          inputs({
+            target,
+            attachmentPaths: [path.join(attachments, 'shot.png')],
+          }),
+        );
+        expect(refused).toMatchObject({ failureReason: 'validation_failed' });
+      },
+    );
+
+    it.each([
+      [
+        'a path outside the folder',
+        (): string => path.join(root, 'secret.txt'),
+      ],
+      [
+        'a path that climbs out with ..',
+        (): string => path.join(attachments, '..', '..', 'secret.txt'),
+      ],
+      [
+        'a ".." segment that stays inside',
+        (): string => `${attachments}/nested/../shot.png`,
+      ],
+      [
+        'a symlink out of the folder',
+        (): string => path.join(attachments, 'escape.txt'),
+      ],
+      ['a file that is missing', (): string => path.join(attachments, 'x.png')],
+      ['the folder itself', (): string => attachments],
+      ['a folder inside it', (): string => path.join(attachments, 'nested')],
+      ['a relative path', (): string => 'shot.png'],
+    ])('refuses %s, sending nothing', async (_label, attachment) => {
+      const result = await send(
+        inputs({
+          attachmentPaths: [path.join(attachments, 'shot.png'), attachment()],
+        }),
+      );
+      expect(result).toMatchObject({
+        status: 'failure',
+        failureReason: 'validation_failed',
+        error:
+          'send-agent-message "attachment_paths" must name files in the task\'s attachments folder',
+      });
+      expect(JSON.stringify(result)).not.toContain(root);
+      expect(dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it('prefers resolved file references over legacy ones', async () => {
+    const resolved = [{ displayPath: 'n.md', absolutePath: '/ws/n.md' }];
+    resolvePrompt.mockResolvedValue({
+      prompt: '@n.md',
+      fileReferences: resolved,
+    });
+    await send(
+      inputs({
+        text: '@n.md',
+        textReferences: [
+          {
+            kind: 'file',
+            textStart: 0,
+            displayText: '@n.md',
+            root: { kind: 'workspace' },
+            relativePath: 'n.md',
+          },
+        ],
+        fileReferences: [{ displayPath: 'old', absolutePath: '/old' }],
+      }),
+    );
+    expect(lastOptions().composition).toEqual({ fileReferences: resolved });
+  });
+
+  it('refuses legacy file references in an agent-started run', async () => {
+    const result = await send(
+      inputs({
+        fileReferences: [{ displayPath: 'a', absolutePath: '/etc/hosts' }],
+      }),
+      {
+        caller: {
+          agentOrigin: { projectId: 'a', worktreeId: 'b', chatId: 'c' },
+        },
+      },
+    );
+    expect(result).toMatchObject({ failureReason: 'authorization_conflict' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+});
+
+// CAN-5479: a converted agent automation's run keeps what its native action
+// set, through the grant main verified for this run; nothing else changes.
+describe('a converted agent automation’s native grant (CAN-5479)', () => {
+  const agentOrigin = { projectId: 'ap', worktreeId: 'aw', chatId: 'ac' };
+  const grantedCaller: Partial<PipelineHostActionCaller> = {
+    agentOrigin,
+    initiator: { kind: 'automation', automationId: 'auto-1' },
+  };
+  const grant: PipelineNativeGrant = {
+    automationId: 'auto-1',
+    pipelineRevision: 3,
+    contentHash: 'sha256:owned',
+    approvalMode: 'full-access',
+  };
+  const plugins = [
+    {
+      type: 'skill' as const,
+      source: { type: 'builtin' as const, id: 'app' },
+      skill_name: 'x',
+    },
+  ];
+  const newChat = (
+    settings: ResolvedSendAgentMessageInputs['settings'],
+  ): ResolvedSendAgentMessageInputs =>
+    inputs({
+      target: { kind: 'project', projectId: 'p', taskId: 't' },
+      settings,
+    });
+  let resolveNativeGrant: jest.Mock<
+    Promise<PipelineNativeGrant | undefined>,
+    [PipelineHostActionCaller]
+  >;
+
+  function grantHost(): ReturnType<typeof host> {
+    return createDesktopPipelineHostActions({
+      assertTargetOwner,
+      sendDispatch: dispatch,
+      hasTranscriptMessage: hasMessage,
+      resolveNativeGrant,
+    });
+  }
+
+  function sendGranted(
+    request: ResolvedSendAgentMessageInputs,
+    runCaller: Partial<PipelineHostActionCaller> = grantedCaller,
+  ): Promise<PipelineHostActionResult> {
+    return send(request, { caller: runCaller, hostActions: grantHost() });
+  }
+
+  beforeEach(() => {
+    resolveNativeGrant = jest.fn<
+      Promise<PipelineNativeGrant | undefined>,
+      [PipelineHostActionCaller]
+    >(() => Promise.resolve(grant));
+    mockPreferences.mockResolvedValue({});
+  });
+
+  it('passes the granted approvals with the new chat’s seed', async () => {
+    const result = await sendGranted(newChat({ approvalMode: 'full-access' }));
+
+    expect(result.status).toBe('success');
+    expect(resolveNativeGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: 'exec-1', ...grantedCaller }),
+    );
+    expect(lastOptions()).toMatchObject({
+      newChatSeed: { approvalMode: 'full-access' },
+      nativeGrant: { approvalMode: 'full-access' },
+    });
+  });
+
+  it('passes the granted plugins and model for an Orchestrator chat', async () => {
+    knownModel.mockReturnValue('gpt-5.5');
+    providerFor.mockReturnValue('codex');
+    const selections = {
+      collectionIds: [],
+      skillRefs: [{ sourceId: 'builtin:app', skillName: 'x' }],
+      pluginRefs: [],
+    };
+    resolvePlugins.mockResolvedValue(selections);
+    resolveNativeGrant.mockResolvedValue({
+      automationId: 'auto-1',
+      pipelineRevision: 3,
+      contentHash: 'sha256:owned',
+      plugins,
+      model: 'gpt-5.5',
+    });
+
+    await sendGranted(
+      inputs({
+        target: { kind: 'bot', botId: 'app_advisor', taskId: 't' },
+        settings: { model: 'gpt-5.5', plugins },
+      }),
+    );
+
+    expect(lastOptions().nativeGrant).toEqual({
+      model: 'gpt-5.5',
+      pluginSelections: selections,
+    });
+  });
+
+  it('keeps the grant beside settings D11 allows, and passes none for others', async () => {
+    knownModel.mockReturnValue('sonnet');
+    providerFor.mockReturnValue('claude');
+    // Plan mode and a project chat's model aren't D11 authority.
+    await sendGranted(
+      newChat({ approvalMode: 'full-access', planMode: true, model: 'sonnet' }),
+    );
+    expect(lastOptions().nativeGrant).toEqual({ approvalMode: 'full-access' });
+
+    for (const settings of [
+      { approvalMode: 'auto' as const },
+      { approvalMode: 'full-access' as const, plugins },
+    ]) {
+      key = `${key}-next`;
+      await sendGranted(newChat(settings));
+      expect(lastOptions()).not.toHaveProperty('nativeGrant');
+    }
+  });
+
+  it('keeps refusing authority for an existing chat', async () => {
+    const result = await sendGranted(
+      inputs({ settings: { approvalMode: 'full-access' } }),
+    );
+
+    expect(result).toMatchObject({ failureReason: 'authorization_conflict' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  // Plugin selections come from the automation's inputs, which the grant's
+  // content hash doesn't cover: the grant must name them itself.
+  it('passes no grant for plugin selections the grant doesn’t name', async () => {
+    const selections = {
+      collectionIds: ['col-1'],
+      skillRefs: [],
+      pluginRefs: [],
+    };
+    resolvePlugins.mockResolvedValue(selections);
+    await sendGranted(
+      newChat({ approvalMode: 'full-access', pluginSelections: selections }),
+    );
+    expect(lastOptions()).not.toHaveProperty('nativeGrant');
+
+    key = `${key}-next`;
+    resolveNativeGrant.mockResolvedValue({
+      ...grant,
+      pluginSelections: selections,
+    });
+    await sendGranted(
+      newChat({ approvalMode: 'full-access', pluginSelections: selections }),
+    );
+    expect(lastOptions().nativeGrant).toEqual({
+      approvalMode: 'full-access',
+      pluginSelections: selections,
+    });
+  });
+
+  it('passes no grant when none holds for the run', async () => {
+    resolveNativeGrant.mockResolvedValue(undefined);
+    await sendGranted(newChat({ approvalMode: 'full-access' }));
+    expect(lastOptions()).not.toHaveProperty('nativeGrant');
+  });
+
+  it('looks for no grant in a run no agent’s automation started', async () => {
+    for (const runCaller of [
+      { initiator: grantedCaller.initiator },
+      { agentOrigin },
+    ]) {
+      key = `${key}-next`;
+      await sendGranted(newChat({}), runCaller);
+    }
+    expect(resolveNativeGrant).not.toHaveBeenCalled();
+  });
+
+  it('refuses a replay once the grant no longer holds', async () => {
+    setBeforeSendJournalWriteForTests((record) => {
+      if (record.phase === 'done') throw new Error('app stopped');
+    });
+    await sendGranted(newChat({ approvalMode: 'full-access' }));
+    setBeforeSendJournalWriteForTests(undefined);
+    resolveNativeGrant.mockResolvedValue(undefined);
+
+    const result = await sendGranted(newChat({ approvalMode: 'full-access' }));
+
+    expect(result).toMatchObject({
+      failureReason: 'authorization_conflict',
+      error: 'This step already ran with different inputs',
+    });
+    expect(chat.messages.size).toBe(1);
   });
 });

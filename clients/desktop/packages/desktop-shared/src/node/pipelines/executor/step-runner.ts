@@ -104,6 +104,7 @@ import {
 } from './normalize-pipeline';
 import {
   AI_GATEWAY_MODELS,
+  APP_ADVISOR_PROJECT_ID,
   CLAUDE_MODELS,
   CODEX_MODELS,
   DEFAULT_CLAUDE_MODEL,
@@ -3191,6 +3192,32 @@ async function resolvePipelineAliasProbeModel(options: {
 }
 
 /**
+ * Where an Agent alias's inherited default is read for a probe: a send step's
+ * destination, as the host resolves it (an Orchestrator chat for any bot),
+ * else the run's own scope. A converted chat automation runs with no project,
+ * so without this an inheriting Agent would be probed as the worktree
+ * default, not the default of where the message goes (CAN-5479).
+ */
+function aliasProbeScope(
+  uses: string | undefined,
+  rawInputValues: Record<string, string>,
+  scope: PipelineModelPolicyScope,
+): PipelineModelPolicyScope {
+  if (uses !== 'builtin/send-agent-message') return scope;
+  const projectId = rawInputValues.project_id?.trim();
+  const destination =
+    projectId ||
+    (rawInputValues.bot_id?.trim() ? APP_ADVISOR_PROJECT_ID : undefined);
+  if (!destination) return scope;
+  return {
+    projectId: destination,
+    ...(scope.executionContext
+      ? { executionContext: scope.executionContext }
+      : {}),
+  };
+}
+
+/**
  * Build one probe per model-carrying input the resolved action declares.
  *
  * Effective value per key, mirroring the action runner's own precedence:
@@ -3227,6 +3254,11 @@ async function collectModelPolicyProbes(options: {
 }): Promise<ModelPolicyProbe[]> {
   const declaredInputs = options.action.definition.inputs ?? {};
   const probes: ModelPolicyProbe[] = [];
+  const aliasScope = aliasProbeScope(
+    options.uses,
+    options.rawInputValues,
+    options.scope,
+  );
   // Resolved at most once per step, and only when a key could actually be
   // pinned — a step whose action declares no pinnable model input must not pay
   // for an extra account read.
@@ -3283,7 +3315,7 @@ async function collectModelPolicyProbes(options: {
           modelAliases: options.modelAliases,
           modelAliasPreferences: options.modelAliasPreferences,
           runtime: options.runtime,
-          scope: options.scope,
+          scope: aliasScope,
         }),
         displayModel: namedValue,
         source: 'step',
@@ -3305,7 +3337,7 @@ async function collectModelPolicyProbes(options: {
           modelAliases: options.modelAliases,
           modelAliasPreferences: options.modelAliasPreferences,
           runtime: options.runtime,
-          scope: options.scope,
+          scope: aliasScope,
         }),
         displayModel: derivedValue,
         source: 'action-default',

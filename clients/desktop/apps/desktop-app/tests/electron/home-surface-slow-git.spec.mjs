@@ -378,6 +378,139 @@ test.describe('home composer send with slow git worktree add', () => {
     }
   });
 
+  test('CAN-5422: Home shows the creation error, settles pending state and retries in the same app', async () => {
+    test.setTimeout(120_000);
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-home-git-retry-'),
+    );
+    seedDemoWorkspaces({
+      userDataDir,
+      apps: ['ts-pnpm-vite'],
+      createWorktrees: false,
+    });
+    const { electronApp } = await launchCanopy({ userDataDir });
+    const creationError =
+      'Selected Git executable cannot be used. Install Git, then recheck.';
+    const prompt = 'Keep this task draft while Git is repaired.';
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      // Isolate renderer failure/retry from Linux discovery (covered by the
+      // main regression). Fail once at the established creation IPC boundary,
+      // then restore the REAL handler before retry. No provider is contacted.
+      await electronApp.evaluate(({ ipcMain }, message) => {
+        const create = ipcMain._invokeHandlers.get('worktree:create');
+        const send = ipcMain._invokeHandlers.get('chat:send-message');
+        if (!create || !send) throw new Error('Home IPC handlers unavailable');
+        const state = { create, send, sends: [] };
+        globalThis.__can5422HomeRetry = state;
+        ipcMain.removeHandler('worktree:create');
+        ipcMain.handle('worktree:create', async () => {
+          await new Promise((resolve) => {
+            state.releaseFailure = resolve;
+          });
+          ipcMain.removeHandler('worktree:create');
+          ipcMain.handle('worktree:create', create);
+          throw new Error(message);
+        });
+        ipcMain.removeHandler('chat:send-message');
+        ipcMain.handle('chat:send-message', (_event, request) => {
+          state.sends.push(request);
+          return {};
+        });
+      }, creationError);
+
+      await window.getByTestId('sidebar-create-task').click();
+      const home = window.getByTestId('page-home');
+      await expect(home).toBeVisible();
+      await expect(home.getByTestId('home-workspace-select')).toContainText(
+        'TypeScript pnpm Vite',
+      );
+      await home.getByTestId('home-composer-editor').fill(prompt);
+      const send = home.getByTestId('home-send-button');
+      await send.click();
+      await expect
+        .poll(() =>
+          electronApp.evaluate(
+            () => typeof globalThis.__can5422HomeRetry.releaseFailure,
+          ),
+        )
+        .toBe('function');
+      await expect(send).toBeDisabled();
+      await electronApp.evaluate(() =>
+        globalThis.__can5422HomeRetry.releaseFailure(),
+      );
+
+      // This assertion goes red if Home replaces worktreeError with its
+      // generic "Failed to create worktree" message again.
+      await expect(home.getByTestId('home-composer-error')).toContainText(
+        creationError,
+      );
+      await expect(send).toBeEnabled();
+      await expect(
+        window.getByLabel('Creating worktree', { exact: true }),
+      ).toHaveCount(0);
+      await expect(home.getByTestId('home-composer-editor')).toHaveText(prompt);
+      await expect(window.getByTestId('worktree-row')).toHaveCount(0);
+      expect(
+        await electronApp.evaluate(() => globalThis.__can5422HomeRetry.sends),
+      ).toEqual([]);
+
+      // The same draft and same application use real worktree creation now.
+      await send.click();
+      await expect(home).toHaveCount(0, { timeout: 30_000 });
+      const row = window.getByTestId('worktree-row');
+      await expect(row).toHaveCount(1, { timeout: 30_000 });
+      await expect(row).toBeVisible();
+      await expect(
+        window
+          .getByTestId('panel-content-chat')
+          .getByText(prompt, { exact: true }),
+      ).toBeVisible();
+      await expect(window.getByTestId('home-composer-error')).toHaveCount(0);
+      await expect(
+        window.getByLabel('Creating worktree', { exact: true }),
+      ).toHaveCount(0);
+      await expect
+        .poll(() =>
+          electronApp.evaluate(
+            () => globalThis.__can5422HomeRetry.sends.length,
+          ),
+        )
+        .toBe(1);
+      const worktrees = JSON.parse(
+        readFileSync(
+          path.join(
+            userDataDir,
+            'workspaces',
+            'demo-ts-pnpm-vite',
+            'worktrees.json',
+          ),
+          'utf8',
+        ),
+      ).worktrees;
+      expect(worktrees).toHaveLength(1);
+      expect(worktrees[0].id).toBe(await row.getAttribute('data-worktree-id'));
+    } finally {
+      await electronApp
+        .evaluate(({ ipcMain }) => {
+          const state = globalThis.__can5422HomeRetry;
+          if (!state) return;
+          state.releaseFailure?.();
+          for (const [channel, handler] of [
+            ['worktree:create', state.create],
+            ['chat:send-message', state.send],
+          ]) {
+            ipcMain.removeHandler(channel);
+            ipcMain.handle(channel, handler);
+          }
+          delete globalThis.__can5422HomeRetry;
+        })
+        .catch(() => undefined);
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('single-repo: immediate transition, held send with setup status, auto-dispatch', async () => {
     test.setTimeout(180_000);
 

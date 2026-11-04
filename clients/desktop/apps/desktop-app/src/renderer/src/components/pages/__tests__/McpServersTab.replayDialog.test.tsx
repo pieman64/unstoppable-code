@@ -7,8 +7,8 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  McpServerData,
-  McpServerFile,
+  McpServerDataView,
+  McpServerFileView,
   McpServersIndexFile,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -36,7 +36,7 @@ const ENV_VALUE = 'env-secret-value';
 const CONFIG_HEADER_VALUE = 'config-header-secret';
 const AUTH_TOKEN = 'config-auth-token';
 
-const server: McpServerData = {
+const server: McpServerDataView = {
   definition: {
     id: 'server',
     name: 'Private server',
@@ -121,7 +121,7 @@ describe('McpServerDialog session replay', () => {
       version: 1,
       servers: [{ ...server.definition, configs: server.configs }],
     };
-    const file: McpServerFile = { version: 1, server };
+    const file: McpServerFileView = { version: 1, server };
     Object.defineProperty(window, 'mcpServers', {
       configurable: true,
       value: {

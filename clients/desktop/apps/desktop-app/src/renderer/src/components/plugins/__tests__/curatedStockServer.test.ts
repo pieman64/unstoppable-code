@@ -2,7 +2,7 @@
  * @jest-environment jsdom
  */
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
-import type { McpServerData } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerDataView } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   matchesStockCuratedServer,
   stockCuratedServerData,
@@ -21,7 +21,7 @@ const granola: CuratedMcpServerEntry = {
   oauthHints: { scopes: ['read'], usePkce: true },
 };
 
-function stock(entry: CuratedMcpServerEntry = granola): McpServerData {
+function stock(entry: CuratedMcpServerEntry = granola): McpServerDataView {
   const result = stockCuratedServerData(entry, {
     now: '2026-09-01T00:00:00.000Z',
     configId: 'granola-config',
@@ -58,10 +58,10 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ).toBe(true);
   });
 
-  it.each<[string, (server: McpServerData) => McpServerData]>([
+  it.each<[string, (server: McpServerDataView) => McpServerDataView]>([
     [
       'a custom OAuth client id on the default endpoint',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -71,21 +71,21 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'no explicit sign-in handler, so it inherits one',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: { ...server.definition, httpAuthHandler: undefined },
       }),
     ],
     [
       'the provider sign-in handler',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: { ...server.definition, httpAuthHandler: 'provider' },
       }),
     ],
     [
       'credentials in the endpoint URL',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -98,7 +98,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'custom OAuth scopes',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -108,7 +108,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a custom OAuth audience',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -118,7 +118,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a custom endpoint',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -128,14 +128,14 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'server headers',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: { ...server.definition, headers: { 'X-Team': 'eng' } },
       }),
     ],
     [
       'configuration headers',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) => ({
           ...config,
@@ -145,7 +145,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a stored access token',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) => ({
           ...config,
@@ -155,7 +155,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a disabled configuration',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) => ({
           ...config,
@@ -165,7 +165,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a definition field Add never writes',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: Object.assign({}, server.definition, {
           proxyOverride: 'http://127.0.0.1:9000',
@@ -174,7 +174,7 @@ describe('matchesStockCuratedServer (REG-3052)', () => {
     ],
     [
       'a configuration field Add never writes',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) =>
           Object.assign({}, config, { region: 'eu' }),

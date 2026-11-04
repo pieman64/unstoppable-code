@@ -1,4 +1,8 @@
 import { dirname } from 'node:path';
+import {
+  projectBackgroundWorkspaceTarget,
+  type BackgroundWorkspaceTarget,
+} from './workspace-owner-projection';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   isAddressableSharedPipelineRemoteId,
@@ -49,7 +53,6 @@ import type {
   AutomationAction,
   AutomationsListResponse,
   ScheduledActivity,
-  WorkspaceType,
 } from '@canopy/desktop-shared/types';
 import {
   automationContextRefusalMessage,
@@ -81,17 +84,7 @@ export async function captureBackgroundExecutionContext(): Promise<
 export async function resolveBackgroundWorkspaceTarget(
   projectId: string,
   worktreeId?: string,
-): Promise<{
-  workspaceOwner: WorkspaceContext;
-  linkedPersonalCandidate: boolean;
-  ownershipTransferred: boolean;
-  /** Persisted workspace kind; absent for App Advisor, which has none. */
-  workspaceType?: WorkspaceType;
-  /** Persisted Private memory setting, from the same read as the owner. */
-  privateMemory: boolean;
-  /** The Private memory fields failed validation; memory callers fail closed. */
-  memoryMalformed: boolean;
-}> {
+): Promise<BackgroundWorkspaceTarget> {
   if (projectId === APP_ADVISOR_PROJECT_ID)
     return {
       workspaceOwner: { kind: 'personal' },
@@ -110,21 +103,7 @@ export async function resolveBackgroundWorkspaceTarget(
   const { readWorkspaceConfigDetailed } =
     await import('../lib/workspace-persistence');
   const read = await readWorkspaceConfigDetailed(workspaceId);
-  if (read.authority !== 'ok' || read.ownerMalformed)
-    throw new Error(backgroundExecutionDeniedMessage('unknown-provenance'));
-  return {
-    workspaceOwner: read.config.owner
-      ? {
-          kind: 'organization',
-          organizationId: read.config.owner.organizationId,
-        }
-      : { kind: 'personal' },
-    linkedPersonalCandidate: read.config.type === 'single-repo',
-    ownershipTransferred: read.config.ownershipTransfer !== undefined,
-    workspaceType: read.config.type,
-    privateMemory: read.config.privateMemory === true,
-    memoryMalformed: read.memoryMalformed,
-  };
+  return projectBackgroundWorkspaceTarget(read);
 }
 
 /** Read owner authority, never a renderer selection or a default on failed reads. */

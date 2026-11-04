@@ -117,16 +117,13 @@ export function SettingsScopePicker({
           <MemberAvatar
             name={viewerName}
             image={model.viewer?.image ?? null}
-            size={24}
-            maxInitials={1}
-            className="shrink-0"
+            size="md"
           />
         ) : (
           <OrganizationLogo
             name={scope.name}
             logoUrl={scope.logoUrl}
-            size={24}
-            maxInitials={1}
+            size="md"
           />
         )}
         <span className="flex min-w-0 flex-1 flex-col">
@@ -167,8 +164,7 @@ export function SettingsScopePicker({
             <MemberAvatar
               name={viewerName}
               image={model.viewer?.image ?? null}
-              size={16}
-              maxInitials={1}
+              size="xs"
             />
           </DropdownMenuItemIcon>
           <span className="min-w-0 flex-1 truncate">Personal account</span>
@@ -204,8 +200,7 @@ export function SettingsScopePicker({
                       <OrganizationLogo
                         name={organization.name}
                         logoUrl={organization.logoUrl}
-                        size={16}
-                        maxInitials={1}
+                        size="xs"
                       />
                     ) : (
                       <BuildingIcon size="xl" />

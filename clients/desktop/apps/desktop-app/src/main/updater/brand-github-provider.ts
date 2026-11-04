@@ -230,9 +230,13 @@ function compareRcReleaseVersions(
 function selectLatestPrerelease(
   releases: GitHubReleaseInfo[],
   releaseFlavor: 'internal' | 'rc',
+  channelFile: string,
 ): GitHubReleaseInfo | null {
   const prereleases = releases
     .filter(isPrereleaseRelease)
+    .filter((release) =>
+      release.assets.some((asset) => asset.name === channelFile),
+    )
     .filter((release) =>
       releaseFlavor === 'rc'
         ? parseRcReleaseVersion(release) !== null
@@ -340,7 +344,10 @@ export class BrandedPrivateGitHubProvider extends BaseGitHubProvider<BrandedPriv
       this.channel,
       this.platform,
     );
-    const releaseInfo = await this.getLatestVersionInfo(cancellationToken);
+    const releaseInfo = await this.getLatestVersionInfo(
+      cancellationToken,
+      channelFile,
+    );
     const asset = releaseInfo.assets.find(
       (entry) => entry.name === channelFile,
     );
@@ -411,6 +418,7 @@ export class BrandedPrivateGitHubProvider extends BaseGitHubProvider<BrandedPriv
 
   private async getLatestVersionInfo(
     cancellationToken: CancellationToken,
+    channelFile: string,
   ): Promise<GitHubReleaseInfo> {
     if (this.targetReleaseTag) {
       return this.getTargetVersionInfo(cancellationToken);
@@ -442,7 +450,7 @@ export class BrandedPrivateGitHubProvider extends BaseGitHubProvider<BrandedPriv
     if (Array.isArray(parsed)) {
       const releases = parsed.filter(isGitHubReleaseInfo);
       releaseInfo = this.updater.allowPrerelease
-        ? selectLatestPrerelease(releases, this.releaseFlavor)
+        ? selectLatestPrerelease(releases, this.releaseFlavor, channelFile)
         : selectLatestStableRelease(releases);
     } else {
       releaseInfo = parsed;

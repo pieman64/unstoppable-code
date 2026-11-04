@@ -147,7 +147,7 @@ export function parseWhereExeOutput(stdout: string): string[] {
 
 /**
  * The precedence a host applies when it detects Git:
- * - `linux` (Linux x64/arm64): the explicit choice, reported but never replaced
+ * - `linux` (Linux x64 and arm64): the explicit choice, reported but never replaced
  *   when it is broken; the revalidated earlier discovery; the refreshed login
  *   PATH in order; then the system location. Only an explicit choice is saved.
  * - `probe` (macOS and Windows): the saved preference, a published override,

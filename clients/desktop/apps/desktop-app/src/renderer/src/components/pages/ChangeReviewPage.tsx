@@ -21,6 +21,7 @@ import {
   ChatPreviewPopover,
   ExecutionActionButton,
   HeaderActionButton,
+  Heading,
   PanelSection as SharedPanelSection,
   WorktreeRow,
   type ChatPreviewRow,
@@ -122,7 +123,9 @@ function ReviewSection({ section, children }: ReviewSectionProps): JSX.Element {
       data-testid={`change-review-section-${section.id}`}
       className="min-w-0 rounded-xl bg-base p-4 ring-[length:var(--border-hairline)] ring-line-secondary"
     >
-      <h2 className="text-sm font-semibold fg-primary">{section.title}</h2>
+      <Heading level={2} variant="title">
+        {section.title}
+      </Heading>
       <p className="mt-1 text-xs leading-relaxed fg-secondary">
         {section.summary}
       </p>
@@ -785,7 +788,9 @@ function ChangeReviewContent(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
         <div className="mx-auto max-w-5xl space-y-8">
           <div className="space-y-2">
-            <h1 className="text-2xl font-semibold fg-primary">Change review</h1>
+            <Heading level={1} variant="page">
+              Change review
+            </Heading>
             <p className="text-s fg-secondary">
               Nine UI fixes from one batch, each with the old state described
               and the new state rendered by the shipping components with seeded

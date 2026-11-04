@@ -1,3 +1,4 @@
+import type { SecretValueInput } from '@canopy/desktop-shared/types/stored-secrets';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { AccountMcpClientSetup } from '@canopy/protocol/mcp-servers';
 import {
@@ -7,7 +8,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AccountMcpConnection,
-  McpServerData,
+  McpServerDataView,
   McpServerIndexEntry,
   McpServerStatusEntry,
 } from '@canopy/desktop-shared/types/mcp-servers';
@@ -53,7 +54,7 @@ export function DesktopMcpManagementSections({
   onMoveToDevice,
   onBusyChange,
 }: {
-  server: McpServerData | null;
+  server: McpServerDataView | null;
   status?: McpServerStatusEntry;
   connection?: AccountMcpConnection;
   row?: McpServerIndexEntry;
@@ -181,7 +182,7 @@ export function DesktopMcpManagementSections({
               )))
       : undefined;
   const promote = async (
-    token: string | undefined,
+    token: SecretValueInput | undefined,
     expectedAccountId: string,
   ): Promise<void> => {
     if (!row) throw new Error('Reopen the server detail to move it.');

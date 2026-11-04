@@ -6,6 +6,7 @@ import {
   Button,
   DialogModal,
   RefreshSpinner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -76,9 +77,9 @@ export function SummarySectionBody({
           >
             <div className="flex items-start justify-between gap-4">
               <div className="space-y-1">
-                <h3 className="text-m font-semibold fg-primary">
+                <Heading level={3} variant="section">
                   {summary.title}
-                </h3>
+                </Heading>
                 <p className="text-s fg-secondary">
                   Last updated {formatRelativeTime(summary.generatedAt)}
                   {summary.lastFullRefreshAt !== undefined
@@ -108,9 +109,9 @@ export function SummarySectionBody({
 
             {summary.highlights !== undefined ? (
               <div className="space-y-3">
-                <h4 className="text-xs font-semibold fg-secondary">
+                <Heading level={4} variant="label">
                   Highlights
-                </h4>
+                </Heading>
                 <div className={`${REPLAY_BLOCK_CLASS} space-y-2`}>
                   {summary.highlights.map((highlight, index) => (
                     <div
@@ -132,18 +133,18 @@ export function SummarySectionBody({
 
             {summary.repos && summary.repos.length > 0 ? (
               <div className="space-y-3">
-                <h4 className="text-xs font-semibold fg-secondary">
+                <Heading level={4} variant="label">
                   Repository summaries
-                </h4>
+                </Heading>
                 <div className="space-y-2">
                   {summary.repos.map((repo) => (
                     <div
                       key={repo.name}
                       className="rounded-xl border bg-fg-primary/[0.03] px-3 py-3"
                     >
-                      <h5 className="text-s font-semibold fg-primary">
+                      <Heading level={5} variant="title">
                         {repo.name}
-                      </h5>
+                      </Heading>
                       <p
                         className={`${REPLAY_BLOCK_CLASS} mt-1 text-s leading-6 fg-primary/80`}
                       >

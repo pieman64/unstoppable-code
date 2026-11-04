@@ -10,6 +10,7 @@ import {
   StatusPill,
   shareAudienceLabelText,
   type AddedPluginItem,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { SkillIcon } from '@canopy/ui-shared/icons';
 import { getDocument } from '@canopy/ui-shared/panels';
@@ -584,9 +585,9 @@ export function ChatPluginsSection({
             rows.length > 0 || error ? 'mt-3 space-y-1.5' : 'space-y-1.5'
           }
         >
-          <h4 className="text-xs font-medium fg-secondary">
+          <Heading level={4} variant="label">
             Used in this chat
-          </h4>
+          </Heading>
           {used.map((target) => (
             <UsedInvocableRow
               key={target.entry.id}

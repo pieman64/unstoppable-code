@@ -58,10 +58,10 @@ it('renders a collapsed-disclosure Privacy switch row that follows synced prefer
       'Personal projects on the web',
     );
     expect(
-      container.querySelector<HTMLDetailsElement>(
-        '[data-testid="personal-catalog-disclosure"]',
-      )?.open,
-    ).toBe(false);
+      container
+        .querySelector('[data-testid="personal-catalog-disclosure-toggle"]')
+        ?.getAttribute('aria-expanded'),
+    ).toBe('false');
     expect(
       container.querySelector('[data-testid="personal-catalog-disclosure"]')
         ?.textContent,

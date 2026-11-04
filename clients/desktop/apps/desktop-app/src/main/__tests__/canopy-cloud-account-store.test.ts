@@ -2,6 +2,11 @@ import { access, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import { safeStorage } from 'electron';
 
 jest.mock('node:fs/promises');
+let mockSecretServiceState: 'secure' | 'unavailable' | 'locked' = 'secure';
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    mockSecretServiceState,
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): string => 'linux',
 }));
@@ -111,6 +116,7 @@ const withReplicaPurgeFence = async <T>(
 describe('safe credential storage diagnostics', () => {
   it('projects only policy metadata even when no cloud account exists', () => {
     mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockSecretServiceState = 'secure';
     mockedBackend.mockReturnValue('gnome_libsecret');
     expect(toPublicCanopyCloudAccountState(null)).toMatchObject({
       secureStorageStatus: {
@@ -125,6 +131,7 @@ describe('safe credential storage diagnostics', () => {
 
 describe('Canopy Cloud account store', () => {
   beforeEach(() => {
+    mockSecretServiceState = 'secure';
     jest.clearAllMocks();
     invalidateCanopyCloudAccountCache();
     mockedIsEncryptionAvailable.mockReturnValue(true);
@@ -208,6 +215,7 @@ describe('Canopy Cloud account store', () => {
     mockedReadFile.mockResolvedValue(bytes);
     mockedDecryptString.mockImplementation(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       throw new Error('native secret diagnostic');
     });
     const listener = jest.fn();
@@ -240,6 +248,8 @@ describe('Canopy Cloud account store', () => {
       mockedReadFile.mockResolvedValue(Buffer.from(JSON.stringify(entry)));
       mockedBackend.mockReturnValue(backend);
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState =
+        backend === 'gnome_libsecret' ? 'locked' : 'secure';
       expect(isCanopyCloudStorageAvailable()).toBe(false);
       await expect(readCanopyCloudAccountWithStatus()).resolves.toMatchObject({
         status: 'unavailable',
@@ -272,6 +282,7 @@ describe('Canopy Cloud account store', () => {
     });
     mockedBackend.mockReturnValue('unknown');
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'secure';
     await expect(loadCanopyCloudAccountPublicState()).resolves.toMatchObject({
       read: 'unavailable',
       secureStorageFailure: {
@@ -284,6 +295,7 @@ describe('Canopy Cloud account store', () => {
     expect(mockedReadFile).toHaveBeenCalledTimes(1);
     mockedBackend.mockReturnValue('gnome_libsecret');
     mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockSecretServiceState = 'secure';
     await expect(loadCanopyCloudAccount()).resolves.toMatchObject({
       apiKey: entry.apiKey,
     });
@@ -302,12 +314,14 @@ describe('Canopy Cloud account store', () => {
     mockedReadFile.mockResolvedValue(Buffer.from(JSON.stringify(entry)));
     await loadCanopyCloudAccount();
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
     await expect(readCanopyCloudAccountWithStatus()).resolves.toMatchObject({
       status: 'unavailable',
       secureStorageFailure: { state: 'locked' },
     });
     expect(peekCanopyCloudAccount()).toMatchObject({ apiKey: entry.apiKey });
     mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockSecretServiceState = 'secure';
     mockedDecryptString.mockImplementationOnce(() => {
       throw new Error('temporary failure');
     });
@@ -337,6 +351,7 @@ describe('Canopy Cloud account store', () => {
     );
     mockedDecryptString.mockImplementationOnce((raw: Buffer) => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       return raw.toString('utf8');
     });
     await expect(readCanopyCloudAccountWithStatus()).resolves.toMatchObject({
@@ -350,6 +365,7 @@ describe('Canopy Cloud account store', () => {
     expect(mockedWriteFileAtomically).not.toHaveBeenCalled();
     expect(mockedRm).not.toHaveBeenCalled();
     mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockSecretServiceState = 'secure';
     await expect(readCanopyCloudAccountWithStatus()).resolves.toMatchObject({
       status: 'ok',
       entry: { apiKey: entry.apiKey },
@@ -368,6 +384,7 @@ describe('Canopy Cloud account store', () => {
     };
     mockedMkdir.mockImplementationOnce(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       return Promise.resolve(undefined);
     });
     const listener = jest.fn();
@@ -387,6 +404,7 @@ describe('Canopy Cloud account store', () => {
 
   it('distinguishes an unavailable keychain from signed out', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
     await expect(readCanopyCloudAccountWithStatus()).resolves.toMatchObject({
       status: 'unavailable',
       secureStorageFailure: { code: 'SECURE_STORAGE_READ_UNAVAILABLE' },
@@ -437,6 +455,7 @@ describe('Canopy Cloud account store', () => {
     mockedReadFile.mockResolvedValue(Buffer.from('encrypted'));
     mockedDecryptString.mockImplementation(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       throw new Error('locked');
     });
 
@@ -580,6 +599,7 @@ describe('Canopy Cloud account store', () => {
     mockedReadFile.mockResolvedValue(Buffer.from('saved-ciphertext'));
     mockedDecryptString.mockImplementation(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       throw new Error('locked');
     });
 
@@ -868,6 +888,7 @@ describe('Canopy Cloud account store', () => {
 
   it('does not mutate when secure storage is unavailable during reset', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     await expect(
       resetUnreadableCanopyCloudAccount(withReplicaPurgeFence),
@@ -889,10 +910,12 @@ describe('Canopy Cloud account store', () => {
 
   it('does not let a guard-only read overwrite another caller read status', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
     await expect(loadCanopyCloudAccount()).resolves.toBeNull();
     expect(isCanopyCloudAccountReadDegraded()).toBe(true);
 
     mockedIsEncryptionAvailable.mockReturnValue(true);
+    mockSecretServiceState = 'secure';
     await expect(clearCanopyCloudAccountUnlessGuest()).resolves.toMatchObject({
       status: 'cleared',
     });
@@ -1182,6 +1205,7 @@ describe('Canopy Cloud account store', () => {
 
   it('fails a guarded clear closed when secure storage is unavailable', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     await expect(clearCanopyCloudAccountUnlessGuest()).rejects.toMatchObject({
       secureStorageFailure: { code: 'SECURE_STORAGE_READ_UNAVAILABLE' },

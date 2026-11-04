@@ -1,5 +1,9 @@
 import { parseMemoryDocumentInWorker } from './parse-runner';
-import { recordMemoryEdit, withMemoryWriteLock } from './edit-coordination';
+import {
+  backfillMemoryScopeBeforeRead,
+  recordMemoryEdit,
+  withMemoryWriteLock,
+} from './edit-coordination';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   lstat,
@@ -17,7 +21,12 @@ import type {
   LocalMemoryFileSummary,
   LocalMemoryItem,
 } from '@canopy/desktop-shared/types';
-import { isMemoryMarkdownFileName, redactMemoryContent } from './store';
+import {
+  assertMemoryScopeLockHeld,
+  isMemoryMarkdownFileName,
+  isMemoryPathContained,
+} from './memory-files';
+import { redactMemoryContent } from './store';
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_FILES = 2_000;
@@ -317,8 +326,14 @@ function hasErrorCode(error: unknown, code: string): boolean {
 export async function listLocalMemoryFiles(
   scopeDir: string,
 ): Promise<LocalMemoryFileSummary[]> {
-  const candidates = ['MEMORY.md'];
+  const folders: string[] = [];
   for (const folder of ['topics', 'inbox']) {
+    if (await isMemoryPathContained(scopeDir, join(scopeDir, folder)))
+      folders.push(folder);
+  }
+  await backfillMemoryScopeBeforeRead(scopeDir);
+  const candidates = ['MEMORY.md'];
+  for (const folder of folders) {
     try {
       const entries = await readdir(join(scopeDir, folder), {
         withFileTypes: true,
@@ -386,6 +401,8 @@ export async function readLocalMemoryDocument(
   scopeDir: string,
   fileKey: string,
 ): Promise<LocalMemoryDocument> {
+  await safePath(scopeDir, fileKey);
+  await backfillMemoryScopeBeforeRead(scopeDir);
   const content = await readBounded(await safePath(scopeDir, fileKey));
   return {
     ...(await parseMemoryDocumentInWorker(fileKey, content)),
@@ -466,8 +483,9 @@ async function replaceAtRevision(
       revision(await readBounded(path)) !== request.revision
     )
       throw new Error(CHANGED_SINCE_OPENED);
+    await recordMemoryEdit(scopeDir);
+    await assertMemoryScopeLockHeld();
     await rename(temporaryPath, path);
-    recordMemoryEdit(scopeDir);
   } finally {
     await unlink(temporaryPath).catch(() => undefined);
   }
@@ -548,7 +566,8 @@ export async function deleteLocalMemoryFile(
       throw new Error(
         'Memory changed since you opened it. Refresh before deleting.',
       );
+    await recordMemoryEdit(scopeDir);
+    await assertMemoryScopeLockHeld();
     await unlink(path);
-    recordMemoryEdit(scopeDir);
   });
 }

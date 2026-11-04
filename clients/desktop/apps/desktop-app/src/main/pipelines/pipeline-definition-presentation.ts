@@ -4,6 +4,7 @@ import type {
   SharedPipelineSummary,
 } from '@canopy/protocol/pipelines';
 import type { PipelineDefinitionSource } from '@canopy/protocol/canopy-core';
+import type { ExecutionOptions } from '@canopy/desktop-shared/node/pipelines/executor';
 import type {
   PipelineData,
   PipelineInfo,
@@ -20,7 +21,14 @@ import type {
 
 export type PresentedPipeline =
   | { readonly kind: 'info'; readonly info: PipelineInfo }
-  | { readonly kind: 'data'; readonly data: PipelineData }
+  | {
+      readonly kind: 'data';
+      readonly data: PipelineData;
+      /** A curated revision's package, which its run executes with. */
+      readonly pipelinePackage?: NonNullable<
+        ExecutionOptions['pipelinePackage']
+      >;
+    }
   | {
       readonly kind: 'shared';
       readonly pipeline: SharedPipelineSummary | SharedPipelineDetail;

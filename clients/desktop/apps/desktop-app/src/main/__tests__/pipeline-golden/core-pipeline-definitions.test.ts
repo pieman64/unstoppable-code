@@ -56,8 +56,8 @@ beforeAll(async () => {
   world = await createPipelineGoldenWorld();
 });
 
-afterAll(() => {
-  world.dispose();
+afterAll(async () => {
+  await world.dispose();
 });
 
 const caller: CanopyCallerDescriptor = {

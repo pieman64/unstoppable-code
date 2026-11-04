@@ -76,7 +76,40 @@ export async function injectSecureStorageFault(electronApp, fault) {
       'getSelectedStorageBackend',
       'encryptString',
     ].map((name) => [name, Object.getOwnPropertyDescriptor(safeStorage, name)]);
-    if (kind === 'encrypt-failed') {
+    let restoreMetadata = () => {};
+    if (kind === 'locked' && process.platform === 'linux') {
+      // Production deliberately recovers native=false while the real provider
+      // is unlocked. Model a lock at the metadata boundary instead, forwarding
+      // owner/alias discovery and every unrelated process invocation unchanged.
+      const childProcess = process.getBuiltinModule('node:child_process');
+      const originalExec = childProcess.execFileSync;
+      childProcess.execFileSync = function (file, args, ...options) {
+        if (
+          file === '/usr/bin/gdbus' &&
+          Array.isArray(args) &&
+          args.length === 12 &&
+          args[0] === 'call' &&
+          args[1] === '--session' &&
+          args[2] === '--dest' &&
+          /^:[0-9]+\.[0-9]+$/.test(args[3]) &&
+          args[4] === '--object-path' &&
+          /^\/org\/freedesktop\/secrets\/collection\/[A-Za-z0-9_]+$/.test(
+            args[5],
+          ) &&
+          args[6] === '--method' &&
+          args[7] === 'org.freedesktop.DBus.Properties.Get' &&
+          args[8] === '--timeout' &&
+          args[9] === '1' &&
+          args[10] === 'org.freedesktop.Secret.Collection' &&
+          args[11] === 'Locked'
+        )
+          return '(<true>,)';
+        return originalExec.call(this, file, args, ...options);
+      };
+      restoreMetadata = () => {
+        childProcess.execFileSync = originalExec;
+      };
+    } else if (kind === 'encrypt-failed') {
       safeStorage.encryptString = () => {
         throw new Error('Synthetic native encryption failure');
       };
@@ -85,20 +118,17 @@ export async function injectSecureStorageFault(electronApp, fault) {
         throw new Error('Synthetic native availability failure');
       };
     } else if (kind === 'unavailable') {
-      // Missing libsecret is unavailable; a recognized backend with false
-      // availability would instead represent an inferred lock on Linux.
+      // Missing/unsupported native backend cannot be recovered by the helper.
       safeStorage.isEncryptionAvailable = () => false;
       if (process.platform === 'linux') {
         safeStorage.getSelectedStorageBackend = () => 'unknown';
       }
     } else {
-      safeStorage.isEncryptionAvailable = () => false;
-      if (process.platform === 'linux') {
-        safeStorage.getSelectedStorageBackend = () => 'gnome_libsecret';
-      }
+      throw new Error('Locked metadata fixture requires Linux.');
     }
     return {
       restore() {
+        restoreMetadata();
         for (const [name, descriptor] of originals) {
           if (descriptor) Object.defineProperty(safeStorage, name, descriptor);
           else delete safeStorage[name];

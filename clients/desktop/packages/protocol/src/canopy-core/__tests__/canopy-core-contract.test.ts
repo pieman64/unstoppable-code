@@ -90,6 +90,11 @@ type _QueryNamesAreExact = Expect<
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
+    | 'worker.codeGraph.buildQueue.get'
+    | 'worker.codeGraph.status.get'
+    | 'worker.codeGraph.query'
+    | 'worker.codeGraph.snapshot.export'
+    | 'worker.codeGraph.languages.validate'
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
     | 'core.workspace.list'
@@ -132,6 +137,10 @@ type _QueryNamesAreExact = Expect<
     | 'core.operation.get'
     | 'core.operation.list'
     | 'core.execution.status.get'
+    | 'core.observability.audit.list'
+    | 'core.observability.audit.transcript.get'
+    | 'core.observability.usage.query'
+    | 'core.observability.summary.get'
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
@@ -155,6 +164,11 @@ type _WorkerNamesAreExact = Expect<
     | 'worker.script.execution.list'
     | 'worker.filesystem.link.resolve'
     | 'worker.pipeline.execution.get'
+    | 'worker.codeGraph.buildQueue.get'
+    | 'worker.codeGraph.status.get'
+    | 'worker.codeGraph.query'
+    | 'worker.codeGraph.snapshot.export'
+    | 'worker.codeGraph.languages.validate'
   >
 >;
 type _CoreNamesAreExact = Expect<
@@ -194,6 +208,10 @@ type _CoreNamesAreExact = Expect<
     | 'core.operation.get'
     | 'core.operation.list'
     | 'core.execution.status.get'
+    | 'core.observability.audit.list'
+    | 'core.observability.audit.transcript.get'
+    | 'core.observability.usage.query'
+    | 'core.observability.summary.get'
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
@@ -1355,6 +1373,10 @@ describe('universal Canopy query registry', () => {
       'core.operation.get',
       'core.operation.list',
       'core.execution.status.get',
+      'core.observability.audit.list',
+      'core.observability.audit.transcript.get',
+      'core.observability.usage.query',
+      'core.observability.summary.get',
       'core.integration.get',
       'core.integration.list',
       'core.integration.resource.list',
@@ -1375,6 +1397,11 @@ describe('universal Canopy query registry', () => {
       'worker.script.execution.get',
       'worker.script.execution.list',
       'worker.pipeline.execution.get',
+      'worker.codeGraph.buildQueue.get',
+      'worker.codeGraph.status.get',
+      'worker.codeGraph.query',
+      'worker.codeGraph.snapshot.export',
+      'worker.codeGraph.languages.validate',
     ]);
     expect(CANOPY_QUERY_DEFINITIONS).toEqual({
       ...CORE_QUERY_DEFINITIONS,
@@ -2093,6 +2120,10 @@ describe('common request and error contracts', () => {
       'core.ledger.entries.search',
       'core.ledger.entry.get',
       'core.ledger.owners.list',
+      'core.observability.audit.list',
+      'core.observability.audit.transcript.get',
+      'core.observability.summary.get',
+      'core.observability.usage.query',
       'core.operation.get',
       'core.operation.list',
       'core.pipeline.definition.get',
@@ -2138,6 +2169,8 @@ describe('common request and error contracts', () => {
       'core.operation.cancel',
       'core.pipeline.definition.delete',
       'core.pipeline.definition.duplicate',
+      // CAN-5076: curated imports and share installs.
+      'core.pipeline.definition.import',
       'core.pipeline.definition.setEnabled',
       'core.pipeline.definition.upsert',
       'core.pullRequest.create',
@@ -2148,6 +2181,12 @@ describe('common request and error contracts', () => {
       'core.workspace.item.import',
       'core.workspace.repoRules.apply',
       'core.workspace.sharedMultiRepo.create',
+      // CAN-4149; CAN-4150 adds the snapshot import, CAN-5089 builds.cancel.
+      'worker.codeGraph.build',
+      'worker.codeGraph.build.cancel',
+      'worker.codeGraph.buildQueue.update',
+      'worker.codeGraph.builds.cancel',
+      'worker.codeGraph.snapshot.import',
       // CAN-5502: entry instructions admitted to the composed registry.
       'worker.filesystem.entry.copy',
       'worker.filesystem.entry.delete',
@@ -2162,8 +2201,15 @@ describe('common request and error contracts', () => {
       'worker.git.fetch',
       'worker.git.pull',
       'worker.pipeline.execution.cancel',
+      // CAN-4141: the recovery controls.
+      'worker.pipeline.execution.resume',
+      'worker.pipeline.execution.retry',
       'worker.pipeline.execution.start',
       'worker.pipeline.hostRequest.respond',
+      'worker.pipeline.matrixJob.retry',
+      'worker.pipeline.matrixVariant.cancel',
+      'worker.pipeline.recovery.checkpoint',
+      'worker.pipeline.recovery.sweep',
       // CAN-4143.
       'worker.script.execute',
       'worker.script.execution.cancel',
@@ -2172,6 +2218,7 @@ describe('common request and error contracts', () => {
       'core.chat.events',
       'core.operation.events',
       'core.execution.status.events',
+      'core.observability.audit.events',
       'worker.filesystem.watch',
       'worker.pipeline.execution.events',
       'worker.pipeline.hostRequests',

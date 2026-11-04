@@ -225,6 +225,7 @@ export type PipelineProjectBotOptions = Pick<
   | 'composition'
   | 'fixedIds'
   | 'newChatSeed'
+  | 'nativeGrant'
   | 'onChatResolved'
   | 'automationDispatch'
   | 'surfaces'

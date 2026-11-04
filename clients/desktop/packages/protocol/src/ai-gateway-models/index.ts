@@ -1,6 +1,8 @@
 import { THINKING_LEVELS, type ThinkingLevel } from '../thinking/index';
 
-export const AI_GATEWAY_MODEL_CATALOG_VERSION = 8 as const;
+export const AI_GATEWAY_MODEL_CATALOG_VERSION = 9 as const;
+/** First clients that honor exact thinking sets without adding legacy Off. */
+export const AI_GATEWAY_EXACT_THINKING_CATALOG_VERSION = 9 as const;
 export const AI_GATEWAY_MODEL_CATALOG_MAX_MODELS = 500;
 export const AI_GATEWAY_MODEL_CATALOG_MAX_BODY_BYTES = 1024 * 1024;
 
@@ -46,6 +48,8 @@ export interface AiGatewayModel {
   showMoreOnly: boolean;
   /** Empty means thinking is unsupported; declared entries are exact. */
   supportedThinkingLevels: AiGatewayThinkingLevel[];
+  /** v9: preserve this exact set, including the absence of Off. */
+  thinkingLevelsExact?: true;
   toolSchemaProfile: AiGatewayToolSchemaProfile;
 }
 
@@ -68,6 +72,7 @@ const MODEL_FIELDS = new Set([
   'requiresLocalHarnessSupport',
   'showMoreOnly',
   'supportedThinkingLevels',
+  'thinkingLevelsExact',
   'toolSchemaProfile',
 ]);
 const RESPONSE_FIELDS = new Set(['version', 'models']);
@@ -142,6 +147,8 @@ export function isAiGatewayModel(value: unknown): value is AiGatewayModel {
     typeof value.showMoreOnly !== 'boolean' ||
     (value.toolSchemaProfile !== 'standard' &&
       value.toolSchemaProfile !== 'flat') ||
+    (value.thinkingLevelsExact !== undefined &&
+      value.thinkingLevelsExact !== true) ||
     !Array.isArray(value.supportedThinkingLevels)
   ) {
     return false;
@@ -203,10 +210,8 @@ export function parseAiGatewayModelCatalogResponse(
   value: unknown,
   bodyByteLength?: number,
 ): AiGatewayModelCatalogResponse {
-  // Version 6 lacks only optional Cursor metadata and version 7 differs only in
-  // restricting `family` to a fixed list, which every v8 family validator
-  // accepts. Promote those frozen shapes so an offline cache or an older
-  // server remains usable.
+  // Retained v6-v8 wire shapes cannot carry v9 exact-thinking metadata.
+  // Promote compatible old servers/caches, retaining legacy effort semantics.
   if (
     isPlainRecord(value) &&
     value.version === 6 &&
@@ -217,7 +222,14 @@ export function parseAiGatewayModelCatalogResponse(
   ) {
     value = { ...value, version: 7 };
   }
-  if (isPlainRecord(value) && value.version === 7) {
+  if (
+    isPlainRecord(value) &&
+    (value.version === 7 || value.version === 8) &&
+    Array.isArray(value.models) &&
+    value.models.every(
+      (model) => isPlainRecord(model) && !('thinkingLevelsExact' in model),
+    )
+  ) {
     value = { ...value, version: AI_GATEWAY_MODEL_CATALOG_VERSION };
   }
   if (!isAiGatewayModelCatalogResponse(value, bodyByteLength)) {

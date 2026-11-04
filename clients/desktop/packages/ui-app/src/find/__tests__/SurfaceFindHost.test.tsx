@@ -105,6 +105,25 @@ describe('SurfaceFindHost', () => {
     expect(input?.placeholder).toBe('Search the chat history.');
   });
 
+  it('keeps a modal file search inside its focus trap and excludes background scopes', async () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const anchor = document.createElement('div');
+    dialog.append(anchor);
+    document.body.append(dialog);
+    register('chat', 'background', document.body);
+    register('file', 'pdf', anchor);
+    act(() => root.render(<SurfaceFindHost />));
+    act(() => useSurfaceFindStore.getState().openFor('file', 'pdf'));
+    await settle();
+    expect(
+      dialog.querySelector('[data-testid="surface-find-bar"]'),
+    ).not.toBeNull();
+    expect(
+      document.querySelector('[data-testid="surface-find-mode-chat"]'),
+    ).toBeNull();
+  });
+
   it('lets the user pick which browser tab the bar searches', async () => {
     register('browser', 'b1', document.body, 'Docs');
     register('browser', 'b2', document.body, 'Local');

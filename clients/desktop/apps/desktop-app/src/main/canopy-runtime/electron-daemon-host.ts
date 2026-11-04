@@ -39,7 +39,12 @@ import {
   CORE_TRANSPORT_STREAM_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+  WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
+  WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
   WORKER_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
 import {
   getCanopyDataDir,
@@ -70,10 +75,24 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
     // so production's manifest refuses each call capability_unavailable.
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+    // The daemon-code-graph experiment's renderer reads (CAN-5089).
+    'worker.codeGraph.query':
+      WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS['worker.codeGraph.query'],
   },
   instructions: {
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+    // The daemon-terminals experiment's renderer terminals (CAN-5088).
+    ...WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+    ...WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+    // And its renderer worktree builds (CAN-5089).
+    'worker.codeGraph.build':
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS['worker.codeGraph.build'],
+    // Worktree cleanup ends the worktree's daemon builds (CAN-5089).
+    'worker.codeGraph.builds.cancel':
+      WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS[
+        'worker.codeGraph.builds.cancel'
+      ],
   },
   streams: {
     'core.runtime.events':
@@ -82,6 +101,7 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // lacks it, so the subscriber never attaches there.
     'core.events.subscribe':
       CORE_TRANSPORT_STREAM_DEFINITIONS['core.events.subscribe'],
+    ...WORKER_TERMINAL_STREAM_DEFINITIONS,
   },
 };
 type D = typeof ELECTRON_DAEMON_DEFINITIONS;

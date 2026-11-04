@@ -39,7 +39,7 @@ export function CompletedWorkTrigger({
             ) ?? null;
         onOpen();
       }}
-      className="focus-ring focus-ring-inset flex h-9 w-full min-w-0 items-center gap-2.5 rounded-xl pl-2.75 pr-1 text-left text-s fg-secondary hover:bg-subtle"
+      className="focus-ring focus-ring-inset flex h-9 w-full min-w-0 items-center gap-2.5 rounded-drawer-row pl-2.75 pr-1 text-left text-s fg-secondary hover:bg-subtle"
     >
       <span aria-hidden="true" className="w-3.5 shrink-0" />
       <span className="flex flex-1 items-center gap-1.5">

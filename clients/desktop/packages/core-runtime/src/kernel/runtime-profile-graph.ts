@@ -32,7 +32,11 @@ import {
   type WorkerBindingPair,
 } from '../runtime/in-process-worker-binding';
 import type { LocalWorkerTransport } from '../runtime/local-worker-transport';
-import { createWorkerExecutorReceipts } from '../runtime/worker-executor-receipts';
+import type { SupervisedLocalWorker } from '../runtime/supervised-local-worker';
+import {
+  createWorkerExecutorReceipts,
+  type WorkerExecutorReceipts,
+} from '../runtime/worker-executor-receipts';
 import {
   createServiceContainer,
   type RuntimeService,
@@ -115,6 +119,21 @@ export interface CreateRuntimeProfileGraphOptions {
   workerCaller?: CanopyCallerDescriptor;
   /** Required for bundled worker modules; the host supplies serialized envelopes. */
   workerBinding?: WorkerBindingPair;
+  /**
+   * Split composition: the worker modules run in a separate supervised
+   * process, so the graph declares them and routes them through `worker`,
+   * and `modules` holds no worker module. Only `core+worker` installs it.
+   */
+  supervisedWorker?: {
+    readonly modules: readonly SupervisedWorkerModule[];
+    readonly worker: SupervisedLocalWorker;
+  };
+}
+
+/** A worker module served by a supervised worker process: its name and operations. */
+export interface SupervisedWorkerModule {
+  readonly name: string;
+  readonly definitions: RuntimeModuleDefinitions;
 }
 
 interface ComposedModules {
@@ -206,19 +225,26 @@ function untilAborted(signal: AbortSignal): Promise<never> {
   });
 }
 
-/** `core.runtime` is core-plane, so a worker graph mirrors its 7 phases. */
+/**
+ * `core.runtime` is core-plane, so a worker graph mirrors its 7 phases. Its
+ * instruction handlers record executor receipts, as a bundled worker's do.
+ */
 function createWorkerRuntime(
   options: CreateRuntimeProfileGraphOptions,
   { definitions, handlers, owners, services }: ComposedModules,
-): CanopyRuntime<CanopyDispatcher> {
+): CanopyRuntime<CanopyDispatcher> & { executor: WorkerExecutor } {
   const profile = 'worker';
   const operations = createOperationRegistry({ profile, definitions, owners });
   const container = createServiceContainer({ profile, services });
   const { shutdownTimeoutMs } = options;
+  const receipts = createWorkerExecutorReceipts(definitions.instructions);
   const dispatcher = createCanopyDispatcher({
     profile,
     definitions,
-    handlers,
+    handlers: {
+      ...handlers,
+      instructions: receipts.wrap(handlers.instructions),
+    },
     shutdownTimeoutMs,
   });
   const phase = (
@@ -249,6 +275,7 @@ function createWorkerRuntime(
     start: () => container.start(),
     health: () => container.health(),
     shutdown: (reason) => sequence.run(reason),
+    executor: { definitions, receipts },
   };
 }
 
@@ -262,6 +289,14 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
   transport: LocalWorkerTransport | null;
   close: () => void;
 } {
+  const { supervisedWorker } = options;
+  if (supervisedWorker)
+    return {
+      handlers: supervisedWorker.worker.forwarders,
+      worker: null,
+      transport: supervisedWorker.worker.transport,
+      close: () => undefined,
+    };
   const modules = options.modules.filter(({ plane }) => plane === 'worker');
   const { definitions, handlers } = composeModules('core+worker', modules);
   if (modules.length === 0)
@@ -301,12 +336,58 @@ function bindBundledWorker(options: CreateRuntimeProfileGraphOptions): {
   };
 }
 
+/**
+ * The supervised worker's modules as the registry sees them: worker-plane
+ * owners whose handlers are only the core's routes to the worker process.
+ */
+function supervisedModules(
+  options: CreateRuntimeProfileGraphOptions,
+): RuntimeModule[] {
+  const { supervisedWorker, profile } = options;
+  if (supervisedWorker === undefined) return [];
+  if (profile !== 'core+worker')
+    throw new Error(`Runtime profile ${profile} cannot supervise a worker`);
+  if (options.modules.some(({ plane }) => plane === 'worker'))
+    throw new Error('A supervised worker hosts every worker module');
+  const { forwarders } = supervisedWorker.worker;
+  const routes = <T>(
+    from: Readonly<Record<string, T>>,
+    names: Readonly<Record<string, unknown>>,
+  ): Record<string, T> =>
+    Object.fromEntries(
+      Object.keys(names).map((name) => {
+        const route = from[name];
+        if (route === undefined)
+          throw new Error(`The supervised worker does not serve ${name}`);
+        return [name, route];
+      }),
+    );
+  return supervisedWorker.modules.map(({ name, definitions }) => ({
+    name,
+    plane: 'worker',
+    definitions,
+    handlers: {
+      queries: routes(forwarders.queries, definitions.queries),
+      instructions: routes(forwarders.instructions, definitions.instructions),
+      streams: routes(forwarders.streams, definitions.streams),
+    },
+  }));
+}
+
+/** What a core needs to serve a worker graph's dispatcher across a binding. */
+export interface WorkerExecutor {
+  readonly definitions: RuntimeModuleDefinitions;
+  readonly receipts: WorkerExecutorReceipts;
+}
+
 export interface RuntimeProfileGraph extends CanopyRuntime<CanopyDispatcher> {
   /**
    * The core's transport to the bundled local worker, for dispatch records
    * (CAN-4132); null when the graph bundles no worker module.
    */
   readonly localWorker: LocalWorkerTransport | null;
+  /** A `worker` graph's maps and receipts, for its binding; null otherwise. */
+  readonly executor: WorkerExecutor | null;
 }
 
 /** Builds a `core`, `worker`, or bundled `core+worker` runtime from modules. */
@@ -314,7 +395,10 @@ export function createRuntimeProfileGraph(
   options: CreateRuntimeProfileGraphOptions,
 ): RuntimeProfileGraph {
   const { profile, shutdownTimeoutMs } = options;
-  const composed = composeModules(profile, options.modules);
+  const composed = composeModules(profile, [
+    ...options.modules,
+    ...supervisedModules(options),
+  ]);
   if (profile === 'worker')
     return { ...createWorkerRuntime(options, composed), localWorker: null };
   let localWorker: LocalWorkerTransport | null = null;
@@ -376,5 +460,5 @@ export function createRuntimeProfileGraph(
       });
     },
   });
-  return Object.assign(graph, { localWorker });
+  return Object.assign(graph, { localWorker, executor: null });
 }

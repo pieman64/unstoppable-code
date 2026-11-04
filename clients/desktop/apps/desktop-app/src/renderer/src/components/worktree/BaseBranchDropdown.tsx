@@ -19,6 +19,7 @@ import {
   PickerMenuOptionTrailing,
   PickerMenuSearchHeader,
   PickerMenuSearchInput,
+  PickerMenuSkeleton,
   PickerMenuState,
   PickerTrigger,
   PickerTriggerChevron,
@@ -32,7 +33,6 @@ import {
   getBranchProvenanceBadge,
   preserveBranchOption,
 } from './branch-options';
-import { LoadingIndicator } from '@canopy/ui-shared/components';
 
 interface BaseBranchDropdownProps {
   projectId: string;
@@ -228,9 +228,7 @@ export function BaseBranchDropdown({
           aria-label="Base branch options"
         >
           {loading ? (
-            <PickerMenuState>
-              <LoadingIndicator text="Loading…" />
-            </PickerMenuState>
+            <PickerMenuSkeleton rows={4} label="Loading branches" />
           ) : filtered.length === 0 ? (
             <PickerMenuState>No branches found</PickerMenuState>
           ) : (

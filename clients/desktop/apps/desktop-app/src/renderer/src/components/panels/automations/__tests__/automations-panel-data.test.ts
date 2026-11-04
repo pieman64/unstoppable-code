@@ -7,17 +7,27 @@ import type {
 import {
   automationActionWorkspaceId,
   automationActionWorktreeId,
-  buildCompletedEntries,
+  buildLibraryRows,
   buildUpcomingEntries,
   filterActivitiesForScope,
   filterWatchersForScope,
   formatTimeUntil,
   getAutomationNextRun,
+  panelRunFeedPredicates,
   watcherTargetWorkspaceId,
   watcherTargetWorktreeId,
   UPCOMING_MIN_ENTRIES,
-  COMPLETED_MAX_ENTRIES,
+  type LibraryTypeFilter,
 } from '../automations-panel-data';
+import type {
+  ExecutionSummary,
+  PipelineInfo,
+} from '@canopy/desktop-shared/types/pipeline';
+import type { WorkflowRunRow } from '@canopy/ui-app/workflows';
+import {
+  buildWorkflowRunRows,
+  type RunFeedInput,
+} from '@/lib/workflows/run-feed';
 
 const NOW = new Date('2026-08-30T12:00:00.000Z');
 
@@ -265,6 +275,103 @@ describe('automation action scoping', () => {
   });
 });
 
+describe('owned workflow scoping', () => {
+  /**
+   * A chat automation converted to a workflow it owns (CAN-4551 / CAN-5479)
+   * is stored as a global pipeline. Once that workflow no longer shows as its
+   * chat, the action stays global and the chat's workspace lives in the
+   * inputs the conversion wrote.
+   */
+  function ownedWorkflow(
+    id: string,
+    inputs: Record<string, string>,
+    owned = true,
+  ): ScheduledActivity {
+    const action: AutomationAction = {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      workspaceId: '',
+      pipelineId: `${id}-pipeline`,
+      pipelineSource: 'user',
+      inputs,
+    };
+    return activity({
+      id,
+      action,
+      ...(owned
+        ? {
+            ownedPipeline: {
+              pipelineId: `${id}-pipeline`,
+              chatEditable: false,
+              storedAction: action,
+            },
+          }
+        : {}),
+    });
+  }
+
+  const inWorktree = ownedWorkflow('owned-in-worktree', {
+    project_id: 'ws-1',
+    task_id: 'wt-1',
+    prompt: 'x',
+  });
+  const newWorktree = ownedWorkflow('owned-new-worktree', {
+    project_id: 'ws-1',
+    base_branch: 'main',
+    prompt: 'x',
+  });
+  const otherWorkspace = ownedWorkflow('owned-other-workspace', {
+    project_id: 'ws-2',
+    task_id: 'wt-9',
+    prompt: 'x',
+  });
+  const orchestrator = ownedWorkflow('owned-orchestrator', {
+    bot_id: 'app_advisor',
+    prompt: 'x',
+  });
+  const notOwned = ownedWorkflow(
+    'global-not-owned',
+    { project_id: 'ws-1', task_id: 'wt-1' },
+    false,
+  );
+  const all = [inWorktree, newWorktree, otherWorkspace, orchestrator, notOwned];
+
+  it('keeps an owned workflow in the workspace its inputs name', () => {
+    expect(
+      filterActivitiesForScope(all, {
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        worktreeOnly: false,
+      }).map((entry) => entry.id),
+    ).toEqual(['owned-in-worktree', 'owned-new-worktree']);
+  });
+
+  it('narrows an owned workflow to the task its inputs name', () => {
+    expect(
+      filterActivitiesForScope(all, {
+        projectId: 'ws-1',
+        worktreeId: 'wt-1',
+        worktreeOnly: true,
+      }).map((entry) => entry.id),
+    ).toEqual(['owned-in-worktree']);
+  });
+
+  it('scopes a watcher on an owned workflow to that workflow', () => {
+    const automationWatcher = watcher({
+      id: 'owned-watcher',
+      trigger: 'automation_run',
+      target: { kind: 'automation', automationId: 'owned-in-worktree' },
+    });
+    expect(
+      filterWatchersForScope(
+        [automationWatcher],
+        { projectId: 'ws-1', worktreeId: 'wt-1', worktreeOnly: true },
+        all,
+      ).map((entry) => entry.id),
+    ).toEqual(['owned-watcher']);
+  });
+});
+
 describe('watcher target scoping', () => {
   it('derives workspace/worktree from scoped target kinds', () => {
     const scoped = watcher({ id: 'scoped' });
@@ -438,117 +545,237 @@ describe('buildUpcomingEntries', () => {
   });
 });
 
-describe('buildCompletedEntries', () => {
-  it('merges runs and watcher fires newest first, dropping running and out-of-scope runs', () => {
-    const scoped = [activity({ id: 'a-1' })];
-    const runs = [
-      run({
-        id: 'r-old',
-        activityId: 'a-1',
-        completedAt: '2026-08-30T10:00:00.000Z',
-      }),
-      run({
-        id: 'r-new',
-        activityId: 'a-1',
-        completedAt: '2026-08-30T11:30:00.000Z',
-        status: 'failure',
-      }),
-      run({ id: 'r-running', activityId: 'a-1', status: 'running' }),
-      run({ id: 'r-foreign', activityId: 'a-other' }),
-    ];
-    const fires = [
-      watcher({
-        id: 'w-fired',
-        status: 'fired',
-        firedAt: '2026-08-30T11:00:00.000Z',
-      }),
-      watcher({
-        id: 'w-failed',
-        status: 'delivery_failed',
-        firedAt: '2026-08-30T11:45:00.000Z',
-      }),
-    ];
-    const entries = buildCompletedEntries(runs, scoped, fires);
-    expect(entries.map((entry) => entry.key)).toEqual([
-      'watcher:w-failed',
-      'run:r-new',
-      'watcher:w-fired',
-      'run:r-old',
-    ]);
-    expect(entries[0]).toMatchObject({
-      kind: 'watcher-fire',
-      status: 'failure',
-    });
-    expect(entries[1]).toMatchObject({
-      kind: 'automation-run',
-      status: 'failure',
-    });
-    expect(entries[2]).toMatchObject({
-      kind: 'watcher-fire',
+describe('panel run feed scope', () => {
+  const SCOPE = { projectId: 'ws-1', worktreeId: 'wt-1', worktreeOnly: true };
+  const WHOLE_WORKSPACE = { ...SCOPE, worktreeOnly: false };
+
+  function execution(
+    id: string,
+    overrides: Partial<ExecutionSummary> = {},
+  ): ExecutionSummary {
+    return {
+      id,
+      pipeline_id: 'release-checks',
+      pipeline_name: 'Release checks',
       status: 'success',
+      status_reasons: [],
+      started_at: '2026-08-30T10:00:00.000Z',
+      completed_at: '2026-08-30T10:02:00.000Z',
+      cwd: '/tmp/ws-1',
+      project_id: 'ws-1',
+      worktree_id: 'wt-1',
+      ...overrides,
+    };
+  }
+
+  function panelRows(
+    scope: typeof SCOPE,
+    sources: Pick<
+      RunFeedInput,
+      'executions' | 'runs' | 'activities' | 'watchers'
+    >,
+  ): readonly WorkflowRunRow[] {
+    return buildWorkflowRunRows({
+      ...sources,
+      ...panelRunFeedPredicates(scope, sources.activities),
+      executionActions: () => [],
+      automationRunResult: () => ({ available: true }),
+      names: {
+        project: () => undefined,
+        worktree: () => undefined,
+        chat: () => undefined,
+        watcherDestination: () => undefined,
+      },
     });
+  }
+
+  it("scopes pipeline runs to the workspace and the toggle's worktree", () => {
+    const { executionInScope } = panelRunFeedPredicates(SCOPE, []);
+    expect(executionInScope(execution('here'))).toBe(true);
+    expect(
+      executionInScope(execution('elsewhere', { worktree_id: 'wt-2' })),
+    ).toBe(false);
+    expect(executionInScope(execution('other', { project_id: 'ws-2' }))).toBe(
+      false,
+    );
+    expect(
+      executionInScope(execution('no-project', { project_id: undefined })),
+    ).toBe(false);
+    const whole = panelRunFeedPredicates(WHOLE_WORKSPACE, []);
+    expect(
+      whole.executionInScope(execution('elsewhere', { worktree_id: 'wt-2' })),
+    ).toBe(true);
   });
 
-  it('leaves watchers whose delivery is still pending out of history', () => {
-    const entries = buildCompletedEntries(
-      [],
-      [activity({ id: 'a-1' })],
-      [
-        watcher({ id: 'w-firing', status: 'firing' }),
+  it('lists a watcher once its fire has finished', () => {
+    const { watcherInScope } = panelRunFeedPredicates(SCOPE, []);
+    expect(watcherInScope(watcher({ id: 'watching', status: 'active' }))).toBe(
+      false,
+    );
+    expect(watcherInScope(watcher({ id: 'firing', status: 'firing' }))).toBe(
+      false,
+    );
+    expect(
+      watcherInScope(watcher({ id: 'failed', status: 'delivery_failed' })),
+    ).toBe(true);
+    expect(watcherInScope(watcher({ id: 'fired', status: 'fired' }))).toBe(
+      true,
+    );
+  });
+
+  it('scopes a run whose workflow is gone by where it ran', () => {
+    const { orphanRunInScope } = panelRunFeedPredicates(SCOPE, []);
+    expect(
+      orphanRunInScope(
+        run({
+          id: 'by-result',
+          activityId: 'gone',
+          result: { projectId: 'ws-1', worktreeId: 'wt-1' },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      orphanRunInScope(
+        run({
+          id: 'by-target',
+          activityId: 'gone',
+          target: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      orphanRunInScope(
+        run({
+          id: 'other-worktree',
+          activityId: 'gone',
+          target: { workspaceId: 'ws-1', worktreeId: 'wt-2' },
+        }),
+      ),
+    ).toBe(false);
+    expect(orphanRunInScope(run({ id: 'nowhere', activityId: 'gone' }))).toBe(
+      false,
+    );
+  });
+
+  it("lists the workspace's pipeline runs and folds a workflow's own run into its scheduled run", () => {
+    const owned: AutomationAction = {
+      type: 'worktree_pipeline',
+      target: { kind: 'global' },
+      workspaceId: '',
+      pipelineId: 'owned-pipeline',
+      pipelineSource: 'user',
+      inputs: { project_id: 'ws-1', task_id: 'wt-1' },
+    };
+    const migrated = activity({
+      id: 'migrated',
+      action: owned,
+      ownedPipeline: {
+        pipelineId: 'owned-pipeline',
+        chatEditable: false,
+        storedAction: owned,
+      },
+    });
+    const rows = panelRows(SCOPE, {
+      activities: [migrated],
+      runs: [
+        run({
+          id: 'migrated-run',
+          activityId: 'migrated',
+          result: { pipelineExecutionId: 'owned-exec' },
+        }),
+      ],
+      executions: [
+        execution('owned-exec', {
+          project_id: undefined,
+          worktree_id: undefined,
+        }),
+        execution('release-checks'),
+        execution('other-workspace', { project_id: 'ws-2' }),
+      ],
+      watchers: [
         watcher({
-          id: 'w-fired',
+          id: 'here',
           status: 'fired',
-          firedAt: '2026-08-30T11:00:00.000Z',
+          firedAt: '2026-08-30T09:00:00.000Z',
+        }),
+        watcher({
+          id: 'there',
+          status: 'fired',
+          target: {
+            kind: 'worktree_chat',
+            projectId: 'ws-2',
+            worktreeId: 'wt-9',
+            chatId: 'chat-9',
+          },
         }),
       ],
-    );
-
-    expect(entries.map((entry) => entry.key)).toEqual(['watcher:w-fired']);
-  });
-
-  it('orders failed watchers by their projected completion time', () => {
-    const failed = Object.assign(
-      watcher({
-        id: 'failed-recently',
-        status: 'delivery_failed',
-        createdAt: '2026-08-01T00:00:00.000Z',
-      }),
-      { completedAt: '2026-08-30T11:45:00.000Z' },
-    );
-    const entries = buildCompletedEntries(
+    });
+    expect(rows.map((row) => row.key).sort()).toEqual(
       [
-        run({
-          id: 'run-before-failure',
-          activityId: 'a-1',
-          completedAt: '2026-08-30T11:30:00.000Z',
-        }),
-      ],
-      [activity({ id: 'a-1' })],
-      [failed],
+        'automation-run:migrated-run',
+        'pipeline-run:release-checks',
+        'watcher:here',
+      ].sort(),
     );
+  });
+});
 
-    expect(entries.map((entry) => entry.key)).toEqual([
-      'watcher:failed-recently',
-      'run:run-before-failure',
-    ]);
+describe('buildLibraryRows', () => {
+  function projectPipeline(
+    id: string,
+    overrides: Partial<PipelineInfo> = {},
+  ): PipelineInfo {
+    return {
+      id,
+      name: id,
+      filename: `${id}.yml`,
+      description: '',
+      icon: '',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      source: 'project',
+      readonly: false,
+      filePath: `/repo/.canopy/pipelines/${id}.yml`,
+      ...overrides,
+    };
+  }
+
+  const activities = [activity({ id: 'Daily digest' })];
+  const pipelines = [
+    projectPipeline('Release checks'),
+    // Only the workspace's own pipelines belong in its panel.
+    projectPipeline('Global lint', { source: 'user', filePath: undefined }),
+  ];
+  const watchers = [watcher({ id: 'Deploy watcher' })];
+
+  it('lists scheduled workflows, then on-demand workflows, then watchers', () => {
+    expect(
+      buildLibraryRows({
+        activities,
+        pipelines,
+        watchers,
+        typeFilter: 'all',
+        search: '',
+      }).map((row) => row.kind),
+    ).toEqual(['automation', 'pipeline', 'watcher']);
   });
 
-  it('caps the merged list', () => {
-    const scoped = [activity({ id: 'a-1' })];
-    const runs = Array.from(
-      { length: COMPLETED_MAX_ENTRIES + 10 },
-      (_, index) =>
-        run({
-          id: `r-${index}`,
-          activityId: 'a-1',
-          completedAt: new Date(
-            Date.parse('2026-08-30T00:00:00.000Z') + index * 60_000,
-          ).toISOString(),
-        }),
-    );
-    expect(buildCompletedEntries(runs, scoped, [])).toHaveLength(
-      COMPLETED_MAX_ENTRIES,
-    );
+  it('filters by type and by name', () => {
+    const rows = (
+      typeFilter: LibraryTypeFilter,
+      search = '',
+    ): readonly string[] =>
+      buildLibraryRows({
+        activities,
+        pipelines,
+        watchers,
+        typeFilter,
+        search,
+      }).map((row) => row.kind);
+    expect(rows('pipelines')).toEqual(['pipeline']);
+    expect(rows('automations')).toEqual(['automation']);
+    expect(rows('watchers')).toEqual(['watcher']);
+    expect(rows('all', 'release')).toEqual(['pipeline']);
   });
 });
 

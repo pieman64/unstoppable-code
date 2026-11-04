@@ -10,8 +10,13 @@
 // self-contained (parse → buffer until startup unlock → IPC push).
 import { expect, test } from '@playwright/test';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
+import { CanopyAppDriver } from './canopyApp.mjs';
+import { loadBrand } from '../../../../scripts/brand/load-brand.mjs';
 
 const UUID = '2f0c9a1e-4b3d-4f6a-8c2e-1d5b7a9e0c4f';
+const BRAND_SCHEME = loadBrand(
+  process.env.CANOPY_BRAND || 'canopy',
+).internalName;
 
 function emitOpenUrl(electronApp, url) {
   return electronApp.evaluate(({ app }, targetUrl) => {
@@ -30,6 +35,98 @@ async function readPendingShareDeepLink(window) {
     () => window.__canopyNavigationTestApi?.getPendingShareInstall() ?? null,
   );
 }
+
+// CAN-3258: exercise startup argv and both live OS event adapters with the
+// built brand. Run with matching CANOPY_BRAND / CANOPY_RELEASE_FLAVOR at
+// build and test time. E2E deliberately bypasses single-instance acquisition;
+// emitting second-instance proves routing, NOT real process-lock ownership.
+test.describe('CAN-3258 branded protocol activation', () => {
+  test('cold argv waits behind startup consent and does not leak into a fresh profile', async () => {
+    const first = await launchCanopy({
+      freshOnboarding: true,
+      applicationArgs: [`${BRAND_SCHEME}://settings/privacy`],
+    });
+    try {
+      const window = await first.electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await expect(window.getByTestId('legal-consent-gate')).toBeVisible();
+      await expect(window.getByTestId('settings-overlay')).toBeHidden();
+      await app.acceptLegalConsent();
+      await app.waitForShell();
+      await expect(window.getByTestId('settings-tab-privacy')).toBeVisible();
+    } finally {
+      await closeCanopy(first.electronApp, first.userDataDir);
+    }
+
+    const second = await launchCanopy();
+    try {
+      expect(second.userDataDir).not.toBe(first.userDataDir);
+      const window = await second.electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      await expect(window.getByTestId('page-home')).toBeVisible();
+      await expect(window.getByTestId('settings-overlay')).toBeHidden();
+      expect(await readPendingShareDeepLink(window)).toBeNull();
+    } finally {
+      await closeCanopy(second.electronApp, second.userDataDir);
+    }
+  });
+
+  test('warm second-instance argv reaches the existing renderer', async () => {
+    const { electronApp, userDataDir } = await launchCanopy();
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      await electronApp.evaluate(({ app }, url) => {
+        app.emit('second-instance', {}, ['app', '--flag', url], process.cwd());
+      }, `${BRAND_SCHEME}://remote-control`);
+      await expect(window.getByTestId('canopy-portal-modal')).toBeVisible();
+      await expect(window.getByTestId('canopy-portal-modal')).toContainText(
+        'Remote Control',
+      );
+      expect(electronApp.windows()).toHaveLength(1);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
+  test('warm open-url accepts the built brand but rejects other brands and malformed URLs', async () => {
+    const { electronApp, userDataDir } = await launchCanopy();
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      // Establish a durable pending navigation value. Invalid inputs must not
+      // replace it; this is stronger than checking an initially empty store.
+      await emitOpenUrl(electronApp, `${BRAND_SCHEME}://share/skills/${UUID}`);
+      const expected = { entity: 'skill', externalId: UUID, intent: 'install' };
+      await expect
+        .poll(() => readPendingShareDeepLink(window))
+        .toEqual(expected);
+      // Internal unstoppable-code builds intentionally accept canopy as an
+      // alias, so use that brand only when it is genuinely foreign here.
+      const foreignScheme =
+        BRAND_SCHEME === 'canopy'
+          ? 'unstoppable-code'
+          : process.env.CANOPY_RELEASE_FLAVOR === 'internal'
+            ? 'unrelated-brand'
+            : 'canopy';
+      for (const url of [
+        `${foreignScheme}://share/pipelines/${UUID}`,
+        `${BRAND_SCHEME}://share/skills/not-a-uuid`,
+        `${BRAND_SCHEME}://user@share/pipelines/${UUID}`,
+        `${BRAND_SCHEME}://share/pipelines/${UUID}/extra`,
+        'not a URL',
+      ]) {
+        await emitOpenUrl(electronApp, url);
+      }
+      // Round-trip the renderer after the synchronous main event handlers.
+      expect(await readPendingShareDeepLink(window)).toEqual(expected);
+      await emitOpenUrl(electronApp, `${BRAND_SCHEME}://settings/privacy`);
+      await expect(window.getByTestId('settings-tab-privacy')).toBeVisible();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+});
 
 test('valid share deep link lands in the navigation store; hostile URLs are dropped', async () => {
   const { electronApp, userDataDir } = await launchCanopy();

@@ -119,6 +119,7 @@ import {
   type ChildStreamRowsPage,
   type ChatReadSelection,
   type V2MutationOptions,
+  settledLease,
 } from './chat-state-v2-backend';
 import { ChatStorageNewerFormatError } from '../lib/chat-delta-journal/format';
 import {
@@ -219,8 +220,11 @@ interface ScopeEntry {
   /** A cached non-transient recovery failure; only releaseScope retries it. */
   loadError?: ChatStateRepositoryLoadError;
   deleting: number;
-  /** A lease covers admission through completion, including reads/exports. */
-  tail: Promise<unknown>;
+  /**
+   * A lease covers admission through completion, including reads/exports.
+   * Like the backend's own chain, it settles without the operation's result.
+   */
+  tail: Promise<void>;
   /** Observers see applied commits strictly in revision order per scope. */
   publishTail: Promise<void>;
   /**
@@ -980,13 +984,11 @@ export class ChatStateV2Repository {
     entry: ScopeEntry,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const next = entry.tail
-      .catch(() => undefined)
-      .then(() => {
-        const pending = entry.backend.pendingJournalDurability();
-        return pending ? pending.then(operation, operation) : operation();
-      });
-    entry.tail = next;
+    const next = entry.tail.then(() => {
+      const pending = entry.backend.pendingJournalDurability();
+      return pending ? pending.then(operation, operation) : operation();
+    });
+    entry.tail = settledLease(next);
     return next;
   }
 
@@ -1000,8 +1002,8 @@ export class ChatStateV2Repository {
     entry: ScopeEntry,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const next = entry.tail.catch(() => undefined).then(operation);
-    entry.tail = next;
+    const next = entry.tail.then(operation);
+    entry.tail = settledLease(next);
     return next;
   }
 
@@ -3364,7 +3366,7 @@ export class ChatStateV2Repository {
     this.cancelArtifactMaintenance(entry);
     await this.closePreviewReaders(entry);
     await entry.backend.disposeArtifactMaintenance();
-    await entry.tail.catch(() => undefined);
+    await entry.tail;
     if (entry.lifecycle !== 'recovery_error' || entry.loading) return false;
     entry.visualStaging = undefined;
     if (this.scopes.get(directory) === entry) this.scopes.delete(directory);

@@ -5,6 +5,41 @@ import {
   appendHookRunLogLines,
   type HookRunLogRef,
 } from '../lib/hook-log-store';
+import {
+  closeTestInitiatedWork,
+  readyTestInitiatedWork,
+  type InitiatedWorkRuntimeHelper,
+} from './helpers/initiated-work-runtime';
+
+// Hook runs go through the initiated-work engine (CAN-4144).
+jest.mock('../canopy-runtime/desktop-runtime', () => ({
+  getActiveDesktopRuntime: (): { initiatedWork: unknown } => ({
+    initiatedWork: jest
+      .requireActual<InitiatedWorkRuntimeHelper>(
+        './helpers/initiated-work-runtime',
+      )
+      .testInitiatedWork().engine,
+  }),
+}));
+
+// The core hook source reads the worktree's paused hooks and the project's
+// saved owner when a hook fires (CAN-4146).
+jest.mock('../lib/workspace-persistence', () => ({
+  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
+}));
+jest.mock('../lib/project-owner', () => ({
+  resolveProjectSavedOwner: jest.fn(() =>
+    Promise.resolve({ kind: 'personal' }),
+  ),
+}));
+
+beforeAll(async () => {
+  await readyTestInitiatedWork();
+});
+
+afterAll(() => {
+  closeTestInitiatedWork();
+});
 
 let hookRunLogCounter = 0;
 
@@ -183,6 +218,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
       previousSnapshotPath: '/tmp/does-not-exist/previous.json',
@@ -243,6 +279,7 @@ describe('hook-runner', () => {
         cwd: '/tmp',
         getWindow: () => null,
         invocation: 'manual',
+        pause: 'bypass',
         currentSnapshot: snapshot,
         currentSnapshotPath: '/tmp/does-not-exist/current.json',
       });
@@ -278,6 +315,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
     });
     await Promise.resolve();
 
@@ -290,10 +328,13 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       onEnqueued,
       onStarted,
     });
 
+    // Enqueued once the engine has recorded the run (CAN-4144).
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
     expect(onEnqueued).toHaveBeenCalledTimes(1);
     expect(onStarted).not.toHaveBeenCalled();
     finishFirst({
@@ -324,6 +365,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
     });
     await Promise.resolve();
 
@@ -336,6 +378,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       onStarted,
     });
     const cancelled = stopRunningHook({
@@ -366,6 +409,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       timeoutSeconds: 600,
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
@@ -395,6 +439,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -425,6 +470,7 @@ describe('hook-runner', () => {
         cwd: '/tmp',
         getWindow: () => null,
         invocation: 'manual',
+        pause: 'bypass',
         currentSnapshot: buildSnapshot(),
         currentSnapshotPath: '/tmp/does-not-exist/current.json',
       });
@@ -453,6 +499,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       timeoutSeconds: 600,
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
@@ -498,6 +545,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
       onOutput,
@@ -526,6 +574,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -576,6 +625,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -609,6 +659,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
       env: {
         CANOPY_WORKTREE_PRECOMMIT_FAILURE_ERROR: 'pre-commit failed',
         CANOPY_WORKTREE_PRECOMMIT_FAILURE_COMMIT_MESSAGE: 'feat: test',
@@ -645,6 +696,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -712,6 +764,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -750,6 +803,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -787,6 +841,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -824,6 +879,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -860,6 +916,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -896,6 +953,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -932,6 +990,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'manual',
+      pause: 'bypass',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -969,6 +1028,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
       onOutput: (activeHook, lines): void => {
@@ -1052,6 +1112,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -1063,6 +1124,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
       currentSnapshot: buildSnapshot(),
       currentSnapshotPath: '/tmp/does-not-exist/current.json',
     });
@@ -1116,6 +1178,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
     });
     await firstRunStarted;
     const secondRun = runHook({
@@ -1125,6 +1188,7 @@ describe('hook-runner', () => {
       cwd: '/tmp',
       getWindow: () => null,
       invocation: 'automatic',
+      pause: 'enforce',
     });
 
     const stopPromise = stopHooksForWorktree({
@@ -1153,5 +1217,36 @@ describe('hook-runner', () => {
       output: 'Hook run cancelled before start.',
     });
     expect(mockedRunShellScript).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a hook run the engine holds but the runner never registered, such as a recovered or deferred one (CAN-4145)', async () => {
+    const { engine, operations } = jest
+      .requireActual<InitiatedWorkRuntimeHelper>(
+        './helpers/initiated-work-runtime',
+      )
+      .testInitiatedWork();
+    const deferred = engine.submit({
+      origin: { kind: 'hook', sourceId: 'project:pr:create' },
+      owner: { kind: 'system', id: 'local' },
+      scope: { workspaceId: 'project-stop', worktreeId: 'worktree-stop' },
+      targetKey: 'project-stop/worktree-stop/project',
+      gates: [],
+      client: {
+        attached: () => false,
+        whenAttached: () => new Promise<void>(() => undefined),
+      },
+      execute: () => Promise.reject(new Error('A deferred run never starts.')),
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const [live] = engine
+      .liveRuns()
+      .filter((run) => run.scope.worktreeId === 'worktree-stop');
+    await stopHooksForWorktree({
+      projectId: 'project-stop',
+      worktreeId: 'worktree-stop',
+    });
+    await expect(deferred).resolves.toMatchObject({ disposition: 'cancelled' });
+    if (!live?.operationId) throw new Error('no live run');
+    expect((await operations.get(live.operationId))?.status).toBe('cancelled');
   });
 });

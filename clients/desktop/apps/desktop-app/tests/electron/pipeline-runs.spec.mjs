@@ -1514,7 +1514,8 @@ test('hidden-only history keeps a full-card Dispatch action', async () => {
     );
     const dispatchIcon = await dispatch.locator('svg').boundingBox();
     const chevron = await unifiedCard
-      .getByTestId('pipeline-hidden-chevron')
+      .getByTestId('pipeline-hidden-toggle')
+      .locator('svg')
       .boundingBox();
     expect(
       Math.abs(

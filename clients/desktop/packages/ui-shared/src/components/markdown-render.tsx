@@ -145,6 +145,38 @@ function sanitizedAnchorOverride(
   };
 }
 
+type SanitizedAnchors = Map<string, MarkdownToJSX.Override>;
+
+// One sanitizing wrapper per wrapped anchor and local-link allowance.
+// `prepareMarkdownRender` builds the options again whenever the text changes,
+// and a new wrapper is a new component type, so React would remount every
+// link of a streaming reply on each frame, dropping its hover and focus.
+const sanitizedAnchorsByOverride = new WeakMap<object, SanitizedAnchors>();
+const sanitizedAnchorsByTag = new Map<string, SanitizedAnchors>();
+
+function stableSanitizedAnchorOverride(
+  override: MarkdownToJSX.Override | undefined,
+  allowance: LocalLinkAllowance,
+): MarkdownToJSX.Override {
+  const owner = override ?? 'a';
+  let anchors =
+    typeof owner === 'string'
+      ? sanitizedAnchorsByTag.get(owner)
+      : sanitizedAnchorsByOverride.get(owner);
+  if (!anchors) {
+    anchors = new Map();
+    if (typeof owner === 'string') sanitizedAnchorsByTag.set(owner, anchors);
+    else sanitizedAnchorsByOverride.set(owner, anchors);
+  }
+  const key = `${allowance.windowsPaths ? 'w' : ''}${allowance.fileUrls ? 'f' : ''}`;
+  let anchor = anchors.get(key);
+  if (!anchor) {
+    anchor = sanitizedAnchorOverride(override, allowance);
+    anchors.set(key, anchor);
+  }
+  return anchor;
+}
+
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*$/i;
 
 /**
@@ -451,7 +483,7 @@ export function markdownOptions(
       : {}),
     overrides: {
       ...mergedOverrides,
-      a: sanitizedAnchorOverride(anchorOverride, allowance),
+      a: stableSanitizedAnchorOverride(anchorOverride, allowance),
     },
   };
 }

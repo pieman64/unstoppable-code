@@ -8,6 +8,7 @@ import {
   DetailMoreMenu,
   useDetailActionSlots,
   type DetailMoreMenuItem,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 
@@ -140,13 +141,18 @@ export function MarketplaceDetailPageShell({
           )}
         </span>
       ) : (
-        <h1 id="plugins-entry-detail-title" className="sr-only">
+        <Heading
+          level={1}
+          variant="page"
+          id="plugins-entry-detail-title"
+          className="sr-only"
+        >
           {privateTitle ? (
             <span className={REPLAY_MASK_CLASS}>{title}</span>
           ) : (
             title
           )}
-        </h1>
+        </Heading>
       )}
       {/*
         `mb-6` matches the 24px `PluginDetailContent` puts under its own Back

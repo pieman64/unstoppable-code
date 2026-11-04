@@ -49,4 +49,26 @@ describe('ForkChatButton', () => {
     expect(html).toContain('h-6 w-6');
     expect(html).not.toContain('pointer-coarse:h-11');
   });
+
+  it('shows a given title in the shared tooltip and adds none for a host that wraps its own', () => {
+    const withTitle = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <ForkChatButton
+          ariaLabel="Fork chat"
+          title="Fork chat"
+          onClick={() => undefined}
+        />
+      </ChatLookProvider>,
+    );
+    expect(withTitle).not.toContain('title=');
+    // The shared Tooltip's wrapper around the button.
+    expect(withTitle).toMatch(/^<span class="relative inline-flex/);
+
+    const hostWrapped = renderToStaticMarkup(
+      <ChatLookProvider value="classic">
+        <ForkChatButton ariaLabel="Fork chat" onClick={() => undefined} />
+      </ChatLookProvider>,
+    );
+    expect(hostWrapped).toMatch(/^<button/);
+  });
 });

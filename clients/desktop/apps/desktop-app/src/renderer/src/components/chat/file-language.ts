@@ -112,6 +112,10 @@ export function getMonacoLanguage(
       return 'lean';
     case '.ini':
       return 'ini';
+    case '.tf':
+    case '.tfvars':
+    case '.hcl':
+      return 'hcl';
     case '.toml':
     case '.env':
     case '.txt':

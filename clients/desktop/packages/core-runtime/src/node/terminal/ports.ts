@@ -10,7 +10,7 @@ import type {
   TerminalShellProfileId,
 } from '@canopy/protocol/terminal';
 import type { PlatformOperatingSystem } from '../../platform/platform-services';
-import type { TerminalShells } from './shells';
+import type { ResolvedTerminalShell, TerminalShells } from './shells';
 
 /** Environment variables as the host passes them to a PTY. */
 export type TerminalEnvironment = Record<string, string | undefined>;
@@ -172,6 +172,11 @@ export interface TerminalCreateRequest extends TerminalWorktreeScope {
    */
   cwd?: string;
   profileId?: TerminalShellProfileId;
+  /**
+   * A shell the trusted caller already resolved, used instead of
+   * `profileId`; a terminal host takes the shell its client selected.
+   */
+  shell?: ResolvedTerminalShell;
   /** A one-shot command the shell runs, then exits. */
   initialCommand?: string;
   /** Replaces the host's base and worktree environment. */
@@ -184,6 +189,8 @@ export interface TerminalRestoreRequest {
   rows: number;
   /** Replaces the host's base and worktree environment. */
   environment?: TerminalEnvironment;
+  /** Restarts a persisted terminal with this shell instead of its own. */
+  shell?: ResolvedTerminalShell;
 }
 
 /** One delivery to an attachment: output bytes, or the terminal's exit. */

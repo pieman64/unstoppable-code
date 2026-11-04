@@ -65,6 +65,23 @@ export interface CodeGraphWorkerBuildRequest {
    * published base must carry its derived analysis.
    */
   deferDerived?: boolean;
+  /**
+   * Worktree builds: the worktree fingerprint observed before the build. The
+   * host fingerprints the worktree again once the graph is published and, when
+   * the two match, stores it as the graph's `worktree_fingerprint` before it
+   * answers. Ignored with `baseFinalization`.
+   */
+  fingerprint?: { start: string };
+}
+
+/** How a worktree build stored its end-of-build fingerprint. */
+export interface CodeGraphWorkerFingerprintPersist {
+  /** `unstable`: the worktree changed during the build, so nothing was stored. */
+  outcome: 'persisted' | 'unstable' | 'error';
+  /** Time taken by the end-of-build fingerprint. */
+  endFingerprintMs?: number;
+  /** Time taken by the metadata write. */
+  persistMs?: number;
 }
 
 export interface CodeGraphWorkerSummaryRepairRequest {
@@ -111,6 +128,8 @@ export type CodeGraphWorkerBuildResponse =
        * analysis and reports it with a {@link CodeGraphWorkerDerivedCompletion}.
        */
       derivedPending?: true;
+      /** Present when the request carried a start fingerprint. */
+      fingerprint?: CodeGraphWorkerFingerprintPersist;
     }
   | { ok: false; message: string };
 

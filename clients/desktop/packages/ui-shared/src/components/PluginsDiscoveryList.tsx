@@ -30,6 +30,7 @@ import {
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import { CustomizeInstalledRow } from './CustomizeInstalledRow';
 import type { CustomizeRowMenuItem } from './CustomizeRowMenu';
+import { Heading } from './Heading';
 
 /**
  * Sectioned discovery grid for the capability marketplace.
@@ -336,11 +337,17 @@ function PluginsDiscoverySectionView({
           </div>
         ) : section.headerActions ? (
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b pb-2">
-            <h2 className="text-m font-medium">{headingContent}</h2>
+            <Heading level={2} variant="section">
+              {headingContent}
+            </Heading>
             {section.headerActions}
           </div>
         ) : (
-          <h2 className="border-b pb-2 text-m font-medium">{headingContent}</h2>
+          <div className="border-b pb-2">
+            <Heading level={2} variant="section">
+              {headingContent}
+            </Heading>
+          </div>
         ))}
       {entries.length === 0 && section.emptyMessage !== undefined && (
         <p

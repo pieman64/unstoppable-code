@@ -9,7 +9,7 @@ import {
 } from '@/stores/chatStore';
 import type { CollapsedIconColor } from '@/components/shared/panel-section';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
-import { LinearProgress } from '../shared/loading/progress/LinearProgress';
+import { ProgressBar } from '@canopy/ui-shared/components';
 import { ActivitySection } from './ActivitySection';
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -46,11 +46,12 @@ export function useTodoHeaderChrome(scope?: {
   return {
     subtitle: (
       <div className="mt-1 flex items-center gap-2">
-        <LinearProgress
-          percentage={percentage}
-          barColor="bg-fg-success-strong"
+        <ProgressBar
+          value={percentage}
+          size="compact"
           className="flex-1"
           label={`${counts.completed} of ${counts.total} tasks completed`}
+          hideLabel
         />
         <span className="text-2xs fg-secondary">
           {counts.completed}/{counts.total}

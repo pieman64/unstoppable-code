@@ -10,6 +10,7 @@ import {
   AnsweredQuestionsBlock,
   AskUserQuestionCard,
   Button,
+  Heading,
   Markdown,
   answersToDisplay,
   type AskUserQuestionCardProps,
@@ -79,7 +80,11 @@ function LabSection({
 }): JSX.Element {
   return (
     <section className="flex flex-col gap-1.5">
-      <h2 className="px-2 text-xs font-medium fg-tertiary">{title}</h2>
+      <div className="px-2">
+        <Heading level={2} variant="label">
+          {title}
+        </Heading>
+      </div>
       {children}
     </section>
   );

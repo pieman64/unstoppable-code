@@ -21,12 +21,13 @@ import type {
 import type { CanopyClient } from '@canopy/app-core';
 import { useCanopyClient } from '@canopy/app-state';
 import {
-  AdvancedDisclosure,
   Button,
+  Disclosure,
   ErrorBanner,
   LoadingSpinner,
   Notice,
   ToggleSwitch,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -595,13 +596,9 @@ function RepoRulesReviewFlow({
         <section className="space-y-4" data-testid="repo-rules-scanning">
           <div className="flex items-center gap-3 py-6">
             <LoadingSpinner tone="tertiary" decorative />
-            <h3
-              ref={headingRef}
-              tabIndex={-1}
-              className="text-s fg-secondary outline-none"
-            >
+            <Heading level={3} variant="title" ref={headingRef} tabIndex={-1}>
               Scanning Cursor rules…
-            </h3>
+            </Heading>
           </div>
           <div className="flex justify-end">
             <Button variant="ghost" onClick={onClose}>
@@ -615,13 +612,9 @@ function RepoRulesReviewFlow({
       announcement = phase.message;
       body = (
         <section className="space-y-4" data-testid="repo-rules-scan-error">
-          <h3
-            ref={headingRef}
-            tabIndex={-1}
-            className="text-m font-medium fg-primary outline-none"
-          >
+          <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
             Couldn&apos;t scan Cursor rules
-          </h3>
+          </Heading>
           <ErrorBanner className="" error={phase.message} />
           {applyError ? <ErrorBanner className="" error={applyError} /> : null}
           <div className="flex flex-wrap justify-end gap-2">
@@ -759,13 +752,9 @@ function ChooseWorkspace({
   );
   return (
     <section className="space-y-4" data-testid="repo-rules-choose">
-      <h3
-        ref={headingRef}
-        tabIndex={-1}
-        className="text-m font-medium fg-primary outline-none"
-      >
+      <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
         Choose a project
-      </h3>
+      </Heading>
       {workspaces.length === 0 ? (
         <p className="text-s fg-secondary">
           {offer
@@ -913,11 +902,7 @@ function ReviewStep({
   return (
     <section className="space-y-4" data-testid="repo-rules-review-step">
       <div className="space-y-1">
-        <h3
-          ref={headingRef}
-          tabIndex={-1}
-          className="text-m font-medium fg-primary outline-none"
-        >
+        <Heading level={3} variant="section" ref={headingRef} tabIndex={-1}>
           {scan.proposals.length === 0 ? (
             'No Cursor rules found'
           ) : (
@@ -926,7 +911,7 @@ function ReviewStep({
               <span className={REPLAY_MASK_CLASS}>{workspaceName}</span>
             </>
           )}
-        </h3>
+        </Heading>
         <p className="text-s fg-secondary" data-testid="repo-rules-reassurance">
           {appName} reads <code className="font-mono">.cursor/rules</code> and{' '}
           <code className="font-mono">.cursorrules</code> in{' '}
@@ -946,9 +931,9 @@ function ReviewStep({
         repoIds.map((repoId) => (
           <div key={repoId} className="space-y-2">
             {multiRepo ? (
-              <h4 className="text-xs font-medium fg-tertiary">
+              <Heading level={4} variant="label">
                 <span className={REPLAY_BLOCK_CLASS}>{repoId}</span>
-              </h4>
+              </Heading>
             ) : null}
             <ul className="divide-y rounded-lg border">
               {scan.proposals
@@ -970,7 +955,9 @@ function ReviewStep({
       )}
       {scan.skipped.length > 0 ? (
         <div className="space-y-2" data-testid="repo-rules-skipped">
-          <h4 className="text-s font-medium fg-primary">Not included</h4>
+          <Heading level={4} variant="title">
+            Not included
+          </Heading>
           <p className="text-xs fg-tertiary">
             These files were found but can&apos;t be used.
           </p>
@@ -993,10 +980,7 @@ function ReviewStep({
           </ul>
         </div>
       ) : null}
-      <AdvancedDisclosure
-        label="How rules work"
-        dataTestId="repo-rules-how-rules-work"
-      >
+      <Disclosure label="How rules work" dataTestId="repo-rules-how-rules-work">
         <ul className="list-disc space-y-1 pl-5 text-xs fg-secondary">
           <li>
             Each new chat reads the current rules, so edits apply without
@@ -1015,7 +999,7 @@ function ReviewStep({
             read through rules or @file references stay live in chats.
           </li>
         </ul>
-      </AdvancedDisclosure>
+      </Disclosure>
       {footer}
     </section>
   );

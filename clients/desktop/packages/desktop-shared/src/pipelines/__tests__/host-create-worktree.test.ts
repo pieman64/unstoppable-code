@@ -184,13 +184,15 @@ describe('parseCreateWorktreeInputs', () => {
     );
   });
 
-  it('parses a group name and refuses none', () => {
+  // CAN-5479: creating never removes a group, so `none` is a name like any
+  // other; only move-to-group reads it as "remove".
+  it('parses a group name, none included', () => {
     expect(
       parseCreateWorktreeInputs({ project_id: 'ws-1', group: ' Reviews ' }),
     ).toMatchObject({ ok: true, value: { group: 'Reviews' } });
-    expect(parseError({ project_id: 'ws-1', group: 'NONE' })).toBe(
-      'create-worktree "group" can\'t be none; leave it out to skip grouping',
-    );
+    expect(
+      parseCreateWorktreeInputs({ project_id: 'ws-1', group: 'NONE' }),
+    ).toMatchObject({ ok: true, value: { group: 'NONE' } });
   });
 
   it('reports the first failure in input order', () => {

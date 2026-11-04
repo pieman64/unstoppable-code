@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { IPC_CHANNELS, type SidebarItem } from '@canopy/desktop-shared/types';
@@ -13,12 +14,19 @@ import type {
 import type { WorktreeData } from '@canopy/desktop-shared/types';
 import {
   compareTriggerNames,
-  getHookTriggerDisplayName,
   SUPPORTED_PR_HOOK_TRIGGERS,
   type HookTriggerName,
 } from '@canopy/desktop-shared/hooks';
 import { getCurrentBranch } from './git';
+import { CanopyClientError, deliverCanopy } from '@canopy/core-client';
+import type {
+  HookFiringAdmission,
+  InitiatedWorkAcceptance,
+} from '@canopy/core-runtime/node/initiated-work';
+import { OperationLedgerError } from '@canopy/core-runtime/node/operations';
+import type { PersistedPrSnapshotFileV1 } from '@canopy/desktop-shared/types/github';
 import {
+  PR_ADVANCE_SOURCE,
   advancePrTrackingState,
   getProjectRepoStorageKey,
   getWorkspaceRepoStorageKey,
@@ -61,7 +69,22 @@ import {
   resolveWorkspaceRepoHooks,
   resolveWorkspaceRootHooks,
 } from './hook-resolver';
-import { runHook } from './hook-runner';
+import { hookClientPresence } from './hook-client-presence';
+import {
+  announceHookSkippedPaused,
+  runHook,
+  type RunHookOptions,
+} from './hook-runner';
+import {
+  getHookFiring,
+  getHookInitiatedWork,
+  hookIdentity,
+  readPausedHookKeys,
+} from './hook-initiated-work';
+import { startHookRecovery } from './hook-recovery';
+import { prHookOccurrenceKey } from './pr-hook-occurrence';
+import { logMainProcessWarn } from './main-process-logging';
+import { getOperationLedgerPath } from './paths';
 import {
   buildHookWatcherVariables,
   fireHookTriggeredWatchers,
@@ -521,6 +544,141 @@ async function hasActiveCommentCollectionHookWatcher(args: {
   });
 }
 
+/** Renderer events for automatic and recovered hook runs. */
+function automaticHookRunEvents(
+  projectId: string,
+  worktreeId: string,
+): Pick<RunHookOptions, 'onStarted' | 'onOutput' | 'onComplete'> {
+  return {
+    onStarted: (startedHook) => {
+      sendToRenderer(
+        IPC_CHANNELS.hookStarted,
+        createHookStartedEvent(projectId, worktreeId, startedHook),
+      );
+    },
+    onOutput: (outputHook, lines, _ref, activeActionIndex) => {
+      sendToRenderer(
+        IPC_CHANNELS.hookOutput,
+        createHookOutputEvent(
+          projectId,
+          worktreeId,
+          outputHook,
+          lines,
+          activeActionIndex,
+        ),
+      );
+    },
+    onComplete: (completedHook, result) => {
+      sendToRenderer(
+        IPC_CHANNELS.hookComplete,
+        createHookCompleteEvent(projectId, worktreeId, completedHook, result),
+      );
+    },
+  };
+}
+
+/** Ledger failures that leave nothing recorded, so the same write may run again. */
+function retryableLedgerFailure(error: unknown): unknown {
+  return error instanceof OperationLedgerError &&
+    (error.code === 'STORAGE_UNAVAILABLE' ||
+      error.code === 'WRITER_UNAVAILABLE')
+    ? new CanopyClientError({
+        kind: 'unavailable',
+        message: 'The operation ledger is unavailable.',
+        retry: { kind: 'same_idempotency_key' },
+      })
+    : error;
+}
+
+/**
+ * Record a PR snapshot advance and every hook it fired in one ledger write
+ * (CAN-4145, ADR 14): each configured trigger's run is accepted, or recorded
+ * as skipped when the core hook source finds its hook paused. The write is
+ * delivered under the shared delivery policy (CAN-4205): the same keyed
+ * write, with backoff, within one deadline. A failure leaves the snapshot
+ * unadvanced, so the next read fires the same triggers again.
+ */
+async function acceptPrHookFirings(args: {
+  projectId: string;
+  worktreeId: string;
+  target: RepoRefreshTarget;
+  subject: string;
+  head: string;
+  triggerNames: readonly string[];
+  currentSnapshot: PersistedPrSnapshotFileV1 | null;
+  hookActionsByTrigger: Record<
+    string,
+    ReturnType<typeof getResolvedHookActions>
+  >;
+}): Promise<Map<string, InitiatedWorkAcceptance>> {
+  const fired: Array<{
+    triggerName: string;
+    firing: HookFiringAdmission;
+  }> = [];
+  const snapshot = args.currentSnapshot;
+  if (snapshot)
+    for (const triggerName of [...args.triggerNames].sort(
+      compareTriggerNames,
+    )) {
+      const actions = args.hookActionsByTrigger[triggerName];
+      if (!Array.isArray(actions) || actions.length === 0) continue;
+      const hook = createHookDescriptorForTarget({
+        target: args.target,
+        triggerName,
+        actions,
+      });
+      fired.push({
+        triggerName,
+        firing: {
+          hook: hookIdentity(hook),
+          occurrenceKey: prHookOccurrenceKey(snapshot, triggerName),
+          pullRequest: {
+            repository: snapshot.repository.fullName,
+            number: snapshot.pr.number,
+          },
+        },
+      });
+    }
+  const hookFiring = getHookFiring();
+  const write = (): Promise<InitiatedWorkAcceptance[]> =>
+    hookFiring.acceptOccurrence({
+      workspaceId: args.projectId,
+      worktreeId: args.worktreeId,
+      head: {
+        source: PR_ADVANCE_SOURCE,
+        subject: args.subject,
+        value: args.head,
+      },
+      firings: fired.map((entry) => entry.firing),
+    });
+  const attempt: { last: Promise<InitiatedWorkAcceptance[]> | null } = {
+    last: null,
+  };
+  let acceptances: InitiatedWorkAcceptance[];
+  try {
+    acceptances = await deliverCanopy(
+      async () => {
+        const pending = write();
+        attempt.last = pending;
+        try {
+          return await pending;
+        } catch (error) {
+          throw retryableLedgerFailure(error);
+        }
+      },
+      { replay: 'same_idempotency_key' },
+    );
+  } catch (error) {
+    // A deadline can pass while the last write is still committing in this
+    // process. Its own outcome, not the deadline, decides the advance.
+    if (!attempt.last) throw error;
+    acceptances = await attempt.last;
+  }
+  return new Map(
+    fired.map((entry, index) => [entry.triggerName, acceptances[index]]),
+  );
+}
+
 function dispatchAutomaticHooks(args: {
   projectId: string;
   worktreeId: string;
@@ -530,13 +688,16 @@ function dispatchAutomaticHooks(args: {
     string,
     ReturnType<typeof getResolvedHookActions>
   >;
-  pausedHookKeys: Set<string>;
+  /** What the watchers are told; the core hook source decides the pause. */
+  pausedHookKeys: ReadonlySet<string>;
   currentSnapshot: NonNullable<
     Awaited<ReturnType<typeof advancePrTrackingState>>['currentSnapshot']
   >;
   currentSnapshotPath: string;
   previousSnapshotPath: string;
   timeoutSeconds: number;
+  /** Each fired hook's acceptance, committed with the snapshot advance. */
+  acceptances: ReadonlyMap<string, InitiatedWorkAcceptance>;
 }): void {
   const orderedTriggerNames = [...args.triggerNames].sort(compareTriggerNames);
 
@@ -568,30 +729,43 @@ function dispatchAutomaticHooks(args: {
       currentSnapshotPath: args.currentSnapshotPath,
       previousSnapshotPath: args.previousSnapshotPath,
     });
-    fireHookTriggeredWatchers({
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      triggerName,
-      scope,
-      repoId: args.target.repoId,
-      repoName: args.target.repoName,
-      hook,
-      configured,
-      paused,
-      variables,
-    });
+    // A failing watcher must not keep an accepted hook from starting.
+    try {
+      fireHookTriggeredWatchers({
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        triggerName,
+        scope,
+        repoId: args.target.repoId,
+        repoName: args.target.repoName,
+        hook,
+        configured,
+        paused,
+        variables,
+      });
+    } catch (error) {
+      logMainProcessWarn('[github-poller] hook watcher delivery failed', error);
+    }
 
     if (!configured || !hook) {
       continue;
     }
 
-    if (paused) {
-      sendToRenderer(IPC_CHANNELS.hookSkippedPaused, {
-        projectId: args.projectId,
-        worktreeId: args.worktreeId,
-        hook,
-        triggerDisplayName: getHookTriggerDisplayName(triggerName),
-      });
+    const occurrenceKey = prHookOccurrenceKey(
+      args.currentSnapshot,
+      triggerName,
+    );
+    const acceptance = args.acceptances.get(triggerName);
+    if (acceptance && acceptance.status !== 'accepted') {
+      // Recorded with the advance: a paused skip, or an occurrence the
+      // ledger already holds, which its first firing or recovery runs.
+      if (acceptance.status === 'stopped')
+        announceHookSkippedPaused({
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          hook,
+          window: getWindowFn?.() ?? null,
+        });
       continue;
     }
     trackDetachedWork(() =>
@@ -601,44 +775,16 @@ function dispatchAutomaticHooks(args: {
         hook,
         cwd: args.target.repoPath,
         invocation: 'automatic',
+        pause: 'enforce',
+        occurrenceKey,
+        ...(acceptance ? { acceptedOperationId: acceptance.operationId } : {}),
+        clientPresence: hookClientPresence(() => getWindowFn?.() ?? null),
         timeoutSeconds: args.timeoutSeconds,
         currentSnapshot: args.currentSnapshot,
         currentSnapshotPath: args.currentSnapshotPath,
         previousSnapshotPath: args.previousSnapshotPath,
         getWindow: () => getWindowFn?.() ?? null,
-        onStarted: (startedHook) => {
-          sendToRenderer(
-            IPC_CHANNELS.hookStarted,
-            createHookStartedEvent(
-              args.projectId,
-              args.worktreeId,
-              startedHook,
-            ),
-          );
-        },
-        onOutput: (outputHook, lines, _ref, activeActionIndex) => {
-          sendToRenderer(
-            IPC_CHANNELS.hookOutput,
-            createHookOutputEvent(
-              args.projectId,
-              args.worktreeId,
-              outputHook,
-              lines,
-              activeActionIndex,
-            ),
-          );
-        },
-        onComplete: (completedHook, result) => {
-          sendToRenderer(
-            IPC_CHANNELS.hookComplete,
-            createHookCompleteEvent(
-              args.projectId,
-              args.worktreeId,
-              completedHook,
-              result,
-            ),
-          );
-        },
+        ...automaticHookRunEvents(args.projectId, args.worktreeId),
       }).catch(() => {}),
     );
   }
@@ -673,9 +819,9 @@ export async function isPrHookActiveForRepo(args: {
     triggerName: args.triggerName,
     actions,
   });
-  const worktrees = await readWorkspaceWorktrees(args.projectId);
-  const worktree = worktrees.find((entry) => entry.id === args.worktreeId);
-  return !(worktree?.pausedHookKeys ?? []).includes(hook.hookKey);
+  return !(await readPausedHookKeys(args.projectId, args.worktreeId)).has(
+    hook.hookKey,
+  );
 }
 
 async function persistLastKnownPrStatus(
@@ -819,12 +965,23 @@ async function applyRepoRefreshes(
     Parameters<typeof dispatchAutomaticHooks>[0]
   > = [];
 
+  // Read once, when the first advance fires hooks: the pause the watchers
+  // are told about.
+  let watcherPause: Promise<ReadonlySet<string>> | null = null;
+  const loadWatcherPause = (): Promise<ReadonlySet<string>> =>
+    (watcherPause ??= readPausedHookKeys(projectId, worktreeId).catch(
+      (): ReadonlySet<string> => new Set<string>(),
+    ));
+  const committedHead = (subject: string): Promise<string | null> =>
+    getHookInitiatedWork().sourceHead(PR_ADVANCE_SOURCE, subject);
+
   const verifiedScopes = new Map<RepoRefreshRead, string | undefined>();
   for (const read of reads) {
     if (read.remote)
       verifiedScopes.set(read, await verifySnapshotReadIdentity(read));
   }
   let identityChanged = false;
+  let advanceFailure: { error: unknown } | null = null;
   for (const read of reads) {
     const { target, branchName, hookActionsByTrigger, trackingData } = read;
     if (
@@ -847,23 +1004,52 @@ async function applyRepoRefreshes(
       continue;
     }
 
-    const advancedState = await advancePrTrackingState({
-      projectId,
-      worktreeId,
-      repoStorageKey: target.repoStorageKey,
-      branchName,
-      credentialScope: verifiedScopes.get(read),
-      currentSnapshot: trackingData.snapshot
-        ? {
-            ...trackingData.snapshot,
-            credentialScope: verifiedScopes.get(read),
-          }
-        : null,
-      // Side-effect-free read: ensureTracked would mutate the tracked entry
-      // mid-refresh.
-      worktreeCreatedAt: tracked.get(worktreeKey(projectId, worktreeId))
-        ?.createdAt,
-    });
+    let acceptances = new Map<string, InitiatedWorkAcceptance>();
+    let advancedState: Awaited<ReturnType<typeof advancePrTrackingState>>;
+    try {
+      advancedState = await advancePrTrackingState({
+        projectId,
+        worktreeId,
+        repoStorageKey: target.repoStorageKey,
+        committedHead,
+        ...(hookActionsByTrigger !== null
+          ? {
+              commit: {
+                committedHead,
+                accept: async (advance): Promise<void> => {
+                  acceptances = await acceptPrHookFirings({
+                    projectId,
+                    worktreeId,
+                    target,
+                    subject: advance.subject,
+                    head: advance.head,
+                    triggerNames: advance.triggers,
+                    currentSnapshot: advance.currentSnapshot,
+                    hookActionsByTrigger,
+                  });
+                },
+              },
+            }
+          : {}),
+        branchName,
+        credentialScope: verifiedScopes.get(read),
+        currentSnapshot: trackingData.snapshot
+          ? {
+              ...trackingData.snapshot,
+              credentialScope: verifiedScopes.get(read),
+            }
+          : null,
+        // Side-effect-free read: ensureTracked would mutate the tracked entry
+        // mid-refresh.
+        worktreeCreatedAt: tracked.get(worktreeKey(projectId, worktreeId))
+          ?.createdAt,
+      });
+    } catch (error) {
+      // Hooks earlier repositories already accepted still start; this
+      // repository's snapshot did not advance, so its triggers fire again.
+      advanceFailure = { error };
+      break;
+    }
     if (
       advancedState.triggers.includes('pr:merged') &&
       advancedState.currentSnapshot
@@ -898,13 +1084,12 @@ async function applyRepoRefreshes(
       currentSnapshotPath: advancedState.currentSnapshotPath,
       previousSnapshotPath: advancedState.previousSnapshotPath,
       timeoutSeconds: scriptTimeoutMinutes * 60,
+      acceptances,
     });
   }
 
   if (pendingHookDispatches.length > 0) {
-    const worktrees = await readWorkspaceWorktrees(projectId).catch(() => []);
-    const worktree = worktrees.find((entry) => entry.id === worktreeId);
-    const pausedHookKeys = new Set<string>(worktree?.pausedHookKeys ?? []);
+    const pausedHookKeys = await loadWatcherPause();
     for (const dispatch of pendingHookDispatches) {
       dispatch.pausedHookKeys = pausedHookKeys;
     }
@@ -921,6 +1106,7 @@ async function applyRepoRefreshes(
   for (const hookDispatch of pendingHookDispatches) {
     dispatchAutomaticHooks(hookDispatch);
   }
+  if (advanceFailure) throw advanceFailure.error;
   if (identityChanged) throw new Error('GitHub acquisition identity changed.');
   const status: WorktreePrStatus = {
     repos,
@@ -1836,6 +2022,11 @@ export function reconcileTrackedWorkspaceWorktrees(
 
 export function startPolling(getWindow: () => BrowserWindow | null): void {
   getWindowFn = getWindow;
+  startHookRecovery({
+    getWindow,
+    events: automaticHookRunEvents,
+    ledgerExists: () => existsSync(getOperationLedgerPath()),
+  });
   running = true;
   scheduleNext();
 }

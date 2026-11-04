@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { LocalMemoryConsolidationResult } from '@canopy/desktop-shared/types';
 import { isRecord } from '../../lib/type-guards';
 import type { RunConsolidationResult } from './consolidation-task';
-import { ensureOwnerOnlyDir } from './store';
+import { ensureOwnerOnlyDir } from './memory-files';
 
 const CONSOLIDATION_STATE_VERSION = 1;
 const CONSOLIDATION_STATE_FILENAME = 'consolidation-state.json';

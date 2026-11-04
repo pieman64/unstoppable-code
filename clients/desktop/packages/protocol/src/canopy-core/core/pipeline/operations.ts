@@ -16,6 +16,8 @@ import {
   PipelineDefinitionDeleteResultSchema,
   PipelineDefinitionDuplicateParamsSchema,
   PipelineDefinitionDuplicateResultSchema,
+  PipelineDefinitionImportParamsSchema,
+  PipelineDefinitionImportResultSchema,
   PipelineDefinitionSetEnabledParamsSchema,
   PipelineDefinitionSetEnabledResultSchema,
   PipelineDefinitionUpsertParamsSchema,
@@ -62,6 +64,16 @@ export const PIPELINE_DEFINITION_INSTRUCTION_ERROR_CODES = [
 export type PipelineDefinitionInstructionErrorCode =
   (typeof PIPELINE_DEFINITION_INSTRUCTION_ERROR_CODES)[number];
 
+/** Codes an import adds: its remote is gone or changed since it was reviewed. */
+export const PIPELINE_DEFINITION_IMPORT_ERROR_CODES = [
+  ...PIPELINE_DEFINITION_INSTRUCTION_ERROR_CODES,
+  'core.pipeline.remoteNotFound',
+  'core.pipeline.remoteVersionConflict',
+] as const;
+
+export type PipelineDefinitionImportErrorCode =
+  (typeof PIPELINE_DEFINITION_IMPORT_ERROR_CODES)[number];
+
 /** Diagnostic codes a validation result may carry. */
 export const PIPELINE_DEFINITION_DIAGNOSTIC_CODES = {
   parseFailed: 'core.pipeline.parseFailed',
@@ -77,6 +89,12 @@ export const PipelineDefinitionQueryErrorSchema =
 export const PipelineDefinitionInstructionErrorSchema =
   CanopyErrorPayloadSchema.extend({
     code: z.enum(PIPELINE_DEFINITION_INSTRUCTION_ERROR_CODES).optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
+export const PipelineDefinitionImportErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z.enum(PIPELINE_DEFINITION_IMPORT_ERROR_CODES).optional(),
     retry: CanopyKeyedRetryDirectiveSchema,
   });
 
@@ -151,6 +169,17 @@ export const PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS =
       params: PipelineDefinitionDuplicateParamsSchema,
       result: PipelineDefinitionDuplicateResultSchema,
       error: PipelineDefinitionInstructionErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [PIPELINE_GRANTS.write],
+    }),
+    'core.pipeline.definition.import': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'core-only',
+      params: PipelineDefinitionImportParamsSchema,
+      result: PipelineDefinitionImportResultSchema,
+      error: PipelineDefinitionImportErrorSchema,
       idempotency: 'keyed',
       requiredGrants: [PIPELINE_GRANTS.write],
     }),

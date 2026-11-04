@@ -87,6 +87,27 @@ describe('ComposerWorkDrawer', () => {
     );
     expect(toggle()?.getAttribute('aria-label')).toBe('Show work: Needs you 2');
   });
+  it('puts Needs you beside its glyph when it is the only work, and at the end otherwise', () => {
+    const attention = (): string | null | undefined =>
+      container.querySelector('[data-testid="composer-work-summary-attention"]')
+        ?.textContent;
+    act(() =>
+      root.render(
+        <ComposerWorkDrawer
+          queuedCount={0}
+          background={{ count: 1, running: 0, needsYou: 1 }}
+        />,
+      ),
+    );
+    expect(attention()).not.toContain('Needs you');
+    expect(toggle()?.textContent).toContain('Needs you 1');
+    act(() =>
+      root.render(
+        <ComposerWorkDrawer queuedCount={0} background={background} />,
+      ),
+    );
+    expect(attention()).toContain('Needs you 1');
+  });
   it('dismisses from the resting Stop all control but leaves its confirmation first', () => {
     act(() =>
       root.render(

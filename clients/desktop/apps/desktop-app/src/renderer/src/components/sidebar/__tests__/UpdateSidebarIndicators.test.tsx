@@ -12,7 +12,9 @@ import type {
   UpdatePhase,
   UpdateState,
 } from '@canopy/desktop-shared/types';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useUpdateState } from '@/hooks/useUpdateState';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { UpdatePrompt } from '../UpdatePrompt';
 import { brand } from '@/lib/brand';
 
@@ -218,6 +220,66 @@ describe('sidebar update prompt', () => {
     render(<UpdatePrompt />);
     expect(queryPrompt()?.textContent).toBe('Download Linux update');
     expect(container.textContent).not.toMatch(/APT|apt update|once more/);
+  });
+
+  it('does not expose a restart for stale downloaded events on Linux', () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    mockUpdateState({
+      phase: 'downloaded',
+      installPending: true,
+      info: { version: '1.2.0' },
+    });
+    render(<UpdatePrompt />);
+    expect(queryPrompt()).toBeNull();
+    expect(installUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('points pacman installs at the package manager without a download', () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    mockUpdateState({
+      phase: 'available',
+      info: {
+        version: '1.2.0',
+        packageManagerUpdate: {
+          guidance: 'Update with your package manager:',
+          command: 'sudo pacman -Syu',
+        },
+      },
+    });
+    const originalOpenSettings = useNavigationStore.getState().openSettings;
+    const openSettings = jest.fn();
+    useNavigationStore.setState({ openSettings });
+    render(<UpdatePrompt />);
+    const prompt = queryPrompt();
+    expect(prompt?.textContent).toBe('Update available');
+    act(() => {
+      prompt?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    const tooltip = document.body.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toContain(
+      'Update with your package manager: sudo pacman -Syu',
+    );
+    const blocked = tooltip?.querySelectorAll(`.${POSTHOG_REPLAY_BLOCK_CLASS}`);
+    expect(blocked).toHaveLength(1);
+    expect(blocked?.[0]?.textContent).toBe('sudo pacman -Syu');
+    act(() => {
+      prompt?.click();
+    });
+    useNavigationStore.setState({ openSettings: originalOpenSettings });
+    expect(openSettings).toHaveBeenCalledWith('canopy', {
+      scrollTo: 'settings-linux-update-guidance',
+    });
+    // A pacman install never gets APT guidance, even on the stable channel.
+    expect(container.textContent).not.toMatch(/APT|apt update|once more/);
+    expect(openExternalMock).not.toHaveBeenCalled();
+    expect(downloadUpdateMock).not.toHaveBeenCalled();
+    expect(installUpdateMock).not.toHaveBeenCalled();
   });
 
   it('does not expose a restart for stale downloaded events on Linux', () => {

@@ -26,6 +26,7 @@ import {
   ErrorState,
   TextArea,
   ThinkingSpinner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { DiagramCenteredMessage } from './DiagramCenteredMessage';
 import type { PlanDiagramArtifact } from '@canopy/desktop-shared/types/plan-diagrams';
@@ -153,7 +154,9 @@ function SelectedNodeDetail({
   return (
     <div className="absolute bottom-3 left-3 right-3 z-20 max-h-3/5 overflow-auto rounded-lg bg-popover p-3 shadow-lg">
       <div className="mb-1 flex items-start justify-between gap-2">
-        <h4 className="text-s font-semibold fg-primary">{data.title}</h4>
+        <Heading level={4} variant="title">
+          {data.title}
+        </Heading>
         <Button
           variant="ghost"
           size="compact"

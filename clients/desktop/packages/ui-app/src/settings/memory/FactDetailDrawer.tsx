@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { X } from '@canopy/ui-shared/icons/AppIcons';
 import type { ExplorerFactDetail } from '@canopy/protocol/settings/organization-memory';
 import { withPrivacyClass } from '../account/privacy-class';
@@ -62,7 +62,9 @@ export function FactDetailDrawer({
         )}
       </div>
 
-      <h2 className="mt-5 text-lg font-semibold fg-primary">Fact</h2>
+      <Heading level={2} variant="section" className="mt-5">
+        Fact
+      </Heading>
       <p
         className={withPrivacyClass(
           'mt-2 whitespace-pre-wrap text-s leading-6 fg-primary',
@@ -74,7 +76,9 @@ export function FactDetailDrawer({
 
       {detail.evidenceQuote !== null && (
         <section className="mt-6">
-          <h3 className="text-sm font-semibold fg-primary">Evidence</h3>
+          <Heading level={3} variant="title">
+            Evidence
+          </Heading>
           <blockquote
             className={withPrivacyClass(
               'mt-2 rounded-lg border-l-2 border-line-accent bg-accent/5 px-4 py-3 text-s italic fg-secondary',
@@ -87,7 +91,9 @@ export function FactDetailDrawer({
       )}
 
       <section className="mt-6">
-        <h3 className="text-sm font-semibold fg-primary">Provenance</h3>
+        <Heading level={3} variant="title">
+          Provenance
+        </Heading>
         {detail.sources.length === 0 ? (
           <p className="mt-2 text-s fg-secondary">No source rows recorded.</p>
         ) : (
@@ -122,9 +128,9 @@ export function FactDetailDrawer({
 
       {detail.supersessionChain.length > 1 && (
         <section className="mt-6">
-          <h3 className="text-sm font-semibold fg-primary">
+          <Heading level={3} variant="title">
             Supersession chain
-          </h3>
+          </Heading>
           <ol className="mt-2 space-y-2 border-l pl-4">
             {detail.supersessionChain.map((fact) => (
               <li key={fact.id} className="relative text-xs fg-secondary">

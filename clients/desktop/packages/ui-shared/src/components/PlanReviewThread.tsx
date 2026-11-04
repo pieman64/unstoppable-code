@@ -1,25 +1,22 @@
 import {
   useEffect,
   useRef,
-  type CSSProperties,
   type JSX,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { AgentIcon } from '../icons/AgentIcon';
-import { WarningIcon } from '../icons/AppIcons';
+import { AgentIcon, WarningIcon } from '../icons/AppIcons';
 import { ChevronDownIcon } from '../icons/ChevronDownIcon';
 import { ChevronRightIcon } from '../icons/ChevronRightIcon';
 import { PencilIcon } from '../icons/PencilIcon';
 import { TrashIcon } from '../icons/TrashIcon';
 import {
   formatPlanCommentTime,
-  planCommentAvatarColor,
-  planCommentInitials,
   type PlanReviewAuthorKind,
 } from '../lib/plan-comments';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Button } from './Button';
+import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import { Tooltip } from './Tooltip';
 
@@ -40,8 +37,6 @@ export interface PlanReviewAuthor {
   kind: PlanReviewAuthorKind;
   /** Marks the comment as authored by the signed-in viewer. */
   isYou?: boolean;
-  /** Stable key for the deterministic avatar color (user id, else the name). */
-  colorKey?: string;
 }
 
 export interface CommentAvatarProps {
@@ -49,35 +44,28 @@ export interface CommentAvatarProps {
   compact?: boolean;
 }
 
-/** Round initials avatar (or an agent glyph), masking the thread spine. */
+/**
+ * A comment author's avatar (an agent's glyph for an agent). The card-colored
+ * backing and ring hide the thread spine behind and around it, since the
+ * avatar's grey fill is translucent. `self-start` keeps the backing the size
+ * of the avatar instead of stretching over the spine beside a tall comment.
+ */
 export function CommentAvatar({
   author,
   compact = false,
 }: CommentAvatarProps): JSX.Element {
-  const dimension = compact ? 'h-5 w-5 text-3xs' : 'h-6 w-6 text-3xs';
-  if (author.kind === 'agent') {
-    return (
-      <span
-        aria-hidden="true"
-        className={`flex ${dimension} shrink-0 items-center justify-center rounded-full bg-fg-primary/[0.08] fg-secondary ring-2 ring-card`}
-      >
-        <AgentIcon width={compact ? 11 : 13} height={compact ? 11 : 13} />
-      </span>
-    );
-  }
-  const color = planCommentAvatarColor(author.colorKey ?? author.name);
-  const style: CSSProperties = {
-    backgroundColor: color.backgroundColor,
-    color: color.color,
-  };
-  // A person's initials: replay records a same-size box.
+  const size = compact ? 'sm' : 'md';
   return (
-    <span
-      aria-hidden="true"
-      style={style}
-      className={`${REPLAY_BLOCK_CLASS} flex ${dimension} shrink-0 items-center justify-center rounded-full font-semibold uppercase ring-2 ring-card`}
-    >
-      {planCommentInitials(author.name)}
+    <span className="flex shrink-0 self-start rounded-full bg-card ring-2 ring-card">
+      <DisplayAvatar
+        name={author.name}
+        size={size}
+        glyph={
+          author.kind === 'agent' ? (
+            <AgentIcon size={DISPLAY_AVATAR_GLYPH_SIZE[size]} />
+          ) : undefined
+        }
+      />
     </span>
   );
 }

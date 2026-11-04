@@ -1,12 +1,9 @@
 'use client';
 
 import { useRef, useState, type JSX, type RefObject } from 'react';
-import { Notice } from '@canopy/ui-shared/components';
+import { Notice, Heading } from '@canopy/ui-shared/components';
 import { SettingsConfirmDialog, useSettingsBrand } from '../host';
-import {
-  SETTINGS_CARD_TITLE_CLASS,
-  SettingsCard,
-} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 import type { GitHubCloudConnectionDto } from '@canopy/protocol/settings/account-github';
 import type {
   GitHubCloudConnectionController,
@@ -262,13 +259,9 @@ export function GitHubCloudConnectionCard({
   return (
     <SettingsCard
       title={
-        <h2
-          ref={headingRef}
-          tabIndex={-1}
-          className={SETTINGS_CARD_TITLE_CLASS}
-        >
+        <Heading level={2} variant="section" ref={headingRef} tabIndex={-1}>
           {CARD_TITLE}
-        </h2>
+        </Heading>
       }
       subtitle={`Connect GitHub so cloud projects in ${brand.displayName} can use your repositories.`}
       testId="github-cloud-card"

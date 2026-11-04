@@ -625,6 +625,8 @@ const NEW_DEFAULTS: Partial<PreferencesData> = {
   lastActiveContext: null,
   fileAutoSave: false,
   inAppBrowserLocalServersOnly: false,
+  inAppBrowserSearchEngineId: 'google',
+  inAppBrowserCustomSearchEngines: [],
   openAppLinksInBuiltInBrowser: true,
   useAsSystemDefaultBrowser: false,
   inAppNotifications: {
@@ -1067,6 +1069,32 @@ describe('normalizePreferences', () => {
       summaryModel: 'sonnet',
       worktreeSummaryModel: 'sonnet',
     });
+  });
+
+  it('searches Google unless another engine was chosen, keeping usable custom engines', () => {
+    expect(normalizePreferences({}).inAppBrowserSearchEngineId).toBe('google');
+    expect(normalizePreferences({}).inAppBrowserCustomSearchEngines).toEqual(
+      [],
+    );
+    const normalized = normalizePreferences({
+      inAppBrowserSearchEngineId: 'custom-wiki',
+      inAppBrowserCustomSearchEngines: [
+        {
+          id: 'custom-wiki',
+          name: 'Wikipedia',
+          urlTemplate: 'https://en.wikipedia.org/w/index.php?search=%s',
+        },
+        { id: 'custom-bad', name: 'Bad', urlTemplate: 'javascript:%s' },
+      ],
+    });
+    expect(normalized.inAppBrowserSearchEngineId).toBe('custom-wiki');
+    expect(normalized.inAppBrowserCustomSearchEngines).toEqual([
+      {
+        id: 'custom-wiki',
+        name: 'Wikipedia',
+        urlTemplate: 'https://en.wikipedia.org/w/index.php?search=%s',
+      },
+    ]);
   });
 
   it('opens app links in the built-in browser unless a choice says otherwise', () => {
@@ -8632,6 +8660,8 @@ describe('save handler', () => {
           aiCreditsRoutingMode: 'off',
           fileAutoSave: false,
           inAppBrowserLocalServersOnly: false,
+          inAppBrowserSearchEngineId: 'google',
+          inAppBrowserCustomSearchEngines: [],
           openAppLinksInBuiltInBrowser: true,
           useAsSystemDefaultBrowser: false,
           inAppNotifications: {

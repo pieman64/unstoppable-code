@@ -4,6 +4,7 @@ import {
   normalizePipeline,
   parsePipelineText,
   serializePipelineDocument,
+  validateCuratedPipeline,
   type NormalizePipelineOptions,
   type Pipeline,
 } from '@canopy/pipeline-interop';
@@ -23,7 +24,9 @@ import {
   type PipelineDefinitionDuplicateParams,
   type PipelineDefinitionDuplicateResult,
   type PipelineDefinitionFormat,
-  type PipelineDefinitionInstructionErrorCode,
+  type PipelineDefinitionImportErrorCode,
+  type PipelineDefinitionImportParams,
+  type PipelineDefinitionImportResult,
   type PipelineDefinitionListParams,
   type PipelineDefinitionListResult,
   type PipelineDefinitionSource,
@@ -33,7 +36,10 @@ import {
   type PipelineDefinitionUpsertParams,
   type PipelineDefinitionValidateResult,
 } from '@canopy/protocol/canopy-core';
-import { isSharedPipelineLocalId } from '@canopy/protocol/pipelines';
+import {
+  isSharedPipelineLocalId,
+  type PipelinePackageManifestV1,
+} from '@canopy/protocol/pipelines';
 import { CanopyOperationError } from '../../runtime/errors';
 
 /** One definition a source can list without reading its document. */
@@ -100,6 +106,49 @@ export interface PipelineDefinitionSourcePort {
     definitionId: string,
     context: PipelineDefinitionSourceContext,
   ): Promise<PipelineDefinitionSourceDocument | null>;
+  /**
+   * The current revision of a remote definition (curated or shared) to
+   * install, read from the remote itself rather than a local cache; `null`
+   * when it has none. Absent on sources nothing installs from.
+   */
+  remote?(
+    source: PipelineDefinitionSource,
+    definitionId: string,
+    context: PipelineDefinitionSourceContext,
+  ): Promise<PipelineDefinitionRemote | null>;
+}
+
+/** A remote revision a source offers for install. */
+export interface PipelineDefinitionRemote {
+  /** The display fields an install keeps and the exact bytes it stores. */
+  readonly document: PipelineDefinitionSourceDocument;
+  /** The content hash an import pins with `expectedRemoteVersion`. */
+  readonly remoteVersion: string;
+  /**
+   * The package the revision ships with, prepared once the version pin has
+   * passed. A curated revision is validated against it with the rule the
+   * catalog applied at publication.
+   */
+  packageManifest?(): Promise<PipelinePackageManifestV1 | undefined>;
+  /**
+   * Stores the validated install as a user definition with the provenance
+   * this remote carries, or leaves nothing behind: a replaced definition is
+   * restored and a created one removed.
+   */
+  install(
+    write: PipelineDefinitionInstall,
+    context: PipelineDefinitionWriteContext,
+  ): Promise<PipelineDefinitionSourceDocument>;
+}
+
+/** A validated remote revision to store under the id core chose. */
+export interface PipelineDefinitionInstall extends Omit<
+  PipelineDefinitionWrite,
+  'definitionId' | 'expectedRevision'
+> {
+  readonly definitionId: string;
+  /** Whether `definitionId` names an existing user definition to replace. */
+  readonly replaces: boolean;
 }
 
 /** A validated document for the writable source to store. */
@@ -198,7 +247,7 @@ export interface PipelineDefinitionPendingEnablement {
 /** A source failure with a stable code and a message safe for its caller. */
 export class PipelineDefinitionSourceError extends Error {
   constructor(
-    readonly code: PipelineDefinitionInstructionErrorCode,
+    readonly code: PipelineDefinitionImportErrorCode,
     message: string,
     readonly sourceCause?: unknown,
   ) {
@@ -240,24 +289,24 @@ const LIST_ORDER: readonly PipelineDefinitionSource[] = [
   'shared',
 ];
 
-const ERROR_KINDS: Record<
-  PipelineDefinitionInstructionErrorCode,
-  CanopyErrorKind
-> = {
-  'core.pipeline.definitionNotFound': 'not_found',
-  'core.pipeline.definitionUnreadable': 'failed_precondition',
-  'core.pipeline.sourceUnavailable': 'unavailable',
-  'core.pipeline.scopeInvalid': 'invalid_argument',
-  'core.pipeline.contextMismatch': 'permission_denied',
-  'core.pipeline.targetUnavailable': 'capability_unavailable',
-  'core.pipeline.definitionInvalid': 'invalid_argument',
-  'core.pipeline.definitionReadOnly': 'failed_precondition',
-  'core.pipeline.revisionConflict': 'conflict',
-};
+const ERROR_KINDS: Record<PipelineDefinitionImportErrorCode, CanopyErrorKind> =
+  {
+    'core.pipeline.definitionNotFound': 'not_found',
+    'core.pipeline.definitionUnreadable': 'failed_precondition',
+    'core.pipeline.sourceUnavailable': 'unavailable',
+    'core.pipeline.scopeInvalid': 'invalid_argument',
+    'core.pipeline.contextMismatch': 'permission_denied',
+    'core.pipeline.targetUnavailable': 'capability_unavailable',
+    'core.pipeline.definitionInvalid': 'invalid_argument',
+    'core.pipeline.definitionReadOnly': 'failed_precondition',
+    'core.pipeline.revisionConflict': 'conflict',
+    'core.pipeline.remoteNotFound': 'not_found',
+    'core.pipeline.remoteVersionConflict': 'conflict',
+  };
 
 /** A typed operation error that keeps the source failure as its cause. */
 export function pipelineDefinitionError(
-  code: PipelineDefinitionInstructionErrorCode,
+  code: PipelineDefinitionImportErrorCode,
   message: string,
   cause?: unknown,
 ): CanopyOperationError {
@@ -459,6 +508,10 @@ export interface PipelineDefinitionService {
   setEnabled(
     params: Omit<PipelineDefinitionSetEnabledParams, '_meta'>,
   ): Promise<PipelineDefinitionSetEnabledResult>;
+  import(
+    params: Omit<PipelineDefinitionImportParams, '_meta'>,
+    signal: AbortSignal,
+  ): Promise<PipelineDefinitionImportResult>;
   /**
    * Records the enabled state an upsert committed without, unless a later
    * write has raised the definition's revision since.
@@ -910,6 +963,129 @@ export function createPipelineDefinitionService(
         definition: await definitionFrom(written, {}, disabled),
         sourceDefinitionId: origin.definitionId,
       };
+    },
+
+    async import(params, signal): Promise<PipelineDefinitionImportResult> {
+      const replaced = params.definitionId ?? null;
+      writerFor(replaced);
+      const [source] = pipelineDefinitionSourcesForId(
+        params.remoteDefinitionId,
+      );
+      if (source !== 'curated' && source !== 'shared')
+        throw new CanopyOperationError({
+          kind: 'invalid_argument',
+          message: `Only curated and shared workflows can be installed: ${params.remoteDefinitionId}`,
+          retry: { kind: 'never' },
+        });
+      // A curated import always adds a new editable copy; no existing
+      // definition is replaced by one.
+      if (source === 'curated' && replaced !== null)
+        throw new CanopyOperationError({
+          kind: 'invalid_argument',
+          message: 'A curated workflow is installed as a new copy.',
+          retry: { kind: 'never' },
+        });
+      const port = portFor(source);
+      if (!port?.remote)
+        throw pipelineDefinitionError(
+          'core.pipeline.sourceUnavailable',
+          'This host cannot install workflows from this source.',
+        );
+      const readRemote = port.remote.bind(port);
+      const context = { scope: params.targetScope, signal };
+      let remote: PipelineDefinitionRemote | null;
+      try {
+        remote = await readRemote(source, params.remoteDefinitionId, {
+          ...context,
+          sources: [source],
+        });
+      } catch (error) {
+        throw toOperationError(error, 'The workflow could not be read.');
+      }
+      if (!remote)
+        throw pipelineDefinitionError(
+          'core.pipeline.remoteNotFound',
+          `Workflow not found: ${params.remoteDefinitionId}`,
+        );
+      if (
+        params.expectedRemoteVersion !== null &&
+        params.expectedRemoteVersion !== remote.remoteVersion
+      )
+        throw pipelineDefinitionError(
+          'core.pipeline.remoteVersionConflict',
+          `Workflow changed since it was reviewed: ${params.remoteDefinitionId}`,
+        );
+      const text = remote.document.text;
+      if (source === 'curated') {
+        let packageManifest: PipelinePackageManifestV1 | undefined;
+        try {
+          packageManifest = await remote.packageManifest?.();
+        } catch (error) {
+          throw toOperationError(
+            error,
+            'The workflow package could not be installed.',
+          );
+        }
+        // The rule the catalog applied at publication: packaged `project/`
+        // actions and child pipelines must be bound by the manifest.
+        try {
+          validateCuratedPipeline(text, { packageManifest });
+        } catch (error) {
+          throw pipelineDefinitionError(
+            'core.pipeline.definitionInvalid',
+            errorMessage(error),
+            error,
+          );
+        }
+      }
+      const validation = validate(text, normalizeOptions());
+      const diagnostic = validation.diagnostics[0];
+      if (!validation.pipeline || diagnostic)
+        throw pipelineDefinitionError(
+          'core.pipeline.definitionInvalid',
+          diagnostic?.message ?? 'The workflow is invalid.',
+        );
+      if (text.length > PIPELINE_DEFINITION_DOCUMENT_MAX_LENGTH)
+        throw pipelineDefinitionError(
+          'core.pipeline.definitionInvalid',
+          'The workflow document is larger than 1 MiB.',
+        );
+      const pipeline = validation.pipeline;
+      const installed = remote;
+      const definitionId =
+        replaced ?? (options.createDefinitionId ?? randomUUID)();
+      return withDefinitionLock(replaced, async () => {
+        // Read before the install commits, so nothing after it can fail the
+        // request and free its key while the definition stays stored.
+        const disabled = await disabledIds();
+        let written: PipelineDefinitionSourceDocument;
+        try {
+          written = await installed.install(
+            {
+              definitionId,
+              replaces: replaced !== null,
+              name: params.nameOverride ?? installed.document.name,
+              description: installed.document.description,
+              icon: installed.document.icon,
+              text,
+              pipeline,
+            },
+            context,
+          );
+        } catch (error) {
+          throw toOperationError(error, 'The workflow could not be installed.');
+        }
+        if (written.definitionId !== definitionId)
+          throw pipelineDefinitionError(
+            'core.pipeline.sourceUnavailable',
+            'The workflow was installed under another id.',
+          );
+        return {
+          definition: await definitionFrom(written, {}, disabled),
+          remoteDefinitionId: params.remoteDefinitionId,
+          remoteVersion: installed.remoteVersion,
+        };
+      });
     },
 
     async setEnabled(params): Promise<PipelineDefinitionSetEnabledResult> {

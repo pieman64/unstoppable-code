@@ -446,6 +446,17 @@ export interface V2Admission {
    */
   durable?: Promise<void>;
 }
+/**
+ * A lease link: settles when `operation` does, without its outcome, so an
+ * idle chain does not keep its last read or commit result alive.
+ */
+export function settledLease(operation: Promise<unknown>): Promise<void> {
+  return operation.then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
 function preparedRowKey(chatId: string, messageId: string): string {
   return JSON.stringify([chatId, messageId]);
 }
@@ -1478,7 +1489,8 @@ export class ChatStateV2Backend {
   /** Read-only verifier shared by checkpoint-only registry views. */
   private registryArtifacts?: ChatTranscriptArtifacts;
   private indexes?: ChatStorageIndexes;
-  private tail: Promise<unknown> = Promise.resolve();
+  /** Settles without the last operation's result; see `settledLease`. */
+  private tail: Promise<void> = Promise.resolve();
   /** The open delta journal while the scope is version 3. */
   private journal?: ChatDeltaJournalWriter;
   /**
@@ -3231,13 +3243,11 @@ export class ChatStateV2Backend {
     return this.artifactMaintenance.onCapacityAvailable(listener);
   }
   private async serial<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.tail
-      .catch(() => undefined)
-      .then(() => {
-        this.dropUndurableIndexes();
-        return work();
-      });
-    this.tail = next;
+    const next = this.tail.then(() => {
+      this.dropUndurableIndexes();
+      return work();
+    });
+    this.tail = settledLease(next);
     try {
       return await next;
     } catch (error) {
@@ -3247,13 +3257,11 @@ export class ChatStateV2Backend {
   }
   /** Derived cleanup shares ordering without invalidating canonical indexes. */
   private async serialDerived<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.tail
-      .catch(() => undefined)
-      .then(() => {
-        this.dropUndurableIndexes();
-        return work();
-      });
-    this.tail = next;
+    const next = this.tail.then(() => {
+      this.dropUndurableIndexes();
+      return work();
+    });
+    this.tail = settledLease(next);
     return next;
   }
 

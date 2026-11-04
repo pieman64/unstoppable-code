@@ -6,6 +6,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsListSkeleton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import type { DigestArchiveItem } from '@canopy/protocol/settings';
 import { DigestList } from '../../digests/digest-list';
@@ -112,9 +113,9 @@ export function ProfileDigestsSection({
   return (
     <div className="flex flex-col gap-3" data-testid="profile-digests-tab">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-s font-semibold fg-primary">
+        <Heading level={2} variant="title">
           {isOwnProfile ? 'Your work digests' : 'Shared digests'}
-        </h2>
+        </Heading>
         {isOwnProfile && (
           <SettingsLink
             href="/account/digests"

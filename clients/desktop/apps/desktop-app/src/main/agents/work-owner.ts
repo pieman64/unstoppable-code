@@ -19,6 +19,16 @@ import {
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
+import type {
+  BackgroundWorkspaceTarget,
+  WorkspaceOwnerManifestRead,
+} from '../services/workspace-owner-projection';
+
+/** Request-local manifest evidence, never a cache for execution/authorization. */
+export type SnapshotWorkOwnerEvidence = ReadonlyMap<
+  string,
+  WorkspaceOwnerManifestRead
+>;
 
 const PERSONAL_WORK_OWNER: WorkOwner = { kind: 'personal' };
 
@@ -74,9 +84,17 @@ export interface WorkOwnerTarget {
  * Reads persisted owner authority only. Throws when that authority is
  * unreadable, so callers can omit the claim rather than guess.
  */
-export async function resolveWorkOwner(
+export function resolveWorkOwner(
   target: WorkOwnerTarget,
   capturedContext: WorkspaceContext,
+): Promise<WorkOwner> {
+  return resolveWorkOwnerWithEvidence(target, capturedContext);
+}
+
+async function resolveWorkOwnerWithEvidence(
+  target: WorkOwnerTarget,
+  capturedContext: WorkspaceContext,
+  snapshotEvidence?: SnapshotWorkOwnerEvidence,
 ): Promise<WorkOwner> {
   const { projectId, worktreeId } = target;
   if (
@@ -88,12 +106,16 @@ export async function resolveWorkOwner(
   }
   // Deferred: the background-execution graph is only needed once a routed
   // request actually resolves an owner, not whenever routing is imported.
-  const { resolveBackgroundWorkspaceTarget } =
-    await import('../services/background-execution-context');
-  const persisted = await resolveBackgroundWorkspaceTarget(
-    projectId,
-    worktreeId,
-  );
+  const persisted = snapshotEvidence
+    ? await projectSnapshotWorkspaceTarget(
+        projectId,
+        worktreeId,
+        snapshotEvidence,
+      )
+    : await import('../services/background-execution-context').then(
+        ({ resolveBackgroundWorkspaceTarget }) =>
+          resolveBackgroundWorkspaceTarget(projectId, worktreeId),
+      );
   if (persisted.workspaceOwner.kind === 'organization') {
     return {
       kind: 'organization',
@@ -119,6 +141,22 @@ export async function resolveWorkOwner(
     : PERSONAL_WORK_OWNER;
 }
 
+async function projectSnapshotWorkspaceTarget(
+  projectId: string,
+  worktreeId: string | undefined,
+  evidence: SnapshotWorkOwnerEvidence,
+): Promise<BackgroundWorkspaceTarget> {
+  const { projectBackgroundWorkspaceTarget } =
+    await import('../services/workspace-owner-projection');
+  const { resolveCoworkWorkspaceId } =
+    await import('../lib/cowork-migration-map');
+  const workspaceId =
+    projectId === STANDALONE_CHAT_PROJECT_ID && worktreeId
+      ? resolveCoworkWorkspaceId(worktreeId)
+      : projectId;
+  return projectBackgroundWorkspaceTarget(evidence.get(workspaceId));
+}
+
 /**
  * {@link resolveWorkOwner}, returning `undefined` when owner authority cannot
  * be read. The request then goes out without a claim and the proxy records it
@@ -127,9 +165,14 @@ export async function resolveWorkOwner(
 async function resolveWorkOwnerOrOmit(
   target: WorkOwnerTarget,
   capturedContext: WorkspaceContext,
+  snapshotEvidence?: SnapshotWorkOwnerEvidence,
 ): Promise<WorkOwner | undefined> {
   try {
-    return await resolveWorkOwner(target, capturedContext);
+    return await resolveWorkOwnerWithEvidence(
+      target,
+      capturedContext,
+      snapshotEvidence,
+    );
   } catch {
     return undefined;
   }
@@ -319,9 +362,9 @@ export async function resolveAiCreditsScopeOwner(
  * alone, except for a legacy standalone chat, whose worktree slot names its
  * Cowork workspace.
  */
-export function createAiCreditsScopeOwnerResolver(): (
-  scope: AiCreditsScopeRequest,
-) => Promise<WorkOwner | undefined> {
+export function createAiCreditsScopeOwnerResolver(
+  snapshotEvidence?: SnapshotWorkOwnerEvidence,
+): (scope: AiCreditsScopeRequest) => Promise<WorkOwner | undefined> {
   let context: Promise<WorkspaceContext | null> | undefined;
   const fallbacks = new Map<string, Promise<WorkOwner | undefined>>();
   return async (scope): Promise<WorkOwner | undefined> => {
@@ -347,7 +390,9 @@ export function createAiCreditsScopeOwnerResolver(): (
     if (!owner) {
       context ??= snapshotNavigationContext();
       owner = context.then((captured) =>
-        captured ? resolveWorkOwnerOrOmit(target, captured) : undefined,
+        captured
+          ? resolveWorkOwnerOrOmit(target, captured, snapshotEvidence)
+          : undefined,
       );
       fallbacks.set(key, owner);
     }

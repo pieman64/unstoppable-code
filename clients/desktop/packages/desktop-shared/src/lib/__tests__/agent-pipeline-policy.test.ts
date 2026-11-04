@@ -97,6 +97,8 @@ ${withLines.map((line) => `          ${line}`).join('\n')}
     model: 'opus',
     plan_mode: 'true',
     plugins: `'[{"type":"skill","source":{"type":"builtin","id":"app"},"skill_name":"x"}]'`,
+    // CAN-5479: local selections choose plugins as `plugins` does.
+    plugin_selections: "'${{ inputs.plugin_selections }}'",
   };
 
   it.each(SEND_AGENT_MESSAGE_AUTHORITY_INPUTS)(

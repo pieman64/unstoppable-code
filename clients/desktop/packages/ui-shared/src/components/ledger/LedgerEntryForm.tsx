@@ -20,6 +20,7 @@ import { FormField } from '../FormField';
 import { Notice } from '../Notice';
 import { LedgerEntryTypePicker } from './LedgerEntryTypePicker';
 import { LedgerStatusControl } from './LedgerStatusControl';
+import { Heading } from '../Heading';
 
 /** The Ledger's limits, in code points and items. */
 export const LEDGER_FORM_LIMITS = {
@@ -161,9 +162,9 @@ export function LedgerEntryForm({
       className="flex min-w-0 flex-col gap-4"
     >
       <header className="flex flex-col gap-1">
-        <h2 id={`${id}-heading`} className="text-s font-medium fg-primary">
+        <Heading level={2} variant="title" id={`${id}-heading`}>
           {correctionOf === null ? 'New entry' : 'Correction'}
-        </h2>
+        </Heading>
         <p
           className="text-2xs fg-tertiary"
           data-testid="ledger-entry-form-author"

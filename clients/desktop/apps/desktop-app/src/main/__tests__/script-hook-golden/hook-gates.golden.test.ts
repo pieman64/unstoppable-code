@@ -1,4 +1,50 @@
 import type * as SharedHooks from '@canopy/desktop-shared/hooks';
+import type { ScriptRunResponse } from '@canopy/desktop-shared/types';
+import type * as HookRunner from '../../lib/hook-runner';
+import type { InitiatedWorkRuntimeHelper } from '../helpers/initiated-work-runtime';
+
+// The core hook source decides pause and split lock for every firing
+// (CAN-4146), over a real initiated-work engine.
+jest.mock('../../canopy-runtime/desktop-runtime', () => ({
+  getActiveDesktopRuntime: (): { initiatedWork: unknown } => ({
+    initiatedWork: jest
+      .requireActual<InitiatedWorkRuntimeHelper>(
+        '../helpers/initiated-work-runtime',
+      )
+      .testInitiatedWork().engine,
+  }),
+}));
+jest.mock('../../lib/hook-log-store', () => ({
+  startHookRunLog: jest.fn((args: { hook: unknown }) =>
+    Promise.resolve({
+      projectId: 'p-1',
+      worktreeId: 'w-1',
+      hook: args.hook,
+      runId: 'run-1',
+    }),
+  ),
+  appendHookRunLogLines: jest.fn(() => Promise.resolve()),
+  completeHookRunLog: jest.fn(() => Promise.resolve()),
+}));
+jest.mock('../../lib/worktree-data-env', () => ({
+  buildWorktreeDataEnv: (
+    _projectId: string,
+    _worktreeId: string,
+    env?: NodeJS.ProcessEnv,
+  ): NodeJS.ProcessEnv => ({ ...env }),
+}));
+jest.mock('../../lib/script-runner', () => ({
+  runShellScript: jest.fn(
+    (): Promise<ScriptRunResponse> =>
+      Promise.resolve({
+        success: true,
+        exitCode: 0,
+        output: '',
+        timedOut: false,
+        durationMs: 1,
+      }),
+  ),
+}));
 
 jest.mock('../../lib/workspace-registry', () => ({
   isMultiRepoWorkspace: jest.fn(() => false),
@@ -32,8 +78,15 @@ jest.mock('../../lib/hook-watcher-events', () => {
     fireHookTriggeredWatchers: jest.fn(),
   };
 });
-jest.mock('../../lib/hook-runner', () => ({
-  runHook: jest.fn(() =>
+// A source's hand-off to the runner is captured by `runHook` and kept from
+// running; tests that run it pass `actualRunHook`. A manual run is prepared
+// by the core hook source (`fireHook`), whose prepared run reaches `runHook`.
+jest.mock('../../lib/hook-runner', () => {
+  const actual = jest.requireActual<typeof HookRunner>('../../lib/hook-runner');
+  const runHook = jest.fn<
+    ReturnType<typeof HookRunner.runHook>,
+    Parameters<typeof HookRunner.runHook>
+  >(() =>
     Promise.resolve({
       success: true,
       stopped: false,
@@ -42,9 +95,27 @@ jest.mock('../../lib/hook-runner', () => ({
       timedOut: false,
       durationMs: 1,
     }),
-  ),
-  stopRunningHook: jest.fn(),
-}));
+  );
+  return {
+    ...actual,
+    runHook,
+    fireHook: jest.fn(
+      (
+        request: HookRunner.HookFiringRequest,
+        prepare: () => Promise<HookRunner.HookRunPreparation>,
+      ) =>
+        actual.fireHook(request, async () => {
+          const prepared = await prepare();
+          if (prepared.kind !== 'ready') return prepared;
+          return {
+            kind: 'unconfigured' as const,
+            response: await runHook(prepared.options),
+          };
+        }),
+    ),
+    actualRunHook: actual.runHook,
+  };
+});
 jest.mock('../../lib/github-pr-hook-state', () => ({
   getProjectRepoStorageKey: (): string => 'project-storage',
   getWorkspaceRootRepoStorageKey: (): string => 'root-storage',
@@ -78,9 +149,12 @@ import {
   fireHookTriggeredWatchers,
 } from '../../lib/hook-watcher-events';
 import { getWorktreeDir } from '../../lib/paths';
-import { readAllSidebarItems } from '../../lib/sidebar-items';
+import { runShellScript } from '../../lib/script-runner';
 import { sendToWindow } from '../../lib/window-send';
-import { readWorkspaceConfig } from '../../lib/workspace-persistence';
+import {
+  readWorkspaceConfig,
+  readWorkspaceWorktrees,
+} from '../../lib/workspace-persistence';
 import { triggerWorktreePrecommitFailureHook } from '../../lib/worktree-precommit-failure-hook';
 import { runHookCommand } from '../../services/hooks-service';
 import {
@@ -88,13 +162,21 @@ import {
   releaseSplitLock,
   SplitLockError,
 } from '../../services/split-lock-service';
+import {
+  closeTestInitiatedWork,
+  readyTestInitiatedWork,
+} from '../helpers/initiated-work-runtime';
 
 const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
-const mockedReadAllSidebarItems = jest.mocked(readAllSidebarItems);
+const mockedReadWorkspaceWorktrees = jest.mocked(readWorkspaceWorktrees);
+const mockedRunShellScript = jest.mocked(runShellScript);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 const mockedFireWatchers = jest.mocked(fireHookTriggeredWatchers);
 const mockedBuildVariables = jest.mocked(buildHookWatcherVariables);
 const mockedRunHook = jest.mocked(runHook);
+const { actualRunHook } = jest.requireMock<{
+  actualRunHook: typeof HookRunner.runHook;
+}>('../../lib/hook-runner');
 const mockedReadSnapshot = jest.mocked(readCurrentPrTrackingSnapshot);
 
 const TRIGGER = 'worktree:precommit:failure';
@@ -114,23 +196,25 @@ function config(
   };
 }
 
-function sidebarWithPaused(
+function worktreesWithPaused(
   pausedHookKeys: string[],
-): Awaited<ReturnType<typeof readAllSidebarItems>> {
-  return {
-    items: [
-      {
-        id: 'p-1',
-        type: 'single-repo',
-        worktrees: [{ id: 'w-1', pausedHookKeys }],
-      },
-    ],
-  } as unknown as Awaited<ReturnType<typeof readAllSidebarItems>>;
+): Awaited<ReturnType<typeof readWorkspaceWorktrees>> {
+  return [{ id: 'w-1', pausedHookKeys }] as unknown as Awaited<
+    ReturnType<typeof readWorkspaceWorktrees>
+  >;
 }
 
 async function settle(): Promise<void> {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
+
+beforeAll(async () => {
+  await readyTestInitiatedWork();
+});
+
+afterAll(() => {
+  closeTestInitiatedWork();
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -150,15 +234,22 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
 
   it('skips a paused hook, tells the renderer, and still fires watchers', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
-    mockedReadAllSidebarItems.mockResolvedValue(
-      sidebarWithPaused(['project:worktree:precommit:failure']),
+    mockedReadWorkspaceWorktrees.mockResolvedValue(
+      worktreesWithPaused(['project:worktree:precommit:failure']),
     );
+    mockedRunHook.mockImplementationOnce(actualRunHook);
 
     await trigger();
+    await mockedRunHook.mock.results[0]?.value;
 
     const hook = createProjectHookDescriptor(TRIGGER, ACTIONS);
     expect(hook.hookKey).toBe('project:worktree:precommit:failure');
-    expect(mockedRunHook).not.toHaveBeenCalled();
+    // The core hook source decides the pause (CAN-4146): nothing runs.
+    expect(mockedRunHook.mock.calls[0]?.[0]).toMatchObject({
+      invocation: 'automatic',
+      pause: 'enforce',
+    });
+    expect(mockedRunShellScript).not.toHaveBeenCalled();
     expect(mockedSendToWindow).toHaveBeenCalledTimes(1);
     expect(mockedSendToWindow).toHaveBeenCalledWith(
       window,
@@ -196,7 +287,9 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
 
   it('runs an unpaused hook automatically with the failure environment and timeout', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
-    mockedReadAllSidebarItems.mockResolvedValue(sidebarWithPaused(['other']));
+    mockedReadWorkspaceWorktrees.mockResolvedValue(
+      worktreesWithPaused(['other']),
+    );
 
     await trigger();
     await settle();
@@ -208,6 +301,7 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
       hook: createProjectHookDescriptor(TRIGGER, ACTIONS),
       cwd: '/repo',
       invocation: 'automatic',
+      pause: 'enforce',
       timeoutSeconds: 420,
       env: {
         CANOPY_WORKTREE_PRECOMMIT_FAILURE_ERROR: 'lint failed',
@@ -221,8 +315,8 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
 
   it('fires watchers for an unconfigured or disabled trigger and runs nothing', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: null }));
-    mockedReadAllSidebarItems.mockResolvedValue(
-      sidebarWithPaused(['project:worktree:precommit:failure']),
+    mockedReadWorkspaceWorktrees.mockResolvedValue(
+      worktreesWithPaused(['project:worktree:precommit:failure']),
     );
 
     await trigger();
@@ -238,14 +332,18 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
     );
   });
 
-  it('treats an unreadable sidebar as nothing paused', async () => {
+  it('treats an unreadable worktree list as nothing paused', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
-    mockedReadAllSidebarItems.mockRejectedValue(new Error('corrupt'));
+    mockedReadWorkspaceWorktrees.mockRejectedValue(new Error('corrupt'));
+    mockedRunHook.mockImplementationOnce(actualRunHook);
 
     await trigger();
-    await settle();
+    await mockedRunHook.mock.results[0]?.value;
 
     expect(mockedRunHook).toHaveBeenCalledTimes(1);
+    expect(mockedRunShellScript).toHaveBeenCalledWith(
+      expect.objectContaining({ script: 'notify', cwd: '/repo' }),
+    );
   });
 });
 
@@ -325,6 +423,7 @@ describe('CAN-5062 golden: manual hook run gates', () => {
       hook: createProjectHookDescriptor('pr:create', ACTIONS),
       cwd: getWorktreeDir('p-1', 'w-1'),
       invocation: 'manual',
+      pause: 'bypass',
       timeoutSeconds: 420,
       currentSnapshot: snapshot,
       currentSnapshotPath: '/current',

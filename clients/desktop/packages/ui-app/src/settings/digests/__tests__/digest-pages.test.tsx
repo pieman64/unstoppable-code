@@ -291,8 +291,8 @@ describe('AccountDigestPage', () => {
     await renderInHost(<AccountDigestPage {...page('/share/digests/slug')} />);
 
     expect(
-      byTestId('digest-report-headline')?.classList.contains('replay-block'),
-    ).toBe(true);
+      byTestId('digest-report-headline')?.querySelector('.replay-block'),
+    ).not.toBeNull();
   });
 });
 

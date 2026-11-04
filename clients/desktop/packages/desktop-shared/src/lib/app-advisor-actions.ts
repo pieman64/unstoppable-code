@@ -142,7 +142,6 @@ export const APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES = [
   'remote_control.get_state',
   'remote_control.open_computer',
   'remote_control.set_allow_incoming',
-  'settings.set_daily_credit_drip',
   'settings.set_ledger_agent_recording_enabled',
   'settings.set_skill_suggestions_enabled',
   'skill_suggestions.list',
@@ -1871,44 +1870,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       ],
       notes: [
         'Persists the same localMemoryEnabled preference as the Local memory section on the Memory settings page.',
-      ],
-    },
-    {
-      type: 'settings.set_daily_credit_drip',
-      category: 'settings',
-      summary:
-        'Turn free daily AI Credits on or off for the connected cloud account.',
-      fields: [
-        field(
-          'enabled',
-          'boolean',
-          true,
-          'True to opt in to free daily AI Credits; false to stop them.',
-        ),
-      ],
-      example: { type: 'settings.set_daily_credit_drip', enabled: true },
-      additionalExamples: [
-        { type: 'settings.set_daily_credit_drip', enabled: false },
-      ],
-      keywords: [
-        'daily credits',
-        'free daily credits',
-        'turn on free daily credits',
-        'daily free AI Credits',
-        'free daily AI Credits',
-        'turn on free daily AI Credits',
-        'stop free daily AI Credits',
-        'free AI Credits',
-        'stop daily credits',
-        'daily drip',
-        'credit drip',
-        'AI Credits',
-        'billing',
-      ],
-      notes: [
-        'Saves the same cloud account preference as the Free daily AI Credits toggle in Settings and the Home onboarding card. Answering either way marks the choice as decided.',
-        "Turning it on grants today's free credits right away when they have not been granted yet; the result reports the amount as granted.",
-        "Requires a connected cloud account. settings.dailyCreditDrip is reported while the Accounts control is open, or the Providers control for a guest with hosted settings on. Signed-in accounts with hosted settings use Billing/AI Credits: open it with settings.open and { scope: 'account', page: 'billing' }.",
       ],
     },
     {
@@ -9998,7 +9959,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           'variant',
           "'all' | 'active-chat' | 'codex' | 'claude' | 'cursor' | 'copilot' | 'full' | 'upcoming' | 'overview' | 'completed'",
           false,
-          "Required when kind is 'usage' (Usage views: 'all' | 'active-chat' | 'codex' | 'claude' | 'cursor' | 'copilot') or 'automations' (Automations views: 'full' | 'upcoming' | 'overview' | 'completed').",
+          "Required when kind is 'usage' (Usage views: 'all' | 'active-chat' | 'codex' | 'claude' | 'cursor' | 'copilot') or 'automations' (Workflows panel views: 'full' | 'upcoming' | 'overview' | 'completed').",
         ),
       ],
       example: { type: 'panel.add_tab', kind: 'terminal' },

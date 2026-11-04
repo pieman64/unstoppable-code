@@ -15,6 +15,7 @@ import type {
 } from '@canopy/protocol/portal';
 import { TrashIcon } from '../../icons';
 import { Button } from '../Button';
+import { Tooltip } from '../Tooltip';
 import {
   AgentSentTitle,
   type AgentSentReceivingContext,
@@ -376,35 +377,37 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                     </Button>
                   )}
                   {row.state === 'cancelled' && (
+                    <Tooltip label="Dismiss message">
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        iconOnly
+                        data-testid="input-delivery-dismiss"
+                        aria-label="Dismiss message"
+                        disabled={busy}
+                        onClick={() => void act('dismiss')}
+                      >
+                        <TrashIcon width={14} height={14} aria-hidden="true" />
+                      </Button>
+                    </Tooltip>
+                  )}
+                </div>
+              )}
+              {row.state === 'uncertain' && (
+                <div className="absolute -right-2 -top-2 z-10 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:right-0 pointer-coarse:top-0 pointer-coarse:opacity-100">
+                  <Tooltip label="Dismiss message">
                     <Button
                       variant="secondary"
                       size="compact"
                       iconOnly
                       data-testid="input-delivery-dismiss"
                       aria-label="Dismiss message"
-                      title="Dismiss message"
                       disabled={busy}
                       onClick={() => void act('dismiss')}
                     >
                       <TrashIcon width={14} height={14} aria-hidden="true" />
                     </Button>
-                  )}
-                </div>
-              )}
-              {row.state === 'uncertain' && (
-                <div className="absolute -right-2 -top-2 z-10 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 pointer-coarse:right-0 pointer-coarse:top-0 pointer-coarse:opacity-100">
-                  <Button
-                    variant="secondary"
-                    size="compact"
-                    iconOnly
-                    data-testid="input-delivery-dismiss"
-                    aria-label="Dismiss message"
-                    title="Dismiss message"
-                    disabled={busy}
-                    onClick={() => void act('dismiss')}
-                  >
-                    <TrashIcon width={14} height={14} aria-hidden="true" />
-                  </Button>
+                  </Tooltip>
                 </div>
               )}
               <div

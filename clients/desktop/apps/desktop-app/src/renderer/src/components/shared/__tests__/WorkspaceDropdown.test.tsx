@@ -9,6 +9,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { SidebarItem } from '@canopy/desktop-shared/types';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { WorkspaceDropdown } from '@/components/shared/WorkspaceDropdown';
 
 function makeWorkspace(id: string, name: string): SidebarItem {
@@ -543,6 +544,24 @@ describe('WorkspaceDropdown', () => {
     expect(onClear).toHaveBeenCalledTimes(1);
     // The control sits over the trigger, so a click must not also open it.
     expect(query('home-workspace-popover')).toBeNull();
+  });
+
+  it('names the project in the Clear tooltip, masked from session replay', () => {
+    renderWith({ selectedWorkspaceId: 'alpha', onClear: jest.fn() });
+
+    const clear = query<HTMLButtonElement>('home-workspace-clear');
+    expect(clear?.getAttribute('aria-label')).toBe('Clear Alpha');
+    expect(clear?.hasAttribute('title')).toBe(false);
+    act(() => {
+      clear?.parentElement?.dispatchEvent(
+        new MouseEvent('mouseover', { bubbles: true }),
+      );
+    });
+    const tooltip = document.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Clear Alpha');
+    expect(
+      tooltip?.querySelector(`.${POSTHOG_REPLAY_MASK_CLASS}`)?.textContent,
+    ).toBe('Alpha');
   });
 
   it('does not strand focus when clearing unmounts the control', () => {

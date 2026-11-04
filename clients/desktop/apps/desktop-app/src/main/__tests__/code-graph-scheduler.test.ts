@@ -74,6 +74,7 @@ interface MockScheduledBuildInput {
   worktreeId: string;
   reason: 'worktree-created' | 'refresh';
   observedFingerprint?: string;
+  observedFingerprintMs?: number;
 }
 
 const mockRunWorktreeCodeGraphBuild = jest.fn<
@@ -87,10 +88,33 @@ jest.mock('../code-graph/build-runner', () => ({
   isCodeGraphBuildPending: (key: string): boolean =>
     mockIsCodeGraphBuildPending(key),
 }));
-jest.mock('../lib/code-graph-build-service', () => ({
-  runWorktreeCodeGraphBuild: (
-    input: MockScheduledBuildInput,
-  ): Promise<unknown> => mockRunWorktreeCodeGraphBuild(input),
+const mockCancelScheduledCodeGraphBuilds = jest.fn();
+// The scheduler's builds run as initiated work (CAN-5617); this stands in
+// for the run: its gates, its start, and the worker build it dispatches.
+jest.mock('../code-graph/scheduled-builds', () => ({
+  startScheduledCodeGraphBuild: async (build: {
+    projectId: string;
+    worktreeId: string;
+    trigger: 'worktree-created' | 'refresh';
+    observedFingerprint: string;
+    observedFingerprintMs: number;
+    available(): boolean;
+    canceled(): boolean;
+    onStarted?(): void;
+  }): Promise<string> => {
+    if (!build.available() || build.canceled()) return 'skipped';
+    build.onStarted?.();
+    await mockRunWorktreeCodeGraphBuild({
+      projectId: build.projectId,
+      worktreeId: build.worktreeId,
+      reason: build.trigger,
+      observedFingerprint: build.observedFingerprint,
+      observedFingerprintMs: build.observedFingerprintMs,
+    });
+    return 'succeeded';
+  },
+  cancelScheduledCodeGraphBuilds: (...args: unknown[]): unknown =>
+    mockCancelScheduledCodeGraphBuilds(...args),
 }));
 const mockReadAllSidebarItems = jest.fn<Promise<unknown>, []>();
 jest.mock('../lib/sidebar-items', () => ({

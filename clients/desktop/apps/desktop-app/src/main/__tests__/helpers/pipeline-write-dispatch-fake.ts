@@ -12,11 +12,16 @@ import type {
 import { parseSharedPipelineLocalId } from '@canopy/protocol/pipelines';
 import { getManagedCuratedPipeline } from '../../pipelines/curated-pipeline-catalog';
 import { getSharedPipeline } from '../../pipelines/canopy-server-client';
-import type { UserPipelineWrite } from '../../canopy-runtime/pipeline-definition-dispatch';
+import type {
+  RemotePipelineImport,
+  UserPipelineWrite,
+} from '../../canopy-runtime/pipeline-definition-dispatch';
 import {
   applyUserPipelineDeleteEffects,
   applyUserPipelineSaveEffects,
   copyPipelineWithProvenance,
+  installSharedPipeline,
+  sharedInstallDisplay,
 } from '../../pipelines/core-pipeline-definition-sources';
 import { recordPipelineEnabled } from '../../pipelines/pipeline-enablement-commit';
 import {
@@ -52,10 +57,10 @@ export function fakeSaveUserPipeline(
   return Promise.resolve(result);
 }
 
-export function fakeDeleteUserPipeline(id: string): Promise<IPCResult> {
+export async function fakeDeleteUserPipeline(id: string): Promise<IPCResult> {
   const result = pipelineService.deletePipeline(id);
-  if (result.success) applyUserPipelineDeleteEffects(id);
-  return Promise.resolve(result);
+  if (result.success) await applyUserPipelineDeleteEffects(id);
+  return result;
 }
 
 /** A source definition, read from the (mocked) source core would pick. */
@@ -173,6 +178,28 @@ async function duplicateFromFakeSource(
   }
 }
 
+/**
+ * Installs a share as core does: reads it from the (mocked) cloud and runs
+ * the real desktop install step over the store. Curated imports reach the
+ * catalog's own tests and the goldens instead.
+ */
+export async function fakeImportRemotePipeline(
+  input: RemotePipelineImport,
+): Promise<PipelineInfo> {
+  const shared = parseSharedPipelineLocalId(input.remoteDefinitionId);
+  if (!shared) throw new Error('Only shares install in this fake.');
+  const detail = await getSharedPipeline(shared.remoteId);
+  const display = sharedInstallDisplay(detail);
+  return installSharedPipeline(detail, {
+    definitionId: input.definitionId ?? randomUUID(),
+    replaces: input.definitionId !== undefined,
+    ...display,
+    name: input.nameOverride ?? display.name,
+    text: detail.rawPipeline,
+    pipeline: parsePipelineText(detail.rawPipeline),
+  });
+}
+
 export async function fakeSetPipelineDefinitionEnabled(
   definitionId: string,
   enabled: boolean,
@@ -192,5 +219,6 @@ export const pipelineWriteDispatchFake = {
   saveUserPipeline: fakeSaveUserPipeline,
   deleteUserPipeline: fakeDeleteUserPipeline,
   duplicatePipelineDefinition: fakeDuplicatePipelineDefinition,
+  importRemotePipeline: fakeImportRemotePipeline,
   setPipelineDefinitionEnabled: fakeSetPipelineDefinitionEnabled,
 };

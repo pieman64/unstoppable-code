@@ -238,8 +238,6 @@ function toReviewAuthor(
       viewerUserId !== null &&
       comment.author.userId.length > 0 &&
       comment.author.userId === viewerUserId,
-    colorKey:
-      comment.author.userId.length > 0 ? comment.author.userId : undefined,
   };
 }
 

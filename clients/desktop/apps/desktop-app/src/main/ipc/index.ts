@@ -351,7 +351,11 @@ export function registerAllIpcHandlers(
   registerSidebarItemGroupHandlers();
   registerGitHubHandlers(getMainWindow, canopyRuntime);
   registerCliHandlers();
-  registerObservabilityHandlers(getMainWindow);
+  registerObservabilityHandlers(
+    getMainWindow,
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerTelemetrySyncHandlers(getMainWindow);
   registerMcpServerHandlers(getMainWindow);
   registerScriptHandlers(canopyRuntime);
@@ -385,7 +389,7 @@ export function registerAllIpcHandlers(
   registerFeatureFlagHandlers(getMainWindow);
   registerLabsExperimentsHandlers();
   registerCodeGraphBuildStatusBroadcast();
-  registerCodeGraphHandlers();
+  registerCodeGraphHandlers(canopyRuntime, accessors);
   registerAuthTerminalHandlers(getMainWindow);
   registerCodexLoginHandlers(getMainWindow);
   registerCodexSpeedHandlers();

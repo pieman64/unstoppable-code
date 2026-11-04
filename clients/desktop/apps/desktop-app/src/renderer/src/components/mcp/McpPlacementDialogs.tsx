@@ -2,6 +2,11 @@ import { useEffect, useState, type JSX } from 'react';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '../shared/DialogModal';
 import {
+  isStoredSecretValue,
+  type SecretValueInput,
+  type StoredSecretValue,
+} from '@canopy/desktop-shared/types/stored-secrets';
+import {
   defaultConfigAuthToken,
   CLOUD_SINGLE_CONFIG_REQUIRED,
 } from './mcpManagementOperations';
@@ -22,6 +27,11 @@ interface McpMoveToCloudDialogProps {
     value: string;
     loading: boolean;
     onChange: (value: string) => void;
+    /**
+     * The device's saved token, which the renderer never sees. It moves
+     * unless the user types another or chooses not to move it.
+     */
+    saved?: { kept: boolean; onDrop: () => void };
   };
   dataTestId: string;
   confirmTestId: string;
@@ -71,7 +81,11 @@ export function McpMoveToCloudDialog({
         {token && !blockedReason && (
           <FormField
             label="Access token (optional)"
-            description="Clear it to move the server without a token, or enter another one."
+            description={
+              token.saved?.kept
+                ? "The saved token moves unless you enter another one or choose Don't move token."
+                : 'Clear it to move the server without a token, or enter another one.'
+            }
           >
             {(control) => (
               <TextInput
@@ -79,6 +93,9 @@ export function McpMoveToCloudDialog({
                 type="password"
                 autoComplete="off"
                 value={token.value}
+                placeholder={
+                  token.saved?.kept ? 'Saved. Type to replace' : undefined
+                }
                 disabled={token.loading}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>): void =>
                   token.onChange(e.target.value)
@@ -87,6 +104,16 @@ export function McpMoveToCloudDialog({
               />
             )}
           </FormField>
+        )}
+        {token?.saved?.kept && !blockedReason && token.value.length === 0 && (
+          <Button
+            variant="ghost"
+            size="compact"
+            onClick={token.saved.onDrop}
+            data-testid="mcp-promote-drop-saved-token"
+          >
+            Don't move token
+          </Button>
         )}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>
@@ -109,7 +136,7 @@ export function McpMoveToCloudDialog({
 interface McpPromoteDialogProps {
   serverId: string;
   serverName: string;
-  onConfirm: (bearerToken: string | undefined) => void;
+  onConfirm: (bearerToken: SecretValueInput | undefined) => void;
   onClose: () => void;
 }
 
@@ -121,6 +148,8 @@ export function McpPromoteDialog({
   onClose,
 }: McpPromoteDialogProps): JSX.Element {
   const [token, setToken] = useState('');
+  const [savedToken, setSavedToken] = useState<StoredSecretValue>();
+  const [keepSaved, setKeepSaved] = useState(true);
   const [loading, setLoading] = useState(true);
   const [blockedReason, setBlockedReason] = useState<string>();
   useEffect((): (() => void) => {
@@ -129,7 +158,9 @@ export function McpPromoteDialog({
       .loadServer(serverId)
       .then(({ server }): void => {
         if (cancelled) return;
-        setToken(defaultConfigAuthToken(server.configs) ?? '');
+        const current = defaultConfigAuthToken(server.configs);
+        if (isStoredSecretValue(current)) setSavedToken(current);
+        else setToken(current ?? '');
         setBlockedReason(
           server.configs.length > 1 ? CLOUD_SINGLE_CONFIG_REQUIRED : undefined,
         );
@@ -142,15 +173,29 @@ export function McpPromoteDialog({
       cancelled = true;
     };
   }, [serverId]);
+  const keptToken =
+    savedToken !== undefined && keepSaved ? savedToken : undefined;
   return (
     <McpMoveToCloudDialog
       serverName={serverName}
       blockedReason={blockedReason}
-      tokenMoves={token.trim().length > 0}
-      token={{ value: token, loading, onChange: setToken }}
+      tokenMoves={token.trim().length > 0 || keptToken !== undefined}
+      token={{
+        value: token,
+        loading,
+        onChange: setToken,
+        ...(savedToken !== undefined
+          ? {
+              saved: {
+                kept: keepSaved,
+                onDrop: (): void => setKeepSaved(false),
+              },
+            }
+          : {}),
+      }}
       dataTestId="mcp-promote-dialog"
       confirmTestId="mcp-promote-confirm"
-      onConfirm={(): void => onConfirm(token.trim() || undefined)}
+      onConfirm={(): void => onConfirm(token.trim() || keptToken)}
       onClose={onClose}
     />
   );

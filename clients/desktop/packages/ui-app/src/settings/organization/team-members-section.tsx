@@ -21,6 +21,7 @@ import {
   StatusBadge,
   SettingsSelect,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { formatUsd } from '@canopy/ui-shared/lib';
 import { BILLING_NO_SAVED_CARD_CODE } from '@canopy/protocol/billing';
@@ -482,7 +483,9 @@ export function TeamMembersSection({
 
       {manageMembers && pendingInvites.length > 0 && (
         <div data-testid="team-pending-invites">
-          <h3 className="text-s font-medium fg-primary">Pending invitations</h3>
+          <Heading level={3} variant="title">
+            Pending invitations
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             People you&apos;ve invited who haven&apos;t joined yet.
           </p>

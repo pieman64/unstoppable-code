@@ -86,14 +86,19 @@ export interface McpHttpAuthPreference {
  * flow to obtain access tokens for the server and proxy authenticated MCP
  * traffic through the local HTTP proxy on `mcpProxyPort`.
  */
-export interface McpOAuthConfigData {
+/**
+ * MCP server shapes take the type of their secret-valued fields as `S`. Hosts
+ * hold plaintext (`string`); the desktop renderer receives stored-secret
+ * references in their place (CAN-4411).
+ */
+export interface McpOAuthConfigData<S = string> {
   /**
    * Optional pre-registered client id. When omitted, Canopy attempts MCP OAuth
    * discovery and dynamic client registration before asking the user for
    * manual client information.
    */
   clientId?: string;
-  clientSecret?: string;
+  clientSecret?: S;
   /** Optional fixed loopback port pre-registered for this public client. */
   callbackPort?: number;
   /**
@@ -152,7 +157,7 @@ export interface McpServerCuratedMetadata {
 }
 
 /** Base definition of an MCP server (the "what") */
-export interface McpServerDefinitionData {
+export interface McpServerDefinitionData<S = string> {
   id: string;
   name: string;
   description: string;
@@ -164,13 +169,13 @@ export interface McpServerDefinitionData {
   /** Server URL (for type='http') */
   url?: string;
   /** Base HTTP headers */
-  headers?: Record<string, string>;
+  headers?: Record<string, S>;
   /**
    * Optional OAuth configuration. Only meaningful when `type === 'http'`; if
    * set, the standalone HTTP MCP server is proxied through the local OAuth
    * proxy and authenticated against the configured authorization server.
    */
-  oauth?: McpOAuthConfigData;
+  oauth?: McpOAuthConfigData<S>;
   /**
    * Optional curated-catalog metadata. Present when this definition was
    * created from (or linked to) a curated catalog entry; carries the join
@@ -189,27 +194,27 @@ export interface McpServerDefinitionData {
 }
 
 /** A configuration variant for a server definition (the "how") */
-export interface McpServerConfigData {
+export interface McpServerConfigData<S = string> {
   id: string;
   name: string;
   description: string;
   enabled: boolean;
   /** Environment variables to set when spawning */
-  envVars: Record<string, string>;
+  envVars: Record<string, S>;
   /** Additional CLI args appended to definition args */
   extraArgs: string[];
   /** Additional HTTP headers merged with definition headers */
-  extraHeaders: Record<string, string>;
+  extraHeaders: Record<string, S>;
   /** Bearer token (stored separately from headers for UX) */
-  authToken?: string;
+  authToken?: S;
   createdAt: string;
   updatedAt: string;
 }
 
 /** Full server with its configurations */
-export interface McpServerData {
-  definition: McpServerDefinitionData;
-  configs: McpServerConfigData[];
+export interface McpServerData<S = string> {
+  definition: McpServerDefinitionData<S>;
+  configs: McpServerConfigData<S>[];
 }
 
 /** Config summary included in the index for table display */

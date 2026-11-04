@@ -848,13 +848,20 @@ describe('isolated delegate changes', () => {
     const files = Array.from(
       container.querySelectorAll('[data-testid="delegated-change"]'),
     );
-    expect(
-      files.map((file) => file.querySelector('summary')?.textContent),
-    ).toEqual([
+    const toggles = files.map((file) =>
+      file.querySelector<HTMLButtonElement>(
+        '[data-testid="delegated-change-toggle"]',
+      ),
+    );
+    expect(toggles.map((toggle) => toggle?.textContent)).toEqual([
       'src/a.ts · modified',
       '.env.local · added',
       'src/b.ts · deleted',
     ]);
+    expect(
+      toggles.map((toggle) => toggle?.getAttribute('aria-expanded')),
+    ).toEqual(['false', 'false', 'false']);
+    act(() => toggles.forEach((toggle) => toggle?.click()));
     expect(files[0]?.querySelector('pre')?.textContent).toContain('+new');
     expect(files[1]?.textContent).toContain('No diff shown for this file');
     expect(files[2]?.textContent).toContain('Diff shortened to fit');

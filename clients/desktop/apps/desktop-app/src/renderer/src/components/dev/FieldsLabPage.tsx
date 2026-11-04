@@ -19,6 +19,7 @@ import {
   FieldError,
   FilterDropdown,
   FormField,
+  Heading,
   InlineTextInput,
   ModelPickerTriggerControl,
   PageSearchControls,
@@ -814,7 +815,9 @@ function ChoiceMatrix(): JSX.Element {
   const [focusRow, setFocusRow] = useState('');
   return (
     <div className="flex flex-col gap-2">
-      <h2 className="text-s font-medium">Radio and checkbox</h2>
+      <Heading level={2} variant="title">
+        Radio and checkbox
+      </Heading>
       <div
         className="grid gap-px rounded-lg bg-secondary"
         style={{
@@ -1488,7 +1491,9 @@ function PlaygroundCard({
 }): JSX.Element {
   return (
     <section className="flex flex-col gap-3 rounded-xl border p-4">
-      <h2 className="text-s font-medium fg-primary">{title}</h2>
+      <Heading level={2} variant="title">
+        {title}
+      </Heading>
       {children}
     </section>
   );
@@ -1556,7 +1561,9 @@ export function FieldsLabPage(): JSX.Element {
       <div className="min-h-screen bg-base fg-primary" data-testid="fields-lab">
         <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-base px-6 py-3">
           <div className="flex flex-wrap items-center gap-4">
-            <h1 className="text-s font-medium">Fields lab</h1>
+            <Heading level={1} variant="title">
+              Fields lab
+            </Heading>
             <SegmentedControl
               label="View"
               value={view}

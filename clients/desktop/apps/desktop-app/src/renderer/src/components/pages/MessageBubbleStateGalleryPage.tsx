@@ -21,6 +21,7 @@ import {
   type QueuedGalleryState,
   type RecurringNoticeGalleryState,
 } from './messageBubbleStateGalleryData';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * Dev-only reference page rendering the real chat message components
@@ -150,7 +151,9 @@ function GallerySection({
       data-testid={`bubble-gallery-section-${messageSectionSlug(title)}`}
       className="rounded-xl border bg-base p-4"
     >
-      <h2 className="text-sm font-semibold fg-primary">{title}</h2>
+      <Heading level={2} variant="title">
+        {title}
+      </Heading>
       <p className="mt-1 text-xs leading-relaxed fg-secondary">{description}</p>
       <div className="mt-4 flex flex-col gap-5">{children}</div>
     </div>
@@ -191,9 +194,9 @@ function MessageBubbleStateGalleryContent(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
         <div className="mx-auto max-w-5xl space-y-8">
           <div className="space-y-2">
-            <h1 className="text-2xl font-semibold fg-primary">
+            <Heading level={1} variant="page">
               Message Bubbles
-            </h1>
+            </Heading>
             <p className="text-s fg-secondary">
               Every state the chat message bubbles can express, rendered by the
               real components with direct props — no live sessions. Hover any

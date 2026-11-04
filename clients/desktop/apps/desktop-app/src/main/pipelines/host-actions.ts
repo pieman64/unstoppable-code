@@ -185,6 +185,8 @@ export function createDesktopPipelineHostActions(deps: {
   /** Injected in tests; production sends through the admitted send path. */
   sendDispatch?: SendAgentMessageHostDeps['dispatch'];
   hasTranscriptMessage?: SendAgentMessageHostDeps['hasTranscriptMessage'];
+  /** Injected in tests; production reads the owned pipeline's grant. */
+  resolveNativeGrant?: SendAgentMessageHostDeps['resolveNativeGrant'];
 }): PipelineHostActions {
   const { assertTargetOwner } = deps;
   const entryDeps: CreateEntryHostDeps = {
@@ -199,6 +201,9 @@ export function createDesktopPipelineHostActions(deps: {
     ...(deps.sendDispatch ? { dispatch: deps.sendDispatch } : {}),
     ...(deps.hasTranscriptMessage
       ? { hasTranscriptMessage: deps.hasTranscriptMessage }
+      : {}),
+    ...(deps.resolveNativeGrant
+      ? { resolveNativeGrant: deps.resolveNativeGrant }
       : {}),
   };
   const getWindow = deps.getWindow ?? ((): BrowserWindow | null => null);

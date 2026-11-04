@@ -15,7 +15,10 @@ import {
   type Rect,
   type Script,
 } from '../../../../../vendor/stageshow/kit';
-import { LabColorModeContext } from './componentsLabStageContext';
+import {
+  LabColorModeContext,
+  LabOverviewContext,
+} from './componentsLabStageContext';
 import './componentsLabStage.css';
 
 /**
@@ -72,6 +75,12 @@ export function LabStage<S extends object>({
   children,
 }: LabStageProps<S>): JSX.Element {
   const theme = useContext(LabColorModeContext);
+  const overview = useContext(LabOverviewContext);
+  // A 4:3 card in the overview: the stage's design size takes the card's ratio.
+  const designHeight = overview ? (STAGE_WIDTH * 3) / 4 : height;
+  const designCompactHeight = overview
+    ? (COMPACT_WIDTH * 3) / 4
+    : compactHeight;
   // Replay remounts the scene at its story boundary (references/kit.md,
   // Explicit replay); the stage plays once and holds its payoff.
   const [run, setRun] = useState(0);
@@ -81,11 +90,11 @@ export function LabStage<S extends object>({
         <Stage
           key={run}
           width={STAGE_WIDTH}
-          height={height}
+          height={designHeight}
           compact={{
             below: STAGE_WIDTH,
             width: COMPACT_WIDTH,
-            height: compactHeight,
+            height: designCompactHeight,
           }}
           initial={initial}
           poster={poster}
@@ -97,8 +106,11 @@ export function LabStage<S extends object>({
             pointer
               ? {
                   at: {
-                    wide: { x: STAGE_WIDTH - 60, y: height - 24 },
-                    compact: { x: COMPACT_WIDTH - 40, y: compactHeight - 24 },
+                    wide: { x: STAGE_WIDTH - 60, y: designHeight - 24 },
+                    compact: {
+                      x: COMPACT_WIDTH - 40,
+                      y: designCompactHeight - 24,
+                    },
                   },
                 }
               : undefined

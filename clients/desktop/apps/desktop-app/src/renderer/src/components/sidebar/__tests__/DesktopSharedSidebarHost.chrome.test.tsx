@@ -151,6 +151,7 @@ import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import { requestWorktreeArchiveConfirmation } from '@/lib/worktreeArchiveConfirmationEvents';
 import { useSidebarWorkspaces } from '../useSidebarWorkspaces';
@@ -162,9 +163,16 @@ import {
 } from '../desktopWorktreeRowOverrides';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import { useArchivedContainersStore } from '@/stores/archivedContainersStore';
+import { useSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
+import { useSidebarPageHandoffStore } from '@/stores/sidebarPageHandoffStore';
 import { SPLIT_PR_BLOCKER_COPY } from '@/lib/splitPrEligibilityInputs';
 import { useSplitPrPreferencesStore } from '@/hooks/useSplitPrPreferences';
-import type { SidebarItem } from '@canopy/desktop-shared/types';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
+  type SidebarItem,
+} from '@canopy/desktop-shared/types';
 import { resolveArchiveRetentionDays } from '@canopy/desktop-shared/lib/archive-retention';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
@@ -207,6 +215,405 @@ describe('DesktopSharedSidebarHost chrome', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+  });
+
+  it.each([undefined, 'grp-retry'])(
+    'creation in group %s reports its failure once and returns the successful retry',
+    async (groupId) => {
+      const original = useProjectsStore.getState();
+      const originalPage = useNavigationStore.getState().activePage;
+      const toast = jest
+        .spyOn(useGitHubStore.getState(), 'addToast')
+        .mockImplementation(() => {});
+      const navigate = jest
+        .spyOn(useNavigationStore.getState(), 'navigate')
+        .mockImplementation(() => {});
+      const error =
+        'Selected Git executable cannot be used. Git executable does not exist: /home/canopy-desktop/.cache/can5422-filtered-path-candidate-v3/git';
+      const create = jest
+        .spyOn(original, 'createWorktree')
+        .mockImplementationOnce(() => {
+          useProjectsStore.setState({ worktreeError: error });
+          return Promise.resolve(undefined);
+        })
+        .mockImplementationOnce((_projectId, options) => {
+          if (groupId === undefined) {
+            options?.onRegistered?.({
+              id: 'retry-row',
+              branchName: 'retry',
+              createdAt: '2026-10-30T00:00:00.000Z',
+            });
+            // Navigation must happen at registration, before creation resolves.
+            expect(navigate).toHaveBeenCalledWith('main');
+          }
+          return Promise.resolve({ id: 'retry-row' });
+        });
+      try {
+        useNavigationStore.setState({ activePage: 'main' });
+        useProjectsStore.setState({ pendingWorkspaceRepair: null });
+        await act(async () => {
+          root.render(
+            <CanopyClientProvider client={createFakeClient().client}>
+              <DesktopSharedSidebarHost />
+            </CanopyClientProvider>,
+          );
+          await Promise.resolve();
+        });
+        const createFromHeader = capturedProps.at(-1)?.onCreateWorktree;
+        if (!createFromHeader)
+          throw new Error('Missing header creation command');
+        await act(async () => {
+          const failed = Promise.resolve(
+            createFromHeader('retry-code', groupId),
+          );
+          await expect(failed).rejects.toThrow(error);
+          // The shared sidebar forwards the rejection after clearing its pending
+          // row. The persistent worktree notice already owns this failure.
+          await failed.catch((failure: unknown) =>
+            capturedProps.at(-1)?.onGroupError?.('retry-code', failure),
+          );
+          expect(toast).not.toHaveBeenCalled();
+          expect(navigate).not.toHaveBeenCalled();
+          await expect(
+            createFromHeader('retry-code', groupId),
+          ).resolves.toEqual({
+            status: 'completed',
+            worktreeId: 'retry-row',
+          });
+        });
+        expect(create).toHaveBeenCalledTimes(2);
+        // An unrelated failure still needs a toast, even with identical text.
+        const groupError = new Error(error);
+        capturedProps.at(-1)?.onGroupError?.('retry-code', groupError);
+        expect(toast).toHaveBeenCalledWith(groupError.message, 'error');
+        toast.mockClear();
+        useProjectsStore.setState({ worktreeError: null });
+        create.mockResolvedValueOnce(undefined);
+        await act(async () => {
+          const failed = Promise.resolve(
+            createFromHeader('retry-code', groupId),
+          );
+          await expect(failed).rejects.toThrow(
+            'Worktree could not be created. Try again.',
+          );
+          await failed.catch((failure: unknown) =>
+            capturedProps.at(-1)?.onGroupError?.('retry-code', failure),
+          );
+        });
+        expect(toast).toHaveBeenCalledWith(
+          'Worktree could not be created. Try again.',
+          'error',
+        );
+      } finally {
+        toast.mockRestore();
+        create.mockRestore();
+        navigate.mockRestore();
+        useNavigationStore.setState({ activePage: originalPage });
+        useProjectsStore.setState({
+          createWorktree: original.createWorktree,
+          pendingWorkspaceRepair: original.pendingWorkspaceRepair,
+          worktreeError: original.worktreeError,
+        });
+      }
+    },
+  );
+
+  it.each([
+    { page: 'home', message: 'Creation failed', dismissed: false },
+    { page: 'overview', message: 'Creation failed', dismissed: false },
+    { page: 'main', message: ' \r\n\t ', dismissed: false },
+    { page: 'main', message: 'Creation failed', dismissed: true },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'archive',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'archive-overview',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'shared',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'past-shares',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'settings',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'project-settings',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'advisor-archive',
+    },
+    {
+      page: 'main',
+      message: 'Creation failed',
+      dismissed: false,
+      overlay: 'cowork-archive',
+    },
+  ] as const)(
+    'reports once on $page ($message; dismissed=$dismissed; overlay=$overlay)',
+    async (scenario) => {
+      const { page, message, dismissed } = scenario;
+      const original = useProjectsStore.getState();
+      const originalPage = useNavigationStore.getState().activePage;
+      const originalSettingsOpen = useNavigationStore.getState().settingsOpen;
+      const originalArchive = useArchivedContainersStore.getState();
+      const originalShared = useSharedContainerReplicasStore.getState();
+      const originalHandoff = useSidebarPageHandoffStore.getState();
+      const toast = jest
+        .spyOn(useGitHubStore.getState(), 'addToast')
+        .mockImplementation(() => {});
+      const create = jest
+        .spyOn(original, 'createWorktree')
+        .mockImplementation(() => {
+          useProjectsStore.setState({ worktreeError: message });
+          return Promise.resolve(undefined);
+        });
+      try {
+        await act(async () => {
+          useNavigationStore.setState({ activePage: page });
+          if ('overlay' in scenario) {
+            switch (scenario.overlay) {
+              case 'archive':
+                useArchivedContainersStore.setState({
+                  viewer: {
+                    workspaceId: 'retry-code',
+                    containerId: 'archive',
+                    tab: 'chats',
+                  },
+                });
+                break;
+              case 'archive-overview':
+                useArchivedContainersStore.setState({
+                  overview: { workspaceId: 'retry-code' },
+                });
+                break;
+              case 'shared':
+                useSharedContainerReplicasStore.setState({
+                  viewer: {
+                    containerId: 'share',
+                    replica: null,
+                    openError: null,
+                    loading: true,
+                  },
+                });
+                break;
+              case 'past-shares':
+                useSharedContainerReplicasStore.setState({
+                  pastSharesOpen: true,
+                });
+                break;
+              case 'settings':
+                useNavigationStore.setState({ settingsOpen: true });
+                break;
+              case 'project-settings':
+                useSidebarPageHandoffStore.setState({
+                  active: true,
+                  coversMainShell: true,
+                });
+                break;
+              case 'advisor-archive':
+              case 'cowork-archive':
+                useArchivedContainersStore.setState({
+                  viewer: {
+                    workspaceId:
+                      scenario.overlay === 'advisor-archive'
+                        ? APP_ADVISOR_PROJECT_ID
+                        : STANDALONE_CHAT_PROJECT_ID,
+                    containerId: 'other-surface',
+                    tab: 'chats',
+                  },
+                });
+                break;
+            }
+          }
+          useProjectsStore.setState({ pendingWorkspaceRepair: null });
+          root.render(
+            <CanopyClientProvider client={createFakeClient().client}>
+              <DesktopSharedSidebarHost />
+            </CanopyClientProvider>,
+          );
+          await Promise.resolve();
+        });
+        const props = capturedProps.at(-1);
+        const createFromHeader = props?.onCreateWorktree;
+        if (!createFromHeader)
+          throw new Error('Missing header creation command');
+        await act(async () => {
+          await Promise.resolve(createFromHeader('retry-code')).catch(
+            (failure: unknown) => {
+              if (dismissed) useProjectsStore.getState().clearWorktreeError();
+              props?.onGroupError?.('retry-code', failure);
+            },
+          );
+        });
+        if (
+          'overlay' in scenario &&
+          (scenario.overlay === 'advisor-archive' ||
+            scenario.overlay === 'cowork-archive')
+        ) {
+          expect(toast).not.toHaveBeenCalled();
+        } else {
+          expect(toast).toHaveBeenCalledTimes(1);
+          expect(toast).toHaveBeenCalledWith(
+            message.trim()
+              ? message
+              : 'Worktree could not be created. Try again.',
+            'error',
+          );
+        }
+      } finally {
+        toast.mockRestore();
+        create.mockRestore();
+        useNavigationStore.setState({ activePage: originalPage });
+        useNavigationStore.setState({ settingsOpen: originalSettingsOpen });
+        useArchivedContainersStore.setState({
+          viewer: originalArchive.viewer,
+          overview: originalArchive.overview,
+        });
+        useSharedContainerReplicasStore.setState({
+          viewer: originalShared.viewer,
+          pastSharesOpen: originalShared.pastSharesOpen,
+        });
+        useSidebarPageHandoffStore.setState({
+          active: originalHandoff.active,
+          coversMainShell: originalHandoff.coversMainShell,
+        });
+        useProjectsStore.setState({
+          createWorktree: original.createWorktree,
+          pendingWorkspaceRepair: original.pendingWorkspaceRepair,
+          worktreeError: original.worktreeError,
+        });
+      }
+    },
+  );
+
+  it('keeps later navigation when header creation settles after registration', async () => {
+    const original = useProjectsStore.getState();
+    const originalNavigation = useNavigationStore.getState();
+    const originalChat = useChatStore.getState();
+    let finishPersistence: ((value: { id: string }) => void) | undefined;
+    const capability = jest.replaceProperty(ipcCanopyClient, 'capabilities', {
+      ...ipcCanopyClient.capabilities,
+      worktreeCreation: true,
+    });
+    const navigate = jest
+      .spyOn(originalNavigation, 'navigate')
+      .mockImplementation((page) => {
+        if (page === 'agents') throw new Error('Unexpected agents navigation');
+        useNavigationStore.setState({ activePage: page });
+      });
+    const select = jest
+      .spyOn(originalChat, 'selectWorktree')
+      .mockImplementation((projectId, worktreeId) => {
+        useChatStore.setState({ selectedWorktree: { projectId, worktreeId } });
+      });
+    const create = jest
+      .spyOn(original, 'createWorktree')
+      .mockImplementation((projectId, options) => {
+        useChatStore.getState().selectWorktree(projectId, 'registered-row');
+        options?.onRegistered?.({
+          id: 'registered-row',
+          branchName: 'new-branch',
+          createdAt: '2026-10-30T00:00:00.000Z',
+        });
+        return new Promise((resolve) => {
+          finishPersistence = resolve;
+        });
+      });
+    const client = createFakeClient().client;
+    try {
+      useProjectsStore.setState({
+        projects: [
+          {
+            type: 'single-repo',
+            id: 'slow-code',
+            name: 'Slow Code',
+            repoPath: '/slow',
+            color: '#000000',
+            collapsed: false,
+            order: 0,
+            worktrees: [],
+          },
+        ],
+        pendingWorkspaceRepair: null,
+      });
+      jest.mocked(ipcCanopyClient).query.mockResolvedValueOnce(
+        makeSessionSnapshot({
+          workspaces: [
+            { localId: 'slow-code', name: 'Slow Code', type: 'single-repo' },
+          ],
+          worktrees: [],
+          standaloneChats: [],
+          chatProjects: [],
+        }),
+      );
+      await act(async () => {
+        root.render(
+          <CanopyClientProvider
+            client={{
+              ...client,
+              capabilities: { ...client.capabilities, worktreeCreation: true },
+            }}
+          >
+            <DesktopSharedSidebarHost />
+          </CanopyClientProvider>,
+        );
+        await Promise.resolve();
+      });
+      const add = container.querySelector<HTMLButtonElement>(
+        '[aria-label="Create worktree for Slow Code"]',
+      );
+      expect(add).not.toBeNull();
+      await act(async () => {
+        add?.click();
+        await Promise.resolve();
+      });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(navigate).toHaveBeenLastCalledWith('main');
+      expect(select).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain('Creating worktree…');
+      act(() => useNavigationStore.getState().navigate('home'));
+      await act(async () => {
+        finishPersistence?.({ id: 'registered-row' });
+        await Promise.resolve();
+      });
+      expect(container.textContent).not.toContain('Creating worktree…');
+      expect(useNavigationStore.getState().activePage).toBe('home');
+      expect(navigate).toHaveBeenLastCalledWith('home');
+      expect(select).toHaveBeenCalledTimes(1);
+    } finally {
+      create.mockRestore();
+      navigate.mockRestore();
+      select.mockRestore();
+      act(() => {
+        useProjectsStore.setState(original);
+        useNavigationStore.setState(originalNavigation);
+        useChatStore.setState(originalChat);
+        capability.restore();
+      });
+    }
   });
 
   it('grouped creation needing repair stays pending without reporting a failed creation', async () => {
@@ -331,6 +738,197 @@ describe('DesktopSharedSidebarHost chrome', () => {
       jest.useRealTimers();
     }
   });
+
+  it.each(['resolve', 'reject'] as const)(
+    'coalesces stale events into serial trailing refreshes when a refresh will %s',
+    async (outcome) => {
+      const query = jest.spyOn(ipcCanopyClient, 'query');
+      const subscribe = jest.spyOn(ipcCanopyClient, 'subscribe');
+      const pending = Array.from({ length: 3 }, () => {
+        let resolve: (snapshot: SessionViewModel) => void = () => {};
+        let reject: (error: Error) => void = () => {};
+        const promise = new Promise<SessionViewModel>((yes, no) => {
+          resolve = yes;
+          reject = no;
+        });
+        return { promise, resolve, reject };
+      });
+      query.mockClear();
+      subscribe.mockClear();
+      query.mockResolvedValueOnce(makeSessionSnapshot());
+      for (const request of pending) {
+        query.mockImplementationOnce(() => request.promise);
+      }
+      const onSnapshot = jest.fn();
+      try {
+        await act(async () => {
+          root.render(
+            <CanopyClientProvider client={createFakeClient().client}>
+              <DesktopSharedSidebarHost onSnapshot={onSnapshot} />
+            </CanopyClientProvider>,
+          );
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(1);
+        const subscription = subscribe.mock.calls.find(
+          ([name]) => name === 'session.snapshot-stale',
+        );
+        if (!subscription) throw new Error('Snapshot subscription not mounted');
+        const invalidate = (): void =>
+          subscription[1]({ occurredAt: '2026-11-02T00:00:00Z' });
+
+        await act(async () => {
+          invalidate();
+          invalidate();
+          invalidate();
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(2);
+
+        await act(async () => {
+          if (outcome === 'reject') {
+            pending[0].reject(new Error('Refresh unavailable'));
+          } else {
+            pending[0].resolve(makeSessionSnapshot());
+          }
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(3);
+        expect(onSnapshot).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+          invalidate();
+          invalidate();
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(3);
+        await act(async () => {
+          pending[1].resolve(makeSessionSnapshot());
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(4);
+        expect(onSnapshot).toHaveBeenCalledTimes(1);
+
+        const latest = makeSessionSnapshot({
+          connectionStatus: 'reconnecting',
+        });
+        await act(async () => {
+          pending[2].resolve(latest);
+          await Promise.resolve();
+        });
+        expect(query).toHaveBeenCalledTimes(4);
+        expect(onSnapshot).toHaveBeenCalledTimes(2);
+        expect(onSnapshot).toHaveBeenLastCalledWith(latest);
+      } finally {
+        await act(async () => {
+          for (const request of pending) request.resolve(makeSessionSnapshot());
+          await Promise.resolve();
+        });
+        query.mockReset();
+        query.mockResolvedValue(makeSessionSnapshot());
+      }
+    },
+  );
+
+  it.each([
+    ['unmount', 'resolve'],
+    ['unmount', 'reject'],
+    ['replace', 'resolve'],
+    ['replace', 'reject'],
+  ] as const)(
+    'discards a queued refresh on %s even when its request will %s',
+    async (lifecycle, outcome) => {
+      let resolve: (snapshot: SessionViewModel) => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      const pending = new Promise<SessionViewModel>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      const unsubscribe = jest.fn();
+      const oldClient = createFakeClient().client;
+      const oldQuery = jest
+        .spyOn(oldClient, 'query')
+        .mockImplementation(() => pending);
+      const oldSubscribe = jest
+        .spyOn(oldClient, 'subscribe')
+        .mockImplementation((name) =>
+          name === 'session.snapshot-stale' ? unsubscribe : (): void => {},
+        );
+      const latest = makeSessionSnapshot({ connectionStatus: 'reconnecting' });
+      const newClient = createFakeClient().client;
+      const newQuery = jest.spyOn(newClient, 'query').mockResolvedValue(latest);
+      jest
+        .spyOn(newClient, 'subscribe')
+        .mockImplementation(() => (): void => {});
+      const onSnapshot = jest.fn();
+      const onRefreshMeasured = jest.fn();
+      const providerClient = createFakeClient().client;
+      try {
+        await act(async () => {
+          root.render(
+            <CanopyClientProvider client={providerClient}>
+              <DesktopSharedSidebarHost
+                client={oldClient}
+                onSnapshot={onSnapshot}
+                onRefreshMeasured={onRefreshMeasured}
+              />
+            </CanopyClientProvider>,
+          );
+          await Promise.resolve();
+        });
+        const subscription = oldSubscribe.mock.calls.find(
+          ([name]) => name === 'session.snapshot-stale',
+        );
+        if (!subscription) throw new Error('Snapshot subscription not mounted');
+        const invalidate = (): void =>
+          subscription[1]({ occurredAt: '2026-11-02T00:00:00Z' });
+        await act(async () => {
+          invalidate();
+          invalidate();
+          await Promise.resolve();
+        });
+        expect(oldQuery).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          root.render(
+            lifecycle === 'unmount' ? null : (
+              <CanopyClientProvider client={providerClient}>
+                <DesktopSharedSidebarHost
+                  client={newClient}
+                  onSnapshot={onSnapshot}
+                  onRefreshMeasured={onRefreshMeasured}
+                />
+              </CanopyClientProvider>
+            ),
+          );
+          await Promise.resolve();
+        });
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          invalidate();
+          if (outcome === 'reject')
+            reject(new Error('Disposed request failed'));
+          else resolve(makeSessionSnapshot());
+          await Promise.resolve();
+        });
+        expect(oldQuery).toHaveBeenCalledTimes(1);
+        expect(onSnapshot).toHaveBeenCalledTimes(
+          lifecycle === 'unmount' ? 0 : 1,
+        );
+        expect(onRefreshMeasured).toHaveBeenCalledTimes(
+          lifecycle === 'unmount' ? 0 : 1,
+        );
+        if (lifecycle === 'replace') {
+          expect(newQuery).toHaveBeenCalledTimes(1);
+          expect(onSnapshot).toHaveBeenLastCalledWith(latest);
+        }
+      } finally {
+        await act(async () => {
+          resolve(makeSessionSnapshot());
+          await Promise.resolve();
+        });
+      }
+    },
+  );
 
   it('renders pending organization Chats above a None found Projects row (CAN-3550)', async (): Promise<void> => {
     const originalContext = useWorkspaceContextStore.getState();

@@ -1,4 +1,4 @@
-import type { BrowserWindow } from 'electron';
+import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
   ClaudeTerminalLaunchError,
@@ -47,6 +47,7 @@ import {
   workerTerminal,
 } from '../terminal/worker-terminal';
 import { TerminalOutputDelivery } from '../terminal/output-delivery';
+import type { DaemonTerminalRouteContext } from '../terminal/daemon-terminal-route';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { terminalPersistenceStore } from '../terminal/persistence';
 import { registerIpcHandler } from './register';
@@ -224,10 +225,27 @@ export function registerTerminalHandlers(
       .catch(() => undefined);
   });
 
+  // CAN-5088: only this app's own windows may place a terminal in the
+  // daemon; the remote-control bridge and Portal keep the in-process engine.
+  const routeContext = (
+    event: Pick<IpcMainInvokeEvent, 'sender'> | null | undefined,
+  ): DaemonTerminalRouteContext => ({
+    localWindow:
+      event !== null &&
+      event !== undefined &&
+      resolveRemoteBridgeSender(event.sender) === null &&
+      [accessors.getMainWindow(), accessors.getAppAdvisorWindow()].some(
+        (window) =>
+          window !== null &&
+          window.webContents === event.sender &&
+          !window.isDestroyed(),
+      ),
+  });
+
   registerIpcHandler<[TerminalSpawnRequest], TerminalSession>(
     IPC_CHANNELS.terminalSpawn,
-    async (_event, request): Promise<TerminalSession> => {
-      return spawnTerminalForRenderer(request);
+    async (event, request): Promise<TerminalSession> => {
+      return spawnTerminalForRenderer(request, routeContext(event));
     },
   );
 
@@ -258,7 +276,7 @@ export function registerTerminalHandlers(
 
   registerIpcHandler<[TerminalRestoreRequest], TerminalSession>(
     IPC_CHANNELS.terminalRestore,
-    async (_event, request): Promise<TerminalSession> => {
+    async (event, request): Promise<TerminalSession> => {
       validateId(request.terminalId, 'terminalId');
       validateTerminalDimension(request.cols, 'cols');
       validateTerminalDimension(request.rows, 'rows');
@@ -275,7 +293,7 @@ export function registerTerminalHandlers(
           'restoring a terminal',
         );
       }
-      return restoreTerminalForRenderer(request, session);
+      return restoreTerminalForRenderer(request, session, routeContext(event));
     },
   );
 

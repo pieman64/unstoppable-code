@@ -46,10 +46,6 @@ const mockFsRemove = jest.fn<
   [string, { recursive: true; force: true }]
 >();
 const mockIsAvailable = jest.fn<boolean, [string]>();
-const mockPersistFingerprint = jest.fn<
-  Promise<boolean>,
-  [string, string, string, string]
->();
 const mockReadCompletion = jest.fn<Promise<boolean>, [string, string]>();
 const mockReadWorkspaceConfig = jest.fn<
   Promise<{ type: 'single-repo'; repoPath: string }>,
@@ -137,13 +133,7 @@ jest.mock('../lib/code-graph-availability', () => ({
     mockIsAvailable(projectId),
 }));
 jest.mock('../lib/code-graph-worktree-fingerprint', () => ({
-  persistStableCodeGraphWorktreeFingerprint: (
-    dbPath: string,
-    startFingerprint: string,
-    endFingerprint: string,
-    key: string,
-  ): Promise<boolean> =>
-    mockPersistFingerprint(dbPath, startFingerprint, endFingerprint, key),
+  clearCodeGraphWorktreeFingerprintCache: jest.fn(),
   readCodeGraphWorktreeCompletion: (
     dbPath: string,
     key: string,
@@ -255,7 +245,6 @@ describe('worktree Code Graph build saturation handling', () => {
       ok: true,
       fingerprint: 'same-worktree-fingerprint',
     });
-    mockPersistFingerprint.mockResolvedValue(true);
     mockCopyBase.mockResolvedValue(null);
     mockBeginBuild.mockImplementation(() => ({
       attemptId: 'stable-coalesced-build-record',
@@ -342,19 +331,17 @@ describe('worktree Code Graph build saturation handling', () => {
     expect(diagnostics[0]?.codeGraphBuild).not.toHaveProperty('attemptId');
   });
 
-  it('keeps publication successful when fingerprint persistence is busy and records the shared build id', async () => {
+  it('keeps publication successful when the host could not store the fingerprint and records the shared build id', async () => {
     const sharedResponse: CodeGraphWorkerBuildResponse = {
       ok: true,
       result: successfulBuildResult(),
+      fingerprint: { outcome: 'error', endFingerprintMs: 2 },
     };
     const sharedHandle: BuildHandle = {
       attemptId: 'stable-coalesced-build-record',
       promise: Promise.resolve(sharedResponse),
     };
     mockBeginBuild.mockReturnValue(sharedHandle);
-    mockPersistFingerprint.mockRejectedValue(
-      new CodeGraphReadFailureError('busy'),
-    );
 
     const input: Parameters<typeof runWorktreeCodeGraphBuild>[0] = {
       projectId: 'project-safe',
@@ -380,8 +367,8 @@ describe('worktree Code Graph build saturation handling', () => {
       expect(record.codeGraphBuild).toMatchObject({
         outcome: 'success',
         queueWaitMs: 7,
-        fingerprintPersistOutcome: 'busy',
-        fingerprintPersistFailure: 'busy',
+        endFingerprintMs: 2,
+        fingerprintPersistOutcome: 'error',
       });
     }
   });

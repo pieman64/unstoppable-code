@@ -4,12 +4,11 @@ import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
   SETTINGS_CARD_ROW_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { useState, type JSX } from 'react';
 import { Github } from '@canopy/ui-shared/icons/AppIcons';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { canEditOrg } from '@canopy/protocol/settings/organization-permissions';
 import {
@@ -131,7 +130,9 @@ export function TeamGitHubConnectionSection({
       data-testid="team-github-connection-section"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h2 className={SETTINGS_CARD_TITLE_CLASS}>GitHub connection</h2>
+        <Heading level={2} variant="section">
+          GitHub connection
+        </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
           Connect the {brand.displayName} GitHub App so pull request merge state
           and diff stats in the timeline are pulled straight from GitHub,

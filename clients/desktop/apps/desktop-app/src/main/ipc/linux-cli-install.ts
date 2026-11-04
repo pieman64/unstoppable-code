@@ -14,6 +14,9 @@ import type {
 const TOOLS = ['claude', 'codex', 'codex-code-mode-host', 'gh', 'rg', 'rtk'];
 const DAEMON = daemonName(BRAND);
 const DAEMON_FILES = [`${DAEMON}.identity.json`, 'w5-commit-log-worker.js'];
+// The daemon's execution host entries beside it: its terminal host (CAN-5088).
+const DAEMON_HOSTS = 'execution-hosts';
+const DAEMON_HOST_ENTRIES = ['terminal-host.js'];
 const RESOURCE_ROOTS = [
   'resources/code-graph',
   'node_modules/web-tree-sitter',
@@ -150,6 +153,7 @@ async function distributionMembers(source: string): Promise<
       DAEMON,
       ...DAEMON_FILES,
       'node-pty',
+      DAEMON_HOSTS,
       'THIRD_PARTY_NOTICES.txt',
     ];
     const existing = await Promise.all(
@@ -413,11 +417,15 @@ async function requirePayload(directory: string): Promise<void> {
       throw new Error(`Incomplete CLI distribution: ${name}`);
     }
   }
-  for (const name of ['package.json', 'build/Release/pty.node']) {
-    const source = members.get('node-pty');
+  for (const [directory, name] of [
+    ['node-pty', 'package.json'],
+    ['node-pty', 'build/Release/pty.node'],
+    ...DAEMON_HOST_ENTRIES.map((entry) => [DAEMON_HOSTS, entry]),
+  ]) {
+    const source = members.get(directory);
     const stat = source ? await statIfPresent(path.join(source, name)) : null;
     if (!stat?.isFile() || stat.size === 0) {
-      throw new Error(`Incomplete CLI distribution: node-pty/${name}`);
+      throw new Error(`Incomplete CLI distribution: ${directory}/${name}`);
     }
   }
   for (const name of RESOURCE_ROOTS) {

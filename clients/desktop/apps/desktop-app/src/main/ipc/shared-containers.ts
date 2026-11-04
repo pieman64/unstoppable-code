@@ -57,6 +57,7 @@ import {
   type ListDismissedSharedContainersResult,
   type RestoreSharedContainerResult,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  isStoredSecretValue,
 } from '@canopy/desktop-shared/types';
 import { BrowserWindow } from 'electron';
 import {
@@ -141,6 +142,7 @@ import { getSharedContainerInboxWatcher } from '../services/shared-container-inb
 import { getObservabilityService } from '../observability';
 import { registerIpcHandler } from './register';
 import {
+  projectSharedContainerRunEnvironment,
   readSharedContainerRunEnvironment,
   removeSharedContainerRunEnvironment,
   writeSharedContainerRunEnvironment,
@@ -1354,10 +1356,10 @@ export function registerSharedContainerHandlers(runtime: {
     const run = await readRunConfig(request);
     const acceptance = await getSharedContainerAcceptance(request.containerId);
     const declared = new Set(run?.requiredEnv ?? []);
-    const values = (
+    const stored = (
       await readSharedContainerRunEnvironment(request.containerId)
     ).filter((entry) => declared.has(entry.key));
-    const applied = new Map(values.map((entry) => [entry.key, entry.value]));
+    const applied = new Map(stored.map((entry) => [entry.key, entry.value]));
     const runCopy = await getSharedContainerRunCopyState(request.containerId);
     const hasRunningProcesses =
       listTrackedShellScriptsForWorktree({
@@ -1377,7 +1379,7 @@ export function registerSharedContainerHandlers(runtime: {
         ? { publisherUserId: acceptance.runAllowedPublisherUserId }
         : {}),
       ...(run ? { run } : {}),
-      values,
+      values: projectSharedContainerRunEnvironment(request.containerId, stored),
       unsetRequiredEnv:
         run?.requiredEnv.filter((name) => !(applied.get(name) ?? '').trim()) ??
         [],
@@ -1452,7 +1454,8 @@ export function registerSharedContainerHandlers(runtime: {
           (entry) =>
             !entry ||
             typeof entry.key !== 'string' ||
-            typeof entry.value !== 'string' ||
+            (typeof entry.value !== 'string' &&
+              !isStoredSecretValue(entry.value)) ||
             !declared.has(entry.key),
         )
       ) {

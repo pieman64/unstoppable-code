@@ -37,10 +37,11 @@ import {
 } from '@canopy/app-state';
 import {
   HeaderActionButton,
-  LinearProgress,
+  ProgressBar,
   OverlayScrollArea,
   RailTabBar,
   RefreshButton,
+  SkeletonBlock,
   type CollapsedIconColor,
   type RailTabBarTab,
 } from '@canopy/ui-shared/components';
@@ -623,11 +624,12 @@ const ACTIVITY_SECTION_DESCRIPTORS: Record<
       const percentage = (completed / items.length) * 100;
       return (
         <div className="mt-1 flex items-center gap-2">
-          <LinearProgress
-            percentage={percentage}
-            barColor="bg-success"
+          <ProgressBar
+            value={percentage}
+            size="compact"
             className="flex-1"
             label={`${completed} of ${items.length} tasks completed`}
+            hideLabel
           />
           <span className="text-2xs fg-secondary">
             {completed}/{items.length}
@@ -1460,12 +1462,15 @@ export function ActivityPanel({
       })
     ) {
       return (
-        <p
-          className="text-xs fg-secondary"
+        <div
+          role="status"
+          className="flex flex-col gap-2 py-1"
           data-testid="activity-section-loading"
         >
-          Loading…
-        </p>
+          <span className="sr-only">Loading</span>
+          <SkeletonBlock width="2/3" />
+          <SkeletonBlock width="1/2" />
+        </div>
       );
     }
     switch (id) {

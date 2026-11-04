@@ -3,6 +3,7 @@ import type {
   PortalMcpConnectionMetadata,
   PortalPluginCatalogMemberInventory,
 } from '@canopy/protocol/portal';
+import { Heading } from './Heading';
 
 export interface PluginMemberDetailsProps {
   inventory: PortalPluginCatalogMemberInventory;
@@ -30,7 +31,9 @@ function MemberSection({
   return (
     <section className="flex flex-col gap-2" aria-label={title}>
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-xs font-semibold fg-primary">{title}</h3>
+        <Heading level={3} variant="label">
+          {title}
+        </Heading>
         <span className="rounded bg-fg-primary/10 px-1.5 py-0.5 text-3xs fg-secondary">
           {rows.length}
         </span>

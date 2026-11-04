@@ -10,6 +10,7 @@ import { TextInput } from '@canopy/ui-shared';
 import { focusableWithin } from '@canopy/ui-shared/lib';
 import type { BrowserAuthRequest } from '@canopy/desktop-shared/types/browser';
 import { Button } from '@/components/shared/Button';
+import { Heading } from '@canopy/ui-shared/components';
 
 function authRequestHost(origin: string): string {
   try {
@@ -122,15 +123,17 @@ export function BrowserSignInDialog({
         onSubmit={handleSubmit}
       >
         <div className="border-b px-5 py-4">
-          <h2
+          <Heading
+            level={2}
+            variant="title"
+            truncate
             id={titleId}
-            className="truncate text-s font-semibold fg-primary"
             title={request.origin}
           >
             {request.isProxy
               ? `Sign in to the proxy ${host}`
               : `Sign in to ${host}`}
-          </h2>
+          </Heading>
           {request.realm && (
             <p
               className="mt-1 truncate text-xs fg-tertiary"

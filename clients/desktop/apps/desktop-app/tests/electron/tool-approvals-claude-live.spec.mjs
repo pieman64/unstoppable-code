@@ -561,7 +561,7 @@ test.describe('live tool-approval round trip (Claude)', () => {
         'data-tool-approval',
         'waiting',
       );
-      await expect(waitingCall).toContainText('Waiting to run');
+      await expect(waitingCall).toContainText('Waiting for approval');
       await expect(
         waitingCall.locator('[class*="canopy-text-shimmer"]'),
       ).toHaveCount(0);

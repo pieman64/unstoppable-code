@@ -3001,34 +3001,17 @@ describe('phase07 transfer installed routes', () => {
 });
 
 describe('appAdvisorActionSchema — daily free AI Credits', () => {
-  it('accepts the daily credit drip toggle with a boolean', () => {
-    expect(
-      appAdvisorActionSchema.safeParse({
-        type: 'settings.set_daily_credit_drip',
-        enabled: true,
-      }).success,
-    ).toBe(true);
-    expect(
-      appAdvisorActionSchema.safeParse({
-        type: 'settings.set_daily_credit_drip',
-        enabled: false,
-      }).success,
-    ).toBe(true);
-  });
-
-  it('rejects a daily credit drip toggle without a boolean enabled value', () => {
-    expect(
-      appAdvisorActionSchema.safeParse({
-        type: 'settings.set_daily_credit_drip',
-      }).success,
-    ).toBe(false);
-    expect(
-      appAdvisorActionSchema.safeParse({
-        type: 'settings.set_daily_credit_drip',
-        enabled: 'yes',
-      }).success,
-    ).toBe(false);
-  });
+  it.each([true, false])(
+    'rejects the retired daily credit drip action with enabled=%s',
+    (enabled) => {
+      expect(
+        appAdvisorActionSchema.safeParse({
+          type: 'settings.set_daily_credit_drip',
+          enabled,
+        }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 describe('App Advisor Code Graph actions', () => {

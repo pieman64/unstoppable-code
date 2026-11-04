@@ -75,6 +75,11 @@ function workerDispatcher(
       'worker.script.execution.get': notExercised,
       'worker.script.execution.list': notExercised,
       'worker.pipeline.execution.get': notExercised,
+      'worker.codeGraph.buildQueue.get': notExercised,
+      'worker.codeGraph.status.get': notExercised,
+      'worker.codeGraph.query': notExercised,
+      'worker.codeGraph.snapshot.export': notExercised,
+      'worker.codeGraph.languages.validate': notExercised,
     },
   });
 }

@@ -9,6 +9,7 @@ import {
   ValueRow,
   ValueRows,
 } from '@canopy/ui-shared/components/settings/ValueRows';
+import { Heading } from '@canopy/ui-shared/components';
 
 export interface CostDetailSectionProps {
   readonly title: string;
@@ -27,7 +28,9 @@ export function CostDetailSection({
   return (
     <section data-testid={testId} className="flex flex-col gap-2">
       <div className="flex items-baseline justify-between gap-3">
-        <h3 className="text-xs font-medium fg-primary">{title}</h3>
+        <Heading level={3} variant="label">
+          {title}
+        </Heading>
         {aside !== undefined ? (
           <span className="shrink-0 text-right text-xs tabular-nums fg-secondary">
             {aside}

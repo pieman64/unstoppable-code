@@ -547,8 +547,9 @@ describe('DigestReport team list', () => {
     );
 
     expect(
-      testId('digest-report-headline')?.classList.contains('replay-block'),
-    ).toBe(true);
+      testId('digest-report-headline')?.querySelector('.replay-block')
+        ?.textContent,
+    ).toBe('Onboarding UX hardening');
     const blocked = Array.from(container.querySelectorAll('.replay-block'));
     expect(
       blocked.some((node) => node.textContent?.includes('canopy#2388')),
@@ -567,8 +568,8 @@ describe('DigestReport team list', () => {
   it('leaves no stray class token when the host has no replay privacy', async () => {
     await render(digest());
 
-    expect(testId('digest-report-headline')?.getAttribute('class')).toBe(
-      'mt-1 text-xl font-semibold fg-primary',
-    );
+    const headline = testId('digest-report-headline');
+    expect(headline?.getAttribute('class')).not.toMatch(/^\s|\s$|\s\s/);
+    expect(headline?.querySelector('[class=""]')).toBeNull();
   });
 });

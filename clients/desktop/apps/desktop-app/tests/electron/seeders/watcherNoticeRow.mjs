@@ -1,13 +1,17 @@
 import { seedWorktreeChat } from './seedWorktreeChat.mjs';
 
 /**
- * Seed one undelivered input-delivery row whose text is a cloud watcher
- * wake-up: the instruction block with the event, then the short notice.
+ * Seed two undelivered input-delivery rows whose text is a watcher wake-up:
+ * the instruction block with the event, then the short notice. Only the first
+ * carries the host's watcher marker; the second is the same text typed by a
+ * person.
  */
 export const WATCHER_NOTICE_PROJECT_ID = 'demo-ts-pnpm-vite';
 export const WATCHER_NOTICE_WORKTREE_ID = 'demo-main';
+export const WATCHER_NOTICE_KIND = 'Dark mode plan finished';
+export const MARKED_ROW_ID = 'watcher-notice';
+export const TYPED_ROW_ID = 'typed-watcher-notice';
 const CHAT_ID = 'watcher-notice-row';
-const ROW_ID = 'watcher-notice';
 
 const FIRED_TEXT = [
   '<system_instruction>',
@@ -17,7 +21,7 @@ const FIRED_TEXT = [
   JSON.stringify(
     {
       watcherId: '33875e8f-c6d7-58b2-8a3b-0137335c92ae',
-      label: 'Dark mode plan finished',
+      label: WATCHER_NOTICE_KIND,
       trigger: 'worktree_chat_completion',
       target: {
         kind: 'worktree_chat',
@@ -39,8 +43,38 @@ const FIRED_TEXT = [
   '</system_instruction>',
   '',
   'Canopy watcher fired.',
-  'Dark mode plan finished',
+  WATCHER_NOTICE_KIND,
 ].join('\n');
+
+function noticeRow(id, createdAt, extraPayload = {}) {
+  return {
+    id,
+    revision: 1,
+    createdAt,
+    state: 'uncertain',
+    text: FIRED_TEXT,
+    settingsKey: 'seeded',
+    payload: {
+      projectId: WATCHER_NOTICE_PROJECT_ID,
+      worktreeId: WATCHER_NOTICE_WORKTREE_ID,
+      chatId: CHAT_ID,
+      userMessageId: id,
+      text: FIRED_TEXT,
+      ...extraPayload,
+    },
+    currentAttemptId: `attempt-${id}`,
+    attempts: [
+      {
+        id: `attempt-${id}`,
+        generation: 'ended-session',
+        provider: 'claude',
+        createdAt,
+        admittedAt: createdAt + 1,
+        uncertainAt: createdAt + 1_000,
+      },
+    ],
+  };
+}
 
 export function seedWatcherNoticeRow(userDataDir) {
   seedWorktreeChat({
@@ -65,32 +99,10 @@ export function seedWatcherNoticeRow(userDataDir) {
           version: 1,
           epoch: 0,
           rows: [
-            {
-              id: ROW_ID,
-              revision: 1,
-              createdAt: 1_000,
-              state: 'uncertain',
-              text: FIRED_TEXT,
-              settingsKey: 'seeded',
-              payload: {
-                projectId: WATCHER_NOTICE_PROJECT_ID,
-                worktreeId: WATCHER_NOTICE_WORKTREE_ID,
-                chatId: CHAT_ID,
-                userMessageId: ROW_ID,
-                text: FIRED_TEXT,
-              },
-              currentAttemptId: `attempt-${ROW_ID}`,
-              attempts: [
-                {
-                  id: `attempt-${ROW_ID}`,
-                  generation: 'ended-session',
-                  provider: 'claude',
-                  createdAt: 1_000,
-                  admittedAt: 1_001,
-                  uncertainAt: 2_000,
-                },
-              ],
-            },
+            noticeRow(MARKED_ROW_ID, 1_000, {
+              watcherFired: { kind: WATCHER_NOTICE_KIND },
+            }),
+            noticeRow(TYPED_ROW_ID, 3_000),
           ],
         },
       },

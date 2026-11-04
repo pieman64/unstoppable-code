@@ -222,6 +222,9 @@ export interface ContinueSectionModel {
   readonly unreadTotal: number;
   /** Unread rows behind the overflow link; 0 when every row shows. */
   readonly unreadOverflowCount: number;
+  /** Needs-input then unread rows, capped at `shownAttentionRows`. */
+  readonly shownAttention: readonly ContinueAttentionItem[];
+  readonly hiddenAttentionCount: number;
   readonly lastViewedVisible: boolean;
   readonly interruptedVisible: boolean;
   /** Whether the section renders anything at all. */
@@ -236,6 +239,8 @@ export interface ContinueSectionModelInput {
   readonly interruptedTarget?: ContinueInterruptedTarget | null;
   /** Whether the host has a destination exposing every unread result. */
   readonly hasUnreadOverflowDestination?: boolean;
+  /** How many needs-input and unread rows are shown; the rest wait behind Show more. */
+  readonly shownAttentionRows?: number;
 }
 
 /**
@@ -282,6 +287,7 @@ export function buildContinueSectionModel({
   interruptedVisible = false,
   interruptedTarget = null,
   hasUnreadOverflowDestination = false,
+  shownAttentionRows = Number.POSITIVE_INFINITY,
 }: ContinueSectionModelInput): ContinueSectionModel {
   const ranked = rankContinueAttention(attention);
   const needsInput = ranked.filter((item) => item.kind !== 'unread');
@@ -291,9 +297,14 @@ export function buildContinueSectionModel({
     hasUnreadOverflowDestination && allUnread.length > CONTINUE_UNREAD_ROW_LIMIT
       ? allUnread.slice(0, CONTINUE_UNREAD_ROW_LIMIT)
       : allUnread;
+  const shownAttention = [...needsInput, ...unread].slice(
+    0,
+    shownAttentionRows,
+  );
+  // Only a row on screen makes Last viewed redundant.
   const lastViewedVisible =
     lastViewed !== null &&
-    !isLastViewedSuppressed(lastViewed, ranked) &&
+    !isLastViewedSuppressed(lastViewed, shownAttention) &&
     !isLastViewedMergedIntoInterrupted(
       lastViewed,
       interruptedTarget,
@@ -304,6 +315,9 @@ export function buildContinueSectionModel({
     unread,
     unreadTotal: allUnread.length,
     unreadOverflowCount: allUnread.length - unread.length,
+    shownAttention,
+    hiddenAttentionCount:
+      needsInput.length + unread.length - shownAttention.length,
     lastViewedVisible,
     interruptedVisible,
     visible:

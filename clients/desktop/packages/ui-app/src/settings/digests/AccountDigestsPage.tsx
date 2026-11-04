@@ -10,6 +10,7 @@ import { DigestList } from './digest-list';
 import { DigestRequestForm } from './digest-request-form';
 import { DigestRequestUnavailable } from './digest-request-unavailable';
 import { isDigestWorkInFlight } from './digest-work-state';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * `/account/digests`: the viewer's digest archive, with the on-demand request
@@ -37,12 +38,13 @@ export function AccountDigestsPage({
       {/* Labeled group, so the raised rows below are read as the archive
           rather than as more of the request control above them. */}
       <div className="mt-1 flex flex-col gap-3">
-        <h3
-          className="text-s font-semibold fg-primary"
+        <Heading
+          level={3}
+          variant="title"
           data-testid="account-digest-archive-heading"
         >
           Past digests
-        </h3>
+        </Heading>
         <DigestList
           digests={digests}
           basePath={settingsRouteToPath({ scope: 'account', page: 'digests' })}

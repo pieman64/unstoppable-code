@@ -35,6 +35,10 @@ import {
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { writeFileAtomically } from './atomic-file';
 import {
+  cancelCodeGraphBaseMaintenance,
+  runCodeGraphBaseMaintenance,
+} from '../code-graph/base-maintenance-runs';
+import {
   cancelBuild,
   beginCodeGraphWorkerBuild,
   CodeGraphWorkerBuildError,
@@ -1021,10 +1025,9 @@ async function runMaintenanceCycle(): Promise<void> {
       ),
     },
   );
-  const preparedWorkspaces: Array<{
-    workspace: DesiredBaseWorkspace;
-    customLanguages: { fingerprint: string; snapshotPath: string };
-  }> = [];
+  // Each workspace's maintenance is one initiated-work run that dispatches
+  // worker.codeGraph.build in maintenance mode (CAN-5619); the run lands in
+  // maintainCodeGraphBasesForWorkspace below. Workspaces run one at a time.
   for (const workspace of workspaces) {
     if (stopped) {
       return;
@@ -1032,20 +1035,12 @@ async function runMaintenanceCycle(): Promise<void> {
     if (!isCodeGraphAvailableForWorkspace(workspace.workspaceId)) {
       continue;
     }
-    const customLanguages = await prepareWorkspaceCustomLanguages(workspace);
-    if (customLanguages !== null) {
-      preparedWorkspaces.push({ workspace, customLanguages });
-    }
-  }
-  for (const { workspace, customLanguages } of preparedWorkspaces) {
-    for (const repository of workspace.repositories) {
-      if (stopped || !isCodeGraphAvailableForWorkspace(workspace.workspaceId)) {
-        break;
-      }
-      await maintainBase(repository, customLanguages, {
-        ownerWorkspaceIds: [workspace.workspaceId],
-      });
-    }
+    await runCodeGraphBaseMaintenance({
+      workspaceId: workspace.workspaceId,
+      repositoryCount: workspace.repositories.length,
+      available: () => isCodeGraphAvailableForWorkspace(workspace.workspaceId),
+      stopped: () => stopped,
+    });
   }
   recordRealisticStartupPerformanceEvent(
     'startup:code-graph-base:cycle-completed',
@@ -1231,9 +1226,15 @@ export function getCodeGraphBaseWorkspaceDescriptor(
       };
 }
 
+/**
+ * Refreshes every base the workspace needs. `forceRefresh` rebuilds now in
+ * the agent class; `maintenance` is the periodic cycle's pass, which rebuilds
+ * a base only when its shadow moved, one repository at a time, in the
+ * maintenance class.
+ */
 export async function maintainCodeGraphBasesForWorkspace(
   workspaceId: string,
-  options: { forceRefresh: true },
+  options: { forceRefresh: true } | { maintenance: true },
 ): Promise<CodeGraphBaseMaintenanceOutcome[]> {
   if (!isCodeGraphAvailableForWorkspace(workspaceId)) {
     return [
@@ -1254,9 +1255,11 @@ export async function maintainCodeGraphBasesForWorkspace(
       },
     ];
   }
-  const customLanguages = await prepareWorkspaceCustomLanguages(workspace, {
-    forceRefresh: options.forceRefresh,
-  });
+  const forceRefresh = 'forceRefresh' in options;
+  const customLanguages = await prepareWorkspaceCustomLanguages(
+    workspace,
+    forceRefresh ? { forceRefresh } : undefined,
+  );
   if (customLanguages === null) {
     return workspace.repositories.map((repository) => ({
       repoId: repository.repoId,
@@ -1265,6 +1268,23 @@ export async function maintainCodeGraphBasesForWorkspace(
         ? 'Failed to prepare custom-language configuration.'
         : CODE_GRAPH_UNAVAILABLE_MESSAGE,
     }));
+  }
+  if (!forceRefresh) {
+    const outcomes: CodeGraphBaseMaintenanceOutcome[] = [];
+    for (const repository of workspace.repositories) {
+      outcomes.push(
+        stopped || !isCodeGraphAvailableForWorkspace(workspaceId)
+          ? {
+              repoId: repository.repoId,
+              ok: false,
+              message: CODE_GRAPH_UNAVAILABLE_MESSAGE,
+            }
+          : await maintainBase(repository, customLanguages, {
+              ownerWorkspaceIds: [workspaceId],
+            }),
+      );
+    }
+    return outcomes;
   }
   return Promise.all(
     workspace.repositories.map((repository) =>
@@ -1462,6 +1482,7 @@ export async function shutdownCodeGraphBaseManager(): Promise<void> {
     periodicTimer = null;
   }
   setRepoShadowRetirementHandler(null);
+  cancelCodeGraphBaseMaintenance('The app is shutting down.');
   // Abort network-bound shadow preparation before awaiting any maintenance
   // promise that may itself be blocked on that Git subprocess.
   activeShadowPreparationControllers.forEach((preparation): void => {

@@ -9,7 +9,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  EnvironmentConfigData,
+  EnvironmentConfigView,
   LoadEnvironmentConfigResponse,
   SaveEnvironmentConfigResponse,
 } from '@canopy/desktop-shared/types';
@@ -26,16 +26,16 @@ interface TestApi {
   loadEnvironmentConfig: jest.Mock<Promise<LoadEnvironmentConfigResponse>, []>;
   saveEnvironmentConfig: jest.Mock<
     Promise<SaveEnvironmentConfigResponse>,
-    [EnvironmentConfigData]
+    [EnvironmentConfigView]
   >;
 }
 
-function installApi(initial: EnvironmentConfigData): TestApi {
+function installApi(initial: EnvironmentConfigView): TestApi {
   const api: TestApi = {
     loadEnvironmentConfig: jest.fn(() =>
       Promise.resolve({ data: initial, encryptionAvailable: true }),
     ),
-    saveEnvironmentConfig: jest.fn((data: EnvironmentConfigData) =>
+    saveEnvironmentConfig: jest.fn((data: EnvironmentConfigView) =>
       Promise.resolve({ ok: true as const, data, encryptionAvailable: true }),
     ),
   };
@@ -191,7 +191,7 @@ describe('WorkspaceEnvironmentTab', () => {
       const initial = createDefaultEnvironmentConfig(
         '2026-01-01T00:00:00.000Z',
       );
-      const submitted: EnvironmentConfigData = {
+      const submitted: EnvironmentConfigView = {
         ...initial,
         environments: initial.environments.map((environment) => ({
           ...environment,
@@ -559,7 +559,7 @@ describe('WorkspaceEnvironmentTab', () => {
     const api = installApi(initial);
     let finishFirst: () => void = () => undefined;
     api.saveEnvironmentConfig.mockImplementationOnce(
-      (data: EnvironmentConfigData) =>
+      (data: EnvironmentConfigView) =>
         new Promise((resolve) => {
           finishFirst = (): void =>
             resolve({ ok: true as const, data, encryptionAvailable: true });
@@ -617,7 +617,7 @@ describe('WorkspaceEnvironmentTab', () => {
     const api = installApi(initial);
     let finishFirst: () => void = () => undefined;
     api.saveEnvironmentConfig.mockImplementationOnce(
-      (data: EnvironmentConfigData) =>
+      (data: EnvironmentConfigView) =>
         new Promise((resolve) => {
           finishFirst = (): void =>
             resolve({ ok: true as const, data, encryptionAvailable: true });
@@ -726,7 +726,7 @@ describe('WorkspaceEnvironmentTab', () => {
     const api = installApi(initial);
     let finishFirst: () => void = () => undefined;
     api.saveEnvironmentConfig.mockImplementationOnce(
-      (data: EnvironmentConfigData) =>
+      (data: EnvironmentConfigView) =>
         new Promise((resolve) => {
           finishFirst = (): void =>
             resolve({ ok: true as const, data, encryptionAvailable: true });
@@ -959,7 +959,7 @@ describe('WorkspaceEnvironmentTab', () => {
         .fn<Promise<LoadEnvironmentConfigResponse>, []>()
         .mockRejectedValueOnce(new Error('load failed'))
         .mockResolvedValue({ data: initial, encryptionAvailable: true }),
-      saveEnvironmentConfig: jest.fn((data: EnvironmentConfigData) =>
+      saveEnvironmentConfig: jest.fn((data: EnvironmentConfigView) =>
         Promise.resolve({ ok: true as const, data, encryptionAvailable: true }),
       ),
     };

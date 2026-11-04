@@ -5,6 +5,7 @@ import {
   DelayedLoadingPlaceholder,
   ErrorBanner,
   SettingsListSkeleton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { MostExpensiveRuns } from '../statistics/MostExpensiveRuns';
 import { useMemberUsage } from './useMemberUsage';
@@ -60,9 +61,9 @@ export function ProfileRunsSection({
   return (
     <section className="flex flex-col gap-5" data-testid="profile-runs">
       <div className="flex items-end justify-between gap-3">
-        <h2 className="text-s font-semibold fg-primary">
+        <Heading level={2} variant="title">
           Most expensive sessions
-        </h2>
+        </Heading>
         <UsageRangeSelect
           rangeMs={rangeMs}
           onChange={setRangeMs}

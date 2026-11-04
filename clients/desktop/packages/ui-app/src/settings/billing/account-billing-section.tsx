@@ -29,11 +29,11 @@ import {
   CreditLedgerTable as SharedCreditLedgerTable,
   ErrorBanner,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { BillingCardBodySkeleton } from './billing-card-body-skeleton';
@@ -572,9 +572,9 @@ function OrgCoverageCard({
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className={SETTINGS_CARD_TITLE_CLASS}>
+                  <Heading level={2} variant="section">
                     Subscription plan
-                  </h2>
+                  </Heading>
                   <SubscriptionPlanPill
                     chrome={chrome}
                     dataTestId="billing-plan-pill"
@@ -728,7 +728,9 @@ function PlanCard({
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+              <Heading level={2} variant="section">
+                Subscription plan
+              </Heading>
               {/* The failure MESSAGE is the stack's `ErrorBanner` above, so this
                 branch stays a neutral placeholder rather than repeating it. */}
               {loading ? (
@@ -780,7 +782,9 @@ function PlanCard({
           <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+                <Heading level={2} variant="section">
+                  Subscription plan
+                </Heading>
                 <PlanPill
                   planDisplayName={plan ? plan.displayName : 'Free'}
                   dataTestId="billing-plan-pill"

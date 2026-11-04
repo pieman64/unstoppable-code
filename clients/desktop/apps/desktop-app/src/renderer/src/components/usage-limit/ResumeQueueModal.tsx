@@ -26,7 +26,7 @@ import {
 } from '@/stores/resumeQueueStore';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { LinearProgress } from '@/components/shared/loading';
+import { ProgressBar } from '@canopy/ui-shared/components';
 import {
   openResumeQueueEntry,
   resumeQueueEntryDestinationLabel,
@@ -290,10 +290,11 @@ export function ResumeQueueModal(): JSX.Element | null {
           {showProgress && (
             // The bar tracks how much of the queue has been handled, not how
             // many entries started.
-            <LinearProgress
-              percentage={progress.percentage}
+            <ProgressBar
+              value={progress.percentage}
               label="Resume progress"
               valueText={`${progress.processed} of ${total} handled`}
+              hideLabel
             />
           )}
           {sentence && <p className="text-s fg-secondary">{sentence}</p>}

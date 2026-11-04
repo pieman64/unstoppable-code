@@ -35,7 +35,6 @@ import { FoldReveal } from './FoldReveal';
 import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
 import { IconToggleButton } from './IconToggleButton';
 import { Tooltip } from './Tooltip';
-import { ControlSelect } from './ControlSelect';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 
 export interface ThinkingLevelControlProps {
@@ -47,13 +46,6 @@ export interface ThinkingLevelControlProps {
    * lines up with the ones in neighboring rows.
    */
   selectFill?: boolean;
-  /**
-   * `capsule` draws the shared Settings dropdown (`SettingsSelect`, the
-   * Canopy menu), so the control matches the Settings dropdowns beside it;
-   * composer controls keep the native select (`ControlSelect`). Both are now
-   * the 28px rounded rectangle (2026-10-30); the name is kept for callers.
-   */
-  selectShape?: 'rounded' | 'capsule';
   variant?: 'cycle' | 'capsule' | 'select';
   /**
    * Hide the effort label while keeping the icon, dots, and capsule geometry.
@@ -183,7 +175,6 @@ export function ThinkingLevelControl(
     supportedLevels,
     variant = 'cycle',
     selectFill = false,
-    selectShape = 'rounded',
     compact = false,
     disabled = false,
     allowWorkspaceDefault = false,
@@ -238,9 +229,9 @@ export function ThinkingLevelControl(
     supportedUiLevels,
   ]);
 
-  if (variant === 'select' && selectShape === 'capsule') {
-    // Settings: the shared Settings dropdown, so the effort menu matches the
-    // model menu beside it.
+  if (variant === 'select') {
+    // The shared Settings dropdown, so the effort menu matches the model
+    // menu beside it.
     const workspaceDefaultOption: readonly SettingsSelectOption[] =
       allowWorkspaceDefault
         ? [{ value: '', label: WORKSPACE_DEFAULT_LABEL }]
@@ -267,35 +258,6 @@ export function ThinkingLevelControl(
           })),
         ]}
       />
-    );
-  }
-
-  if (variant === 'select') {
-    return (
-      <ControlSelect
-        fill={selectFill}
-        value={normalizedValue ?? ''}
-        disabled={disabled}
-        onChange={(event): void => {
-          const next = event.target.value;
-          if (allowWorkspaceDefault && next === '') {
-            onChange(undefined);
-          } else if (isThinkingLevel(next)) {
-            onChange(next);
-          }
-        }}
-        aria-label="Thinking level"
-        data-testid={testId}
-      >
-        {allowWorkspaceDefault && (
-          <option value="">{WORKSPACE_DEFAULT_LABEL}</option>
-        )}
-        {supportedUiLevels.map((level) => (
-          <option key={level} value={level}>
-            {level === 'low' ? 'Low' : THINKING_LEVEL_LABELS[level]}
-          </option>
-        ))}
-      </ControlSelect>
     );
   }
 

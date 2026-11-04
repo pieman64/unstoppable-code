@@ -217,7 +217,6 @@ describe('LedgerEntryTypeAvatar', () => {
     expect(avatar.getAttribute('data-type')).toBe('DECISION');
     expect(avatar.getAttribute('aria-hidden')).toBe('true');
     expect(avatar.className).toContain('h-6');
-    expect(avatar.className).toContain('rounded-full');
     // The same glyph the label shows beside the type's name.
     const labelGlyph = byTestId('ledger-entry-type').querySelector('svg');
     expect(avatar.querySelector('svg')?.innerHTML).toBe(labelGlyph?.innerHTML);

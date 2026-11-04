@@ -3374,8 +3374,11 @@ describe('AutomationsPage — reveal an installed automation (CAN-3651)', () => 
 
     // Exact-id match: the other copy of the same share is untouched.
     expect(row('copy-2')?.getAttribute('data-revealed')).toBe('true');
-    expect(row('copy-2')?.getAttribute('tabindex')).toBe('-1');
-    expect(row('copy-2')?.className).toContain('bg-accent-subtle');
+    // Rows open on Enter, so the revealed row is already a tab stop that the
+    // page can focus; it is also the selected (current) row.
+    expect(row('copy-2')?.getAttribute('tabindex')).toBe('0');
+    expect(row('copy-2')?.getAttribute('aria-current')).toBe('true');
+    expect(row('copy-1')?.hasAttribute('aria-current')).toBe(false);
     expect(
       byTestId('automations-activity-newly-installed-copy-2')?.textContent,
     ).toBe('Newly installed');

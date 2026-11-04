@@ -980,7 +980,7 @@ describe('AppSidebar', () => {
       // Spacing is owned by the account menu's banner stack; the slot wrapper
       // itself is bare.
       expect(item?.parentElement?.className).toBe('');
-      expect(item?.textContent).toContain('Dev build');
+      expect(item?.textContent).toContain('DEV');
       expect(item?.textContent).toContain('codex/footer-alignment');
       const [iconSlot, branchLabel, badge] = Array.from(item?.children ?? []);
       expect(iconSlot?.className).toContain('ml-0.5');
@@ -1017,16 +1017,21 @@ describe('AppSidebar', () => {
       expect(badge?.getAttribute('data-testid')).toBe('sidebar-dev-badge');
       expect(item?.className).toContain('items-center');
       expect(item?.className).toContain('pr-2');
-      // The shared 18px warning Badge, 5px from the 28px banner's top,
-      // bottom and trailing edge (its 8px padding less a 3px margin).
-      expect(badge?.textContent).toBe('Dev build');
-      expect(badge?.className).toContain('h-4.5');
-      expect(badge?.className).toContain('rounded-full');
-      expect(badge?.className).toContain('-mr-0.75');
+      // The shared Badge's solid variant: the short DEV label on full
+      // warning, 20px, 4px from the 28px banner's edges (its 8px padding
+      // less a 4px margin), corner nested at max(6px, 10px - 4px).
+      expect(badge?.textContent).toBe('DEV');
+      expect(badge?.getAttribute('data-badge-variant')).toBe('solid');
+      expect(badge?.className).toContain('h-5');
+      expect(badge?.className).toContain('text-3xs');
+      expect(badge?.className).toContain('-mr-1');
       expect(badge?.className).toContain('shrink-0');
-      expect(badge?.className).toContain('bg-warning-subtle fg-warning-strong');
-      expect(badge?.className).not.toContain('fg-emphasis');
-      expect(badge?.className).not.toContain('uppercase');
+      expect(badge?.className).toContain('bg-warning fg-emphasis');
+      expect(badge?.className).toContain(
+        'rounded-[max(6px,calc(var(--radius-row)-4px))]',
+      );
+      expect(badge?.className).not.toContain('rounded-full');
+      expect(badge?.className).not.toContain('bg-warning-subtle');
       expect(item?.lastElementChild).toBe(badge);
       // The mask class is unconditional; the CSS only paints the fade while
       // the footer banner stack has content (banner-driven, not dev-driven).
@@ -1055,7 +1060,7 @@ describe('AppSidebar', () => {
     }
   });
 
-  it('insets the dev build badge 7px on every side of the 32px early-access banner', async () => {
+  it('insets the DEV label 6px on every side of the 32px early-access banner', async () => {
     setTestEarlyAccessFeatures({ enabled: true, hydrated: true });
     const { container, unmount } = await renderSidebar({}, makePreferences(), {
       isDev: true,
@@ -1068,13 +1073,15 @@ describe('AppSidebar', () => {
       const badge = container.querySelector<HTMLElement>(
         '[data-testid="sidebar-dev-badge"]',
       );
-      // 32px banner, 18px badge: 7px above and below. The banner's 8px right
-      // padding less the badge's -1px margin: 7px on the right too.
+      // 32px banner, 20px label: 6px above and below. The banner's 8px right
+      // padding less the label's -2px margin: 6px on the right too.
       expect(item?.classList).toContain('h-8');
-      expect(badge?.classList).toContain('h-4.5');
-      expect(badge?.classList).toContain('-mr-px');
-      expect(badge?.classList).not.toContain('-mr-0.75');
-      expect(badge?.classList).toContain('rounded-full');
+      expect(badge?.classList).toContain('h-5');
+      expect(badge?.classList).toContain('-mr-0.5');
+      expect(badge?.classList).not.toContain('-mr-1');
+      expect(badge?.classList).toContain(
+        'rounded-[max(6px,calc(var(--radius-row)-4px))]',
+      );
     } finally {
       unmount();
     }

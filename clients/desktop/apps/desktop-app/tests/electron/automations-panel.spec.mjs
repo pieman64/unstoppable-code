@@ -16,7 +16,7 @@
 // E2E build never starts the automations scheduler, so seeded state is
 // deterministic.
 
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -30,8 +30,11 @@ import { closeCanopy } from './launchCanopy.mjs';
 import { seedDemoWorkspaces } from './demoWorkspaces.mjs';
 import {
   seedAutomations,
+  seedPipelineExecution,
+  seedStoredPipeline,
   seedWatchers,
   seedWorktreeChat,
+  writeJson,
 } from './seeders/index.mjs';
 import {
   DEFAULT_GROUP_IDS,
@@ -261,12 +264,23 @@ test('automations panel: submenu variants, sections, scope toggle, runs in the e
   });
 
   try {
-    // --- 1. The Automations submenu offers all four variants.
+    // --- 1. The Workflows submenu offers all four variants, named after the
+    // Workflows page's tabs.
     await openAutomationsSubmenu(window);
-    for (const variant of ['full', 'upcoming', 'overview', 'completed']) {
-      await expect(
-        window.getByTestId(`panel-add-menu-item-automations-${variant}`),
-      ).toBeVisible();
+    await expect(
+      window.getByTestId('panel-add-menu-automations-submenu'),
+    ).toContainText('Workflows');
+    for (const [variant, label] of [
+      ['full', 'Workflows'],
+      ['upcoming', 'Workflows (Schedule)'],
+      ['overview', 'Workflows (Library)'],
+      ['completed', 'Workflows (Runs)'],
+    ]) {
+      const item = window.getByTestId(
+        `panel-add-menu-item-automations-${variant}`,
+      );
+      await expect(item).toBeVisible();
+      await expect(item).toContainText(label);
     }
 
     // --- 2. Add the full panel: content mounts with all three sections.
@@ -275,11 +289,20 @@ test('automations panel: submenu variants, sections, scope toggle, runs in the e
       '[data-testid="automations-panel"][data-variant="full"]',
     );
     await expect(fullPanel).toBeVisible();
-    for (const section of ['upcoming', 'overview', 'completed']) {
-      await expect(
-        fullPanel.getByTestId(`automations-panel-section-${section}`),
-      ).toBeVisible();
+    for (const [section, title] of [
+      ['upcoming', 'Schedule'],
+      ['overview', 'Library'],
+      ['completed', 'Runs'],
+    ]) {
+      const header = fullPanel.getByTestId(
+        `automations-panel-section-${section}`,
+      );
+      await expect(header).toBeVisible();
+      await expect(header).toContainText(title);
     }
+    await expect(
+      fullPanel.getByTestId('automations-panel-add'),
+    ).toHaveAttribute('aria-label', 'New workflow');
 
     // --- 3. Worktree scope is ON by default: only the worktree-targeting
     // automation shows; the workspace-level one appears after toggling.
@@ -373,7 +396,9 @@ test('automations panel: submenu variants, sections, scope toggle, runs in the e
         .first(),
     ).toBeVisible();
     await expect(
-      fullPanel.getByTestId(`automations-panel-completed-run:${RUN_ID}`),
+      fullPanel.getByTestId(
+        `automations-panel-completed-automation-run:${RUN_ID}`,
+      ),
     ).toBeVisible();
     await expect(
       fullPanel.getByTestId(
@@ -534,7 +559,7 @@ test('automations panel: failed hydration shows a retry instead of false empty r
     await expect(loadError).toContainText(
       'Injected automations hydration failure.',
     );
-    await expect(panel).not.toContainText('No upcoming automation triggers.');
+    await expect(panel).not.toContainText('No scheduled runs coming up.');
 
     await electronApp.evaluate(({ ipcMain }) => {
       ipcMain.removeHandler('automations:list');
@@ -548,7 +573,269 @@ test('automations panel: failed hydration shows a retry instead of false empty r
     await expect(
       panel.getByTestId('automations-panel-section-overview'),
     ).toBeVisible();
-    await expect(panel).toContainText('No automations or watchers match.');
+    await expect(panel).toContainText('No workflows or watchers match.');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+/**
+ * A chat automation converted to a workflow it owns (CAN-4551 / CAN-5479) is
+ * stored as a global pipeline whose owner marker names the automation. Once
+ * the workflow no longer projects back to a chat, the panel scopes it by the
+ * `project_id` / `task_id` inputs the conversion wrote.
+ */
+function seedOwnedWorkflows(userDataDir, workflows) {
+  const metadataEntries = {};
+  const activities = workflows.map(({ id, name, inputs }) => {
+    const pipelineId = `${id}-pipeline`;
+    seedStoredPipeline({
+      userDataDir,
+      id: pipelineId,
+      name,
+      // A hand-edited workflow: a plain step no chat action stands for.
+      yaml: [
+        `name: ${name}`,
+        'on: dispatch',
+        'jobs:',
+        '  check:',
+        '    name: Check',
+        '    steps:',
+        '      - id: lint',
+        '        name: Lint',
+        '        run: echo lint',
+        '',
+      ].join('\n'),
+    });
+    metadataEntries[`stored:user:${pipelineId}`] = { ownerAutomationId: id };
+    return {
+      version: 1,
+      id,
+      name,
+      enabled: true,
+      schedule: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId,
+        pipelineSource: 'user',
+        pipelineName: name,
+        inputs,
+      },
+      createdAt: '2026-10-20T00:00:00.000Z',
+      updatedAt: '2026-10-20T00:00:00.000Z',
+      failureCount: 0,
+    };
+  });
+  writeJson(path.join(userDataDir, 'pipeline-local-metadata.json'), {
+    version: 1,
+    entries: metadataEntries,
+  });
+  seedAutomations({ userDataDir, activities });
+}
+
+test('automations panel: a migrated workflow stays in its own workspace and worktree', async () => {
+  test.setTimeout(120_000);
+
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-automations-panel-owned-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: SEEDED_CHAT_TAB_ID, title: 'Chat' }],
+  });
+  seedOwnedWorkflows(userDataDir, [
+    {
+      id: 'owned-in-worktree',
+      name: 'Owned branch check',
+      inputs: { project_id: WORKSPACE_ID, task_id: WORKTREE_ID, prompt: 'x' },
+    },
+    {
+      id: 'owned-new-worktree',
+      name: 'Owned project check',
+      inputs: { project_id: WORKSPACE_ID, base_branch: 'main', prompt: 'x' },
+    },
+    {
+      id: 'owned-other-workspace',
+      name: 'Owned elsewhere',
+      inputs: { project_id: 'other-workspace', task_id: 'wt-9', prompt: 'x' },
+    },
+  ]);
+
+  const { electronApp, window } = await seedPanelWorktree({
+    userDataDir,
+    seedDemoWorkspaces: false,
+  });
+
+  try {
+    await openAutomationsSubmenu(window);
+    await window
+      .getByTestId('panel-add-menu-item-automations-overview')
+      .click();
+    const panel = window.locator(
+      '[data-testid="automations-panel"][data-variant="overview"]',
+    );
+    const row = (id) =>
+      panel.getByTestId(`automations-panel-overview-automation-${id}`);
+
+    // Worktree scope is on: only the workflow whose task is this worktree.
+    await expect(row('owned-in-worktree')).toBeVisible();
+    await expect(row('owned-new-worktree')).toHaveCount(0);
+    await expect(row('owned-other-workspace')).toHaveCount(0);
+
+    // The whole workspace adds its other workflow, never another workspace's.
+    await panel.getByTestId('automations-panel-worktree-toggle').click();
+    await expect(row('owned-in-worktree')).toBeVisible();
+    await expect(row('owned-new-worktree')).toBeVisible();
+    await expect(row('owned-other-workspace')).toHaveCount(0);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('automations panel: Runs lists the workspace pipeline runs and opens one in its run panel', async () => {
+  test.setTimeout(120_000);
+
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-automations-panel-runs-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: SEEDED_CHAT_TAB_ID, title: 'Chat' }],
+  });
+  seedPipelineExecution({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    execution: {
+      id: 'panel-exec-here',
+      pipelineName: 'Release checks',
+      status: 'success',
+    },
+  });
+  seedPipelineExecution({
+    userDataDir,
+    workspaceId: 'other-workspace',
+    worktreeId: 'other-worktree',
+    execution: {
+      id: 'panel-exec-elsewhere',
+      pipelineName: 'Elsewhere checks',
+      status: 'success',
+    },
+  });
+
+  const { electronApp, window } = await seedPanelWorktree({
+    userDataDir,
+    seedDemoWorkspaces: false,
+  });
+
+  try {
+    await openAutomationsSubmenu(window);
+    await window
+      .getByTestId('panel-add-menu-item-automations-completed')
+      .click();
+    const panel = window.locator(
+      '[data-testid="automations-panel"][data-variant="completed"]',
+    );
+    const here = panel.getByTestId(
+      'automations-panel-completed-pipeline-run:panel-exec-here',
+    );
+    await expect(here).toBeVisible();
+    await expect(here).toContainText('Release checks');
+    await expect(here).toContainText('On demand');
+    await expect(
+      panel.getByTestId(
+        'automations-panel-completed-pipeline-run:panel-exec-elsewhere',
+      ),
+    ).toHaveCount(0);
+
+    await here.click();
+    await expect(
+      window.locator(
+        '[data-testid="pipeline-execution-panel"][data-execution-id="panel-exec-here"]',
+      ),
+    ).toBeVisible();
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('automations panel: Library lists the checkout pipelines and opens one in the edit shell', async () => {
+  test.setTimeout(120_000);
+
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-automations-panel-library-'),
+  );
+  const seeded = seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  const worktreePath = seeded.workspaces?.find(
+    (workspace) => workspace.id === WORKSPACE_ID,
+  )?.worktreePath;
+  expect(worktreePath).toBeTruthy();
+  const pipelinesDir = path.join(worktreePath, '.canopy', 'pipelines');
+  mkdirSync(pipelinesDir, { recursive: true });
+  writeFileSync(
+    path.join(pipelinesDir, 'release-checks.yml'),
+    [
+      'name: Release checks',
+      'on: dispatch',
+      'jobs:',
+      '  check:',
+      '    name: Check',
+      '    steps:',
+      '      - id: lint',
+      '        name: Lint',
+      '        run: echo lint',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: SEEDED_CHAT_TAB_ID, title: 'Chat' }],
+  });
+
+  const { electronApp, window } = await seedPanelWorktree({
+    userDataDir,
+    seedDemoWorkspaces: false,
+  });
+
+  try {
+    await openAutomationsSubmenu(window);
+    await window
+      .getByTestId('panel-add-menu-item-automations-overview')
+      .click();
+    const panel = window.locator(
+      '[data-testid="automations-panel"][data-variant="overview"]',
+    );
+    const row = panel
+      .locator('[data-testid^="automations-panel-overview-pipeline-"]')
+      .filter({ hasText: 'Release checks' });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('On demand');
+    await expect(row).toContainText('Manual');
+
+    await panel.getByTestId('automations-panel-filter-pipelines').click();
+    await expect(row).toBeVisible();
+    await panel.getByTestId('automations-panel-filter-watchers').click();
+    await expect(row).toHaveCount(0);
+    await panel.getByTestId('automations-panel-filter-all').click();
+
+    await row.click();
+    const shell = window.getByTestId('workflow-edit-shell');
+    await expect(shell).toBeVisible();
+    await expect(shell).toContainText('Release checks');
+    await discardWorkflowEditIfOpen(window);
   } finally {
     await closeCanopy(electronApp, userDataDir);
   }

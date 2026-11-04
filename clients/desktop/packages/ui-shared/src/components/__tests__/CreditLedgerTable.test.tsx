@@ -32,7 +32,7 @@ describe('CreditLedgerTable', () => {
     const html = renderToString(
       <CreditLedgerTable entries={[CREDIT]} formatDate={formatDate} />,
     );
-    expect(html).toContain('sm:table');
+    expect(html).toContain('sm:block');
     expect(html).toContain('sm:hidden');
     expect(html).toContain('Date');
     expect(html).toContain('Description');

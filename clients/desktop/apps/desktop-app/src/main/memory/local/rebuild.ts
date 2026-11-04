@@ -1,13 +1,4 @@
-import { constants } from 'node:fs';
-import {
-  access,
-  copyFile,
-  link,
-  readFile,
-  readdir,
-  stat,
-  unlink,
-} from 'node:fs/promises';
+import { access, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { basename, isAbsolute, join } from 'node:path';
 import type { LocalMemoryScopeRequest } from '@canopy/desktop-shared/types';
 import {
@@ -29,7 +20,14 @@ import {
   type LocalMemoryState,
   type LocalMemoryWriteGuard,
 } from './snapshots';
-import { ensureOwnerOnlyDir, isMemoryMarkdownFileName } from './store';
+import {
+  assertMemoryPathContained,
+  assertMemoryScopeLockHeld,
+  ensureOwnerOnlyMemoryDir,
+  isMemoryMarkdownFileName,
+  moveWithoutReplacing,
+} from './memory-files';
+import { memoryNoteId } from './note-identity';
 
 /** Upper bound on consolidation runs one rebuild performs. */
 export const MAX_REBUILD_CONSOLIDATION_RUNS = 100;
@@ -103,40 +101,9 @@ function markdownStem(filename: string): string {
   return filename.slice(0, -'.md'.length);
 }
 
-const HARD_LINK_UNSUPPORTED = ['EPERM', 'ENOTSUP', 'EXDEV', 'ENOSYS', 'EMLINK'];
-
-/**
- * Moves a file to a name that must not exist yet. Unlike rename, an
- * existing destination (a note saved meanwhile under the same name) is never
- * replaced: the move rejects with EEXIST and changes nothing.
- */
-async function moveWithoutReplacing(
-  source: string,
-  destination: string,
-): Promise<void> {
-  try {
-    await link(source, destination);
-  } catch (error) {
-    if (
-      !HARD_LINK_UNSUPPORTED.some((code) => isNodeError(error, code)) ||
-      isNodeError(error, 'EEXIST')
-    ) {
-      throw error;
-    }
-    await copyFile(source, destination, constants.COPYFILE_EXCL);
-  }
-  try {
-    await unlink(source);
-  } catch (error) {
-    // Leave exactly one copy: the source, where it was.
-    await unlink(destination).catch(() => undefined);
-    throw error;
-  }
-}
-
 /** Puts a moved file back under its archived name, which is still free. */
-async function moveBack(move: SourceMove): Promise<void> {
-  await moveWithoutReplacing(move.to, move.from);
+async function moveBack(scopeDir: string, move: SourceMove): Promise<void> {
+  await moveWithoutReplacing(scopeDir, move.to, move.from);
 }
 
 interface SourceMove {
@@ -147,9 +114,12 @@ interface SourceMove {
 /**
  * Moves archived inbox notes back to the pending inbox under their archived
  * name, or the next free `-N` name when a different note holds it. An
- * archived note identical to the pending one stays archived. Topics the
- * prune pass archived (`topic-*`) stay archived: they were retired for
- * disuse, not consumed as source material.
+ * archived note identical to the pending one stays archived, unless it
+ * carries a note ID: then the pending file is that note, as an earlier
+ * restore cut short after its copy leaves it, and only the archived copy
+ * goes, so the note stays in one file. Topics the prune pass archived
+ * (`topic-*`) stay archived: they were retired for disuse, not consumed as
+ * source material.
  */
 async function restoreArchivedInboxNotes(
   scopeDir: string,
@@ -162,7 +132,7 @@ async function restoreArchivedInboxNotes(
     (name) => !name.startsWith(PRUNED_TOPIC_ARCHIVE_PREFIX),
   );
   if (archived.length === 0) return duplicates;
-  await ensureOwnerOnlyDir(inboxDir);
+  await ensureOwnerOnlyMemoryDir(scopeDir, inboxDir);
   for (const filename of archived) {
     const source = join(archiveDir, filename);
     for (let suffix = 1; ; suffix += 1) {
@@ -170,7 +140,7 @@ async function restoreArchivedInboxNotes(
         suffix === 1 ? filename : `${markdownStem(filename)}-${suffix}.md`;
       const destination = join(inboxDir, candidate);
       try {
-        await moveWithoutReplacing(source, destination);
+        await moveWithoutReplacing(scopeDir, source, destination);
         moves.push({ from: source, to: destination });
         break;
       } catch (error) {
@@ -181,7 +151,14 @@ async function restoreArchivedInboxNotes(
         readFile(destination, 'utf8'),
       ]);
       if (archivedText === pendingText) {
-        duplicates.add(filename);
+        if (memoryNoteId(archivedText) === null) {
+          duplicates.add(filename);
+          break;
+        }
+        await assertMemoryPathContained(scopeDir, source);
+        await assertMemoryScopeLockHeld();
+        await unlink(source);
+        moves.push({ from: source, to: destination });
         break;
       }
     }
@@ -498,7 +475,9 @@ export async function restoreConsolidatedSources(
   const undo = async (): Promise<boolean> => {
     const failures: unknown[] = [];
     for (const move of [...moves].reverse()) {
-      await moveBack(move).catch((error: unknown) => failures.push(error));
+      await moveBack(scopeDir, move).catch((error: unknown) =>
+        failures.push(error),
+      );
     }
     moves.length = 0;
     if (ledgerWritten && plan.originalLedger !== null) {
@@ -522,10 +501,10 @@ export async function restoreConsolidatedSources(
     const inboxNotes = moves.length;
     const archiveDir = join(scopeDir, 'imported', ARCHIVE_DIRNAME);
     for (const restore of plan.restores) {
-      await ensureOwnerOnlyDir(join(scopeDir, 'imported'));
+      await ensureOwnerOnlyMemoryDir(scopeDir, join(scopeDir, 'imported'));
       const from = join(archiveDir, restore.archived);
       const to = join(scopeDir, restore.stagedAs);
-      await moveWithoutReplacing(from, to);
+      await moveWithoutReplacing(scopeDir, from, to);
       moves.push({ from, to });
     }
     if (plan.ledger !== null) {
@@ -772,6 +751,7 @@ export async function trackRebuildSources(
 
 async function unlinkIfPresent(filePath: string): Promise<void> {
   try {
+    await assertMemoryScopeLockHeld();
     await unlink(filePath);
   } catch (error) {
     if (!isNodeError(error, 'ENOENT')) throw error;

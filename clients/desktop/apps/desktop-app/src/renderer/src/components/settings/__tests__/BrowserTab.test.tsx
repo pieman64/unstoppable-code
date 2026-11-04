@@ -41,6 +41,8 @@ describe('BrowserTab', () => {
       localServersOnly: false,
       openAppLinksInBuiltInBrowser: false,
       useAsSystemDefaultBrowser: false,
+      searchEngineId: 'google',
+      customSearchEngines: [],
       browserPreferencesLoaded: false,
     });
     getDefaultRegistrationStatus.mockResolvedValue({
@@ -212,6 +214,91 @@ describe('BrowserTab', () => {
     }
   });
 
+  it('adds a search engine of your own, searches with it, and deletes it', async () => {
+    const rendered = await renderTab();
+    try {
+      const name = getInput(
+        rendered.container,
+        'settings-browser-search-engine-name',
+      );
+      const url = getInput(
+        rendered.container,
+        'settings-browser-search-engine-url',
+      );
+      const add = getButton(
+        rendered.container,
+        'settings-browser-search-engine-add',
+      );
+      await act(async () => {
+        setInputValue(name, 'Wikipedia');
+        setInputValue(url, 'https://en.wikipedia.org/w/index.php?search=');
+        add.click();
+        await Promise.resolve();
+      });
+      expect(
+        rendered.container.querySelector(
+          '[data-testid="settings-browser-search-engine-error"]',
+        )?.textContent,
+      ).toBe('Include %s where the search words go.');
+      expect(savePreferences).not.toHaveBeenCalled();
+
+      await act(async () => {
+        setInputValue(url, 'https://en.wikipedia.org/w/index.php?search=%s');
+        add.click();
+        await Promise.resolve();
+      });
+      const [added] = useBrowserStore.getState().customSearchEngines;
+      expect(added).toMatchObject({
+        name: 'Wikipedia',
+        urlTemplate: 'https://en.wikipedia.org/w/index.php?search=%s',
+      });
+      expect(savePreferences).toHaveBeenLastCalledWith({
+        inAppBrowserSearchEngineId: 'google',
+        inAppBrowserCustomSearchEngines: [added],
+      });
+      expect(name.value).toBe('');
+
+      await act(async () => {
+        getButton(
+          rendered.container,
+          'settings-browser-search-engine-select',
+        ).click();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        getButton(
+          document.body,
+          `settings-browser-search-engine-option-${added?.id ?? ''}`,
+        ).click();
+        await Promise.resolve();
+      });
+      expect(savePreferences).toHaveBeenLastCalledWith({
+        inAppBrowserSearchEngineId: added?.id,
+        inAppBrowserCustomSearchEngines: [added],
+      });
+      expect(useBrowserStore.getState().searchEngineId).toBe(added?.id);
+
+      const remove = rendered.container.querySelector(
+        '[aria-label="Delete Wikipedia"]',
+      );
+      if (!(remove instanceof HTMLButtonElement)) {
+        throw new Error('Delete button not found');
+      }
+      await act(async () => {
+        remove.click();
+        await Promise.resolve();
+      });
+      // Deleting the engine in use goes back to Google.
+      expect(savePreferences).toHaveBeenLastCalledWith({
+        inAppBrowserSearchEngineId: 'google',
+        inAppBrowserCustomSearchEngines: [],
+      });
+      expect(useBrowserStore.getState().customSearchEngines).toEqual([]);
+    } finally {
+      rendered.cleanup();
+    }
+  });
+
   it('shows recovery guidance when the OS registration did not take', async () => {
     getDefaultRegistrationStatus.mockResolvedValue({
       enabled: true,
@@ -323,6 +410,31 @@ describe('BrowserTab', () => {
     }
   });
 });
+
+function getInput(container: HTMLElement, testId: string): HTMLInputElement {
+  const input = container.querySelector(`[data-testid="${testId}"]`);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`Input ${testId} not found`);
+  }
+  return input;
+}
+
+function getButton(container: HTMLElement, testId: string): HTMLElement {
+  const button = container.querySelector(`[data-testid="${testId}"]`);
+  if (!(button instanceof HTMLElement)) {
+    throw new Error(`Button ${testId} not found`);
+  }
+  return button;
+}
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value',
+  );
+  descriptor?.set?.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
 
 function getToggle(container: HTMLElement, testId: string): HTMLButtonElement {
   const toggle = container.querySelector(`[data-testid="${testId}"]`);

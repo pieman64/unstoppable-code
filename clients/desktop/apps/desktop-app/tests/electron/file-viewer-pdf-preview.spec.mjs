@@ -276,19 +276,24 @@ test('renders a selectable, searchable and responsive two-page PDF in a desktop 
     });
     expect(selected).toContain('REG-2901 selectable text');
 
-    await preview.getByTestId('pdf-search-input').fill('searchable text');
-    await preview.getByRole('button', { name: 'Search PDF text' }).click();
-    await expect(preview.getByTestId('pdf-search-count')).toHaveText('1 / 2');
+    await expect(preview.getByTestId('pdf-preview-toolbar')).toHaveCount(0);
+    await expect(preview.getByTestId('pdf-zoom-controls')).toBeVisible();
+    await expect(preview.getByTestId('pdf-page-counter')).toBeVisible();
+    await preview.click({ position: { x: 5, y: 5 } });
+    await window.keyboard.press('ControlOrMeta+f');
+    const findBar = window.getByTestId('surface-find-bar');
+    await expect(findBar).toHaveAttribute('data-find-mode', 'file');
+    const findInput = findBar.getByRole('textbox');
+    await findInput.fill('searchable text');
+    await expect(findBar).toContainText('1 of 2');
     const highlights = rotatedLayer.locator('mark[data-pdf-search-highlight]');
     await expect(highlights).toHaveCount(2);
     await expect(highlights.first()).toHaveAttribute(
       'data-pdf-search-highlight',
       'active',
     );
-    await preview
-      .getByRole('button', { name: 'Next PDF search match' })
-      .click();
-    await expect(preview.getByTestId('pdf-search-count')).toHaveText('2 / 2');
+    await findInput.press('Enter');
+    await expect(findBar).toContainText('2 of 2');
     await expect(highlights.nth(1)).toHaveAttribute(
       'data-pdf-search-highlight',
       'active',
@@ -296,6 +301,17 @@ test('renders a selectable, searchable and responsive two-page PDF in a desktop 
 
     expect(remotePdfRequests).toEqual([]);
     expect(external.opened).toEqual([]);
+    await findInput.press('Escape');
+    const link = preview.getByRole('link', {
+      name: 'https://example.com/pdf-reference',
+      exact: true,
+    });
+    await link.scrollIntoViewIfNeeded();
+    await link.click();
+    await window.getByTestId('browser-url-input').focus();
+    await expect(window.getByTestId('browser-url-input')).toHaveValue(
+      'https://example.com/pdf-reference',
+    );
     expect(navigations).toEqual([]);
     expect(await window.evaluate(() => window.__reg2901PdfScriptExecuted)).toBe(
       false,
@@ -465,6 +481,29 @@ test('reloads PDFs across file types, isolates simultaneous tabs, and discovers 
     );
     await expectRenderedPdf(firstPdfPanel);
     await expectRenderedPdf(secondPdfPanel);
+    await firstPdfPanel
+      .getByTestId('pdf-preview')
+      .click({ position: { x: 5, y: 5 } });
+    await window.keyboard.press('ControlOrMeta+f');
+    const findBar = window.getByTestId('surface-find-bar');
+    await expect(
+      findBar.locator('[data-testid^="surface-find-scope-file-"]'),
+    ).toHaveCount(2);
+    await findBar.getByRole('textbox').fill('selectable text');
+    await expect(
+      firstPdfPanel.locator('mark[data-pdf-search-highlight="active"]'),
+    ).toHaveCount(1);
+    await findBar
+      .getByRole('button', { name: /Search file .*brief-two.pdf/ })
+      .click();
+    await findBar.getByRole('textbox').fill('selectable text');
+    await expect(
+      secondPdfPanel.locator('mark[data-pdf-search-highlight="active"]'),
+    ).toHaveCount(1);
+    await expect(
+      firstPdfPanel.locator('mark[data-pdf-search-highlight]'),
+    ).toHaveCount(0);
+    await findBar.getByRole('textbox').press('Escape');
     // Electron exposes the imported module URL directly; other Chromium
     // versions expose its blob wrapper. Match either to this host's exact URL.
     const liveWorkers = window

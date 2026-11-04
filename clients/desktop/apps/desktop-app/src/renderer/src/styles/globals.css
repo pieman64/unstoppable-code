@@ -1440,63 +1440,6 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
   padding-left: 0.5rem;
 }
 
-/* The MCP servers table's horizontal scroll region (CAN-4258) fades the side
- * that hides columns, so the overflow stays discoverable while overlay
- * scrollbars are hidden at rest. `McpTableScrollRegion` sets the attribute
- * only when the table is wider than the region. */
-.mcp-table-scroll {
-  --mcp-table-fade: 2rem;
-}
-
-.mcp-table-scroll[data-overflow='end'] {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    black calc(100% - var(--mcp-table-fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to right,
-    black calc(100% - var(--mcp-table-fade)),
-    transparent
-  );
-}
-
-.mcp-table-scroll[data-overflow='start'] {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--mcp-table-fade)
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--mcp-table-fade)
-  );
-}
-
-.mcp-table-scroll[data-overflow='both'] {
-  -webkit-mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--mcp-table-fade),
-    black calc(100% - var(--mcp-table-fade)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--mcp-table-fade),
-    black calc(100% - var(--mcp-table-fade)),
-    transparent
-  );
-}
-
-/* The focused region keeps its whole inset ring. */
-.mcp-table-scroll[data-overflow]:focus-visible {
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
 /* Interpolating from `40px - clip-start` at scroll 0 to
  * `40px + clip-distance` at max scroll keeps the clip line at a constant
  * viewport position (the bottom of the transparent sticky controls plus the

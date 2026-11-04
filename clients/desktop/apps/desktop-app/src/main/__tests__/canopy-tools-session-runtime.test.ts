@@ -251,6 +251,10 @@ jest.mock('../lib/paths', () => ({
 }));
 
 import { PLAN_COMMENT_HANDOFF_GRACE_MS } from '../lib/plan-persistence';
+import {
+  LOCAL_MEMORY_READ_ONLY_MESSAGE,
+  LocalMemoryScopeReadOnlyError,
+} from '../memory/local/scope-manifest';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import {
   getFileCommentsInSession,
@@ -1650,6 +1654,25 @@ describe('canopy tool session runtime Git preferences', () => {
       '/memory/workspaces/project-1',
       'inbox/2026-08.md',
     );
+  });
+
+  it('asks for an update instead of saving into memory a newer version made read-only', async () => {
+    mockReadPreferencesFile.mockResolvedValue(
+      gitPreferenceDefaults({ localMemoryEnabled: true }),
+    );
+    mockAppendInboxNote.mockRejectedValue(new LocalMemoryScopeReadOnlyError());
+
+    await expect(
+      saveLocalMemory({
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        provider: 'claude',
+        chatId: 'chat-1',
+        text: 'Remember that this repo uses pnpm.',
+        scope: 'workspace',
+      }),
+    ).resolves.toBe(LOCAL_MEMORY_READ_ONLY_MESSAGE);
+    expect(mockSeedEntry).not.toHaveBeenCalled();
   });
 
   it('gates disabled local memory without touching the store or usage index', async () => {

@@ -182,6 +182,18 @@ function getShadowMetaPath(repoRoot: string): string {
   return join(getRepoShadowDir(repoRoot), 'meta.json');
 }
 
+/**
+ * Removes what this module writes in a shadow before recreating it: the
+ * checkout and `meta.json`. The `code-graph/` subtree belongs to the code-graph
+ * base manager (CAN-5084), whose readers may be copying a published generation
+ * under its own lock, so a recreate leaves it alone. Only cleanup removes the
+ * whole directory, after the base manager's retirement drain.
+ */
+async function removeShadowOwnState(repoRoot: string): Promise<void> {
+  await rm(getShadowCheckoutPath(repoRoot), { recursive: true, force: true });
+  await rm(getShadowMetaPath(repoRoot), { force: true });
+}
+
 function isRepoShadowMeta(value: unknown): value is RepoShadowMetaFile {
   if (typeof value !== 'object' || value === null) {
     return false;
@@ -462,7 +474,7 @@ async function ensureRepoShadowInternal(
     throw new Error('The existing repository shadow could not be refreshed.');
   }
   if (shouldContinue === undefined) {
-    await rm(shadowDir, { recursive: true, force: true });
+    await removeShadowOwnState(repoRoot);
   }
   try {
     assertEnsureContinues(shouldContinue);

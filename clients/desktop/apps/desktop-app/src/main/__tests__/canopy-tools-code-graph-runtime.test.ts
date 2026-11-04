@@ -34,6 +34,11 @@ import type {
 
 jest.mock('../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn(),
+  // No chat scope in this suite borrows another worktree.
+  resolveRegisteredChatWorktree: (
+    projectId: string,
+    worktreeId: string,
+  ): { projectId: string; worktreeId: string } => ({ projectId, worktreeId }),
 }));
 
 interface MockWorktreeRepoEntry {
@@ -239,6 +244,68 @@ export function newFn(): number {
 // two-worker CI run those exceeded Jest's default 5 s for both tests and
 // hooks; this matches the sibling code-graph suites.
 jest.setTimeout(30_000);
+
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+import { installCodeGraphBuildDispatcherForTests } from './helpers/code-graph-build-dispatcher';
+import * as sidebarItems from '../lib/sidebar-items';
+import {
+  codeGraphBuildFailedError,
+  codeGraphQueueUnavailableError,
+  codeGraphScopeNotFoundError,
+  codeGraphUnavailableError,
+  createWorkerCodeGraphHandlers,
+  type CodeGraphBuildQueueWorker,
+} from '@canopy/core-runtime/node/code-graph';
+import type { CanopyHandlerContext } from '@canopy/core-runtime';
+import { setCodeGraphBuildDispatcherForTests } from '../code-graph/graph-builds';
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
+  installCodeGraphBuildDispatcherForTests();
+  // `worker.codeGraph.build` refuses a worktree the sidebar does not record.
+  const sidebar: unknown = {
+    version: 1,
+    items: [{ id: 'proj-1', type: 'single-repo', worktrees: [{ id: 'wt-1' }] }],
+  };
+  jest
+    .spyOn(sidebarItems, 'readAllSidebarItems')
+    .mockResolvedValue(
+      sidebar as Awaited<ReturnType<typeof sidebarItems.readAllSidebarItems>>,
+    );
+});
+
+/**
+ * Routes agent builds through the real dispatcher and handlers over a worker
+ * whose `build` the test supplies, recording each scope and handler context.
+ */
+function routeBuilds(build: CodeGraphBuildQueueWorker['build']): {
+  scopes: unknown[];
+  contexts: CanopyHandlerContext[];
+} {
+  const scopes: unknown[] = [];
+  const contexts: CanopyHandlerContext[] = [];
+  const handlers = createWorkerCodeGraphHandlers({
+    queue: () => ({ revision: 0, items: [] }),
+    reorder: () => ({ ok: true, queue: { revision: 0, items: [] } }),
+    cancel: () => Promise.resolve(null),
+    cancelWorktree: () => Promise.resolve(0),
+    build: (graphScope) => {
+      scopes.push(graphScope);
+      return build(graphScope);
+    },
+  });
+  installCodeGraphBuildDispatcherForTests({
+    queries: handlers.queries,
+    instructions: {
+      ...handlers.instructions,
+      'worker.codeGraph.build': (params, context) => {
+        contexts.push(context);
+        return handlers.instructions['worker.codeGraph.build'](params, context);
+      },
+    },
+  });
+  return { scopes, contexts };
+}
 
 describe('code-graph-runtime', () => {
   const originalCanopyDataDir = process.env.CANOPY_DATA_DIR;
@@ -644,9 +711,8 @@ describe('code-graph-runtime', () => {
 
       const build = await buildOrUpdateCodeGraph(runtime);
       expect(build.status).toBe('error');
-      expect(build.summary).toContain('canceled');
-      expect(build.summary).toContain(
-        'Code-graph build for "proj-1/wt-1" was canceled.',
+      expect(build.summary).toBe(
+        'Failed to build code graph (canceled): The code graph build was canceled.',
       );
       expect(build.filesParsed).toBe(0);
     });
@@ -673,8 +739,9 @@ describe('code-graph-runtime', () => {
 
       const build = await buildOrUpdateCodeGraph(runtime);
       expect(build.status).toBe('error');
-      expect(build.summary).toContain('timeout');
-      expect(build.summary).toContain('exceeded the watchdog');
+      expect(build.summary).toBe(
+        'Failed to build code graph (timeout): Code graph generation timed out.',
+      );
     });
 
     it('reports an error result naming the cause when the worker rejects with worker-exit', async () => {
@@ -717,15 +784,148 @@ describe('code-graph-runtime', () => {
       expect(build.summary).toContain('malformed-response');
     });
 
-    it('reports an error result when the worker responds with ok:false', async () => {
+    it('reports an error result, keeping the host message in the worker, when the worker responds with ok:false', async () => {
       mockRunCodeGraphWorkerBuild.mockResolvedValueOnce({
         ok: false,
-        message: 'engine exploded mid-build',
+        message: 'engine exploded mid-build at /private/fixture/graph.db',
       });
 
       const build = await buildOrUpdateCodeGraph(runtime);
       expect(build.status).toBe('error');
-      expect(build.summary).toContain('engine exploded mid-build');
+      expect(build.summary).toBe(
+        'Failed to build code graph: The code graph build failed.',
+      );
+    });
+
+    it('builds through worker.codeGraph.build as a keyed agent request', async () => {
+      const route = routeBuilds(() =>
+        Promise.resolve({
+          kind: 'worktree',
+          filesScanned: 4,
+          filesParsed: 3,
+          filesUnchanged: 1,
+          filesSkipped: 0,
+          filesRemoved: 2,
+          parseFailures: 1,
+          symbolCount: 9,
+          edgeCount: 8,
+          durationMs: 42,
+          lastBuildAt: '2026-11-03T04:00:00.000Z',
+          derivedPending: true,
+          customLanguageDiagnostics: [
+            { entryId: null, message: 'config is malformed' },
+            { entryId: 'zig', message: 'grammar missing' },
+          ],
+          derivedWarnings: ['repo fixture: community detection skipped'],
+        }),
+      );
+      try {
+        const build = await buildOrUpdateCodeGraph(runtime);
+        expect(route.scopes).toEqual([
+          {
+            kind: 'worktree',
+            workspaceId: projectId,
+            worktreeId,
+            mode: 'verified',
+            requestedBy: 'agent',
+          },
+        ]);
+        expect(route.contexts[0]?.metadata.idempotencyKey).toEqual(
+          expect.any(String),
+        );
+        expect(route.contexts[0]?.caller.grants).toEqual([
+          'worker.codeGraph.write',
+        ]);
+        expect(build).toEqual({
+          status: 'ok',
+          summary:
+            'Built code graph: 3 parsed, 1 unchanged, 2 removed, 1 parse failure(s) in 42ms. Derived analysis (communities, flows) is still running; until it completes, those results are reported as stale.',
+          truncated: false,
+          suggestedNextTools: ['GetCodeGraphContext', 'QueryCodeGraph'],
+          filesScanned: 4,
+          filesParsed: 3,
+          filesUnchanged: 1,
+          filesRemoved: 2,
+          filesSkipped: 0,
+          parseFailures: 1,
+          durationMs: 42,
+          lastBuildAt: Date.parse('2026-11-03T04:00:00.000Z'),
+          customLanguageWarnings: [
+            'config is malformed',
+            'zig: grammar missing',
+          ],
+          derivedWarnings: ['repo fixture: community detection skipped'],
+        });
+
+        await buildOrUpdateCodeGraph(runtime);
+        expect(route.contexts[1]?.metadata.idempotencyKey).not.toBe(
+          route.contexts[0]?.metadata.idempotencyKey,
+        );
+      } finally {
+        installCodeGraphBuildDispatcherForTests();
+      }
+    });
+
+    it.each([
+      [
+        'unavailable',
+        codeGraphUnavailableError(),
+        {
+          status: 'unavailable',
+          summary: 'Code graph tools are not available for this project.',
+        },
+      ],
+      [
+        'graph scope not found',
+        codeGraphScopeNotFoundError(),
+        {
+          status: 'error',
+          summary:
+            'Failed to build code graph: The project or worktree does not exist.',
+        },
+      ],
+      [
+        'queue unavailable',
+        codeGraphQueueUnavailableError(),
+        {
+          status: 'error',
+          summary: `Failed to build code graph: ${codeGraphQueueUnavailableError().message}`,
+        },
+      ],
+      [
+        'internal failure',
+        codeGraphBuildFailedError('internal'),
+        {
+          status: 'error',
+          summary: 'Failed to build code graph: The code graph build failed.',
+        },
+      ],
+    ])(
+      'maps the %s refusal to the tool result',
+      async (_label, refusal, expected) => {
+        routeBuilds(() => Promise.reject(refusal));
+        try {
+          await expect(buildOrUpdateCodeGraph(runtime)).resolves.toMatchObject(
+            expected,
+          );
+        } finally {
+          installCodeGraphBuildDispatcherForTests();
+        }
+      },
+    );
+
+    it('reports a canceled build when the desktop runtime is not accepting work', async () => {
+      setCodeGraphBuildDispatcherForTests(null);
+      try {
+        const build = await buildOrUpdateCodeGraph(runtime);
+        expect(build).toMatchObject({
+          status: 'error',
+          summary:
+            'Failed to build code graph (canceled): The code graph build was canceled.',
+        });
+      } finally {
+        installCodeGraphBuildDispatcherForTests();
+      }
     });
   });
 

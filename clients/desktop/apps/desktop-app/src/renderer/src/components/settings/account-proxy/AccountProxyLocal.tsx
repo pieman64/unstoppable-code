@@ -6,8 +6,8 @@ import {
   DropdownMenuItemIcon,
   FLOATING_MENU_GAP,
   FloatingMenu,
-  LinearProgress,
   ModelProviderIcon,
+  ProgressBar,
   ToggleSwitch,
   ProviderStatusDot,
   type ProviderStatusDotTone,
@@ -124,11 +124,11 @@ export function AccountProxyLocalSetup({
         description={installLine(local)}
         dataTestId="account-proxy-local-installing"
       >
-        <LinearProgress
-          percentage={local.install?.percent ?? 0}
+        <ProgressBar
+          value={local.install?.percent ?? 0}
           indeterminate={local.install?.step !== 'downloading'}
-          height="h-1.5"
           label="Download progress"
+          hideLabel
         />
       </SettingsRow>
     );
@@ -307,11 +307,11 @@ export function AccountProxyLocalConnection({
           }
         >
           {local.phase === 'installing' ? (
-            <LinearProgress
-              percentage={local.install?.percent ?? 0}
+            <ProgressBar
+              value={local.install?.percent ?? 0}
               indeterminate={local.install?.step !== 'downloading'}
-              height="h-1.5"
               label="Download progress"
+              hideLabel
             />
           ) : null}
         </SettingsRow>

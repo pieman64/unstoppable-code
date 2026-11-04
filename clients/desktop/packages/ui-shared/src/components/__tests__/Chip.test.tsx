@@ -60,6 +60,24 @@ describe('Chip', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('shows its title in the shared tooltip, never as a native title', () => {
+    render(
+      <Chip onClick={jest.fn()} title="Open README.md" data-testid="chip">
+        README.md
+      </Chip>,
+    );
+    const chip = container.querySelector('[data-testid="chip"]');
+    expect(container.querySelector('[title]')).toBeNull();
+    act(() => {
+      chip?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    const tooltip = document.body.querySelector('[role="tooltip"]');
+    expect(tooltip?.textContent).toBe('Open README.md');
+    expect(
+      container.querySelector('button')?.getAttribute('aria-describedby'),
+    ).toBe(tooltip?.id);
+  });
+
   it('removes through its own named button without acting on the chip', () => {
     const onClick = jest.fn();
     const onRemove = jest.fn();
@@ -189,5 +207,64 @@ describe('Chip', () => {
     );
     expect(html).toContain('data-[forced-state=hover]:bg-muted');
     expect(html.match(/data-forced-state=/g)).toHaveLength(1);
+  });
+
+  it('is a toggle with an accent selected look and a leading check', () => {
+    const onClick = jest.fn();
+    render(
+      <Chip onClick={onClick} selected icon={FileIcon} actionTestId="toggle">
+        Research
+      </Chip>,
+    );
+    const button = container.querySelector('[data-testid="toggle"]');
+    expect(button?.tagName).toBe('BUTTON');
+    expect(button?.getAttribute('aria-pressed')).toBe('true');
+    // The check replaces the icon: one glyph, before the label.
+    expect(button?.querySelectorAll('svg')).toHaveLength(1);
+    const chip = container.querySelector('[data-chip]');
+    expect(chip?.className).toContain('bg-accent-subtle');
+    expect(chip?.className).toContain('fg-accent');
+    expect(chip?.classList.contains('bg-subtle')).toBe(false);
+    // Hover and press stay on the accent tint.
+    expect(chip?.className).toContain(
+      'has-[[data-chip-main]:hover]:bg-accent-subtle/80',
+    );
+    expect(chip?.className).not.toContain(
+      'has-[[data-chip-main]:hover]:bg-muted',
+    );
+    act(() => (button as HTMLButtonElement | null)?.click());
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('is an unpressed toggle with the neutral look and no check when not selected', () => {
+    render(
+      <Chip onClick={jest.fn()} selected={false} actionTestId="toggle">
+        Research
+      </Chip>,
+    );
+    const button = container.querySelector('[data-testid="toggle"]');
+    expect(button?.getAttribute('aria-pressed')).toBe('false');
+    expect(button?.querySelector('svg')).toBeNull();
+    const chip = container.querySelector('[data-chip]');
+    expect(chip?.className).toContain('bg-subtle');
+    expect(chip?.className).not.toContain('bg-accent-subtle');
+  });
+
+  it('is not a toggle when selected is not given', () => {
+    render(<Chip onClick={jest.fn()}>Fast</Chip>);
+    expect(
+      container.querySelector('button')?.hasAttribute('aria-pressed'),
+    ).toBe(false);
+  });
+
+  it('hands aria-describedby to its action button', () => {
+    render(
+      <Chip onClick={jest.fn()} aria-describedby="hint">
+        Fast
+      </Chip>,
+    );
+    expect(
+      container.querySelector('button')?.getAttribute('aria-describedby'),
+    ).toBe('hint');
   });
 });

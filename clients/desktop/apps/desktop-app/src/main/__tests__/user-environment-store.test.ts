@@ -37,6 +37,16 @@ const safeStorageMock: SafeStorageMock = {
 };
 
 let mockBackend = 'gnome_libsecret';
+const mockSecretServiceState = jest.fn<'secure' | 'unavailable' | 'locked', []>(
+  () => 'secure',
+);
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    mockSecretServiceState(),
+}));
+jest.mock('../lib/linux-safe-storage-recovery', () => ({
+  probeLinuxSafeStorageRecovery: (): boolean => false,
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): 'linux' => 'linux',
 }));
@@ -59,13 +69,69 @@ jest.mock('electron', () => ({
 
 import { chmod, mkdir, readFile, unlink } from 'node:fs/promises';
 import { writeFileAtomically } from '../lib/atomic-file';
+import { SafeStorageWriteError } from '../lib/safe-storage';
+import { getSecureStorageFailure } from '../lib/secure-storage-policy';
 import { getInternalLegacySharedEnvironmentConfigFilePath } from '@canopy/desktop-shared/canopy-paths';
+import type {
+  EnvironmentConfigData,
+  UserEnvironmentData,
+} from '@canopy/desktop-shared/types';
+import {
+  createDefaultEnvironmentConfig,
+  normalizeUserEnvironmentEntries,
+} from '@canopy/desktop-shared/lib/user-environment';
 import {
   readEnvironmentConfig,
-  readUserEnvironment,
+  readEnvironmentConfigView,
   writeEnvironmentConfig,
-  writeUserEnvironment,
 } from '../lib/user-environment-store';
+import { storedSecretRef } from '../lib/stored-secrets';
+
+const OVERALL = 'default-overall';
+
+// The Overall environment through the version-2 API, as the retired
+// version-1 IPC wrappers exposed it.
+async function readUserEnvironment(): Promise<{
+  data: UserEnvironmentData;
+  encryptionAvailable: boolean;
+}> {
+  const result = await readEnvironmentConfig();
+  const overall = result.data.environments.find(
+    (environment) => environment.id === OVERALL,
+  );
+  return {
+    data: {
+      uiMode: overall?.uiMode ?? 'key-value',
+      variables: overall?.variables ?? [],
+    },
+    encryptionAvailable: result.encryptionAvailable,
+  };
+}
+
+function withOverall(
+  data: EnvironmentConfigData,
+  next: UserEnvironmentData,
+): EnvironmentConfigData {
+  return {
+    ...data,
+    environments: data.environments.map((environment) =>
+      environment.id === OVERALL
+        ? {
+            ...environment,
+            uiMode: next.uiMode,
+            variables: normalizeUserEnvironmentEntries(next.variables),
+          }
+        : environment,
+    ),
+  };
+}
+
+async function writeUserEnvironment(
+  next: UserEnvironmentData,
+): Promise<{ encryptionAvailable: boolean }> {
+  const { data } = await readEnvironmentConfig();
+  return writeEnvironmentConfig(withOverall(data, next));
+}
 
 const readFileMock = jest.mocked(readFile);
 const writeFileMock = jest.mocked(writeFileAtomically);
@@ -84,6 +150,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   safeStorageMock.encryptionAvailable = true;
   mockBackend = 'gnome_libsecret';
+  mockSecretServiceState.mockReturnValue('secure');
   safeStorageMock.isEncryptionAvailable.mockImplementation(
     () => safeStorageMock.encryptionAvailable,
   );
@@ -613,66 +680,6 @@ describe('user-environment-store', () => {
     expect(writeFileMock).not.toHaveBeenCalled();
   });
 
-  it('preserves queued version-2 saves when the legacy wrapper writes Overall', async () => {
-    safeStorageMock.encryptionAvailable = false;
-    await writeUserEnvironment({
-      uiMode: 'key-value',
-      variables: [],
-    });
-    const current = (await readEnvironmentConfig()).data;
-    const nextConfig = {
-      ...current,
-      workspaceAssignments: [
-        {
-          workspaceId: 'workspace-1',
-          runtimes: { agent: 'default-agent' as const },
-          updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ],
-    };
-
-    const firstWriteGate: { release?: () => void } = {};
-    const firstWriteStarted = new Promise<void>((resolve) => {
-      writeFileMock.mockImplementationOnce(
-        (_path: string, content: string | Uint8Array): Promise<void> => {
-          resolve();
-          return new Promise((release) => {
-            firstWriteGate.release = (): void => {
-              environmentPayload =
-                typeof content === 'string'
-                  ? content
-                  : Buffer.from(content).toString('utf8');
-              release();
-            };
-          });
-        },
-      );
-    });
-
-    const v2Save = writeEnvironmentConfig(nextConfig);
-    await firstWriteStarted;
-    const legacySave = writeUserEnvironment({
-      uiMode: 'bulk',
-      variables: [{ key: 'LEGACY', value: '1' }],
-    });
-    firstWriteGate.release?.();
-    await v2Save;
-    await legacySave;
-
-    const result = await readEnvironmentConfig();
-    expect(result.data.workspaceAssignments).toEqual(
-      nextConfig.workspaceAssignments,
-    );
-    expect(
-      result.data.environments.find(
-        (environment) => environment.id === 'default-overall',
-      ),
-    ).toMatchObject({
-      uiMode: 'bulk',
-      variables: [{ key: 'LEGACY', value: '1' }],
-    });
-  });
-
   it('loads the full version-2 environment config', async () => {
     await writeUserEnvironment({
       uiMode: 'bulk',
@@ -764,17 +771,6 @@ describe('user-environment-store', () => {
     expect(environmentPayload).toBe(previousPayload);
   });
 
-  it('drops invalid keys during normalization on save', async () => {
-    const result = await writeUserEnvironment({
-      uiMode: 'key-value',
-      variables: [
-        { key: 'GOOD', value: 'ok' },
-        { key: '1bad', value: 'skipped' },
-      ],
-    });
-    expect(result.data.variables).toEqual([{ key: 'GOOD', value: 'ok' }]);
-  });
-
   it('fails closed when the current file is corrupt JSON', async () => {
     environmentPayload = '{not json';
     await expect(readUserEnvironment()).rejects.toBeInstanceOf(SyntaxError);
@@ -782,6 +778,102 @@ describe('user-environment-store', () => {
 });
 
 describe('environment secure policy retention', () => {
+  it.each(['locked', 'unavailable'] as const)(
+    'refuses a new value save when the live provider is %s despite native availability',
+    async (state) => {
+      // Confirm the native parent while the provider is healthy, with no ciphertext yet.
+      const next = (await readEnvironmentConfig()).data;
+      expect(safeStorageMock.isEncryptionAvailable).toHaveReturnedWith(true);
+      next.environments = next.environments.map((environment) => ({
+        ...environment,
+        variables: [{ key: 'TOKEN', value: 'private', secret: true }],
+      }));
+      mockSecretServiceState.mockReturnValue(state);
+
+      // Availability is a nonthrowing display value, not authorization to save plaintext.
+      await expect(readEnvironmentConfig()).resolves.toMatchObject({
+        encryptionAvailable: false,
+      });
+      const error = await writeEnvironmentConfig(next).catch(
+        (failure: unknown) => failure,
+      );
+      expect(error).toBeInstanceOf(SafeStorageWriteError);
+      expect(getSecureStorageFailure(error)).toMatchObject({
+        code: 'SECURE_STORAGE_WRITE_REFUSED',
+        operation: 'write',
+        state,
+        backend: 'gnome_libsecret',
+        retryable: true,
+      });
+      expect(safeStorageMock.encryptionAvailable).toBe(true);
+      expect(safeStorageMock.encryptString).not.toHaveBeenCalled();
+      expect(writeFileMock).not.toHaveBeenCalled();
+      expect(environmentPayload).toBeNull();
+
+      mockSecretServiceState.mockReturnValue('secure');
+      await expect(writeEnvironmentConfig(next)).resolves.toMatchObject({
+        encryptionAvailable: true,
+      });
+      expect(environmentPayload).not.toContain('plaintextVariables');
+      expect(environmentPayload).not.toContain('private');
+    },
+  );
+
+  it('preserves ciphertext when a provider probe fails between reading and staging the atomic save', async () => {
+    const initial = (await readEnvironmentConfig()).data;
+    initial.environments = initial.environments.map((environment) => ({
+      ...environment,
+      variables: [{ key: 'TOKEN', value: environment.id, secret: true }],
+    }));
+    // The reply carries stored-secret references (CAN-4411); saving it back
+    // keeps the values, and the ciphertext is of the stored plaintext.
+    const next = (await writeEnvironmentConfig(initial)).data;
+    const stored = (await readEnvironmentConfig()).data;
+    const previous = environmentPayload;
+    expect(previous).toContain('encryptedVariables');
+    expect(previous).not.toContain('plaintextVariables');
+    const lastCiphertext = `enc:${JSON.stringify(stored.environments.at(-1)?.variables)}`;
+    writeFileMock.mockClear();
+    safeStorageMock.encryptString.mockClear();
+    safeStorageMock.decryptString.mockImplementation((encrypted) => {
+      const ciphertext = encrypted.toString('utf8');
+      // The last record was readable; the subsequent live write observation fails.
+      if (ciphertext === lastCiphertext) {
+        mockSecretServiceState.mockReturnValue('unavailable');
+      }
+      return ciphertext.replace(/^enc:/, '');
+    });
+
+    const error = await writeEnvironmentConfig(next).catch(
+      (failure: unknown) => failure,
+    );
+    expect(error).toBeInstanceOf(SafeStorageWriteError);
+    expect(getSecureStorageFailure(error)).toMatchObject({
+      code: 'SECURE_STORAGE_WRITE_REFUSED',
+      operation: 'write',
+      state: 'unavailable',
+      backend: 'gnome_libsecret',
+      retryable: true,
+    });
+    expect(safeStorageMock.encryptionAvailable).toBe(true);
+    expect(safeStorageMock.encryptString).not.toHaveBeenCalled();
+    expect(writeFileMock).not.toHaveBeenCalled();
+    expect(environmentPayload).toBe(previous);
+    expect(environmentPayload).not.toContain('plaintextVariables');
+
+    mockSecretServiceState.mockReturnValue('secure');
+    safeStorageMock.decryptString.mockImplementation((encrypted) =>
+      encrypted.toString('utf8').replace(/^enc:/, ''),
+    );
+    await expect(writeEnvironmentConfig(next)).resolves.toMatchObject({
+      encryptionAvailable: true,
+    });
+    expect((await readEnvironmentConfig()).data.environments).toEqual(
+      stored.environments,
+    );
+    expect(environmentPayload).not.toContain('plaintextVariables');
+  });
+
   it.each(['unknown', 'gnome_libsecret'])(
     'refuses %s becoming unavailable during encryption without plaintext fallback',
     async (backend) => {
@@ -791,10 +883,12 @@ describe('environment secure policy retention', () => {
         return true;
       });
       await expect(
-        writeUserEnvironment({
-          uiMode: 'bulk',
-          variables: [{ key: 'TOKEN', value: 'private' }],
-        }),
+        writeEnvironmentConfig(
+          withOverall(createDefaultEnvironmentConfig('now'), {
+            uiMode: 'bulk',
+            variables: [{ key: 'TOKEN', value: 'private' }],
+          }),
+        ),
       ).rejects.toMatchObject({ code: 'SECURE_STORAGE_WRITE_REFUSED' });
       expect(environmentPayload).toBeNull();
       expect(writeFileMock).not.toHaveBeenCalled();
@@ -888,5 +982,155 @@ describe('environment secure policy retention', () => {
       data: { variables: [{ key: 'TOKEN', value: 'original' }] },
     });
     expect(environmentPayload).toBe(previous);
+  });
+});
+
+describe('stored-secret environment replies (CAN-4411)', () => {
+  const SECRET = 'sk-live-private-value';
+
+  async function seed(): Promise<void> {
+    await writeUserEnvironment({
+      uiMode: 'key-value',
+      variables: [
+        { key: 'API_TOKEN', value: SECRET, secret: true },
+        { key: 'LOG_LEVEL', value: 'debug' },
+      ],
+    });
+  }
+
+  async function overallView(): Promise<
+    Awaited<ReturnType<typeof readEnvironmentConfigView>>['data']
+  > {
+    return (await readEnvironmentConfigView()).data;
+  }
+
+  function overallVariables(
+    data: Awaited<ReturnType<typeof overallView>>,
+  ): Awaited<
+    ReturnType<typeof overallView>
+  >['environments'][number]['variables'] {
+    return (
+      data.environments.find((environment) => environment.id === OVERALL)
+        ?.variables ?? []
+    );
+  }
+
+  it('replies with stored-secret values for secret entries and text for the rest', async () => {
+    await seed();
+    const view = await overallView();
+    expect(JSON.stringify(view)).not.toContain(SECRET);
+    const [token, level] = overallVariables(view);
+    expect(token).toEqual({
+      key: 'API_TOKEN',
+      secret: true,
+      value: {
+        kind: 'stored-secret',
+        ref: storedSecretRef('environment', 'config', `${OVERALL}/API_TOKEN`),
+      },
+    });
+    expect(level).toEqual({ key: 'LOG_LEVEL', value: 'debug' });
+    // Stable across reads, so the renderer can compare and round-trip it.
+    expect(overallVariables(await overallView())[0]).toEqual(token);
+  });
+
+  it('keeps a stored secret the save echoes back, including under a new key', async () => {
+    await seed();
+    const view = await overallView();
+    const [token] = overallVariables(view);
+    const saved = await writeEnvironmentConfig({
+      ...view,
+      environments: view.environments.map((environment) =>
+        environment.id === OVERALL
+          ? {
+              ...environment,
+              variables: [{ ...token, key: 'RENAMED_TOKEN' }],
+            }
+          : environment,
+      ),
+    });
+    expect(JSON.stringify(saved)).not.toContain(SECRET);
+    expect((await readUserEnvironment()).data.variables).toEqual([
+      { key: 'RENAMED_TOKEN', value: SECRET, secret: true },
+    ]);
+  });
+
+  it('refuses to unmark a kept secret, which would reveal it on the next load', async () => {
+    await seed();
+    const before = environmentPayload;
+    const view = await overallView();
+    const [token] = overallVariables(view);
+    await expect(
+      writeEnvironmentConfig({
+        ...view,
+        environments: view.environments.map((environment) =>
+          environment.id === OVERALL
+            ? {
+                ...environment,
+                variables: [{ key: 'API_TOKEN', value: token.value }],
+              }
+            : environment,
+        ),
+      }),
+    ).rejects.toMatchObject({ code: 'stored_secret_reveal' });
+    expect(environmentPayload).toBe(before);
+  });
+
+  it('refuses a reference that names no stored secret, writing nothing', async () => {
+    await seed();
+    const before = environmentPayload;
+    const view = await overallView();
+    await expect(
+      writeEnvironmentConfig({
+        ...view,
+        environments: view.environments.map((environment) =>
+          environment.id === OVERALL
+            ? {
+                ...environment,
+                variables: [
+                  {
+                    key: 'API_TOKEN',
+                    secret: true,
+                    value: { kind: 'stored-secret', ref: 'ssr1_forged' },
+                  },
+                ],
+              }
+            : environment,
+        ),
+      }),
+    ).rejects.toMatchObject({ code: 'stored_secret_unknown' });
+    expect(environmentPayload).toBe(before);
+  });
+
+  it('cannot keep a value that was never marked secret', async () => {
+    await seed();
+    const view = await overallView();
+    const unmarked = await readEnvironmentConfig();
+    // A reference derived for the plain entry's slot is not honoured.
+    await expect(
+      writeEnvironmentConfig({
+        ...unmarked.data,
+        environments: view.environments.map((environment) =>
+          environment.id === OVERALL
+            ? {
+                ...environment,
+                variables: [
+                  {
+                    key: 'LEAK',
+                    secret: true,
+                    value: {
+                      kind: 'stored-secret',
+                      ref: storedSecretRef(
+                        'environment',
+                        'config',
+                        `${OVERALL}/LOG_LEVEL`,
+                      ),
+                    },
+                  },
+                ],
+              }
+            : environment,
+        ),
+      }),
+    ).rejects.toMatchObject({ code: 'stored_secret_unknown' });
   });
 });

@@ -52,3 +52,52 @@ it.each(['single-repo', 'multi-repo'] as const)(
     expect(createdProject.worktrees).toEqual([]);
   },
 );
+
+it.each(['single-repo', 'multi-repo'] as const)(
+  'settles failed %s creation and clears its error when retrying',
+  async (type) => {
+    const project: SidebarItem =
+      type === 'single-repo'
+        ? { ...shared, type, repoPath: '/tmp/code' }
+        : { ...shared, type, repos: [] };
+    useProjectsStore.setState({
+      projects: [project],
+      creatingWorktreeForProject: new Set(),
+      worktreeError: null,
+    });
+    const command = type === 'single-repo' ? createSingle : createMulti;
+    const error = 'Git is unavailable. Install Git, then recheck.';
+    command.mockRejectedValueOnce(new Error(error));
+    await useProjectsStore.getState().createWorktree('code');
+    expect(
+      useProjectsStore.getState().creatingWorktreeForProject.has('code'),
+    ).toBe(false);
+    expect(useProjectsStore.getState().worktreeError).toBe(error);
+    const createdProject = useProjectsStore.getState().projects[0];
+    if (!createdProject || createdProject.type === 'cowork') {
+      throw new Error('Expected a code workspace');
+    }
+    expect(createdProject.worktrees).toEqual([]);
+
+    let rejectRetry: (error: Error) => void = () => undefined;
+    command.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRetry = reject;
+        }),
+    );
+    const retry = useProjectsStore.getState().createWorktree('code');
+    const retryState = {
+      pending: useProjectsStore
+        .getState()
+        .creatingWorktreeForProject.has('code'),
+      error: useProjectsStore.getState().worktreeError,
+    };
+    rejectRetry(new Error(error));
+    await retry;
+    expect(retryState).toEqual({ pending: true, error: null });
+    expect(
+      useProjectsStore.getState().creatingWorktreeForProject.has('code'),
+    ).toBe(false);
+  },
+);

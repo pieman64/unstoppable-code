@@ -1,6 +1,5 @@
-import { existsSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import * as path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import {
   CODE_GRAPH_EXTRACTOR_VERSION,
   CODE_GRAPH_SCHEMA_VERSION,
@@ -15,10 +14,21 @@ import { CodeGraphQueryService } from '../query/queries';
 import { CodeGraphStore } from '../store/graph-store';
 import {
   getMetadataValue,
+  openCodeGraphDatabase,
   readCodeGraphFingerprintMetadata,
-  setMetadataValue,
   type CodeGraphDatabase,
 } from '../store/database';
+import { runCodeGraphMigrations } from '../store/migrations';
+import {
+  CodeGraphWriterLeaseBusyError,
+  withCodeGraphWriterLease,
+} from '../store/writer-lease';
+import { buildCodeGraphSnapshot } from '../snapshot/export';
+import {
+  applyCodeGraphSnapshot,
+  type CodeGraphSnapshotImportResult,
+} from '../snapshot/import';
+import type { CodeGraphSnapshotEnvelope } from '../types/code-graph-tools';
 import { getDiffRanges } from '../git/diff';
 import { mapRangesToSymbols } from '../impact/changed-symbols';
 import { assembleChangeImpact } from '../impact/change-impact';
@@ -28,8 +38,6 @@ import type {
   CodeGraphWorkerReadRequest,
   CodeGraphWorkerReadResponse,
 } from './read-protocol';
-
-const FINGERPRINT_WRITE_BUSY_TIMEOUT_MS = 5_000;
 
 function containsAsciiIdentityControl(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -301,24 +309,38 @@ function executeCall(
   }
 }
 
+/** How long an import waits for a build or another writer before it is refused as busy. */
+const SNAPSHOT_IMPORT_LEASE_WAIT_MS = 5_000;
+
 /**
- * Writes the end-of-build fingerprint into an existing graph. Opening a missing
- * path would create an empty database, so absence is an error. A follow-up
- * build can hold the write lock for its whole run; this worker is off main, so
- * it waits up to the busy timeout rather than failing immediately, and a
- * timeout surfaces like any other persistence failure.
+ * Replaces one repository's graph under the cross-process writer lease, so it
+ * never runs beside a build or another writer of the same database.
  */
-function persistWorktreeFingerprint(dbPath: string, fingerprint: string): void {
-  if (!existsSync(dbPath)) {
-    throw new Error('Code graph database is missing.');
-  }
-  const db = new DatabaseSync(dbPath);
-  try {
-    db.exec(`PRAGMA busy_timeout = ${FINGERPRINT_WRITE_BUSY_TIMEOUT_MS};`);
-    setMetadataValue(db, 'worktree_fingerprint', fingerprint);
-  } finally {
-    db.close();
-  }
+async function importCodeGraphSnapshot(
+  dbPath: string,
+  repoId: string,
+  rootPath: string,
+  envelope: CodeGraphSnapshotEnvelope,
+): Promise<CodeGraphSnapshotImportResult> {
+  return withCodeGraphWriterLease(
+    dbPath,
+    async () => {
+      const db = openCodeGraphDatabase(dbPath);
+      try {
+        runCodeGraphMigrations(db);
+        return await applyCodeGraphSnapshot({
+          store: new CodeGraphStore(db),
+          db,
+          repoId,
+          rootPath,
+          envelope,
+        });
+      } finally {
+        db.close();
+      }
+    },
+    { waitMs: SNAPSHOT_IMPORT_LEASE_WAIT_MS },
+  );
 }
 
 interface ReadConnection {
@@ -490,12 +512,20 @@ export async function executeCodeGraphRead(
   let release: ((failed: boolean) => void) | undefined;
   let failed = false;
   try {
-    if (request.task.kind === 'persist-fingerprint') {
-      // A kept reader would stop this writer, often the graph's last
-      // connection after a build, from checkpointing and removing the WAL.
+    if (request.task.kind === 'snapshot-import') {
       connections?.close();
-      persistWorktreeFingerprint(request.dbPath, request.task.fingerprint);
-      return { ok: true, result: { kind: 'persist-fingerprint' } };
+      return {
+        ok: true,
+        result: {
+          kind: 'snapshot-import',
+          value: await importCodeGraphSnapshot(
+            request.dbPath,
+            request.task.repoId,
+            request.task.rootPath,
+            request.task.envelope,
+          ),
+        },
+      };
     }
     if (request.task.kind === 'validate-base') {
       return {
@@ -567,6 +597,17 @@ export async function executeCodeGraphRead(
         },
       };
     }
+    if (request.task.kind === 'snapshot-export') {
+      const { envelope } = await buildCodeGraphSnapshot({
+        store,
+        repoId: request.task.repoId,
+        generatedAt: request.task.generatedAt,
+      });
+      return {
+        ok: true,
+        result: { kind: 'snapshot-export', value: envelope },
+      };
+    }
     if (request.task.kind === 'calls') {
       return {
         ok: true,
@@ -623,6 +664,7 @@ export async function executeCodeGraphRead(
     return {
       ok: false,
       code:
+        error instanceof CodeGraphWriterLeaseBusyError ||
         classifyCodeGraphReadDatabaseError(error) === 'busy'
           ? 'busy'
           : 'database-error',

@@ -1668,7 +1668,74 @@
       }
     },
     {
-      "name": "Linux arm64 refuses a broken saved selection instead of falling back",
+      "name": "Linux arm64 uses the saved explicit selection and live rechecks repairs",
+      "os": "linux",
+      "arch": "arm64",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/opt/custom/git": {
+          "kind": "executable",
+          "stdout": "git version 2.44.0\n"
+        },
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        },
+        "/other/git": {
+          "kind": "executable",
+          "stdout": "git version 2.45.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/opt/custom/git"],
+        "status": {
+          "ready": true,
+          "path": "/opt/custom/git",
+          "source": "user-selected"
+        },
+        "savedAfter": "/opt/custom/git"
+      },
+      "steps": [
+        {
+          "name": "the selected Git disappears without falling back to system Git",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "missing"
+            }
+          },
+          "expected": {
+            "resolved": null,
+            "savedAfter": "/opt/custom/git"
+          }
+        },
+        {
+          "name": "the selected Git is repaired at the same path",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "executable",
+              "stdout": "git version 2.46.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        },
+        {
+          "name": "a new saved selection takes effect in the same host",
+          "select": "/other/git",
+          "expected": {
+            "resolved": "/other/git",
+            "savedAfter": "/other/git"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Linux arm64 rejects a missing saved selection until its same-path repair",
       "os": "linux",
       "arch": "arm64",
       "environment": {},
@@ -1690,7 +1757,22 @@
           "error": "Selected Git executable cannot be used. Git executable does not exist: /opt/custom/git"
         },
         "savedAfter": "/opt/custom/git"
-      }
+      },
+      "steps": [
+        {
+          "name": "the selected Git is installed without changing PATH or restarting",
+          "filesystem": {
+            "/opt/custom/git": {
+              "kind": "executable",
+              "stdout": "git version 2.44.0\n"
+            }
+          },
+          "expected": {
+            "resolved": "/opt/custom/git",
+            "savedAfter": "/opt/custom/git"
+          }
+        }
+      ]
     },
     {
       "name": "Linux arm64 uses the environment override",
@@ -1714,6 +1796,56 @@
           "ready": true,
           "path": "/env/git",
           "source": "user-selected"
+        },
+        "savedAfter": ""
+      }
+    },
+    {
+      "name": "Linux ppc64 spawns git from PATH without validation",
+      "os": "linux",
+      "arch": "ppc64",
+      "environment": {},
+      "saved": "/opt/custom/git",
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/usr/bin/git": {
+          "kind": "executable",
+          "stdout": "git version 2.43.0\n"
+        }
+      },
+      "expected": {
+        "attempts": [],
+        "status": {
+          "ready": true,
+          "path": null,
+          "source": "not-found"
+        },
+        "savedAfter": "/opt/custom/git"
+      }
+    },
+    {
+      "name": "Linux ppc64 uses the environment override",
+      "os": "linux",
+      "arch": "ppc64",
+      "environment": {
+        "CANOPY_GIT_EXECUTABLE": " /env/git "
+      },
+      "saved": null,
+      "loginPath": "/usr/bin",
+      "developerDir": null,
+      "filesystem": {
+        "/env/git": {
+          "kind": "executable",
+          "stdout": "git version 2.44.0\n"
+        }
+      },
+      "expected": {
+        "attempts": ["/env/git"],
+        "status": {
+          "ready": true,
+          "path": "/env/git",
+          "source": "cache"
         },
         "savedAfter": ""
       }

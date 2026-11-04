@@ -254,6 +254,17 @@ export function MonacoFileDiff({
             viewState.current.editor
           )
             instance.restoreViewState(viewState.current.editor);
+          // Monaco binds its global hover-delegate factory to the services of
+          // the last editor created; these inner editors' services die with the
+          // diff, so later suggest, menu or find widgets in any editor throw
+          // "InstantiationService has been disposed" (monaco-editor#5518). A
+          // plain editor rebinds the factory to the never-disposed root services.
+          // The diff editor's own onDidDispose never fires in Monaco 0.55.
+          instance
+            .getModifiedEditor()
+            .onDidDispose(() =>
+              monaco.editor.create(document.createElement('div')).dispose(),
+            );
           setEditor(instance);
         }}
         options={{

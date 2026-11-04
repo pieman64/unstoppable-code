@@ -19,8 +19,14 @@ import {
   withoutAuthTokens,
   sameHeaders,
   clearDeviceSignIns,
+  keepsStoredSecrets,
   promoteCustomMcpServer,
 } from '../mcp/mcpManagementOperations';
+import {
+  isStoredSecretValue,
+  type SecretValueInput,
+  type StoredSecretValue,
+} from '@canopy/desktop-shared/types/stored-secrets';
 import {
   McpMoveToCloudDialog,
   McpMoveToDeviceDialog,
@@ -60,14 +66,7 @@ import { extractIpcErrorMessage } from '@/lib/errors';
 import { pointRefsAt } from '@/lib/mcpServerRefs';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import {
-  type JSX,
-  type ReactNode,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from 'react';
+import { type JSX, useEffect, useId, useRef, useState } from 'react';
 import { useMcpServerList } from '../../hooks/useMcpServerList';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { useCuratedMcpServers } from '../../hooks/useCuratedMcpServers';
@@ -85,6 +84,12 @@ import { McpBrowseDialog } from '../mcp/McpBrowseDialog';
 import { ErrorBanner, EmptyState } from '../shared/StatusBlocks';
 import {
   CenteredLoadingSpinner,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
@@ -100,11 +105,11 @@ import type {
   SaveMcpServerRequest,
   AccountMcpConnection,
   McpHttpAuthHandler,
-  McpOAuthConfigData,
-  McpServerData,
-  McpServerConfigData,
+  McpOAuthConfigView,
+  McpServerDataView,
+  McpServerConfigView,
   McpServerCuratedMetadata,
-  McpServerFile,
+  McpServerFileView,
   McpServerHealthCheckResult,
   McpServerIndexEntry,
   McpServerStatusEntry,
@@ -197,7 +202,7 @@ const EMPTY_OAUTH_FORM: OAuthFormState = {
 };
 
 export function oauthFromDefinition(
-  oauth: McpOAuthConfigData | undefined,
+  oauth: McpOAuthConfigView | undefined,
 ): OAuthFormState {
   if (!oauth) return { ...EMPTY_OAUTH_FORM };
   const advancedOpen = Boolean(
@@ -284,7 +289,7 @@ export function curatedMetadataFromEntry(
 
 /** Curated catalog metadata is valid only for HTTP server definitions. */
 export function curatedMetadataForServerType(
-  serverType: McpServerData['definition']['type'],
+  serverType: McpServerDataView['definition']['type'],
   curated: McpServerCuratedMetadata | undefined,
 ): McpServerCuratedMetadata | undefined {
   return serverType === 'http' ? curated : undefined;
@@ -300,7 +305,7 @@ function isValidHttpUrl(value: string): boolean {
 }
 
 interface OAuthValidationResult {
-  oauth: McpOAuthConfigData | null;
+  oauth: McpOAuthConfigView | null;
   error: string | null;
 }
 
@@ -352,7 +357,7 @@ export function validateOAuthForm(form: OAuthFormState): OAuthValidationResult {
     .map((s: string) => s.trim())
     .filter((s: string) => s.length > 0);
   const audience = form.audience.trim();
-  const oauth: McpOAuthConfigData = {
+  const oauth: McpOAuthConfigView = {
     usePkce: form.usePkce,
     ...(clientId.length > 0 ? { clientId } : {}),
     ...(form.callbackPort !== undefined
@@ -412,10 +417,11 @@ export function validateCuratedSetup(
   return null;
 }
 
-function hasAnyAuthTokenConfigured(configs: McpServerConfigData[]): boolean {
-  return configs.some(
-    (config) =>
-      config.authToken !== undefined && config.authToken.trim().length > 0,
+function hasAnyAuthTokenConfigured(configs: McpServerConfigView[]): boolean {
+  return configs.some((config) =>
+    typeof config.authToken === 'string'
+      ? config.authToken.trim().length > 0
+      : config.authToken !== undefined,
   );
 }
 
@@ -476,8 +482,9 @@ function ignoreAccountRefresh(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 interface KeyValueEditorProps {
-  entries: Record<string, string>;
-  onChange: (entries: Record<string, string>) => void;
+  /** Saved values arrive as stored-secret values and are shown as saved. */
+  entries: Record<string, SecretValueInput>;
+  onChange: (entries: Record<string, SecretValueInput>) => void;
   keyPlaceholder?: string;
   valuePlaceholder?: string;
   valueType?: string;
@@ -516,7 +523,8 @@ function KeyValueEditor({
           <div className="min-w-0 flex-1">
             <TextInput
               type={valueType}
-              value={value}
+              value={isStoredSecretValue(value) ? '' : value}
+              placeholder={isStoredSecretValue(value) ? 'Saved' : undefined}
               readOnly
               aria-label={`${key} ${valuePlaceholder}`}
             />
@@ -571,8 +579,8 @@ function KeyValueEditor({
 // ---------------------------------------------------------------------------
 
 interface ConfigEditorProps {
-  config: McpServerConfigData;
-  onChange: (config: McpServerConfigData) => void;
+  config: McpServerConfigView;
+  onChange: (config: McpServerConfigView) => void;
   onDelete: () => void;
   initialExpanded?: boolean;
 }
@@ -585,6 +593,9 @@ function ConfigEditor({
 }: ConfigEditorProps): JSX.Element {
   const [expanded, setExpanded] = useState(initialExpanded);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [keptToken, setKeptToken] = useState<StoredSecretValue | undefined>(
+    isStoredSecretValue(config.authToken) ? config.authToken : undefined,
+  );
   const fieldId = useId();
 
   return (
@@ -653,7 +664,7 @@ function ConfigEditor({
             </span>
             <KeyValueEditor
               entries={config.envVars}
-              onChange={(envVars: Record<string, string>) =>
+              onChange={(envVars: Record<string, SecretValueInput>) =>
                 onChange({ ...config, envVars })
               }
               keyPlaceholder="VAR_NAME"
@@ -683,7 +694,7 @@ function ConfigEditor({
             <span className="mb-1 block fg-secondary">Extra headers</span>
             <KeyValueEditor
               entries={config.extraHeaders}
-              onChange={(extraHeaders: Record<string, string>) =>
+              onChange={(extraHeaders: Record<string, SecretValueInput>) =>
                 onChange({ ...config, extraHeaders })
               }
               keyPlaceholder="Header-Name"
@@ -696,13 +707,35 @@ function ConfigEditor({
             <TextInput
               id={`${fieldId}-token`}
               type="password"
-              value={config.authToken ?? ''}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                onChange({ ...config, authToken: e.target.value || undefined })
+              value={
+                typeof config.authToken === 'string' ? config.authToken : ''
               }
-              placeholder="Bearer token"
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                onChange({
+                  ...config,
+                  // Clearing a replacement keeps the saved token.
+                  authToken: e.target.value || keptToken,
+                })
+              }
+              placeholder={
+                keptToken !== undefined
+                  ? 'Saved. Type to replace'
+                  : 'Bearer token'
+              }
             />
           </DialogFormField>
+          {isStoredSecretValue(config.authToken) && (
+            <Button
+              variant="ghost"
+              size="compact"
+              onClick={(): void => {
+                setKeptToken(undefined);
+                onChange({ ...config, authToken: undefined });
+              }}
+            >
+              Remove saved token
+            </Button>
+          )}
 
           {/* Delete config */}
           <div className="pt-1">
@@ -831,8 +864,8 @@ export function McpServerDialog({
   const [command, setCommand] = useState('');
   const [args, setArgs] = useState('');
   const [url, setUrl] = useState('');
-  const [headers, setHeaders] = useState<Record<string, string>>({});
-  const [configs, setConfigs] = useState<McpServerConfigData[]>([]);
+  const [headers, setHeaders] = useState<Record<string, SecretValueInput>>({});
+  const [configs, setConfigs] = useState<McpServerConfigView[]>([]);
   const [oauthForm, setOauthForm] = useState<OAuthFormState>({
     ...EMPTY_OAUTH_FORM,
   });
@@ -874,6 +907,8 @@ export function McpServerDialog({
   >(accountConnection);
   // Write-only in the cloud; blank keeps what the cloud stores.
   const [cloudToken, setCloudToken] = useState('');
+  // A device token moving to the cloud, which this window never sees.
+  const [savedCloudToken, setSavedCloudToken] = useState<StoredSecretValue>();
   const [clearStoredHeaders, setClearStoredHeaders] = useState(false);
   const [confirmMoveToDevice, setConfirmMoveToDevice] = useState(false);
   const [confirmMoveToCloud, setConfirmMoveToCloud] = useState(false);
@@ -952,7 +987,9 @@ export function McpServerDialog({
   const [connectMessage, setConnectMessage] = useState('');
 
   // Loaded server data for edit mode
-  const [loadedServer, setLoadedServer] = useState<McpServerData | null>(null);
+  const [loadedServer, setLoadedServer] = useState<McpServerDataView | null>(
+    null,
+  );
 
   const accessTokenRef = useRef<HTMLInputElement>(null);
 
@@ -1256,7 +1293,7 @@ export function McpServerDialog({
         return;
       }
     }
-    let oauthToPersist: McpOAuthConfigData | undefined;
+    let oauthToPersist: McpOAuthConfigView | undefined;
     if (serverType === 'http' && oauthForm.enabled) {
       const validation = validateOAuthForm(oauthForm);
       if (validation.error) {
@@ -1340,7 +1377,7 @@ export function McpServerDialog({
             ? withoutAuthTokens(configs)
             : movingToDevice && cloudToken.trim()
               ? moveConfigs.map(
-                  (config): McpServerConfigData =>
+                  (config): McpServerConfigView =>
                     config.id === defaultId
                       ? { ...config, authToken: cloudToken }
                       : config,
@@ -1422,7 +1459,7 @@ export function McpServerDialog({
   };
 
   // A device save in create mode added this server; an edit reports nothing.
-  const reportCreatedDeviceServer = (saved: McpServerFile): void => {
+  const reportCreatedDeviceServer = (saved: McpServerFileView): void => {
     if (serverId !== null || cloudConnection) return;
     const { id, curated: savedCurated } = saved.server.definition;
     onCreatedRef.current?.({
@@ -1470,6 +1507,15 @@ export function McpServerDialog({
     // Only a token typed here replaces the cloud's sign-in; an older device
     // copy may still hold a stale one, which the save below drops.
     if (cloudToken.trim()) request.bearerToken = cloudToken.trim();
+    if (
+      loadedServer &&
+      keepsStoredSecrets(Object.values(request.headers ?? {}))
+    ) {
+      // Main sends saved headers only with the connection pinned to this
+      // server's own URL in the same edit.
+      request.secretSource = { serverId: loadedServer.definition.id };
+      request.customUrl ??= loadedServer.definition.url;
+    }
     await runEntityEditOperation(
       async (): Promise<void> => {
         if (Object.keys(request).length > 0) {
@@ -1543,11 +1589,11 @@ export function McpServerDialog({
     let bound = false;
     let saveError: string | undefined;
     let failure: string | undefined;
-    // A move sends only the token its confirmation showed; the field starts
-    // with the device's own, and a token the user cleared stays behind.
+    // A move sends a token typed here, or else the device's saved one unless
+    // the user chose not to move it.
     const bearerToken =
       cloudToken.trim() ||
-      (movingToCloud ? undefined : defaultConfigAuthToken(configs));
+      (movingToCloud ? savedCloudToken : defaultConfigAuthToken(configs));
     const oauthClientId =
       oauthForm.enabled && oauthForm.clientId.trim()
         ? oauthForm.clientId.trim()
@@ -1559,6 +1605,12 @@ export function McpServerDialog({
       ...(hasAccountHeaders ? { headers: accountHeaders } : {}),
       ...(expectedAccountId ? { expectedAccountId } : {}),
       ...(moving ? { pendingKey: moving.definition.id } : {}),
+      // Saved headers and tokens go by reference, resolved against this
+      // device server and its own URL only.
+      ...(loadedServer &&
+      keepsStoredSecrets([...Object.values(accountHeaders), bearerToken])
+        ? { secretSource: { serverId: loadedServer.definition.id } }
+        : {}),
       onFailure: (message): void => {
         failure = message;
       },
@@ -1722,7 +1774,7 @@ export function McpServerDialog({
   function handleAddConfig(): void {
     const now = new Date().toISOString();
     const newId = crypto.randomUUID();
-    const newConfig: McpServerConfigData = {
+    const newConfig: McpServerConfigView = {
       id: newId,
       name: `Config ${configs.length + 1}`,
       description: '',
@@ -1739,7 +1791,7 @@ export function McpServerDialog({
 
   function handleUpdateConfig(
     index: number,
-    updated: McpServerConfigData,
+    updated: McpServerConfigView,
   ): void {
     setConfigs(configs.map((c, i) => (i === index ? updated : c)));
   }
@@ -1800,9 +1852,14 @@ export function McpServerDialog({
     setScope(next);
     setError('');
     // A device server's token travels with it; a cloud one is write-only.
-    if (next === 'cloud' && initialScope === 'device')
-      setCloudToken(defaultConfigAuthToken(configs) ?? '');
-    else if (next !== initialScope) setCloudToken('');
+    if (next === 'cloud' && initialScope === 'device') {
+      const token = defaultConfigAuthToken(configs);
+      setSavedCloudToken(isStoredSecretValue(token) ? token : undefined);
+      setCloudToken(typeof token === 'string' ? token : '');
+    } else if (next !== initialScope) {
+      setCloudToken('');
+      setSavedCloudToken(undefined);
+    }
   };
   const canSave =
     name.trim().length > 0 &&
@@ -2516,14 +2573,27 @@ export function McpServerDialog({
                         e: React.ChangeEvent<HTMLInputElement>,
                       ): void => setCloudToken(e.target.value)}
                       placeholder={
-                        editsCloudConnection &&
-                        cloudConnection?.authMode === 'BEARER'
-                          ? 'Stored'
-                          : 'Optional'
+                        savedCloudToken !== undefined
+                          ? 'Saved. Type to replace'
+                          : editsCloudConnection &&
+                              cloudConnection?.authMode === 'BEARER'
+                            ? 'Stored'
+                            : 'Optional'
                       }
                       data-testid="mcp-cloud-access-token"
                     />
                   </DialogFormField>
+                  {savedCloudToken !== undefined && !cloudToken && (
+                    <Button
+                      variant="ghost"
+                      size="compact"
+                      className="self-start"
+                      onClick={(): void => setSavedCloudToken(undefined)}
+                      data-testid="mcp-cloud-drop-saved-token"
+                    >
+                      Don't move token
+                    </Button>
+                  )}
                   {cloudUrlWarning && (
                     <Notice
                       role="none"
@@ -2897,7 +2967,7 @@ export function McpServerDialog({
                     key={config.id || `new-${index}`}
                     config={config}
                     initialExpanded={expandedNewIds.has(config.id)}
-                    onChange={(updated: McpServerConfigData) =>
+                    onChange={(updated: McpServerConfigView) =>
                       handleUpdateConfig(index, updated)
                     }
                     onDelete={() => handleDeleteConfig(index)}
@@ -2932,7 +3002,9 @@ export function McpServerDialog({
       {confirmMoveToCloud && (
         <McpMoveToCloudDialog
           serverName={name.trim()}
-          tokenMoves={cloudToken.trim().length > 0}
+          tokenMoves={
+            cloudToken.trim().length > 0 || savedCloudToken !== undefined
+          }
           dataTestId="mcp-move-to-cloud-dialog"
           confirmTestId="mcp-move-to-cloud-confirm"
           onConfirm={(): void => {
@@ -2975,7 +3047,7 @@ export function McpServerDetailOverlay({
   );
   const [accountConnection, setAccountConnection] =
     useState<AccountMcpConnection | null>(null);
-  const [server, setServer] = useState<McpServerData | null>(null);
+  const [server, setServer] = useState<McpServerDataView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -3125,64 +3197,6 @@ function McpRowLogo({
       imgTestId="mcp-server-row-logo"
       fallbackTestId="mcp-server-row-logo-fallback"
     />
-  );
-}
-
-type McpTableOverflow = 'none' | 'start' | 'end' | 'both';
-
-function readMcpTableOverflow(region: HTMLElement): McpTableOverflow {
-  const hidden = region.scrollWidth - region.clientWidth;
-  if (hidden <= 1) return 'none';
-  const before = region.scrollLeft > 1;
-  const after = region.scrollLeft < hidden - 1;
-  if (before && after) return 'both';
-  return before ? 'start' : 'end';
-}
-
-/**
- * The table's border and scroll region (CAN-4258). A table wider than its
- * mount scrolls here instead of being clipped: the hidden side fades, since
- * overlay scrollbars hide at rest, and the region becomes a named keyboard
- * stop that arrow keys scroll. A table that fits adds neither.
- */
-function McpTableScrollRegion({
-  children,
-}: {
-  children: ReactNode;
-}): JSX.Element {
-  const regionRef = useRef<HTMLDivElement>(null);
-  const [overflow, setOverflow] = useState<McpTableOverflow>('none');
-  useEffect((): (() => void) | undefined => {
-    const region = regionRef.current;
-    if (!region) return undefined;
-    // Only an edge change re-renders, so scrolling stays off React.
-    const update = (): void => setOverflow(readMcpTableOverflow(region));
-    update();
-    const observer =
-      typeof ResizeObserver === 'undefined'
-        ? undefined
-        : new ResizeObserver(update);
-    observer?.observe(region);
-    if (region.firstElementChild) observer?.observe(region.firstElementChild);
-    region.addEventListener('scroll', update, { passive: true });
-    return (): void => {
-      observer?.disconnect();
-      region.removeEventListener('scroll', update);
-    };
-  }, []);
-  const scrollable = overflow !== 'none';
-  return (
-    <div
-      ref={regionRef}
-      data-testid="mcp-servers-table"
-      data-overflow={scrollable ? overflow : undefined}
-      {...(scrollable
-        ? { role: 'region', 'aria-label': 'MCP servers', tabIndex: 0 }
-        : {})}
-      className="mcp-table-scroll focus-ring focus-ring-inset overflow-x-auto rounded-lg border"
-    >
-      {children}
-    </div>
   );
 }
 
@@ -3648,7 +3662,7 @@ export function McpServersTab({
   // hands its references to the cloud ref.
   const promoteCustomRow = async (
     row: McpServerIndexEntry,
-    credential: { bearerToken?: string; expectedAccountId: string },
+    credential: { bearerToken?: SecretValueInput; expectedAccountId: string },
   ): Promise<void> => {
     setSetupError(null);
     try {
@@ -3946,237 +3960,219 @@ export function McpServersTab({
 
       {/* Table */}
       {servers.length > 0 && (
-        <McpTableScrollRegion>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-secondary/50 border-b">
-                <th className="text-left px-4 py-3 font-medium fg-secondary">
-                  Name
-                </th>
-                <th className="text-left px-4 py-3 font-medium fg-secondary">
-                  Type
-                </th>
-                <th className="text-left px-4 py-3 font-medium fg-secondary">
-                  Status
-                </th>
-                <th className="text-left px-4 py-3 font-medium fg-secondary">
-                  Last updated
-                </th>
-                <th className="text-right px-4 py-3 font-medium fg-secondary">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {servers
-                .slice()
-                .sort((a, b) => a.name.localeCompare(b.name))
-                .map((server) => {
-                  const subtitle = mcpRowSubtitle(server);
-                  return (
-                    <tr
-                      key={server.accountConnectionId ?? server.id}
-                      data-testid={`mcp-server-row-${server.id}`}
-                      data-mcp-connection-id={server.accountConnectionId}
-                      onClick={(): void =>
-                        server.accountConnection && accountEnabled
-                          ? setAccountDetails(
-                              server.accountConnectionId ?? server.id,
-                            )
-                          : setDialogServerId(server.id)
-                      }
-                      className="border-b last:border-b-0 hover:bg-secondary/30 transition-colors cursor-pointer"
-                    >
-                      {/* The Name column yields width to the others and
+        <DataTableFrame caption="MCP servers" testId="mcp-servers-table">
+          <DataTableHead>
+            {/* The Name column yields width to the others and truncates, but
+                    keeps a 10rem floor (CAN-4258). */}
+            <DataTableHeaderCell width="100%" minWidth="10rem">
+              Name
+            </DataTableHeaderCell>
+            <DataTableHeaderCell>Type</DataTableHeaderCell>
+            <DataTableHeaderCell>Status</DataTableHeaderCell>
+            <DataTableHeaderCell>Last updated</DataTableHeaderCell>
+            <DataTableHeaderCell align="right">Actions</DataTableHeaderCell>
+          </DataTableHead>
+          <DataTableBody>
+            {servers
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((server) => {
+                const subtitle = mcpRowSubtitle(server);
+                return (
+                  <DataTableRow
+                    key={server.accountConnectionId ?? server.id}
+                    data-testid={`mcp-server-row-${server.id}`}
+                    data-mcp-connection-id={server.accountConnectionId}
+                    onActivate={(): void =>
+                      server.accountConnection && accountEnabled
+                        ? setAccountDetails(
+                            server.accountConnectionId ?? server.id,
+                          )
+                        : setDialogServerId(server.id)
+                    }
+                  >
+                    {/* The Name column yields width to the others and
                           truncates; the details open from the row keep the
                           full name (CAN-4258). */}
-                      <td className="w-full min-w-40 max-w-0 px-4 py-3">
-                        <div className="flex items-start gap-2.5">
-                          <McpRowLogo
-                            curatedKey={server.curatedKey}
-                            logoUrl={server.logoUrl}
-                            name={server.name}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex min-w-0 items-baseline gap-1.5">
-                              <span className="truncate fg-primary font-medium">
-                                {server.name}
-                              </span>
-                              {server.accountConnection &&
-                                server.accountConnection.configId !==
-                                  'default' && (
-                                  // One row per connection (REG-3033): a second
-                                  // configuration of the same provider names
-                                  // itself beside the shared display name.
-                                  <span
-                                    className="shrink-0 text-xs fg-secondary"
-                                    data-testid="mcp-account-config"
-                                  >
-                                    {server.configs[0]?.name ??
-                                      server.accountConnection.configId}
-                                  </span>
-                                )}
-                            </div>
-                            {accountEnabled && (
-                              <div className="mt-1">
-                                <McpTierBadge
-                                  row={server}
-                                  desktopOnly={rowDesktopOnly(server)}
-                                  providers={
-                                    statuses.get(server.id)?.handler ===
-                                    'provider'
-                                      ? curatedEntries.find(
-                                          (entry): boolean =>
-                                            entry.key === server.curatedKey,
-                                        )?.providerConnector?.providers
-                                      : undefined
-                                  }
-                                />
-                              </div>
-                            )}
-                            {subtitle && (
-                              <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
-                                {subtitle}
-                              </p>
-                            )}
+                    <DataTableCell tone="primary" overflow="truncate">
+                      <div className="flex items-start gap-2.5">
+                        <McpRowLogo
+                          curatedKey={server.curatedKey}
+                          logoUrl={server.logoUrl}
+                          name={server.name}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-baseline gap-1.5">
+                            <span className="truncate fg-primary font-medium">
+                              {server.name}
+                            </span>
+                            {server.accountConnection &&
+                              server.accountConnection.configId !==
+                                'default' && (
+                                // One row per connection (REG-3033): a second
+                                // configuration of the same provider names
+                                // itself beside the shared display name.
+                                <span
+                                  className="shrink-0 text-xs fg-secondary"
+                                  data-testid="mcp-account-config"
+                                >
+                                  {server.configs[0]?.name ??
+                                    server.accountConnection.configId}
+                                </span>
+                              )}
                           </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
-                          {server.type}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {accountEnabled && server.accountConnection ? (
-                          <span data-testid="mcp-account-status">
-                            {server.accountConnection.status === 'CONNECTED'
-                              ? 'Connected'
-                              : server.accountConnection.status ===
-                                  'REAUTH_REQUIRED'
-                                ? 'Reconnect'
-                                : server.accountConnection.status === 'PENDING'
-                                  ? 'Waiting for browser'
-                                  : 'Not connected'}
-                          </span>
-                        ) : (
-                          <McpStatusCell
-                            entry={statuses.get(server.id)}
-                            connecting={connectingServerId === server.id}
-                            onConnect={(): void => void handleConnect(server)}
-                          />
-                        )}
-                      </td>
-                      <td className="px-4 py-3 fg-secondary">
-                        {server.updatedAt
-                          ? formatDate(server.updatedAt)
-                          : '\u2014'}
-                      </td>
-                      <td
-                        className="px-4 py-3"
-                        onClick={(event): void => event.stopPropagation()}
-                      >
-                        {/* Actions wrap onto further lines instead of
-                            widening the table (CAN-4258). */}
-                        <div className="flex flex-wrap items-center justify-end gap-1.5">
-                          {accountEnabled &&
-                            accountConnectionsAvailable &&
-                            (!customAccountMcpPromotable(server) ||
-                              customRowPromotable(server)) &&
-                            (!rowDesktopOnly(server) ||
-                              accountMcpConnectionLive(server)) && (
-                              // A desktop-only server never connects through
-                              // the cloud account, but a connection made before
-                              // it was marked keeps its Disconnect (REG-3035).
-                              <AccountMcpControls
+                          {accountEnabled && (
+                            <div className="mt-1">
+                              <McpTierBadge
                                 row={server}
-                                actions={accountActions}
-                                connectable={!rowDesktopOnly(server)}
-                                onConnect={(): void =>
-                                  connectAccountRow(server)
+                                desktopOnly={rowDesktopOnly(server)}
+                                providers={
+                                  statuses.get(server.id)?.handler ===
+                                  'provider'
+                                    ? curatedEntries.find(
+                                        (entry): boolean =>
+                                          entry.key === server.curatedKey,
+                                      )?.providerConnector?.providers
+                                    : undefined
                                 }
                               />
+                            </div>
+                          )}
+                          {subtitle && (
+                            <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
+                              {subtitle}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </DataTableCell>
+                    <DataTableCell>
+                      <span className="rounded bg-secondary px-1.5 py-0.5 text-3xs font-medium fg-secondary">
+                        {server.type}
+                      </span>
+                    </DataTableCell>
+                    <DataTableCell overflow="wrap">
+                      {accountEnabled && server.accountConnection ? (
+                        <span data-testid="mcp-account-status">
+                          {server.accountConnection.status === 'CONNECTED'
+                            ? 'Connected'
+                            : server.accountConnection.status ===
+                                'REAUTH_REQUIRED'
+                              ? 'Reconnect'
+                              : server.accountConnection.status === 'PENDING'
+                                ? 'Waiting for browser'
+                                : 'Not connected'}
+                        </span>
+                      ) : (
+                        <McpStatusCell
+                          entry={statuses.get(server.id)}
+                          connecting={connectingServerId === server.id}
+                          onConnect={(): void => void handleConnect(server)}
+                        />
+                      )}
+                    </DataTableCell>
+                    <DataTableCell>
+                      {server.updatedAt
+                        ? formatDate(server.updatedAt)
+                        : '\u2014'}
+                    </DataTableCell>
+                    <DataTableCell align="right" overflow="wrap">
+                      {/* Actions wrap onto further lines instead of
+                            widening the table (CAN-4258). */}
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        {accountEnabled &&
+                          accountConnectionsAvailable &&
+                          (!customAccountMcpPromotable(server) ||
+                            customRowPromotable(server)) &&
+                          (!rowDesktopOnly(server) ||
+                            accountMcpConnectionLive(server)) && (
+                            // A desktop-only server never connects through
+                            // the cloud account, but a connection made before
+                            // it was marked keeps its Disconnect (REG-3035).
+                            <AccountMcpControls
+                              row={server}
+                              actions={accountActions}
+                              connectable={!rowDesktopOnly(server)}
+                              onConnect={(): void => connectAccountRow(server)}
+                            />
+                          )}
+                        {accountEnabled &&
+                          server.deviceCopies
+                            ?.filter(
+                              (device): boolean =>
+                                server.accountConnection?.kind !== 'CUSTOM' ||
+                                device !== editableAccountCopy(server),
+                            )
+                            .map(
+                              (device): JSX.Element => (
+                                <Button
+                                  key={device.id}
+                                  size="sm"
+                                  variant="ghost"
+                                  className="whitespace-nowrap"
+                                  data-testid="mcp-device-copy"
+                                  onClick={(): void =>
+                                    setDialogServerId(device.id)
+                                  }
+                                >
+                                  Device copy
+                                </Button>
+                              ),
                             )}
-                          {accountEnabled &&
-                            server.deviceCopies
-                              ?.filter(
-                                (device): boolean =>
-                                  server.accountConnection?.kind !== 'CUSTOM' ||
-                                  device !== editableAccountCopy(server),
-                              )
-                              .map(
-                                (device): JSX.Element => (
-                                  <Button
-                                    key={device.id}
-                                    size="sm"
-                                    variant="ghost"
-                                    className="whitespace-nowrap"
-                                    data-testid="mcp-device-copy"
-                                    onClick={(): void =>
-                                      setDialogServerId(device.id)
-                                    }
-                                  >
-                                    Device copy
-                                  </Button>
-                                ),
-                              )}
-                          {accountEnabled && server.accountConnection ? (
-                            <>
+                        {accountEnabled && server.accountConnection ? (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="whitespace-nowrap"
+                              data-testid="mcp-account-details-button"
+                              onClick={(): void =>
+                                setAccountDetails(
+                                  server.accountConnectionId ?? server.id,
+                                )
+                              }
+                            >
+                              Details
+                            </Button>
+                            {server.accountConnection.kind === 'CUSTOM' && (
                               <Button
                                 size="sm"
                                 variant="ghost"
                                 className="whitespace-nowrap"
-                                data-testid="mcp-account-details-button"
-                                onClick={(): void =>
-                                  setAccountDetails(
-                                    server.accountConnectionId ?? server.id,
-                                  )
-                                }
+                                data-testid="mcp-account-edit-button"
+                                onClick={(): void => openAccountEditor(server)}
                               >
-                                Details
+                                Edit
                               </Button>
-                              {server.accountConnection.kind === 'CUSTOM' && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="whitespace-nowrap"
-                                  data-testid="mcp-account-edit-button"
-                                  onClick={(): void =>
-                                    openAccountEditor(server)
-                                  }
-                                >
-                                  Edit
-                                </Button>
-                              )}
-                            </>
-                          ) : (
-                            <Tooltip label="Edit server">
-                              <Button
-                                variant="ghost-quiet"
-                                size="compact"
-                                iconOnly
-                                onClick={(e): void => {
-                                  e.stopPropagation();
-                                  setDialogServerId(server.id);
-                                }}
-                                aria-label="Edit server"
-                                data-testid="mcp-server-edit-button"
-                              >
-                                <AppCatalogDocumentPencilIcon
-                                  width="14"
-                                  height="14"
-                                />
-                              </Button>
-                            </Tooltip>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        </McpTableScrollRegion>
+                            )}
+                          </>
+                        ) : (
+                          <Tooltip label="Edit server">
+                            <Button
+                              variant="ghost-quiet"
+                              size="compact"
+                              iconOnly
+                              onClick={(e): void => {
+                                e.stopPropagation();
+                                setDialogServerId(server.id);
+                              }}
+                              aria-label="Edit server"
+                              data-testid="mcp-server-edit-button"
+                            >
+                              <AppCatalogDocumentPencilIcon
+                                width="14"
+                                height="14"
+                              />
+                            </Button>
+                          </Tooltip>
+                        )}
+                      </div>
+                    </DataTableCell>
+                  </DataTableRow>
+                );
+              })}
+          </DataTableBody>
+        </DataTableFrame>
       )}
 
       {/* Empty state */}

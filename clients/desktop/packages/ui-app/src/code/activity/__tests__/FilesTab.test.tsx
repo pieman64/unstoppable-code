@@ -50,7 +50,9 @@ describe('FilesTab', () => {
       '[data-path="deliverables/ses-a"]',
     );
     if (!button) throw new Error('Expected session row');
-    expect(button.title).toBe(
+    // The full text rides on the truncated label, not the row button.
+    expect(button.hasAttribute('title')).toBe(false);
+    expect(button.querySelector('[title]')?.getAttribute('title')).toBe(
       'ses-a — Дослідження <script>long title</script>',
     );
     expect(button.textContent).toContain('Дослідження');
@@ -102,7 +104,9 @@ describe('FilesTab', () => {
       rows[0].querySelector('[data-testid="file-tree-row-secondary-label"]')
         ?.textContent,
     ).toBe('Current title');
-    expect(rows[0].title).toBe('ses-current — Current title');
+    expect(rows[0].querySelector('[title]')?.getAttribute('title')).toBe(
+      'ses-current — Current title',
+    );
     expect(rows[0].textContent).not.toContain('Saved copy');
     act(() => root.unmount());
     container.remove();

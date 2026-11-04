@@ -68,7 +68,18 @@ describe('SubagentChangesDialog', () => {
     expect(document.body.textContent).toContain('Changes from Review tests');
     expect(document.body.textContent).toContain('src/a.ts');
     expect(document.body.textContent).toContain('Showing first 1 file');
-    expect(document.body.textContent).toContain('Diff shortened to fit');
+    // Each file's diff sits behind its own closed disclosure.
+    const fileToggle = document.body.querySelector<HTMLButtonElement>(
+      '[data-testid="subagent-changed-file-toggle"]',
+    );
+    expect(fileToggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(document.body.textContent).not.toContain('Diff shortened to fit');
+    act((): void => fileToggle?.click());
+    expect(fileToggle?.getAttribute('aria-expanded')).toBe('true');
+    expect(
+      document.body.querySelector('[data-testid="subagent-changed-file-body"]')
+        ?.textContent,
+    ).toContain('Diff shortened to fit');
     // Diff content stays out of session replay; the dialog is portaled
     // outside any blocked ancestor.
     const diff = Array.from(document.body.querySelectorAll('pre')).find(

@@ -8,10 +8,12 @@ import {
 /**
  * Bumped with each catalog wire-shape change. Versions 6 and 7 can be promoted:
  * version 7 only adds optional Cursor metadata and version 8 only widens
- * `family` to any registry key. Older incompatible shapes expire.
+ * `family` to any registry key. v9 adds optional exact-thinking metadata; v8
+ * caches are promoted stale with their representation ETag discarded.
+ * Older incompatible shapes expire.
  */
-export const AI_GATEWAY_MODEL_CATALOG_CACHE_VERSION = 8 as const;
-const PROMOTABLE_CACHE_VERSIONS = new Set<unknown>([6, 7]);
+export const AI_GATEWAY_MODEL_CATALOG_CACHE_VERSION = 9 as const;
+const PROMOTABLE_CACHE_VERSIONS = new Set<unknown>([6, 7, 8]);
 export const AI_GATEWAY_MODEL_CATALOG_TTL_MS = 15 * 60 * 1000;
 
 export interface AiGatewayModelCatalogCacheFile {

@@ -22,6 +22,7 @@ import {
   type FloatingMenuProps,
 } from './FloatingMenu';
 import { OverlayScrollArea } from './OverlayScrollArea';
+import { useSkeletonBone } from './SkeletonBlock';
 
 type PickerMenuStyle = CSSProperties & {
   '--canopy-picker-minimum-width'?: string;
@@ -754,15 +755,55 @@ export function PickerMenuState({
   );
 }
 
+/** A placeholder label's width, in Tailwind's spacing steps. */
+export type PickerMenuSkeletonLabelWidth =
+  | 20
+  | 22
+  | 24
+  | 28
+  | 32
+  | 34
+  | 36
+  | 40;
+
+const SKELETON_LABEL_WIDTH_CLASS: Record<PickerMenuSkeletonLabelWidth, string> =
+  {
+    20: 'w-20',
+    22: 'w-22',
+    24: 'w-24',
+    28: 'w-28',
+    32: 'w-32',
+    34: 'w-34',
+    36: 'w-36',
+    40: 'w-40',
+  };
+
 /** Varied label widths so placeholder rows read as a list, not a block. */
-const SKELETON_LABEL_WIDTH_CLASSES = [
-  'w-32',
-  'w-24',
-  'w-40',
-  'w-28',
-  'w-36',
-  'w-20',
-] as const;
+const SKELETON_LABEL_WIDTHS = [
+  32, 24, 40, 28, 36, 20,
+] as const satisfies readonly PickerMenuSkeletonLabelWidth[];
+
+/**
+ * One placeholder option: a leading icon and a label bar on an option's
+ * 32px row, both shared skeleton blocks.
+ */
+export function PickerMenuSkeletonRow({
+  labelWidth,
+}: {
+  readonly labelWidth: PickerMenuSkeletonLabelWidth;
+}): JSX.Element {
+  const icon = useSkeletonBone<HTMLSpanElement>();
+  const label = useSkeletonBone<HTMLSpanElement>();
+  return (
+    <div aria-hidden="true" className="flex h-8 items-center gap-2 px-2">
+      <span {...icon} className="block size-4 shrink-0 rounded-full" />
+      <span
+        {...label}
+        className={`block h-2.5 rounded-full ${SKELETON_LABEL_WIDTH_CLASS[labelWidth]}`}
+      />
+    </div>
+  );
+}
 
 export interface PickerMenuSkeletonProps extends HTMLAttributes<HTMLDivElement> {
   /** Placeholder rows to draw. */
@@ -786,20 +827,12 @@ export function PickerMenuSkeleton({
     <div {...props} role="status" className={`flex flex-col ${className}`}>
       <span className="sr-only">{label}</span>
       {Array.from({ length: rows }, (_, index) => (
-        <div
+        <PickerMenuSkeletonRow
           key={index}
-          aria-hidden="true"
-          className="flex h-8 items-center gap-2 px-2"
-        >
-          <span className="size-4 shrink-0 animate-pulse rounded-full bg-subtle motion-reduce:animate-none" />
-          <span
-            className={`h-2.5 animate-pulse rounded-full bg-subtle motion-reduce:animate-none ${
-              SKELETON_LABEL_WIDTH_CLASSES[
-                index % SKELETON_LABEL_WIDTH_CLASSES.length
-              ]
-            }`}
-          />
-        </div>
+          labelWidth={
+            SKELETON_LABEL_WIDTHS[index % SKELETON_LABEL_WIDTHS.length] ?? 32
+          }
+        />
       ))}
     </div>
   );

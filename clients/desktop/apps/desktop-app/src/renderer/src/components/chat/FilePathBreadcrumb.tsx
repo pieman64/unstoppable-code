@@ -322,7 +322,6 @@ export function FilePathBreadcrumb({
         type="button"
         data-testid="file-breadcrumb-segment-file"
         className="min-w-0 max-w-64 shrink truncate rounded px-0.5 fg-primary transition-colors hover:bg-fg-primary/[0.06]"
-        title={fileName}
         onClick={(event): void =>
           openSegmentMenu(
             parts.length,
@@ -332,7 +331,9 @@ export function FilePathBreadcrumb({
           )
         }
       >
-        {fileName}
+        {/* The name can be cut off, so the text keeps a native title with the
+            full name. */}
+        <span title={fileName}>{fileName}</span>
       </button>
       <FloatingMenu
         // Each segment's menu is its own: switching segments places it anew.

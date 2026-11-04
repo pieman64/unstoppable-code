@@ -6,7 +6,6 @@ import type {
   SharedContainerSharePreview,
 } from '@canopy/desktop-shared/types';
 import type { SharedContainerType } from '@canopy/protocol/shared-containers';
-import { ADVANCED_DISCLOSURE_LABEL } from '@canopy/ui-shared/components';
 import { formatOrgNameList } from '@canopy/ui-shared/lib/org-lapse-sentence';
 import { brandText } from '@/lib/brand';
 
@@ -68,7 +67,7 @@ export const RECIPIENTS_ERROR_LABEL = 'Could not load who has access.';
 export const RECIPIENTS_PARTIAL_ERROR_LABEL =
   'Could not load the complete access list.';
 /** The low-profile toggle over everything the owner may opt out of. */
-export const ADVANCED_LABEL = ADVANCED_DISCLOSURE_LABEL;
+export const ADVANCED_LABEL = 'Advanced';
 export const SCOPE_SAVE_ERROR_LABEL =
   'Could not save the approved share scope.';
 /**

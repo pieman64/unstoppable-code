@@ -42,8 +42,9 @@ describe('MarketplaceDetailPageShell and catalog detail cores', () => {
 
     expect(out).toContain('data-testid="plugins-entry-detail"');
     expect(out).toContain('aria-labelledby="plugins-entry-detail-title"');
-    expect(out).toContain(
-      '<h1 id="plugins-entry-detail-title" class="sr-only">Useful plugin</h1>',
+    // The page's visually hidden h1 names the section.
+    expect(out).toMatch(
+      /<h1 id="plugins-entry-detail-title" class="[^"]*\bsr-only\b[^"]*">Useful plugin<\/h1>/,
     );
     expect(out).toContain('data-testid="plugins-entry-detail-back"');
     expect(out).toContain('data-testid="detail-body"');

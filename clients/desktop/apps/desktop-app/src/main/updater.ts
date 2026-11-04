@@ -3,9 +3,11 @@ import { app } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import {
+  detectLinuxInstallSource,
   installedLinuxPackageArchitecture,
-  isInstalledLinuxDeb,
+  PACMAN_UPDATE_COMMAND,
   type LinuxPackageArchitecture,
+  type PackageManagedLinuxInstallSource,
 } from './updater/linux-manual-update';
 import {
   verifiedLinuxRelease,
@@ -505,7 +507,7 @@ class UnsupportedLinuxUpdateError extends Error {}
 
 function linuxFailureMessage(error: unknown): string {
   const copy = linuxUpdateCopy(BRAND, RELEASE_FLAVOR);
-  if (error instanceof UnsupportedLinuxUpdateError) return copy.unsupported;
+  if (error instanceof UnsupportedLinuxUpdateError) return error.message;
   if (
     error instanceof Error &&
     (error.message === PRIVATE_REPO_AUTH_ERROR ||
@@ -515,13 +517,21 @@ function linuxFailureMessage(error: unknown): string {
   return copy.unavailable;
 }
 
+interface LinuxPackageInstall {
+  architecture: LinuxPackageArchitecture;
+  source: PackageManagedLinuxInstallSource;
+}
+
 /**
- * Resolves the installed package architecture once per operation; callers
- * thread it through every release decision so one check never mixes
- * architectures.
+ * Resolves the install source and package architecture once per operation;
+ * callers thread them through every release decision so one check never
+ * mixes architectures.
  */
-async function ensureLinuxDeb(): Promise<LinuxPackageArchitecture> {
-  if (!app.isPackaged || !(await isInstalledLinuxDeb())) {
+async function ensureLinuxPackage(): Promise<LinuxPackageInstall> {
+  const source = app.isPackaged
+    ? await detectLinuxInstallSource()
+    : { kind: 'unknown' as const };
+  if (source.kind !== 'deb' && source.kind !== 'pacman') {
     throw new UnsupportedLinuxUpdateError(
       linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unsupported,
     );
@@ -532,7 +542,37 @@ async function ensureLinuxDeb(): Promise<LinuxPackageArchitecture> {
       linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unsupported,
     );
   }
-  return architecture;
+  return { architecture, source };
+}
+
+/** The package manager, not this app, chooses which version gets installed. */
+function refusePackageManagerTarget(install: LinuxPackageInstall): void {
+  if (install.source.kind === 'pacman')
+    throw new UnsupportedLinuxUpdateError(
+      linuxUpdateCopy(BRAND, RELEASE_FLAVOR).packageManagerVersion,
+    );
+}
+
+function linuxUpdateInfo(
+  release: VerifiedLinuxRelease,
+  source: PackageManagedLinuxInstallSource,
+): UpdateInfoData {
+  if (source.kind === 'pacman')
+    return {
+      version: release.version,
+      packageManagerUpdate: {
+        guidance: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).packageManager,
+        command: PACMAN_UPDATE_COMMAND,
+      },
+    };
+  return {
+    version: release.version,
+    manualDownload: {
+      url: release.url,
+      guidance: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).verification,
+      checksum: { algorithm: release.algorithm, value: release.checksum },
+    },
+  };
 }
 
 function refuseLinuxInstall(): void {
@@ -545,7 +585,9 @@ async function checkLinuxUpdates(
   generation = updaterGeneration,
 ): Promise<void> {
   try {
-    const architecture = await ensureLinuxDeb();
+    const install = await ensureLinuxPackage();
+    if (request) refusePackageManagerTarget(install);
+    const { architecture } = install;
     if (generation !== updaterGeneration) return;
     setState({ phase: 'checking' }, { type: 'checking' });
     const target = request
@@ -604,14 +646,7 @@ async function checkLinuxUpdates(
           next[difference] > current[difference]
         : relation === 'upgrade' ||
           (target !== undefined && relation === 'downgrade');
-    const info: UpdateInfoData = {
-      version: release.version,
-      manualDownload: {
-        url: release.url,
-        guidance: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).verification,
-        checksum: { algorithm: release.algorithm, value: release.checksum },
-      },
-    };
+    const info = linuxUpdateInfo(release, install.source);
     setState(
       {
         phase: available ? 'available' : 'not-available',
@@ -763,8 +798,12 @@ async function listTargetUpdateVersionsImpl(
 ): Promise<TargetUpdateVersionListResponse> {
   ensureTargetedUpdatesSupported();
   ensurePackaged();
-  const linuxArchitecture =
-    hostPlatformOperatingSystem() === 'linux' ? await ensureLinuxDeb() : null;
+  let linuxArchitecture: LinuxPackageArchitecture | null = null;
+  if (hostPlatformOperatingSystem() === 'linux') {
+    const install = await ensureLinuxPackage();
+    refusePackageManagerTarget(install);
+    linuxArchitecture = install.architecture;
+  }
 
   const { query, limit, page: initialPage } = normalizeListRequest(request);
   let page = initialPage;

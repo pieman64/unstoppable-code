@@ -1,5 +1,5 @@
 jest.mock('../../lib/sidebar-items', () => ({
-  readAllSidebarItems: jest.fn(),
+  readAllSidebarItemsSnapshot: jest.fn(),
 }));
 jest.mock('../../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path';
 import type { SidebarItem, WorktreeData } from '@canopy/desktop-shared/types';
 import type * as PreferencesStore from '../../lib/preferences-store';
 import { readPreferencesFile } from '../../lib/preferences-store';
-import { readAllSidebarItems } from '../../lib/sidebar-items';
+import { readAllSidebarItemsSnapshot } from '../../lib/sidebar-items';
 import { serializeWorkspaceMutation } from '../../lib/chat-project-operation-queue';
 import { getSidebarItemGroupsFilePath } from '../../lib/paths';
 import { listWorkspacePortalEntities } from '../workspace-portal-service';
@@ -71,9 +71,14 @@ beforeEach(async () => {
       jest.requireActual<typeof PreferencesStore>('../../lib/preferences-store')
         .DEFAULT_PREFERENCES,
     );
-  jest
-    .mocked(readAllSidebarItems)
-    .mockResolvedValue({ version: 1, items: [workspace] });
+  jest.mocked(readAllSidebarItemsSnapshot).mockResolvedValue({
+    file: { version: 1, items: [workspace] },
+    authority: 'ok',
+    indexAuthority: 'ok',
+    indexedWorkspaceIds: [workspace.id],
+    workspaceReads: new Map(),
+    storedFields: [],
+  });
   const path = getSidebarItemGroupsFilePath(workspace.id);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(storedGroups));

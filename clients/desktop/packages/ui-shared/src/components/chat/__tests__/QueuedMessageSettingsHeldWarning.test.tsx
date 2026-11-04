@@ -41,6 +41,13 @@ describe('QueuedMessageSettingsHeldWarning', () => {
         interrupt: false,
       }),
     ).toMatch(/^Changed: model, plugins and agent instructions\. /);
+    expect(
+      queuedMessageSettingsHeldDescription({
+        changes: ['model', 'thinking_level'],
+        steer: false,
+        interrupt: true,
+      }),
+    ).toMatch(/^Changed: model and thinking level\. /);
   });
 
   it('renders a focusable warning icon that carries the explanation', () => {

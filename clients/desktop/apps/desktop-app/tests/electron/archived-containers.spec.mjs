@@ -527,7 +527,7 @@ require(${JSON.stringify(modulePath)});
     test(
       bulkCleanup
         ? 'archives a slow dependency tree without a Git removal timeout or retry'
-        : 'preserves a timed-out single-repository archive and completes it on retry',
+        : 'preserves a timed-out single-repository archive and refuses its retry',
       async () => {
         test.skip(process.platform !== 'darwin', 'macOS timeout recovery');
         test.setTimeout(300_000);
@@ -663,10 +663,40 @@ require(${JSON.stringify(modulePath)});
               ).worktrees.some((worktree) => worktree.id === worktreeId),
             ).toBe(true);
 
-            // Release the exact command that timed out, then retry from the same
-            // sidebar action. This must resume the verified archive journal.
+            // Release the exact command that timed out, then retry from the
+            // same sidebar action. The timed-out archive's journal ends
+            // recovery-required, so the retry is refused and offers the
+            // discard instead, without running Git again. Cancel keeps the
+            // worktree, its quarantined checkout and its staged capture.
             writeFileSync(allowRemovalPath, 'allowed\n');
             await deleteWorktreeWithOptionalConfirmation(window, row);
+            const discard = window.getByTestId('worktree-discard-dialog');
+            await expect(discard).toBeVisible({ timeout: 30_000 });
+            await expect(
+              window.getByTestId('worktree-discard-dialog-targets'),
+            ).toContainText(descriptor.teardown.quarantinePath);
+            await window.getByTestId('worktree-discard-dialog-cancel').click();
+            await expect(discard).toHaveCount(0);
+            await expect(row).toBeVisible();
+            expect(
+              readFileSync(attemptLogPath, 'utf8').trim().split('\n'),
+            ).toHaveLength(1);
+            expect(existsSync(descriptor.teardown.quarantinePath)).toBe(true);
+            expect(
+              existsSync(path.join(archiveDir, 'git-state.staged.json')),
+            ).toBe(true);
+            expect(existsSync(path.join(archiveDir, 'container.json'))).toBe(
+              false,
+            );
+            expect(
+              JSON.parse(
+                readFileSync(
+                  path.join(workspaceMetaDir, 'worktrees.json'),
+                  'utf8',
+                ),
+              ).worktrees.some((worktree) => worktree.id === worktreeId),
+            ).toBe(true);
+            return;
           }
           await expect(row).toHaveCount(0, { timeout: 45_000 });
           await expect
@@ -683,7 +713,7 @@ require(${JSON.stringify(modulePath)});
             .toBe(false);
           expect(
             readFileSync(attemptLogPath, 'utf8').trim().split('\n'),
-          ).toHaveLength(bulkCleanup ? 1 : 2);
+          ).toHaveLength(1);
           const manifest = JSON.parse(
             readFileSync(path.join(archiveDir, 'container.json'), 'utf8'),
           );

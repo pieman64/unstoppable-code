@@ -27,6 +27,7 @@ import {
   type TeamTab,
 } from '../navigation/organization-nav-items';
 import { organizationSettingsSubtabsFromBootstrap } from '../navigation/settings-nav-bootstrap';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * What an organization tab draws above its page header. The settings rail's
@@ -153,7 +154,9 @@ export function PersonalOverviewHeader({
 }): JSX.Element {
   return (
     <header data-testid="team-personal-header">
-      <h1 className="truncate text-2xl font-semibold fg-primary">Personal</h1>
+      <Heading level={1} variant="page" truncate>
+        Personal
+      </Heading>
       <p className="mt-1.5 text-s fg-secondary">
         Your activity and usage across your personal work.
       </p>

@@ -5,8 +5,9 @@ import {
   ActivityItemRow,
   AnsiOutput,
   Button,
-  CompletedRunsDisclosure,
+  Disclosure,
   ExecutionActionButton,
+  HeaderActionButton,
   LoadingSpinner,
   RunConfirmationCard,
   RunningProcessCard,
@@ -480,19 +481,21 @@ export function ScriptsSectionBody({
                   }
                 >
                   {details.length > 0 && (
-                    <button
-                      type="button"
+                    <HeaderActionButton
+                      iconOnly
                       onClick={(): void =>
                         setExpandedLifecycles((previous) =>
                           toggle(previous, group.lifecycle),
                         )
                       }
                       aria-expanded={expanded}
-                      className="focus-ring rounded p-0.5 fg-secondary transition-colors hover:fg-primary/80"
                       aria-label={`${expanded ? 'Collapse' : 'Expand'} project ${group.lifecycle} scripts`}
+                      // The 28px control overhangs the row's text line
+                      // rather than growing it.
+                      className="-my-1.5"
                     >
                       <ChevronIcon open={expanded} />
-                    </button>
+                    </HeaderActionButton>
                   )}
                   <span
                     className={`min-w-0 flex-1 truncate ${compact ? 'fg-primary' : 'font-medium fg-primary/80'}`}
@@ -569,11 +572,12 @@ export function ScriptsSectionBody({
         </div>
       )}
       {completedRuns.length > 0 && (
-        <CompletedRunsDisclosure
-          count={completedRuns.length}
-          expanded={completedExpanded}
-          onToggle={(): void => setCompletedExpanded((previous) => !previous)}
-          dataTestId="activity-scripts-completed-toggle"
+        <Disclosure
+          label={`Completed (${completedRuns.length})`}
+          open={completedExpanded}
+          onOpenChange={setCompletedExpanded}
+          dataTestId="activity-scripts-completed"
+          toggleTestId="activity-scripts-completed-toggle"
         >
           {completedRuns.map(([scriptKey, run]) => {
             const stopped =
@@ -609,14 +613,16 @@ export function ScriptsSectionBody({
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     {
-                      <button
-                        type="button"
+                      <HeaderActionButton
+                        iconOnly
                         onClick={(): void => setEnlargedKey(scriptKey)}
-                        className={`focus-ring rounded p-0.5 transition-colors ${color}`}
                         aria-label="Enlarge output"
+                        // The 28px control overhangs the card's text line
+                        // rather than growing it.
+                        className="-my-1.5"
                       >
                         <ExternalIcon size={14} />
-                      </button>
+                      </HeaderActionButton>
                     }
                     <span className={`font-medium ${color}`}>{run.label}</span>
                   </div>
@@ -627,7 +633,7 @@ export function ScriptsSectionBody({
               </div>
             );
           })}
-        </CompletedRunsDisclosure>
+        </Disclosure>
       )}
       {enlargedKey !== null &&
         runs[enlargedKey] !== undefined &&

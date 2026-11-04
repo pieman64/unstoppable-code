@@ -112,7 +112,6 @@ import {
   isClaudeCodeGraphOrientationCurrent,
   readClaudeCodeGraphToolAnswer,
   recordClaudeCodeGraphOrientation,
-  resolveClaudeCodeGraphWorktreeRoot,
 } from '../lib/claude-code-graph-orientation';
 import { spawnManagedTerminal } from '../services/terminal-service';
 import type { WorkerTerminalEvent } from '@canopy/core-runtime/node/terminal';
@@ -3771,13 +3770,10 @@ export class DefaultClaudeTerminalSessionService implements ClaudeTerminalSessio
       record.codeGraphCustomSourceExtensionsThisTurn === undefined
     ) {
       record.codeGraphCustomSourceExtensionsThisTurn =
-        await loadConfiguredClaudeCodeGraphSourceExtensions(
-          resolveClaudeCodeGraphWorktreeRoot(
-            record.projectId,
-            record.worktreeId,
-            record.cwd ?? '',
-          ),
-        );
+        await loadConfiguredClaudeCodeGraphSourceExtensions({
+          projectId: record.projectId,
+          worktreeId: record.worktreeId,
+        });
     }
     const graphScope = {
       projectId: record.projectId,

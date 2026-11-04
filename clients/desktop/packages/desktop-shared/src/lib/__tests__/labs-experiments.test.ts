@@ -56,12 +56,42 @@ describe('experiment registry', () => {
       'chat-automation-pipelines',
     );
   });
-  it('keeps only the Appearance preference, Files reads, chat automation pipelines and pages after UI graduation', () => {
+  // CAN-5088: off by default, so terminals stay in the app until opted in.
+  it('offers daemon terminals independently, owning no navigation', () => {
+    expect(
+      LABS_EXPERIMENTS.find((entry) => entry.id === 'daemon-terminals'),
+    ).toMatchObject({
+      flagKey: 'canopy-desktop-labs-daemon-terminals',
+      requiresEarlyAccess: false,
+      pages: [],
+      sidebarKeys: [],
+    });
+    expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain(
+      'daemon-terminals',
+    );
+  });
+  // CAN-5089: off by default, so graph builds and reads stay in the app.
+  it('offers the daemon code graph independently, owning no navigation', () => {
+    expect(
+      LABS_EXPERIMENTS.find((entry) => entry.id === 'daemon-code-graph'),
+    ).toMatchObject({
+      flagKey: 'canopy-desktop-labs-daemon-code-graph',
+      requiresEarlyAccess: false,
+      pages: [],
+      sidebarKeys: [],
+    });
+    expect(EXTRACTED_EARLY_ACCESS_EXPERIMENT_IDS).not.toContain(
+      'daemon-code-graph',
+    );
+  });
+  it('keeps only the Appearance preference, Files reads, daemon terminals and code graph, chat automation pipelines and pages after UI graduation', () => {
     expect(LABS_EXPERIMENTS.map((entry) => entry.id)).toEqual([
       'early-access',
       'sidebar',
       'activity-card',
       'daemon-files-reads',
+      'daemon-terminals',
+      'daemon-code-graph',
       'chat-automation-pipelines',
       ...PAGE_EXPERIMENTS.map(([id]) => id),
     ]);

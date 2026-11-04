@@ -9,6 +9,7 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
+  Heading,
   Notice,
   SegmentedControl,
   type SegmentedControlOption,
@@ -336,9 +337,9 @@ export function TodayStatisticsPanel(): JSX.Element {
     <section className="space-y-4" data-testid="statistics-today-panel">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold fg-primary">
+          <Heading level={2} variant="section">
             Today's statistics
-          </h2>
+          </Heading>
           <p className="text-s fg-secondary">
             Activity since local midnight from local {brandText.appName}{' '}
             observability.
@@ -430,9 +431,9 @@ export function TodayStatisticsPanel(): JSX.Element {
 
             <div className="rounded-lg border bg-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <h3 className="text-s font-semibold fg-primary">
+                <Heading level={3} variant="title">
                   Detail Explorer
-                </h3>
+                </Heading>
                 <SegmentedControl<DetailMode>
                   label="Detail explorer view"
                   value={mode}

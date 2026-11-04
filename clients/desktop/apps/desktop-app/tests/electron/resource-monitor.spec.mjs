@@ -325,7 +325,7 @@ test('resource popover strips Electron prefix only for App process rows', async 
     await expect(appRow).toBeVisible();
     await expect(otherRow).toBeVisible();
     await expect(
-      appRow.locator('td').nth(1).locator('span').first(),
+      appRow.locator('td').nth(1).getByText('Main', { exact: true }),
     ).toHaveText('Main');
     await expect(otherRow).toContainText('Electron helper');
     await expect(appRow).not.toContainText('Electron main');

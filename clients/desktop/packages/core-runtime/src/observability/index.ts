@@ -65,3 +65,15 @@ export type {
   ObservedTaskUsage,
   PipelineStepOutputObservation,
 } from './ports';
+export {
+  AuditEventJournal,
+  type AuditEventFeed,
+  type AuditJournalItem,
+  type AuditJournalReplay,
+} from './audit-event-journal';
+export {
+  createCoreObservabilityHandlers,
+  type CoreObservabilityHandlerOptions,
+  type CoreObservabilityHandlers,
+  type ObservabilityReadModel,
+} from './handlers';

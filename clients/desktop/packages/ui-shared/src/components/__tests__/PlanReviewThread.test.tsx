@@ -8,6 +8,7 @@
  */
 import { renderToString } from 'react-dom/server';
 import {
+  CommentAvatar,
   PlanReviewComment,
   PlanReviewCommentActions,
   type PlanReviewAuthor,
@@ -40,6 +41,13 @@ describe('PlanReviewComment unsent badge', () => {
     );
     expect(html).not.toContain('Not sent');
     expect(html).not.toContain('bg-warning-subtle');
+  });
+});
+
+describe('CommentAvatar', () => {
+  it('keeps its card backing the size of the avatar beside a tall comment', () => {
+    const html = renderToString(<CommentAvatar author={AUTHOR} />);
+    expect(html).toContain('self-start');
   });
 });
 

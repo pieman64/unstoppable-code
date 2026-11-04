@@ -25,7 +25,7 @@ import {
 // on the unlinked→linked Canopy Cloud transition, which requires a seeded
 // linked cloud account the harness cannot provision deterministically. That
 // surface is covered manually (see plan). This spec exercises the same shared
-// `TelemetryDisclosure` + `TelemetrySharingControls` via the persistent
+// `TelemetrySharingIntro` + `TelemetrySharingControls` via the persistent
 // Privacy tab and asserts the real on-disk persistence round-trip.
 
 // Canonical least-invasive → most-invasive order, matching the rows the Privacy
@@ -250,9 +250,12 @@ test('CAN-2963: Personal catalog is a Settings choice, not a Home offer', async 
     await expect(section).toContainText('Public profile card above');
     // The full payload list stays one click away instead of always open.
     const disclosure = section.getByTestId('personal-catalog-disclosure');
-    await expect(disclosure).not.toHaveAttribute('open', '');
-    await disclosure.getByText('What is sent').click();
-    await expect(disclosure).toHaveAttribute('open', '');
+    const disclosureToggle = disclosure.getByTestId(
+      'personal-catalog-disclosure-toggle',
+    );
+    await expect(disclosureToggle).toHaveAttribute('aria-expanded', 'false');
+    await disclosureToggle.click();
+    await expect(disclosureToggle).toHaveAttribute('aria-expanded', 'true');
 
     await app.closeSettings();
     await expect(window.getByTestId('page-home')).toBeVisible();

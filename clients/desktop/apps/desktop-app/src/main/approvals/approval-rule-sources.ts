@@ -23,6 +23,10 @@ import {
   preferencesBackupPathPattern,
 } from '../lib/preferences-file-paths';
 import { getMigrationsFilePath, getPreferencesFilePath } from '../lib/paths';
+import {
+  createMigrationsLastGoodPath,
+  migrationsDamagedPathPattern,
+} from '../lib/migrations-file-paths';
 
 /**
  * Where an approval session reads its rules and roots from. Every approval
@@ -185,8 +189,9 @@ export async function resolveExistingAncestorPath(
  * The approval policy files a governed agent must never silently modify:
  * the rule files, the preferences copies recovery restores or keeps, the
  * generation record that decides whether recovery may restore last-good, and
- * the migrations ledger, whose loss re-runs approval-mode migrations. Backups
- * are a file-rule glob, since recovery names each one when it creates it.
+ * the migrations ledger and its recovery copies, whose loss re-runs
+ * approval-mode migrations. Preferences backups and kept damaged ledgers are
+ * file-rule globs, since recovery names each one when it creates it.
  */
 export async function protectedApprovalFileWritePaths(
   workspaceId: string,
@@ -194,6 +199,7 @@ export async function protectedApprovalFileWritePaths(
 ): Promise<string[]> {
   const preferencesPath = getPreferencesFilePath();
   const backupPattern = preferencesBackupPathPattern(preferencesPath);
+  const migrationsPath = getMigrationsFilePath();
   const paths = await Promise.all([
     resolveExistingAncestorPath(
       getWorkspaceApprovalsFilePath(workspaceId),
@@ -208,14 +214,19 @@ export async function protectedApprovalFileWritePaths(
       createPreferencesGenerationPath(preferencesPath),
       basePath,
     ),
-    resolveExistingAncestorPath(getMigrationsFilePath(), basePath),
+    resolveExistingAncestorPath(migrationsPath, basePath),
+    resolveExistingAncestorPath(
+      createMigrationsLastGoodPath(migrationsPath),
+      basePath,
+    ),
     // The folder, not the glob: a file literally named like the glob must not
     // redirect the pattern through a symlink.
-    resolveExistingAncestorPath(dirname(backupPattern), basePath).then(
-      (folder) =>
-        folder === undefined
-          ? undefined
-          : join(folder, basename(backupPattern)),
+    ...[backupPattern, migrationsDamagedPathPattern(migrationsPath)].map(
+      (pattern) =>
+        resolveExistingAncestorPath(dirname(pattern), basePath).then(
+          (folder) =>
+            folder === undefined ? undefined : join(folder, basename(pattern)),
+        ),
     ),
   ]);
   return Array.from(

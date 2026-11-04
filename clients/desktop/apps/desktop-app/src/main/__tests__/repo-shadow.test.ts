@@ -285,6 +285,20 @@ describe('ensureRepoShadow', () => {
     expect(mockedAdd).toHaveBeenCalled();
   });
 
+  it('keeps the code-graph base subtree when it recreates a shadow', async () => {
+    const shadowDir = getRepoShadowDir('/Users/me/repo');
+    mockedReadFile.mockResolvedValue(JSON.stringify('not-an-object'));
+
+    await ensureRepoShadow('/Users/me/repo');
+
+    // The base manager owns `code-graph/`; a recreate removes only what this
+    // module writes (CAN-5084).
+    expect(mockedRm.mock.calls.map(([target]) => target)).toEqual([
+      `${shadowDir}/checkout`,
+      `${shadowDir}/meta.json`,
+    ]);
+  });
+
   it('treats a non-object meta.json as missing and recreates the shadow', async () => {
     mockedReadFile.mockResolvedValue(JSON.stringify('not-an-object'));
 
@@ -766,22 +780,24 @@ describe('cleanupUnreferencedRepoShadows', () => {
       { name: shadowDirName, isDirectory: (): boolean => true },
     ]);
 
-    // Pause ensure mid-create: after rm+mkdir+provisional meta, on fetch.
+    // Pause ensure mid-create: after removing the shadow's checkout and meta,
+    // mkdir and the provisional meta, on fetch.
     const ensurePromise = ensureRepoShadow(repoRoot);
     await flushMicrotasks();
-    expect(order).toEqual(['rm', 'ensure:fetchOrigin']);
+    expect(order).toEqual(['rm', 'rm', 'ensure:fetchOrigin']);
 
     const cleanupPromise = cleanupUnreferencedRepoShadows([]);
     await flushMicrotasks();
     // Cleanup derived the lock key from the provisional meta and is waiting
     // on the in-flight ensure instead of rm-ing the half-built shadow.
-    expect(order).toEqual(['rm', 'ensure:fetchOrigin']);
+    expect(order).toEqual(['rm', 'rm', 'ensure:fetchOrigin']);
 
     resolveFetchOrigin();
     await ensurePromise;
     await cleanupPromise;
 
     expect(order).toEqual([
+      'rm',
       'rm',
       'ensure:fetchOrigin',
       'ensure:addWorktree',

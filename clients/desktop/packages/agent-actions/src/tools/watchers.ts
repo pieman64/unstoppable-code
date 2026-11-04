@@ -578,9 +578,11 @@ function targetWatcherSetupJsonSchema(
                 },
             followUpInstruction: {
               type: 'string',
-              description: chatOnly
-                ? 'Optional instruction included in the visible message posted when the watcher fires.'
-                : 'Optional instruction included in the generated message when the watcher fires.',
+              description: !chatOnly
+                ? 'Optional instruction included in the generated message when the watcher fires.'
+                : capabilities?.hiddenInstructions === false
+                  ? 'Optional instruction included in the visible message posted when the watcher fires.'
+                  : 'Optional instruction included in the hidden event details of the notification posted when the watcher fires.',
             },
             allowDuplicate: {
               type: 'boolean',

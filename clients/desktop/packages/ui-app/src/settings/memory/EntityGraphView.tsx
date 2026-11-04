@@ -27,6 +27,7 @@ import {
   TextInput,
   type SettingsSelectOption,
   CopyDetailsButton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { RefreshCw } from '@canopy/ui-shared/icons/AppIcons';
 import type {
@@ -518,14 +519,13 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
           <aside
             className={`${GRAPH_AREA_HEIGHT} overflow-y-auto rounded-xl border bg-card p-4`}
           >
-            <h2
-              className={withPrivacyClass(
-                'text-base font-semibold fg-primary',
-                blockClassName,
-              )}
-            >
-              {selectionTitle}
-            </h2>
+            <Heading level={2} variant="section">
+              <span
+                className={blockClassName === '' ? undefined : blockClassName}
+              >
+                {selectionTitle}
+              </span>
+            </Heading>
             {selectedFactIds.length === 0 ? (
               <p className="mt-2 text-s fg-secondary">
                 Click an entity or connection to inspect its facts. Drag to

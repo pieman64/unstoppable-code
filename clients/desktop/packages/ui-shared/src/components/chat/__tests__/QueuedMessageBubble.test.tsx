@@ -272,6 +272,47 @@ describe('QueuedMessageBubble', () => {
     expect(html).toContain('data-testid="queued-message-interrupt"');
   });
 
+  it('warns beside Steer and Interrupt when the host names settings that wait for background work', () => {
+    const held = renderToString(
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'queued text',
+          restartHeldChanges: ['thinking_level'],
+        }}
+        turnPhase="foreground"
+        onForce={(): void => {}}
+      />,
+    );
+    expect(held).toContain(
+      'data-testid="queued-message-settings-held-warning"',
+    );
+    expect(held).toContain('Changed: thinking level.');
+
+    for (const props of [
+      { message: { id: 'queue-1', text: 'queued text' } },
+      {
+        message: {
+          id: 'queue-1',
+          text: 'queued text',
+          restartHeldChanges: ['model' as const],
+        },
+        turnPhase: 'idle' as const,
+        onRunNow: (): void => {},
+      },
+    ]) {
+      expect(
+        renderToString(
+          <QueuedMessageBubble
+            turnPhase="foreground"
+            onForce={(): void => {}}
+            {...props}
+          />,
+        ),
+      ).not.toContain('queued-message-settings-held-warning');
+    }
+  });
+
   it('offers Retry and Run now outside a foreground turn', () => {
     const html = renderToString(
       <QueuedMessageBubble
@@ -379,17 +420,32 @@ describe('QueuedMessageBubble fired watcher', () => {
     'Dark mode plan finished',
   ].join('\n');
 
-  it('shows the short notice under the watcher title, never the payload', () => {
+  it('titles a queued message the host marked as a fired watcher', () => {
     const html = renderToString(
-      <QueuedMessageBubble message={{ id: 'queue-1', text: FIRED }} />,
+      <QueuedMessageBubble
+        message={{
+          id: 'queue-1',
+          text: 'Canopy watcher fired.\nDark mode plan finished',
+          watcherFired: { kind: 'Dark mode plan finished' },
+        }}
+      />,
     );
     expect(html).toContain('data-testid="watcher-fired-title"');
     expect(html).toContain('Dark mode plan finished watcher has fired');
     expect(html).toContain('Canopy watcher fired.');
+    expect(html).toContain('bg-info-subtle');
+  });
+
+  it('shows an unmarked watcher block as its plain notice, never the payload', () => {
+    const html = renderToString(
+      <QueuedMessageBubble message={{ id: 'queue-1', text: FIRED }} />,
+    );
+    expect(html).not.toContain('data-testid="watcher-fired-title"');
+    expect(html).toContain('Canopy watcher fired.');
     expect(html).not.toContain('system_instruction');
     expect(html).not.toContain('canopy_watcher_event');
     expect(html).not.toContain('Plan ready.');
-    expect(html).toContain('bg-info-subtle');
+    expect(html).not.toContain('bg-info-subtle');
   });
 
   it('passes a held row to a disabled Retry with no other send action', () => {

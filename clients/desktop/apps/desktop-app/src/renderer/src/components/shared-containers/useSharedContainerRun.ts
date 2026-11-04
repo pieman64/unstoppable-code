@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ScriptRunResponse,
   SharedContainerRunStatus,
-  UserEnvironmentEntry,
+  UserEnvironmentEntryView,
 } from '@canopy/desktop-shared/types';
 import { useGitHubStore } from '@/stores/githubStore';
 
@@ -48,7 +48,7 @@ export interface SharedContainerRunState {
   reload: () => Promise<void>;
   allowRun: (publisherUserId: string) => Promise<boolean>;
   revokeRun: () => Promise<boolean>;
-  saveEnvironment: (values: UserEnvironmentEntry[]) => Promise<boolean>;
+  saveEnvironment: (values: UserEnvironmentEntryView[]) => Promise<boolean>;
   /**
    * Writes an empty value for every declared name that has none, so the
    * recipient edits a pre-labelled list instead of retyping names that are
@@ -199,7 +199,7 @@ export function useSharedContainerRun({
   );
 
   const saveEnvironment = useCallback(
-    (values: UserEnvironmentEntry[]): Promise<boolean> =>
+    (values: UserEnvironmentEntryView[]): Promise<boolean> =>
       runAction(async () => {
         if (containerId === null) throw new Error('No container is open.');
         await window.api.sharedContainers.saveRunEnvironment({
@@ -214,7 +214,7 @@ export function useSharedContainerRun({
     const current = status;
     if (!current) return Promise.resolve(false);
     const existing = new Set(current.values.map((entry) => entry.key));
-    const seeded: UserEnvironmentEntry[] = [
+    const seeded: UserEnvironmentEntryView[] = [
       ...current.values,
       ...(current.run?.requiredEnv ?? [])
         .filter((name) => !existing.has(name))

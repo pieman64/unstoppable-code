@@ -737,7 +737,7 @@ describe('ActivityPanel', () => {
     expect(out).toContain('data-testid="native-summary"');
     expect(out).toContain('data-testid="desktop-summary-icon"');
     expect(out).toContain('Desktop summary subtitle');
-    expect(out).not.toContain('Loading…');
+    expect(out).not.toContain('activity-section-loading');
     expect(out).toContain('data-testid="native-notes"');
     expect(out.match(/data-testid="activity-section-notes"/g)).toHaveLength(1);
     expect(out).not.toContain('data-testid="activity-section-changed-files"');
@@ -1944,6 +1944,9 @@ describe('ActivityPanel', () => {
     );
 
     expect(out).toContain('data-testid="activity-section-loading"');
+    // The loading body is skeleton bars, never "Loading…" copy.
+    expect(out).not.toContain('Loading…');
+    expect(out).toContain('skullet-bar');
     // Body-level empty states are replaced by the loading placeholder; the
     // header subtitle still shows the semantic (desktop-matched) copy.
     expect(out).not.toContain('data-testid="activity-changed-files-empty"');

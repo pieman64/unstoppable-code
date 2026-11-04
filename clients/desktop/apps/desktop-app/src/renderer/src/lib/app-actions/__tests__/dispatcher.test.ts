@@ -80,7 +80,7 @@ import {
   type ChatCommandRequest,
   type ChatCommandResult,
   type CreateSharedAutomationIpcRequest,
-  type EnvironmentConfigData,
+  type EnvironmentConfigView,
   type FileTreeMutationRequest,
   type FileTreeMutationResponse,
   type LoadEnvironmentConfigResponse,
@@ -304,7 +304,7 @@ const loadEnvironmentConfigMock = jest.fn<
 >();
 const saveEnvironmentConfigMock = jest.fn<
   Promise<SaveEnvironmentConfigResponse>,
-  [EnvironmentConfigData]
+  [EnvironmentConfigView]
 >();
 const chatApiMock = {
   command: jest.fn<Promise<ChatCommandResult>, [ChatCommandRequest]>(),
@@ -2705,101 +2705,51 @@ describe('dispatchAppAction', () => {
     expect(response.result).toEqual({ localMemoryEnabled: false });
   });
 
-  it('opts in to the daily free AI Credits and reports the granted amount', async () => {
-    saveDailyCreditDripChoiceMock.mockReset();
-    saveDailyCreditDripChoiceMock.mockResolvedValue({
-      result: {
-        enabled: true,
-        decidedAt: '2026-10-06T12:00:00.000Z',
-        capCredits: 50,
-        balanceCredits: 50,
-        granted: 50,
-      },
-      refreshed: new Promise(() => undefined),
-      accountChanged: false,
-    });
+  it.each([true, false])(
+    'rejects the retired daily credit drip action in validation with enabled=%s',
+    (enabled) => {
+      expect(
+        __isValidAppAdvisorActionForTests({
+          type: 'settings.set_daily_credit_drip',
+          enabled,
+        }),
+      ).toBe(false);
+    },
+  );
 
-    const response = await dispatchAppAction({
-      requestId: 'req-daily-drip-on',
-      source: 'assistant',
-      action: { type: 'settings.set_daily_credit_drip', enabled: true },
-    });
+  it.each([true, false])(
+    'refuses the retired daily credit drip action without saving with enabled=%s',
+    async (enabled) => {
+      saveDailyCreditDripChoiceMock.mockReset();
+      saveDailyCreditDripChoiceMock.mockResolvedValue({
+        result: {
+          enabled,
+          decidedAt: '2026-10-06T12:00:00.000Z',
+          capCredits: 50,
+          balanceCredits: 12,
+          granted: 0,
+        },
+        refreshed: new Promise(() => undefined),
+        accountChanged: false,
+      });
 
-    expect(saveDailyCreditDripChoiceMock).toHaveBeenCalledWith(true);
-    expect(response).toMatchObject({
-      ok: true,
-      result: { dailyCreditDripEnabled: true, capCredits: 50, granted: 50 },
-    });
-  });
+      const response = await dispatchAppAction({
+        requestId: `req-retired-daily-drip-${enabled}`,
+        source: 'assistant',
+        expectedUiRevision: 42,
+        action: { type: 'settings.set_daily_credit_drip', enabled },
+      } as unknown as Parameters<typeof dispatchAppAction>[0]);
 
-  it('opts out of the daily free AI Credits without a granted amount', async () => {
-    saveDailyCreditDripChoiceMock.mockReset();
-    saveDailyCreditDripChoiceMock.mockResolvedValue({
-      result: {
-        enabled: false,
-        decidedAt: '2026-10-06T12:00:00.000Z',
-        capCredits: 50,
-        balanceCredits: 12,
-        granted: 0,
-      },
-      refreshed: new Promise(() => undefined),
-      accountChanged: false,
-    });
-
-    const response = await dispatchAppAction({
-      requestId: 'req-daily-drip-off',
-      source: 'assistant',
-      action: { type: 'settings.set_daily_credit_drip', enabled: false },
-    });
-
-    expect(saveDailyCreditDripChoiceMock).toHaveBeenCalledWith(false);
-    expect(response.ok).toBe(true);
-    expect(response.result).toEqual({
-      dailyCreditDripEnabled: false,
-      capCredits: 50,
-    });
-  });
-
-  it('reports a failed daily free AI Credits save as an execution failure', async () => {
-    saveDailyCreditDripChoiceMock.mockReset();
-    saveDailyCreditDripChoiceMock.mockRejectedValue(
-      new Error('Connect a cloud account to change daily free AI Credits.'),
-    );
-
-    const response = await dispatchAppAction({
-      requestId: 'req-daily-drip-failure',
-      source: 'assistant',
-      action: { type: 'settings.set_daily_credit_drip', enabled: true },
-    });
-
-    expect(response).toMatchObject({
-      ok: false,
-      error: {
-        code: 'execution_failed',
-        message: 'Connect a cloud account to change daily free AI Credits.',
-      },
-    });
-  });
-
-  it('requires a boolean enabled field on the daily free AI Credits action', () => {
-    expect(
-      __isValidAppAdvisorActionForTests({
-        type: 'settings.set_daily_credit_drip',
-        enabled: false,
-      }),
-    ).toBe(true);
-    expect(
-      __isValidAppAdvisorActionForTests({
-        type: 'settings.set_daily_credit_drip',
-      }),
-    ).toBe(false);
-    expect(
-      __isValidAppAdvisorActionForTests({
-        type: 'settings.set_daily_credit_drip',
-        enabled: 'on',
-      }),
-    ).toBe(false);
-  });
+      expect(response).toMatchObject({
+        ok: false,
+        error: {
+          code: 'unsupported_action',
+          message: 'Unsupported action type settings.set_daily_credit_drip.',
+        },
+      });
+      expect(saveDailyCreditDripChoiceMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('persists the Agents add to the Feed preference through the settings action', async () => {
     savePreferencesMock.mockClear();
@@ -17828,7 +17778,7 @@ describe('dispatchAppAction', () => {
   });
 
   it('updates project environment assignments through the canonical config store', async () => {
-    const currentData: EnvironmentConfigData = {
+    const currentData: EnvironmentConfigView = {
       version: 2 as const,
       environments: [
         {
@@ -24183,7 +24133,7 @@ describe('dispatchAppAction', () => {
       );
       expect(automationsTab).toMatchObject({
         kind: 'automations',
-        title: 'Automations (Overview)',
+        title: 'Workflows (Library)',
         instance: { variant: 'overview' },
       });
     });

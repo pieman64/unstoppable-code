@@ -207,7 +207,7 @@ exports[`searchAppAdvisorActions ranking characterization ranks empty input 1`] 
   "category": undefined,
   "query": "",
   "returned": 12,
-  "totalMatches": 390,
+  "totalMatches": 389,
 }
 `;
 

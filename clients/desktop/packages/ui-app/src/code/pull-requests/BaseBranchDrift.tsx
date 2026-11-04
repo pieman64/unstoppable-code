@@ -161,15 +161,17 @@ export function BaseBranchDriftWarning({
         </div>
       }
     >
-      <button
-        type="button"
+      <Button
+        variant="warning"
+        size="sm"
+        iconOnly
         data-testid="pr-status-base-branch-drift-warning"
         aria-label="Base branch differs from PR"
         onClick={onAlign}
-        className="electron-no-drag focus-ring inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md fg-warning transition-colors hover:bg-warning-subtle"
+        className="electron-no-drag"
       >
         <WarningIcon size={16} aria-hidden="true" />
-      </button>
+      </Button>
     </RichHoverTooltip>
   );
 }

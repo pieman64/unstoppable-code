@@ -11,6 +11,7 @@ import {
   ShareActionButton,
   ShareAudienceLabel,
   ErrorBanner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   createShareLinkResolver,
@@ -124,9 +125,9 @@ export function WorkspaceTemplateShareTab({
     >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {`Share ${WORKSPACE_TEMPLATE_SHARE_LABEL_LOWER}`}
-          </h3>
+          </Heading>
           <p className="mt-1 text-xs fg-secondary">
             Shares this project’s setup. Chats and files stay private.
           </p>

@@ -83,6 +83,7 @@ jest.mock('../lib/repo-shadow', () => {
 import {
   codeGraphBaseManagerTestExports,
   getCodeGraphBaseWorkspaceDescriptor,
+  maintainCodeGraphBasesForWorkspace,
   reconcileCodeGraphBaseAvailability,
   resolveCodeGraphBaseWorkspaceFingerprint,
   retireCodeGraphBasesForRepo,
@@ -481,6 +482,71 @@ describe('code graph base manager descriptors', () => {
     releaseRetirement();
     syncCodeGraphBaseRepositories([]);
   });
+
+  it.each([
+    ['maintenance', { maintenance: true } as const, 15 * 60 * 1000, 1],
+    ['a forced refresh', { forceRefresh: true } as const, 0, 2],
+  ])(
+    "prepares a workspace's bases for %s with its shadow age and concurrency",
+    async (_label, options, maxAgeMs, startedTogether) => {
+      syncCodeGraphBaseRepositories([multi]);
+      const emptyCheckout = await mkdtemp(
+        path.join(tmpdir(), 'code-graph-base-maintenance-'),
+      );
+      const shadowAges: Array<number | undefined> = [];
+      const pending: Array<() => void> = [];
+      let bases = 0;
+      // The first shadow is the custom-language source; the rest are bases.
+      jest
+        .mocked(withEnsuredRepoShadow)
+        .mockImplementationOnce((repoPath, shadowOptions, run) => {
+          shadowAges.push(shadowOptions.maxAgeMs);
+          return run({
+            repoPath,
+            shadowPath: emptyCheckout,
+            defaultBranch: 'main',
+            lastSyncAt: new Date(0).toISOString(),
+          });
+        })
+        .mockImplementation((_repoPath, shadowOptions) => {
+          shadowAges.push(shadowOptions.maxAgeMs);
+          bases += 1;
+          return new Promise((_resolve, reject) => {
+            pending.push(() => reject(new Error('offline')));
+          });
+        });
+      const waitFor = async (done: () => boolean): Promise<void> => {
+        for (let attempt = 0; attempt < 300 && !done(); attempt += 1)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+      };
+
+      try {
+        const maintained = maintainCodeGraphBasesForWorkspace(
+          multi.id,
+          options,
+        );
+        await waitFor(() => bases >= startedTogether);
+        // Give another base the chance to start before checking it did not.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(bases).toBe(startedTogether);
+        while (bases < 2 || pending.length > 0) {
+          pending.shift()?.();
+          await waitFor(() => pending.length > 0 || bases >= 2);
+          if (bases >= 2 && pending.length === 0) break;
+        }
+
+        await expect(maintained).resolves.toEqual([
+          { repoId: WORKSPACE_ROOT_REPO_ID, ok: false, message: 'offline' },
+          { repoId: 'app', ok: false, message: 'offline' },
+        ]);
+        expect(shadowAges).toEqual([maxAgeMs, maxAgeMs, maxAgeMs]);
+      } finally {
+        jest.mocked(withEnsuredRepoShadow).mockReset();
+        syncCodeGraphBaseRepositories([]);
+        await rm(emptyCheckout, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('aborts in-flight shadow preparation when its final owner becomes unavailable', async () => {
     syncCodeGraphBaseRepositories([single]);

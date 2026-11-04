@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { RepoRulesStatus } from '@canopy/protocol/repo-rules';
 import { useCanopyClient } from '@canopy/app-state';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import { Button, ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { CapabilityGate } from '../capability/CapabilityGate';
 
 export interface RepoRulesStatusCardProps {
@@ -169,7 +169,9 @@ function RepoRulesStatusCardBody({
       className="rounded-lg border p-4"
       data-testid="project-settings-repo-rules"
     >
-      <h3 className="text-s font-medium fg-primary">Cursor rules</h3>
+      <Heading level={3} variant="title">
+        Cursor rules
+      </Heading>
       <p
         className="mt-1 text-xs fg-secondary"
         role="status"

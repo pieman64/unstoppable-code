@@ -22,6 +22,7 @@ const config = {
   setupFiles: [
     '<rootDir>/apps/desktop-app/src/__tests__/jestDataDirIsolation.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestElectronLogSetup.ts',
+    '<rootDir>/apps/desktop-app/src/__tests__/jestSecureStorageSetup.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestW5FileStoreSetup.ts',
     '<rootDir>/apps/desktop-app/src/__tests__/jestCodeGraphResourcesSetup.ts',
   ],

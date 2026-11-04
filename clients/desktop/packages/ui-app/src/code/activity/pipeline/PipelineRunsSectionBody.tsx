@@ -2,7 +2,7 @@
 
 import { type JSX } from 'react';
 import { OverlayScrollArea } from '@canopy/ui-shared';
-import { ChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { Disclosure } from '@canopy/ui-shared/components';
 import {
   FailedPendingExecutionCard,
   FailedQueuedHookPipelineCard,
@@ -147,57 +147,45 @@ export function PipelineRunsSectionBody({
       )}
 
       {hiddenRoots.length > 0 && (
-        <div className={frameless ? 'shrink-0' : undefined}>
-          <button
-            type="button"
-            aria-expanded={hiddenExpanded}
-            onClick={() => onHiddenExpandedChange(!hiddenExpanded)}
-            className="focus-ring flex w-full items-center gap-3 rounded-md py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
+        // The chevron leads the toggle at its left edge, so it centers under
+        // the action card's 16px Dispatch glyph above it.
+        <Disclosure
+          label={`Hidden (${hiddenRoots.length})`}
+          open={hiddenExpanded}
+          onOpenChange={onHiddenExpandedChange}
+          dataTestId="pipeline-hidden"
+          {...(frameless ? { className: 'shrink-0' } : {})}
+        >
+          <OverlayScrollArea
+            viewportProps={{
+              'data-testid': 'pipeline-hidden-viewport',
+              onScroll: (event) => {
+                const viewport = event.currentTarget;
+                const maskImage =
+                  viewport.scrollTop > 0
+                    ? 'linear-gradient(to bottom, transparent, black 12px)'
+                    : 'none';
+                if (viewport.style.maskImage !== maskImage)
+                  viewport.style.maskImage = maskImage;
+              },
+            }}
+            viewportClassName="overflow-x-hidden"
+            railClassName="-right-3"
+            contentClassName="min-w-0 space-y-1.5"
+            // The frameless cap is `FRAMELESS_HIDDEN_GROUP_MAX_H`, spelled
+            // out so the design-system lint can read it; the section test
+            // pins the literal to the shared constant.
+            className={frameless ? 'max-h-60' : 'max-h-76'}
           >
-            {/* The 16px slot matches the action card's icon slot, so the
-                chevron centers under the Dispatch glyph above it. */}
-            <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
-              <ChevronRightMediumIcon
-                size={16}
-                data-testid="pipeline-hidden-chevron"
-                className={`shrink-0 transition-transform ${hiddenExpanded ? 'rotate-90' : ''}`}
+            {hiddenRoots.map((node) => (
+              <PipelineRunTreeRow
+                key={node.summary.id}
+                node={node}
+                {...runRowProps}
               />
-            </span>
-            Hidden ({hiddenRoots.length})
-          </button>
-
-          {hiddenExpanded && (
-            <OverlayScrollArea
-              viewportProps={{
-                'data-testid': 'pipeline-hidden-viewport',
-                onScroll: (event) => {
-                  const viewport = event.currentTarget;
-                  const maskImage =
-                    viewport.scrollTop > 0
-                      ? 'linear-gradient(to bottom, transparent, black 12px)'
-                      : 'none';
-                  if (viewport.style.maskImage !== maskImage)
-                    viewport.style.maskImage = maskImage;
-                },
-              }}
-              viewportClassName="overflow-x-hidden"
-              railClassName="-right-3"
-              contentClassName="min-w-0 space-y-1.5"
-              // The frameless cap is `FRAMELESS_HIDDEN_GROUP_MAX_H`, spelled
-              // out so the design-system lint can read it; the section test
-              // pins the literal to the shared constant.
-              className={frameless ? 'mt-2 max-h-60' : 'mt-2 max-h-76'}
-            >
-              {hiddenRoots.map((node) => (
-                <PipelineRunTreeRow
-                  key={node.summary.id}
-                  node={node}
-                  {...runRowProps}
-                />
-              ))}
-            </OverlayScrollArea>
-          )}
-        </div>
+            ))}
+          </OverlayScrollArea>
+        </Disclosure>
       )}
     </div>
   );

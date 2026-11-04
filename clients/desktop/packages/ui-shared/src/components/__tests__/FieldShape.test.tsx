@@ -1,5 +1,4 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ControlSelect } from '../ControlSelect';
 import { Select, TextInput } from '../Field';
 import { PickerTrigger } from '../PickerMenu';
 import { SearchField } from '../SearchField';
@@ -62,19 +61,6 @@ describe('field and dropdown shape', () => {
       /<button[^>]*class="([^"]*)"/,
     );
     expect(cls).toContain('h-7');
-    expect(cls).toContain('rounded-row');
-    expect(cls).not.toContain('rounded-full');
-  });
-
-  it('draws the native dropdown as a 28px rounded rectangle', () => {
-    const cls = classOf(
-      renderToStaticMarkup(
-        <ControlSelect aria-label="Sound" value="a" onChange={noop}>
-          <option value="a">A</option>
-        </ControlSelect>,
-      ),
-      /<select[^>]*class="([^"]*)"/,
-    );
     expect(cls).toContain('rounded-row');
     expect(cls).not.toContain('rounded-full');
   });

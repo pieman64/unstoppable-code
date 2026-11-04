@@ -10,6 +10,7 @@ import {
   TextInput,
   CopyDetailsButton,
   ToggleSwitch,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   CopyIcon,
@@ -484,9 +485,9 @@ export function DigestShareControls({
       >
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
-            <h2 className="text-s font-semibold fg-primary">
+            <Heading level={2} variant="title">
               Share this digest
-            </h2>
+            </Heading>
             {/*
               `trapFocus` makes Escape or an outside press the only keyboard
               way out, so the exit has to be visible on the surface itself.

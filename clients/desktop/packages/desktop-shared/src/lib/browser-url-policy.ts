@@ -1,3 +1,5 @@
+import { buildBrowserSearchUrl } from './browser-search-engines';
+
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
@@ -149,6 +151,46 @@ export function sameBrowserUrl(left: string, right: string): boolean {
   }
 }
 
+/**
+ * Whether the start of Browser-bar input names a host: it has a dot, a
+ * bracketed IPv6 address, a port, or is `localhost`.
+ */
+function startsWithHost(token: string): boolean {
+  const [host = ''] = token.split(/[/?#]/, 1);
+  return (
+    host.includes('.') ||
+    host.startsWith('[') ||
+    host.toLowerCase() === 'localhost' ||
+    HOST_WITH_PORT.test(token)
+  );
+}
+
+/**
+ * Whether Browser-bar input reads as search keywords rather than an address.
+ * Paths and inputs with `://` are addresses even with spaces. Other input
+ * with whitespace is an address only when its first word is a host with a
+ * path (`localhost/my page`); a single word is an address when it has a
+ * scheme or names a host.
+ */
+function isSearchQuery(trimmed: string): boolean {
+  if (
+    trimmed.length === 0 ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('\\') ||
+    trimmed.startsWith('~') ||
+    WINDOWS_DRIVE_PATH.test(trimmed) ||
+    /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(trimmed)
+  ) {
+    return false;
+  }
+  if (/\s/.test(trimmed)) {
+    const [first = ''] = trimmed.split(/\s/, 1);
+    // `example.com/a b` and `localhost:3000/a b` are a host with a path.
+    return !(/[/?#]/.test(first) && startsWithHost(first));
+  }
+  return !hasScheme(trimmed) && !startsWithHost(trimmed);
+}
+
 export function classifyInAppBrowserInput(
   input: string,
   localServersOnly: boolean,
@@ -178,4 +220,33 @@ export function classifyInAppBrowserInput(
     // Fall through to the unsupported verdict.
   }
   return { kind: 'unsupported' };
+}
+
+/**
+ * Typed into the Browser bar: an address, a local file path, or search
+ * keywords, which open `searchUrlTemplate` with `%s` replaced by the words.
+ * A leading `?` always searches.
+ * Agent navigation and start pages do not search; they go through
+ * `classifyInAppBrowserInput`. A search URL passes the same gate as a typed
+ * address, so local-only browsing allows a search engine on this computer.
+ */
+export function classifyBrowserBarInput(
+  input: string,
+  localServersOnly: boolean,
+  searchUrlTemplate: string,
+): InAppBrowserInputVerdict {
+  const trimmed = input.trim();
+  // As in Chrome, a leading `?` searches whatever follows.
+  const forced = trimmed.startsWith('?');
+  const query = forced ? trimmed.slice(1).trim() : trimmed;
+  if (query.length === 0 || (!forced && !isSearchQuery(trimmed))) {
+    return classifyInAppBrowserInput(input, localServersOnly);
+  }
+  const url = buildBrowserSearchUrl(searchUrlTemplate, query);
+  if (isAllowedInAppBrowserUrl(url, localServersOnly)) {
+    return { kind: 'ok', url };
+  }
+  return localServersOnly && isAllowedInAppBrowserUrl(url, false)
+    ? { kind: 'blocked-by-local-only' }
+    : { kind: 'unsupported' };
 }

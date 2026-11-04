@@ -1,15 +1,15 @@
 'use client';
 
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
-import {
-  useState,
-  type JSX,
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-} from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
   EmptyState,
   ListRow,
   PageSearchControls,
@@ -248,14 +248,6 @@ export interface WorkflowsRunsTableProps {
   readonly highlightKey?: string | null;
 }
 
-function isRowControlTarget(event: MouseEvent | KeyboardEvent): boolean {
-  // Portaled menus bubble through React to the row; only a press on the row's
-  // own cells opens it.
-  return (
-    event.target instanceof Node && event.currentTarget.contains(event.target)
-  );
-}
-
 /**
  * The Runs feed table (CAN-3981): one row per automation run, pipeline run or
  * watcher. Rows are focusable; Enter or a click opens the result, and a row
@@ -296,162 +288,132 @@ export function WorkflowsRunsTable({
 
   return (
     <div className="flex min-h-0 flex-col" data-testid="workflows-runs-table">
-      <div className="overflow-hidden rounded-lg border">
-        <table className="w-full table-fixed text-left text-s">
-          <thead className="text-xs fg-tertiary">
-            <tr>
-              <th className="px-4 py-2.5 font-normal">Workflow</th>
-              <th className="w-24 px-3 py-2.5 font-normal">Kind</th>
-              <th className="hidden w-28 px-3 py-2.5 font-normal lg:table-cell">
-                Started by
-              </th>
-              <th className="hidden w-48 px-3 py-2.5 font-normal xl:table-cell">
-                Where
-              </th>
-              <th className="w-36 px-3 py-2.5 font-normal">Started</th>
-              <th className="w-24 px-3 py-2.5 font-normal">Duration</th>
-              <th className="w-32 px-3 py-2.5 text-right font-normal">
-                <span className="sr-only">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((row) => {
-              const interactive =
-                row.result.available || row.output !== undefined;
-              const expanded = expandedKey === row.key;
-              const primary = primaryWorkflowRunAction(row.actions);
-              const busy = busyKeys?.has(row.key) === true;
-              const detail =
-                row.detail ??
-                (row.result.available ? undefined : row.result.reason);
-              return (
-                <tr
-                  key={row.key}
-                  data-testid="workflows-run-row"
-                  data-run-key={row.key}
-                  data-run-kind={row.kind}
-                  data-run-status={row.status}
-                  data-highlighted={
-                    highlightKey === row.key ? 'true' : undefined
-                  }
-                  aria-current={highlightKey === row.key ? 'true' : undefined}
-                  tabIndex={
-                    interactive ? 0 : highlightKey === row.key ? -1 : undefined
-                  }
-                  aria-expanded={
-                    !row.result.available && row.output !== undefined
-                      ? expanded
-                      : undefined
-                  }
-                  onClick={
-                    interactive
-                      ? (event): void => {
-                          if (isRowControlTarget(event)) activate(row);
-                        }
-                      : undefined
-                  }
-                  onKeyDown={
-                    interactive
-                      ? (event): void => {
-                          if (event.key !== 'Enter') return;
-                          if (event.target !== event.currentTarget) return;
-                          event.preventDefault();
-                          activate(row);
-                        }
-                      : undefined
-                  }
-                  className={`border-t align-top transition-colors ${
-                    interactive
-                      ? 'focus-ring cursor-pointer hover:bg-subtle'
-                      : ''
-                  }${highlightKey === row.key ? ' bg-subtle' : ''}`}
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex min-w-0 gap-2">
-                      <WorkflowRunStatusGlyph status={row.status} />
-                      <div className="flex min-w-0 flex-col gap-1">
+      <DataTableFrame layout="fixed" caption="Workflow runs">
+        <DataTableHead>
+          <DataTableHeaderCell>Workflow</DataTableHeaderCell>
+          <DataTableHeaderCell width="6rem">Kind</DataTableHeaderCell>
+          <DataTableHeaderCell width="7rem" showFrom="lg">
+            Started by
+          </DataTableHeaderCell>
+          <DataTableHeaderCell width="12rem" showFrom="xl">
+            Where
+          </DataTableHeaderCell>
+          <DataTableHeaderCell width="9rem">Started</DataTableHeaderCell>
+          <DataTableHeaderCell width="6rem">Duration</DataTableHeaderCell>
+          <DataTableHeaderCell width="8rem" align="right" labelHidden>
+            Actions
+          </DataTableHeaderCell>
+        </DataTableHead>
+        <DataTableBody>
+          {shown.map((row) => {
+            const interactive =
+              row.result.available || row.output !== undefined;
+            const expanded = expandedKey === row.key;
+            const primary = primaryWorkflowRunAction(row.actions);
+            const busy = busyKeys?.has(row.key) === true;
+            const detail =
+              row.detail ??
+              (row.result.available ? undefined : row.result.reason);
+            return (
+              <DataTableRow
+                key={row.key}
+                data-testid="workflows-run-row"
+                data-run-key={row.key}
+                data-run-kind={row.kind}
+                data-run-status={row.status}
+                data-highlighted={highlightKey === row.key ? 'true' : undefined}
+                selected={highlightKey === row.key}
+                focusable={highlightKey === row.key}
+                verticalAlign="top"
+                aria-expanded={
+                  !row.result.available && row.output !== undefined
+                    ? expanded
+                    : undefined
+                }
+                onActivate={interactive ? (): void => activate(row) : undefined}
+              >
+                <DataTableCell tone="primary">
+                  <div className="flex min-w-0 gap-2">
+                    <WorkflowRunStatusGlyph status={row.status} />
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span
+                        className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
+                        data-testid="workflows-run-name"
+                      >
+                        {row.name}
+                      </span>
+                      {detail ? (
                         <span
-                          className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
-                          data-testid="workflows-run-name"
+                          className={`truncate text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}
+                          data-testid="workflows-run-detail"
                         >
-                          {row.name}
+                          {detail}
                         </span>
-                        {detail ? (
-                          <span
-                            className={`truncate text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}
-                            data-testid="workflows-run-detail"
-                          >
-                            {detail}
-                          </span>
-                        ) : null}
-                        {expanded && row.output !== undefined ? (
-                          <pre
-                            className={`mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-subtle p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-                            data-testid="workflows-run-output"
-                          >
-                            {row.output}
-                          </pre>
-                        ) : null}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="truncate px-3 py-3 fg-secondary">
-                    {WORKFLOW_RUN_KIND_LABELS[row.kind]}
-                  </td>
-                  <td className="hidden truncate px-3 py-3 fg-secondary lg:table-cell">
-                    {row.starter
-                      ? WORKFLOW_RUN_STARTER_LABELS[row.starter]
-                      : ''}
-                  </td>
-                  <td
-                    className={`hidden truncate px-3 py-3 fg-secondary xl:table-cell ${REPLAY_MASK_CLASS}`}
-                  >
-                    {row.where ?? ''}
-                  </td>
-                  <td className="truncate px-3 py-3 tabular-nums fg-secondary">
-                    {row.startedAt === undefined
-                      ? ''
-                      : formatRunStarted(row.startedAt, now, locale)}
-                  </td>
-                  <td className="truncate px-3 py-3 tabular-nums fg-secondary">
-                    {workflowRunDurationLabel(row)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <TableActionsCell testId="workflows-run-actions">
-                      {renderActions ? (
-                        renderActions(row)
-                      ) : primary ? (
-                        <Button
-                          variant="secondary"
-                          size="compact"
-                          disabled={busy}
-                          data-testid={`workflows-run-action-${primary}`}
-                          onClick={(): void => onAction(row, primary)}
-                        >
-                          {WORKFLOW_RUN_ACTION_LABELS[primary]}
-                        </Button>
                       ) : null}
-                      <WorkflowsRowMenu
-                        label={`More actions for ${row.name}`}
-                        testId="workflows-run-menu"
-                        items={menuWorkflowRunActions(row.actions).map(
-                          (action) => ({
-                            id: action,
-                            label: WORKFLOW_RUN_ACTION_LABELS[action],
-                            ...RUN_MENU_ROWS[action],
-                            onSelect: (): void => onAction(row, action),
-                          }),
-                        )}
-                      />
-                    </TableActionsCell>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                      {expanded && row.output !== undefined ? (
+                        <pre
+                          className={`mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-subtle p-2 font-mono text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+                          data-testid="workflows-run-output"
+                        >
+                          {row.output}
+                        </pre>
+                      ) : null}
+                    </div>
+                  </div>
+                </DataTableCell>
+                <DataTableCell overflow="truncate">
+                  {WORKFLOW_RUN_KIND_LABELS[row.kind]}
+                </DataTableCell>
+                <DataTableCell overflow="truncate" showFrom="lg">
+                  {row.starter ? WORKFLOW_RUN_STARTER_LABELS[row.starter] : ''}
+                </DataTableCell>
+                <DataTableCell overflow="truncate" showFrom="xl" replay="mask">
+                  {row.where ?? ''}
+                </DataTableCell>
+                <DataTableCell overflow="truncate">
+                  {row.startedAt === undefined
+                    ? ''
+                    : formatRunStarted(row.startedAt, now, locale)}
+                </DataTableCell>
+                <DataTableCell overflow="truncate">
+                  <span className="tabular-nums">
+                    {workflowRunDurationLabel(row)}
+                  </span>
+                </DataTableCell>
+                <DataTableCell align="right">
+                  <TableActionsCell testId="workflows-run-actions">
+                    {renderActions ? (
+                      renderActions(row)
+                    ) : primary ? (
+                      <Button
+                        variant="secondary"
+                        size="compact"
+                        disabled={busy}
+                        data-testid={`workflows-run-action-${primary}`}
+                        onClick={(): void => onAction(row, primary)}
+                      >
+                        {WORKFLOW_RUN_ACTION_LABELS[primary]}
+                      </Button>
+                    ) : null}
+                    <WorkflowsRowMenu
+                      label={`More actions for ${row.name}`}
+                      testId="workflows-run-menu"
+                      items={menuWorkflowRunActions(row.actions).map(
+                        (action) => ({
+                          id: action,
+                          label: WORKFLOW_RUN_ACTION_LABELS[action],
+                          ...RUN_MENU_ROWS[action],
+                          onSelect: (): void => onAction(row, action),
+                        }),
+                      )}
+                    />
+                  </TableActionsCell>
+                </DataTableCell>
+              </DataTableRow>
+            );
+          })}
+        </DataTableBody>
+      </DataTableFrame>
       {hiddenLoaded > 0 || hasMore ? (
         <div className="flex justify-end pt-3">
           <Button

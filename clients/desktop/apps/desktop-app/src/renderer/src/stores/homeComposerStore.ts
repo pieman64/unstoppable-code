@@ -87,13 +87,6 @@ export type HomeNewWorktreeBaseTarget = Extract<
 export type HomeComposerMode = 'chat' | 'pipeline';
 
 /**
- * Why the composer landed on its workspace, when the landing needs an
- * explanation (CAN-4674). Presentation provenance only: it never routes a
- * send and is not persisted.
- */
-export type HomeWorkspaceSelectionReason = 'most-recent-import';
-
-/**
  * The provider a Home draft's capabilities are keyed on. `cursor` has no
  * provider-side slash discovery (its skills and commands come from the
  * inventory and load from the chat's private Cursor root), so discovery
@@ -844,12 +837,6 @@ interface HomeComposerData {
    */
   workspaceSelectionExplicit: boolean;
   /**
-   * Why an inherited selection landed on `workspaceId` (CAN-4674). Set only
-   * by a `selectWorkspace` call that passes a reason; any other selection,
-   * including of the same workspace, and `reset()` clear it.
-   */
-  workspaceSelectionReason: HomeWorkspaceSelectionReason | null;
-  /**
    * Bumped by every selection, successful same-project rules Apply, and
    * `reset()`. Lets an async flow that
    * captured it reject a completion after a newer selection, even one that
@@ -914,7 +901,6 @@ function createInitialData(): HomeComposerData {
     branchPickerRevealed: false,
     pendingTaskPlanPreset: null,
     workspaceSelectionExplicit: false,
-    workspaceSelectionReason: null,
     workspaceSelectionGeneration: 0,
     linkTarget: IDLE_HOME_LINK_TARGET,
     dismissedLinkKeys: [],
@@ -1021,27 +1007,23 @@ export interface HomeComposerState extends HomeComposerData {
    * (see {@link HomeComposerData.manualPluginSelections}) — then kicks off a
    * branch-targets load for the newly selected workspace. Passing `null`
    * clears the selection (`pluginSelections` becomes `null`) without
-   * starting a load or touching `manualPluginSelections`. `reason` explains
-   * the landing (see {@link HomeComposerData.workspaceSelectionReason}); a
-   * selection without one clears the previous reason.
+   * starting a load or touching `manualPluginSelections`.
    */
   selectWorkspace: (
     workspaceId: string | null,
     options?: {
       explicit?: boolean;
       preserveDraft?: boolean;
-      reason?: HomeWorkspaceSelectionReason;
     },
   ) => void;
   /** Treat the current project as inherited so a link may propose another. */
   markWorkspaceSelectionInherited: () => void;
   /**
-   * Drops an obsolete landing explanation without reselecting, so the draft,
-   * branch target, and attachments stay as they are. Advances selection
-   * identity even without a reason, so a successful same-project rules Apply
-   * supersedes older pending review completions.
+   * Advances selection identity without reselecting, so the draft, branch
+   * target, and attachments stay as they are and a successful same-project
+   * rules Apply supersedes older pending review completions.
    */
-  clearWorkspaceSelectionReason: () => void;
+  advanceWorkspaceSelectionGeneration: () => void;
   setLinkTarget: (linkTarget: HomeLinkTargetState) => void;
   /** Ignore these references until they leave the draft. */
   dismissLinkReferences: (keys: readonly string[]) => void;
@@ -1221,8 +1203,6 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     set({
       workspaceId,
       workspaceSelectionExplicit: options?.explicit === true,
-      workspaceSelectionReason:
-        workspaceId && options?.reason ? options.reason : null,
       workspaceSelectionGeneration: get().workspaceSelectionGeneration + 1,
       executionHarness: undefined,
       branchTarget: NEW_WORKTREE_TARGET,
@@ -1268,9 +1248,8 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     set({ workspaceSelectionExplicit: false });
   },
 
-  clearWorkspaceSelectionReason: (): void => {
+  advanceWorkspaceSelectionGeneration: (): void => {
     set((state) => ({
-      workspaceSelectionReason: null,
       workspaceSelectionGeneration: state.workspaceSelectionGeneration + 1,
     }));
   },

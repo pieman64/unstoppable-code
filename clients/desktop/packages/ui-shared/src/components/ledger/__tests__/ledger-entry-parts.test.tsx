@@ -1115,9 +1115,10 @@ describe('ledger entry details and activity', () => {
     expect(byTestId('ledger-entry-details').textContent).toContain(
       'Recorded from the Summary panel.',
     );
-    expect(byTestId('ledger-entry-summary-snapshot').textContent).toContain(
-      'Show recorded summary',
-    );
+    const snapshotToggle = byTestId('ledger-entry-summary-snapshot-toggle');
+    expect(snapshotToggle.textContent).toBe('Show recorded summary');
+    expect(snapshotToggle.getAttribute('aria-expanded')).toBe('false');
+    act(() => snapshotToggle.click());
     expect(byTestId('ledger-entry-summary-snapshot').textContent).toContain(
       'Recorded title',
     );

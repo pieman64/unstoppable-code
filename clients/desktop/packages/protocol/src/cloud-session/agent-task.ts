@@ -90,6 +90,12 @@ export function agentTaskSourceKey(
 export const AGENT_TASK_MAX_DEPTH = 8;
 
 /**
+ * Live background tasks a session may run (`AGENT_TASK_MAX_CONCURRENT_BACKGROUND`,
+ * REG-3081); Core fails the next with error code `task_limit`.
+ */
+export const AGENT_TASK_MAX_CONCURRENT_BACKGROUND = 16;
+
+/**
  * Client-announced conversation capability (REG-3067
  * `AGENT_CONVERSATION_TASKS_CAPABILITY`). Core sends task data only to
  * clients that announce it.

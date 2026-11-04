@@ -291,7 +291,7 @@ describe('ActivityStateGalleryPage render', () => {
     expect(summaryCopy?.parentElement?.className).toContain('space-y-3');
   });
 
-  it('keeps a 10px gap between progress text and its bar', () => {
+  it('labels the progress bar with its stage', () => {
     const pullRequestMachine = container.querySelector(
       '[data-testid="activity-state-machine-pull-request"]',
     );
@@ -300,13 +300,13 @@ describe('ActivityStateGalleryPage render', () => {
     ).find((button) => button.textContent === 'Creating');
     act(() => creatingState?.click());
 
-    const progressLabel = Array.from(container.querySelectorAll('span')).find(
-      (element) => element.textContent === 'Pushing branch',
+    const bar = Array.from(
+      container.querySelectorAll('[role="progressbar"]'),
+    ).find(
+      (element) => element.getAttribute('aria-label') === 'Pushing branch',
     );
-
-    expect(progressLabel?.parentElement?.parentElement?.className).toContain(
-      'space-y-2.5',
-    );
+    expect(bar).toBeDefined();
+    expect(bar?.parentElement?.textContent).toContain('Pushing branch');
   });
 
   it('switches to the exhaustive catalog and renders every declared state', () => {

@@ -191,6 +191,16 @@ export function ComposerWorkDrawer({
     { label: 'Pull requests', count: pullRequests },
     { label: 'Watching', count: watching },
   ].filter(({ count }) => count > 0);
+  // Needs you ends the row beside other work; alone, it sits by its glyph
+  // instead of leaving the glyph stranded at the other end.
+  const needsYouLeading = needsYou > 0 && summary.length === 0;
+  const needsYouLabel = (
+    <span
+      className={`inline-flex items-center gap-1.5 fg-warning-strong ${needsYouLeading ? '' : 'px-2.5'}`}
+    >
+      Needs you <span className="fg-quaternary">{needsYou}</span>
+    </span>
+  );
   const accessibleSummary = [
     ...summary,
     ...(needsYou > 0 ? [{ label: 'Needs you', count: needsYou }] : []),
@@ -262,24 +272,33 @@ export function ComposerWorkDrawer({
                   </div>
                 ) : null,
               )}
-              {running === 0 && sections?.completed != null
-                ? sections.completed
-                : section(
-                    'Running',
-                    running,
-                    sections ? (
-                      running > 0 || sections.completed != null ? (
-                        <>
-                          {sections.running}
-                          {sections.completed}
-                        </>
-                      ) : null
-                    ) : (
-                      background?.panel
-                    ),
-                    sections?.controls,
-                    'execution-controls',
-                  )}
+              {running === 0 && sections?.completed != null ? (
+                // With no Running label of its own, View completed sits 1px
+                // under the rows above it, as rows do in a list, instead of
+                // a section's 8px away.
+                needsYou > 0 || queuedCount > 0 ? (
+                  <div className="-mt-1.75">{sections.completed}</div>
+                ) : (
+                  sections.completed
+                )
+              ) : (
+                section(
+                  'Running',
+                  running,
+                  sections ? (
+                    running > 0 || sections.completed != null ? (
+                      <>
+                        {sections.running}
+                        {sections.completed}
+                      </>
+                    ) : null
+                  ) : (
+                    background?.panel
+                  ),
+                  sections?.controls,
+                  'execution-controls',
+                )
+              )}
               {section('Pull requests', pullRequests, sections?.pullRequests)}
               {section('Watching', watching, sections?.watching)}
             </div>
@@ -296,7 +315,7 @@ export function ComposerWorkDrawer({
           aria-controls={listId}
           aria-label={`${expanded ? 'Hide work' : 'Show work'}: ${accessibleSummary}`}
           data-testid="composer-work-drawer-toggle"
-          className="focus-ring flex min-h-9 min-w-0 items-center gap-2.5 rounded-xl py-1 pl-2.75 pr-1 text-left text-xs fg-secondary hover:bg-subtle"
+          className="focus-ring flex min-h-9 min-w-0 items-center gap-2.5 rounded-drawer-row py-1 pl-2.75 pr-1 text-left text-xs fg-secondary hover:bg-subtle"
           onClick={(event): void => {
             setAnimate(event.detail > 0);
             setExpanded((current) => !current);
@@ -312,6 +331,7 @@ export function ComposerWorkDrawer({
               spinnerSize={10}
             />
             <span className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+              {needsYouLeading && needsYouLabel}
               {summary.map(({ label, count }, index) => (
                 <span
                   key={label}
@@ -337,11 +357,7 @@ export function ComposerWorkDrawer({
             data-testid="composer-work-summary-attention"
             className="flex shrink-0 items-center"
           >
-            {needsYou > 0 && (
-              <span className="inline-flex items-center gap-1.5 px-2.5 fg-warning-strong">
-                Needs you <span className="fg-quaternary">{needsYou}</span>
-              </span>
-            )}
+            {needsYou > 0 && !needsYouLeading && needsYouLabel}
             <span className="flex h-7 w-7 items-center justify-center">
               {expanded ? (
                 <ChevronDownIcon size={14} />

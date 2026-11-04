@@ -2893,6 +2893,9 @@ async function dispatchHeldWorktreeChatTurn<
             openPlanTurn();
           } else if (evaluation.revivesSettledTurn) {
             turnSettled = false;
+            // Cowork has no plan lease or worktree queue, but its resumed
+            // tools still need the original trusted presentation source.
+            openPlanTurn();
           }
           const rollbackRevival = (): void => {
             if (!evaluation.revivesSettledTurn) return;

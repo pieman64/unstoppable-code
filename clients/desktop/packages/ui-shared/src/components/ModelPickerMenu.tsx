@@ -70,7 +70,9 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuSearchInput,
+  PickerMenuSkeletonRow,
   type PickerMenuOptionTrailingSlots,
+  type PickerMenuSkeletonLabelWidth,
 } from './PickerMenu';
 import { Button } from './Button';
 import { RichHoverTooltip } from './RichHoverTooltip';
@@ -236,7 +238,9 @@ const SEARCH_ENTRY_ROW_SELECTOR =
   '[data-model-id]:not([hidden]):not([aria-disabled="true"]), [data-connect-harness]:not([hidden]):not([aria-disabled="true"])';
 
 /** Label bar widths for the three hosted-model placeholder rows. */
-const GATEWAY_PLACEHOLDER_WIDTH_CLASSES = ['w-28', 'w-22', 'w-34'] as const;
+const GATEWAY_PLACEHOLDER_WIDTHS = [
+  28, 22, 34,
+] as const satisfies readonly PickerMenuSkeletonLabelWidth[];
 
 /** Ink of the single list's `$` marker for AI Credits-only rows. */
 const EXTRA_CHARGE_TEXT_CLASS = 'fg-destructive';
@@ -2172,17 +2176,8 @@ export function ModelPickerMenu({
           <span role="status" className="sr-only">
             Loading more models
           </span>
-          {GATEWAY_PLACEHOLDER_WIDTH_CLASSES.map((widthClass) => (
-            <div
-              key={widthClass}
-              aria-hidden="true"
-              className="flex h-8 items-center gap-2 px-2"
-            >
-              <span className="size-4 shrink-0 animate-pulse rounded-full bg-subtle motion-reduce:animate-none" />
-              <span
-                className={`h-2.5 animate-pulse rounded-full bg-subtle motion-reduce:animate-none ${widthClass}`}
-              />
-            </div>
+          {GATEWAY_PLACEHOLDER_WIDTHS.map((width) => (
+            <PickerMenuSkeletonRow key={width} labelWidth={width} />
           ))}
         </>
       ) : (

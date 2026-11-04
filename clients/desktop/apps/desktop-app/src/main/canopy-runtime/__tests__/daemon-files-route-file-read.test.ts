@@ -285,9 +285,11 @@ it('gives the Electron daemon client the five Files reads with a daemon path, an
     'worker.filesystem.file.read',
     'worker.filesystem.search',
     'worker.filesystem.link.resolve',
+    // The daemon-code-graph experiment's summary read (CAN-5089).
+    'worker.codeGraph.query',
   ]);
   for (const name of Object.keys(ELECTRON_DAEMON_DEFINITIONS.queries))
-    if (name.startsWith('worker.'))
+    if (name.startsWith('worker.filesystem.'))
       expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toContain(name);
   // CAN-5556: production selects every Files read with a daemon path; the
   // read-route table still decides each host.

@@ -1,7 +1,8 @@
 // CAN-5061 golden world: a real data root, workspace records, a Git checkout
 // with a project pipeline, a stored user pipeline, a signed-in cloud account
-// and a fixture bundled catalog. Only `fetch` is replaced, by an in-memory
-// cloud that serves shared and curated pipelines and records every request.
+// and a fixture bundled catalog. `fetch` is an in-memory cloud; the live OS
+// credential metadata probe is scoped to secure for this Node-only world.
+import type * as LinuxSecretService from '../../lib/linux-secret-service';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -95,7 +96,7 @@ export interface GoldenWorld {
   normalize(value: unknown): unknown;
   /** Store a user pipeline and give its generated id a stable token. */
   saveUserPipeline(yaml: string, token: string): Promise<string>;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 function git(cwd: string, args: string[]): void {
@@ -355,6 +356,19 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
     throw new Error(saved.error ?? 'Could not save the golden user pipeline');
   const userPipelineId = saved.data.id;
 
+  // Electron itself is already a golden mock. Keep its metadata boundary
+  // equally deterministic on Linux runners without a session Secret Service.
+  const metadata = jest.requireActual<typeof LinuxSecretService>(
+    '../../lib/linux-secret-service',
+  );
+  const metadataProbe = jest
+    .spyOn(metadata, 'getLinuxSecretServiceState')
+    .mockReturnValue('secure');
+  // The execution golden simulates a relaunch with jest.resetModules(). Keep
+  // that fresh runtime on this world's metadata boundary until disposal.
+  jest.doMock('../../lib/linux-secret-service', () => metadata);
+  const subscriptions =
+    await import('../../canopy-cloud/shared-item-subscriptions');
   const { saveCanopyCloudAccount } =
     await import('../../lib/canopy-cloud-account-store');
   await saveCanopyCloudAccount({
@@ -400,7 +414,16 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
       replacements.push({ value: result.data.id, token: `<${token}>` });
       return Promise.resolve(result.data.id);
     },
-    dispose: (): void => {
+    dispose: async (): Promise<void> => {
+      // Shared install records flush in the background. Drain both the
+      // original world and any simulated relaunch before restoring fetch.
+      const currentSubscriptions =
+        await import('../../canopy-cloud/shared-item-subscriptions');
+      await subscriptions.flushSharedItemSubscriptions();
+      if (currentSubscriptions !== subscriptions)
+        await currentSubscriptions.flushSharedItemSubscriptions();
+      metadataProbe.mockRestore();
+      jest.dontMock('../../lib/linux-secret-service');
       restoreCloud();
       originalEnv.forEach((value, key) => {
         if (value === undefined) delete process.env[key];

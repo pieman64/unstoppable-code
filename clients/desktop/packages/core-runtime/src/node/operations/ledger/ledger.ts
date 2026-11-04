@@ -999,6 +999,60 @@ export class OperationLedger {
   }
 
   /** Unfinished work last run by an earlier process, oldest first. */
+  /**
+   * Run several ledger writes as one transaction: all of them commit, or
+   * none does. Writes that already run in a transaction join it.
+   */
+  atomically<T>(run: () => T): T {
+    return this.transaction(run);
+  }
+
+  /** The last state a source recorded for a subject, or null. */
+  sourceHead(source: string, subject: string): string | null {
+    const head = this.db
+      .prepare(
+        'SELECT head FROM initiated_work_heads WHERE source = ? AND subject = ?',
+      )
+      .get(source, subject)?.head;
+    return head === undefined ? null : asText(head);
+  }
+
+  /**
+   * Record the state a source has seen for a subject. Call it with
+   * {@link atomically} together with the work that state started.
+   */
+  recordSourceHead(source: string, subject: string, head: string): void {
+    this.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO initiated_work_heads (source, subject, head, recorded_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (source, subject)
+             DO UPDATE SET head = excluded.head, recorded_at = excluded.recorded_at`,
+        )
+        .run(source, subject, head, this.now());
+    });
+  }
+
+  /**
+   * The status an operation had when a restart interrupted it, read from its
+   * latest reconciliation that did not find it already paused. Null once
+   * compaction pruned that event.
+   */
+  statusBeforeRestart(operationId: string): OperationStatus | null {
+    const previous = this.db
+      .prepare(
+        `SELECT previous_status FROM operation_events
+          WHERE operation_id = ? AND event = 'reconciled'
+            AND previous_status IN ('queued', 'running')
+          ORDER BY sequence DESC LIMIT 1`,
+      )
+      .get(operationId)?.previous_status;
+    return previous === undefined || previous === null
+      ? null
+      : asStatus(previous);
+  }
+
   listInterrupted(): OperationRecord[] {
     return this.db
       .prepare(

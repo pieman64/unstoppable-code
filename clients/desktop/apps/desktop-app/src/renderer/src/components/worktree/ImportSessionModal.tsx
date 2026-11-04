@@ -17,6 +17,7 @@ import {
   ChoiceField,
   Fact,
   FactList,
+  Heading,
   Notice,
   SearchField,
 } from '@canopy/ui-shared/components';
@@ -423,9 +424,9 @@ export function ImportSessionModal({
               data-testid="import-session-bundle-summary"
             >
               <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
-                <h3 className="text-xs font-semibold fg-secondary ">
+                <Heading level={3} variant="label">
                   Exported session
-                </h3>
+                </Heading>
                 <div className="text-s font-medium break-words">
                   {inspection.manifestSummary.title}
                 </div>
@@ -448,9 +449,9 @@ export function ImportSessionModal({
               </section>
 
               <section className="space-y-2 rounded-lg border bg-secondary/10 p-3">
-                <h3 className="text-xs font-semibold fg-secondary ">
+                <Heading level={3} variant="label">
                   Destination project
-                </h3>
+                </Heading>
                 <div className="text-s font-medium break-words">
                   {inspection.workspaceSummary.workspaceName}
                 </div>
@@ -531,9 +532,9 @@ export function ImportSessionModal({
                 className="space-y-2 rounded-lg border bg-secondary/10 p-3"
                 data-testid="import-session-capability-readiness"
               >
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Capabilities and setup
-                </h3>
+                </Heading>
                 <ul className="space-y-1.5">
                   {capabilityReadiness.map((capability) => (
                     <li

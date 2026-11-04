@@ -1,4 +1,4 @@
-import type * as CollectionStore from '../pipelines/plugin-collection-store';
+import type * as CollectionStore from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import type * as CloudClientModule from '../canopy-cloud/client';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { BRAND } from '@canopy/brand/current';
@@ -88,15 +88,18 @@ jest.mock('../canopy-cloud/mcp-connections', () => ({
   listAccountMcpConnections: (): Promise<unknown[]> =>
     Promise.resolve(mockAccountConnections),
 }));
-jest.mock('../pipelines/plugin-collection-store', () => ({
-  ...jest.requireActual<typeof CollectionStore>(
-    '../pipelines/plugin-collection-store',
-  ),
-  loadPipelinePluginCollectionPreferences: (): Record<string, unknown> =>
-    mockCollectionPreferences,
-  loadPipelineModelAliasPreferences: (): Record<string, unknown> =>
-    mockAliasPreferences,
-}));
+jest.mock(
+  '@canopy/desktop-shared/node/pipelines/plugin-collection-store',
+  () => ({
+    ...jest.requireActual<typeof CollectionStore>(
+      '@canopy/desktop-shared/node/pipelines/plugin-collection-store',
+    ),
+    loadPipelinePluginCollectionPreferences: (): Record<string, unknown> =>
+      mockCollectionPreferences,
+    loadPipelineModelAliasPreferences: (): Record<string, unknown> =>
+      mockAliasPreferences,
+  }),
+);
 const empty: ChatTabPluginSelections = {
   collectionIds: [],
   skillRefs: [],

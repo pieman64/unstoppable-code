@@ -4,6 +4,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { CliPathStatus, UpdateState } from '@canopy/desktop-shared/types';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { useGitHubCliStatus } from '@/hooks/useGitHubCliStatus';
 import { CanopyTab } from '../CanopyTab';
@@ -218,6 +219,36 @@ describe('CanopyTab error messages', () => {
     expect(row).toContain(
       'Chats from Code projects open in a new worktree, so commit and push your work before you import.',
     );
+  });
+
+  it('shows the package manager command for a pacman Linux update', async () => {
+    Object.defineProperty(window, 'platform', {
+      configurable: true,
+      value: 'linux',
+    });
+    mockUpdateState({
+      phase: 'available',
+      info: {
+        version: '1.2.0',
+        packageManagerUpdate: {
+          guidance: 'Update with your package manager:',
+          command: 'sudo pacman -Syu',
+        },
+      },
+    });
+    await renderTab();
+    expect(byTestId('settings-linux-update-guidance').textContent).toBe(
+      'Update with your package manager:sudo pacman -Syu',
+    );
+    const command = byTestId('settings-linux-update-command');
+    expect(command.textContent).toBe('sudo pacman -Syu');
+    expect(command.classList.contains(POSTHOG_REPLAY_BLOCK_CLASS)).toBe(true);
+    expect(
+      byTestId('settings-linux-update-guidance').classList.contains(
+        POSTHOG_REPLAY_BLOCK_CLASS,
+      ),
+    ).toBe(false);
+    expect(container.textContent).not.toMatch(/SHA-(256|512)|\.deb/);
   });
 
   it('shows the folder creation error', async () => {

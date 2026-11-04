@@ -50,6 +50,7 @@ import type {
   McpProxyState,
   McpServerData,
   McpServerFile,
+  McpServerFileView,
   McpServerIndexEntry,
   McpServersIndexFile,
   McpServerConfigSummary,
@@ -76,6 +77,13 @@ import {
   normalizeHttpAuthHandler,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import { sanitizeEnvVars } from '@canopy/desktop-shared/lib/mcp-security';
+import {
+  projectMcpServerData,
+  projectMcpServerFile,
+  resolveAccountSecretInputs,
+  resolveMcpServerInput,
+} from '../mcp/server-secret-view';
+import { StoredSecretError } from '../lib/stored-secrets';
 import { getMcpServersIndexFilePath, getMcpServerFilePath } from '../lib/paths';
 import {
   readPreferencesFile,
@@ -324,7 +332,9 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
       readServer(retire.serverId).then(
         async ({ server }) =>
           (await resolveStandaloneHttpHandler(server.definition)) === 'canopy'
-            ? stableStringify(server)
+            ? // The caller fingerprints the reply it saw, which carries
+              // references; any save also moves `updatedAt`.
+              stableStringify(projectMcpServerData(server))
             : undefined,
         (): undefined => undefined,
       ),
@@ -343,7 +353,8 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
     });
     const stillCurrent = await inMcpRefRewritePhase('retirementGuard', () =>
       readServer(retire.serverId).then(
-        ({ server }) => stableStringify(server) === retire.fingerprint,
+        ({ server }) =>
+          stableStringify(projectMcpServerData(server)) === retire.fingerprint,
         (): boolean => false,
       ),
     );
@@ -1417,9 +1428,96 @@ export async function saveMcpServer(
       ? server.definition.createdAt
       : new Date().toISOString(),
   };
-  return configRepository.withServerMutation(id, () =>
-    writeMcpServer({ ...server, definition }),
+  return configRepository.withServerMutation(id, async () => {
+    // Kept stored secrets resolve against the server as stored now, inside
+    // its lease, so a value kept here is the one this save replaces.
+    const current = server.definition.id
+      ? (await configRepository.readServerForMutation(id))?.server
+      : undefined;
+    const resolved = resolveMcpServerInput(
+      id,
+      { definition, configs: server.configs },
+      current,
+    );
+    return writeMcpServer({
+      ...resolved,
+      ...(server.accountConnectionId !== undefined
+        ? { accountConnectionId: server.accountConnectionId }
+        : {}),
+      ...(server.accountRouting !== undefined
+        ? { accountRouting: server.accountRouting }
+        : {}),
+    });
+  });
+}
+
+const destinationChanged = (): StoredSecretError =>
+  new StoredSecretError(
+    'stored_secret_destination_changed',
+    'Re-enter saved secrets after changing where this server connects or what it runs.',
   );
+
+function urlHostname(url: string | undefined): string | undefined {
+  try {
+    return url === undefined ? undefined : new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolves the kept header and token references a cloud move sends, against
+ * the device server the request names in `secretSource`. A start sends them
+ * only to a custom URL on that server's own origin. An update sends them only
+ * to the connection the server is bound to, and must set that connection's
+ * URL to the server's own origin in the same request: the cloud reports only
+ * the upstream hostname, so a connection pointed at another port or host
+ * first could otherwise collect them.
+ */
+async function resolveAccountRequestSecrets(
+  raw: unknown,
+  boundConnectionId?: string,
+): Promise<unknown> {
+  if (typeof raw !== 'object' || raw === null || !('secretSource' in raw))
+    return raw;
+  const source = raw.secretSource;
+  const serverId =
+    typeof source === 'object' && source !== null && 'serverId' in source
+      ? source.serverId
+      : undefined;
+  validateId(serverId, 'MCP server id');
+  const customUrl =
+    'customUrl' in raw && typeof raw.customUrl === 'string'
+      ? raw.customUrl
+      : undefined;
+  const upstreamHost =
+    boundConnectionId === undefined
+      ? undefined
+      : (await getAccountMcpConnection(boundConnectionId)).upstreamHost;
+  return configRepository.withServerMutation(serverId, async () => {
+    const current = await configRepository.readServerForMutation(serverId);
+    if (!current)
+      throw new StoredSecretError(
+        'stored_secret_unknown',
+        'A saved secret changed or was removed. Reload and try again.',
+      );
+    const deviceUrl = current.server.definition.url;
+    if (boundConnectionId !== undefined) {
+      const entry = (await configRepository.readIndex()).servers.find(
+        (candidate) => candidate.id === serverId,
+      );
+      if (
+        entry?.accountConnectionId !== boundConnectionId ||
+        upstreamHost === undefined ||
+        upstreamHost !== urlHostname(deviceUrl)
+      )
+        throw destinationChanged();
+    }
+    return resolveAccountSecretInputs(raw, {
+      server: current.server,
+      destinationUrl: customUrl ?? '',
+    });
+  });
 }
 
 /** Decides the no-op from strict state read inside the server lease. */
@@ -1456,7 +1554,8 @@ export async function uninstallInstalledDeviceMcpServer(
 }
 
 async function writeMcpServer(
-  server: SaveMcpServerRequest,
+  server: McpServerData &
+    Pick<SaveMcpServerRequest, 'accountConnectionId' | 'accountRouting'>,
 ): Promise<McpServerFile> {
   if (
     server.accountConnectionId !== undefined &&
@@ -1907,7 +2006,7 @@ export function registerMcpServerHandlers(
         })
         .strict()
         .refine((value): boolean => !(value.bearerToken && value.oauthClient))
-        .parse(raw);
+        .parse(await resolveAccountRequestSecrets(raw));
       if (Boolean(input.serverKey) === Boolean(input.customUrl))
         throw new Error('Choose a server key or a custom URL.');
       if (input.endpointUrl !== undefined && !input.serverKey)
@@ -1983,7 +2082,9 @@ export function registerMcpServerHandlers(
     ): Promise<AccountMcpConnection | AccountMcpConnectionFailure> => {
       assertAccountEnabled();
       validateId(id, 'MCP account connection id');
-      const input = updateAccountSchema.parse(raw);
+      const input = updateAccountSchema.parse(
+        await resolveAccountRequestSecrets(raw, id),
+      );
       const headers =
         input.headers === undefined
           ? undefined
@@ -2189,21 +2290,22 @@ export function registerMcpServerHandlers(
   );
 
   // Load single server
+  // Replies never carry stored secrets (CAN-4411); see server-secret-view.
   registerIpcHandler(
     MCP_SERVER_CHANNELS.LOAD_SERVER,
-    async (_event, id: string) => {
+    async (_event, id: string): Promise<McpServerFileView> => {
       if (!id || !SAFE_ID_RE.test(id)) {
         throw new Error(`Invalid MCP server id: ${id}`);
       }
-      return readServer(id);
+      return projectMcpServerFile(await readServer(id));
     },
   );
 
   // Save server (create or update)
   registerIpcHandler(
     MCP_SERVER_CHANNELS.SAVE_SERVER,
-    async (_event, server: SaveMcpServerRequest): Promise<McpServerFile> =>
-      saveMcpServer(server),
+    async (_event, server: SaveMcpServerRequest): Promise<McpServerFileView> =>
+      projectMcpServerFile(await saveMcpServer(server)),
   );
 
   // Delete server

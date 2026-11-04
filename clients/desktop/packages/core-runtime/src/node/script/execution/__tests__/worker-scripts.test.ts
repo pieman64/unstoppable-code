@@ -48,7 +48,16 @@ import {
   type ScriptExecutionPlace,
   type ScriptExecutionWorkerHost,
   type ScriptSpawnOptions,
+  type ScriptTerminalPort,
 } from '..';
+import type {
+  TerminalCreateRequest,
+  WorkerTerminalEventListener,
+} from '../../../terminal';
+import {
+  TERMINAL_USER_CLOSE_SIGNAL,
+  type TerminalSession,
+} from '@canopy/protocol/terminal';
 
 const caller: CanopyCallerDescriptor = {
   principalId: 'core',
@@ -172,8 +181,11 @@ interface Composition {
 }
 
 /** Electron main's direct call and the daemon's bundled binding. */
-function compose(kind: 'direct' | 'bundled'): Composition {
-  const worker = new ScriptExecutionWorker(testHost());
+function compose(
+  kind: 'direct' | 'bundled',
+  host: ScriptExecutionWorkerHost = testHost(),
+): Composition {
+  const worker = new ScriptExecutionWorker(host);
   const handlers = createWorkerScriptHandlers(worker);
   const receipts = createWorkerExecutorReceipts(instructions);
   const workerHandlers = {
@@ -667,4 +679,266 @@ it('stops a script key whose run has not reached the worker yet', async () => {
     operations.close();
     composition.close();
   }
+});
+
+/** The worker's terminals, as the terminal engine's port exposes them. */
+function fakeTerminals(): ScriptTerminalPort & {
+  created: TerminalCreateRequest[];
+  killed: string[];
+  output(terminalId: string, data: string | Uint8Array): void;
+  exit(terminalId: string, exitCode: number, signal?: string): void;
+} {
+  const listeners = new Set<WorkerTerminalEventListener>();
+  const emit: WorkerTerminalEventListener = (event) =>
+    listeners.forEach((listener) => listener(event));
+  const created: TerminalCreateRequest[] = [];
+  const killed: string[] = [];
+  const scope = (
+    terminalId: string,
+  ): { projectId: string; worktreeId: string; terminalId: string } => ({
+    projectId: 'ws',
+    worktreeId: 'wt',
+    terminalId,
+  });
+  let seq = 0;
+  return {
+    created,
+    killed,
+    create: (request): TerminalSession => {
+      created.push(request);
+      return {
+        id: `terminal-${created.length}`,
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        shell: request.managedCommand?.executable ?? '/bin/bash',
+        shellBasename: 'bash',
+        cwd: request.cwd ?? '',
+        createdAt: Date.now(),
+        kind: 'script',
+      };
+    },
+    kill: (terminalId): void => {
+      killed.push(terminalId);
+      emit({
+        type: 'exit',
+        payload: { ...scope(terminalId), exitCode: 0, signal: 'SIGHUP' },
+      });
+    },
+    release: () => Promise.resolve(),
+    lowerPriority: () => undefined,
+    addEventListener: (listener) => {
+      listeners.add(listener);
+      return (): void => void listeners.delete(listener);
+    },
+    output: (terminalId, data): void => {
+      const bytes =
+        typeof data === 'string' ? new TextEncoder().encode(data) : data;
+      seq += bytes.length;
+      emit({
+        type: 'output',
+        payload: { ...scope(terminalId), data: bytes, seq },
+      });
+    },
+    exit: (terminalId, exitCode, signal): void =>
+      emit({
+        type: 'exit',
+        payload: { ...scope(terminalId), exitCode, signal: signal ?? null },
+      }),
+  };
+}
+
+describe('terminal-backed runs (CAN-5082)', () => {
+  const terminal = { terminal: {} };
+
+  it('records the run and its dispatch, and runs it in a worker terminal with exactly its place', async () => {
+    const terminals = fakeTerminals();
+    const registerProcess = jest.fn(() => undefined);
+    const composition = compose('bundled', {
+      ...testHost(),
+      registerProcess,
+      revealTerminal: (tracking): boolean =>
+        tracking.invocation === 'manual-run',
+      terminals: () => Promise.resolve(terminals),
+      resolvePlace: () =>
+        Promise.resolve({ cwd: '/run-copy/repo', env: { ONLY: 'declared' } }),
+    });
+    const { operations, localWorker, runs } = core(
+      composition,
+      join(root, 'ledger.sqlite'),
+    );
+    try {
+      let started!: () => void;
+      const processStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const lines: string[] = [];
+      const running = runs.run(request('read answer', terminal), {
+        observer: {
+          onProcessStarted: () => started(),
+          onLines: (batch) => lines.push(...batch),
+        },
+      });
+      await processStarted;
+      expect(terminals.created).toMatchObject([
+        {
+          projectId: 'ws',
+          worktreeId: 'wt',
+          cwd: '/run-copy/repo',
+          environment: { ONLY: 'declared' },
+          managedCommand: {
+            args: ['-l', '-c', 'read answer'],
+            env: { ONLY: 'declared' },
+            title: 'Setup',
+            kind: 'script',
+            focusOnSpawn: true,
+          },
+        },
+      ]);
+      terminals.output('terminal-1', 'one\ntwo\n');
+      terminals.exit('terminal-1', 0);
+      const outcome = await running;
+
+      expect(outcome).toMatchObject({
+        status: 'completed',
+        result: { status: 'success', exitCode: 0, recorded: true },
+      });
+      expect(lines).toEqual(['one', 'two']);
+      // The terminal holds the run's execution lease; no script lease.
+      expect(registerProcess).not.toHaveBeenCalled();
+      const [delegation] = await localWorker.listDelegations(
+        outcome.operationId,
+      );
+      expect(delegation).toMatchObject({
+        targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+        operation: { name: 'worker.script.execute' },
+      });
+      const { run } = await composition.worker.get({
+        scope: { workspaceId: 'ws', worktreeId: 'wt' },
+        scriptKey: script.scriptKey,
+        tailLines: 5,
+      });
+      expect(run).toMatchObject({
+        execution: { status: 'success', exitCode: 0 },
+        lines: ['one', 'two'],
+      });
+    } finally {
+      operations.close();
+      composition.close();
+    }
+  });
+
+  it('kills the terminal when any caller cancels the run, and treats a user close as cancelled', async () => {
+    const terminals = fakeTerminals();
+    const composition = compose('direct', {
+      ...testHost(),
+      terminals: () => Promise.resolve(terminals),
+    });
+    const { operations, runs } = core(composition, join(root, 'ledger.sqlite'));
+    try {
+      let started!: () => void;
+      let processStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const cancelled = runs.run(request('read answer', terminal), {
+        observer: { onProcessStarted: () => started() },
+      });
+      await processStarted;
+      const [parent] = (
+        await operations.list({ kinds: [CORE_SCRIPT_RUN_KIND], limit: 10 })
+      ).items;
+      await operations.cancel(parent.operationId, {
+        reason: 'test',
+        requestedBy: 'another-client',
+      });
+      expect(await cancelled).toMatchObject({ status: 'cancelled' });
+      expect(terminals.killed).toEqual(['terminal-1']);
+
+      processStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const closed = runs.run(request('read answer', terminal), {
+        observer: { onProcessStarted: () => started() },
+      });
+      await processStarted;
+      terminals.exit('terminal-2', 0, TERMINAL_USER_CLOSE_SIGNAL);
+      expect(await closed).toMatchObject({ status: 'cancelled' });
+      const { run } = await composition.worker.get({
+        scope: { workspaceId: 'ws', worktreeId: 'wt' },
+        scriptKey: script.scriptKey,
+      });
+      expect(run?.execution).toMatchObject({
+        status: 'cancelled',
+        exitCode: null,
+      });
+    } finally {
+      operations.close();
+      composition.close();
+    }
+  });
+
+  it('keeps a character split across two terminal chunks whole', async () => {
+    const terminals = fakeTerminals();
+    const worker = new ScriptExecutionWorker({
+      ...testHost(),
+      terminals: (): Promise<ScriptTerminalPort> => Promise.resolve(terminals),
+    });
+    const lines: string[] = [];
+    const unobserve = worker.observe('run-1', {
+      onLines: (batch) => lines.push(...batch),
+      onProcessStarted: () => {
+        const bytes = new TextEncoder().encode('caf\u00e9\n');
+        terminals.output('terminal-1', bytes.subarray(0, 4));
+        terminals.output('terminal-1', bytes.subarray(4));
+        terminals.exit('terminal-1', 0);
+      },
+    });
+    const result = await worker.execute({
+      ...request('read answer', terminal).params,
+      executionId: 'run-1',
+    });
+    unobserve();
+    expect(result).toMatchObject({ status: 'success', outputBytes: 6 });
+    expect(lines).toEqual(['caf\u00e9']);
+  });
+
+  it('closes the run log as failed when the terminals cannot be loaded', async () => {
+    const worker = new ScriptExecutionWorker({
+      ...testHost(),
+      terminals: (): Promise<ScriptTerminalPort> =>
+        Promise.reject(new Error('No terminal backend.')),
+    });
+    await expect(
+      worker.execute({
+        ...request('read answer', terminal).params,
+        executionId: 'run-1',
+      }),
+    ).rejects.toThrow('No terminal backend.');
+    const { run } = await worker.get({
+      scope: { workspaceId: 'ws', worktreeId: 'wt' },
+      scriptKey: script.scriptKey,
+      tailLines: 5,
+    });
+    expect(run).toMatchObject({
+      execution: { executionId: 'run-1', status: 'failed', exitCode: 1 },
+      lines: ['No terminal backend.'],
+    });
+  });
+
+  it('refuses a terminal run on a worker without terminals, before logging it', async () => {
+    const worker = new ScriptExecutionWorker(testHost());
+    await expect(
+      worker.execute({
+        ...request('read answer', terminal).params,
+        executionId: 'run-1',
+      }),
+    ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+    expect(
+      (
+        await worker.get({
+          scope: { workspaceId: 'ws', worktreeId: 'wt' },
+          scriptKey: script.scriptKey,
+        })
+      ).run,
+    ).toBeNull();
+  });
 });

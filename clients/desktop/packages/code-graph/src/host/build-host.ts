@@ -13,9 +13,15 @@ import {
 import { completeDeferredCodeGraphDerived } from '../deferred-derived';
 import {
   openCodeGraphDatabase,
+  setMetadataValue,
+  withImmediateTransaction,
   type CodeGraphDatabase,
 } from '../store/database';
 import { CodeGraphStore } from '../store/graph-store';
+import {
+  acquireCodeGraphWriterLease,
+  type CodeGraphWriterLease,
+} from '../store/writer-lease';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { Session, type Profiler } from 'node:inspector';
@@ -23,7 +29,9 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { CodeGraphBuildResult } from '../types/code-graph';
 import type { CodeGraphHostChannel } from './channel';
+import { fingerprintCodeGraphWorktree } from './worktree-fingerprint';
 import type {
+  CodeGraphWorkerFingerprintPersist,
   CodeGraphWorkerSummaryRepairRequest,
   CodeGraphWorkerSummaryRepairResponse,
   CodeGraphWorkerBuildRequest,
@@ -42,6 +50,8 @@ export interface CodeGraphBuildHostFacts {
   readonly openFilesBlockReplacement: boolean;
   /** Where to write a CPU profile of each build; none without it. */
   readonly cpuProfileDirectory?: string;
+  /** The Git executable for the end-of-build worktree fingerprint. */
+  readonly gitExecutable: string;
 }
 
 const CPU_SAMPLING_INTERVAL_US = 1_000;
@@ -529,7 +539,10 @@ function isWorkerBuildRequest(
       (isRecord(value.baseFinalization) &&
         isRecord(value.baseFinalization.identity))) &&
     (value.deferDerived === undefined ||
-      typeof value.deferDerived === 'boolean')
+      typeof value.deferDerived === 'boolean') &&
+    (value.fingerprint === undefined ||
+      (isRecord(value.fingerprint) &&
+        typeof value.fingerprint.start === 'string'))
   );
 }
 
@@ -561,6 +574,79 @@ function isWorkerEagerSeedRequest(
   );
 }
 
+/**
+ * The worktree graph a request writes, which its host holds the writer lease
+ * for. Base finalization writes a private staging database and takes none.
+ */
+function worktreeGraphWrittenBy(payload: unknown): string | undefined {
+  if (isWorkerEagerSeedRequest(payload)) return payload.targetDbPath;
+  if (isWorkerSummaryRepairRequest(payload)) return payload.dbPath;
+  if (isWorkerBuildRequest(payload) && payload.baseFinalization === undefined)
+    return payload.dbPath;
+  return undefined;
+}
+
+/**
+ * Fingerprints the worktree again after its build published and stores the
+ * fingerprint when it still equals the one observed before the build. The
+ * caller holds the graph's writer lease.
+ */
+export async function persistEndOfBuildFingerprint(input: {
+  dbPath: string;
+  repositories: CodeGraphWorkerBuildRequest['repositories'];
+  start: string;
+  gitExecutable: string;
+}): Promise<CodeGraphWorkerFingerprintPersist> {
+  const startedAt = performance.now();
+  let end: string;
+  try {
+    end = await fingerprintCodeGraphWorktree(
+      input.repositories,
+      input.gitExecutable,
+    );
+  } catch {
+    return { outcome: 'error' };
+  }
+  const persistStartedAt = performance.now();
+  const endFingerprintMs = persistStartedAt - startedAt;
+  if (end !== input.start) return { outcome: 'unstable', endFingerprintMs };
+  let db: CodeGraphDatabase | undefined;
+  try {
+    // Opening a missing path would create an empty database.
+    if (!existsSync(input.dbPath))
+      return { outcome: 'error', endFingerprintMs };
+    db = openCodeGraphDatabase(input.dbPath);
+    const writer = db;
+    withImmediateTransaction(writer, () =>
+      setMetadataValue(writer, 'worktree_fingerprint', end),
+    );
+    try {
+      // As at the engine's close: a kept reader would otherwise leave this
+      // write in the WAL after the build host exits.
+      writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch {
+      // SQLite checkpoints later; the fingerprint is already committed.
+    }
+    return {
+      outcome: 'persisted',
+      endFingerprintMs,
+      persistMs: performance.now() - persistStartedAt,
+    };
+  } catch {
+    return {
+      outcome: 'error',
+      endFingerprintMs,
+      persistMs: performance.now() - persistStartedAt,
+    };
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // The outcome is already decided.
+    }
+  }
+}
+
 async function respondOnce(
   channel: CodeGraphHostChannel,
   payload: unknown,
@@ -569,7 +655,22 @@ async function respondOnce(
   const cpuProfiler = isWorkerBuildRequest(payload)
     ? await startCodeGraphWorkerCpuProfiler(facts.cpuProfileDirectory)
     : undefined;
+  let lease: CodeGraphWriterLease | undefined;
   try {
+    const writtenGraph = worktreeGraphWrittenBy(payload);
+    if (writtenGraph !== undefined) {
+      try {
+        // Another process (the CLI) may be writing this graph; wait for it.
+        // The launcher's timeout and cancel still end a host that waits.
+        lease = await acquireCodeGraphWriterLease(writtenGraph);
+      } catch (error) {
+        channel.postMessage({
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
     if (isWorkerEagerSeedRequest(payload)) {
       channel.postMessage(await executeCodeGraphEagerSeed(payload, facts));
     } else if (isWorkerSummaryRepairRequest(payload)) {
@@ -579,6 +680,18 @@ async function respondOnce(
         allowDeferredDerived: true,
         openFilesBlockReplacement: facts.openFilesBlockReplacement,
       });
+      if (
+        response.ok &&
+        payload.fingerprint !== undefined &&
+        payload.baseFinalization === undefined
+      ) {
+        response.fingerprint = await persistEndOfBuildFingerprint({
+          dbPath: payload.dbPath,
+          repositories: payload.repositories,
+          start: payload.fingerprint.start,
+          gitExecutable: facts.gitExecutable,
+        });
+      }
       // The caller is answered as soon as the graph is published.
       channel.postMessage(response);
       if (response.ok && response.derivedPending === true) {
@@ -593,6 +706,7 @@ async function respondOnce(
       });
     }
   } finally {
+    lease?.release();
     await cpuProfiler?.stop().catch(() => undefined);
     // One response per launch (plus the derived completion after a
     // `derivedPending` response), then exit; the runner treats this exit as

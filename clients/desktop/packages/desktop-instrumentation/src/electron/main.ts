@@ -24,6 +24,11 @@ import {
   type PostHogAccountTracker,
 } from '../posthog-account';
 import {
+  readPostHogPlatformProperties,
+  type PostHogHostPlatform,
+  type PostHogPlatformProperties,
+} from './posthog-platform';
+import {
   createPostHogOperationTracker,
   isDesktopPostHogOperationEvent,
   type DesktopOperationName,
@@ -392,6 +397,7 @@ let posthogInitialization:
 let posthogShutdown: Promise<void> | undefined;
 let posthogShutdownRequested = false;
 let posthogSession: PostHogSessionState | undefined;
+let posthogPlatformProperties: PostHogPlatformProperties = {};
 let posthogOperationCaptureEnabled = false;
 let posthogInitializationUnavailable = false;
 let posthogOperationEpoch = 0;
@@ -561,6 +567,7 @@ export function initializePostHogMain(
   getAnonymousId: () => Promise<string>,
   accountSource?: PostHogAccountSource,
   getInstallLaunch?: () => Promise<PostHogInstallLaunch>,
+  getHostPlatform?: () => PostHogHostPlatform,
 ): Promise<DesktopInstrumentationInitResult> {
   return (posthogInitialization ??=
     (async (): Promise<DesktopInstrumentationInitResult> => {
@@ -569,6 +576,7 @@ export function initializePostHogMain(
           getAnonymousId,
           accountSource,
           getInstallLaunch,
+          getHostPlatform,
         );
         posthogInitializationUnavailable = !result.enabled;
         return result;
@@ -582,6 +590,7 @@ async function initializePostHogMainClient(
   getAnonymousId: () => Promise<string>,
   accountSource?: PostHogAccountSource,
   getInstallLaunch?: () => Promise<PostHogInstallLaunch>,
+  getHostPlatform?: () => PostHogHostPlatform,
 ): Promise<DesktopInstrumentationInitResult> {
   const config = getDesktopInstrumentationConfig();
   const readiness = getPostHogInstrumentationReadiness(config.posthog);
@@ -612,6 +621,7 @@ async function initializePostHogMainClient(
       throw new Error('PostHog anonymous identity is unavailable');
     }
     const installLaunch = await readPostHogInstallLaunch(getInstallLaunch);
+    posthogPlatformProperties = readPostHogPlatformProperties(getHostPlatform);
     const sdk = loadRequiredNodeModule<typeof PostHogNodeModule>({
       moduleId: 'posthog-node',
       requireFrom: __filename,
@@ -727,6 +737,7 @@ export function captureDesktopPostHogEvent(
     const sanitized = sanitizePostHogEvent({
       properties: {
         ...sanitizeInstrumentationContext(context),
+        ...posthogPlatformProperties,
         distinct_id: posthogAnonymousId,
         $session_id: getDesktopPostHogSession().sessionId,
         $process_person_profile: domain !== undefined,

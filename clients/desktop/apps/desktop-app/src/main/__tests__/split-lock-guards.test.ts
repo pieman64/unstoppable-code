@@ -5,6 +5,21 @@
 // so lock state is authoritative; the downstream of each guard is mocked to a
 // trivial/known outcome so "passed the guard" is observable.
 
+// Hook runs go through the core hook source over a real engine (CAN-4146).
+jest.mock('../canopy-runtime/desktop-runtime', () => ({
+  getActiveDesktopRuntime: (): { initiatedWork: unknown } => ({
+    initiatedWork: jest
+      .requireActual<InitiatedWorkRuntimeHelper>(
+        './helpers/initiated-work-runtime',
+      )
+      .testInitiatedWork().engine,
+  }),
+}));
+jest.mock('../lib/project-owner', () => ({
+  resolveProjectSavedOwner: jest.fn(() =>
+    Promise.resolve({ kind: 'personal' }),
+  ),
+}));
 jest.mock('../lib/validation', () => ({
   validateId: jest.fn(),
   validateOptionalRepoId: jest.fn(),
@@ -52,6 +67,10 @@ jest.mock('../pipelines/project-pipeline-discovery', () => ({
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  closeTestInitiatedWork,
+  type InitiatedWorkRuntimeHelper,
+} from './helpers/initiated-work-runtime';
 import { PortalServiceError } from '../services/portal-service-error';
 import { SplitLockError } from '../services/split-lock-service';
 import {
@@ -63,6 +82,10 @@ describe('split lock chokepoint guards', () => {
   const WS = 'ws-guard';
   const WT = 'wt-guard';
   const OTHER_WT = 'wt-other';
+
+  afterAll(() => {
+    closeTestInitiatedWork();
+  });
 
   afterEach(() => {
     releaseSplitLock(WS, WT);

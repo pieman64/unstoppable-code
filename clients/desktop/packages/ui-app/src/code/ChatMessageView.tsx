@@ -24,6 +24,7 @@ import {
   type PortalChatMessage,
   type PortalChatPart,
   readChatPromptSource,
+  readChatWatcherFired,
 } from '@canopy/protocol/portal';
 import {
   AutoResumeMarker,
@@ -474,12 +475,28 @@ function ChatMessageViewImpl({
         : { reference: null, body: message.text },
     [textPresentation, message.text],
   );
+  // Only the host's marker names a fired watcher; text alone never does.
+  const watcherFired = useMemo(
+    () =>
+      message.role === 'user'
+        ? readChatWatcherFired({
+            watcherFired: message.watcherFired,
+            parts: message.parts,
+          })
+        : undefined,
+    [message.role, message.watcherFired, message.parts],
+  );
   const steeringRequest = useMemo(
     () =>
       message.role === 'user'
-        ? hostMessagePresentation(message.text, message.agentSent)
+        ? hostMessagePresentation(
+            message.text,
+            message.agentSent,
+            'block',
+            watcherFired,
+          )
         : undefined,
-    [message.role, message.text, message.agentSent],
+    [message.role, message.text, message.agentSent, watcherFired],
   );
   const userBody =
     message.role === 'user'
@@ -524,7 +541,7 @@ function ChatMessageViewImpl({
         </div>
       );
     }
-    const existingHeader = steeringRequest ? (
+    const existingHeader = steeringRequest?.title ? (
       steeringRequest.title
     ) : isSteering ? (
       <SteeringTitle />

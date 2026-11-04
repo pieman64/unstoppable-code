@@ -1929,7 +1929,7 @@ for (const outcome of ['completed', 'error']) {
         ),
       ).toBeVisible();
       await expect(
-        header(card).getByText('error', { exact: true }),
+        header(card).getByText('Failed', { exact: true }),
       ).toHaveCount(0);
 
       // Expanding reveals the child transcript and its nested agent card,
@@ -1987,7 +1987,7 @@ for (const outcome of ['completed', 'error']) {
           ),
         ).toHaveCount(0);
         await expect(
-          header(settled).getByText('error', { exact: true }),
+          header(settled).getByText('Failed', { exact: true }),
         ).toHaveCount(outcome === 'error' ? 1 : 0);
         await open(settled);
         await expect(settled.getByTestId('agent-block')).toHaveCount(1);
@@ -2211,7 +2211,7 @@ for (const matching of [true, false]) {
         await expect(legacy).not.toContainText('Apply Patch');
         await expect(
           card.locator('[data-tool-name="file_change"]'),
-        ).toContainText('Edited index.ts');
+        ).toContainText('Edit index.ts');
       }
     } finally {
       await closeCanopy(electronApp, userDataDir);

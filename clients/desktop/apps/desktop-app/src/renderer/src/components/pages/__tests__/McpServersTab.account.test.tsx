@@ -19,7 +19,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type {
   AccountMcpConnection,
-  McpServerFile,
+  McpServerFileView,
   McpServerIndexEntry,
   McpServersAPI,
   SaveMcpServerRequest,
@@ -57,11 +57,12 @@ function cloudAccountState(
 }
 
 function createSaveServerMock(): jest.Mock<
-  Promise<McpServerFile>,
+  Promise<McpServerFileView>,
   [SaveMcpServerRequest]
 > {
-  return jest.fn<Promise<McpServerFile>, [SaveMcpServerRequest]>(
-    (server): Promise<McpServerFile> => Promise.resolve({ version: 1, server }),
+  return jest.fn<Promise<McpServerFileView>, [SaveMcpServerRequest]>(
+    (server): Promise<McpServerFileView> =>
+      Promise.resolve({ version: 1, server }),
   );
 }
 
@@ -2899,15 +2900,20 @@ describe('promoting existing custom HTTP rows', (): void => {
       const definition: unknown = expect.objectContaining({
         httpAuthHandler: 'account',
       });
-      expect(save).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledTimes(2);
       expect(save).toHaveBeenCalledWith(
         expect.objectContaining({
           accountConnectionId: customConnection.id,
           definition,
         }),
       );
-      // The token now lives only in the cloud account.
-      expect(save.mock.calls[0]?.[0].configs[0]).not.toHaveProperty(
+      // The device keeps its token until the cloud connects, so a cancelled
+      // move can restore it (CAN-4411); then it lives only in the cloud.
+      expect(save.mock.calls[0]?.[0].configs[0]).toHaveProperty(
+        'authToken',
+        'device-token',
+      );
+      expect(save.mock.calls[1]?.[0].configs[0]).not.toHaveProperty(
         'authToken',
       );
       expect(rewrite).toHaveBeenCalledWith({
@@ -3338,9 +3344,9 @@ describe('promoting existing custom HTTP rows', (): void => {
     mockServers = [customDevice];
     const start = jest.fn().mockResolvedValue({ connection: customConnection });
     const disconnect = jest.fn().mockResolvedValue(undefined);
-    let resolveSave: ((file: McpServerFile) => void) | undefined;
+    let resolveSave: ((file: McpServerFileView) => void) | undefined;
     const save = createSaveServerMock().mockImplementationOnce(
-      (): Promise<McpServerFile> =>
+      (): Promise<McpServerFileView> =>
         new Promise((resolve): void => {
           resolveSave = resolve;
         }),
@@ -3430,7 +3436,7 @@ describe('promoting existing custom HTTP rows', (): void => {
     const disconnect = jest.fn().mockResolvedValue(undefined);
     let finish: (value: AccountMcpConnection) => void = (): void => undefined;
     const save = createSaveServerMock()
-      .mockImplementationOnce((): Promise<McpServerFile> => {
+      .mockImplementationOnce((): Promise<McpServerFileView> => {
         // The bind moves the device row under the account connection, the
         // way the merged index lists it after the next refresh.
         mockServers = [
@@ -3456,7 +3462,7 @@ describe('promoting existing custom HTTP rows', (): void => {
         ];
         return Promise.resolve({ version: 1, server: customServer });
       })
-      .mockImplementation((): Promise<McpServerFile> => {
+      .mockImplementation((): Promise<McpServerFileView> => {
         mockServers = [customDevice];
         return Promise.resolve({ version: 1, server: customServer });
       });

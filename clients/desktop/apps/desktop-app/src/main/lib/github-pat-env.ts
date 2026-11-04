@@ -47,12 +47,12 @@ function loadPatSync(): string | null {
       throw legacyError;
     }
   }
-  return getSecretStoragePolicy().decrypt(encrypted).trim();
+  return getSecretStoragePolicy({ forSpawn: true }).decrypt(encrypted).trim();
 }
 
 function getGitHubPatSecretsForInjection(): Record<string, string> {
   try {
-    const policy = getSecretStoragePolicy();
+    const policy = getSecretStoragePolicy({ forSpawn: true });
     if (cached !== null && cachedRequiresDecryption) {
       policy.assertCanRead();
       if (policy.getStatus().backend !== cachedBackend) {

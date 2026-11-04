@@ -36,7 +36,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isGatewayOnlyModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
-import { ChoiceField } from '@canopy/ui-shared/components';
+import { ChoiceField, Heading } from '@canopy/ui-shared/components';
 import { applyTheme } from '@/lib/theme';
 import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
@@ -1175,7 +1175,9 @@ export function ComposerStatesGallery(): JSX.Element {
       <div className="flex flex-col gap-8 p-6">
         {SECTIONS.map((section) => (
           <section key={section.title} className="flex flex-col gap-3">
-            <h2 className="text-s font-medium fg-primary">{section.title}</h2>
+            <Heading level={2} variant="title">
+              {section.title}
+            </Heading>
             <div className="flex flex-wrap items-start gap-4">
               {section.states.map((state) => (
                 <figure

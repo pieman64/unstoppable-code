@@ -383,6 +383,14 @@ export const AI_CREDITS_ATTRIBUTION_WORKTREE_HEADER = 'x-canopy-worktree';
 export const AI_CREDITS_WORK_OWNER_HEADER = 'x-canopy-work-owner';
 export const AI_CREDITS_ORG_PROJECT_HEADER = 'x-canopy-org-project';
 
+/**
+ * Set to `1` on Codex Responses requests from a session running multi-agent
+ * v2. The proxy keeps such a request on OpenAI, because only OpenAI can read
+ * the encrypted task a v2 child receives. Stripped before forwarding.
+ */
+export const AI_CREDITS_CODEX_MULTI_AGENT_V2_HEADER =
+  'x-canopy-codex-multi-agent-v2';
+
 export interface AiCreditsOrgPoolFunding {
   /** Organization wire id. */
   orgId: string;

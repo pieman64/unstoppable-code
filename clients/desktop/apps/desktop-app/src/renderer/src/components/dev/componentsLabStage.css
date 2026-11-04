@@ -123,6 +123,10 @@
 }
 
 .canopy-lab-stage .canopy-lab-swap > * {
+  /* Flex, so an inline glyph or badge inside a slot adds no line-box
+     descender that pushes it off the row's centre line. */
+  display: flex;
+  align-items: center;
   grid-area: 1 / 1;
   opacity: 0;
   transition: opacity 0.24s ease;
@@ -173,4 +177,10 @@
 
 .canopy-lab-stage .canopy-lab-dialog-layer[data-open] {
   opacity: 1;
+}
+
+/* The overview shows the stage alone: the whole card opens its sheet, and the
+   label under it names it. */
+[data-view='overview'] [data-stage] > button {
+  display: none;
 }

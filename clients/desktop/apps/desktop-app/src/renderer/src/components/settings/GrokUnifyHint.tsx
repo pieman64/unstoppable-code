@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { AdvancedDisclosure, Button } from '@canopy/ui-shared/components';
+import { Button, Disclosure } from '@canopy/ui-shared/components';
 import { GrokLogo } from '@/components/GrokLogo';
 import { SettingsSubRow } from './SettingsLayout';
 
@@ -19,7 +19,7 @@ export function GrokUnifyHint(): JSX.Element {
     // The shared quiet expander, with the Grok mark after its chevron: its
     // label stays on the row's text column instead of reading as a second
     // trailing action.
-    <AdvancedDisclosure
+    <Disclosure
       label="Only have a Grok account?"
       dataTestId="grok-unify"
       leadingIcon={
@@ -49,6 +49,6 @@ export function GrokUnifyHint(): JSX.Element {
           </Button>
         }
       />
-    </AdvancedDisclosure>
+    </Disclosure>
   );
 }

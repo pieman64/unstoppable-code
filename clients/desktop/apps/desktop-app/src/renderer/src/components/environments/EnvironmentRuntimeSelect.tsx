@@ -3,7 +3,7 @@ import {
   SettingsSelect,
   useInDialogFormField,
 } from '@canopy/ui-shared/components';
-import type { EnvironmentDefinition } from '@canopy/desktop-shared/types';
+import type { EnvironmentDefinitionView } from '@canopy/desktop-shared/types';
 
 export interface EnvironmentRuntimeSelectOption {
   /**
@@ -17,7 +17,7 @@ export interface EnvironmentRuntimeSelectOption {
 
 interface EnvironmentRuntimeSelectProps {
   /** All environments the user can pick from. Already in display order. */
-  environments: ReadonlyArray<EnvironmentDefinition>;
+  environments: ReadonlyArray<EnvironmentDefinitionView>;
   /** Optional `null`-valued option appended at the top — e.g. "Global default". */
   fallbackOption?: EnvironmentRuntimeSelectOption;
   /** Currently selected id. `null` selects the fallback (when provided). */

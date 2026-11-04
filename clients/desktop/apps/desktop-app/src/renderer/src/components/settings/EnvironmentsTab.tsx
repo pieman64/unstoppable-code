@@ -8,11 +8,11 @@ import {
   useState,
 } from 'react';
 import type {
-  EnvironmentConfigData,
-  EnvironmentDefinition,
+  EnvironmentConfigView,
+  EnvironmentDefinitionView,
   EnvironmentRuntime,
   EnvironmentRuntimeAssignments,
-  UserEnvironmentEntry,
+  UserEnvironmentEntryView,
   UserEnvironmentUiMode,
 } from '@canopy/desktop-shared/types';
 import {
@@ -194,7 +194,7 @@ export function EnvironmentsTab(): JSX.Element {
 
   // Derived on every render, so a reload, retry, or delete that removes the
   // open environment falls back to the list.
-  const openEnvironment = useMemo<EnvironmentDefinition | undefined>(
+  const openEnvironment = useMemo<EnvironmentDefinitionView | undefined>(
     () =>
       openEnvironmentId === null
         ? undefined
@@ -275,7 +275,7 @@ export function EnvironmentsTab(): JSX.Element {
   }, []);
 
   const updateLocal = useCallback(
-    (mutator: (current: EnvironmentConfigData) => EnvironmentConfigData) => {
+    (mutator: (current: EnvironmentConfigView) => EnvironmentConfigView) => {
       const current = useEnvironmentsStore.getState().data;
       if (!current) return;
       const next = mutator(current);
@@ -286,7 +286,9 @@ export function EnvironmentsTab(): JSX.Element {
 
   const updateOpenEnvironment = useCallback(
     (
-      patch: (environment: EnvironmentDefinition) => EnvironmentDefinition,
+      patch: (
+        environment: EnvironmentDefinitionView,
+      ) => EnvironmentDefinitionView,
     ): void => {
       if (!openEnvironment) return;
       const now = new Date().toISOString();
@@ -305,7 +307,7 @@ export function EnvironmentsTab(): JSX.Element {
   const handleCreate = useCallback((): void => {
     if (!data) return;
     const now = new Date().toISOString();
-    const newEnvironment: EnvironmentDefinition = {
+    const newEnvironment: EnvironmentDefinitionView = {
       id: makeUntitledEnvironmentId(),
       name: 'Untitled environment',
       parentId: null,
@@ -344,7 +346,7 @@ export function EnvironmentsTab(): JSX.Element {
   );
 
   const handleVariablesChange = useCallback(
-    (entries: UserEnvironmentEntry[]): void => {
+    (entries: UserEnvironmentEntryView[]): void => {
       updateOpenEnvironment((environment) => ({
         ...environment,
         variables: entries,
@@ -831,8 +833,8 @@ export function EnvironmentsTab(): JSX.Element {
 }
 
 interface EnvironmentListRowProps {
-  environment: EnvironmentDefinition;
-  config: EnvironmentConfigData;
+  environment: EnvironmentDefinitionView;
+  config: EnvironmentConfigView;
   workspaces: ReadonlyArray<EnvironmentUsageWorkspace>;
   onOpen: (id: string) => void;
 }

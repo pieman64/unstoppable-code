@@ -2874,3 +2874,451 @@ exports[`desktop IPC refuses invalid definitions on save without persisting them
   },
 }
 `;
+
+exports[`installs from the curated catalog and shares imports a curated revision as a user definition and refuses a stale one 1`] = `
+{
+  "ipc": {
+    "added": 1,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+      ],
+      "result": {
+        "data": {
+          "createdAt": "<timestamp>",
+          "curatedOrigin": {
+            "contentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+            "importedAt": "<timestamp>",
+            "key": "golden-curated",
+            "revision": 1,
+          },
+          "description": "Curated golden fixture",
+          "filename": "<uuid>.yaml",
+          "icon": "🧭",
+          "id": "<uuid>",
+          "name": "Golden curated triage",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "directory",
+            "worktree",
+          ],
+          "source": "user",
+          "stepCount": 1,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "success": true,
+      },
+    },
+    "state": {
+      "context": {
+        "owner": {
+          "id": "acct-golden",
+          "name": null,
+          "type": "user",
+        },
+      },
+      "info": {
+        "createdAt": "<timestamp>",
+        "curatedOrigin": {
+          "contentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+          "importedAt": "<timestamp>",
+          "key": "golden-curated",
+          "revision": 1,
+        },
+        "description": "Curated golden fixture",
+        "filename": "<uuid>.yaml",
+        "icon": "🧭",
+        "id": "<uuid>",
+        "name": "Golden curated triage",
+        "readonly": false,
+        "revision": 1,
+        "scopes": [
+          "directory",
+          "worktree",
+        ],
+        "source": "user",
+        "stepCount": 1,
+        "triggerTypes": [
+          "dispatch",
+        ],
+        "updatedAt": "<timestamp>",
+      },
+      "owner": "personal",
+      "packageInstalls": [],
+      "subscriptions": [],
+      "text": "pipeline:
+  name: Golden curated triage
+  description: Curated golden fixture
+  on: dispatch
+  scope: [directory, worktree]
+  jobs:
+    triage:
+      name: Triage
+      steps:
+        - id: sort
+          name: Sort
+          run: echo curated
+",
+    },
+  },
+  "ipcInvalid": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [],
+      "result": {
+        "error": "Invalid curated pipeline import request.",
+        "success": false,
+      },
+    },
+    "state": undefined,
+  },
+  "ipcMissing": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/curated/missing-curated/content",
+      ],
+      "result": {
+        "error": "HTTP 404: Not found",
+        "success": false,
+      },
+    },
+    "state": undefined,
+  },
+  "ipcStale": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+      ],
+      "result": {
+        "error": "This curated workflow changed. Refresh its preview before adding it.",
+        "success": false,
+      },
+    },
+    "state": undefined,
+  },
+  "portal": {
+    "added": 1,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+      ],
+      "result": {
+        "event": "portal.command.completed",
+        "payload": {
+          "generatedAt": "<timestamp>",
+          "result": {
+            "pipelineId": "<uuid>",
+          },
+        },
+        "updates": [],
+      },
+    },
+    "state": {
+      "context": {
+        "owner": {
+          "id": "acct-golden",
+          "name": null,
+          "type": "user",
+        },
+      },
+      "info": {
+        "createdAt": "<timestamp>",
+        "curatedOrigin": {
+          "contentHash": "1d178e4c0a69515481d7d7ad4ce829039b26099170772e760a064a9b7a8444ba",
+          "importedAt": "<timestamp>",
+          "key": "golden-curated",
+          "revision": 1,
+        },
+        "description": "Curated golden fixture",
+        "filename": "<uuid>.yaml",
+        "icon": "🧭",
+        "id": "<uuid>",
+        "name": "Golden curated triage",
+        "readonly": false,
+        "revision": 1,
+        "scopes": [
+          "directory",
+          "worktree",
+        ],
+        "source": "user",
+        "stepCount": 1,
+        "triggerTypes": [
+          "dispatch",
+        ],
+        "updatedAt": "<timestamp>",
+      },
+      "owner": "personal",
+      "packageInstalls": [],
+      "subscriptions": [],
+      "text": "pipeline:
+  name: Golden curated triage
+  description: Curated golden fixture
+  on: dispatch
+  scope: [directory, worktree]
+  jobs:
+    triage:
+      name: Triage
+      steps:
+        - id: sort
+          name: Sort
+          run: echo curated
+",
+    },
+  },
+  "portalStale": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/curated/golden-curated/content",
+      ],
+      "result": {
+        "event": "portal.command.failed",
+        "payload": {
+          "error": {
+            "code": "execution_failed",
+            "message": "This curated workflow changed. Refresh its preview before adding it.",
+          },
+          "generatedAt": "<timestamp>",
+          "retryable": false,
+        },
+        "updates": [],
+      },
+    },
+    "state": undefined,
+  },
+}
+`;
+
+exports[`installs from the curated catalog and shares installs a share through pipelines:save with its provenance and refuses a missing one 1`] = `
+{
+  "install": {
+    "added": 1,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+      ],
+      "result": {
+        "data": {
+          "createdAt": "<timestamp>",
+          "description": "Shared golden fixture",
+          "filename": "<uuid>.yaml",
+          "icon": "",
+          "id": "<uuid>",
+          "name": "Golden shared plan review",
+          "readonly": false,
+          "revision": 1,
+          "scopes": [
+            "worktree",
+          ],
+          "source": "user",
+          "stepCount": 1,
+          "triggerTypes": [
+            "plan_ready",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "success": true,
+      },
+    },
+    "state": {
+      "context": {
+        "owner": {
+          "id": "acct-golden",
+          "name": "Golden",
+          "type": "user",
+        },
+        "provenance": {
+          "authorizedAt": "<timestamp>",
+          "family": "pipelines",
+          "hash": "9104022239eed85433b7044ab9553690492d61b16af8572c6aa07acb5e7c7311",
+          "localResourceIds": [
+            "<uuid>",
+          ],
+          "ownerContext": {
+            "kind": "personal",
+          },
+          "remoteId": "shared-golden-1",
+          "shareScope": "private",
+        },
+      },
+      "info": {
+        "createdAt": "<timestamp>",
+        "description": "Shared golden fixture",
+        "filename": "<uuid>.yaml",
+        "icon": "",
+        "id": "<uuid>",
+        "name": "Golden shared plan review",
+        "readonly": false,
+        "revision": 1,
+        "scopes": [
+          "worktree",
+        ],
+        "source": "user",
+        "stepCount": 1,
+        "triggerTypes": [
+          "plan_ready",
+        ],
+        "updatedAt": "<timestamp>",
+      },
+      "owner": "personal",
+      "packageInstalls": [],
+      "subscriptions": [
+        {
+          "contentHash": "9104022239eed85433b7044ab9553690492d61b16af8572c6aa07acb5e7c7311",
+          "kind": "pipeline",
+          "localIds": [
+            "<uuid>",
+          ],
+          "remoteId": "shared-golden-1",
+          "sourceKind": "shared",
+        },
+      ],
+      "text": "pipeline:
+  name: Golden shared plan review
+  description: Shared golden fixture
+  on:
+    plan_ready:
+      inputs:
+        depth:
+          type: choice
+          options: [quick, deep]
+          default: quick
+  scope: [worktree]
+  jobs:
+    review:
+      name: Review
+      steps:
+        - id: read
+          name: Read
+          run: echo "shared $DEPTH"
+          env:
+            DEPTH: \${{ inputs.depth }}
+",
+    },
+  },
+  "missing": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/shared-missing",
+      ],
+      "result": {
+        "error": "HTTP 404: Not found",
+        "success": false,
+      },
+    },
+    "state": undefined,
+  },
+  "reinstall": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/shared-golden-dispatch",
+      ],
+      "result": {
+        "data": {
+          "createdAt": "<timestamp>",
+          "description": "",
+          "filename": "<reinstall-target>.yaml",
+          "icon": "",
+          "id": "<reinstall-target>",
+          "name": "Golden shared dispatch",
+          "readonly": false,
+          "revision": 2,
+          "scopes": [
+            "directory",
+          ],
+          "source": "user",
+          "stepCount": 1,
+          "triggerTypes": [
+            "dispatch",
+          ],
+          "updatedAt": "<timestamp>",
+        },
+        "success": true,
+      },
+    },
+    "state": {
+      "context": {
+        "owner": {
+          "id": "acct-golden",
+          "name": "Golden",
+          "type": "user",
+        },
+        "provenance": {
+          "authorizedAt": "<timestamp>",
+          "family": "pipelines",
+          "hash": "c97ce0557719dbb709cfe5defe70815e5de59cc2b5593dcc3d76c0058cba39d8",
+          "localResourceIds": [
+            "<reinstall-target>",
+          ],
+          "ownerContext": {
+            "kind": "personal",
+          },
+          "remoteId": "shared-golden-dispatch",
+          "shareScope": "private",
+        },
+      },
+      "info": {
+        "createdAt": "<timestamp>",
+        "description": "",
+        "filename": "<reinstall-target>.yaml",
+        "icon": "",
+        "id": "<reinstall-target>",
+        "name": "Golden shared dispatch",
+        "readonly": false,
+        "revision": 2,
+        "scopes": [
+          "directory",
+        ],
+        "source": "user",
+        "stepCount": 1,
+        "triggerTypes": [
+          "dispatch",
+        ],
+        "updatedAt": "<timestamp>",
+      },
+      "owner": "personal",
+      "packageInstalls": [],
+      "subscriptions": [
+        {
+          "contentHash": "c97ce0557719dbb709cfe5defe70815e5de59cc2b5593dcc3d76c0058cba39d8",
+          "kind": "pipeline",
+          "localIds": [
+            "<reinstall-target>",
+          ],
+          "remoteId": "shared-golden-dispatch",
+          "sourceKind": "shared",
+        },
+      ],
+      "text": "pipeline:
+  name: Golden shared dispatch
+  on: dispatch
+  jobs:
+    run:
+      steps:
+        - run: echo shared dispatch
+",
+    },
+  },
+  "reinstallUnknown": {
+    "added": 0,
+    "result": {
+      "cloudRequests": [
+        "GET /api/v1/desktop-app/pipelines/shared-golden-1",
+      ],
+      "result": {
+        "error": "Workflow unavailable (unknown-provenance)",
+        "success": false,
+      },
+    },
+    "state": undefined,
+  },
+}
+`;

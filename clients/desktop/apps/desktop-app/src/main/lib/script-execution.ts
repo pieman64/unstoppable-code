@@ -20,28 +20,19 @@ import type {
 import type { CommandShellDefinition } from '@canopy/desktop-shared/scripts';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
-import {
-  appendScriptRunLogLines,
-  completeScriptRunLog,
-  startScriptRunLog,
-  type ScriptRunLogRef,
-} from './script-log-store';
+import type { ScriptRunLogRef } from './script-log-store';
 import { mkdir } from 'node:fs/promises';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import { getAppAdvisorHomeDir } from './paths';
-import {
-  desktopScriptWorker,
-  runShellScript,
-  scriptTimeoutMs,
-} from './script-runner';
+import { desktopScriptWorker, scriptTimeoutMs } from './script-runner';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 
 /*
  * Electron main's callers of script execution (CAN-4143). A run is a
  * `core.script.run` operation whose `worker.script.execute` dispatch runs on
  * the local worker; stops and log reads go through `worker.script.*` on the
- * dispatcher. Interactive, terminal-backed scripts still run in this host's
- * PTYs until CAN-5082 and keep the same run log.
+ * dispatcher. Interactive scripts run the same way, in a terminal the
+ * worker owns for the worktree (CAN-5082).
  */
 
 /** The trusted core caller the desktop's script callers act as. */
@@ -109,71 +100,6 @@ function toResponse(
   };
 }
 
-async function runInteractiveScript(
-  run: DesktopScriptRun,
-  runId: string,
-  options: { signal?: AbortSignal; observer?: DesktopScriptRunObserver },
-): Promise<DesktopScriptRunOutcome> {
-  const { resolveScriptExecutionPlace } =
-    await import('./script-execution-place');
-  const place = await resolveScriptExecutionPlace(
-    { workspaceId: run.projectId, worktreeId: run.worktreeId },
-    run.context,
-  );
-  const logRef = await startScriptRunLog({
-    projectId: run.projectId,
-    worktreeId: run.worktreeId,
-    script: run.script,
-    invocation: run.invocation,
-    runId,
-  }).catch(() => null);
-  const startedAt = Date.now();
-  let response: ScriptRunResponse;
-  try {
-    response = await runShellScript({
-      script: run.command,
-      cwd: place.cwd,
-      env: place.env,
-      ...(run.shell ? { shell: run.shell } : {}),
-      timeoutSeconds: null,
-      interactive: true,
-      backgroundPriority: run.backgroundPriority === true,
-      ...(options.signal ? { signal: options.signal } : {}),
-      onChunk: (lines) => {
-        if (logRef)
-          void appendScriptRunLogLines({ ref: logRef, lines }).catch(() => {});
-        options.observer?.onLines?.(lines);
-      },
-      tracking: {
-        projectId: run.projectId,
-        worktreeId: run.worktreeId,
-        scriptKey: run.script.scriptKey,
-        runId,
-        script: run.script,
-        invocation: run.invocation,
-        ...(logRef ? { logRef } : {}),
-      },
-      onProcessStarted: () => options.observer?.onProcessStarted?.(),
-    });
-  } catch (error) {
-    // A start that throws ran nothing; its opened log still needs an end.
-    if (logRef)
-      await completeScriptRunLog({
-        ref: logRef,
-        response: {
-          success: false,
-          exitCode: options.signal?.aborted ? null : 1,
-          timedOut: false,
-          durationMs: Date.now() - startedAt,
-        },
-      }).catch(() => {});
-    throw error;
-  }
-  if (logRef)
-    await completeScriptRunLog({ ref: logRef, response }).catch(() => {});
-  return { runId, logRef, response };
-}
-
 /**
  * Run a script and keep it in the worktree's run log. Resolves once it ends;
  * a stop or cancellation resolves as cancelled. Throws only when the worker
@@ -186,7 +112,6 @@ export async function runDesktopScript(
   const runId = run.runId ?? randomUUID();
   // The host's worktree fences refuse a start before anything is recorded.
   assertWorkspaceTargetRuntimeStartAllowed(run.projectId, run.worktreeId);
-  if (run.interactive) return runInteractiveScript(run, runId, options);
   const capture: { finished: ScriptProcessOutcome | null } = {
     finished: null,
   };
@@ -197,8 +122,9 @@ export async function runDesktopScript(
     command: run.command,
     ...(run.shell ? { shell: run.shell } : {}),
     shellStartup: 'interactive',
-    timeoutMs: scriptTimeoutMs(run.timeoutSeconds),
+    timeoutMs: run.interactive ? null : scriptTimeoutMs(run.timeoutSeconds),
     priority: run.backgroundPriority === true ? 'background' : 'normal',
+    ...(run.interactive ? { terminal: {} } : {}),
     record: { script: run.script, invocation: run.invocation },
   };
   const outcome = await getActiveDesktopRuntime().scriptRuns.run(

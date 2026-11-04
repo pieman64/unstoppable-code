@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { CloseIcon, type AppIcon } from '../icons/AppIcons';
+import { CheckIcon, CloseIcon, type AppIcon } from '../icons/AppIcons';
+import { Tooltip } from './Tooltip';
 
 /** A state a gallery or lab can force so every look is visible at once. */
 export type ChipForcedState = 'hover' | 'pressed' | 'remove-hover';
@@ -11,6 +12,13 @@ export interface ChipProps {
   icon?: AppIcon;
   /** Makes the chip an action (open the file, switch the mode). */
   onClick?: () => void;
+  /**
+   * Makes the action a toggle (`aria-pressed`). Selected, the chip takes the
+   * accent tint and ink and leads with a check in place of `icon`.
+   */
+  selected?: boolean;
+  /** Test id for the action button. */
+  actionTestId?: string;
   /** Adds a trailing remove button. */
   onRemove?: () => void;
   /**
@@ -19,6 +27,16 @@ export interface ChipProps {
    */
   removeLabel?: string;
   disabled?: boolean;
+  /**
+   * Names the element that describes the chip, for the action button. A
+   * `Tooltip` around the chip sets it.
+   */
+  'aria-describedby'?: string;
+  /**
+   * Help text shown in the shared `Tooltip` on hover or keyboard focus, never
+   * as a native `title`. The chip then sits in the tooltip's wrapper, so
+   * `className` flex participation (`flex-1`, `shrink`) applies inside it.
+   */
   title?: string;
   /** Placement only: margin, max width, flex participation. */
   className?: string;
@@ -30,7 +48,9 @@ export interface ChipProps {
 }
 
 const ROOT_CLASS =
-  'inline-flex h-6 min-w-0 max-w-full shrink-0 select-none items-center gap-1 rounded-md bg-subtle text-xs fg-primary';
+  'inline-flex h-6 min-w-0 max-w-full shrink-0 select-none items-center gap-1 rounded-md text-xs';
+const FILL_CLASS = 'bg-subtle fg-primary';
+const SELECTED_FILL_CLASS = 'bg-accent-subtle fg-accent';
 // Hover is instant (no color transition) and a press dims and shrinks the
 // chip, like `Button`. Both follow the chip's own action button, never the
 // whole chip: a bare `hover:` would also light the chip while the pointer is
@@ -40,6 +60,10 @@ const ROOT_CLASS =
 // `scale` property, so the transition names it.
 const INTERACTIVE_CLASS =
   'transition-[opacity,transform,scale] duration-150 has-[[data-chip-main]:hover]:bg-muted has-[[data-chip-main]:active]:scale-97 has-[[data-chip-main]:active]:opacity-70 data-[forced-state=hover]:bg-muted data-[forced-state=pressed]:scale-97 data-[forced-state=pressed]:bg-muted data-[forced-state=pressed]:opacity-70';
+// Selected, hover and press keep the accent tint (its -subtle/80 hover)
+// rather than dropping back to the neutral fill.
+const SELECTED_INTERACTIVE_CLASS =
+  'transition-[opacity,transform,scale] duration-150 has-[[data-chip-main]:hover]:bg-accent-subtle/80 has-[[data-chip-main]:active]:scale-97 has-[[data-chip-main]:active]:opacity-70 data-[forced-state=hover]:bg-accent-subtle/80 data-[forced-state=pressed]:scale-97 data-[forced-state=pressed]:bg-accent-subtle/80 data-[forced-state=pressed]:opacity-70';
 // Disabled, the chip stays the click target, so a click is swallowed rather
 // than handed to a clickable row behind it, like a disabled `Button`.
 const DISABLED_CLASS = 'cursor-not-allowed opacity-40';
@@ -56,11 +80,14 @@ const REMOVE_CLASS =
  */
 export function Chip({
   children,
-  icon: Icon,
+  icon,
   onClick,
+  selected,
+  actionTestId,
   onRemove,
   removeLabel,
   disabled = false,
+  'aria-describedby': describedBy,
   title,
   className,
   forcedState,
@@ -68,54 +95,71 @@ export function Chip({
   removeTestId,
 }: ChipProps): JSX.Element {
   const interactive = onClick !== undefined || onRemove !== undefined;
+  const Icon = selected === true ? CheckIcon : icon;
   // The padding sits on the action button when there is one, so the whole
   // chip up to the remove button is its hit area.
   const startPadding = Icon ? 'pl-1.5' : 'pl-2';
   const endPadding = onRemove ? 'pr-1' : 'pr-2';
   const rootClass = [
     ROOT_CLASS,
+    selected === true ? SELECTED_FILL_CLASS : FILL_CLASS,
     onClick ? '' : startPadding,
     onClick || onRemove ? '' : endPadding,
     onRemove ? 'pr-0.5' : '',
-    onClick && !disabled ? INTERACTIVE_CLASS : '',
+    onClick && !disabled
+      ? selected === true
+        ? SELECTED_INTERACTIVE_CLASS
+        : INTERACTIVE_CLASS
+      : '',
     interactive && disabled ? DISABLED_CLASS : '',
     className ?? '',
   ]
     .filter((part) => part !== '')
     .join(' ');
-  const content = (
-    <>
-      {Icon ? (
-        <Icon size={14} className="shrink-0 fg-secondary" aria-hidden />
-      ) : null}
-      <span className="min-w-0 truncate">{children}</span>
-    </>
+  const iconNode = Icon ? (
+    <Icon
+      key="icon"
+      size={14}
+      // Selected, the check takes the chip's accent ink.
+      className={selected === true ? 'shrink-0' : 'shrink-0 fg-secondary'}
+      aria-hidden
+    />
+  ) : null;
+  const text = (
+    <span key="text" className="min-w-0 truncate">
+      {children}
+    </span>
   );
   const name =
     removeLabel ??
     (typeof children === 'string' ? `Remove ${children}` : 'Remove');
-  return (
+  // The icon and text stay direct children (no fragment) so a tooltip's
+  // `aria-describedby` reaches the chip's buttons, not a fragment.
+  const chip = (
     <span
       data-chip=""
       data-forced-state={
         forcedState === 'remove-hover' ? undefined : forcedState
       }
       data-testid={testId}
-      title={title}
       className={rootClass}
     >
       {onClick ? (
         <button
           type="button"
           data-chip-main=""
+          data-testid={actionTestId}
+          aria-pressed={selected}
+          aria-describedby={describedBy}
           className={`${MAIN_CLASS} ${startPadding} ${endPadding}`}
           onClick={onClick}
           disabled={disabled}
         >
-          {content}
+          {iconNode}
+          {text}
         </button>
       ) : (
-        content
+        [iconNode, text]
       )}
       {onRemove ? (
         <button
@@ -133,5 +177,11 @@ export function Chip({
         </button>
       ) : null}
     </span>
+  );
+  if (title === undefined) return chip;
+  return (
+    <Tooltip label={title} className="max-w-full">
+      {chip}
+    </Tooltip>
   );
 }

@@ -550,6 +550,90 @@ test('CAN-3220 saved environment values are encrypted and persist across relaunc
   }
 });
 
+test('CAN-4411 a saved secret comes back as saved, never as its value, and survives a later save', async () => {
+  const { electronApp, userDataDir } = await launchCanopy();
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    await app.openEnvironmentsSettings();
+
+    await window.getByTestId('environments-new-environment').click();
+    await window
+      .getByTestId('environments-name-input')
+      .fill(STORAGE_ENVIRONMENT_NAME);
+    const editor = environmentEditor(window);
+    await editor.getByTestId('environment-editor-add-row').click();
+    await lastKeyInput(window, editor).fill(STORAGE_KEY);
+    await lastValueInput(window, editor).fill(STORAGE_VALUE);
+    await editor
+      .locator('input[data-testid^="environment-editor-secret-"]')
+      .last()
+      .check();
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
+      'Saved.',
+    );
+
+    await window.reload();
+    await app.waitForShell();
+    await app.openEnvironmentsSettings();
+    await window
+      .getByTestId('environments-list')
+      .getByText(STORAGE_ENVIRONMENT_NAME, { exact: true })
+      .click();
+    const value = lastValueInput(window, environmentEditor(window));
+    await expect(value).toHaveValue('');
+    await expect(value).toHaveAttribute(
+      'placeholder',
+      'Saved. Type to replace',
+    );
+    await expect(
+      environmentEditor(window)
+        .locator('input[data-testid^="environment-editor-secret-"]')
+        .last(),
+    ).toBeDisabled();
+    const reply = await window.evaluate(() =>
+      window.api.loadEnvironmentConfig(),
+    );
+    expect(JSON.stringify(reply)).not.toContain(STORAGE_VALUE);
+
+    // Another edit saves the kept reference; main keeps the stored value.
+    await environmentEditor(window)
+      .getByTestId('environment-editor-add-row')
+      .click();
+    await lastKeyInput(window, environmentEditor(window)).fill('ADDED_KEY');
+    await lastValueInput(window, environmentEditor(window)).fill('added');
+    await window.getByTestId('environments-save').click();
+    await expect(window.getByTestId('environments-save-status')).toHaveText(
+      'Saved.',
+    );
+    const environment = JSON.parse(
+      readEnvironmentRecord(userDataDir),
+    ).data.environments.find(
+      (entry) => entry.name === STORAGE_ENVIRONMENT_NAME,
+    );
+    expect(
+      await electronApp.evaluate(
+        ({ safeStorage }, { encrypted, key, value }) =>
+          JSON.parse(
+            safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
+          ).some(
+            (entry) =>
+              entry.key === key && entry.value === value && entry.secret,
+          ),
+        {
+          encrypted: environment.encryptedVariables,
+          key: STORAGE_KEY,
+          value: STORAGE_VALUE,
+        },
+      ),
+    ).toBe(true);
+  } finally {
+    await closeCanopy(electronApp, userDataDir, { keepUserData: false });
+  }
+});
+
 test('Environment editor cases reset state between steps in one app', async () => {
   const { electronApp, userDataDir } = await launchCanopy();
 
@@ -1159,16 +1243,22 @@ for (const assignmentFirst of [false, true]) {
       // assignment action after its preliminary read, before releasing Save.
       const fence = await fixture.fenceAdvisor();
       expect(fence.ok).toBe(true);
-      await fixture.release();
-      const action = await fixture.actionResponse();
+      // Observe the short-lived confirmation while the queued writes settle;
+      // the Advisor response can arrive after that confirmation has expired.
+      const [action] = await Promise.all([
+        (async () => {
+          await fixture.release();
+          return fixture.actionResponse();
+        })(),
+        expect(window.getByTestId('environments-save-status')).toHaveText(
+          'Saved.',
+        ),
+      ]);
       expect(action.ok).toBe(true);
       await expect(window.getByTestId('environments-save')).toHaveText(
         'Save changes',
       );
       await expect(window.getByTestId('environments-unsaved')).toHaveCount(0);
-      await expect(window.getByTestId('environments-save-status')).toHaveText(
-        'Saved.',
-      );
       const saved = JSON.parse(readEnvironmentRecord(userDataDir)).data;
       expect(
         saved.environments.some(({ name }) => name === 'Overlapping Draft'),

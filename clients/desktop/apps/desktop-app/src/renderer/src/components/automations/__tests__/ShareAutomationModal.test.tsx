@@ -1297,6 +1297,56 @@ it('pins an installed package commit to the exact stored bundled pipeline bytes'
   expect(commitRequest?.expectedPackageContentHash).toBe(expectedContentHash);
 });
 
+// CAN-5479: a converted chat automation installed with a package shares the
+// chat action its package binds, pinned to the hash its install recorded.
+it('re-shares a converted package install as the chat action it shows', async (): Promise<void> => {
+  const capabilityPackage = {
+    version: 1 as const,
+    digest: `pp:v1:${'I'.repeat(43)}`,
+  };
+  const chatAction: ScheduledActivity['action'] = {
+    type: 'standalone_prompt',
+    chatProjectId: 'cowork-1',
+    prompt: 'Review this',
+  };
+  mockCommitPackage.mockResolvedValueOnce({
+    capabilityPackage,
+    committedPackageUploadId: 'upload-1',
+  });
+  await renderModal(false, chatAction, {
+    installedFrom: {
+      remoteId: 'installed-share',
+      contentHash: 'c'.repeat(64),
+      installedAt: '2026-09-18T12:00:00.000Z',
+      capabilityPackage,
+    },
+    ownedPipeline: {
+      pipelineId: 'owned-1',
+      chatEditable: true,
+      storedAction: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipelineId: 'owned-1',
+        pipelineSource: 'user',
+        inputs: { project_id: 'cowork-1' },
+      },
+    },
+  });
+  await submit();
+
+  const expectedContentHash = await hashPipelineDocumentYaml(
+    JSON.stringify({ name: pipelineDetail().name, action: chatAction }),
+  );
+  if (expectedContentHash === null) throw new Error('Web Crypto unavailable');
+  const commitRequest = mockCommitPackage.mock.calls[0]?.[0] as
+    | { expectedPackageContentHash?: unknown }
+    | undefined;
+  expect(commitRequest?.expectedPackageContentHash).toBe(expectedContentHash);
+  const created = JSON.stringify(mockCreate.mock.calls[0]?.[0]);
+  expect(created).toContain('"type":"standalone_prompt"');
+  expect(created).not.toContain('worktree_pipeline');
+});
+
 it('analyzes again when publishing fails after package commit', async (): Promise<void> => {
   mockAnalyzePackage.mockResolvedValue({
     analysisId: 'analysis-retry',

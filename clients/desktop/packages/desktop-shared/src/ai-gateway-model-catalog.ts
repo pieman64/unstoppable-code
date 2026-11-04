@@ -48,8 +48,9 @@ function packageModelEnabled(
  */
 function materializeGatewayThinkingLevels(
   levels: readonly ThinkingLevel[],
+  exact: boolean,
 ): ThinkingLevel[] {
-  if (levels.length === 0 || levels.includes('off')) {
+  if (exact || levels.length === 0 || levels.includes('off')) {
     return [...levels];
   }
   return ['off', ...levels];
@@ -72,6 +73,7 @@ function gatewayConfig(
     supportsPromptCaching: model.supportsPromptCaching,
     supportedThinkingLevels: materializeGatewayThinkingLevels(
       model.supportedThinkingLevels,
+      model.thinkingLevelsExact === true,
     ),
     toolSchemaProfile: model.toolSchemaProfile,
     ...route,
@@ -200,6 +202,7 @@ export function mergeAiGatewayModelCatalog(input: {
       supportsPromptCaching: model.supportsPromptCaching,
       supportedThinkingLevels: materializeGatewayThinkingLevels(
         model.supportedThinkingLevels,
+        model.thinkingLevelsExact === true,
       ),
       toolSchemaProfile: model.toolSchemaProfile,
     });
@@ -269,6 +272,7 @@ export function mergeAiGatewayModelCatalog(input: {
         supportsPromptCaching: model.supportsPromptCaching,
         supportedThinkingLevels: materializeGatewayThinkingLevels(
           model.supportedThinkingLevels,
+          model.thinkingLevelsExact === true,
         ),
         toolSchemaProfile: model.toolSchemaProfile,
       });

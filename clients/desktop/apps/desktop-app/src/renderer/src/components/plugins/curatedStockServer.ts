@@ -1,5 +1,5 @@
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
-import type { McpServerData } from '@canopy/desktop-shared/types/mcp-servers';
+import type { McpServerDataView } from '@canopy/desktop-shared/types/mcp-servers';
 import {
   curatedInitialUrl,
   curatedMetadataFromEntry,
@@ -23,7 +23,7 @@ function stableJson(value: unknown): string {
 export function stockCuratedServerData(
   entry: CuratedMcpServerEntry,
   options: { now?: string; configId?: string } = {},
-): { server: McpServerData } | { error: string } {
+): { server: McpServerDataView } | { error: string } {
   const validation = validateOAuthForm(oauthFromCuratedHints(entry));
   if (validation.error) return { error: validation.error };
   const now = options.now ?? new Date().toISOString();
@@ -99,7 +99,7 @@ function project(
   );
 }
 
-function connectionProjection(server: McpServerData): string {
+function connectionProjection(server: McpServerDataView): string {
   const definition = project(server.definition, IGNORED_DEFINITION_FIELDS);
   const curated = server.definition.curated;
   return stableJson({
@@ -125,7 +125,7 @@ function connectionProjection(server: McpServerData): string {
  */
 export function matchesStockCuratedServer(
   entry: CuratedMcpServerEntry,
-  server: McpServerData,
+  server: McpServerDataView,
 ): boolean {
   const stock = stockCuratedServerData(entry);
   if ('error' in stock) return false;

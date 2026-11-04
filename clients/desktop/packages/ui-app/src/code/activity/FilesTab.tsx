@@ -42,6 +42,7 @@ import type {
 import {
   FileRootGroupRow,
   FileTreeRow,
+  SearchField,
   TextInput,
   ErrorBanner,
   Notice,
@@ -61,6 +62,7 @@ import {
   useIconStyle,
 } from '@canopy/ui-shared/components';
 import {
+  CloseIcon,
   FolderPlusIcon as CentralFolderPlusIcon,
   PlusIcon as CentralPlusIcon,
   SearchIcon as CentralSearchIcon,
@@ -740,35 +742,27 @@ export function FilesTab({
   const searchTray = searchOpen ? (
     <div
       data-testid="files-tree-search"
-      className="flex items-center gap-1 border-b px-2 py-1.5"
+      className="flex items-center gap-1.5 border-b px-2 py-1.5"
     >
-      <div className="min-w-0 flex-1">
-        <TextInput
-          ref={searchInputRef}
-          density="compact"
-          data-testid="files-tree-search-input"
-          aria-label="Filter files"
-          placeholder="Filter files…"
-          value={searchQuery}
-          onChange={(event): void => setSearchQuery(event.target.value)}
-          onKeyDown={(event): void => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              closeSearch();
-            }
-          }}
-        />
-      </div>
-      <Button
-        type="button"
-        variant="ghost"
-        size="compact"
-        aria-label="Clear search"
-        data-testid="files-tree-search-clear"
-        onClick={(): void => setSearchQuery('')}
-      >
-        Clear
-      </Button>
+      <SearchField
+        ref={searchInputRef}
+        className="flex-1"
+        data-testid="files-tree-search-input"
+        aria-label="Filter files"
+        placeholder="Filter files…"
+        value={searchQuery}
+        onValueChange={setSearchQuery}
+        onKeyDown={(event): void => {
+          // Escape closes the tray (and clears it), as on desktop.
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            closeSearch();
+          }
+        }}
+        clearLabel="Clear search"
+        clearTestId="files-tree-search-clear"
+      />
       <Button
         type="button"
         variant="ghost"
@@ -778,7 +772,7 @@ export function FilesTab({
         data-testid="files-tree-search-close"
         onClick={closeSearch}
       >
-        ×
+        <CloseIcon size="xs" aria-hidden="true" />
       </Button>
     </div>
   ) : null;

@@ -145,12 +145,10 @@ export async function openSetup(
   await expect(
     window.getByTestId('org-project-setup-destination'),
   ).toContainText(destination);
-  await expect(
-    window.getByTestId('org-project-setup-destination'),
-  ).toHaveAttribute('title', destination);
   const destinationText = window
     .getByTestId('org-project-setup-destination')
     .locator('[dir="rtl"]');
+  await expect(destinationText).toHaveAttribute('title', destination);
   await expect(destinationText).toHaveCSS('white-space', 'nowrap');
   await expect(destinationText).toHaveCSS('text-overflow', 'ellipsis');
   expect(

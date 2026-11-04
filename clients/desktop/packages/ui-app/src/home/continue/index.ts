@@ -1,5 +1,7 @@
 export {
   ContinueSection,
+  useContinueAttentionPaging,
+  type ContinueAttentionPaging,
   type ContinueInterruptedSession,
   type ContinueSectionInterrupted,
   type ContinueSectionProps,

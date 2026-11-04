@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
+import { ProgressBar } from '@canopy/ui-shared/components';
 import { formatUsd } from '@canopy/ui-shared/lib';
 import {
   AI_CREDIT_AUTO_TOP_UP_DEFAULT_AMOUNT_USD,
@@ -8,7 +9,6 @@ import {
 } from '@canopy/protocol/settings/billing-plan-catalog';
 import type { CreditsAutoTopUpSettings } from '@canopy/protocol/settings/billing';
 import { BillingTogglePanel } from './billing-toggle-panel';
-import { CreditsMeterBar } from './credits-meter-bar';
 
 /**
  * The read-only half of the automatic top-up controls: the month-to-date
@@ -87,10 +87,11 @@ export function AutoTopUpSettingsDetails({
           )}
         </div>
         {cap !== null ? (
-          <CreditsMeterBar
+          <ProgressBar
             className="mt-1"
-            pct={pct}
-            ariaLabel="Month-to-date auto top-up spend"
+            value={pct}
+            label="Month-to-date auto top-up spend"
+            hideLabel
           />
         ) : null}
       </div>

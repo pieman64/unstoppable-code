@@ -124,6 +124,129 @@ test('the shared rail shows loading projects during initial snapshot hydration',
   }
 });
 
+test('the shared rail refreshes a label invalidated during an older snapshot request', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, window, userDataDir } = await launchSharedRail({
+    worktreeCount: 2,
+  });
+  try {
+    // Prove this is the shared rail, not a legacy-store-only label update.
+    await expect(
+      window.locator('[data-sidebar-projects-header]'),
+    ).toBeAttached();
+    const row = window.locator(
+      '[data-testid="worktree-row"][data-worktree-id="feature-01"]',
+    );
+    await expect(row).toBeVisible();
+    await electronApp.evaluate(({ ipcMain }) => {
+      const channel = 'desktop:session-snapshot';
+      const original = ipcMain._invokeHandlers.get(channel);
+      if (!original) throw new Error('Session snapshot handler is unavailable');
+      let delivered;
+      globalThis.__updatedLabelSnapshot = new Promise((resolve) => {
+        delivered = resolve;
+      });
+      let entered;
+      globalThis.__sidebarSnapshotEntered = new Promise((resolve) => {
+        entered = resolve;
+      });
+      const barrier = new Promise((resolve) => {
+        globalThis.__releaseLabelSnapshot = resolve;
+      });
+      const counts = { started: 0, active: 0, maxActive: 0, completed: 0 };
+      globalThis.__labelSnapshotCounts = counts;
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, async (...args) => {
+        const hold = ++counts.started === 1;
+        counts.active += 1;
+        counts.maxActive = Math.max(counts.maxActive, counts.active);
+        try {
+          const snapshot = await original(...args);
+          if (hold) {
+            entered(snapshot);
+            await barrier;
+          }
+          if (
+            snapshot.worktrees.some(
+              (item) =>
+                item.localId === 'feature-01' &&
+                item.label === 'Updated during refresh',
+            )
+          ) {
+            delivered(snapshot);
+          }
+          return snapshot;
+        } finally {
+          counts.active -= 1;
+          counts.completed += 1;
+        }
+      });
+    });
+    await window.evaluate(() => window.api.invalidateDesktopSessionSnapshot());
+    const held = await electronApp.evaluate(
+      () => globalThis.__sidebarSnapshotEntered,
+    );
+    expect(
+      held.worktrees.find((item) => item.localId === 'feature-01')?.label,
+    ).not.toBe('Updated during refresh');
+
+    await window.evaluate(async (projectId) => {
+      const stale = new Promise((resolve) => {
+        const unsubscribe = window.api.onDesktopSessionSnapshotStale(() => {
+          unsubscribe();
+          resolve();
+        });
+      });
+      await window.api.setWorktreeLabel({
+        projectId,
+        worktreeId: 'feature-01',
+        label: 'Updated during refresh',
+      });
+      await stale;
+      // FIFO round trip from the same renderer fences any snapshot invocation
+      // made by the stale-event subscribers before we inspect main's counts.
+      await window.api.loadPreferences();
+    }, CHATS_SECTION_CODE_WORKSPACE_ID);
+    expect(
+      await electronApp.evaluate(() => globalThis.__labelSnapshotCounts),
+    ).toEqual({ started: 1, active: 1, maxActive: 1, completed: 0 });
+
+    // Another actual stale delivery must still queue, not overlap, the held IPC.
+    await window.evaluate(async () => {
+      const stale = new Promise((resolve) => {
+        const unsubscribe = window.api.onDesktopSessionSnapshotStale(() => {
+          unsubscribe();
+          resolve();
+        });
+      });
+      await window.api.invalidateDesktopSessionSnapshot();
+      await stale;
+      await window.api.loadPreferences();
+    });
+    expect(
+      await electronApp.evaluate(() => globalThis.__labelSnapshotCounts),
+    ).toEqual({ started: 1, active: 1, maxActive: 1, completed: 0 });
+
+    await electronApp.evaluate(() => globalThis.__releaseLabelSnapshot());
+    await expect(row).toContainText('Updated during refresh');
+    // The real snapshot, not just the projects-store overlay, catches up.
+    const refreshed = await electronApp.evaluate(
+      () => globalThis.__updatedLabelSnapshot,
+    );
+    expect(
+      refreshed.worktrees.find((item) => item.localId === 'feature-01')?.label,
+    ).toBe('Updated during refresh');
+    expect(
+      await electronApp.evaluate(() => globalThis.__labelSnapshotCounts),
+    ).toEqual({ started: 2, active: 0, maxActive: 1, completed: 2 });
+  } finally {
+    await electronApp
+      .evaluate(() => globalThis.__releaseLabelSnapshot?.())
+      .catch(() => undefined);
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('the shared rail renders the Chats header over desktop Work Entry rows', async () => {
   test.setTimeout(180_000);
   const { electronApp, window, userDataDir } = await launchSharedRail();

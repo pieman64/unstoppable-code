@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { NoticeButton } from '@canopy/ui-shared/components';
+import { Heading, NoticeButton } from '@canopy/ui-shared/components';
 import { useGitHubStore } from '@/stores/githubStore';
 import { TOAST_TEST_SAMPLES, type ToastSample } from './toastTestSamples';
 
@@ -21,7 +21,9 @@ function raiseToast(sample: ToastSample): void {
 export function ToastTestBench(): JSX.Element {
   return (
     <section className="mb-12" data-testid="toast-test-bench">
-      <h2 className="mb-1 text-sm font-semibold">Toasts</h2>
+      <Heading level={2} variant="title" className="mb-1">
+        Toasts
+      </Heading>
       <p className="mb-3 max-w-3xl text-xs fg-secondary">
         Each button shows a real toast. Press several to see them stack. They
         also land in notification history.

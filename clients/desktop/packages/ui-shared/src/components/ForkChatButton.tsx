@@ -57,20 +57,23 @@ export function ForkChatButton({
       </Tooltip>
     );
   }
+  // A host that wraps the button in its own tooltip (desktop's
+  // ActionTooltip) passes no title, so this one stays out of its way.
   return (
-    <button
-      type="button"
-      aria-label={ariaLabel}
-      className={`${'focus-ring flex h-6 w-6 items-center justify-center rounded-md bg-fg-primary/[0.04] fg-primary/80 ring-1 ring-line-base transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50'}${
-        coarsePointerTarget ? ' pointer-coarse:h-11 pointer-coarse:w-11' : ''
-      }${className ? ` ${className}` : ''}`}
-      data-testid={dataTestId}
-      disabled={disabled}
-      onClick={onClick}
-      title={title}
-      {...ariaAttributes}
-    >
-      <AppCatalogGitForkIcon width="14" height="14" aria-hidden="true" />
-    </button>
+    <Tooltip label={title} disabled={title === undefined}>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        className={`${'focus-ring flex h-6 w-6 items-center justify-center rounded-md bg-fg-primary/[0.04] fg-primary/80 ring-1 ring-line-base transition-colors hover:bg-fg-primary/[0.08] hover:fg-primary disabled:cursor-not-allowed disabled:opacity-50'}${
+          coarsePointerTarget ? ' pointer-coarse:h-11 pointer-coarse:w-11' : ''
+        }${className ? ` ${className}` : ''}`}
+        data-testid={dataTestId}
+        disabled={disabled}
+        onClick={onClick}
+        {...ariaAttributes}
+      >
+        <AppCatalogGitForkIcon width="14" height="14" aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
 }

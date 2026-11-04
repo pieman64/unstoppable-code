@@ -10,6 +10,7 @@ export const SETTINGS_HELD_CHANGE_LABELS: Readonly<
   Record<SettingsHeldChange, string>
 > = {
   model: 'model',
+  thinking_level: 'thinking level',
   agent: 'agent',
   plan_mode: 'plan mode',
   plugins: 'plugins',

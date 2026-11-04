@@ -1,24 +1,34 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   OPERATION_TERMINAL_STATUSES,
+  WorkerPipelineControlResultSchema,
   WorkerPipelineExecutionResultSchema,
+  WorkerPipelineRecoveryCheckpointResultSchema,
+  WorkerPipelineRecoverySweepResultSchema,
   type CanopyErrorPayload,
   type OperationFailure,
   type OperationOrigin,
   type OperationOwner,
   type WorkerPipelineCancelMode,
+  type WorkerPipelineControlOutcome,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionStartParams,
+  type WorkerPipelineRecoveryCheckpointResult,
+  type WorkerPipelineRecoverySweepResult,
 } from '@canopy/protocol/canopy-core';
+import { stableStringify } from '@canopy/protocol/plans';
 
+import { canopyInvalidArgumentError } from '../../../runtime/errors';
 import type {
   LocalWorkerDispatchResult,
   LocalWorkerExecution,
 } from '../../operations/local-worker';
+import type { OperationAcceptResult } from '../../operations/ledger';
 import type { OperationService } from '../../operations/service';
 import {
   isTerminalPipelineExecution,
+  type PipelineControlRequest,
   type PipelineExecutionWorker,
 } from './worker-pipelines';
 
@@ -26,7 +36,27 @@ import {
 export const CORE_PIPELINE_RUN_KIND = 'core.pipeline.run';
 /** A cancel of a run this process did not start, such as a resumed one. */
 export const CORE_PIPELINE_CANCEL_KIND = 'core.pipeline.cancel';
+/**
+ * One recovery control (CAN-4141), receipted by its request id: a child of
+ * the run it acts in, whose worker dispatch is its own child.
+ */
+export const CORE_PIPELINE_CONTROL_KIND = 'core.pipeline.control';
+/** The startup orphan sweep or the shutdown checkpoint (CAN-4141). */
+export const CORE_PIPELINE_RECOVERY_KIND = 'core.pipeline.recovery';
+const WORKER_SWEEP = 'worker.pipeline.recovery.sweep';
+const WORKER_CHECKPOINT = 'worker.pipeline.recovery.checkpoint';
+const SYSTEM = 'local-desktop-runtime';
 const WORKER_START = 'worker.pipeline.execution.start';
+/** Whose receipts a sweep's or checkpoint's operation records. */
+const RECOVERY_RECEIPT_CALLER = 'core.pipeline.recovery';
+/** Whose receipts a control's own operation records. */
+const CONTROL_RECEIPT_CALLER = 'core.pipeline.control';
+
+function digest(value: unknown): string {
+  return `sha256:${createHash('sha256')
+    .update(stableStringify(value) ?? 'null')
+    .digest('hex')}`;
+}
 const WORKER_CANCEL = 'worker.pipeline.execution.cancel';
 
 const OUTCOME_UNKNOWN: CanopyErrorPayload = {
@@ -80,6 +110,70 @@ export type CorePipelineRequestResult =
       error: CanopyErrorPayload | null;
     };
 
+interface AdmittedControl {
+  controlId: string;
+  runId: string;
+  /** The request id was seen before; its recorded control is replayed. */
+  replayed: boolean;
+}
+
+const RECOVERY_FAILED: CanopyErrorPayload = {
+  kind: 'internal',
+  message: 'Workflow run recovery could not be dispatched.',
+  retry: { kind: 'never' },
+};
+
+export type CorePipelineRecoveryResult<T> =
+  | { status: 'completed'; operationId: string; result: T }
+  | {
+      status: 'failed' | 'cancelled';
+      operationId: string;
+      error: CanopyErrorPayload | null;
+    };
+
+export interface CorePipelineControlRequest {
+  control: PipelineControlRequest;
+  /** Who asked: a client, a hook, an automation or a transient retry. */
+  origin: OperationOrigin;
+  owner: OperationOwner;
+}
+
+export type CorePipelineControlResult =
+  | {
+      status: 'completed';
+      operationId: string;
+      outcome: WorkerPipelineControlOutcome;
+      /** The execution the control acted on; a start over's new one. */
+      execution: WorkerPipelineExecution;
+    }
+  | {
+      status: 'failed' | 'cancelled';
+      operationId: string;
+      error: CanopyErrorPayload | null;
+    };
+
+/** The execution a control runs: a start over runs a new one. */
+export function pipelineControlTarget(control: PipelineControlRequest): string {
+  return control.operation === 'worker.pipeline.execution.retry' &&
+    control.params.mode === 'from_start' &&
+    control.params.newExecutionId !== undefined
+    ? control.params.newExecutionId
+    : control.params.executionId;
+}
+
+function controlResult(
+  operationId: string,
+  dispatched: LocalWorkerDispatchResult,
+): CorePipelineControlResult {
+  const child = dispatched.operation;
+  const reply = WorkerPipelineControlResultSchema.safeParse(dispatched.result);
+  if (child.status === 'completed' && reply.success)
+    return { status: 'completed', operationId, ...reply.data };
+  return child.status === 'cancelled'
+    ? { status: 'cancelled', operationId, error: null }
+    : { status: 'failed', operationId, error: toErrorPayload(child.error) };
+}
+
 function requestResult(
   operationId: string,
   dispatched: LocalWorkerDispatchResult,
@@ -121,6 +215,12 @@ export class CorePipelineRuns {
   private readonly paused = new Set<string>();
   /** Starts in flight; a cancel waits for its run to exist. */
   private readonly starting = new Map<string, Promise<unknown>>();
+  /** Control admissions in flight by execution; one at a time each. */
+  private readonly admitting = new Map<string, Promise<AdmittedControl>>();
+  /** Controls in flight under each run. */
+  private readonly controlling = new Map<string, number>();
+  /** Runs a control recorded that have not run their execution yet. */
+  private readonly idle = new Set<string>();
   /** In-flight worker cancels by parent operation and mode; a repeat joins one. */
   private readonly cancels = new Map<
     string,
@@ -136,7 +236,12 @@ export class CorePipelineRuns {
   ) {
     options.operations.registerDomain({
       domain: 'core.pipeline',
-      kinds: [CORE_PIPELINE_RUN_KIND, CORE_PIPELINE_CANCEL_KIND],
+      kinds: [
+        CORE_PIPELINE_RUN_KIND,
+        CORE_PIPELINE_CANCEL_KIND,
+        CORE_PIPELINE_CONTROL_KIND,
+        CORE_PIPELINE_RECOVERY_KIND,
+      ],
       restartClass: 'lost',
       cancel: (operation, request) => {
         const { executionId } = operation.scope;
@@ -234,6 +339,389 @@ export class CorePipelineRuns {
     this.runs.set(params.executionId, run.operationId);
     this.follow(params.executionId);
     return result;
+  }
+
+  /**
+   * Run a recovery control (CAN-4141) on the local worker and resolve with
+   * its outcome. A control of an execution whose run this process holds is
+   * a child of that run; any other gets a new `core.pipeline.run`, which
+   * follows the execution once the control runs it and otherwise finishes
+   * with the control's outcome. The dispatch is keyed by the control's
+   * `requestId`, so an unanswered control is never sent twice.
+   */
+  async control(
+    request: CorePipelineControlRequest,
+  ): Promise<CorePipelineControlResult> {
+    const { control } = request;
+    const target = pipelineControlTarget(control);
+    await this.afterStart(control.params.executionId);
+    await this.afterStart(target);
+    const admitted = await this.admitControl(target, request);
+    return this.dispatchControl(admitted, target, request);
+  }
+
+  /**
+   * A control's own operation, receipted by its request id, and the run it
+   * acts in, counted as in flight before another control of the same
+   * execution may look. A request id seen before, in this process or an
+   * earlier one, returns its recorded control so the worker replays it;
+   * otherwise the control joins the execution's live run, or records a new
+   * run.
+   */
+  private admitControl(
+    target: string,
+    request: CorePipelineControlRequest,
+  ): Promise<AdmittedControl> {
+    const previous = this.admitting.get(target) ?? Promise.resolve();
+    const admission = previous
+      .catch(() => undefined)
+      .then(async (): Promise<AdmittedControl> => {
+        const { operations } = this.options;
+        const receipt = {
+          caller: CONTROL_RECEIPT_CALLER,
+          idempotencyKey: request.control.params.requestId,
+          fingerprint: digest(request.control),
+        };
+        const admitIn = (runId: string): Promise<OperationAcceptResult> =>
+          operations.admit({
+            kind: CORE_PIPELINE_CONTROL_KIND,
+            status: 'running',
+            origin: request.origin,
+            owner: request.owner,
+            scope: { executionId: target },
+            parentOperationId: runId,
+            receipt,
+          });
+        const recorded = (await operations.ready()).lookupReceipt(
+          CORE_PIPELINE_CONTROL_KIND,
+          receipt,
+        );
+        let admitted: OperationAcceptResult | undefined;
+        if (recorded.status === 'key-reused')
+          throw canopyInvalidArgumentError(
+            'This workflow control was already requested with other details.',
+          );
+        if (recorded.status !== 'none') {
+          admitted = await admitIn(
+            recorded.operation.parentOperationId ?? target,
+          );
+        } else {
+          const live = await this.liveRun(target);
+          if (live !== undefined)
+            admitted = await admitIn(live).catch(() => undefined);
+        }
+        if (admitted === undefined) {
+          const run = await operations.admit({
+            kind: CORE_PIPELINE_RUN_KIND,
+            status: 'running',
+            origin: request.origin,
+            owner: request.owner,
+            scope: { executionId: target },
+          });
+          const runId = run.operation.operationId;
+          const superseded = this.runs.get(target);
+          this.runs.set(target, runId);
+          this.idle.add(runId);
+          if (superseded !== undefined) this.retire(target, superseded);
+          admitted = await admitIn(runId);
+        }
+        const runId = admitted.operation.parentOperationId ?? '';
+        this.controlling.set(runId, (this.controlling.get(runId) ?? 0) + 1);
+        return {
+          controlId: admitted.operation.operationId,
+          runId,
+          replayed: admitted.status !== 'accepted',
+        };
+      });
+    this.admitting.set(target, admission);
+    return admission.finally(() => {
+      if (this.admitting.get(target) === admission)
+        this.admitting.delete(target);
+    });
+  }
+
+  /**
+   * A run a new one replaced while it was being cancelled: nothing follows
+   * its execution for it any more, so it finishes cancelled now.
+   */
+  private retire(executionId: string, runId: string): void {
+    this.following.get(executionId)?.();
+    this.paused.delete(executionId);
+    this.idle.delete(runId);
+    void this.options.operations
+      .finish(runId, { status: 'cancelled' })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Record a new run that follows an execution no run holds, unless it has
+   * ended: the reply may predate the end its own run already recorded.
+   */
+  private async adopt(
+    target: string,
+    request: CorePipelineControlRequest,
+  ): Promise<void> {
+    const current = await this.options.worker.get(target).catch(() => null);
+    if (current === null || isTerminalPipelineExecution(current)) return;
+    const run = await this.options.operations
+      .admit({
+        kind: CORE_PIPELINE_RUN_KIND,
+        status: 'running',
+        origin: request.origin,
+        owner: request.owner,
+        scope: { executionId: target },
+      })
+      .catch(() => null);
+    if (run === null || this.runs.has(target)) {
+      if (run !== null)
+        void this.options.operations
+          .finish(run.operation.operationId, { status: 'cancelled' })
+          .catch(() => undefined);
+      return;
+    }
+    this.runs.set(target, run.operation.operationId);
+    this.follow(target);
+  }
+
+  /**
+   * The startup orphan sweep through the local worker: a
+   * `core.pipeline.recovery` operation whose child pauses the executions a
+   * process left running when it exited. Their runs were `lost` with that
+   * process; they resume through a recovery control.
+   */
+  async sweep(
+    executionIds: readonly string[],
+    requestId: string = randomUUID(),
+  ): Promise<CorePipelineRecoveryResult<WorkerPipelineRecoverySweepResult>> {
+    const params = { requestId, executionIds: [...executionIds] };
+    const recorded = await this.dispatchRecovery(
+      WORKER_SWEEP,
+      'startup-sweep',
+      params,
+    );
+    const reply = WorkerPipelineRecoverySweepResultSchema.safeParse(
+      recorded.dispatched.result,
+    );
+    return this.finishRecovery(recorded, reply.success ? reply.data : null);
+  }
+
+  /**
+   * The shutdown checkpoint through the local worker: every live execution
+   * pauses so it can resume after the restart.
+   */
+  async checkpoint(
+    requestId: string = randomUUID(),
+  ): Promise<
+    CorePipelineRecoveryResult<WorkerPipelineRecoveryCheckpointResult>
+  > {
+    const recorded = await this.dispatchRecovery(
+      WORKER_CHECKPOINT,
+      'shutdown-checkpoint',
+      { requestId },
+    );
+    const reply = WorkerPipelineRecoveryCheckpointResultSchema.safeParse(
+      recorded.dispatched.result,
+    );
+    return this.finishRecovery(recorded, reply.success ? reply.data : null);
+  }
+
+  private async dispatchRecovery(
+    operation: typeof WORKER_SWEEP | typeof WORKER_CHECKPOINT,
+    sourceId: string,
+    params: { requestId: string },
+  ): Promise<{
+    operationId: string;
+    replayed: boolean;
+    dispatched: LocalWorkerDispatchResult;
+  }> {
+    const { operations, localWorker } = this.options;
+    // Receipted by the request id, so a repeat replays the recorded sweep or
+    // checkpoint instead of running it again.
+    const admitted = await operations.admit({
+      kind: CORE_PIPELINE_RECOVERY_KIND,
+      status: 'running',
+      origin: { kind: 'system', sourceId },
+      owner: { kind: 'system', id: SYSTEM },
+      receipt: {
+        caller: RECOVERY_RECEIPT_CALLER,
+        idempotencyKey: params.requestId,
+        fingerprint: digest({ operation, params }),
+      },
+    });
+    const operationId = admitted.operation.operationId;
+    const replayed = admitted.status !== 'accepted';
+    try {
+      return {
+        operationId,
+        replayed,
+        dispatched: await localWorker.dispatch({
+          parentOperationId: operationId,
+          operation,
+          params,
+          idempotencyKey: params.requestId,
+        }),
+      };
+    } catch (error) {
+      if (!replayed)
+        await operations
+          .finish(operationId, { status: 'failed', error: RECOVERY_FAILED })
+          .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async finishRecovery<T extends Record<string, number>>(
+    {
+      operationId,
+      replayed,
+      dispatched,
+    }: {
+      operationId: string;
+      replayed: boolean;
+      dispatched: LocalWorkerDispatchResult;
+    },
+    reply: T | null,
+  ): Promise<CorePipelineRecoveryResult<T>> {
+    const child = dispatched.operation;
+    const result: CorePipelineRecoveryResult<T> =
+      child.status === 'completed' && reply !== null
+        ? { status: 'completed', operationId, result: reply }
+        : {
+            status: child.status === 'cancelled' ? 'cancelled' : 'failed',
+            operationId,
+            error: toErrorPayload(child.error),
+          };
+    if (replayed) return result;
+    await this.options.operations
+      .finish(
+        operationId,
+        result.status === 'completed'
+          ? { status: 'completed', outcome: result.result }
+          : result.status === 'cancelled'
+            ? { status: 'cancelled' }
+            : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+      )
+      .catch(() => undefined);
+    return result;
+  }
+
+  /** The unfinished run this process holds for an execution, if any. */
+  private async liveRun(executionId: string): Promise<string | undefined> {
+    const runId = this.runs.get(executionId);
+    if (runId === undefined) return undefined;
+    const run = await this.options.operations.get(runId);
+    return run &&
+      !TERMINAL_OPERATION_STATUSES.has(run.status) &&
+      !run.cancellation
+      ? runId
+      : undefined;
+  }
+
+  private async dispatchControl(
+    { controlId, runId, replayed }: AdmittedControl,
+    target: string,
+    request: CorePipelineControlRequest,
+  ): Promise<CorePipelineControlResult> {
+    const { control } = request;
+    const { operations } = this.options;
+    let result: CorePipelineControlResult;
+    try {
+      const dispatched = await this.options.localWorker.dispatch({
+        parentOperationId: controlId,
+        operation: control.operation,
+        params: control.params,
+        idempotencyKey: control.params.requestId,
+      });
+      result = controlResult(runId, dispatched);
+    } catch (error) {
+      const dispatchFailed = {
+        status: 'failed' as const,
+        error: {
+          kind: 'internal' as const,
+          message: 'This workflow control could not be dispatched.',
+          retry: { kind: 'never' as const },
+        },
+      };
+      if (!replayed)
+        void operations
+          .finish(controlId, dispatchFailed)
+          .catch(() => undefined);
+      this.afterControl(runId, target, dispatchFailed);
+      throw error;
+    }
+    if (!replayed)
+      void operations
+        .finish(
+          controlId,
+          result.status === 'completed'
+            ? { status: 'completed', outcome: { outcome: result.outcome } }
+            : result.status === 'cancelled'
+              ? { status: 'cancelled' }
+              : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+        )
+        .catch(() => undefined);
+    if (result.status === 'completed' && result.outcome === 'started') {
+      this.idle.delete(runId);
+      this.afterControl(runId, target, null);
+      // A replay under an older run reports what that run started; only the
+      // run that holds the execution now follows it. When none does, as when
+      // a concurrent control already finished their shared run, a new run
+      // follows what this control started.
+      const holder = this.runs.get(target);
+      if (
+        !replayed &&
+        holder === undefined &&
+        !isTerminalPipelineExecution(result.execution)
+      ) {
+        await this.adopt(target, request);
+        return result;
+      }
+      if (holder !== runId) return result;
+      if (isTerminalPipelineExecution(result.execution))
+        this.settle(target, result.execution);
+      else this.follow(target);
+      return result;
+    }
+    // A control that ran nothing may still end the execution, as cancelling
+    // its last paused matrix variant does.
+    if (
+      result.status === 'completed' &&
+      !this.idle.has(runId) &&
+      this.runs.get(target) === runId &&
+      isTerminalPipelineExecution(result.execution)
+    )
+      this.settle(target, result.execution);
+    this.afterControl(
+      runId,
+      target,
+      result.status === 'completed'
+        ? { status: 'completed', outcome: { outcome: result.outcome } }
+        : result.status === 'cancelled'
+          ? { status: 'cancelled' }
+          : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+    );
+    return result;
+  }
+
+  /**
+   * A control has settled. A run that only controls recorded, none of which
+   * ran its execution, finishes with the last one's outcome.
+   */
+  private afterControl(
+    runId: string,
+    target: string,
+    terminal: Parameters<OperationService['finish']>[1] | null,
+  ): void {
+    const remaining = (this.controlling.get(runId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.controlling.set(runId, remaining);
+      return;
+    }
+    this.controlling.delete(runId);
+    if (terminal === null || !this.idle.has(runId)) return;
+    this.idle.delete(runId);
+    if (this.runs.get(target) === runId) this.runs.delete(target);
+    void this.options.operations.finish(runId, terminal).catch(() => undefined);
   }
 
   /**

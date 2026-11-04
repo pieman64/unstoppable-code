@@ -2975,10 +2975,11 @@ for (const {
         await delegated.getByRole('button', { name: 'Show changes' }).click();
         const changed = delegated.getByTestId('delegated-change');
         await expect(changed).toHaveCount(1);
-        await expect(changed.locator('summary')).toHaveText(
+        const changedToggle = changed.getByTestId('delegated-change-toggle');
+        await expect(changedToggle).toHaveText(
           'delegation-evidence.txt · modified',
         );
-        await changed.locator('summary').click();
+        await changedToggle.click();
         // Removing the large file's padding fills the bounded display diff.
         if (largeEvidence)
           await expect(changed).toContainText('Diff shortened to fit');
@@ -3334,7 +3335,7 @@ for (const {
           delegated.getByText(fixture.finding, { exact: true }),
         ).toHaveCount(1);
         await expect(delegated).toContainText(
-          child === 'claude' ? 'Read' : 'Ran',
+          child === 'claude' ? 'Read' : 'Run',
         );
         await expect(delegated).toContainText('high');
         await window.reload();
@@ -3361,7 +3362,7 @@ for (const {
           restored.getByText(fixture.finding, { exact: true }),
         ).toHaveCount(1);
         await expect(restored).toContainText(
-          child === 'claude' ? 'Read' : 'Ran',
+          child === 'claude' ? 'Read' : 'Run',
         );
         expect(retainedRuns(userDataDir)[0].delivery).toEqual(runs[0].delivery);
         if (mode === 'foreground') {
@@ -3397,7 +3398,7 @@ for (const {
             coldWindow.getByText(/A delegated task has finished/),
           ).toHaveCount(0);
           await expect(coldCard).toContainText(
-            child === 'claude' ? 'Read' : 'Ran',
+            child === 'claude' ? 'Read' : 'Run',
           );
           expect(retainedRuns(userDataDir)[0].delivery).toEqual(
             runs[0].delivery,

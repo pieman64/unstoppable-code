@@ -969,16 +969,16 @@ describe('memory loading placeholders', () => {
         }}
       />,
     );
-    expect(testId('settings-skeleton-table')).toBeNull();
+    expect(testId('memory-jobs-table-loading')).toBeNull();
 
     await chooseSettingsOption(
       settingsSelectTrigger(container, '[aria-label="Filter ingest jobs"]'),
       'DEAD',
     );
 
-    expect(testId('settings-skeleton-table')?.getAttribute('role')).toBe(
-      'status',
-    );
+    const loadingRow = testId('memory-jobs-table-loading');
+    expect(loadingRow).not.toBeNull();
+    expect(loadingRow?.querySelector('[role="status"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Loading jobs');
   });
 

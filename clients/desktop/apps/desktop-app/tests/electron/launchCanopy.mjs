@@ -188,6 +188,9 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   // CAN-5544 dry run (`CANOPY_E2E_DAEMON_FILES_DRY_RUN=1`) forces it `on`; see
   // resolveDefaultE2eClientFeatureFlags.
   'canopy-desktop-labs-daemon-files-reads': 'offered',
+  // Terminals stay in the app; terminal acceptance opts in through Labs.
+  'canopy-desktop-labs-daemon-terminals': 'offered',
+  'canopy-desktop-labs-daemon-code-graph': 'offered',
   // Chat automations save natively unless a spec opts in through Labs.
   'canopy-desktop-labs-chat-automation-pipelines': 'offered',
   // The Labs page experiments are `offered` (off until switched on) in

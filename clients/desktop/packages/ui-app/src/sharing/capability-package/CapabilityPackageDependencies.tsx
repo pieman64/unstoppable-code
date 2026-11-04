@@ -11,6 +11,7 @@ import {
   Checkbox,
   RichHoverTooltip,
   SettingsSelect,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import {
@@ -748,9 +749,9 @@ function SummaryRow({
     >
       <div className="min-w-0 space-y-0.5">
         <div className="flex items-center gap-1">
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             {INCLUDED_FILES_HEADING}
-          </h3>
+          </Heading>
           {summary === null && help}
         </div>
         {summary !== null && (
@@ -969,7 +970,9 @@ function PackagedPipelineList({
       className="space-y-1.5"
       data-testid={`${testIdPrefix}-dependencies-pipelines`}
     >
-      <h4 className="text-s font-medium fg-primary">{PIPELINES_HEADING}</h4>
+      <Heading level={4} variant="title">
+        {PIPELINES_HEADING}
+      </Heading>
       <p className="text-xs fg-secondary">{PIPELINES_HELPER}</p>
       {pipelines.length > 0 && (
         <ul className="divide-y divide-line-base">
@@ -1067,7 +1070,9 @@ function WithheldFileList({
       className="space-y-1.5"
       data-testid={`${testIdPrefix}-dependencies-withheld`}
     >
-      <h4 className="text-s font-medium fg-primary">{WITHHELD_HEADING}</h4>
+      <Heading level={4} variant="title">
+        {WITHHELD_HEADING}
+      </Heading>
       <p className="text-xs fg-secondary">{WITHHELD_HELPER}</p>
       <ul className="space-y-1">
         {files.map((file) => (
@@ -1105,9 +1110,9 @@ function RecipientSetupList({
       className="space-y-1.5"
       data-testid={`${testIdPrefix}-dependencies-recipient-setup`}
     >
-      <h4 className="text-s font-medium fg-primary">
+      <Heading level={4} variant="title">
         {PIPELINE_PACKAGE_PUBLISHER_SETUP_HEADING}
-      </h4>
+      </Heading>
       <p className="text-xs fg-secondary">
         {PIPELINE_PACKAGE_PUBLISHER_NO_CREDENTIALS_NOTE}
       </p>

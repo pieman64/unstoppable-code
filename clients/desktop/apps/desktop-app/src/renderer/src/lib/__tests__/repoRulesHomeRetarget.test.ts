@@ -15,10 +15,9 @@ interface FakeComposer {
   scheduledSendDraft: { runAt: string } | null;
   isSending: boolean;
   workspaceSelectionExplicit: boolean;
-  workspaceSelectionReason: 'most-recent-import' | null;
   workspaceSelectionGeneration: number;
   selectWorkspace: jest.Mock;
-  clearWorkspaceSelectionReason: jest.Mock;
+  advanceWorkspaceSelectionGeneration: jest.Mock;
 }
 
 let composer: FakeComposer;
@@ -62,15 +61,12 @@ beforeEach(() => {
     scheduledSendDraft: null,
     isSending: false,
     workspaceSelectionExplicit: false,
-    workspaceSelectionReason: 'most-recent-import',
     workspaceSelectionGeneration: 3,
     selectWorkspace: jest.fn((workspaceId: string) => {
       composer.workspaceId = workspaceId;
-      composer.workspaceSelectionReason = null;
       composer.workspaceSelectionGeneration += 1;
     }),
-    clearWorkspaceSelectionReason: jest.fn(() => {
-      composer.workspaceSelectionReason = null;
+    advanceWorkspaceSelectionGeneration: jest.fn(() => {
       composer.workspaceSelectionGeneration += 1;
     }),
   };
@@ -157,7 +153,7 @@ describe('retargetHomeAfterRepoRulesApplied (CAN-4674)', () => {
     protect();
     expect(apply()).toBe(false);
     expect(composer.selectWorkspace).not.toHaveBeenCalled();
-    expect(composer.clearWorkspaceSelectionReason).not.toHaveBeenCalled();
+    expect(composer.advanceWorkspaceSelectionGeneration).not.toHaveBeenCalled();
     expect(composer.workspaceId).toBe('side-quest');
   });
 
@@ -215,13 +211,12 @@ describe('retargetHomeAfterRepoRulesApplied (CAN-4674)', () => {
     expect(composer.selectWorkspace).not.toHaveBeenCalled();
   });
 
-  it('only clears the landing reason when the project is already selected', () => {
+  it('only advances selection identity when the project is already selected', () => {
     composer.text = '';
     composer.workspaceId = 'payments-service';
-    expect(apply()).toBe(true);
+    expect(apply()).toBe(false);
     expect(composer.selectWorkspace).not.toHaveBeenCalled();
-    expect(composer.clearWorkspaceSelectionReason).toHaveBeenCalled();
-    expect(composer.workspaceSelectionReason).toBeNull();
+    expect(composer.advanceWorkspaceSelectionGeneration).toHaveBeenCalled();
   });
 
   it('lets a later, current Apply select its own project', () => {
@@ -235,26 +230,22 @@ describe('retargetHomeAfterRepoRulesApplied (CAN-4674)', () => {
     expect(composer.workspaceId).toBe('side-quest');
   });
 
-  it.each([null, 'most-recent-import'] as const)(
-    'rejects an older review after a newer same-project Apply with reason %s',
-    (reason) => {
-      composer.workspaceSelectionReason = reason;
-      const older = captureRepoRulesReviewOrigin('first-run-import');
-      const newer = captureRepoRulesReviewOrigin('import-results');
-      retargetHomeAfterRepoRulesApplied(newer, {
-        workspaceId: 'side-quest',
+  it('rejects an older review after a newer same-project Apply', () => {
+    const older = captureRepoRulesReviewOrigin('first-run-import');
+    const newer = captureRepoRulesReviewOrigin('import-results');
+    retargetHomeAfterRepoRulesApplied(newer, {
+      workspaceId: 'side-quest',
+      status: ENABLED,
+    });
+    expect(
+      retargetHomeAfterRepoRulesApplied(older, {
+        workspaceId: 'payments-service',
         status: ENABLED,
-      });
-      expect(
-        retargetHomeAfterRepoRulesApplied(older, {
-          workspaceId: 'payments-service',
-          status: ENABLED,
-        }),
-      ).toBe(false);
-      expect(composer.workspaceId).toBe('side-quest');
-      expect(composer.selectWorkspace).not.toHaveBeenCalled();
-    },
-  );
+      }),
+    ).toBe(false);
+    expect(composer.workspaceId).toBe('side-quest');
+    expect(composer.selectWorkspace).not.toHaveBeenCalled();
+  });
 
   it('rejects a context that changed away and back while Apply was pending', () => {
     expect(
@@ -262,7 +253,7 @@ describe('retargetHomeAfterRepoRulesApplied (CAN-4674)', () => {
         context.state.revision += 2;
       }),
     ).toBe(false);
-    expect(composer.clearWorkspaceSelectionReason).not.toHaveBeenCalled();
+    expect(composer.advanceWorkspaceSelectionGeneration).not.toHaveBeenCalled();
   });
 
   it('protects an explicit choice made while Apply was pending', () => {
@@ -271,7 +262,7 @@ describe('retargetHomeAfterRepoRulesApplied (CAN-4674)', () => {
         composer.workspaceSelectionExplicit = true;
       }),
     ).toBe(false);
-    expect(composer.workspaceSelectionReason).toBe('most-recent-import');
+    expect(composer.workspaceId).toBe('side-quest');
   });
 });
 

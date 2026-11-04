@@ -800,6 +800,7 @@ function App(): JSX.Element {
         .setOpenAppLinksInBuiltInBrowser(
           preferences.openAppLinksInBuiltInBrowser === true,
         );
+      useBrowserStore.getState().applySearchPreferences(preferences);
     });
   }, []);
 

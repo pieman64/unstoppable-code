@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { OperationLedgerError } from './errors';
 
 /** The schema this build writes; a newer database is never opened. */
-export const OPERATION_LEDGER_SCHEMA_VERSION = 2;
+export const OPERATION_LEDGER_SCHEMA_VERSION = 3;
 
 const SCHEMA = [
   `CREATE TABLE operation_meta (
@@ -111,6 +111,22 @@ const SCHEMA_V2 = [
     WHERE state IN ('prepared', 'dispatched', 'reconciling', 'unreachable')`,
 ];
 
+/**
+ * Version 3 (CAN-4145): the last state each initiated-work source has seen
+ * per subject, such as a pull request's tracked snapshot. A source records
+ * it in the same transaction as the runs that state fired, so seeing an
+ * event and accepting its work commit together.
+ */
+const SCHEMA_V3 = [
+  `CREATE TABLE initiated_work_heads (
+    source TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    head TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (source, subject)
+  ) STRICT`,
+];
+
 function closeQuietly(db: DatabaseSync): void {
   try {
     if (db.isOpen) db.close();
@@ -150,9 +166,11 @@ function migrate(db: DatabaseSync): void {
   const stored = readMeta(db, 'schema_version');
   if (stored !== null) {
     if (Number(stored) === OPERATION_LEDGER_SCHEMA_VERSION) return;
-    if (Number(stored) === 1) {
+    if (Number(stored) === 1 || Number(stored) === 2) {
       upgrade(db, () => {
-        for (const statement of SCHEMA_V2) db.exec(statement);
+        const statements =
+          Number(stored) === 1 ? [...SCHEMA_V2, ...SCHEMA_V3] : SCHEMA_V3;
+        for (const statement of statements) db.exec(statement);
         db.prepare(
           `UPDATE operation_meta SET value = ? WHERE key = 'schema_version'`,
         ).run(String(OPERATION_LEDGER_SCHEMA_VERSION));
@@ -165,7 +183,8 @@ function migrate(db: DatabaseSync): void {
     );
   }
   upgrade(db, () => {
-    for (const statement of [...SCHEMA, ...SCHEMA_V2]) db.exec(statement);
+    for (const statement of [...SCHEMA, ...SCHEMA_V2, ...SCHEMA_V3])
+      db.exec(statement);
     const insert = db.prepare(
       'INSERT INTO operation_meta (key, value) VALUES (?, ?)',
     );

@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 import type {
   DetectedMcpServerInfo,
-  McpServerData,
+  McpServerDataView,
 } from '@canopy/desktop-shared/types/mcp-servers';
 import type {
   MarketplaceInfo,
@@ -59,7 +59,7 @@ export function McpServerDetailsModal({
   onClose,
   onEdit,
 }: McpServerDetailsModalProps): JSX.Element {
-  const [serverData, setServerData] = useState<McpServerData | null>(null);
+  const [serverData, setServerData] = useState<McpServerDataView | null>(null);
   const [serverLoading, setServerLoading] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 

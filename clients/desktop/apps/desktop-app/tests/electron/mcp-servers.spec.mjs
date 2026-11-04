@@ -170,6 +170,76 @@ test('device MCP saves keep unknown fields and refuse a damaged index', async ()
   }
 });
 
+test('CAN-4411 MCP editor shows saved values as saved and keeps them on save', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir } = await launchCanopy();
+  const secret = 'postgres://demo:e2e-secret-pass@db/app';
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell();
+    const serverId = await window.evaluate(async (value) => {
+      const now = '2026-11-02T00:00:00.000Z';
+      const saved = await window.mcpServers.saveServer({
+        definition: {
+          id: '',
+          name: 'Saved secrets',
+          description: '',
+          type: 'command',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-postgres'],
+          createdAt: now,
+          updatedAt: now,
+        },
+        configs: [
+          {
+            id: 'default',
+            name: 'Default',
+            description: '',
+            enabled: true,
+            envVars: { DATABASE_URL: value },
+            extraArgs: [],
+            extraHeaders: {},
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      });
+      return saved.server.definition.id;
+    }, secret);
+    const reply = await window.evaluate(
+      (id) => window.mcpServers.loadServer(id),
+      serverId,
+    );
+    expect(JSON.stringify(reply)).not.toContain(secret);
+
+    await app.openPluginsPage();
+    await app.openPluginsTab('mcp');
+    await window
+      .getByTestId('customize-section-installed')
+      .locator('[data-testid^="customize-row-mcp-local:"]')
+      .first()
+      .click();
+    await window.getByTestId('plugin-advanced-configuration').click();
+    const dialog = window.getByRole('dialog', { name: 'Edit MCP server' });
+    await dialog.getByRole('button', { name: 'Expand config' }).click();
+    await expect(
+      dialog.getByRole('textbox', { name: 'DATABASE_URL value' }),
+    ).toHaveAttribute('placeholder', 'Saved');
+    await dialog.getByPlaceholder('My MCP server').fill('Saved secrets two');
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const file = readFileSync(
+      path.join(userDataDir, 'mcp-servers', `server-${serverId}.json`),
+      'utf8',
+    );
+    expect(file).toContain('Saved secrets two');
+    expect(file).toContain(secret);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('Plugins → MCP Servers supports add, edit, and remove', async ({}, testInfo) => {
   test.setTimeout(120_000);
 

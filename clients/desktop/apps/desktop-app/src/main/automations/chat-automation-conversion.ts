@@ -4,17 +4,25 @@
  * action to run it. Nothing calls it yet; the Start chat card (7b) and agent
  * creation (7c) will.
  */
+import { isDeepStrictEqual } from 'node:util';
 import {
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
+import type {
+  SharedAutomationTargetRequirement,
+  TargetContext,
+} from '@canopy/protocol/automations';
 import {
   chatAutomationToPipeline,
   convertibleChatAutomation,
   type ChatAutomationAction,
 } from '@canopy/desktop-shared/lib/chat-automation-conversion';
-import type { PipelineData } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  Pipeline,
+  PipelineData,
+} from '@canopy/desktop-shared/types/pipeline';
 import {
   APP_ADVISOR_PROJECT_ID,
   type AutomationAction,
@@ -24,13 +32,21 @@ import {
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
   setUserPipelineAgentAuthor,
+  setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
+  type PipelineNativeGrant,
 } from '../pipelines/pipeline-local-metadata-store';
+import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import { automationSendCaller } from './automation-send';
+import {
+  nativeGrantAuthority,
+  nativeGrantContentHash,
+} from './chat-automation-native-grant';
 
 /** Electron main writing an automation's own pipeline. */
 export const AUTOMATION_PIPELINE_CALLER: CanopyCallerDescriptor = {
@@ -58,6 +74,57 @@ function actionTarget(action: ChatAutomationAction): {
   }
 }
 
+/** The single target context a chat action runs in. */
+function impliedTargetContext(action: ChatAutomationAction): TargetContext {
+  switch (action.type) {
+    case 'worktree_prompt':
+      return 'worktree';
+    case 'standalone_prompt':
+      return 'cowork';
+    case 'app_advisor_prompt':
+      return 'app_advisor';
+    case 'worktree_session_prompt':
+      return action.workspaceId === APP_ADVISOR_PROJECT_ID
+        ? 'app_advisor'
+        : isCoworkWorkspace(action.workspaceId)
+          ? 'cowork'
+          : 'worktree';
+  }
+}
+
+/**
+ * The run restriction a chat action implies (CAN-5479). A valid restriction
+ * is never wider than this, so a converted automation, whose global pipeline
+ * can't carry one, drops it, and converting back restores it.
+ */
+export function impliedChatTargetRequirement(
+  action: ChatAutomationAction,
+): SharedAutomationTargetRequirement {
+  return { contexts: [impliedTargetContext(action)] };
+}
+
+/**
+ * Whether the activity converts: the shared converter accepts it, and any run
+ * restriction is exactly the one its action implies. Any other restriction
+ * already fails the native run, so that automation stays native.
+ */
+export function convertsToOwnedChatPipeline(
+  activity: ScheduledActivity,
+): boolean {
+  const { action, targetRequirement } = activity;
+  if (!convertibleChatAutomation(activity).convertible) return false;
+  if (targetRequirement === undefined) return true;
+  if (
+    action.type !== 'worktree_prompt' &&
+    action.type !== 'standalone_prompt' &&
+    action.type !== 'app_advisor_prompt' &&
+    action.type !== 'worktree_session_prompt'
+  )
+    return false;
+  const [context, ...rest] = targetRequirement.contexts;
+  return rest.length === 0 && context === impliedTargetContext(action);
+}
+
 /**
  * The owner the native action sent as: the automation's bound context, or
  * its target project's saved owner (Personal for the Orchestrator).
@@ -70,7 +137,11 @@ async function conversionOwner(
   return serializeWorkspaceContext(caller.source.owner);
 }
 
-/** What the service applies once the owned pipeline is saved. */
+/**
+ * What the service applies once the owned pipeline is saved. The automation
+ * drops its run restriction, which a global pipeline can't carry and which
+ * the save checked is the one its chat action implies.
+ */
 export interface OwnedPipelineReplacement {
   action: AutomationAction;
   /** The owner a global pipeline automation runs as. */
@@ -101,6 +172,81 @@ function withResolvedCoworkProject(
 }
 
 /**
+ * The stored pipeline's content, if it is still at `revision`; a read that
+ * fails is no content, so no grant is minted from it.
+ */
+function storedRevisionContent(
+  pipelineId: string,
+  revision: number | undefined,
+): { revision: number; content: Pipeline } | undefined {
+  if (revision === undefined) return undefined;
+  try {
+    const stored = getStoredPipelineBySource('user', pipelineId);
+    return stored.success &&
+      stored.data &&
+      stored.data.info.revision === revision
+      ? { revision, content: stored.data.content }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The grant a rollback puts back (CAN-5479): one that held for the content
+ * it restores holds for that content's new revision; any other stays as it
+ * was, so a stale grant stays stale.
+ */
+function restoredGrant(
+  previous: PipelineNativeGrant | undefined,
+  loadedRevision: number | undefined,
+  restoredRevision: number | undefined,
+  pipelineId: string,
+): PipelineNativeGrant | null {
+  if (previous === undefined) return null;
+  if (previous.pipelineRevision !== loadedRevision) return previous;
+  const restored = storedRevisionContent(pipelineId, restoredRevision);
+  return restored !== undefined &&
+    nativeGrantContentHash(restored.content) === previous.contentHash
+    ? { ...previous, pipelineRevision: restored.revision }
+    : previous;
+}
+
+type ChatAutomationPipeline = ReturnType<typeof chatAutomationToPipeline>;
+
+/** The action that runs `pipeline` as the owned pipeline `pipelineId`. */
+function ownedPipelineAction(
+  pipelineId: string,
+  { pipeline, inputs, modelAliasPreferences }: ChatAutomationPipeline,
+): AutomationAction {
+  return {
+    type: 'worktree_pipeline',
+    target: { kind: 'global' },
+    pipelineId,
+    pipelineSource: 'user',
+    pipelineName: pipeline.name,
+    inputs,
+    // An Agent runs through the pipeline's model alias.
+    ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
+  };
+}
+
+/**
+ * The action a regenerated owned pipeline `pipelineId` runs `stored` with,
+ * what its in-place save answers (CAN-5465). Throws for an activity that
+ * can't convert.
+ */
+export function regeneratedOwnedChatAction(
+  stored: ScheduledActivity,
+  pipelineId: string,
+): AutomationAction {
+  return ownedPipelineAction(
+    pipelineId,
+    chatAutomationToPipeline(withResolvedCoworkProject(stored)),
+  );
+}
+
+/**
  * Saves the activity's owned pipeline and returns the action that runs it:
  * a new pipeline, or `inPlace` the one it already owns, against the revision
  * that was loaded so a concurrent edit is never overwritten. Throws, changing
@@ -114,7 +260,10 @@ export async function saveOwnedChatPipeline(
   const verdict = convertibleChatAutomation(activity);
   if (!verdict.convertible)
     throw new Error(`This automation can't convert (${verdict.reason}).`);
-  const { pipeline, inputs } = chatAutomationToPipeline(activity);
+  if (!convertsToOwnedChatPipeline(activity))
+    throw new Error("This automation can't convert (target_requirement).");
+  const converted = chatAutomationToPipeline(activity);
+  const { pipeline } = converted;
   const { action } = activity;
   if (
     action.type !== 'worktree_prompt' &&
@@ -124,8 +273,11 @@ export async function saveOwnedChatPipeline(
   )
     throw new Error("This automation can't convert (not_a_chat_action).");
   const owner = await conversionOwner(activity, action);
+  // CAN-5479: the settings its runs keep, which D11 would refuse an agent's.
+  const authority = nativeGrantAuthority(action);
   // What a rollback of an in-place save puts back besides the content: the
-  // owner and the agent author, whose runs keep their admission (D11).
+  // owner, the agent author, whose runs keep their admission (D11), and the
+  // native grant.
   const previousMetadata = inPlace
     ? readPipelineLocalMetadata({
         type: 'stored',
@@ -190,13 +342,40 @@ export async function saveOwnedChatPipeline(
       pipelineId,
       previousMetadata?.agentAuthor ?? null,
     );
+    setUserPipelineNativeGrant(
+      pipelineId,
+      restoredGrant(
+        previousMetadata?.nativeGrant,
+        inPlace.previous.info.revision,
+        restored.data?.revision,
+        pipelineId,
+      ),
+    );
   };
   try {
+    // The grant names the revision this save wrote and its content as
+    // stored; a write since then is not the automation's. A person's
+    // automation records it too, as the authority an agent's later update
+    // must keep; an agent's can't run as its native action did without it.
+    let grant: PipelineNativeGrant | null = null;
+    if (authority !== undefined) {
+      const written = storedRevisionContent(pipelineId, savedRevision);
+      if (written === undefined && activity.agentAuthor !== undefined)
+        throw new Error('The workflow’s settings could not be recorded.');
+      if (written !== undefined)
+        grant = {
+          automationId: activity.id,
+          pipelineRevision: written.revision,
+          contentHash: nativeGrantContentHash(written.content),
+          ...authority,
+        };
+    }
     recordUserPipelineOwner(pipelineId, owner);
     // An agent's automation keeps its admission (D11); a person's save, whose
     // activity carries no agent author, clears it.
     setUserPipelineAgentAuthor(pipelineId, activity.agentAuthor ?? null);
     setUserPipelineOwnerAutomation(pipelineId, activity.id);
+    setUserPipelineNativeGrant(pipelineId, grant);
     // The store logs a failed write instead of throwing; without the marker
     // the automation's delete could never find its pipeline.
     const recorded = readPipelineLocalMetadata({
@@ -210,19 +389,16 @@ export async function saveOwnedChatPipeline(
       (activity.agentAuthor !== undefined && recorded.agentAuthor === undefined)
     )
       throw new Error('The workflow’s owner could not be recorded.');
+    // Without its grant an agent's run would be refused what the native
+    // action ran with; a stale one would keep authority the action dropped.
+    if (!isDeepStrictEqual(recorded.nativeGrant ?? null, grant))
+      throw new Error('The workflow’s settings could not be recorded.');
   } catch (error) {
     await rollback();
     throw error;
   }
   return {
-    action: {
-      type: 'worktree_pipeline',
-      target: { kind: 'global' },
-      pipelineId,
-      pipelineSource: 'user',
-      pipelineName: pipeline.name,
-      inputs,
-    },
+    action: ownedPipelineAction(pipelineId, converted),
     executionContext: owner,
     rollback,
   };

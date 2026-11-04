@@ -213,6 +213,36 @@ export const PipelineDefinitionDuplicateResultSchema = z.looseObject({
   sourceDefinitionId: id,
 });
 
+/**
+ * An install of a curated or shared definition as a user definition: a new
+ * one under an id core assigns, or a replacement of `definitionId`. Core
+ * reads the remote itself; the caller never supplies the document.
+ */
+export const PipelineDefinitionImportParamsSchema = z.strictObject({
+  /** A `curated:` or `shared:` definition id. */
+  remoteDefinitionId: id,
+  /** The scope the install is authorized in; the definition is unscoped. */
+  targetScope: CanopyWorkspaceScopeSchema,
+  /**
+   * The remote content hash the caller reviewed; a remote that changed
+   * since is refused with `remoteVersionConflict`. `null` installs the
+   * current revision.
+   */
+  expectedRemoteVersion: z.string().max(256).nullable(),
+  /** The installed definition's name; `null` keeps the remote's. */
+  nameOverride: z.string().nullable(),
+  /** A user definition the install replaces; omitted creates one. */
+  definitionId: id.optional(),
+  _meta: PipelineDefinitionKeyedRequestMetadataSchema,
+});
+
+export const PipelineDefinitionImportResultSchema = z.looseObject({
+  definition: PipelineDefinitionSchema,
+  remoteDefinitionId: id,
+  /** The remote content hash installed. */
+  remoteVersion: z.string().max(256),
+});
+
 /** Records whether a definition of any source, read-only ones included, is enabled. */
 export const PipelineDefinitionSetEnabledParamsSchema = z.strictObject({
   definitionId: id,
@@ -276,6 +306,12 @@ export type PipelineDefinitionDuplicateParams = z.output<
 >;
 export type PipelineDefinitionDuplicateResult = z.output<
   typeof PipelineDefinitionDuplicateResultSchema
+>;
+export type PipelineDefinitionImportParams = z.output<
+  typeof PipelineDefinitionImportParamsSchema
+>;
+export type PipelineDefinitionImportResult = z.output<
+  typeof PipelineDefinitionImportResultSchema
 >;
 export type PipelineDefinitionSetEnabledParams = z.output<
   typeof PipelineDefinitionSetEnabledParamsSchema

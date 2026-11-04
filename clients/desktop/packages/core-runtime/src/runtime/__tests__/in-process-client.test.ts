@@ -65,6 +65,21 @@ describe('createInProcessCanopyClient', () => {
         'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.codeGraph.buildQueue.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.status.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.query': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.snapshot.export': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.languages.validate': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -130,6 +145,21 @@ describe('createInProcessCanopyClient', () => {
         'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.codeGraph.buildQueue.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.status.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.query': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.snapshot.export': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.languages.validate': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     });
     const client = createInProcessCanopyClient(dispatcher, caller);
@@ -181,6 +211,21 @@ describe('createInProcessCanopyClient', () => {
           throw new Error('Not exercised.');
         },
         'worker.pipeline.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.buildQueue.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.status.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.query': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.snapshot.export': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.languages.validate': (): never => {
           throw new Error('Not exercised.');
         },
       },
@@ -245,6 +290,21 @@ describe('createInProcessCanopyClient', () => {
           throw new Error('Not exercised.');
         },
         'worker.pipeline.execution.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.buildQueue.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.status.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.query': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.snapshot.export': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.languages.validate': (): never => {
           throw new Error('Not exercised.');
         },
       },

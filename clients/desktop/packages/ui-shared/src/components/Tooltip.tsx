@@ -17,6 +17,7 @@ import {
 import { createPortal } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Kbd } from './Kbd';
 import { useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
@@ -128,6 +129,12 @@ export interface TooltipProps {
    * keyboard behavior remain stable.
    */
   suppressed?: boolean;
+  /**
+   * Blocks the tooltip surface from session replay. Set it when the label is
+   * user content (a file name or path): the surface portals to the document
+   * body, outside any replay-blocked transcript or panel around the trigger.
+   */
+  replayBlock?: boolean;
   /** The trigger element. */
   children: ReactNode;
 }
@@ -206,6 +213,7 @@ export function Tooltip({
   disabled = false,
   openDelay = 0,
   suppressed = false,
+  replayBlock = false,
   children,
 }: TooltipProps): JSX.Element {
   const interactive = Boolean(link);
@@ -561,7 +569,9 @@ export function Tooltip({
               tone === 'inverse'
                 ? 'bg-tooltip-inverse fg-tooltip-inverse'
                 : 'bg-quaternary fg-primary'
-            } ${interactive ? 'pointer-events-auto' : 'pointer-events-none'}`}
+            } ${interactive ? 'pointer-events-auto' : 'pointer-events-none'}${
+              replayBlock ? ` ${REPLAY_BLOCK_CLASS}` : ''
+            }`}
             style={{
               ...(position
                 ? { top: position.top, left: position.left }

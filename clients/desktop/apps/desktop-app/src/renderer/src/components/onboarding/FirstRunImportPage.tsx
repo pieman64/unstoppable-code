@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -15,16 +14,14 @@ import type {
   ExternalProjectImportResponse,
   ExternalProjectProvider,
 } from '@canopy/desktop-shared/types';
-import { DEFAULT_DAILY_DRIP_CAP_CREDITS } from '@canopy/protocol/billing';
 import {
   Button,
   Checkbox,
   Notice,
-  ToggleSwitch,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
-import { CheckIcon, FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatCompactAge } from '@canopy/ui-shared/lib';
 import {
   POSTHOG_REPLAY_BLOCK_CLASS,
@@ -57,19 +54,13 @@ import {
 } from '@/components/settings/SettingsLayout';
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
-import {
-  useDailyCreditDripOptIn,
-  type DailyCreditDripOptInState,
-} from '@/hooks/useDailyCreditDripOptIn';
+import { useDailyCreditDripOptIn } from '@/hooks/useDailyCreditDripOptIn';
 import { offerCursorRulesReview } from '@/lib/cursorRulesOffer';
-import { agentConnectionsIntro } from '@/lib/onboarding/agent-connections-copy';
 import {
-  dailyCreditsRowState,
-  FIRST_RUN_DAILY_CREDITS_ENABLED,
-  FIRST_RUN_DAILY_CREDITS_LABEL,
-  firstRunDailyCreditsGranted,
-  firstRunDailyCreditsOffer,
-} from '@/lib/onboarding/first-run-daily-credits-copy';
+  agentConnectionsIntro,
+  FirstRunAiCreditsRow,
+} from '@canopy/ui-app/onboarding';
+import { brandText } from '@/lib/brand';
 import {
   captureProjectImportSubmission,
   openImportedProject,
@@ -84,7 +75,6 @@ import {
   type ProjectImportResultCounts,
   type ProviderConnections,
 } from '@/lib/projectImportTelemetry';
-import type { HomeWorkspaceSelectionReason } from '@/stores/homeComposerStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 
 /**
@@ -318,126 +308,6 @@ function foundProjectsDescription(
   if (!newest || !oldest) return found;
   const lead = known.length === count ? 'last used' : 'known activity';
   return `${found} · ${lead} ${ageRange(newest, oldest)} ago`;
-}
-
-/**
- * The account's daily free AI Credits, offered as an opt-in to a user with
- * no Claude or Codex subscription. Off until the user turns it on; either
- * answer is saved as their decision, which also clears Home's "Claim…" step.
- *
- * The description is one region whose height never changes between the
- * offer and the confirmations: every variant sits in the same grid cell and
- * only the current one is visible, so the page (and Continue) never moves
- * at any width or text size.
- */
-function AccountCreditsRow({
-  drip,
-}: {
-  drip: DailyCreditDripOptInState;
-}): JSX.Element {
-  const { live, busy, error, outcome, turnOn, notNow } = drip;
-  // Only the hook's current save may show an optimistic choice. Its busy
-  // state also clears on account changes, before an old request settles.
-  const [pending, setPending] = useState(false);
-  const canSave = live.state === 'undecided' || live.state === 'decided';
-  const capCredits = live.capCredits ?? DEFAULT_DAILY_DRIP_CAP_CREDITS;
-  const onChange = (next: boolean): void => {
-    if (busy) return;
-    setPending(next);
-    void (next ? turnOn() : notNow());
-  };
-  const id = useId();
-  const switchId = `${id}-switch`;
-  const offerId = `${id}-offer`;
-  const confirmationId = `${id}-confirmation`;
-  // A save in flight keeps the offer: success is announced once it settles.
-  const state = busy
-    ? 'offer'
-    : dailyCreditsRowState(outcome, live.enabled === true);
-  const offer = firstRunDailyCreditsOffer(capCredits);
-  const confirmation =
-    state === 'granted' && outcome
-      ? firstRunDailyCreditsGranted(outcome.granted)
-      : state === 'enabled'
-        ? FIRST_RUN_DAILY_CREDITS_ENABLED
-        : null;
-  const cell = 'col-start-1 row-start-1';
-  return (
-    <SettingsRow
-      dataTestId="first-run-daily-credits"
-      htmlFor={switchId}
-      label={
-        <span className="inline-flex items-center gap-2">
-          <BrandLogo size={16} aria-hidden />
-          {FIRST_RUN_DAILY_CREDITS_LABEL}
-        </span>
-      }
-      description={
-        <span
-          className="grid"
-          data-testid="first-run-daily-credits-description"
-          data-state={state}
-        >
-          {/* Invisible sizers: the longest variants reserve their height. */}
-          <span
-            aria-hidden="true"
-            className={`${cell} invisible flex items-start gap-1`}
-          >
-            <CheckIcon size={12} className="mt-0.5 shrink-0" />
-            <span>{firstRunDailyCreditsGranted(capCredits)}</span>
-          </span>
-          <span aria-hidden="true" className={`${cell} invisible`}>
-            {FIRST_RUN_DAILY_CREDITS_ENABLED}
-          </span>
-          <span
-            id={offerId}
-            className={`${cell} ${confirmation === null ? '' : 'invisible'}`}
-            aria-hidden={confirmation === null ? undefined : true}
-          >
-            {offer}
-          </span>
-          {/* Always mounted, so screen readers hear each settled outcome. */}
-          <span
-            role="status"
-            id={confirmationId}
-            className={`${cell} flex items-start gap-1`}
-          >
-            {confirmation !== null && (
-              <>
-                {state === 'granted' && (
-                  <CheckIcon
-                    aria-hidden
-                    size={12}
-                    className="mt-0.5 shrink-0 fg-success"
-                  />
-                )}
-                <span data-testid="first-run-daily-credits-confirmation">
-                  {confirmation}
-                </span>
-              </>
-            )}
-          </span>
-        </span>
-      }
-      control={
-        <ToggleSwitch
-          id={switchId}
-          label={FIRST_RUN_DAILY_CREDITS_LABEL}
-          describedBy={confirmation === null ? offerId : confirmationId}
-          dataTestId="first-run-daily-credits-toggle"
-          checked={busy ? pending : live.enabled === true}
-          disabled={busy || !canSave}
-          onChange={onChange}
-        />
-      }
-    >
-      {error && (
-        <Notice intent="attention" data-testid="first-run-daily-credits-error">
-          {error}
-        </Notice>
-      )}
-    </SettingsRow>
-  );
 }
 
 /**
@@ -807,18 +677,13 @@ export function FirstRunImportPage({
   const finish = async (imported?: {
     submission: ProjectImportSubmission;
     workspaceId: string;
-    reason?: HomeWorkspaceSelectionReason;
   }): Promise<void> => {
     if (mounted.current)
       visit.complete(latest.current.scanState, latest.current.connections);
     await markFirstRunDone().catch((): void => {});
     onDone();
     if (imported)
-      await openImportedProject(
-        imported.submission,
-        imported.workspaceId,
-        imported.reason,
-      );
+      await openImportedProject(imported.submission, imported.workspaceId);
   };
 
   const runImport = async (): Promise<void> => {
@@ -892,15 +757,8 @@ export function FirstRunImportPage({
         ),
         'first-run-import',
       );
-      // Land in the most recently active imported project, and say so when
-      // it was chosen over other successful imports (CAN-4674).
-      const reason: HomeWorkspaceSelectionReason | undefined =
-        new Set(workspaceIds).size > 1 ? 'most-recent-import' : undefined;
-      await finish({
-        submission,
-        workspaceId: first,
-        ...(reason ? { reason } : {}),
-      });
+      // Land in the most recently active imported project (CAN-4674).
+      await finish({ submission, workspaceId: first });
     } catch {
       // A failure after the response was recorded is not a request failure.
       if (tracking && recorded === null)
@@ -983,10 +841,18 @@ export function FirstRunImportPage({
         description={pageDescription(scan, foundAny)}
       >
         <SettingsSection
-          description={agentConnectionsIntro({ offersCredits: showCredits })}
+          description={agentConnectionsIntro({
+            offersCredits: showCredits,
+            appName: brandText.appName,
+          })}
         >
           <SettingsGroup>
-            {showCredits && <AccountCreditsRow drip={drip} />}
+            {showCredits && (
+              <FirstRunAiCreditsRow
+                drip={drip}
+                logo={<BrandLogo size={16} aria-hidden />}
+              />
+            )}
             <ProviderAuthPanel
               provider="claude"
               layout="row"

@@ -17,6 +17,7 @@ import {
   HeaderActionButton,
   SegmentedControl,
   ThinkingSpinner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   CostFreshness,
@@ -800,11 +801,9 @@ function Header({
         <div className="flex min-w-0 items-center gap-2">
           {/* A chat's name is user-written: masked in session replay, and
               in no attribute, which replay would record as written. */}
-          <h2
-            className={`${REPLAY_MASK_CLASS} min-w-0 truncate text-s font-medium fg-primary`}
-          >
-            {view.chat.label}
-          </h2>
+          <Heading level={2} variant="title" truncate className="min-w-0">
+            <span className={REPLAY_MASK_CLASS}>{view.chat.label}</span>
+          </Heading>
           <ChatStateMarker view={view} sealed={sealed} />
         </div>
         <div

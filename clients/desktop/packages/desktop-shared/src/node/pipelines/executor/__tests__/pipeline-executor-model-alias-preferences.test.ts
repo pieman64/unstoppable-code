@@ -86,14 +86,18 @@ describe('pipeline executor model alias preferences', () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('overlays stored and draft preferences while preserving reset markers', () => {
+  it('overlays stored and draft preferences while preserving reset markers', async () => {
     const locator = { type: 'file' as const, value: '/tmp/pipeline.yaml' };
-    savePipelineModelAliasPreferences(locator, {
-      reviewer: { mode: 'inline', base: 'claude-stored' },
-      reset_me: { mode: 'inline', base: 'claude-stored' },
-      absent: { mode: 'agent', agent_id: 'agent_model_absent' },
-      removed: { mode: 'inline', base: 'claude-removed' },
-    });
+    await savePipelineModelAliasPreferences(
+      locator,
+      {
+        reviewer: { mode: 'inline', base: 'claude-stored' },
+        reset_me: { mode: 'inline', base: 'claude-stored' },
+        absent: { mode: 'agent', agent_id: 'agent_model_absent' },
+        removed: { mode: 'inline', base: 'claude-removed' },
+      },
+      'desktop_cli',
+    );
 
     const state = createInitialState(
       pipeline,

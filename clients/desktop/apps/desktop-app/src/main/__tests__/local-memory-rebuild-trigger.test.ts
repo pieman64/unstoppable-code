@@ -140,6 +140,7 @@ import {
 } from '../memory/local/consolidation-run-tracker';
 import { readConsolidationState } from '../memory/local/consolidation-state';
 import { readImportState } from '../memory/local/import/ledger';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
 import {
   restoreManualLocalMemorySnapshot,
   runManualLocalMemoryConsolidation,
@@ -201,6 +202,12 @@ function consumeInbox(batch: number) {
 }
 
 describe('manual local memory rebuild', () => {
+  // A rebuild loads the importer lazily. On a cold transform cache, loading
+  // it inside the first restage test alone takes longer than a test timeout.
+  beforeAll(async () => {
+    await import('../memory/local/import/import-runner');
+  }, 120_000);
+
   beforeEach(async () => {
     jest.clearAllMocks();
     localMemoryConsolidationRunTrackerTestExports.reset();
@@ -209,6 +216,8 @@ describe('manual local memory rebuild', () => {
     mockReadPreferencesFile.mockResolvedValue(enabledPreferences);
     mockIsModelBlockedByStoredPolicy.mockResolvedValue(false);
     mockUserDir = await mkdtemp(join(tmpdir(), 'local-memory-rebuild-run-'));
+    // Already given note identities, so a rebuild changes only what it means to.
+    await prepareMemoryScopeForWrite(mockUserDir);
     await mkdir(join(mockUserDir, 'inbox', '.consolidated'), {
       recursive: true,
     });

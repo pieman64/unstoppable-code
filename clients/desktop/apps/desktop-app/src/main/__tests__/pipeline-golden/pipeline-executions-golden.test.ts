@@ -10,10 +10,10 @@
 // `pnpm test apps/desktop-app/src/main/__tests__/pipeline-golden -u`
 // and review the snapshot diff as a behavior change.
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import { recoverOrphanedPipelineExecutions } from '@canopy/desktop-shared/node/pipelines/executor/crash-recovery';
 import { loadExecutionState } from '@canopy/desktop-shared/node/pipelines/executor';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import type { ExecutionState } from '@canopy/desktop-shared/types/pipeline';
@@ -47,6 +47,9 @@ import {
 } from './executions';
 import {
   createPipelineGoldenWorld,
+  GOLDEN_CURATED_KEY,
+  GOLDEN_CURATED_YAML,
+  GOLDEN_SHARED_DISPATCH_REMOTE_ID,
   GOLDEN_WORKSPACE_ID,
   GOLDEN_WORKTREE_ID,
   type GoldenWorld,
@@ -107,7 +110,7 @@ afterAll(async () => {
     await import('../../canopy-runtime/desktop-runtime-access')
   ).setDesktopCanopyRuntime(null);
   await runtime.shutdown();
-  world.dispose();
+  await world.dispose();
 });
 
 const marker = (name: string): string => join(world.root, 'markers', name);
@@ -504,11 +507,13 @@ describe('desktop IPC', () => {
       JSON.stringify({ ...(crashed as object), owner_pid: deadPid }),
     );
     const before = projectExecution(await loadState(id));
-    const sweepOwnLiveRun = await recoverOrphanedPipelineExecutions(
-      ['missing-execution'],
-      executionsDir,
-    );
-    const sweep = await recoverOrphanedPipelineExecutions([id], executionsDir);
+    // CAN-4141: the startup sweep runs through core and the local worker.
+    const { sweepOrphanedPipelinesThroughLocalWorker } =
+      await import('../../pipelines/pipeline-worker-dispatch');
+    const sweepOwnLiveRun = await sweepOrphanedPipelinesThroughLocalWorker([
+      'missing-execution',
+    ]);
+    const sweep = await sweepOrphanedPipelinesThroughLocalWorker([id]);
     const recovered = await loadState(id);
     const resume = await invokeIpc(PIPELINE_CHANNELS.RESUME, id, {
       statusReasonIds: recovered.status_reasons.map((reason) => reason.id),
@@ -877,9 +882,10 @@ describe('desktop shutdown', () => {
       'wait',
       'sleep',
     );
-    const { pauseAllActivePipelineExecutions } =
-      await import('../../pipelines/pipeline-execution-registry');
-    await pauseAllActivePipelineExecutions();
+    // CAN-4141: the shutdown checkpoint runs through core and the local worker.
+    const { checkpointPipelinesThroughLocalWorker } =
+      await import('../../pipelines/pipeline-worker-dispatch');
+    await checkpointPipelinesThroughLocalWorker();
     const checkpointed = await waitForExecution(
       executionsDir,
       running.executionId ?? '',
@@ -934,6 +940,27 @@ describe('core run records', () => {
     }
     throw new Error('The run record never reached the expected status.');
   };
+  const runStatuses = async (
+    executionId: string | undefined,
+  ): Promise<string[]> => {
+    const { items } = await runtime.query(
+      'core.operation.list',
+      {
+        kinds: ['core.pipeline.run'],
+        scope: { executionId: executionId ?? '' },
+      },
+      {
+        caller: {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'golden',
+          authorityId: 'local-desktop',
+          interfaceKind: 'test',
+          grants: ['core.operation.read'],
+        },
+      },
+    );
+    return items.map((item) => item.status);
+  };
   const runRecord = async (
     executionId: string | undefined,
   ): Promise<string | undefined> => {
@@ -973,6 +1000,70 @@ describe('core run records', () => {
     await waitFor(
       async () => (await runRecord(run.executionId)) === 'completed',
     );
+    // The resume ran under the run it resumed.
+    expect(await runStatuses(run.executionId)).toEqual(['completed']);
+  });
+
+  // CAN-4141: a startup scan may find more executions than one sweep takes.
+  it('sweeps a large startup scan in recorded batches', async () => {
+    const recoveries = async (): Promise<number> =>
+      (
+        await runtime.query(
+          'core.operation.list',
+          { kinds: ['core.pipeline.recovery'] },
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: 'golden',
+              authorityId: 'local-desktop',
+              interfaceKind: 'test',
+              grants: ['core.operation.read'],
+            },
+          },
+        )
+      ).items.length;
+    const before = await recoveries();
+    const { sweepOrphanedPipelinesThroughLocalWorker } =
+      await import('../../pipelines/pipeline-worker-dispatch');
+    const ids = Array.from(
+      { length: 10_001 },
+      (_unused, index) => `missing-${index}`,
+    );
+    await expect(
+      sweepOrphanedPipelinesThroughLocalWorker(ids),
+    ).resolves.toEqual([]);
+    expect((await recoveries()) - before).toBe(2);
+  });
+
+  // CAN-4141: recovery controls are recorded as runs of the executions they
+  // run; one that runs nothing finishes with its outcome.
+  it('records retries, start overs and stale resumes as runs', async () => {
+    const flaky = await start('record-retry', () =>
+      executeIpc('flaky', FLAKY_YAML, {
+        inputs: { marker: marker('record-retry') },
+      }),
+    );
+    await settled(flaky.executionId);
+    await waitFor(
+      async () => (await runRecord(flaky.executionId)) === 'failed',
+    );
+    await invokeIpc(PIPELINE_CHANNELS.RETRY_EXECUTION, flaky.executionId);
+    await settled(flaky.executionId);
+    await waitFor(
+      async () =>
+        (await runStatuses(flaky.executionId)).join() === 'completed,failed',
+    );
+    const rerun = await start('record-rerun', () =>
+      invokeIpc(PIPELINE_CHANNELS.RERUN_EXECUTION, flaky.executionId),
+    );
+    await settled(rerun.executionId);
+    await waitFor(
+      async () => (await runStatuses(rerun.executionId)).join() === 'completed',
+    );
+    await invokeIpc(PIPELINE_CHANNELS.RESUME, flaky.executionId, {
+      statusReasonIds: ['123e4567-e89b-42d3-a456-426614174000'],
+    });
+    expect(await runStatuses(flaky.executionId)).toHaveLength(3);
   });
 });
 
@@ -1040,5 +1131,90 @@ describe('run admission', () => {
       success: false,
       error: 'Unknown job dependency "missing"',
     });
+  });
+});
+
+// CAN-5076: curated and shared runs, captured before they resolve through
+// core definition ownership. Each executes its catalog revision or share,
+// never the caller's copy.
+describe('curated and shared runs', () => {
+  const curatedHash = createHash('sha256')
+    .update(GOLDEN_CURATED_YAML)
+    .digest('hex');
+  const callerCopy = {
+    ...parsePipelineText(SUCCESS_YAML),
+    name: 'Caller copy',
+  };
+  const curated = (
+    options: Record<string, unknown>,
+    label: string,
+  ): Promise<unknown> =>
+    (async (): Promise<unknown> => {
+      const { result, executionId } = await start(label, () =>
+        invokeIpc(PIPELINE_CHANNELS.EXECUTE, callerCopy, {
+          ...worktreeTarget(),
+          ...options,
+        }),
+      );
+      return golden({ result, settled: await settled(executionId) });
+    })();
+
+  it('runs the reviewed curated revision and refuses a changed or missing one', async () => {
+    expect({
+      byId: await curated(
+        { pipelineId: `curated:${GOLDEN_CURATED_KEY}` },
+        'curated-by-id',
+      ),
+      byLocator: await curated(
+        {
+          pipelineId: `curated:${GOLDEN_CURATED_KEY}`,
+          pipelinePreferenceLocator: {
+            type: 'stored',
+            source: 'curated',
+            value: `curated:${GOLDEN_CURATED_KEY}`,
+            contentHash: curatedHash,
+          },
+        },
+        'curated-by-locator',
+      ),
+      changed: await curated(
+        {
+          pipelineId: `curated:${GOLDEN_CURATED_KEY}`,
+          pipelinePreferenceLocator: {
+            type: 'stored',
+            source: 'curated',
+            value: `curated:${GOLDEN_CURATED_KEY}`,
+            contentHash: '0'.repeat(64),
+          },
+        },
+        'curated-changed',
+      ),
+      missing: await curated(
+        { pipelineId: 'curated:missing-curated' },
+        'curated-missing',
+      ),
+      planReady: await curated(
+        {
+          pipelineId: `curated:${GOLDEN_CURATED_KEY}`,
+          eventName: 'plan_ready',
+        },
+        'curated-plan-ready',
+      ),
+    }).toMatchSnapshot();
+  });
+
+  it('runs the share rather than the caller copy and refuses a missing one', async () => {
+    const shared = (remoteId: string, label: string): Promise<unknown> =>
+      curated(
+        {
+          pipelineId: `shared:canopy-cloud:${remoteId}`,
+          sharedPipeline: { serverId: 'canopy-cloud', remoteId },
+        },
+        label,
+      );
+    expect({
+      share: await shared(GOLDEN_SHARED_DISPATCH_REMOTE_ID, 'shared-run'),
+      missing: await shared('shared-missing', 'shared-missing'),
+    }).toMatchSnapshot();
   });
 });

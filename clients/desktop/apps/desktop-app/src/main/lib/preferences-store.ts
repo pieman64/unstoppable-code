@@ -56,6 +56,10 @@ import { mcpHttpAuthTargetKey } from '@canopy/desktop-shared/lib/mcp-http-auth';
 import { isTerminalPresetImageDataUrl } from '@canopy/desktop-shared/lib/terminal-preset-images';
 import { isGatewayRoutableModel } from '@canopy/desktop-shared/lib/gateway-model-availability';
 import {
+  DEFAULT_BROWSER_SEARCH_ENGINE_ID,
+  normalizeCustomBrowserSearchEngines,
+} from '@canopy/desktop-shared/lib/browser-search-engines';
+import {
   isAccountProxyRoutingStrategy,
   normalizeAccountProxyUrl,
 } from '@canopy/desktop-shared/lib/account-proxy';
@@ -848,6 +852,8 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   hideAnthropicNav: DEFAULT_HIDE_ANTHROPIC_NAV,
   fileAutoSave: false,
   inAppBrowserLocalServersOnly: false,
+  inAppBrowserSearchEngineId: DEFAULT_BROWSER_SEARCH_ENGINE_ID,
+  inAppBrowserCustomSearchEngines: [],
   openAppLinksInBuiltInBrowser: true,
   useAsSystemDefaultBrowser: false,
   inAppNotifications: {
@@ -3678,6 +3684,14 @@ export function normalizePreferences(
       typeof data?.inAppBrowserLocalServersOnly === 'boolean'
         ? data.inAppBrowserLocalServersOnly
         : DEFAULT_PREFERENCES.inAppBrowserLocalServersOnly,
+    inAppBrowserSearchEngineId:
+      typeof data?.inAppBrowserSearchEngineId === 'string' &&
+      data.inAppBrowserSearchEngineId.trim().length > 0
+        ? data.inAppBrowserSearchEngineId.trim()
+        : DEFAULT_PREFERENCES.inAppBrowserSearchEngineId,
+    inAppBrowserCustomSearchEngines: normalizeCustomBrowserSearchEngines(
+      data?.inAppBrowserCustomSearchEngines,
+    ),
     openAppLinksInBuiltInBrowser:
       typeof data?.openAppLinksInBuiltInBrowser === 'boolean'
         ? data.openAppLinksInBuiltInBrowser

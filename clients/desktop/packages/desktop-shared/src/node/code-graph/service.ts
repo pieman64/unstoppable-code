@@ -1,6 +1,11 @@
 import type { CodeGraphBuildOptions } from '../../types/code-graph';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import { CodeGraphEngine } from '@canopy/code-graph/engine';
+import {
+  ensureCodeGraphDatabaseCurrent,
+  withCodeGraphWriterLease,
+  type AcquireCodeGraphWriterLeaseOptions,
+} from '@canopy/code-graph/store/writer-lease';
 import type {
   CodeGraphBuildResult,
   CodeGraphRepositoryInput,
@@ -28,6 +33,15 @@ function keyFor(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}/${worktreeId}`;
 }
 
+function fileIdentity(filePath: string): string | undefined {
+  try {
+    const stats = statSync(filePath, { bigint: true });
+    return `${stats.dev}:${stats.ino}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Per-worktree owner of {@link CodeGraphEngine} instances.
  *
@@ -46,6 +60,12 @@ function keyFor(workspaceId: string, worktreeId: string): string {
  * queue tail is normalized to always resolve — a failed build is reported to
  * its own caller but never poisons the queue for subsequent callers on the
  * same key.
+ *
+ * Writes hold the graph's cross-process writer lease (CAN-5084): a build holds
+ * it for the whole build, and an open for reads takes it only when opening
+ * would create, convert or migrate the database. Another process that owns
+ * the graph (the desktop build host) therefore never writes it at the same
+ * time.
  *
  * Close guarantee: when `closeWorktree`/`closeAll` resolves, every engine this
  * service opened for the key up to that point has been closed — the close
@@ -68,6 +88,8 @@ export class CodeGraphWorktreeService {
   private readonly engines = new Map<string, Promise<CodeGraphEngine>>();
   private readonly buildQueues = new Map<string, Promise<void>>();
   private readonly closing = new Map<string, Promise<void>>();
+  /** The `dev:ino` of the database file each engine opened. */
+  private readonly engineFiles = new WeakMap<CodeGraphEngine, string>();
 
   public hasGraph(workspaceId: string, worktreeId: string): boolean {
     return existsSync(getWorktreeCodeGraphDbPath(workspaceId, worktreeId));
@@ -77,6 +99,13 @@ export class CodeGraphWorktreeService {
     descriptor: CodeGraphWorktreeDescriptor,
   ): Promise<CodeGraphEngine> {
     const key = keyFor(descriptor.workspaceId, descriptor.worktreeId);
+    // Bring the schema current before any engine is cached, so a cached open
+    // never waits for the writer lease a build may already hold. It runs
+    // before the close gate below, so a close that starts while it waits
+    // still holds this open back.
+    await ensureCodeGraphDatabaseCurrent(
+      getWorktreeCodeGraphDbPath(descriptor.workspaceId, descriptor.worktreeId),
+    );
     // Work issued while a close is in flight must run strictly after that
     // close completes, so it never adopts an engine the close is about to
     // shut down. Loop: a further close may have been chained while awaiting.
@@ -105,6 +134,7 @@ export class CodeGraphWorktreeService {
   public async buildOrUpdate(
     descriptor: CodeGraphWorktreeDescriptor,
     options?: CodeGraphBuildOptions,
+    lease?: AcquireCodeGraphWriterLeaseOptions,
   ): Promise<CodeGraphBuildResult> {
     const key = keyFor(descriptor.workspaceId, descriptor.worktreeId);
     // Seed a fresh queue behind any in-flight close: a build issued mid-close
@@ -120,10 +150,19 @@ export class CodeGraphWorktreeService {
         // are drained BY the close, so gating them on it would deadlock. The
         // queue position (old tail vs. chained behind `closing`) already
         // encodes the correct ordering relative to any close.
-        const engine = await this.getEngineInternal(descriptor);
-        return options === undefined
-          ? engine.buildOrUpdate()
-          : engine.buildOrUpdate(options);
+        return withCodeGraphWriterLease(
+          getWorktreeCodeGraphDbPath(
+            descriptor.workspaceId,
+            descriptor.worktreeId,
+          ),
+          async () => {
+            const engine = await this.getEngineForWrite(descriptor);
+            return options === undefined
+              ? engine.buildOrUpdate()
+              : engine.buildOrUpdate(options);
+          },
+          lease,
+        );
       });
     // The stored tail must never reject, or every later caller on this key
     // would inherit this build's failure instead of getting a fresh attempt.
@@ -218,6 +257,34 @@ export class CodeGraphWorktreeService {
     }
   }
 
+  /**
+   * The engine a build writes through, opened while the caller holds the
+   * writer lease. Another writer may have installed a new database while the
+   * build waited for the lease (a seed replaces an incomplete graph), so an
+   * engine still on the replaced file is closed and reopened: its WAL frames
+   * belong to the old database.
+   */
+  private async getEngineForWrite(
+    descriptor: CodeGraphWorktreeDescriptor,
+  ): Promise<CodeGraphEngine> {
+    const key = keyFor(descriptor.workspaceId, descriptor.worktreeId);
+    const cached = this.engines.get(key);
+    const engine = await this.getEngineInternal(descriptor);
+    if (
+      this.engineFiles.get(engine) ===
+      fileIdentity(
+        getWorktreeCodeGraphDbPath(
+          descriptor.workspaceId,
+          descriptor.worktreeId,
+        ),
+      )
+    )
+      return engine;
+    if (this.engines.get(key) === cached) this.engines.delete(key);
+    engine.close();
+    return this.getEngineInternal(descriptor);
+  }
+
   private async openEngine(
     descriptor: CodeGraphWorktreeDescriptor,
   ): Promise<CodeGraphEngine> {
@@ -229,15 +296,21 @@ export class CodeGraphWorktreeService {
     // parent, but creating it up front keeps this service's directory
     // contract explicit and harmless to repeat.
     mkdirSync(dir, { recursive: true });
-    return CodeGraphEngine.open({
-      dbPath: getWorktreeCodeGraphDbPath(
-        descriptor.workspaceId,
-        descriptor.worktreeId,
-      ),
+    const dbPath = getWorktreeCodeGraphDbPath(
+      descriptor.workspaceId,
+      descriptor.worktreeId,
+    );
+    // Readers brought the schema current in getEngine; a build holds the
+    // writer lease, so any migration this open runs is its own write.
+    const engine = await CodeGraphEngine.open({
+      dbPath,
       repositories: descriptor.repositories,
       resourcesDir: descriptor.resourcesDir,
       worktreeRootPath: descriptor.worktreeRootPath,
     });
+    const identity = fileIdentity(dbPath);
+    if (identity !== undefined) this.engineFiles.set(engine, identity);
+    return engine;
   }
 
   private closeByKey(key: string): Promise<void> {

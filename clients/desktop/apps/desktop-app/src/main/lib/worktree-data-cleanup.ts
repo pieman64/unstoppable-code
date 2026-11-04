@@ -250,6 +250,12 @@ function buildCleanupTasks(
         // scheduler module mocked away. Keys with no live worker and no
         // pending exit resolve immediately.
         await cancelBuild(`${projectId}/${worktreeId}`);
+        // And the builds this app sent to the daemon (CAN-5089), which write
+        // the same graph under the same lease. Deferred: the route pulls in
+        // the daemon connection.
+        const { drainDaemonCodeGraphWorktree } =
+          await import('../code-graph/daemon-code-graph-route');
+        await drainDaemonCodeGraphWorktree(projectId, worktreeId);
         await getCodeGraphWorktreeService().closeWorktree(
           projectId,
           worktreeId,

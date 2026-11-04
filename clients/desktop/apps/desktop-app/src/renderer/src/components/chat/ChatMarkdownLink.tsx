@@ -6,8 +6,9 @@ import {
   type ComponentPropsWithoutRef,
   type JSX,
 } from 'react';
-import { TRANSCRIPT_LINK_CLASS } from '@canopy/ui-shared/components';
+import { TRANSCRIPT_LINK_CLASS, Tooltip } from '@canopy/ui-shared/components';
 import { parseFileLinkLineSuffix } from '@canopy/ui-shared/lib/file-link-line-suffix';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useChatStore } from '@/stores/chatStore';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
@@ -143,25 +144,33 @@ export function ChatMarkdownLink({
   };
   return (
     <>
-      <button
-        type="button"
-        data-testid="chat-local-file-link"
-        className={`focus-ring cursor-pointer ${TRANSCRIPT_LINK_CLASS}`}
-        disabled={opening}
-        title={href}
-        data-file-link-line={
-          location
-            ? `${location.line}${location.lineEnd !== undefined ? `-${location.lineEnd}` : ''}`
-            : undefined
-        }
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void open();
-        }}
+      {/* The link text can name the file differently from its path, so the
+          tip shows where it points. It portals out of the transcript's
+          replay mask, so it carries its own. */}
+      <Tooltip
+        label={<span className={REPLAY_MASK_CLASS}>{href}</span>}
+        delay="long"
+        contentClassName="max-w-96 break-all"
       >
-        {children}
-      </button>
+        <button
+          type="button"
+          data-testid="chat-local-file-link"
+          className={`focus-ring cursor-pointer ${TRANSCRIPT_LINK_CLASS}`}
+          disabled={opening}
+          data-file-link-line={
+            location
+              ? `${location.line}${location.lineEnd !== undefined ? `-${location.lineEnd}` : ''}`
+              : undefined
+          }
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void open();
+          }}
+        >
+          {children}
+        </button>
+      </Tooltip>
       {error && (
         <span role="status" className="ml-2 text-xs fg-secondary">
           Couldn't open file

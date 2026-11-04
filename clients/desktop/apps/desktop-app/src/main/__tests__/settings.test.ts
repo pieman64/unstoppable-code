@@ -53,6 +53,11 @@ jest.mock('node:child_process', () => ({
   execFile: jest.fn(),
 }));
 jest.mock('node:fs/promises');
+let mockSecretServiceState: 'secure' | 'unavailable' | 'locked' = 'secure';
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    mockSecretServiceState,
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: jest.fn((): string => 'linux'),
 }));
@@ -649,6 +654,13 @@ function mockExecFileByCommand(
 }
 
 beforeEach(() => {
+  // Each test has a fresh native lifetime; retain function mocks, not the
+  // previous test's object-bound provider/recovery history.
+  const electron = jest.requireMock<{ safeStorage: typeof safeStorage }>(
+    'electron',
+  );
+  electron.safeStorage = { ...electron.safeStorage };
+  mockSecretServiceState = 'secure';
   jest.clearAllMocks();
   mockReadLinearViewer.mockReset();
   mockSearchLinearIssues.mockReset();
@@ -1847,6 +1859,7 @@ describe('loadPatHandler', () => {
   it('preserves metadata when stored credentials cannot be read', async () => {
     mockedReadFile.mockResolvedValue(Buffer.from('retained-ciphertext'));
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     const result = await loadPatHandler();
 
@@ -1957,6 +1970,8 @@ describe('savePatHandler', () => {
     async (backend) => {
       mockedBackend.mockReturnValue(backend);
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState =
+        backend === 'gnome_libsecret' ? 'locked' : 'secure';
       await expect(savePatHandler({}, 'ghp_retained')).resolves.toMatchObject({
         success: false,
         secureStorageFailure: {
@@ -1974,6 +1989,7 @@ describe('savePatHandler', () => {
   it('rechecks write permission after asynchronous directory preparation', async () => {
     mockedMkdir.mockImplementationOnce(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       return Promise.resolve(undefined);
     });
     await expect(savePatHandler({}, 'ghp_retained')).resolves.toMatchObject({
@@ -2013,6 +2029,7 @@ describe('savePatHandler', () => {
 
   it('rejects unavailable saves without deleting credentials or invalidating caches', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     await expect(savePatHandler({}, 'ghp_token')).resolves.toMatchObject({
       success: false,
@@ -2097,6 +2114,7 @@ describe('loadLinearHandler', () => {
   it('preserves metadata when stored credentials cannot be read', async () => {
     mockedReadFile.mockResolvedValue(Buffer.from('retained-ciphertext'));
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     const result = await loadLinearHandler();
 
@@ -2209,6 +2227,8 @@ describe('saveLinearHandler', () => {
     async (backend) => {
       mockedBackend.mockReturnValue(backend);
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState =
+        backend === 'gnome_libsecret' ? 'locked' : 'secure';
       await expect(
         saveLinearHandler({}, 'lin_api_retained'),
       ).resolves.toMatchObject({
@@ -2228,6 +2248,7 @@ describe('saveLinearHandler', () => {
   it('rechecks write permission after asynchronous directory preparation', async () => {
     mockedMkdir.mockImplementationOnce(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       return Promise.resolve(undefined);
     });
     await expect(
@@ -2280,6 +2301,7 @@ describe('saveLinearHandler', () => {
 
   it('rejects unavailable saves without deleting credentials or invalidating caches', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     await expect(saveLinearHandler({}, 'lin_api_token')).resolves.toMatchObject(
       {
@@ -3632,6 +3654,7 @@ describe('Canopy Cloud account handlers', () => {
 
   it('loads storage-unavailable public state without throwing', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
     invalidateCanopyCloudAccountCache();
 
     await expect(loadCanopyCloudAccountHandler({})).resolves.toEqual({
@@ -3691,6 +3714,7 @@ describe('Canopy Cloud account handlers', () => {
     await saveCanopyCloudApiKeyHandler({}, { apiKey: 'csk_valid' });
 
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     await expect(loadCanopyCloudAccountHandler({})).resolves.toEqual({
       secureStorageStatus: {
@@ -3722,6 +3746,7 @@ describe('Canopy Cloud account handlers', () => {
 
   it('reports retained credential read failure during cloud validation', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
     const result = await validateCanopyCloudApiKeyHandler({}, {});
     expect(result).toMatchObject({
       authenticated: false,
@@ -3757,6 +3782,7 @@ describe('Canopy Cloud account handlers', () => {
 
   it('refuses OAuth before browser start when secure storage is unavailable', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     const result = await startCanopyCloudOAuthLoginHandler({});
 
@@ -4445,6 +4471,7 @@ describe('Canopy Cloud account handlers', () => {
     mockedReadFile.mockResolvedValue(Buffer.from('retained-ciphertext'));
     mockedDecryptString.mockImplementationOnce(() => {
       mockedIsEncryptionAvailable.mockReturnValue(false);
+      mockSecretServiceState = 'locked';
       throw new Error('private native diagnostic');
     });
     await expect(
@@ -5041,6 +5068,7 @@ describe('Canopy Cloud account handlers', () => {
 
   it('returns a storage-unavailable envelope on save', async () => {
     mockedIsEncryptionAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'locked';
 
     const result = await saveCanopyCloudApiKeyHandler(
       {},
@@ -5112,6 +5140,7 @@ describe('loadOrgAiCreditsSpendable', () => {
   }
 
   beforeEach(() => {
+    mockSecretServiceState = 'secure';
     jest.clearAllMocks();
     mockRequestCanopyCloudJson.mockResolvedValue(SPENDABLE);
     seedAccount([
@@ -5520,6 +5549,7 @@ describe('reprobeAndApplyCanopyCloudEnforcedSettings — orgBillingStates presen
   };
 
   beforeEach(() => {
+    mockSecretServiceState = 'secure';
     jest.clearAllMocks();
     mockedEncryptString.mockImplementation((text: string) => Buffer.from(text));
     mockedWriteFile.mockResolvedValue(undefined);
@@ -6036,6 +6066,7 @@ describe('reprobeAndApplyCanopyCloudEnforcedSettings — memory org eligibility'
   }
 
   beforeEach(() => {
+    mockSecretServiceState = 'secure';
     jest.clearAllMocks();
     mockedEncryptString.mockImplementation((text: string) => Buffer.from(text));
     mockedWriteFile.mockResolvedValue(undefined);

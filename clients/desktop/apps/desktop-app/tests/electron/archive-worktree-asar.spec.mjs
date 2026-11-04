@@ -36,8 +36,9 @@ import { seedWorktreeChat } from './seeders/index.mjs';
 // instead of unlinking it. The row came back and every retry failed the same
 // way against the leftover quarantine.
 //
-// Desired behaviour: archive removes `.asar` files as plain files, and a
-// worktree already stuck with a leftover quarantine archives on retry.
+// Desired behaviour: archive removes `.asar` files as plain files. A worktree
+// already stuck with a leftover quarantine keeps it across retries and
+// relaunches, and the user's discard removes it, asar archive included.
 // Delegated checkouts also live in worktree metadata: cleanup must finish
 // there before removing the durable sidebar record and releasing chat fences.
 //
@@ -429,7 +430,30 @@ async function failFirstTeardown(electronApp, window, row, seeded) {
   expect(worktreeRecordCount(paths.worktreesPath)).toBe(1);
 }
 
-test('retrying archive clears a leftover quarantine that contains an asar archive', async () => {
+/**
+ * A failed archive's journal ends recovery-required, so another removal is
+ * refused and offers the discard instead. Cancel keeps everything.
+ */
+async function expectRemovalOffersDiscard(window, row, seeded, action) {
+  await archiveFromRowMenu(window, row, action);
+  const discard = window.getByTestId('worktree-discard-dialog');
+  await expect(discard).toBeVisible({ timeout: 30_000 });
+  await expect(
+    window.getByTestId('worktree-discard-dialog-targets'),
+  ).toContainText(seeded.paths.quarantinePath);
+  return discard;
+}
+
+function expectQuarantineKept(seeded) {
+  const { paths } = seeded;
+  expect(existsSync(path.join(paths.quarantinePath, ASAR_RELATIVE_PATH))).toBe(
+    true,
+  );
+  expect(existsSync(seeded.quarantinedSealed)).toBe(true);
+  expect(worktreeRecordCount(paths.worktreesPath)).toBe(1);
+}
+
+test('a retried archive keeps a leftover quarantine that contains an asar archive', async () => {
   test.setTimeout(180_000);
   const seeded = await seedWorktreeWithBlockedTeardown(
     'canopy-archive-asar-retry-',
@@ -439,18 +463,22 @@ test('retrying archive clears a leftover quarantine that contains an asar archiv
     userDataDir: seeded.userDataDir,
   });
   try {
-    const { window, app, row } = await openWorktreeRow(electronApp);
+    const { window, row } = await openWorktreeRow(electronApp);
     await failFirstTeardown(electronApp, window, row, seeded);
 
-    await archiveFromRowMenu(window, row);
-    await expectArchivedAfterReload(window, app, row, seeded.paths);
+    const discard = await expectRemovalOffersDiscard(window, row, seeded);
+    await window.getByTestId('worktree-discard-dialog-cancel').click();
+    await expect(discard).toHaveCount(0);
+    await expect(row).toBeVisible();
+    expectQuarantineKept(seeded);
+    await expect(window.getByText(/ENOTEMPTY/)).toHaveCount(0);
   } finally {
     restoreSealedPermissions(seeded);
     await closeCanopy(electronApp, seeded.userDataDir);
   }
 });
 
-test('startup recovery clears a leftover quarantine that contains an asar archive', async () => {
+test('a relaunch keeps a leftover asar quarantine until the user discards it', async () => {
   test.setTimeout(180_000);
   const seeded = await seedWorktreeWithBlockedTeardown(
     'canopy-archive-asar-recovery-',
@@ -462,18 +490,28 @@ test('startup recovery clears a leftover quarantine that contains an asar archiv
     const { window, row } = await openWorktreeRow(electronApp);
     await failFirstTeardown(electronApp, window, row, seeded);
 
-    // Relaunching finishes the journaled teardown with no user action: main
-    // drives the recovery and the archive worker removes the checkout.
+    // Startup never finishes the interrupted archive on its own.
     await closeCanopy(electronApp, userDataDir, { keepUserData: true });
     ({ electronApp } = await launchCanopy({ userDataDir }));
-    await electronApp.firstWindow();
+    const reopened = await openWorktreeRow(electronApp);
+    expectQuarantineKept(seeded);
 
-    await expect
-      .poll(() => existsSync(paths.quarantinePath), { timeout: 60_000 })
-      .toBe(false);
-    await expect
-      .poll(() => worktreeRecordCount(paths.worktreesPath), { timeout: 30_000 })
-      .toBe(0);
+    // The discard removes the quarantine, asar archive and sealed folder
+    // included, through the archive worker.
+    const discard = await expectRemovalOffersDiscard(
+      reopened.window,
+      reopened.row,
+      seeded,
+      'delete',
+    );
+    await reopened.window
+      .getByTestId('worktree-discard-dialog-confirm')
+      .click();
+    await expect(discard).toHaveCount(0, { timeout: 60_000 });
+    await expect(reopened.row).toHaveCount(0, { timeout: 30_000 });
+    expect(worktreeRecordCount(paths.worktreesPath)).toBe(0);
+    expect(existsSync(paths.quarantinePath)).toBe(false);
+    await expect(reopened.window.getByText(/ENOTEMPTY|EACCES/)).toHaveCount(0);
   } finally {
     restoreSealedPermissions(seeded);
     await closeCanopy(electronApp, userDataDir);

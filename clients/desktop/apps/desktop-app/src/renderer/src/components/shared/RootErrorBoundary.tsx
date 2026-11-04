@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { brandText } from '@/lib/brand';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import { Button } from '@/components/shared/Button';
@@ -55,9 +55,9 @@ export class RootErrorBoundary extends Component<
         <div className="w-full max-w-2xl rounded-xl border border-line-destructive/20 bg-card/90 p-6">
           <div className="space-y-3">
             <div>
-              <h1 className="text-lg font-semibold fg-primary">
+              <Heading level={1} variant="page">
                 {brandText.appName} hit a renderer error
-              </h1>
+              </Heading>
               <p className="mt-1 text-s fg-secondary">
                 The window was kept alive with a fallback view instead of going
                 blank.

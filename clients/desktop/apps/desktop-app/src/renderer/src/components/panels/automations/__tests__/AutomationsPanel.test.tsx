@@ -17,6 +17,7 @@ import { useAppAdvisorWatchersStore } from '@/stores/appAdvisorWatchersStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useExecutionFeedStore } from '@/lib/workflows/execution-feed';
 import { AutomationsPanel } from '../AutomationsPanel';
 
 declare global {
@@ -27,6 +28,8 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const originalAutomationsHydrate = useAutomationsStore.getState().hydrate;
 const originalWatchersHydrate = useAppAdvisorWatchersStore.getState().hydrate;
+const originalExecutionFeedLoad = useExecutionFeedStore.getState().load;
+const originalApi = Object.getOwnPropertyDescriptor(window, 'api');
 
 function activity(
   overrides: Partial<ScheduledActivity> & { id: string },
@@ -143,6 +146,22 @@ describe('AutomationsPanel', () => {
       activePage: 'main',
       workflowEdit: undefined,
     });
+    // The Runs section reads the Workflows execution feed.
+    useExecutionFeedStore.setState({
+      executions: [],
+      loaded: true,
+      loading: false,
+      error: null,
+      load: originalExecutionFeedLoad,
+    });
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      value: {
+        listExecutions: (): Promise<{ success: true; data: [] }> =>
+          Promise.resolve({ success: true, data: [] }),
+        onExecutionEvent: (): (() => void) => () => undefined,
+      },
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -155,6 +174,8 @@ describe('AutomationsPanel', () => {
     container.remove();
     document.body.innerHTML = '';
     jest.restoreAllMocks();
+    if (originalApi) Object.defineProperty(window, 'api', originalApi);
+    else Reflect.deleteProperty(window, 'api');
   });
 
   /** The edit shell target the panel opened in the main window (CAN-4072). */
@@ -357,7 +378,7 @@ describe('AutomationsPanel', () => {
         '[data-testid="automations-panel-overview-body"]',
       ),
     ).toBeNull();
-    expect(container.textContent).toContain('No upcoming automation triggers.');
+    expect(container.textContent).toContain('No scheduled runs coming up.');
   });
 
   it('shows a loading state instead of false empty rows until both stores hydrate', () => {
@@ -373,9 +394,7 @@ describe('AutomationsPanel', () => {
     expect(
       container.querySelector('[data-testid="automations-panel-loading"]'),
     ).not.toBeNull();
-    expect(container.textContent).not.toContain(
-      'No upcoming automation triggers.',
-    );
+    expect(container.textContent).not.toContain('No scheduled runs coming up.');
     expect(container.textContent).not.toContain('No automations or watchers.');
     expect(hydrate).toHaveBeenCalledTimes(1);
   });
@@ -395,12 +414,214 @@ describe('AutomationsPanel', () => {
       '[data-testid="automations-panel-load-error"]',
     );
     expect(error?.textContent).toContain('Automations IPC failed.');
-    expect(container.textContent).not.toContain(
-      'No upcoming automation triggers.',
-    );
+    expect(container.textContent).not.toContain('No scheduled runs coming up.');
 
     click('automations-panel-retry');
     expect(hydrate).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a run history that could not be loaded and reloads it on retry', () => {
+    const load = jest.fn(() => Promise.resolve());
+    useExecutionFeedStore.setState({
+      loaded: true,
+      loading: false,
+      error: 'Workflow runs could not be loaded.',
+      load,
+    });
+
+    renderPanel({ variant: 'completed' });
+
+    const error = container.querySelector(
+      '[data-testid="automations-panel-runs-error"]',
+    );
+    expect(error?.textContent).toContain('Workflow runs could not be loaded.');
+    // Only Runs reads the run history; the rest of the panel stays usable.
+    expect(
+      container.querySelector('[data-testid="automations-panel-load-error"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain(
+      'No workflow runs or watcher fires yet.',
+    );
+
+    const before = load.mock.calls.length;
+    click('automations-panel-runs-retry');
+    expect(load.mock.calls.length).toBe(before + 1);
+  });
+
+  it('shows Runs as loading until the run history arrives', () => {
+    useExecutionFeedStore.setState({
+      loaded: false,
+      loading: true,
+      error: null,
+      load: jest.fn(() => Promise.resolve()),
+    });
+
+    renderPanel({ variant: 'completed' });
+
+    expect(
+      container.querySelector('[data-testid="automations-panel-runs-loading"]'),
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain(
+      'No workflow runs or watcher fires yet.',
+    );
+  });
+
+  it("lists the checkout's on-demand workflows in Library and opens one in the edit shell", async () => {
+    const discoverProject = jest.fn((cwd: string) =>
+      Promise.resolve({
+        success: true,
+        data: [
+          {
+            id: 'release-checks',
+            name: 'Release checks',
+            filename: 'release-checks.yml',
+            description: '',
+            icon: '',
+            createdAt: '2026-08-01T00:00:00.000Z',
+            updatedAt: '2026-08-01T00:00:00.000Z',
+            triggerTypes: ['dispatch'],
+            source: 'project',
+            readonly: false,
+            filePath: `${cwd}/.canopy/pipelines/release-checks.yml`,
+          },
+        ],
+      }),
+    );
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      value: {
+        listExecutions: (): Promise<{ success: true; data: [] }> =>
+          Promise.resolve({ success: true, data: [] }),
+        onExecutionEvent: (): (() => void) => () => undefined,
+        discoverProject,
+      },
+    });
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        getWorktreePath: (): Promise<string> => Promise.resolve('/repo/wt-1'),
+      },
+    });
+
+    renderPanel({ variant: 'overview' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(discoverProject).toHaveBeenCalledWith('/repo/wt-1');
+    const row = container.querySelector(
+      '[data-testid="automations-panel-overview-pipeline-release-checks"]',
+    );
+    expect(row?.textContent).toContain('Release checks');
+    expect(row?.textContent).toContain('On demand');
+    expect(row?.textContent).toContain('Manual');
+
+    click('automations-panel-filter-pipelines');
+    expect(
+      container.querySelector(
+        '[data-testid="automations-panel-overview-pipeline-release-checks"]',
+      ),
+    ).not.toBeNull();
+
+    click('automations-panel-overview-pipeline-release-checks');
+    expect(openedTarget()).toMatchObject({
+      kind: 'pipeline',
+      cwd: '/repo/wt-1',
+      worktree: { projectId: 'ws-1', worktreeId: 'wt-1' },
+    });
+  });
+
+  it('keeps two checkout pipelines with the same id apart', async () => {
+    // The same file name under both pipeline roots yields the same id.
+    const pipeline = (
+      name: string,
+      filePath: string,
+    ): Record<string, unknown> => ({
+      id: 'checks',
+      name,
+      filename: 'checks.yml',
+      description: '',
+      icon: '',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z',
+      source: 'project',
+      readonly: false,
+      filePath,
+    });
+    Object.defineProperty(window, 'pipelines', {
+      configurable: true,
+      value: {
+        listExecutions: (): Promise<{ success: true; data: [] }> =>
+          Promise.resolve({ success: true, data: [] }),
+        onExecutionEvent: (): (() => void) => () => undefined,
+        discoverProject: (): Promise<unknown> =>
+          Promise.resolve({
+            success: true,
+            data: [
+              pipeline(
+                'Release checks',
+                '/repo/wt-1/.canopy/pipelines/checks.yml',
+              ),
+              pipeline(
+                'Legacy checks',
+                '/repo/wt-1/.unstoppable-code/pipelines/checks.yml',
+              ),
+            ],
+          }),
+      },
+    });
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        getWorktreePath: (): Promise<string> => Promise.resolve('/repo/wt-1'),
+      },
+    });
+    const consoleError = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    renderPanel({ variant: 'overview' });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const rows = (): string[] =>
+      Array.from(
+        container.querySelectorAll(
+          '[data-testid="automations-panel-overview-pipeline-checks"]',
+        ),
+        (row) => row.querySelector('td')?.textContent ?? '',
+      );
+    expect(rows()).toEqual(['Release checks', 'Legacy checks']);
+
+    const search = container.querySelector<HTMLInputElement>(
+      '[data-testid="automations-panel-search"]',
+    );
+    if (search === null) throw new Error('search input was not rendered');
+    act(() => {
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      const setter = Object.getOwnPropertyDescriptor(
+        Object.getPrototypeOf(search),
+        'value',
+      )?.set;
+      setter?.call(search, 'legacy');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(rows()).toEqual(['Legacy checks']);
+
+    click('automations-panel-overview-pipeline-checks');
+    expect(openedTarget()).toMatchObject({
+      kind: 'pipeline',
+      filePath: '/repo/wt-1/.unstoppable-code/pipelines/checks.yml',
+    });
+    expect(
+      consoleError.mock.calls.some((call) =>
+        String(call[0]).includes('same key'),
+      ),
+    ).toBe(false);
   });
 
   it('filters the overview by type and search text', () => {
@@ -528,7 +749,7 @@ describe('AutomationsPanel', () => {
     ).toBeNull();
   });
 
-  it('merges completed runs and watcher fires and opens each row type', () => {
+  it('lists runs and watcher fires and opens each row type', () => {
     useAutomationsStore.setState({
       activities: [activity({ id: 'a-1' })],
       recentRuns: [
@@ -552,7 +773,7 @@ describe('AutomationsPanel', () => {
     renderPanel({ variant: 'completed' });
 
     const runRow = container.querySelector(
-      '[data-testid="automations-panel-completed-run:r-1"]',
+      '[data-testid="automations-panel-completed-automation-run:r-1"]',
     );
     expect(runRow).not.toBeNull();
     act(() => {

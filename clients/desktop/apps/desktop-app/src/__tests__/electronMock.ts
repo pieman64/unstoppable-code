@@ -9,6 +9,7 @@ export const app = {
   isReady: (): boolean => true,
   on: (): void => {},
   once: (): void => {},
+  removeListener: (): void => {},
   quit: (): void => {},
   setName: (): void => {},
   whenReady: (): Promise<void> => Promise.resolve(),

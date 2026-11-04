@@ -80,7 +80,7 @@ import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage
 import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
 import {
   coalesceFileIndexBuild,
-  explorerIndexEntriesPerRoot,
+  fileIndexEntriesPerRoot,
   listFileTreeDirectory,
   listFileTreeRoots,
 } from '../services/files-service';
@@ -109,6 +109,7 @@ import { createCoreWorkspaceInstructionsAdapter } from './core-workspace-instruc
 import { createCoreWorkspaceItemsAdapter } from './core-workspace-items-adapter';
 import { createCoreInitiatedWorkSourceAdapter } from './core-initiated-work-source-adapter';
 import { createCoreExecutionAdapter } from './core-execution-adapter';
+import { createCoreObservabilityAdapter } from './core-observability-adapter';
 import type { CoreHookSourceHost } from '@canopy/core-runtime/node/initiated-work/hook-sources';
 import type { HookAction } from '@canopy/desktop-shared/hooks';
 import type { CoreWorkspaceInstructionsHost } from '@canopy/core-runtime/node/workspace/workspace-instructions';
@@ -139,6 +140,12 @@ import {
   createWorkerPipelineAdapter,
   type WorkerPipelineAdapter,
 } from './worker-pipeline-adapter';
+import { createWorkerCodeGraphAdapter } from './worker-code-graph-adapter';
+import type {
+  WorkerCodeGraphHandlers,
+  WorkerCodeGraphReadHandlers,
+} from '@canopy/core-runtime/node/code-graph';
+import { createWorkerCodeGraphReadAdapter } from './worker-code-graph-read-adapter';
 import {
   createWorkerGitAdapter,
   type DesktopHealthWorktree,
@@ -178,7 +185,10 @@ import {
 } from './core-operation-adapter';
 import { LocalWorkerExecution } from '@canopy/core-runtime/node/operations';
 import { CoreScriptRuns } from '@canopy/core-runtime/node/script/execution';
+import { InitiatedWorkEngine } from '@canopy/core-runtime/node/initiated-work';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import type { CostService } from '../cost-index/service';
+import type { ObservabilityReadModel } from '@canopy/core-runtime/observability';
 import {
   createWorkerFilesystemAdapter,
   WorkerFilesystemAdapterError,
@@ -259,6 +269,8 @@ export interface CreateDesktopRuntimeOptions {
   ledgerService?: LedgerService;
   /** Handler logic for `core.cost.*`; tests may inject an isolated service. */
   costService?: CostService;
+  /** Read model for `core.observability.*`; tests may inject isolated stores. */
+  observabilityReadModel?: ObservabilityReadModel;
   /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
   workspaceInstructionsHost?: CoreWorkspaceInstructionsHost;
   /** Hosts and providers for `core.workspace.item.*`; default to the desktop stores. */
@@ -287,6 +299,10 @@ export interface CreateDesktopRuntimeOptions {
   sourceCompositionHost?: CoreSourceCompositionHost;
   /** `worker.pipeline.execution.*`; defaults to the desktop pipeline worker. */
   workerPipelineAdapter?: WorkerPipelineAdapter;
+  /** The code-graph build queue controls; default to main's build scheduler. */
+  workerCodeGraphAdapter?: WorkerCodeGraphHandlers;
+  /** The code-graph reads; default to main's code-graph read service. */
+  workerCodeGraphReadAdapter?: WorkerCodeGraphReadHandlers;
   /** Host port for `worker.git.branch.list`; defaults to the desktop checkouts. */
   workerGitHost?: WorkerGitBranchListHost<string>;
   /** Host port for `worker.git.executable.get`; defaults to the desktop detection. */
@@ -578,6 +594,11 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
    * `worker.script.execute` dispatch runs on the local worker.
    */
   readonly scriptRuns: CoreScriptRuns;
+  /**
+   * Initiated work (CAN-4144): each hook firing is a `core.initiatedWork.run`
+   * operation with its gates, target queue and cancellation.
+   */
+  readonly initiatedWork: InitiatedWorkEngine;
   /**
    * Pipeline runs (CAN-4140): each run is a core operation whose start and
    * cancel are dispatched to the local worker.
@@ -1069,6 +1090,13 @@ export function createDesktopRuntime(
     options.hookSourceHost,
   );
   const executionAdapter = createCoreExecutionAdapter();
+  const observabilityReadModel = options.observabilityReadModel;
+  const observabilityAdapter = createCoreObservabilityAdapter(
+    observabilityReadModel
+      ? (): Promise<ObservabilityReadModel> =>
+          Promise.resolve(observabilityReadModel)
+      : undefined,
+  );
   const sharedMultiRepoAdapter = createCoreSharedMultiRepoHandlers(
     options.sharedMultiRepoHost ?? {
       load: async (): Promise<SharedMultiRepoCoordinator> =>
@@ -1086,6 +1114,10 @@ export function createDesktopRuntime(
   const workerPipelineAdapter =
     options.workerPipelineAdapter ?? createWorkerPipelineAdapter();
   const pipelineHostRequests = workerPipelineAdapter.hostRequests;
+  const workerCodeGraphAdapter =
+    options.workerCodeGraphAdapter ?? createWorkerCodeGraphAdapter();
+  const workerCodeGraphReadAdapter =
+    options.workerCodeGraphReadAdapter ?? createWorkerCodeGraphReadAdapter();
   const scriptDefinitionsAdapter = createCoreScriptDefinitionsAdapter(
     options.scriptDefinitionsHost,
   );
@@ -1163,6 +1195,7 @@ export function createDesktopRuntime(
     workspaceItemsAdapter,
     initiatedWorkSourceAdapter,
     { queries: executionAdapter.queries },
+    { queries: observabilityAdapter.queries },
     repoRulesAdapter,
     pipelineDefinitionAdapter,
     sharedMultiRepoAdapter,
@@ -1173,6 +1206,8 @@ export function createDesktopRuntime(
     integrationAdapter,
     pullRequestAdapter,
     workerPipelineAdapter,
+    workerCodeGraphAdapter,
+    workerCodeGraphReadAdapter,
     annotationAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
@@ -1191,6 +1226,7 @@ export function createDesktopRuntime(
     ...watchAdapter.handlers,
     ...operationAdapter.streams,
     ...executionAdapter.streams,
+    ...observabilityAdapter.streams,
   };
   for (const entry of adapters) {
     for (const name of Object.keys(entry.queries ?? {}))
@@ -1295,6 +1331,11 @@ export function createDesktopRuntime(
         executionAdapter.queries,
         executionAdapter.streams,
       ),
+      owned(
+        'core.observability',
+        observabilityAdapter.queries,
+        observabilityAdapter.streams,
+      ),
       ownedAdapter('core.workspace.repoRules', repoRulesAdapter),
       ownedAdapter('core.pipeline', pipelineDefinitionAdapter),
       ownedAdapter('core.workspace.sharedMultiRepo', sharedMultiRepoAdapter),
@@ -1316,6 +1357,13 @@ export function createDesktopRuntime(
       ownedAdapter('core.integration', integrationAdapter),
       ownedAdapter('core.pullRequest', pullRequestAdapter),
       ownedAdapter('worker.pipeline', workerPipelineAdapter),
+      owned(
+        'worker.codeGraph',
+        workerCodeGraphAdapter.queries,
+        workerCodeGraphAdapter.instructions,
+        workerCodeGraphReadAdapter.queries,
+        workerCodeGraphReadAdapter.instructions,
+      ),
       ownedAdapter('core.annotation', annotationAdapter),
       owned(
         'core.operation',
@@ -1386,6 +1434,15 @@ export function createDesktopRuntime(
     localWorker,
     observe: (executionId, observer): Promise<() => void> =>
       workerScriptAdapter.observe(executionId, observer),
+  });
+  const initiatedWork = new InitiatedWorkEngine({
+    operations: operationAdapter.service,
+    // Hook runs a restart interrupted resume through the hook source
+    // (CAN-4145); it registers once the poller starts.
+    recoverableOrigins: ['hook'],
+    onError: (error, context): void => {
+      logMainProcessWarn(`[initiated-work] ${context} failed`, error);
+    },
   });
   const pipelineRuns = new CorePipelineRuns({
     operations: operationAdapter.service,
@@ -1608,9 +1665,9 @@ export function createDesktopRuntime(
     };
   };
   /**
-   * One root of `file-index:get`: mentions page at the largest limit until
-   * the walk ends (uncapped, as before); the explorer takes the root's share
-   * of the 25,000-entry cap and releases the rest of the walk.
+   * One root of `file-index:get`: pages at the largest limit until the walk
+   * ends or the root's share of its purpose's entry cap is reached, then
+   * releases the rest of the walk.
    */
   const indexRootForLegacyIpc = async (
     request: FileIndexRequest,
@@ -1700,10 +1757,7 @@ export function createDesktopRuntime(
       ),
       fileSearchServices.readFileIndexingPreferences(),
     ]);
-    const cap =
-      request.purpose === 'file-explorer'
-        ? explorerIndexEntriesPerRoot(roots.length)
-        : Number.POSITIVE_INFINITY;
+    const cap = fileIndexEntriesPerRoot(request.purpose, roots.length);
     return {
       repos: await Promise.all(
         roots.map((root) =>
@@ -1937,6 +1991,7 @@ export function createDesktopRuntime(
     isShuttingDown: (): boolean => shuttingDown,
     localWorker,
     scriptRuns,
+    initiatedWork,
     pipelineRuns,
     pipelineHostRequests,
     queryWorkspaceListForLegacyIpc: refuseOnceShuttingDown(

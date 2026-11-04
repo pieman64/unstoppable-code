@@ -1,5 +1,4 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ControlSelect } from '../ControlSelect';
 import { Select, TextArea, TextInput } from '../Field';
 import { SettingsSelect } from '../SettingsSelect';
 import { InlineTextInput } from '../InlineTextInput';
@@ -108,7 +107,7 @@ describe('invalid field', () => {
     );
   });
 
-  it('gives the 28px dropdowns the same edge and focus through aria-invalid', () => {
+  it('gives the 28px Settings dropdown the same edge and focus through aria-invalid', () => {
     const dropdown = [
       'aria-invalid:ring-0',
       'aria-invalid:shadow-field-invalid',
@@ -126,15 +125,6 @@ describe('invalid field', () => {
     );
     expect(settings).toContain('aria-invalid="true"');
     expect(firstClass(settings, 'button')).toEqual(
-      expect.arrayContaining(dropdown),
-    );
-    const native = renderToStaticMarkup(
-      <ControlSelect aria-label="Sound" value="a" onChange={noop} aria-invalid>
-        <option value="a">A</option>
-      </ControlSelect>,
-    );
-    expect(native).toContain('aria-invalid="true"');
-    expect(firstClass(native, 'select')).toEqual(
       expect.arrayContaining(dropdown),
     );
   });

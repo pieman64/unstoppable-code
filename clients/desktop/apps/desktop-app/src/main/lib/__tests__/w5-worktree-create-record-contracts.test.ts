@@ -286,6 +286,57 @@ it('W6b commits a keyed synchronous create decision by decision, then saves only
   expect(events).toEqual([]);
 });
 
+it.each([
+  ['single-repo', 'validateBranchName'],
+  ['single-repo', 'isBranchNameAvailable'],
+  ['multi-repo', 'validateBranchName'],
+  ['multi-repo', 'isBranchNameAvailable'],
+] as const)(
+  '%s releases a keyed Git preflight failure from %s and retries the same key',
+  async (workspaceKind, check) => {
+    if (workspaceKind === 'multi-repo') useMultiRepoWorkspace();
+    const creationRequest: WorktreeCreationRequest = {
+      ...request(),
+      workspaceKind,
+      callerSource: 'pipeline-host',
+      repairWorkspaceRoot: true,
+      ...(workspaceKind === 'multi-repo' ? { includedRepoIds: [] } : {}),
+    };
+    const failure = Object.assign(
+      new Error(
+        check === 'validateBranchName'
+          ? 'Selected Git executable cannot be used: /missing/git'
+          : 'spawn git ENOENT: repository cwd is missing',
+      ),
+      { code: 'ENOENT' },
+    );
+    const preflight = jest.spyOn(git, check).mockRejectedValue(failure);
+    const released = jest.spyOn(host, 'releaseReservation');
+    const marked = jest.spyOn(host, 'markReservationRecoveryRequired');
+    const before = readFileSync(join(root, list()), 'utf8');
+
+    await expect(createWorktreeFromSelection(creationRequest)).rejects.toBe(
+      failure,
+    );
+    expect(commits).not.toHaveBeenCalled();
+    expect(readFileSync(join(root, list()), 'utf8')).toBe(before);
+    expect(released).toHaveBeenCalledWith(
+      reservations.mock.calls[0]?.[0].reservationId,
+    );
+    expect(marked).not.toHaveBeenCalled();
+    const key = receipt();
+    expect(await host.lookupReceipt(key)).toMatchObject({ status: 'none' });
+
+    preflight.mockRestore();
+    await expect(
+      createWorktreeFromSelection(creationRequest),
+    ).resolves.toMatchObject({ status: 'created' });
+    expect(reservations).toHaveBeenCalledTimes(2);
+    expect(await host.lookupReceipt(key)).toMatchObject({ status: 'replay' });
+    expect(marked).not.toHaveBeenCalled();
+  },
+);
+
 it('W6b checks the expected worktrees revision on the reservation only', async () => {
   const events = recordCreationSeam();
   await createWorktreeFromSelection(

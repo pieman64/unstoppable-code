@@ -11,6 +11,7 @@ import { DialogModal } from './DialogModal';
 import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
+import { Heading } from './Heading';
 
 export interface PipelineTemplatesSectionProps {
   catalog: CuratedPipelineCatalogProps;
@@ -92,7 +93,9 @@ export function PipelineTemplatesSection({
           aria-label="Workflow templates"
           data-testid="pipeline-templates-section-status"
         >
-          <h2 className="text-sm font-medium fg-primary">Workflow templates</h2>
+          <Heading level={2} variant="title">
+            Workflow templates
+          </Heading>
           <CatalogStatus catalog={catalog} />
         </section>
       )}
@@ -103,9 +106,9 @@ export function PipelineTemplatesSection({
           data-testid="pipeline-templates-section"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-medium fg-primary">
+            <Heading level={2} variant="title">
               Workflow templates
-            </h2>
+            </Heading>
             <Button
               ref={viewAllRef}
               variant="ghost"
@@ -132,12 +135,9 @@ export function PipelineTemplatesSection({
                 data-testid={`pipeline-template-${row.key}`}
               >
                 <div className="min-w-0">
-                  <h3
-                    className="truncate text-sm font-medium fg-primary"
-                    title={row.name}
-                  >
+                  <Heading level={3} variant="title" truncate title={row.name}>
                     {row.name}
-                  </h3>
+                  </Heading>
                   <p
                     className="mt-1 truncate text-xs fg-secondary"
                     title={row.shortDescription}

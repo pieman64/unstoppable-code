@@ -459,6 +459,153 @@ describe('useCanopyCloudAuth — connect announcements', () => {
     expect(accountChanged).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])(
+    'queues a mounted newer debounce behind an in-flight save without duplicating it on unmount (ambient refresh: %s)',
+    async (ambientRefresh) => {
+      jest.useFakeTimers();
+      saveCanopyCloudApiKey.mockReset();
+      clearCanopyCloudApiKey.mockReset();
+      let persistedKey = '';
+      let finishFirstSave:
+        | ((result: ReturnType<typeof connectedResult>) => void)
+        | undefined;
+      const firstSave = new Promise<ReturnType<typeof connectedResult>>(
+        (resolve) => {
+          finishFirstSave = resolve;
+        },
+      );
+      saveCanopyCloudApiKey
+        .mockImplementationOnce(async ({ apiKey }: { apiKey: string }) => {
+          const result = await firstSave;
+          persistedKey = apiKey;
+          return result;
+        })
+        .mockImplementation(({ apiKey }: { apiKey: string }) => {
+          persistedKey = apiKey;
+          return Promise.resolve(connectedResult());
+        });
+      await mount({ autoSaveApiKey: true });
+      const input = container.querySelector<HTMLInputElement>(
+        '[data-testid="key"]',
+      );
+      act(() => {
+        setNativeValue(input, 'csk_first');
+        input?.dispatchEvent(new Event('input', { bubbles: true }));
+        jest.advanceTimersByTime(600);
+      });
+      expect(saveCanopyCloudApiKey).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        setNativeValue(input, 'csk_newer');
+        input?.dispatchEvent(new Event('input', { bubbles: true }));
+        // Unlike the unmount-before-debounce coverage below, B's timer expires
+        // while A's complete save IPC is still held and the editor is mounted.
+        jest.advanceTimersByTime(600);
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      });
+      const callsWhileFirstSavePending =
+        saveCanopyCloudApiKey.mock.calls.length;
+      if (ambientRefresh) {
+        // A can be durable while its complete IPC still performs policy work.
+        // Another mounted consumer may refresh that account in this interval.
+        loadCanopyCloudAccount.mockResolvedValue(manualAccount());
+        loadCanopyCloudApiKey.mockResolvedValue('csk_first');
+        await act(async () => {
+          window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
+          for (let i = 0; i < 8; i += 1) await Promise.resolve();
+        });
+        expect(input?.value).toBe('csk_newer');
+      }
+      act(() => root.unmount());
+      const callsAtUnmount = saveCanopyCloudApiKey.mock.calls.length;
+      await act(async () => {
+        finishFirstSave?.(connectedResult());
+        for (let i = 0; i < 16; i += 1) await Promise.resolve();
+      });
+      root = createRoot(container);
+
+      expect(callsWhileFirstSavePending).toBe(1);
+      expect(callsAtUnmount).toBe(1);
+      expect(saveCanopyCloudApiKey).toHaveBeenCalledTimes(2);
+      expect(saveCanopyCloudApiKey).toHaveBeenNthCalledWith(1, {
+        apiKey: 'csk_first',
+      });
+      expect(saveCanopyCloudApiKey).toHaveBeenNthCalledWith(2, {
+        apiKey: 'csk_newer',
+      });
+      expect(persistedKey).toBe('csk_newer');
+      expect(clearCanopyCloudApiKey).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['csk_queued', ''])(
+    'does not revive a superseded queued draft (%j) when its surface later unmounts',
+    async (queued) => {
+      jest.useFakeTimers();
+      saveCanopyCloudApiKey.mockReset();
+      clearCanopyCloudApiKey.mockReset();
+      let finishFirstSave:
+        | ((result: ReturnType<typeof connectedResult>) => void)
+        | undefined;
+      const firstSave = new Promise<ReturnType<typeof connectedResult>>(
+        (resolve) => {
+          finishFirstSave = resolve;
+        },
+      );
+      saveCanopyCloudApiKey
+        .mockImplementationOnce(() => firstSave)
+        .mockResolvedValue(connectedResult());
+      await mount({ autoSaveApiKey: true });
+      const input = container.querySelector<HTMLInputElement>(
+        '[data-testid="key"]',
+      );
+      await act(async () => {
+        setNativeValue(input, 'csk_first');
+        input?.dispatchEvent(new Event('input', { bubbles: true }));
+        jest.advanceTimersByTime(600);
+        setNativeValue(input, queued);
+        input?.dispatchEvent(new Event('input', { bubbles: true }));
+        jest.advanceTimersByTime(600);
+        for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      });
+      const newerContainer = document.createElement('div');
+      document.body.appendChild(newerContainer);
+      const newerRoot = createRoot(newerContainer);
+      try {
+        await act(async () => {
+          newerRoot.render(<Harness autoSaveApiKey />);
+          await Promise.resolve();
+        });
+        const newerInput = newerContainer.querySelector<HTMLInputElement>(
+          '[data-testid="key"]',
+        );
+        await act(async () => {
+          setNativeValue(newerInput, 'csk_newest');
+          newerInput?.dispatchEvent(new Event('input', { bubbles: true }));
+          finishFirstSave?.(connectedResult());
+          for (let i = 0; i < 16; i += 1) await Promise.resolve();
+        });
+        expect(saveCanopyCloudApiKey).toHaveBeenCalledTimes(1);
+        await act(async () => {
+          root.unmount();
+          for (let i = 0; i < 16; i += 1) await Promise.resolve();
+        });
+        root = createRoot(container);
+        expect(saveCanopyCloudApiKey).toHaveBeenCalledTimes(1);
+        expect(clearCanopyCloudApiKey).not.toHaveBeenCalled();
+        expect(newerInput?.value).toBe('csk_newest');
+      } finally {
+        await act(async () => {
+          newerRoot.unmount();
+          await Promise.resolve();
+        });
+        newerContainer.remove();
+      }
+      expect(saveCanopyCloudApiKey).toHaveBeenLastCalledWith({
+        apiKey: 'csk_newest',
+      });
+    },
+  );
+
   it.each([
     ['new account', false, 'csk_newer', false, false],
     ['saved account', true, 'csk_newer', false, false],

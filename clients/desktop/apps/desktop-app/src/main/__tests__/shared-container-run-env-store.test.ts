@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { isRecord } from '../lib/type-guards';
 import { writeFileAtomically } from '../lib/atomic-file';
 import {
+  projectSharedContainerRunEnvironment,
   readSharedContainerRunEnvironment,
   writeSharedContainerRunEnvironment,
   removeSharedContainerRunEnvironment,
@@ -26,6 +27,11 @@ const mockEncrypt = jest.fn((text: string) => Buffer.from(`enc:${text}`));
 const mockDecrypt = jest.fn((data: Buffer) =>
   data.toString('utf8').replace(/^enc:/, ''),
 );
+let mockSecretServiceState: 'secure' | 'unavailable' | 'locked' = 'secure';
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    mockSecretServiceState,
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): 'linux' => 'linux',
 }));
@@ -75,9 +81,11 @@ function expectNoWrite(): void {
   expect(rename).not.toHaveBeenCalled();
 }
 beforeEach(() => {
+  mockSecretServiceState = 'secure';
   jest.clearAllMocks();
   mockBackend = 'gnome_libsecret';
   mockAvailable.mockReturnValue(true);
+  mockSecretServiceState = 'secure';
   mockEncrypt.mockImplementation((text) => Buffer.from(`enc:${text}`));
   mockDecrypt.mockImplementation((data) =>
     data.toString('utf8').replace(/^enc:/, ''),
@@ -116,7 +124,51 @@ it('writes normalized encrypted values atomically with owner-only permissions', 
   );
   expect(writeFile).not.toHaveBeenCalled();
   expect(rename).not.toHaveBeenCalled();
-  expect(await readSharedContainerRunEnvironment('first')).toEqual(result);
+  expect(await readSharedContainerRunEnvironment('first')).toEqual(
+    entries.slice(0, 64),
+  );
+  // The echo names each stored value; it never carries one (CAN-4411).
+  expect(result).toEqual(
+    projectSharedContainerRunEnvironment('first', entries.slice(0, 64)),
+  );
+  expect(result.every((entry) => typeof entry.value === 'object')).toBe(true);
+});
+it('keeps stored values the echo names and refuses references from elsewhere', async () => {
+  payload = stored();
+  const [kept] = projectSharedContainerRunEnvironment('first', originalEntries);
+  const echo = await writeSharedContainerRunEnvironment('first', [
+    kept,
+    { key: 'ADDED', value: 'new' },
+  ]);
+  expect(JSON.stringify(echo)).not.toContain('original');
+  expect(await readSharedContainerRunEnvironment('first')).toEqual([
+    { key: 'TOKEN', value: 'original', secret: true },
+    { key: 'ADDED', value: 'new' },
+  ]);
+  const before = payload;
+  // The same slot in another container is a different reference.
+  const [foreign] = projectSharedContainerRunEnvironment('second', [
+    { key: 'TOKEN', value: 'x' },
+  ]);
+  await expect(
+    writeSharedContainerRunEnvironment('first', [foreign]),
+  ).rejects.toMatchObject({ code: 'stored_secret_unknown' });
+  expect(payload).toBe(before);
+});
+it('replaces an undecryptable record when the save keeps nothing', async () => {
+  payload = stored();
+  mockDecrypt.mockImplementation(() => {
+    throw new Error('wrong key');
+  });
+  await writeSharedContainerRunEnvironment('first', [
+    { key: 'TOKEN', value: 'fresh' },
+  ]);
+  mockDecrypt.mockImplementation((data) =>
+    data.toString('utf8').replace(/^enc:/, ''),
+  );
+  expect(await readSharedContainerRunEnvironment('first')).toEqual([
+    { key: 'TOKEN', value: 'fresh' },
+  ]);
 });
 it.each([
   ['unknown', false, 'unavailable'],
@@ -128,6 +180,7 @@ it.each([
     const previous = payload;
     mockBackend = backend;
     mockAvailable.mockReturnValue(available);
+    mockSecretServiceState = state === 'locked' ? 'locked' : 'secure';
     await expect(
       writeSharedContainerRunEnvironment('other', []),
     ).rejects.toMatchObject({ code: 'SECURE_STORAGE_WRITE_REFUSED', state });
@@ -140,6 +193,7 @@ it('retains existing ciphertext while libsecret is unavailable', async () => {
   payload = stored();
   mockBackend = 'unknown';
   mockAvailable.mockReturnValue(false);
+  mockSecretServiceState = 'secure';
   const previous = payload;
   await expect(
     readSharedContainerRunEnvironment('first'),
@@ -154,6 +208,7 @@ it('reports typed failure and recovers on the same record after unlocking', asyn
   payload = stored();
   const previous = payload;
   mockAvailable.mockReturnValue(false);
+  mockSecretServiceState = 'locked';
   await expect(
     readSharedContainerRunEnvironment('first'),
   ).rejects.toMatchObject({
@@ -163,6 +218,7 @@ it('reports typed failure and recovers on the same record after unlocking', asyn
   expect(payload).toBe(previous);
   expectNoWrite();
   mockAvailable.mockReturnValue(true);
+  mockSecretServiceState = 'secure';
   expect(await readSharedContainerRunEnvironment('first')).toEqual(
     originalEntries,
   );
@@ -228,6 +284,7 @@ it('preserves queued unrelated writes and explicitly removes only one container 
   ]);
   const second = persistedContainers().second;
   mockAvailable.mockReturnValue(false);
+  mockSecretServiceState = 'locked';
   await removeSharedContainerRunEnvironment('first');
   expect(persistedContainers()).toEqual({ second });
 });
@@ -245,6 +302,7 @@ it('rechecks write permission after asynchronous directory preparation', async (
   jest.mocked(mkdir).mockImplementationOnce((): Promise<undefined> => {
     mockBackend = 'unknown';
     mockAvailable.mockReturnValue(false);
+    mockSecretServiceState = 'secure';
     return Promise.resolve(undefined);
   });
   await expect(

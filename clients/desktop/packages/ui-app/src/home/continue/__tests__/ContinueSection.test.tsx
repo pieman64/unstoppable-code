@@ -262,6 +262,68 @@ describe('ContinueSection', () => {
     ).toBeNull();
   });
 
+  it('shows 5 attention rows, then 10 more per Show more until none are left', () => {
+    const rows = [
+      question,
+      ...Array.from({ length: 26 }, (_, n) => unread(`chat-${n}`, 100 - n)),
+    ];
+    renderSection({ attention: rows, lastViewed });
+    const attentionRows = (): number =>
+      container.querySelectorAll('[data-attention-kind]').length;
+    const showMore = (): HTMLButtonElement | null =>
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="home-continue-show-more"]',
+      );
+
+    expect(attentionRows()).toBe(5);
+    expect(
+      container.querySelector('[data-testid="home-continue-question-row"]'),
+    ).not.toBeNull();
+    // Last viewed stays reachable while rows are paged.
+    expect(
+      container.querySelector('[data-testid="home-resume-button"]'),
+    ).not.toBeNull();
+    act(() => showMore()?.click());
+    expect(attentionRows()).toBe(15);
+    act(() => showMore()?.click());
+    expect(attentionRows()).toBe(25);
+    act(() => showMore()?.click());
+    expect(attentionRows()).toBe(27);
+    expect(showMore()).toBeNull();
+  });
+
+  it('keeps Last viewed when its worktree only matches a row behind Show more', () => {
+    const rows = [1, 2, 3, 4, 5].map((n) => unread(`chat-${n}`, 100 - n));
+    const sameWorktree: ContinueAttentionItem = {
+      ...unread('chat-6', 1),
+      target: { ...unread('chat-6', 1).target, worktreeId: 'wt-a' },
+    };
+    renderSection({ attention: [...rows, sameWorktree], lastViewed });
+    expect(
+      container.querySelector('[data-testid="home-resume-button"]'),
+    ).not.toBeNull();
+
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="home-continue-show-more"]',
+        )
+        ?.click(),
+    );
+    expect(
+      container.querySelector('[data-testid="home-resume-button"]'),
+    ).toBeNull();
+  });
+
+  it('shows no Show more when every attention row fits', () => {
+    renderSection({
+      attention: [1, 2, 3, 4, 5].map((n) => unread(`chat-${n}`, n)),
+    });
+    expect(
+      container.querySelector('[data-testid="home-continue-show-more"]'),
+    ).toBeNull();
+  });
+
   it('hides Last viewed while attention leads to the same worktree', () => {
     renderSection({
       attention: [

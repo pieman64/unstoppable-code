@@ -18,10 +18,7 @@ import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { getDocument } from '../panels/window-registry';
 import { aiCreditsLabel } from './aiCreditsLabel';
 import { formatCost, formatUsageResetWhen } from '../lib/format-usage';
-import {
-  CircularProgress,
-  type CircularProgressTone,
-} from './CircularProgress';
+import { ProgressRing, type ProgressTone } from './Progress';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { InlineTextSkeleton } from './InlineTextSkeleton';
 
@@ -674,7 +671,7 @@ function isDomNode(value: unknown): value is Node {
 }
 
 /** The ring warns as the context nears its limit, like the meter bar. */
-export function getUsageRingTone(percentage: number): CircularProgressTone {
+export function getUsageRingTone(percentage: number): ProgressTone {
   if (percentage >= 90) return 'destructive';
   if (percentage >= 70) return 'warning';
   return 'neutral';
@@ -885,7 +882,7 @@ export function UsageIndicator({
             'Usage'
           )
         ) : (
-          <CircularProgress percentage={percentage} tone={ringTone} />
+          <ProgressRing value={percentage} tone={ringTone} />
         )}
         {balance && (
           <CreditBalanceFigure

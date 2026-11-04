@@ -34,7 +34,7 @@ import type {
   TerminalShellProfileId,
 } from '@canopy/desktop-shared/types';
 import {
-  AutomationsIcon,
+  WorkflowsIcon,
   BarChart4BarsIcon,
   ChatIcon,
   DataUsageIcon,
@@ -259,6 +259,8 @@ export function PanelAddTabMenu({
   ): void => {
     if (terminalAddBusy !== null) return;
     setTerminalAddBusy(busyKey);
+    const ownerDocument = anchor?.ownerDocument;
+    const pickedRow = ownerDocument?.activeElement ?? null;
     void (async (): Promise<void> => {
       try {
         const added = await createTerminalPanel(
@@ -267,10 +269,16 @@ export function PanelAddTabMenu({
           terminalProfileId,
           title,
           command,
-          anchor?.ownerDocument,
+          ownerDocument,
         );
         if (!added) return;
-        anchor?.querySelector<HTMLButtonElement>('button')?.focus();
+        // The new terminal may already hold the caret: its pane redeems the
+        // spawn's focus request as soon as it mounts. Hand focus back to `+`
+        // only while it is still on the picked row, which is about to unmount.
+        const active = ownerDocument?.activeElement ?? null;
+        if (active === pickedRow || active === ownerDocument?.body) {
+          anchor?.querySelector<HTMLButtonElement>('button')?.focus();
+        }
         onClose();
       } finally {
         setTerminalAddBusy(null);
@@ -357,7 +365,7 @@ export function PanelAddTabMenu({
     activityFromCard,
   ]);
   // Primary (singletons + chat/file) lead; the labeled "Usage",
-  // "Automations", and "Activity" groups each follow their own divider.
+  // "Workflows", and "Activity" groups each follow their own divider.
   const primaryEntries = entries.filter(
     (entry) =>
       (entry.kind !== 'activity-card' ||
@@ -571,9 +579,9 @@ export function PanelAddTabMenu({
             },
             {
               id: 'automations',
-              label: 'Automations',
+              label: 'Workflows',
               presentation: 'submenu' as const,
-              icon: <AutomationsIcon size="xl" />,
+              icon: <WorkflowsIcon size="xl" />,
               entries: automationsEntries.map(toViewEntry),
             },
             ...(sessionBreakdownEntries.length > 0

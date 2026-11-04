@@ -84,6 +84,7 @@ import {
 } from '../memory/local/store';
 import { broadcastLocalMemoryChanged } from '../memory/local/change-events';
 import { resolveLocalMemoryPolicy } from '../memory/local/policy';
+import { LocalMemoryScopeReadOnlyError } from '../memory/local/scope-manifest';
 import { recordUsage, seedEntry } from '../memory/local/usage';
 import { checkGitHubCliStatus } from '../lib/github-auth';
 import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
@@ -218,16 +219,22 @@ export async function saveLocalMemory(
     scopeDir = getWorkspaceMemoryDir(workspaceId);
     scopeRequest = { scope: 'workspace', workspaceId };
   }
-  const fileKey = await appendInboxNote(scopeDir, {
-    text: options.text,
-    source: {
-      provider: options.provider,
-      chatId: options.chatId,
-      ...(options.sessionId !== undefined
-        ? { sessionId: options.sessionId }
-        : {}),
-    },
-  });
+  let fileKey: string;
+  try {
+    fileKey = await appendInboxNote(scopeDir, {
+      text: options.text,
+      source: {
+        provider: options.provider,
+        chatId: options.chatId,
+        ...(options.sessionId !== undefined
+          ? { sessionId: options.sessionId }
+          : {}),
+      },
+    });
+  } catch (error) {
+    if (error instanceof LocalMemoryScopeReadOnlyError) return error.message;
+    throw error;
+  }
   if (!fileKey) {
     throw new Error('The memory note could not be written.');
   }

@@ -58,6 +58,36 @@ export function createWorkerPipelineAdapter(
           params,
           context,
         ),
+      'worker.pipeline.execution.resume': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.execution.resume'](
+          params,
+          context,
+        ),
+      'worker.pipeline.execution.retry': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.execution.retry'](
+          params,
+          context,
+        ),
+      'worker.pipeline.matrixJob.retry': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.matrixJob.retry'](
+          params,
+          context,
+        ),
+      'worker.pipeline.matrixVariant.cancel': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.matrixVariant.cancel'](
+          params,
+          context,
+        ),
+      'worker.pipeline.recovery.sweep': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.recovery.sweep'](
+          params,
+          context,
+        ),
+      'worker.pipeline.recovery.checkpoint': async (params, context) =>
+        (await handlers()).instructions['worker.pipeline.recovery.checkpoint'](
+          params,
+          context,
+        ),
       'worker.pipeline.hostRequest.respond':
         host.instructions['worker.pipeline.hostRequest.respond'],
     },

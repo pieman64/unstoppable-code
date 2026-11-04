@@ -91,13 +91,11 @@ export function PrMergeWarningDialog({
             View pull request on GitHub
           </a>
         ) : (
-          <button
-            type="button"
-            onClick={onOpenPr}
-            className="focus-ring self-start text-xs font-medium fg-accent underline-offset-2 hover:underline"
-          >
-            View pull request on GitHub
-          </button>
+          <span className="self-start text-xs">
+            <Button variant="link" onClick={onOpenPr}>
+              View pull request on GitHub
+            </Button>
+          </span>
         )}
         {onTriageReviewComments === undefined ? (
           // Capability-gated: shown unavailable with its reason, not hidden.

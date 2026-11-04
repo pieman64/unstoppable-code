@@ -170,7 +170,10 @@ export async function saveUserPipeline(
       { caller, metadata: { idempotencyKey } },
     );
     void republishOwnerAutomation(definition.definitionId);
-    return { success: true, data: savedPipelineInfo(definition, write) };
+    return {
+      success: true,
+      data: savedPipelineInfo(definition, write.content),
+    };
   } catch (error) {
     return { success: false, error: pipelineWriteErrorMessage(error) };
   }
@@ -184,7 +187,7 @@ export async function saveUserPipeline(
  */
 function savedPipelineInfo(
   definition: PipelineDefinition,
-  write: UserPipelineWrite,
+  content: Pipeline,
 ): PipelineInfo {
   const stored = getStoredPipelineBySource('user', definition.definitionId);
   const row = stored.success ? stored.data?.info : undefined;
@@ -199,7 +202,7 @@ function savedPipelineInfo(
     ...(row?.curatedOrigin ? { curatedOrigin: row.curatedOrigin } : {}),
     ...(row?.remote ? { remote: row.remote } : {}),
     triggerTypes: definition.triggerTypes,
-    stepCount: Object.values(write.content.jobs).reduce(
+    stepCount: Object.values(content.jobs).reduce(
       (count, job) => count + job.steps.length,
       0,
     ),
@@ -208,6 +211,44 @@ function savedPipelineInfo(
     source: 'user',
     readonly: false,
   };
+}
+
+export interface RemotePipelineImport {
+  /** The `curated:` or `shared:` definition to install. */
+  remoteDefinitionId: string;
+  /** The content hash the caller reviewed; `null` installs the current one. */
+  expectedRemoteVersion: string | null;
+  /** `null` keeps the remote's name. */
+  nameOverride: string | null;
+  /** A user pipeline the install replaces; absent creates one. */
+  definitionId?: string;
+}
+
+/**
+ * Installs a curated or shared definition as a user pipeline through core,
+ * which reads and validates the remote itself, and answers with the store's
+ * legacy row. Throws core's typed error for the caller to word.
+ */
+export async function importRemotePipeline(
+  input: RemotePipelineImport,
+  caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
+): Promise<PipelineInfo> {
+  const idempotencyKey = randomUUID();
+  const { definition } = await getDesktopCanopyRuntime().instruction(
+    'core.pipeline.definition.import',
+    {
+      remoteDefinitionId: input.remoteDefinitionId,
+      targetScope: {},
+      expectedRemoteVersion: input.expectedRemoteVersion,
+      nameOverride: input.nameOverride,
+      ...(input.definitionId === undefined
+        ? {}
+        : { definitionId: input.definitionId }),
+      _meta: { idempotencyKey },
+    },
+    { caller, metadata: { idempotencyKey } },
+  );
+  return savedPipelineInfo(definition, parsePipelineText(definition.document));
 }
 
 /** Deletes a user pipeline through core, with the store's effects. */

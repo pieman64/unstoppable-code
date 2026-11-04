@@ -32,6 +32,7 @@ import {
   Button,
   ErrorBanner,
   EmptyStateRow,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
@@ -969,7 +970,6 @@ function ResourceRow({
       onKeyDown={clickable ? handleKeyDown : undefined}
       tabIndex={clickable ? 0 : undefined}
       role={clickable ? 'button' : undefined}
-      title={`${displayLabel}\n${details}${clickable ? '\nOpen worktree' : ''}`}
     >
       <td className="py-1 align-middle">
         {row.hasChildren ? (
@@ -1004,10 +1004,26 @@ function ResourceRow({
         )}
       </td>
       <td className="py-1">
-        <div className="truncate" style={{ paddingLeft: depth * 12 }}>
-          <span className="fg-primary">{displayLabel}</span>
-          <span className="sr-only">, {details}</span>
-        </div>
+        <Tooltip
+          label={
+            <span className="flex flex-col">
+              <span>{displayLabel}</span>
+              <span className="fg-secondary">{details}</span>
+              {clickable ? (
+                <span className="fg-secondary">Open worktree</span>
+              ) : null}
+            </span>
+          }
+          delay="long"
+          allowShrink
+          className="w-full"
+          contentClassName="max-w-80 whitespace-normal wrap-anywhere"
+        >
+          <div className="min-w-0 truncate" style={{ paddingLeft: depth * 12 }}>
+            <span className="fg-primary">{displayLabel}</span>
+            <span className="sr-only">, {details}</span>
+          </div>
+        </Tooltip>
       </td>
       <td className="whitespace-nowrap py-1 pl-3 text-right tabular-nums fg-secondary">
         {formatCpuPercent(process.cpuPercent)}%

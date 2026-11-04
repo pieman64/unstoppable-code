@@ -2334,7 +2334,7 @@ test('uncertain watcher deliveries can be dismissed durably without resending', 
     const dismiss = rows
       .first()
       .getByRole('button', { name: 'Dismiss message', exact: true });
-    const dismissCorner = dismiss.locator('..');
+    const dismissCorner = dismiss.locator('xpath=ancestor::div[1]');
     await window.mouse.move(0, 0);
     await expect(dismissCorner).toHaveCSS('opacity', '0');
     await rows.first().getByTestId('input-delivery-bubble').hover();

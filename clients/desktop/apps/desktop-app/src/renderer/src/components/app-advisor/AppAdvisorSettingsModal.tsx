@@ -17,7 +17,7 @@
  * tab remains available in the main window.
  */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { TabBar } from '@canopy/ui-shared/components';
+import { TabBar, Heading } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   AppAdvisorWorkspaceSettingsFile,
@@ -274,12 +274,9 @@ export function AppAdvisorSettingsModal({
 
         {activeTab === 'instructions' && (
           <div className="flex min-h-0 flex-1 flex-col">
-            <h3
-              id="app-advisor-claude-md-label"
-              className="text-sm font-medium fg-primary"
-            >
+            <Heading level={3} variant="title" id="app-advisor-claude-md-label">
               CLAUDE.md
-            </h3>
+            </Heading>
             <p
               id="app-advisor-claude-md-description"
               className="mt-1 text-xs fg-secondary"
@@ -307,9 +304,9 @@ export function AppAdvisorSettingsModal({
               data-testid="app-advisor-settings-retention"
             >
               <div data-testid="app-advisor-settings-retention-card">
-                <h3 className="text-sm font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Deletion retention
-                </h3>
+                </Heading>
                 <p className="mt-1 text-xs fg-secondary">
                   {`Deleted and archived chats are kept for ${retentionDays} ${retentionDays === 1 ? 'day' : 'days'} before they're removed. Archived work entries are kept until you delete them.`}
                 </p>

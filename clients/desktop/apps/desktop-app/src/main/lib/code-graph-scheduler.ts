@@ -15,7 +15,10 @@ import {
 import { isCodeGraphAvailableForWorkspace } from './code-graph-availability';
 import { isE2eBuild } from './e2e-gate';
 import { isCoworkWorkspace } from './workspace-registry';
-import { runWorktreeCodeGraphBuild } from './code-graph-build-service';
+import {
+  cancelScheduledCodeGraphBuilds,
+  startScheduledCodeGraphBuild,
+} from '../code-graph/scheduled-builds';
 import { getWorktreeCodeGraphDbPath } from '@canopy/desktop-shared/node/code-graph/worktree-paths';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { resolveWorktreeCodeGraphRepositories } from './worktree-repo-entries';
@@ -336,6 +339,13 @@ export function cancelCodeGraphBuilds(
   // wait for the killed worker to actually exit — worktree cleanup, before
   // it closes engines and removes worktree-data — awaits its own direct
   // cancelBuild call instead.
+  cancelScheduledCodeGraphBuilds(
+    projectId,
+    worktreeId,
+    reason === 'unavailable'
+      ? 'Code graph generation is unavailable for this project.'
+      : "This worktree's graph builds were canceled.",
+  );
   if (reason === 'unavailable') {
     void cancelBuild(key, {
       reason,
@@ -528,24 +538,26 @@ async function runCodeGraphBuild(
       return;
     }
 
-    if (
-      cancellationVersion !== (cancellationVersions.get(key) ?? 0) ||
-      canceled.has(key) ||
-      !isCodeGraphAvailableForWorkspace(projectId)
-    ) {
-      return;
-    }
-    recordCodeGraphRefreshTelemetry({ source, outcome: 'build-started' });
-    // The centralized service owns the privacy-bounded
-    // `canopy.code_graph_generation` Datadog lifecycle. Code-graph builds are
-    // background maintenance, not agent turns, so they deliberately do not
-    // enter the local agent Audit Trail.
-    await runWorktreeCodeGraphBuild({
+    // The build is core initiated work that dispatches
+    // `worker.codeGraph.build` (CAN-5617); the run records whether it was
+    // skipped, ran or failed. The centralized build service still owns the
+    // privacy-bounded `canopy.code_graph_generation` Datadog lifecycle.
+    // Code-graph builds are background maintenance, not agent turns, so
+    // they deliberately do not enter the local agent Audit Trail.
+    await startScheduledCodeGraphBuild({
       projectId,
       worktreeId,
-      reason,
+      trigger: reason,
+      refreshSource: source,
       observedFingerprint,
       observedFingerprintMs,
+      available: () => isCodeGraphAvailableForWorkspace(projectId),
+      canceled: () =>
+        cancellationVersion !== (cancellationVersions.get(key) ?? 0) ||
+        canceled.has(key),
+      onStarted: () => {
+        recordCodeGraphRefreshTelemetry({ source, outcome: 'build-started' });
+      },
     });
   } catch {
     // Best-effort: telemetry is emitted before the build service rethrows, and

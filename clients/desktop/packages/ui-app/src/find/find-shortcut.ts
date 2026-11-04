@@ -10,13 +10,13 @@
  */
 import {
   hasClosestMethod,
-  isDialogTarget,
   isShortcutEvent,
   readTargetOwnerDocument,
   type ShortcutEventLike,
 } from './shortcut-target';
 import {
   SURFACE_FIND_BAR_SELECTOR,
+  findControllerKey,
   useSurfaceFindStore,
   type FindSurfaceMode,
 } from './surface-find-store';
@@ -137,18 +137,36 @@ export function resolveFallbackFindTarget(
 /**
  * Handles Cmd/Ctrl+F. Returns whether the bar opened (and the event was
  * claimed). Leaves the event untouched when another handler already claimed
- * it, the target is inside a dialog, or no searchable surface resolves.
+ * it or no searchable surface resolves. Dialogs can search only their own
+ * explicitly registered surfaces, never a background fallback.
  */
 export function runFindShortcut(
   event: FindShortcutEvent,
   fallback: () => FindTarget | null,
 ): boolean {
   if (!isShortcutEvent(event, 'f')) return false;
-  if (event.defaultPrevented === true || isDialogTarget(event.target)) {
+  if (event.defaultPrevented === true) {
     return false;
   }
-  const target = resolveFindTarget(event.target, fallback);
+  const dialog = hasClosestMethod(event.target)
+    ? event.target.closest('[role="dialog"], [aria-modal="true"]')
+    : null;
+  const target = resolveFindTarget(
+    event.target,
+    dialog ? (): null => null : fallback,
+  );
   if (!isRegistered(target)) return false;
+  if (dialog) {
+    const controller =
+      useSurfaceFindStore.getState().controllers[
+        findControllerKey(target.mode, target.scopeKey)
+      ]?.controller;
+    if (
+      controller?.anchor.closest('[role="dialog"], [aria-modal="true"]') !==
+      dialog
+    )
+      return false;
+  }
   event.preventDefault();
   const doc = readTargetOwnerDocument(event.target) ?? document;
   useSurfaceFindStore

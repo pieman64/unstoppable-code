@@ -14,6 +14,7 @@ import {
 } from '../../../__tests__/helpers/test-settings-host';
 import { ProfileHeader } from '../ProfileHeader';
 import type { ProfileEditTarget } from '../use-profile-editor';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 function makeMember(
   overrides: Partial<MemberProfileHeader> = {},
@@ -117,7 +118,8 @@ describe('ProfileHeader', () => {
     render(makeMember());
     const header = container.querySelector('[data-testid="profile-header"]');
     const blocked = Array.from(
-      header?.querySelectorAll('.replay-block') ?? [],
+      // The host's block class, or the shared one avatars carry.
+      header?.querySelectorAll(`.replay-block, .${REPLAY_BLOCK_CLASS}`) ?? [],
     ).map((element) => element.textContent);
     expect(blocked).toEqual(
       expect.arrayContaining(['GH', 'Grace Hopper', 'grace@example.com']),

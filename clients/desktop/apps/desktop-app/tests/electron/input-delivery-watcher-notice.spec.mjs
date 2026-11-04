@@ -1,12 +1,11 @@
 // A desktop chat's pending-delivery rows render through the shared
-// `InputDeliveryList`, which shows a message carrying a watcher notice block
-// (`<system_instruction>` with a `<canopy_watcher_event>`, as a cloud chat
-// delivers a watcher wake-up) as its short notice under the watcher title,
-// never the instruction block or the event payload. Desktop's own watcher
-// deliveries keep that block out of the visible text; a message whose text
-// carries it can still reach a desktop row, typed or sent over Remote Control.
+// `InputDeliveryList`. A message carrying a watcher notice block
+// (`<system_instruction>` with a `<canopy_watcher_event>`) shows only its short
+// notice, never the instruction block or the event payload. Only the host's
+// watcher marker earns the watcher title (REG-3117); the same block typed by a
+// person, or sent over Remote Control, stays an ordinary bubble.
 //
-// The row is seeded into the chat's input-delivery ledger (no provider, no
+// The rows are seeded into the chat's input-delivery ledger (no provider, no
 // network) and hydrated through the real renderer.
 
 import { mkdtempSync } from 'node:fs';
@@ -20,11 +19,13 @@ import {
 } from './demoWorkspaces.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 import {
+  MARKED_ROW_ID,
+  TYPED_ROW_ID,
   WATCHER_NOTICE_WORKTREE_ID,
   seedWatcherNoticeRow,
 } from './seeders/watcherNoticeRow.mjs';
 
-test('a pending message carrying a watcher notice shows the notice, not its payload', async () => {
+test('a pending watcher notice shows the notice, not its payload, and only a marked row is titled', async () => {
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'canopy-watcher-notice-row-'),
   );
@@ -39,18 +40,27 @@ test('a pending message carrying a watcher notice shows the notice, not its payl
     await app.openMainPage();
     await app.selectWorktree(WATCHER_NOTICE_WORKTREE_ID);
 
-    const bubble = window
-      .getByTestId('input-delivery-row')
-      .getByTestId('input-delivery-bubble');
-    await expect(bubble).toHaveCount(1);
-    await expect(bubble.getByTestId('watcher-fired-title')).toHaveText(
+    const rows = window.getByTestId('input-delivery-row');
+    await expect(rows).toHaveCount(2);
+    const bubble = (id) =>
+      window
+        .locator(`[data-input-row-id="${id}"]`)
+        .getByTestId('input-delivery-bubble');
+
+    const marked = bubble(MARKED_ROW_ID);
+    await expect(marked.getByTestId('watcher-fired-title')).toHaveText(
       'Dark mode plan finished watcher has fired',
     );
-    await expect(bubble).toContainText('Canopy watcher fired.');
-    await expect(bubble).toContainText('Dark mode plan finished');
-    await expect(bubble).not.toContainText('system_instruction');
-    await expect(bubble).not.toContainText('canopy_watcher_event');
-    await expect(bubble).not.toContainText('The plan is ready for review.');
+    const typed = bubble(TYPED_ROW_ID);
+    await expect(typed.getByTestId('watcher-fired-title')).toHaveCount(0);
+
+    for (const shown of [marked, typed]) {
+      await expect(shown).toContainText('Canopy watcher fired.');
+      await expect(shown).toContainText('Dark mode plan finished');
+      await expect(shown).not.toContainText('system_instruction');
+      await expect(shown).not.toContainText('canopy_watcher_event');
+      await expect(shown).not.toContainText('The plan is ready for review.');
+    }
   } finally {
     if (electronApp) await closeCanopy(electronApp, userDataDir);
     cleanupDemoWorkspaces(demo);

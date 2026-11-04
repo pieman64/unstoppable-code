@@ -79,10 +79,33 @@ export const BADGE_ICON_BY_SIZE: Readonly<
   compact: { className: 'size-2.5 shrink-0', px: 10 },
 };
 
+/**
+ * Solid label: a 20px block with a 10px label on the tone's full fill. Kept
+ * for the one environment marker (the sidebar's DEV label), which reads as a
+ * stamp, not a state. Its corner nests in the sidebar's `rounded-row`
+ * banner: max(6px, row radius - 4px inset).
+ */
+export const BADGE_SOLID_BASE_CLASS =
+  'inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[max(6px,calc(var(--radius-row)-4px))] px-1.5 text-3xs font-medium leading-none';
+
+/** Full fill and emphasis ink per tone for the solid variant. */
+export const BADGE_SOLID_TONE_CLASS: Readonly<Record<BadgeTone, string>> = {
+  neutral: 'bg-muted fg-primary',
+  info: 'bg-info fg-emphasis',
+  success: 'bg-success fg-emphasis',
+  warning: 'bg-warning fg-emphasis',
+  danger: 'bg-destructive fg-emphasis',
+  special: 'bg-special fg-emphasis',
+};
+
+export type BadgeVariant = 'tint' | 'solid';
+
 export interface BadgeClassNameOptions {
   readonly muted?: boolean;
-  /** Defaults to `regular`, the 18px capsule. */
+  /** Defaults to `regular`, the 18px capsule. Ignored by `solid`. */
   readonly size?: BadgeSize;
+  /** `tint` (default) is the capsule; `solid` the environment label. */
+  readonly variant?: BadgeVariant;
 }
 
 /** Full class string for a badge: shared geometry plus the tone's fill and ink. */
@@ -90,6 +113,9 @@ export function badgeClassName(
   tone: BadgeTone,
   options: BadgeClassNameOptions = {},
 ): string {
+  if (options.variant === 'solid') {
+    return `${BADGE_SOLID_BASE_CLASS} ${BADGE_SOLID_TONE_CLASS[tone]}`;
+  }
   const toneClass =
     options.muted === true
       ? BADGE_MUTED_TONE_CLASS[tone]

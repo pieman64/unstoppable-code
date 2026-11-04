@@ -1,9 +1,14 @@
+/** @jest-environment <rootDir>/apps/desktop-app/src/__tests__/jestReleasingNodeEnvironment.ts */
+jest.mock('../lifecycle/desktop-instance-diagnostics', () => ({
+  recordDesktopInstanceEvent: jest.fn(),
+}));
 // Startup tests replace process.platform; native PTYs must stay behind a host mock.
 jest.mock('../auth-terminal/manager', () => ({
   getAuthTerminalManager: jest.fn(() => ({ shutdown: jest.fn() })),
 }));
 jest.mock('../lib/interrupted-work-recovery', () => ({
   recoverInterruptedWorkAtStartup: jest.fn(() => Promise.resolve()),
+  sweepInterruptedPipelinesAtStartup: jest.fn((): Promise<void> | null => null),
 }));
 // Startup awaits this real-process reaper before admission; tests own it.
 const mockRecoverCopilotAtStartup = jest.fn<Promise<void>, []>();
@@ -69,6 +74,8 @@ import type { BrowserWindow, WebContents } from 'electron';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setFlagsFromString, writeHeapSnapshot } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { BRAND } from '@canopy/brand/current';
 import {
   IPC_CHANNELS,
@@ -79,6 +86,7 @@ import {
 import { ASK_USER_TIMEOUT_MS } from '@canopy/desktop-shared/lib/canopy-injected-tools';
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 import { patchedSdkBridgeConfigFor } from '@canopy/desktop-instrumentation/electron/__tests__/patched-datadog-sdk';
+import { describeRetainerPath } from './helpers/heap-retainer-path';
 
 const eventHandlers = new Map<string, (...args: unknown[]) => void>();
 const MAIN_PROCESS_EVENTS = [
@@ -90,9 +98,21 @@ const MAIN_PROCESS_EVENTS = [
 const initialMainProcessListeners = new Map(
   MAIN_PROCESS_EVENTS.map((event) => [event, process.rawListeners(event)]),
 );
+// The Files access module keeps the first graph's evidence on globalThis for
+// the whole file; claim the slot so no loaded graph is pinned there.
+Object.defineProperty(globalThis, '__CANOPY_FILES_MAIN_EVIDENCE__', {
+  value: Object.freeze({ snapshot: (): null => null }),
+});
 const initialGlobalKeys = new Set(Reflect.ownKeys(globalThis));
 const initialChromeDesktop = process.env.CHROME_DESKTOP;
-const E2E_GLOBAL_SEAM = /^__CANOPY_E2E_/;
+const E2E_GLOBAL_SEAM = /^__CANOPY_(?:E2E_|WORK_COUNTERS__$)/;
+const CODE_GRAPH_RESOLVER = Symbol.for(
+  'canopy.codeGraph.defaultResourcesDirResolver',
+);
+const initialCodeGraphResolver: unknown = Reflect.get(
+  globalThis,
+  CODE_GRAPH_RESOLVER,
+);
 
 function trackRealTimers(): () => void {
   const timeouts = jest.spyOn(globalThis, 'setTimeout');
@@ -255,7 +275,7 @@ const getAllActiveSessionInfosMock = jest.fn(
 );
 const cancelAllDiscoveriesMock = jest.fn();
 const stopAllOutputPollingMock = jest.fn();
-const stopAllRunningHooksMock = jest.fn();
+const holdHooksForShutdownMock = jest.fn();
 const stopAllRunningShellScriptsMock = jest.fn();
 const discardAllStagedSessionImportsMock = jest.fn(() => Promise.resolve());
 const discardStaleSessionImportArtifactsMock = jest.fn(() => Promise.resolve());
@@ -744,6 +764,12 @@ jest.mock('../pipelines/pipeline-execution-registry', () => ({
   pauseAllActivePipelineExecutions: pauseAllActivePipelineExecutionsMock,
 }));
 
+// The quit chain checkpoints through core while the runtime runs (CAN-4141).
+jest.mock('../pipelines/pipeline-worker-dispatch', () => ({
+  checkpointPipelinesThroughLocalWorker: (): unknown =>
+    pauseAllActivePipelineExecutionsMock(),
+}));
+
 jest.mock('../pipelines', () => ({
   cancelAllActivePipelineExecutions: pauseAllActivePipelineExecutionsMock,
   registerExecutionHandlers: jest.fn(),
@@ -795,7 +821,7 @@ jest.mock('../lib/bg-output-poller', () => ({
 }));
 
 jest.mock('../lib/hook-runner', () => ({
-  stopAllRunningHooks: stopAllRunningHooksMock,
+  holdHooksForShutdown: holdHooksForShutdownMock,
   listActiveHookRunTargets: jest.fn(() => []),
   subscribeActiveHookRunsChanged: jest.fn(() => jest.fn()),
 }));
@@ -1594,10 +1620,20 @@ describe('main process shutdown', () => {
     // Jest yields no macrotask between tests, so startup parked on I/O keeps
     // each test's whole module graph alive; consecutive startup tests then
     // exhaust CI's 4 GB heap. Real timers first: a fake setImmediate never fires.
+    // A fresh fake clock drops the timers, and graph, a test left on the last one.
+    jest.useFakeTimers();
     jest.useRealTimers();
     await waitForImmediate();
     releaseRealTimers?.();
     releaseRealTimers = undefined;
+    // mockRestore() leaves each spy's restorer in Jest's spy registry, and a
+    // spy on a requireActual module keeps that whole module graph reachable.
+    jest.restoreAllMocks();
+    // Both keep the last loaded graph until a later test replaces them.
+    mockRendererOrigin.options = null;
+    Reflect.set(globalThis, CODE_GRAPH_RESOLVER, initialCodeGraphResolver);
+    // Removed seams land in GlobalProxy leftovers, which the file's
+    // jestReleasingNodeEnvironment releases once this test finishes.
     removeE2eGlobalSeams();
     for (const event of MAIN_PROCESS_EVENTS) {
       const initialListeners = initialMainProcessListeners.get(event) ?? [];
@@ -1610,6 +1646,70 @@ describe('main process shutdown', () => {
         }
       }
     }
+  });
+
+  describe('between tests', () => {
+    const GRAPH_MARKER = '__canopyIndexTestPreviousGraph';
+    const RELEASE_ROUNDS = 20;
+    const isGc = (value: unknown): value is () => void =>
+      typeof value === 'function';
+    let loadedElectron: WeakRef<object> | undefined;
+
+    async function describeGraphRetainers(): Promise<string> {
+      // Let the job that dereferenced the graph end so it holds nothing.
+      await waitForImmediate();
+      const directory = mkdtempSync(join(tmpdir(), 'index-test-retainers-'));
+      try {
+        const snapshot = writeHeapSnapshot(
+          join(directory, 'graph.heapsnapshot'),
+        );
+        return [
+          describeRetainerPath(snapshot, GRAPH_MARKER),
+          `active resources: ${process.getActiveResourcesInfo().join(', ')}`,
+        ].join('\n');
+      } catch (error) {
+        return `retainer diagnosis failed: ${String(error)}`;
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+
+    it('loads the main graph with fake timers pending', async () => {
+      jest.useFakeTimers();
+      whenReadyMock.mockResolvedValue(undefined);
+      await import('../index');
+      await waitForAppReady();
+      setTimeout((): void => undefined, 60_000);
+      const electron = await import('electron');
+      Reflect.set(electron, GRAPH_MARKER, true);
+      loadedElectron = new WeakRef(electron);
+    });
+
+    it('releases the previous test main graph', async () => {
+      await waitForImmediate();
+      setFlagsFromString('--expose-gc');
+      const gc: unknown = runInNewContext('gc');
+      if (!isGc(gc)) throw new Error('Expected V8 to expose gc');
+      if (!loadedElectron) throw new Error('Expected the previous test to run');
+      gc();
+      // A loaded runner may still be finishing the previous test's async
+      // work. A pin outlives every round; the snapshot then names its path.
+      for (
+        let round = 0;
+        round < RELEASE_ROUNDS && loadedElectron.deref() !== undefined;
+        round += 1
+      ) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 50);
+        });
+        gc();
+      }
+      const retainers =
+        loadedElectron.deref() === undefined
+          ? null
+          : await describeGraphRetainers();
+      expect(retainers).toBeNull();
+    }, 120_000);
   });
 
   it('uses the padded amber dev icon for macOS development windows and dock', async () => {
@@ -2212,7 +2312,7 @@ describe('main process shutdown', () => {
     );
     await waitForImmediate();
     expect(cancelAllDiscoveriesMock).toHaveBeenCalledTimes(1);
-    expect(stopAllRunningHooksMock).toHaveBeenCalledTimes(1);
+    expect(holdHooksForShutdownMock).toHaveBeenCalledTimes(1);
     expect(stopAllRunningShellScriptsMock).toHaveBeenCalledTimes(1);
     expect(cancelStartupBackgroundTasksMock).not.toHaveBeenCalled();
     expect(stopWorktreeBranchWatchersMock).toHaveBeenCalledTimes(1);
@@ -2845,6 +2945,27 @@ describe('main process shutdown', () => {
     expect(browserWindowMock).toHaveBeenCalledTimes(1);
   });
 
+  it('sweeps interrupted workflow runs through core before opening the first window', async () => {
+    const { sweepInterruptedPipelinesAtStartup } =
+      await import('../lib/interrupted-work-recovery');
+    let releaseSweep!: () => void;
+    jest.mocked(sweepInterruptedPipelinesAtStartup).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSweep = resolve;
+        }),
+    );
+    whenReadyMock.mockResolvedValue(undefined);
+    await import('../index');
+    for (let attempt = 0; attempt < 100 && !releaseSweep; attempt += 1)
+      await waitForImmediate();
+    expect(sweepInterruptedPipelinesAtStartup).toHaveBeenCalledTimes(1);
+    expect(browserWindowMock).not.toHaveBeenCalled();
+    releaseSweep();
+    await waitForAppReady();
+    expect(browserWindowMock).toHaveBeenCalledTimes(1);
+  });
+
   it('reaps prior Copilot processes before repairing work or opening a window', async () => {
     const { recoverInterruptedWorkAtStartup } =
       await import('../lib/interrupted-work-recovery');
@@ -3277,6 +3398,40 @@ describe('main process shutdown', () => {
     unsubscribe();
   });
 
+  it('reports the real OS version and the CPU behind ARM translation to PostHog', async () => {
+    whenReadyMock.mockResolvedValue(undefined);
+    initializeDesktopInstrumentationMainMock.mockResolvedValue({
+      enabled: false,
+      provider: 'datadog',
+      reason: 'disabled',
+    });
+    await import('../index');
+    await waitForAppReady();
+    const instrumentation = jest.requireMock<
+      jest.Mocked<typeof DesktopInstrumentationMainModule>
+    >('@canopy/desktop-instrumentation/electron/main');
+    const getHostPlatform =
+      instrumentation.initializePostHogMain.mock.calls[0]?.[3];
+    if (!getHostPlatform) throw new Error('Expected a PostHog host platform');
+
+    const electron = jest.requireMock<{
+      app: { runningUnderARM64Translation?: boolean };
+    }>('electron');
+    Object.assign(process, { getSystemVersion: () => '15.6.1' });
+    try {
+      electron.app.runningUnderARM64Translation = true;
+      expect(getHostPlatform()).toEqual({
+        osVersion: '15.6.1',
+        cpuArchitecture: 'arm64',
+      });
+      electron.app.runningUnderARM64Translation = false;
+      expect(getHostPlatform().cpuArchitecture).toBe(process.arch);
+    } finally {
+      Reflect.deleteProperty(process, 'getSystemVersion');
+      Reflect.deleteProperty(electron.app, 'runningUnderARM64Translation');
+    }
+  });
+
   // Every preload blocks in a sync `datadog:bridge-config` IPC; an uncloneable
   // reply is never sent and no renderer mounts.
   it('passes the crash dump filter to Datadog while the preload bridge config reply stays cloneable', async () => {
@@ -3424,6 +3579,44 @@ describe('main process shutdown', () => {
     expect(app.setName).not.toHaveBeenCalledWith('Unstoppable (RC)');
   });
 
+  it('leaves profile services untouched when another process owns the instance lock', async () => {
+    const originalE2e: unknown = Reflect.get(globalThis, '__CANOPY_E2E__');
+    Reflect.set(globalThis, '__CANOPY_E2E__', false);
+    const { app } = jest.requireMock<{
+      app: { requestSingleInstanceLock: jest.Mock };
+    }>('electron');
+    app.requestSingleInstanceLock.mockReturnValueOnce(false);
+    whenReadyMock.mockResolvedValue(undefined);
+    const codex = await import('../codex/app-server-process-registry');
+    const claude = await import('../agents/claude-process-registry');
+    const reapCodex = jest.spyOn(codex, 'reapStaleCodexAppServerProcesses');
+    const reapClaude = jest.spyOn(claude, 'reapStaleClaudeProcesses');
+    const listeners = MAIN_PROCESS_EVENTS.map((event) =>
+      process.rawListeners(event),
+    );
+    try {
+      await import('../index');
+      await waitForAppReady();
+      expect(reapCodex).not.toHaveBeenCalled();
+      expect(reapClaude).not.toHaveBeenCalled();
+      expect(
+        MAIN_PROCESS_EVENTS.map((event) => process.rawListeners(event)),
+      ).toEqual(listeners);
+      const { initializeMainProcessLogging } =
+        await import('../lib/main-process-logging');
+      expect(appQuitMock).toHaveBeenCalledTimes(1);
+      expect(initializeMainProcessLogging).not.toHaveBeenCalled();
+      expect(admitDesktopW5HostMock).not.toHaveBeenCalled();
+      expect(browserWindowMock).not.toHaveBeenCalled();
+      expect(eventHandlers.has('before-quit')).toBe(false);
+      expect(eventHandlers.has('second-instance')).toBe(false);
+    } finally {
+      if (typeof originalE2e === 'boolean')
+        Reflect.set(globalThis, '__CANOPY_E2E__', originalE2e);
+      else Reflect.deleteProperty(globalThis, '__CANOPY_E2E__');
+    }
+  });
+
   it('sets Linux desktop identity after locking and before readiness', async () => {
     const restorePlatform = setPlatform('linux');
     const originalDesktopName = process.env.CHROME_DESKTOP;
@@ -3512,7 +3705,7 @@ describe('main process shutdown', () => {
     }
   });
 
-  describe('E2E userData isolation (__CANOPY_E2E__)', () => {
+  describe('Electron userData profile isolation', () => {
     const originalCanopyDataDir = process.env.CANOPY_DATA_DIR;
     let e2eDataDir: string;
 
@@ -3607,10 +3800,22 @@ describe('main process shutdown', () => {
       await import('../index');
       await waitForAppReady();
 
-      expect(appSetPathMock).not.toHaveBeenCalledWith(
-        'userData',
-        expect.anything(),
-      );
+      expect(appSetPathMock).not.toHaveBeenCalled();
+      const { app } = jest.requireMock<{
+        app: { requestSingleInstanceLock: jest.Mock };
+      }>('electron');
+      expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves the default installed profile when no data override is configured', async () => {
+      Reflect.set(globalThis, '__CANOPY_E2E__', false);
+      delete process.env.CANOPY_DATA_DIR;
+      await import('../index');
+      expect(appSetPathMock).not.toHaveBeenCalled();
+      const { app } = jest.requireMock<{
+        app: { requestSingleInstanceLock: jest.Mock };
+      }>('electron');
+      expect(app.requestSingleInstanceLock).toHaveBeenCalledTimes(1);
     });
 
     it('does not redirect userData when CANOPY_DATA_DIR is unset', async () => {

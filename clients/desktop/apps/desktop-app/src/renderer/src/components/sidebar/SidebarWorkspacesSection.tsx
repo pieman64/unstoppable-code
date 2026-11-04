@@ -699,7 +699,7 @@ export function SidebarWorkspacesSection({
                       workspace={soleVisibleWorkspace}
                       onCreate={(): void => {
                         if (isGitSidebarItem(soleVisibleWorkspace))
-                          model.onCreateWorktree(soleVisibleWorkspace.id);
+                          void model.onCreateWorktree(soleVisibleWorkspace.id);
                         else {
                           // Same path as the cowork row "+".
                           openNewCoworkTaskFromSidebar(soleVisibleWorkspace.id);

@@ -193,10 +193,8 @@ for (const paged of [false, true]) {
           '1 step ran into an errorEffect on the result is unknown',
         );
       } else {
-        // It says what it couldn't run, as the step's own row does.
-        await expect(tooltip).toContainText(
-          /Couldn.t run ls ~\/\.claude\/mcp-\*\.json/,
-        );
+        // The step keeps its description; the reason below explains the error.
+        await expect(tooltip).toContainText('List MCP connection files');
         await expect(tooltip).toContainText(ZSH_LINE);
         // It says what the error did to the result, here that it's unknown.
         await expect(tooltip).toContainText('Effect on the result is unknown');
@@ -229,9 +227,11 @@ for (const paged of [false, true]) {
         path: testInfo.outputPath('turn-outcome-error-landed.png'),
       });
 
-      // The expanded row says it ran into an error, in words: the tensed
-      // label already says it, with no color.
-      await expect(errorRow).toContainText(/Couldn.t run/);
+      // The stable description and explicit outcome remain readable without color.
+      await expect(errorRow).toContainText('List MCP connection files');
+      await expect(errorRow.getByTestId('tool-call-failed')).toHaveText(
+        'Failed',
+      );
 
       // From the open turn, a second click lands again.
       await expect(errorRow).not.toHaveAttribute(

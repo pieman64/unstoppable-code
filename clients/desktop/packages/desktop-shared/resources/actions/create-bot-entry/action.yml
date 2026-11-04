@@ -10,7 +10,7 @@ inputs:
     description: Task title, at most 200 characters. Optional.
     required: false
   group:
-    description: Sidebar group name to join, created when missing. Optional.
+    description: Sidebar group name to join, created when missing. Any name, none included, is a group to join. Optional.
     required: false
 outputs:
   bot_id:

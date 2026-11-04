@@ -143,7 +143,11 @@ export interface SidebarWorkspacesModel {
   // --- actions ---
   onSelectWorktree: (projectId: string, worktreeId: string) => void;
   onToggleCollapsed: (projectId: string) => void;
-  onCreateWorktree: (projectId: string) => void;
+  onCreateWorktree: (
+    projectId: string,
+  ) => ReturnType<
+    ReturnType<typeof useProjectsStore.getState>['createWorktree']
+  >;
   onCreateBranchWorktree: (projectId: string, worktreeId: string) => void;
   onReorderProjects: (activeId: string, overId: string) => void;
   onReorderWorktrees: (
@@ -611,11 +615,11 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
   );
 
   const onCreateWorktree = useCallback(
-    (projectId: string): void => {
+    (projectId: string): ReturnType<typeof createWorktree> => {
       // Reveal the Code surface at local registration, when the row has been
       // inserted and selected. The returned promise also waits for persistence
       // and post-create refreshes, which must not delay the active UI.
-      void createWorktree(projectId, {
+      return createWorktree(projectId, {
         onRegistered: () => navigate('main'),
       });
     },

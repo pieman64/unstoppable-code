@@ -1360,6 +1360,51 @@ test.describe('Workflows page', () => {
     }
   });
 
+  test('an ownerless run opened from Runs closes from its Close button', async () => {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-workflows-runs-ownerless-'),
+    );
+    // No project or worktree: the run opens in the app-level modal.
+    seedPipelineExecution({
+      userDataDir,
+      execution: {
+        id: 'runs-ownerless',
+        pipelineName: 'Global review',
+        status: 'success',
+        completedAt: '2026-04-10T12:05:00.000Z',
+      },
+    });
+
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openWorkflowsTab('runs');
+
+      const row = window.locator(
+        '[data-testid="workflows-run-row"][data-run-key="pipeline-run:runs-ownerless"]',
+      );
+      await row.focus();
+      await window.keyboard.press('Enter');
+      const host = window.getByTestId('pipeline-execution-compat-host');
+      const dialog = window.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+
+      // The modal's header sits inside the page titlebar's window-drag band.
+      // app-region hit testing ignores z-order, so without `no-drag` on the
+      // card a real mouse press on Close drags the window instead. Playwright
+      // clicks bypass app-region, so only the computed region catches this.
+      await expect(dialog).toHaveCSS('-webkit-app-region', 'no-drag');
+
+      await dialog.getByRole('button', { name: 'Close' }).click();
+      await expect(host).toHaveCount(0);
+      await expectWorkflowsTab(window, RUNS);
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  });
+
   test('leaving the pipeline editor with unsaved edits asks to save, discard or keep editing', async () => {
     test.setTimeout(120_000);
     const userDataDir = seedWorkflows();
@@ -2147,6 +2192,31 @@ async function holdIpc(electronApp, channel, releaseName) {
   );
 }
 
+/**
+ * How a skeleton's blocks are drawn: skullet's bars, each filled with the
+ * muted surface token and pulsing, with no hand-rolled class pulse left.
+ */
+function skeletonBlocks(locator) {
+  return locator.evaluate((node) => {
+    const probe = document.createElement('span');
+    probe.style.backgroundColor = 'var(--bg-muted)';
+    node.append(probe);
+    const token = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const bars = [...node.querySelectorAll('[skullet-bar]')];
+    return {
+      some: bars.length > 0,
+      tokenFill: bars.every(
+        (bar) => getComputedStyle(bar).backgroundColor === token,
+      ),
+      pulsing: bars.every((bar) =>
+        bar.getAnimations().some((pulse) => pulse.playState === 'running'),
+      ),
+      classPulses: node.querySelectorAll('.animate-pulse').length,
+    };
+  });
+}
+
 test.describe('Workflows Library loading', () => {
   test('a slow first load shows the table in skeleton, rows replace it, and Refresh keeps the rows', async () => {
     test.setTimeout(120_000);
@@ -2191,6 +2261,13 @@ test.describe('Workflows Library loading', () => {
         'On or off, and actions',
       ]);
       await expect(skeleton.locator('tbody tr')).toHaveCount(5);
+      // skullet draws the values: the muted token, pulsing.
+      expect(await skeletonBlocks(skeleton)).toEqual({
+        some: true,
+        tokenFill: true,
+        pulsing: true,
+        classPulses: 0,
+      });
       await expect(library).not.toContainText('Loading workflows…');
       // Nothing counts rows that have not arrived.
       await expect(

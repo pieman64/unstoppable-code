@@ -573,7 +573,10 @@ describe('SessionBreakdownView', () => {
     const view = breakdownView();
     const heading = renderer.container.querySelector('h2');
     expect(heading?.textContent).toBe(view.chat.label);
-    expect(heading?.classList.contains('ph-mask')).toBe(true);
+    // The whole name is masked, inside the heading.
+    expect(heading?.querySelector('.ph-mask')?.textContent).toBe(
+      view.chat.label,
+    );
     expect(heading?.getAttribute('title')).toBeNull();
 
     click(byTestId(renderer.container, 'session-breakdown-source-subagents'));

@@ -807,8 +807,7 @@ test('Cursor notices remain visible in a completed collapsed turn after reload',
   try {
     await f.complete();
     const steps = f.panel.getByRole('button', { name: /^Agent steps:/ });
-    await expect(steps).toHaveAttribute('aria-expanded', 'true');
-    await steps.click();
+    await expect(steps).toHaveAttribute('aria-expanded', 'false');
     for (const reload of [false, true]) {
       if (reload) {
         await f.window.reload();
@@ -1003,8 +1002,6 @@ test('Cursor completed turn collapses activity and restores its final answer', a
   try {
     await f.complete();
     const summary = f.panel.getByRole('button', { name: /^Agent steps:/ });
-    await expect(summary).toHaveAttribute('aria-expanded', 'true');
-    await summary.click();
     await expect(summary).toHaveAttribute('aria-expanded', 'false');
     await expect(summary).toHaveAccessibleName(/Read 1 file/);
     await expect(summary).toHaveAccessibleName(/Ran 1 command/);

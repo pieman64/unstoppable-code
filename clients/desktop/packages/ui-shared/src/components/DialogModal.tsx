@@ -576,6 +576,10 @@ export function DialogModal({
       className={`fixed inset-0 z-modal flex ${placementClass} justify-center bg-overlay-scrim ${overlayPadClass} ${overlayClassName}`}
       onClick={closeOnBackdrop ? onClose : undefined}
     >
+      {/* `electron-no-drag`: a card (a page's header and Close above all) can
+          land in a desktop window-drag band painted underneath. app-region
+          hit testing ignores z-order, so without it a mouse press there drags
+          the window instead of clicking. The scrim keeps dragging. */}
       <div
         ref={cardRef}
         role="dialog"
@@ -583,7 +587,7 @@ export function DialogModal({
         aria-labelledby={id}
         data-testid={dataTestId}
         tabIndex={focusCard ? -1 : undefined}
-        className={`w-full ${widthClass} ${heightClass} flex flex-col overflow-hidden ${radiusClass} bg-card shadow-xl ${focusCard ? 'outline-none' : ''} ${className}`}
+        className={`electron-no-drag w-full ${widthClass} ${heightClass} flex flex-col overflow-hidden ${radiusClass} bg-card shadow-xl ${focusCard ? 'outline-none' : ''} ${className}`}
         style={{ maxHeight: resolvedMaxHeight, height, minHeight }}
         onClick={(e) => e.stopPropagation()}
       >

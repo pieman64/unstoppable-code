@@ -72,6 +72,7 @@ import {
   SIDEBAR_NAV_ICON_CLASSNAME,
   sidebarNavIconItemClassName,
   sidebarNavItemClassName,
+  SkeletonBlock,
   Tooltip,
   useDropdownMenuRowStyle,
   useIsMobile,
@@ -4358,10 +4359,10 @@ export function SidebarSurface(props: SidebarSurfaceProps): JSX.Element {
             role="status"
             aria-label="Loading projects"
             data-testid={testIds?.loading}
-            className="space-y-3 px-2 py-1 animate-pulse"
+            className="space-y-3 px-2 py-1"
           >
-            <div className="h-4 w-2/3 rounded bg-fg-primary/[0.06]" />
-            <div className="h-3.5 w-3/4 rounded bg-fg-primary/[0.06]" />
+            <SkeletonBlock height="title" width="2/3" />
+            <SkeletonBlock height="title" width="3/4" />
           </div>
         ) : contentState === 'empty' &&
           (props.pendingProjects?.length ?? 0) === 0 ? (

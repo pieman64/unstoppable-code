@@ -4,6 +4,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { FileGlobMatcher } from './file-glob-matcher';
 import {
+  deferIgnoredDirectories,
   readFilesystemDirectory,
   readIgnoredPathMatcher,
   walkFileIndex,
@@ -60,28 +61,29 @@ export async function buildFileIndex(
 /**
  * The retained direct index walk (Home, Portal mentions, rebind) over the
  * core-runtime engine `worker.filesystem.search` pages, with one ignored-path
- * listing per Git-aware root after the walk.
+ * listing per Git-aware root before the walk, which visits ignored
+ * directories last.
  */
 export async function buildFileIndexResult(
   root: string,
   options: FileSystemListingOptions,
   maxEntries = Number.POSITIVE_INFINITY,
 ): Promise<FileIndexBuildResult> {
+  const isIgnored = await readIgnoredPathMatcher(
+    options.gitAware
+      ? (): Promise<string[]> => listIgnoredPathEntries(root)
+      : null,
+  );
   const walked = await walkFileIndex(
     {
       absolutePath: root,
       excludedDescendantRoots: options.excludedDescendantRoots ?? [],
     },
     {
-      matcher: options.globMatcher,
+      matcher: deferIgnoredDirectories(options.globMatcher, isIgnored),
       ...(options.readBoundary ? { readBoundary: options.readBoundary } : {}),
     },
     maxEntries,
-  );
-  const isIgnored = await readIgnoredPathMatcher(
-    options.gitAware
-      ? (): Promise<string[]> => listIgnoredPathEntries(root)
-      : null,
   );
   return {
     files: walked.files.map((file) => ({

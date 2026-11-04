@@ -110,6 +110,21 @@ const files = (): RuntimeModule =>
         'worker.pipeline.execution.get': (): never => {
           throw new Error('Not exercised.');
         },
+        'worker.codeGraph.buildQueue.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.status.get': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.query': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.snapshot.export': (): never => {
+          throw new Error('Not exercised.');
+        },
+        'worker.codeGraph.languages.validate': (): never => {
+          throw new Error('Not exercised.');
+        },
       },
     },
   });

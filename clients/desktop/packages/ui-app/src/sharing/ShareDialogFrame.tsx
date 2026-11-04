@@ -6,7 +6,7 @@ import type { PipelinePackageProgressEvent } from '@canopy/protocol/pipelines';
 import {
   CopyLinkButton,
   DialogModal,
-  LinearProgress,
+  ProgressBar,
   Notice,
 } from '@canopy/ui-shared/components';
 import { PUBLIC_SHARE_RETRY_LABEL } from './capability-package/share-copy';
@@ -302,9 +302,10 @@ export function ShareDialogFrame({
             {shareStageCaption(stage)}
           </p>
           {determinate && (
-            <LinearProgress
-              percentage={((stage.completed ?? 0) / (stage.total ?? 1)) * 100}
-              label={stage.stage}
+            <ProgressBar
+              value={((stage.completed ?? 0) / (stage.total ?? 1)) * 100}
+              label={shareStageCaption(stage)}
+              hideLabel
             />
           )}
         </div>

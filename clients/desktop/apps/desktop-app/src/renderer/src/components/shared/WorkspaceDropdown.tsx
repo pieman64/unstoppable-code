@@ -23,6 +23,7 @@ import {
   PickerMenuState,
   PickerTrigger,
   PickerTriggerChevron,
+  Tooltip,
   type WorkspaceKind,
 } from '@canopy/ui-shared/components';
 import {
@@ -403,23 +404,39 @@ export function WorkspaceDropdown({
 
       {clearable && (
         // Seated exactly over the swatch it replaces — the trigger's own
-        // horizontal padding, which differs per variant.
-        <button
-          type="button"
-          onClick={handleClear}
-          aria-label={`Clear ${selectedDisplayName}`}
-          title={`Clear ${selectedDisplayName}`}
-          data-testid={`${testIdPrefix}-clear`}
-          // The visible chip stays 16px to sit exactly over the swatch, but
-          // the pressable area is widened to the 24px minimum — on a coarse
-          // pointer this is the only affordance in that slot. It swaps with
-          // the swatch instantly: no fade either way.
-          className={`focus-ring absolute top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full fg-tertiary after:absolute after:-inset-1 after:content-[''] hover:fg-secondary pointer-fine:opacity-0 pointer-fine:group-hover/picker-trigger:opacity-100 pointer-fine:group-focus-within/picker-trigger:opacity-100 ${
+        // horizontal padding, which differs per variant. The holder places
+        // it; the tooltip wraps the button inside.
+        <span
+          className={`absolute top-1/2 inline-flex -translate-y-1/2 ${
             capsule ? 'left-2.5' : 'left-2'
           }`}
         >
-          <ClearFilledIcon size={16} aria-hidden="true" />
-        </button>
+          <Tooltip
+            label={
+              <>
+                Clear{' '}
+                <span className={POSTHOG_REPLAY_MASK_CLASS}>
+                  {selectedDisplayName}
+                </span>
+              </>
+            }
+            suppressed={isOpen}
+          >
+            <button
+              type="button"
+              onClick={handleClear}
+              aria-label={`Clear ${selectedDisplayName}`}
+              data-testid={`${testIdPrefix}-clear`}
+              // The visible chip stays 16px to sit exactly over the swatch, but
+              // the pressable area is widened to the 24px minimum — on a coarse
+              // pointer this is the only affordance in that slot. It swaps with
+              // the swatch instantly: no fade either way.
+              className="focus-ring relative inline-flex h-4 w-4 items-center justify-center rounded-full fg-tertiary after:absolute after:-inset-1 after:content-[''] hover:fg-secondary pointer-fine:opacity-0 pointer-fine:group-hover/picker-trigger:opacity-100 pointer-fine:group-focus-within/picker-trigger:opacity-100"
+            >
+              <ClearFilledIcon size={16} aria-hidden="true" />
+            </button>
+          </Tooltip>
+        </span>
       )}
 
       <FloatingPickerMenu

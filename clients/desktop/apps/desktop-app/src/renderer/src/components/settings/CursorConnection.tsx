@@ -14,6 +14,7 @@ import {
   Button,
   ProviderStatusDot,
   ErrorBanner,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { GrokUnifyHint } from './GrokUnifyHint';
@@ -400,25 +401,29 @@ export function CursorConnection({
       Check again
     </Button>
   ) : account === undefined ? null : (
-    <Button
-      size="compact"
-      data-testid="cursor-change-account"
-      disabled={busy}
-      // The visible line about this consequence was dropped for parity with
-      // the peer rows; the hint keeps the side effect discoverable without a
-      // paragraph, since the credential store is shared with the user's own
-      // Cursor CLI.
-      title={
+    // The visible line about this consequence was dropped for parity with
+    // the peer rows; the hint keeps the side effect discoverable without a
+    // paragraph, since the credential store is shared with the user's own
+    // Cursor CLI.
+    <Tooltip
+      label={
         account === null
           ? "Opens Cursor's sign-in in your browser."
           : "Signs out the Cursor CLI on this computer, then opens Cursor's sign-in in your browser."
       }
-      onClick={(): void => {
-        void changeAccount(account === null ? 'sign-in' : 'change');
-      }}
+      contentClassName="max-w-64 whitespace-normal"
     >
-      {account === null ? 'Sign in' : 'Change account'}
-    </Button>
+      <Button
+        size="compact"
+        data-testid="cursor-change-account"
+        disabled={busy}
+        onClick={(): void => {
+          void changeAccount(account === null ? 'sign-in' : 'change');
+        }}
+      >
+        {account === null ? 'Sign in' : 'Change account'}
+      </Button>
+    </Tooltip>
   );
   const row = (
     <SettingsRow

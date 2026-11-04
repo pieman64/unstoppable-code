@@ -1,9 +1,11 @@
 import { type JSX, useMemo } from 'react';
-import type {
-  EnvironmentDefinition,
-  EnvironmentRuntime,
+import {
+  isStoredSecretValue,
+  type EnvironmentDefinitionView,
+  type EnvironmentRuntime,
+  type EnvironmentValue,
+  type ResolvedEnvironment,
 } from '@canopy/desktop-shared/types';
-import type { resolveEnvironmentVariables } from '@canopy/desktop-shared/lib/user-environment';
 import { AgentIcon, CommandIcon, PipelineIcon } from '@canopy/ui-shared/icons';
 import {
   SettingsSelect,
@@ -97,7 +99,7 @@ export function UsageKindIndicators({
 
 interface ParentSelectProps {
   id?: string;
-  environments: ReadonlyArray<EnvironmentDefinition>;
+  environments: ReadonlyArray<EnvironmentDefinitionView>;
   blockedIds: ReadonlySet<string>;
   currentId: string;
   value: string | null;
@@ -144,7 +146,7 @@ export function ParentSelect({
 }
 
 interface ResolvedVariablesListProps {
-  resolved: ReturnType<typeof resolveEnvironmentVariables> | null;
+  resolved: ResolvedEnvironment<EnvironmentValue> | null;
   sources: ReadonlyMap<string, string>;
 }
 
@@ -183,7 +185,9 @@ export function ResolvedVariablesList({
           >
             <span className="min-w-0 truncate font-mono text-xs fg-primary">
               <span className="font-medium">{key}</span>
-              <span className="fg-secondary">={value}</span>
+              <span className="fg-secondary">
+                {isStoredSecretValue(value) ? ' (saved secret)' : `=${value}`}
+              </span>
             </span>
             {source && (
               <span className="shrink-0 text-xs fg-secondary">{source}</span>

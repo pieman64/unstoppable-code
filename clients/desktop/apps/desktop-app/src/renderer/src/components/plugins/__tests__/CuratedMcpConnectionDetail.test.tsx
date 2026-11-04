@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { CuratedMcpServerEntry } from '@canopy/protocol/mcp-catalog';
 import type {
   AccountMcpConnection,
-  McpServerData,
+  McpServerDataView,
   McpServersAPI,
   McpServerStatusEntry,
   RewriteMcpServerRefsRequest,
@@ -250,7 +250,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     sortOrder: 0,
     updatedAt: '2026-10-01T00:00:00.000Z',
   };
-  const deviceServer: McpServerData = {
+  const deviceServer: McpServerDataView = {
     definition: {
       id: 'device-linear',
       name: 'Linear',
@@ -319,7 +319,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     };
   }
   let onServersChanged: jest.Mock;
-  let currentDeviceServer: McpServerData;
+  let currentDeviceServer: McpServerDataView;
 
   async function flush(
     action: () => void = (): void => undefined,
@@ -696,7 +696,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
   it.each([
     [
       'its address',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -706,7 +706,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     ],
     [
       'its configuration headers',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) => ({
           ...config,
@@ -820,7 +820,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
   it.each([
     [
       'a custom endpoint',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,
@@ -830,7 +830,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     ],
     [
       'custom headers',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         configs: server.configs.map((config) => ({
           ...config,
@@ -840,7 +840,7 @@ describe('CuratedMcpConnectionDetail desktop sign-ins and the account (REG-3052)
     ],
     [
       'its own OAuth client on the default endpoint',
-      (server: McpServerData): McpServerData => ({
+      (server: McpServerDataView): McpServerDataView => ({
         ...server,
         definition: {
           ...server.definition,

@@ -1,3 +1,7 @@
+import type {
+  CodeGraphQueryKind,
+  CodeGraphQueryOutcome,
+} from '@canopy/code-graph/host/read-scheduler';
 import type { CodeGraphReadFailure } from '@canopy/desktop-shared/types/code-graph-tools';
 import type {
   CodeGraphReadDiagnosticDetail,
@@ -61,32 +65,7 @@ const refreshMetricsBuckets = new Map<
 >();
 let refreshMetricsTimer: ReturnType<typeof setTimeout> | null = null;
 
-export type CodeGraphQueryKind =
-  | 'context'
-  /**
-   * Scheduler-internal staleness read. Kept separate from `context` so the
-   * `GetCodeGraphContext` tool's counts and latency percentiles are not
-   * dominated by background polling.
-   */
-  | 'fingerprint-metadata'
-  /** End-of-build fingerprint write, run in the same worker lane. */
-  | 'fingerprint-persist'
-  /** Shadow maintenance checking a published base before trusting it. */
-  | 'base-validation'
-  | 'query'
-  | 'search'
-  | 'explain'
-  | 'impact-radius'
-  | 'detect-changed'
-  | 'compare-impact'
-  | 'review-context'
-  | 'ui-summary';
-
-export type CodeGraphQueryOutcome =
-  | 'success'
-  | 'error'
-  | 'timeout'
-  | 'canceled';
+export type { CodeGraphQueryKind, CodeGraphQueryOutcome };
 
 interface CodeGraphQueryMetricsBucket {
   windowStartedAtMs: number;

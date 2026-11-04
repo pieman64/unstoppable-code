@@ -14,6 +14,7 @@ import {
   Button,
   DetailPageActions,
   ExecutionActionButton,
+  Heading,
 } from '@canopy/ui-shared/components';
 
 export type CollectionReadMemberRef =
@@ -160,9 +161,9 @@ export function CollectionReadDetail({
         if (refs.length === 0) return null;
         return (
           <section key={kind} data-testid={`collection-read-group-${kind}`}>
-            <h2 className="mb-2 text-xs font-medium fg-secondary">
+            <Heading level={2} variant="label" className="mb-2">
               {label} ({refs.length})
-            </h2>
+            </Heading>
             <div className="divide-y overflow-hidden rounded-lg border">
               {refs.map((ref) => {
                 const refKey = collectionMemberRefKey(ref);

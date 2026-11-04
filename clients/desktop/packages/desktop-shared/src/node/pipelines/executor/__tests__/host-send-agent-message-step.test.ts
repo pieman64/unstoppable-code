@@ -478,6 +478,48 @@ describe('send-agent-message host step', () => {
       expect(blockedProbe.mock.calls.map(([model]) => model)).toEqual(['opus']);
     });
 
+    // CAN-5479: a converted automation runs with no project, and an Agent
+    // that inherits its model takes the default of where the send goes, as
+    // the host's own resolution does.
+    it.each([
+      [{ ...base, chat_id: '' }, 'p'],
+      [{ bot_id: 'app_advisor', task_id: 't', chat_id: '' }, 'app-advisor'],
+    ])(
+      'probes an Agent alias for the send destination (%j)',
+      async (target, projectId) => {
+        runtime.pipelineHostActions = port(ok);
+        const resolveAgent = jest.fn(() =>
+          Promise.resolve({
+            agentId: 'agent_model_abc',
+            name: 'A',
+            base: 'opus',
+          }),
+        );
+        runtime.resolvePipelineAgentModelAlias = resolveAgent;
+
+        await run(
+          { ...target, text: 'hi', model: 'agent' },
+          {
+            modelAliases: [
+              {
+                id: 'agent',
+                name: 'Agent',
+                defaults: { agent_id: 'agent_model_abc' },
+              },
+            ],
+          },
+        );
+
+        expect(resolveAgent).toHaveBeenCalledWith(
+          'agent_model_abc',
+          expect.objectContaining({ projectId }),
+        );
+        expect(blockedProbe.mock.calls.map(([model]) => model)).toEqual([
+          'opus',
+        ]);
+      },
+    );
+
     it('does not probe the provider default when no model is named', async () => {
       runtime.pipelineHostActions = port(ok);
 

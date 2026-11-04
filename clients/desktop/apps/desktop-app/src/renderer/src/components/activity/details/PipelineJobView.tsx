@@ -1,5 +1,5 @@
 import { memo, useState, type JSX } from 'react';
-import { EmptyState, ErrorBanner } from '@canopy/ui-shared/components';
+import { EmptyState, ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import type {
   ExecutionState,
   ExecutionSummary,
@@ -125,9 +125,9 @@ function PipelineJobViewComponent({
       <div className="space-y-4" data-testid={`pipeline-matrix-view-${jobId}`}>
         <div className="rounded-xl border bg-base p-4">
           <div className="flex items-center gap-2">
-            <h2 className="text-lg font-medium fg-primary">
+            <Heading level={2} variant="section">
               {logicalJob.name}
-            </h2>
+            </Heading>
             <Badge>matrix</Badge>
           </div>
           <div className="mt-2 text-s fg-secondary">
@@ -310,9 +310,9 @@ function PipelineJobViewComponent({
                 state={pipelineStatusGlyphState(jobStatus)}
                 size={20}
               />
-              <h2 className="truncate text-lg font-medium fg-primary">
+              <Heading level={2} variant="section" truncate>
                 {jobName}
-              </h2>
+              </Heading>
             </div>
             <div className="mt-1 font-mono text-2xs fg-secondary">
               {displayJobId}

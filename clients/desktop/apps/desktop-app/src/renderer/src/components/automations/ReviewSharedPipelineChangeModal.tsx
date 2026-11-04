@@ -4,6 +4,7 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   ErrorBanner,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { DialogModal } from '@/components/shared/DialogModal';
 import type {
@@ -150,12 +151,13 @@ export function ReviewSharedPipelineChangeModal({
     >
       <div className="space-y-4 px-6 pb-4 pt-6">
         <div>
-          <h3
-            className="text-base font-semibold fg-primary"
+          <Heading
+            level={3}
+            variant="section"
             data-testid="shared-pipeline-review-name"
           >
             {pipelineDisplayName(activity)}
-          </h3>
+          </Heading>
           <p className="mt-1 text-s fg-secondary">
             {SHARED_PIPELINE_REVIEW_EXPLANATION}
           </p>

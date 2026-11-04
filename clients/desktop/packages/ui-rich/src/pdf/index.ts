@@ -5,5 +5,6 @@ export {
   PdfPreview,
   type PdfPreviewAssets,
   type PdfPreviewProps,
+  type PdfPreviewSearchResult,
   type PdfPreviewRenderFailure,
 } from './PdfPreview';

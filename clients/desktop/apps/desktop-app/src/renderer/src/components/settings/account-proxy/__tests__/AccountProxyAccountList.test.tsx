@@ -177,11 +177,26 @@ describe('AccountProxyAccountList', () => {
   });
 
   it('renders Claude and Codex usage details without duplicating legacy limits', () => {
-    const host = render([
-      CLAUDE_ACCOUNT_WITH_USAGE,
-      CODEX_ACCOUNT_WITH_USAGE,
-      GEMINI_ACCOUNT_WITH_USAGE,
-    ]);
+    Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => {
+      root.render(
+        <AccountProxyAccountList
+          accounts={[
+            CLAUDE_ACCOUNT_WITH_USAGE,
+            CODEX_ACCOUNT_WITH_USAGE,
+            GEMINI_ACCOUNT_WITH_USAGE,
+          ]}
+          variant="row"
+        />,
+      );
+    });
+    const usageToggle = (row: Element | null): HTMLButtonElement | null =>
+      row?.querySelector<HTMLButtonElement>(
+        '[data-testid="provider-account-usage-toggle"]',
+      ) ?? null;
     const claude = host.querySelector(
       '[data-testid="account-proxy-account-a1f3c2d4a1f3c2d4"]',
     );
@@ -192,6 +207,14 @@ describe('AccountProxyAccountList', () => {
       '[data-testid="account-proxy-account-c3f3c2d4c3f3c2d4"]',
     );
 
+    // Usage starts closed under its own toggle.
+    expect(usageToggle(claude)?.textContent).toBe('Usage');
+    expect(usageToggle(claude)?.getAttribute('aria-expanded')).toBe('false');
+    expect(usageToggle(codex)?.getAttribute('aria-expanded')).toBe('false');
+    expect(claude?.textContent).not.toContain('7-day Opus');
+    act(() => usageToggle(claude)?.click());
+    act(() => usageToggle(codex)?.click());
+
     expect(claude?.textContent).toContain('7-day Opus');
     expect(claude?.textContent).toContain('52%');
     expect(claude?.textContent).toMatch(/Resets |Reset time has passed/);
@@ -200,9 +223,6 @@ describe('AccountProxyAccountList', () => {
     expect(claude?.textContent).toContain('Updated ');
     expect(claude?.textContent).not.toContain('Weekly limit');
     expect(descriptionText(claude)).toBe('Claude');
-    expect(claude?.querySelector('details')).not.toBeNull();
-    expect(claude?.querySelector('details')?.hasAttribute('open')).toBe(false);
-    expect(claude?.querySelector('summary')?.textContent).toBe('Usage');
 
     expect(codex?.textContent).toContain('5-hour window');
     expect(codex?.textContent).toContain('22%');
@@ -213,12 +233,12 @@ describe('AccountProxyAccountList', () => {
     expect(codex?.textContent).not.toContain('Bearer private-value');
     expect(codex?.textContent).not.toContain('five-hour limit');
     expect(descriptionText(codex)).toBe('Codex');
-    expect(codex?.querySelector('details')).not.toBeNull();
-    expect(codex?.querySelector('details')?.hasAttribute('open')).toBe(false);
 
     expect(gemini?.textContent).toContain('Weekly limit 40%');
     expect(gemini?.textContent).not.toContain('Gemini quota');
     expect(descriptionText(gemini)).toBe('Gemini · Weekly limit 40%');
-    expect(gemini?.querySelector('details')).toBeNull();
+    expect(usageToggle(gemini)).toBeNull();
+    act(() => root.unmount());
+    host.remove();
   });
 });

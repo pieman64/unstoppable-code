@@ -220,6 +220,179 @@ export const WorkerPipelineExecutionEventsEndSchema =
     error: WorkerPipelineExecutionQueryErrorSchema.nullable(),
   });
 
+/*
+ * Recovery controls (CAN-4141): resume, retry, start over and the matrix
+ * controls act on an execution the worker holds. Core records each as a
+ * `core.pipeline.control` operation receipted by `requestId`, so a
+ * redelivered or unanswered control is never sent again.
+ */
+
+/** The idempotency key of one control; a Portal command id when it has one. */
+const requestId = id;
+const statusReasonId = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+
+/**
+ * The longest text one pause answer carries. The executor never capped
+ * answers, and a multiline input may take pasted logs or a spec, so the
+ * boundary only rules out unbounded payloads.
+ */
+export const WORKER_PIPELINE_PAUSE_ANSWER_MAX_LENGTH = 1_000_000;
+
+/** An answer to one pending input request, the run's pending-input command. */
+export const WorkerPipelinePauseResponseSchema = z.strictObject({
+  /** The exact pause it answers, so a stale answer can't reach a newer one. */
+  checkpointId: id.optional(),
+  jobId: id,
+  stepId: id,
+  answers: z
+    .record(
+      z.string().min(1).max(256),
+      z.union([
+        z.string().max(WORKER_PIPELINE_PAUSE_ANSWER_MAX_LENGTH),
+        z.number(),
+        z.boolean(),
+      ]),
+    )
+    .refine(
+      (answers) => Object.keys(answers).length <= 256,
+      'Too many answers.',
+    )
+    .optional(),
+});
+
+/** Who asked for a control; usage records keep the run's own source. */
+export const WORKER_PIPELINE_CONTROL_SOURCES = [
+  'user',
+  'automation',
+  'portal',
+] as const;
+
+export const WorkerPipelineExecutionResumeParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  /** The pauses to resume; every recoverable one when absent. */
+  statusReasonIds: z.array(statusReasonId).min(1).max(256).optional(),
+  pauseResponses: z
+    .array(WorkerPipelinePauseResponseSchema)
+    .min(1)
+    .max(256)
+    .optional(),
+  /** Answer `stale_noop` when none of the named pauses is current. */
+  allowStaleNoop: z.boolean().optional(),
+  initiationSource: z.enum(WORKER_PIPELINE_CONTROL_SOURCES),
+  /** Attribute the rest of the run to `initiationSource`. */
+  persistInitiationSource: z.boolean().optional(),
+});
+
+export const WORKER_PIPELINE_RETRY_MODES = [
+  'failed_only',
+  'from_start',
+] as const;
+
+export const WorkerPipelineExecutionRetryParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  /**
+   * `failed_only` reruns the execution's failed work in place. `from_start` runs
+   * its snapshot again as `newExecutionId`.
+   */
+  mode: z.enum(WORKER_PIPELINE_RETRY_MODES),
+  newExecutionId: id.optional(),
+  initiationSource: z.enum(WORKER_PIPELINE_CONTROL_SOURCES).optional(),
+});
+
+export const WORKER_PIPELINE_MATRIX_RETRY_MODES = [
+  'all',
+  'failed',
+  'variants',
+  'expansion',
+] as const;
+
+export const WorkerPipelineMatrixJobRetryParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  jobId: id,
+  mode: z.enum(WORKER_PIPELINE_MATRIX_RETRY_MODES),
+  variantJobIds: z.array(id).min(1).max(1024).optional(),
+});
+
+export const WorkerPipelineMatrixVariantCancelParamsSchema = z.strictObject({
+  requestId,
+  executionId: id,
+  jobId: id,
+  variantJobId: id,
+});
+
+/**
+ * What a control did. `started` runs the execution (for `from_start`, the
+ * new one); `updated` changed it without running anything; `already_running`
+ * and `stale_noop` changed nothing.
+ */
+export const WORKER_PIPELINE_CONTROL_OUTCOMES = [
+  'started',
+  'updated',
+  'already_running',
+  'stale_noop',
+] as const;
+
+export const WorkerPipelineControlResultSchema = z.strictObject({
+  outcome: z.enum(WORKER_PIPELINE_CONTROL_OUTCOMES),
+  execution: WorkerPipelineExecutionSchema,
+});
+
+export const WorkerPipelineControlErrorSchema = CanopyErrorPayloadSchema.extend(
+  {
+    code: z
+      .enum([
+        'worker.pipeline.executionNotFound',
+        'worker.pipeline.launchUnavailable',
+        'worker.pipeline.controlFailed',
+      ])
+      .optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  },
+);
+
+/*
+ * Startup and shutdown recovery (CAN-4141): the orphan sweep pauses the
+ * executions a process left running when it exited, so they can resume, and
+ * the shutdown checkpoint pauses every live execution before the worker
+ * stops. Messages stay on the host; results carry ids and counts only.
+ */
+
+/** The most executions one startup sweep looks at. */
+export const WORKER_PIPELINE_SWEEP_MAX = 10_000;
+
+export const WorkerPipelineRecoverySweepParamsSchema = z.strictObject({
+  requestId,
+  /** The executions the startup scan found; only orphaned ones change. */
+  executionIds: z.array(id).max(WORKER_PIPELINE_SWEEP_MAX),
+});
+
+export const WorkerPipelineRecoverySweepResultSchema = z.strictObject({
+  /** Executions the sweep could not recover; a later startup retries them. */
+  failureCount: z.number().int().min(0),
+});
+
+export const WorkerPipelineRecoveryCheckpointParamsSchema = z.strictObject({
+  requestId,
+});
+
+export const WorkerPipelineRecoveryCheckpointResultSchema = z.strictObject({
+  /** Live executions the worker paused at a checkpoint. */
+  checkpointedCount: z.number().int().min(0),
+});
+
+export const WorkerPipelineRecoveryErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    code: z.enum(['worker.pipeline.checkpointFailed']).optional(),
+    retry: CanopyKeyedRetryDirectiveSchema,
+  });
+
 /** Every host step crosses as a request (CAN-4140, CAN-5077). */
 export const WORKER_PIPELINE_HOST_ACTIONS = [
   'move-to-group',
@@ -476,6 +649,35 @@ export type WorkerPipelineExecutionEventsParams = z.output<
 export type WorkerPipelineExecutionEventsItem = z.output<
   typeof WorkerPipelineExecutionEventsItemSchema
 >;
+export type WorkerPipelinePauseResponse = z.output<
+  typeof WorkerPipelinePauseResponseSchema
+>;
+export type WorkerPipelineExecutionResumeParams = z.output<
+  typeof WorkerPipelineExecutionResumeParamsSchema
+>;
+export type WorkerPipelineExecutionRetryParams = z.output<
+  typeof WorkerPipelineExecutionRetryParamsSchema
+>;
+export type WorkerPipelineMatrixJobRetryParams = z.output<
+  typeof WorkerPipelineMatrixJobRetryParamsSchema
+>;
+export type WorkerPipelineMatrixVariantCancelParams = z.output<
+  typeof WorkerPipelineMatrixVariantCancelParamsSchema
+>;
+export type WorkerPipelineControlOutcome =
+  (typeof WORKER_PIPELINE_CONTROL_OUTCOMES)[number];
+export type WorkerPipelineControlResult = z.output<
+  typeof WorkerPipelineControlResultSchema
+>;
+export type WorkerPipelineRecoverySweepParams = z.output<
+  typeof WorkerPipelineRecoverySweepParamsSchema
+>;
+export type WorkerPipelineRecoverySweepResult = z.output<
+  typeof WorkerPipelineRecoverySweepResultSchema
+>;
+export type WorkerPipelineRecoveryCheckpointResult = z.output<
+  typeof WorkerPipelineRecoveryCheckpointResultSchema
+>;
 export type WorkerPipelineExecutionStatus =
   (typeof WORKER_PIPELINE_EXECUTION_STATUSES)[number];
 
@@ -519,6 +721,72 @@ export const WORKER_PIPELINE_INSTRUCTION_DEFINITIONS =
       error: WorkerPipelineHostRequestErrorSchema,
       idempotency: 'inherent',
       requiredGrants: [WORKER_PIPELINE_GRANTS.host],
+    }),
+    'worker.pipeline.execution.resume': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionResumeParamsSchema,
+      result: WorkerPipelineControlResultSchema,
+      error: WorkerPipelineControlErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.execution.retry': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineExecutionRetryParamsSchema,
+      result: WorkerPipelineControlResultSchema,
+      error: WorkerPipelineControlErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.matrixJob.retry': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineMatrixJobRetryParamsSchema,
+      result: WorkerPipelineControlResultSchema,
+      error: WorkerPipelineControlErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.matrixVariant.cancel': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineMatrixVariantCancelParamsSchema,
+      result: WorkerPipelineControlResultSchema,
+      error: WorkerPipelineControlErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.recovery.sweep': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineRecoverySweepParamsSchema,
+      result: WorkerPipelineRecoverySweepResultSchema,
+      error: WorkerPipelineRecoveryErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
+    }),
+    'worker.pipeline.recovery.checkpoint': defineCanopyInstruction({
+      plane: 'worker',
+      domain: 'pipeline',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerPipelineRecoveryCheckpointParamsSchema,
+      result: WorkerPipelineRecoveryCheckpointResultSchema,
+      error: WorkerPipelineRecoveryErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [WORKER_PIPELINE_GRANTS.write],
     }),
     'worker.pipeline.execution.cancel': defineCanopyInstruction({
       plane: 'worker',

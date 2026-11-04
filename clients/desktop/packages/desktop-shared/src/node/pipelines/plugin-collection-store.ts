@@ -1,6 +1,15 @@
 import * as fs from 'node:fs';
+import { copyFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { getCanopyDataDir } from '../../canopy-paths';
+import {
+  writeFileAtomically,
+  type AdmittedWriterTarget,
+} from '../lib/atomic-file';
+import {
+  ensurePrivateLockDirectory,
+  withOwnerLockFile,
+} from '../lib/owner-lock-file';
 import type { ChatTabPluginSelections } from '../../types';
 import type {
   PipelineModelAliasPreference,
@@ -19,6 +28,44 @@ interface PipelinePreferencesFile {
   entries: Record<string, PipelinePreferenceEntry>;
 }
 
+/** The processes that write pipeline preferences: the desktop and the CLI. */
+export type PipelinePreferenceWriter = Extract<
+  AdmittedWriterTarget['writer'],
+  'electron_main' | 'desktop_cli'
+>;
+
+type PreferencesFileStatus =
+  | 'ok'
+  | 'missing'
+  | 'damaged'
+  | 'newer'
+  | 'unreadable';
+
+interface PreferencesFileRead {
+  status: PreferencesFileStatus;
+  file: PipelinePreferencesFile;
+}
+
+/** A preference write that would destroy a file this process cannot read. */
+export class PipelinePreferencesWriteRefusedError extends Error {
+  public constructor(
+    public readonly reason: 'newer' | 'unreadable' | 'damaged-copy-failed',
+  ) {
+    super(
+      reason === 'newer'
+        ? 'Pipeline preferences were saved by a newer version. Update to change them.'
+        : reason === 'unreadable'
+          ? 'Pipeline preferences could not be read, so they were not changed.'
+          : 'Pipeline preferences are damaged and could not be set aside, so they were not changed.',
+    );
+    this.name = 'PipelinePreferencesWriteRefusedError';
+  }
+}
+
+const PREFERENCES_FILE_VERSION = 2;
+const WRITER_MODULE = 'shared/node/pipelines/plugin-collection-store';
+const LOCK_MAX_WAIT_MS = 30_000;
+
 const EMPTY_SELECTIONS: ChatTabPluginSelections = {
   collectionIds: [],
   skillRefs: [],
@@ -31,8 +78,21 @@ function warn(message: string): void {
   process.stderr.write(`[pipeline-plugin-preferences] ${message}\n`);
 }
 
-function getPipelinePluginPreferencesFilePath(): string {
+const warnedStatuses = new Set<PreferencesFileStatus>();
+
+function warnOnce(status: PreferencesFileStatus, message: string): void {
+  if (warnedStatuses.has(status)) return;
+  warnedStatuses.add(status);
+  warn(message);
+}
+
+/** `<data>/pipeline-plugin-preferences.json`, the only preference file. */
+export function getPipelinePluginPreferencesFilePath(): string {
   return path.join(getCanopyDataDir(), 'pipeline-plugin-preferences.json');
+}
+
+function getPipelinePluginPreferencesLockDir(): string {
+  return path.join(getCanopyDataDir(), 'locks', 'pipeline-plugin-preferences');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -298,25 +358,35 @@ function omitEmptyEntry(
   return result;
 }
 
-function readPreferencesFile(): PipelinePreferencesFile {
-  const filePath = getPipelinePluginPreferencesFilePath();
+function emptyFile(): PipelinePreferencesFile {
+  return { version: PREFERENCES_FILE_VERSION, entries: {} };
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? error.code
+    : undefined;
+}
+
+function parsePreferencesFile(text: string): PreferencesFileRead {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (error) {
-    const code =
-      typeof error === 'object' && error !== null && 'code' in error
-        ? error.code
-        : undefined;
-    if (code !== 'ENOENT') {
-      warn('Failed to parse preference file; using empty defaults.');
-    }
-    return { version: 2, entries: {} };
+    parsed = JSON.parse(text);
+  } catch {
+    return { status: 'damaged', file: emptyFile() };
   }
-
-  if (!isRecord(parsed) || !isRecord(parsed.entries)) {
-    warn('Unsupported preference file version or shape; using empty defaults.');
-    return { version: 2, entries: {} };
+  if (!isRecord(parsed)) {
+    return { status: 'damaged', file: emptyFile() };
+  }
+  // A newer version may change the whole layout, so check it before shape.
+  if (
+    typeof parsed.version === 'number' &&
+    parsed.version > PREFERENCES_FILE_VERSION
+  ) {
+    return { status: 'newer', file: emptyFile() };
+  }
+  if (!isRecord(parsed.entries)) {
+    return { status: 'damaged', file: emptyFile() };
   }
 
   const entries: Record<string, PipelinePreferenceEntry> = {};
@@ -327,23 +397,54 @@ function readPreferencesFile(): PipelinePreferencesFile {
           normalizePipelinePluginCollectionPreferences(rawPreferences),
       };
     }
-    return { version: 2, entries };
+    return { status: 'ok', file: { version: 2, entries } };
   }
 
-  if (parsed.version !== 2) {
-    warn('Unsupported preference file version or shape; using empty defaults.');
-    return { version: 2, entries: {} };
+  if (parsed.version !== PREFERENCES_FILE_VERSION) {
+    return { status: 'damaged', file: emptyFile() };
   }
 
   for (const [locatorKey, rawEntry] of Object.entries(parsed.entries)) {
     entries[locatorKey] = normalizePreferenceEntry(rawEntry);
   }
-
-  return { version: 2, entries };
+  return { status: 'ok', file: { version: 2, entries } };
 }
 
-function writePreferencesFile(file: PipelinePreferencesFile): void {
-  const filePath = getPipelinePluginPreferencesFilePath();
+/** Reads have no side effects; a write installs a whole file atomically. */
+function readPreferencesFile(): PreferencesFileRead {
+  let text: string;
+  try {
+    text = fs.readFileSync(getPipelinePluginPreferencesFilePath(), 'utf8');
+  } catch (error) {
+    return errorCode(error) === 'ENOENT'
+      ? { status: 'missing', file: emptyFile() }
+      : { status: 'unreadable', file: emptyFile() };
+  }
+  return parsePreferencesFile(text);
+}
+
+function readPreferencesForDisplay(): PipelinePreferencesFile {
+  const read = readPreferencesFile();
+  if (read.status === 'damaged') {
+    warnOnce(
+      read.status,
+      'Failed to parse preference file; using empty defaults.',
+    );
+  } else if (read.status === 'newer') {
+    warnOnce(
+      read.status,
+      'Preference file is from a newer version; using empty defaults.',
+    );
+  } else if (read.status === 'unreadable') {
+    warnOnce(
+      read.status,
+      'Preference file could not be read; using empty defaults.',
+    );
+  }
+  return read.file;
+}
+
+function serializePreferencesFile(file: PipelinePreferencesFile): string {
   const normalizedEntries: PipelinePreferencesFile['entries'] = {};
   for (const [locatorKey, entry] of Object.entries(file.entries)) {
     const normalized = omitEmptyEntry(normalizePreferenceEntry(entry));
@@ -351,12 +452,76 @@ function writePreferencesFile(file: PipelinePreferencesFile): void {
       normalizedEntries[locatorKey] = normalized;
     }
   }
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(
-    filePath,
-    `${JSON.stringify({ version: 2, entries: normalizedEntries }, null, 2)}\n`,
-    'utf8',
-  );
+  return `${JSON.stringify(
+    { version: PREFERENCES_FILE_VERSION, entries: normalizedEntries },
+    null,
+    2,
+  )}\n`;
+}
+
+let pendingMutation: Promise<unknown> = Promise.resolve();
+
+/**
+ * The one write path: a read-modify-write that holds this process's queue
+ * and the cross-process writer lock, so desktop and CLI writes never
+ * interleave, then installs the result durably before it resolves.
+ */
+function mutatePreferencesFile(
+  writer: PipelinePreferenceWriter,
+  mutate: (file: PipelinePreferencesFile) => boolean | void,
+): Promise<void> {
+  const run = async (): Promise<void> => {
+    const lockDir = getPipelinePluginPreferencesLockDir();
+    await ensurePrivateLockDirectory(lockDir);
+    await withOwnerLockFile(
+      path.join(lockDir, 'writer.lock'),
+      () => applyMutation(writer, mutate),
+      {
+        maxWaitMs: LOCK_MAX_WAIT_MS,
+        timeoutMessage:
+          'Timed out waiting for another process to finish saving pipeline preferences.',
+      },
+    );
+  };
+  const operation = pendingMutation.then(run, run);
+  pendingMutation = operation.catch(() => undefined);
+  return operation;
+}
+
+async function applyMutation(
+  writer: PipelinePreferenceWriter,
+  mutate: (file: PipelinePreferencesFile) => boolean | void,
+): Promise<void> {
+  const filePath = getPipelinePluginPreferencesFilePath();
+  const read = readPreferencesFile();
+  if (read.status === 'newer' || read.status === 'unreadable') {
+    throw new PipelinePreferencesWriteRefusedError(read.status);
+  }
+  if (mutate(read.file) === false) {
+    return;
+  }
+  if (read.status === 'damaged') {
+    // The damaged file stays in place until its replacement is installed.
+    try {
+      await copyFile(
+        filePath,
+        `${filePath}.damaged-${Date.now()}`,
+        fs.constants.COPYFILE_EXCL,
+      );
+    } catch {
+      throw new PipelinePreferencesWriteRefusedError('damaged-copy-failed');
+    }
+  }
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  await writeFileAtomically(filePath, serializePreferencesFile(read.file), {
+    encoding: 'utf8',
+    durable: true,
+    admittedWriter: {
+      namespace: 'pipeline_plugin_preferences',
+      writer,
+      module: WRITER_MODULE,
+    },
+  });
 }
 
 function getLegacyStoredPreferenceKey(
@@ -382,105 +547,164 @@ function entryWithLegacyFallback(
   };
 }
 
-export function loadPipelinePluginCollectionPreferences(
+function storedEntry(
+  file: PipelinePreferencesFile,
   locator: PipelinePreferenceLocator,
-): Record<string, PipelinePluginCollectionPreference> {
-  const file = readPreferencesFile();
+): PipelinePreferenceEntry {
   const locatorKey = serializePipelinePreferenceLocator(locator);
   const stored = file.entries[locatorKey];
   if (stored) {
-    return stored.plugin_collections ?? {};
+    return stored;
   }
-
   const legacyKey = getLegacyStoredPreferenceKey(locator);
-  if (legacyKey) {
-    return file.entries[legacyKey]?.plugin_collections ?? {};
-  }
+  return (legacyKey ? file.entries[legacyKey] : undefined) ?? {};
+}
 
-  return {};
+/** Replaces one field of the locator's entry, folding in its legacy key. */
+function replaceEntryField(
+  file: PipelinePreferencesFile,
+  locator: PipelinePreferenceLocator,
+  update: (entry: PipelinePreferenceEntry) => PipelinePreferenceEntry,
+): void {
+  const locatorKey = serializePipelinePreferenceLocator(locator);
+  const legacyKey = getLegacyStoredPreferenceKey(locator);
+  file.entries[locatorKey] = update(
+    entryWithLegacyFallback(file, locatorKey, legacyKey),
+  );
+  if (legacyKey && legacyKey !== locatorKey) {
+    delete file.entries[legacyKey];
+  }
+}
+
+function deleteEntryField(
+  file: PipelinePreferencesFile,
+  locator: PipelinePreferenceLocator,
+  field: keyof PipelinePreferenceEntry,
+): void {
+  const locatorKey = serializePipelinePreferenceLocator(locator);
+  if (file.entries[locatorKey]) {
+    delete file.entries[locatorKey][field];
+  }
+  const legacyKey = getLegacyStoredPreferenceKey(locator);
+  if (legacyKey && legacyKey !== locatorKey && file.entries[legacyKey]) {
+    delete file.entries[legacyKey][field];
+  }
+}
+
+export function loadPipelinePluginCollectionPreferences(
+  locator: PipelinePreferenceLocator,
+): Record<string, PipelinePluginCollectionPreference> {
+  return (
+    storedEntry(readPreferencesForDisplay(), locator).plugin_collections ?? {}
+  );
 }
 
 export function savePipelinePluginCollectionPreferences(
   locator: PipelinePreferenceLocator,
   preferences: Record<string, PipelinePluginCollectionPreference>,
-): void {
-  const file = readPreferencesFile();
-  const locatorKey = serializePipelinePreferenceLocator(locator);
-  const legacyKey = getLegacyStoredPreferenceKey(locator);
-  file.entries[locatorKey] = {
-    ...entryWithLegacyFallback(file, locatorKey, legacyKey),
-    plugin_collections:
-      normalizePipelinePluginCollectionPreferences(preferences),
-  };
-  if (legacyKey && legacyKey !== locatorKey) {
-    delete file.entries[legacyKey];
-  }
-  writePreferencesFile(file);
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  const normalized = normalizePipelinePluginCollectionPreferences(preferences);
+  return mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => ({
+      ...entry,
+      plugin_collections: normalized,
+    })),
+  );
+}
+
+/** Saves `preferences` over the stored ones collection by collection. */
+export function mergePipelinePluginCollectionPreferences(
+  locator: PipelinePreferenceLocator,
+  preferences: Record<string, PipelinePluginCollectionPreference>,
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  const normalized = normalizePipelinePluginCollectionPreferences(preferences);
+  return mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => ({
+      ...entry,
+      plugin_collections: { ...entry.plugin_collections, ...normalized },
+    })),
+  );
 }
 
 export function deletePipelinePluginCollectionPreferences(
   locator: PipelinePreferenceLocator,
-): void {
-  const file = readPreferencesFile();
-  const locatorKey = serializePipelinePreferenceLocator(locator);
-  if (file.entries[locatorKey]) {
-    delete file.entries[locatorKey].plugin_collections;
-  }
-  const legacyKey = getLegacyStoredPreferenceKey(locator);
-  if (legacyKey && legacyKey !== locatorKey) {
-    if (file.entries[legacyKey]) {
-      delete file.entries[legacyKey].plugin_collections;
-    }
-  }
-  writePreferencesFile(file);
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  return mutatePreferencesFile(writer, (file) =>
+    deleteEntryField(file, locator, 'plugin_collections'),
+  );
 }
 
 export function loadPipelineModelAliasPreferences(
   locator: PipelinePreferenceLocator,
 ): Record<string, PipelineModelAliasPreference> {
-  const file = readPreferencesFile();
-  const locatorKey = serializePipelinePreferenceLocator(locator);
-  const stored = file.entries[locatorKey];
-  if (stored) {
-    return stored.model_aliases ?? {};
-  }
-
-  const legacyKey = getLegacyStoredPreferenceKey(locator);
-  if (legacyKey) {
-    return file.entries[legacyKey]?.model_aliases ?? {};
-  }
-
-  return {};
+  return storedEntry(readPreferencesForDisplay(), locator).model_aliases ?? {};
 }
 
 export function savePipelineModelAliasPreferences(
   locator: PipelinePreferenceLocator,
   preferences: Record<string, PipelineModelAliasPreference>,
-): void {
-  const file = readPreferencesFile();
-  const locatorKey = serializePipelinePreferenceLocator(locator);
-  const legacyKey = getLegacyStoredPreferenceKey(locator);
-  file.entries[locatorKey] = {
-    ...entryWithLegacyFallback(file, locatorKey, legacyKey),
-    model_aliases: normalizePipelineModelAliasPreferences(preferences),
-  };
-  if (legacyKey && legacyKey !== locatorKey) {
-    delete file.entries[legacyKey];
-  }
-  writePreferencesFile(file);
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  const normalized = normalizePipelineModelAliasPreferences(preferences);
+  return mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => ({
+      ...entry,
+      model_aliases: normalized,
+    })),
+  );
+}
+
+/**
+ * Saves `preferences` over the stored ones alias by alias; a `reset` entry
+ * removes its stored alias.
+ */
+export function mergePipelineModelAliasPreferences(
+  locator: PipelinePreferenceLocator,
+  preferences: Record<string, PipelineModelAliasPreference>,
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  return mutatePreferencesFile(writer, (file) =>
+    replaceEntryField(file, locator, (entry) => ({
+      ...entry,
+      model_aliases: normalizePipelineModelAliasPreferences({
+        ...entry.model_aliases,
+        ...preferences,
+      }),
+    })),
+  );
 }
 
 export function deletePipelineModelAliasPreferences(
   locator: PipelinePreferenceLocator,
-): void {
-  const file = readPreferencesFile();
-  const locatorKey = serializePipelinePreferenceLocator(locator);
-  if (file.entries[locatorKey]) {
-    delete file.entries[locatorKey].model_aliases;
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  return mutatePreferencesFile(writer, (file) =>
+    deleteEntryField(file, locator, 'model_aliases'),
+  );
+}
+
+/**
+ * Removes saved selections that name a deleted plugin, skill or marketplace.
+ * `prune` edits the stored entries in place and reports whether it changed
+ * anything; nothing is written when it did not. A file from a newer version,
+ * or one that cannot be read, is left alone rather than failing the removal.
+ */
+export async function prunePipelinePreferenceSelections(
+  prune: (entries: Record<string, unknown>) => boolean,
+  writer: PipelinePreferenceWriter,
+): Promise<void> {
+  try {
+    await mutatePreferencesFile(writer, (file) => prune(file.entries));
+  } catch (error) {
+    if (
+      error instanceof PipelinePreferencesWriteRefusedError &&
+      error.reason !== 'damaged-copy-failed'
+    ) {
+      return;
+    }
+    throw error;
   }
-  const legacyKey = getLegacyStoredPreferenceKey(locator);
-  if (legacyKey && legacyKey !== locatorKey && file.entries[legacyKey]) {
-    delete file.entries[legacyKey].model_aliases;
-  }
-  writePreferencesFile(file);
 }

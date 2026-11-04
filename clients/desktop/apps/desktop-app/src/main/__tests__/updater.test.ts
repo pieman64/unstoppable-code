@@ -8,14 +8,28 @@ import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { DesktopBrandRuntime } from '@canopy/protocol/brand';
 import type * as UpdaterModule from '../updater';
+import type { LinuxInstallSource } from '../updater/linux-manual-update';
 
 type LinuxArchitecture = 'x64' | 'arm64';
-const mockLinuxDebInstalled = jest.fn(() => Promise.resolve(true));
+const DEB_INSTALL: LinuxInstallSource = {
+  kind: 'deb',
+  packageName: 'canopy-desktop',
+};
+const PACMAN_INSTALL: LinuxInstallSource = {
+  kind: 'pacman',
+  packageName: 'canopy-desktop',
+  version: '1.0.0-1',
+};
+const mockLinuxInstallSource = jest.fn<Promise<LinuxInstallSource>, []>(() =>
+  Promise.resolve(DEB_INSTALL),
+);
 const mockLinuxArchitecture = jest.fn<Promise<LinuxArchitecture | null>, []>(
   () => Promise.resolve('x64'),
 );
 jest.mock('../updater/linux-manual-update', () => ({
-  isInstalledLinuxDeb: (): Promise<boolean> => mockLinuxDebInstalled(),
+  PACMAN_UPDATE_COMMAND: 'sudo pacman -Syu',
+  detectLinuxInstallSource: (): Promise<LinuxInstallSource> =>
+    mockLinuxInstallSource(),
   installedLinuxPackageArchitecture: (): Promise<LinuxArchitecture | null> =>
     mockLinuxArchitecture(),
 }));
@@ -435,7 +449,7 @@ describe('updater service', () => {
     beforeEach(() => {
       Object.defineProperty(process, 'platform', { value: 'linux' });
       Object.defineProperty(process, 'arch', { value: 'x64' });
-      mockLinuxDebInstalled.mockResolvedValue(true);
+      mockLinuxInstallSource.mockResolvedValue(DEB_INSTALL);
       mockLinuxArchitecture.mockResolvedValue('x64');
       mockElectronApp.getVersion.mockReturnValue('1.0.0');
     });
@@ -496,17 +510,77 @@ describe('updater service', () => {
       },
     );
 
-    it('fails closed for a wrong package or architecture', async () => {
-      mockLinuxDebInstalled.mockResolvedValue(false);
-      const updater = await importFreshUpdater();
-      updater.startUpdater(() => createWindow());
-      await expect(updater.checkForUpdates()).rejects.toThrow(
-        LINUX_COPY.unsupported,
-      );
-      expect(mockFetch).not.toHaveBeenCalled();
-      expect(mockLinuxArchitecture).not.toHaveBeenCalled();
-      expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
-      updater.stopUpdater();
+    it.each([{ kind: 'appimage' as const }, { kind: 'unknown' as const }])(
+      'fails closed for an $kind install',
+      async (source) => {
+        mockLinuxInstallSource.mockResolvedValue(source);
+        const updater = await importFreshUpdater();
+        updater.startUpdater(() => createWindow());
+        await expect(updater.checkForUpdates()).rejects.toThrow(
+          LINUX_COPY.unsupported,
+        );
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(mockLinuxArchitecture).not.toHaveBeenCalled();
+        expect(mockAutoUpdater.checkForUpdates).not.toHaveBeenCalled();
+        updater.stopUpdater();
+      },
+    );
+
+    describe('on a pacman install', () => {
+      beforeEach(() => {
+        mockLinuxInstallSource.mockResolvedValue(PACMAN_INSTALL);
+      });
+
+      it('offers the package manager command, never a .deb download', async () => {
+        mockFetch.mockResolvedValue(
+          new Response(linuxStableMetadata('1.2.0', ['x64'])),
+        );
+        const updater = await importFreshUpdater();
+        updater.startUpdater(() => createWindow());
+        await updater.checkForUpdates();
+        expect(mockFetch).toHaveBeenCalledWith(
+          'https://releases.unstoppable.ai/desktop/canopy/latest-linux.yml',
+          expect.anything(),
+        );
+        const state = updater.getUpdateState();
+        expect(state).toMatchObject({
+          phase: 'available',
+          info: {
+            version: '1.2.0',
+            packageManagerUpdate: {
+              guidance: LINUX_COPY.packageManager,
+              command: 'sudo pacman -Syu',
+            },
+          },
+        });
+        expect(state.info?.manualDownload).toBeUndefined();
+        expect(mockGetAutoUpdater).not.toHaveBeenCalled();
+        updater.stopUpdater();
+      });
+
+      it('reports up to date when the feed has the installed version', async () => {
+        mockFetch.mockResolvedValue(
+          new Response(linuxStableMetadata('1.0.0', ['x64'])),
+        );
+        const updater = await importFreshUpdater();
+        await updater.checkForUpdates();
+        expect(updater.getUpdateState()).toMatchObject({
+          phase: 'not-available',
+        });
+        expect(updater.getUpdateState().message).toBeUndefined();
+      });
+
+      it('leaves version selection to the package manager', async () => {
+        mockElectronApp.getVersion.mockReturnValue('1.2.0-rc.1');
+        const updater = await importFreshUpdater(undefined, 'rc');
+        await expect(
+          updater.checkForVersion({ tag: 'v1.2.0-rc.3' }),
+        ).rejects.toThrow(LINUX_COPY.packageManagerVersion);
+        await expect(updater.listTargetUpdateVersions()).rejects.toThrow(
+          LINUX_COPY.packageManagerVersion,
+        );
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
     });
 
     it('refuses an unsupported installed architecture even when an ownership record exists', async () => {
@@ -1216,11 +1290,11 @@ describe('updater service', () => {
 
     it('replaces a prior targeted error with the current Linux failure', async () => {
       const updater = await importFreshUpdater(undefined, 'rc');
-      mockLinuxDebInstalled.mockResolvedValue(false);
+      mockLinuxInstallSource.mockResolvedValue({ kind: 'unknown' });
       await expect(
         updater.checkForVersion({ tag: 'v1.2.0-rc.3' }),
       ).rejects.toThrow(LINUX_COPY.unsupported);
-      mockLinuxDebInstalled.mockResolvedValue(true);
+      mockLinuxInstallSource.mockResolvedValue(DEB_INSTALL);
       mockedResolveGitHubToken.mockResolvedValue('');
       await expect(
         updater.checkForVersion({ tag: 'v1.2.0-rc.3' }),

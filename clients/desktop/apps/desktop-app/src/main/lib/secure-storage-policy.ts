@@ -12,6 +12,7 @@ import {
   SafeStorageWriteError,
   type ReadableSafeStorage,
   type SafeStorageStatus,
+  type SafeStorageReadOptions,
 } from './safe-storage';
 import { isRecord } from './type-guards';
 
@@ -163,27 +164,35 @@ export function getSecureStorageFailure(
 function operationError(
   code: SecureStorageFailureCode,
   operation: SecureStorageFailure['operation'],
+  options: SafeStorageReadOptions = {},
 ): SecureStorageOperationError {
-  // A fresh diagnostic observation, not a confirmed native lock diagnosis.
+  // Default diagnostics are live; background spawn failures share their bounded observation.
   return new SecureStorageOperationError(
-    failureDescriptor(code, operation, getSafeStorageStatus()),
+    failureDescriptor(code, operation, getSafeStorageStatus(options)),
   );
 }
 
-function nativeAvailability(storage: ReadableSafeStorage | null): boolean {
+function nativeAvailability(
+  storage: ReadableSafeStorage | null,
+  options: SafeStorageReadOptions = {},
+): boolean {
   if (!storage) return false;
   try {
     const available: unknown = storage.isEncryptionAvailable();
     if (typeof available === 'boolean') return available;
-  } catch {
+  } catch (error) {
+    if (error instanceof SafeStorageWriteError) throw error;
     // Native diagnostics must not become a cause or serialized descriptor.
   }
-  throw operationError('SECURE_STORAGE_PROBE_FAILED', 'probe');
+  throw operationError('SECURE_STORAGE_PROBE_FAILED', 'probe', options);
 }
 
-function assertReadable(storage: ReadableSafeStorage | null): void {
-  if (!nativeAvailability(storage)) {
-    throw operationError('SECURE_STORAGE_READ_UNAVAILABLE', 'read');
+function assertReadable(
+  storage: ReadableSafeStorage | null,
+  options: SafeStorageReadOptions = {},
+): void {
+  if (!nativeAvailability(storage, options)) {
+    throw operationError('SECURE_STORAGE_READ_UNAVAILABLE', 'read', options);
   }
 }
 
@@ -207,48 +216,72 @@ function encrypt(text: string): Buffer {
     return storage.encryptString(text);
   } catch (error) {
     if (error instanceof SafeStorageWriteError) throw error;
+    const failure = getSecureStorageFailure(error);
+    if (failure) throw new SecureStorageOperationError(failure);
     throw operationError('SECURE_STORAGE_ENCRYPT_FAILED', 'write');
   }
 }
 
-function decrypt(ciphertext: Buffer): string {
-  const storage = getReadableSafeStorage();
-  assertReadable(storage);
+function decrypt(ciphertext: Buffer, options: SafeStorageReadOptions): string {
+  const storage = getReadableSafeStorage(options);
+  assertReadable(storage, options);
   if (!storage) {
-    throw operationError('SECURE_STORAGE_READ_UNAVAILABLE', 'read');
+    throw operationError('SECURE_STORAGE_READ_UNAVAILABLE', 'read', options);
   }
   try {
     return storage.decryptString(ciphertext);
-  } catch {
-    throw operationError('SECURE_STORAGE_DECRYPT_FAILED', 'read');
+  } catch (error) {
+    // Preserve the operation's validated classification before any fresh probe:
+    // a subsequently healthy helper cannot turn a timeout into corrupt data.
+    const failure = getSecureStorageFailure(error);
+    if (failure) throw new SecureStorageOperationError(failure);
+    throw operationError('SECURE_STORAGE_DECRYPT_FAILED', 'read', options);
   }
 }
 
-/** Stateless: every operation resolves fresh native facades and permission. */
-export function getSecretStoragePolicy(): SecretStoragePolicy {
+/** Default operations stay live. Only spawn reads opt into bounded observation reuse. */
+export function getSecretStoragePolicy(
+  options: SafeStorageReadOptions = {},
+): SecretStoragePolicy {
   return Object.freeze({
-    getStatus: getSafeStorageStatus,
+    getStatus: (): SafeStorageStatus => getSafeStorageStatus(options),
     isWriteAvailable: (): boolean => getSafeStorageStatus().state === 'secure',
     nativeEncryptionAvailable: (): boolean =>
-      nativeAvailability(getReadableSafeStorage()),
-    assertCanRead: (): void => assertReadable(getReadableSafeStorage()),
+      nativeAvailability(getReadableSafeStorage(options), options),
+    assertCanRead: (): void =>
+      assertReadable(getReadableSafeStorage(options), options),
     assertCanWrite,
     encrypt,
-    decrypt,
+    decrypt: (ciphertext: Buffer): string => decrypt(ciphertext, options),
   });
 }
 
 /** Historical plaintext exception for environment values only, never tokens. */
 export function getEnvironmentValueWritePolicy(): EnvironmentValueWritePolicy {
-  const policy = getSecretStoragePolicy();
-  const encryptionAvailable = policy.nativeEncryptionAvailable();
+  const availability = (): boolean =>
+    nativeAvailability(getReadableSafeStorage({ requireSecureProvider: true }));
+  let encryptionAvailable = false;
+  let availabilityFailure: Error | undefined;
+  try {
+    encryptionAvailable = availability();
+  } catch (error) {
+    // Display availability must not throw or turn a failed write attempt into plaintext.
+    availabilityFailure =
+      error instanceof Error
+        ? error
+        : new SafeStorageWriteError({ state: 'unavailable', backend: null });
+  }
   return Object.freeze({
     encryptionAvailable,
     encode: (
       text: string,
-    ): ReturnType<EnvironmentValueWritePolicy['encode']> =>
-      encryptionAvailable
-        ? { kind: 'encrypted', value: policy.encrypt(text) }
-        : { kind: 'plain-text', value: text },
+    ): ReturnType<EnvironmentValueWritePolicy['encode']> => {
+      if (availabilityFailure !== undefined) throw availabilityFailure;
+      // Encrypt revalidates independently; only plaintext needs a fresh availability check.
+      // Never downgrade an encrypted decision, even if native availability changes.
+      return encryptionAvailable || availability()
+        ? { kind: 'encrypted', value: encrypt(text) }
+        : { kind: 'plain-text', value: text };
+    },
   });
 }

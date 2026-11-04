@@ -14,19 +14,37 @@ export type QueuedMessageWaitingReason =
   | 'background_work';
 
 /**
- * A kind of setting that differs from the one the chat's live agent runs
- * with, named so a host can say what a held send is waiting to apply. Names
- * only; never the old or new values.
+ * The kinds of setting a held send can wait to apply, in display order.
+ * Names only; never the old or new values.
  */
-export type SettingsHeldChange =
-  | 'model'
-  | 'agent'
-  | 'plan_mode'
-  | 'plugins'
-  | 'tools'
-  | 'instructions'
-  | 'approval_rules'
-  | 'delegation'
-  | 'codex_preferences'
-  | 'account'
-  | 'organization';
+export const SETTINGS_HELD_CHANGES = [
+  'model',
+  'thinking_level',
+  'agent',
+  'plan_mode',
+  'plugins',
+  'tools',
+  'instructions',
+  'approval_rules',
+  'delegation',
+  'codex_preferences',
+  'account',
+  'organization',
+] as const;
+
+/**
+ * A kind of setting that differs from the one the chat's live agent runs
+ * with, named so a host can say what a held send is waiting to apply.
+ */
+export type SettingsHeldChange = (typeof SETTINGS_HELD_CHANGES)[number];
+
+/**
+ * The known kinds among `names`, each once, in display order. Names a newer
+ * host sends that this build does not know are dropped.
+ */
+export function orderedSettingsHeldChanges(
+  names: Iterable<string>,
+): SettingsHeldChange[] {
+  const present = new Set(names);
+  return SETTINGS_HELD_CHANGES.filter((change) => present.has(change));
+}

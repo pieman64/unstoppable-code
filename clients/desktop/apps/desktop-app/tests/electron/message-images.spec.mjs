@@ -154,7 +154,8 @@ test('sent images show in the bubble with or without early access', async () => 
       }),
     );
     await expect(tiles).toHaveCount(1);
-    await expect(tiles.first()).toHaveAttribute('title', 'shot.png');
+    // The tile opens the image; its name is the shared tooltip, not a title.
+    await expect(tiles.first()).toHaveAttribute('aria-label', 'Open shot.png');
     const image = tiles.first().locator('img');
     await expect(image).toHaveAttribute('src', /^data:image\/png;base64,/);
     await expect

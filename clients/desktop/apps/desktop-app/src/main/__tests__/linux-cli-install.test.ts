@@ -23,6 +23,7 @@ const DAEMON_COMPANIONS = [
   `${DAEMON}.identity.json`,
   'w5-commit-log-worker.js',
   'node-pty',
+  'execution-hosts',
 ];
 let root: string;
 let home: string;
@@ -89,6 +90,10 @@ async function distribution(version: string, packaged = true): Promise<void> {
     JSON.stringify({ brandId: BRAND.id, version }),
   );
   await write(path.join(bin, 'w5-commit-log-worker.js'), `worker-${version}`);
+  await write(
+    path.join(bin, 'execution-hosts/terminal-host.js'),
+    `terminal-host-${version}`,
+  );
   await write(path.join(bin, 'node-pty/package.json'), '{}');
   await write(
     path.join(bin, 'node-pty/build/Release/pty.node'),
@@ -178,6 +183,7 @@ describe('Linux complete per-user CLI install', () => {
       DAEMON,
       `${DAEMON}.identity.json`,
       'w5-commit-log-worker.js',
+      'execution-hosts/terminal-host.js',
       'node-pty/package.json',
       'node-pty/build/Release/pty.node',
     ]) {
@@ -259,6 +265,7 @@ describe('Linux complete per-user CLI install', () => {
   it.each([
     `${DAEMON}.identity.json`,
     'w5-commit-log-worker.js',
+    'execution-hosts/terminal-host.js',
     'node-pty/package.json',
     'node-pty/build/Release/pty.node',
   ])('refuses a package missing the daemon dependency %s', async (file) => {
@@ -339,6 +346,7 @@ describe('Linux complete per-user CLI install', () => {
     `resources/bin/${DAEMON}`,
     `resources/bin/${DAEMON}.identity.json`,
     'resources/bin/w5-commit-log-worker.js',
+    'resources/bin/execution-hosts/terminal-host.js',
     'resources/bin/node-pty/package.json',
     'resources/bin/node-pty/build/Release/pty.node',
   ])(

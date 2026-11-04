@@ -26,6 +26,7 @@ import {
 } from 'node:path';
 import { promisify } from 'node:util';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import type {
   ChangedFileInfo,
   ChangedFileStatus,
@@ -2708,7 +2709,20 @@ export async function validateBranchName(
   try {
     await runGit(['check-ref-format', '--branch', branchName], repoPath);
     return true;
-  } catch {
+  } catch (error) {
+    // Git exits 128 for an invalid branch. Missing/unusable Git is not a name
+    // collision: keep its actionable error instead of exhausting generated IDs.
+    if (
+      hostOperatingSystem() === 'linux' &&
+      !(
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 128
+      )
+    ) {
+      throw error;
+    }
     return false;
   }
 }

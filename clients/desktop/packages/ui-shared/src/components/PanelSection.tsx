@@ -7,6 +7,7 @@ import {
   type Ref,
 } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
+import { Heading } from './Heading';
 
 export type CollapsedIconColor = 'amber' | 'blue' | 'muted';
 
@@ -172,7 +173,12 @@ export function PanelSection({
           />
         )}
         {collapsible ? (
-          <h3 className="col-start-1 row-start-1 min-w-0 truncate text-s font-semibold fg-primary">
+          <Heading
+            level={3}
+            variant="title"
+            truncate
+            className="col-start-1 row-start-1 min-w-0"
+          >
             <button
               type="button"
               className={`${titleRowClassName} focus-ring w-full rounded-sm`}
@@ -191,19 +197,22 @@ export function PanelSection({
                 {title}
               </span>
             </button>
-          </h3>
+          </Heading>
         ) : (
           <div
             className={`col-start-1 row-start-1 ${titleRowClassName}`}
             data-panel-section-title-row
           >
             {titleIcon}
-            <h3
-              className="min-w-0 flex-1 truncate text-s font-semibold fg-primary"
+            <Heading
+              level={3}
+              variant="title"
+              truncate
+              className="min-w-0 flex-1"
               data-panel-section-title
             >
               {title}
-            </h3>
+            </Heading>
           </div>
         )}
         <div

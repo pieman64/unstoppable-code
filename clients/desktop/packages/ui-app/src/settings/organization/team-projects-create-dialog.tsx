@@ -25,6 +25,7 @@ import {
   SearchField,
   TextInput,
   CopyDetailsButton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { SIDEBAR_INDICATOR_BLUE } from '@canopy/ui-shared/lib';
 import { FilterIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -258,7 +259,9 @@ export function TeamProjectsCreateDialog({
         )}
         {step === 'definition' && (
           <>
-            <h3 className="text-m fg-primary">Definition</h3>
+            <Heading level={3} variant="section">
+              Definition
+            </Heading>
             {selected.map((repository) => (
               <div key={repository.id} className={blockClassName}>
                 <DialogFormField
@@ -291,7 +294,9 @@ export function TeamProjectsCreateDialog({
               dataTestId="team-projects-create-private-memory"
               disclosureTestId="team-projects-create-advanced"
             />
-            <h3 className="text-m fg-primary">Grants</h3>
+            <Heading level={3} variant="section">
+              Grants
+            </Heading>
             <TeamProjectsGrantsEditor
               detail={detail}
               grants={grants}

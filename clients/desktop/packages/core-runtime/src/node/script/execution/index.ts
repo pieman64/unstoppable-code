@@ -52,6 +52,12 @@ export {
   type ScriptShellHost,
 } from './shell-command';
 export {
+  runScriptTerminal,
+  type RunScriptTerminalOptions,
+  type ScriptTerminalHost,
+  type ScriptTerminalPort,
+} from './terminal-runner';
+export {
   createWorkerScriptHandlers,
   ScriptExecutionWorker,
   scriptContextUnavailableError,

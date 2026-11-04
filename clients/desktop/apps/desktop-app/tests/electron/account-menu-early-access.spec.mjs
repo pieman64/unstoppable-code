@@ -149,8 +149,8 @@ for (const earlyAccess of [true, false]) {
           .getByTestId('sidebar-context-row'),
       ).toHaveCount(0);
 
-      // The avatar's dot reports usage; only without early access does the
-      // name take the usage ink.
+      // The avatar's dot reports usage; the name keeps the account row's
+      // inherited ink for everyone after the Labs graduation (#5891).
       await expect(
         window.getByTestId('sidebar-account-attention-dot'),
       ).toBeVisible({ timeout: 20_000 });
@@ -159,8 +159,10 @@ for (const earlyAccess of [true, false]) {
       const warning = await probeColor(window, 'fg-warning');
       const primary = await probeColor(window, 'fg-primary');
       expect(warning).not.toBe(primary);
-      if (earlyAccess) expect(await colorOf(identity)).not.toBe(warning);
-      else await expect.poll(() => colorOf(identity)).toBe(warning);
+      expect(await colorOf(identity)).not.toBe(warning);
+      expect(await colorOf(identity)).toBe(
+        await colorOf(window.getByTestId('sidebar-account-row')),
+      );
 
       await broadcastSyncPaused(electronApp);
       await window.getByTestId('sidebar-account-row').click();
@@ -207,14 +209,12 @@ for (const earlyAccess of [true, false]) {
         /^Activity you share hasn't reached .+ in over 6 hours\. It's saved on this device and will upload automatically\. If this continues, check your internet connection or open Settings → Privacy\.$/,
       );
 
-      // Usage near its limit: the dot on the right; the row's ink follows
-      // the mode.
+      // Usage near its limit keeps the warning on the dot, with primary
+      // row ink for everyone after graduation.
       await expect(
         usage.getByTestId('sidebar-account-usage-alert-dot'),
       ).toBeVisible();
-      await expect
-        .poll(() => colorOf(usage))
-        .toBe(earlyAccess ? primary : warning);
+      await expect.poll(() => colorOf(usage)).toBe(primary);
 
       await window.keyboard.press('Escape');
       await expect(menu).toBeHidden();

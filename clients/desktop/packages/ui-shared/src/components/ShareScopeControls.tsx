@@ -1,13 +1,12 @@
 import type { JSX, ReactNode } from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
 import { CheckIcon } from '../icons/CheckIcon';
-import { MagnifyingGlassIcon } from '../icons/MagnifyingGlassIcon';
 import {
   type SelectableShareAudience,
   shareAudienceLabel,
 } from '../lib/share-audience-label';
 import { DisplayAvatar } from './DisplayAvatar';
-import { TextInput } from './Field';
+import { SearchField } from './SearchField';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip, type TooltipLink } from './Tooltip';
 
@@ -432,16 +431,12 @@ export function SharedTargetPicker<T>({
         The search box now announces itself, and the rows below dropped the
         box entirely.
       */}
-      <TextInput
-        type="search"
+      <SearchField
         value={searchValue}
-        onChange={(e) => onSearchChange(e.target.value)}
+        onValueChange={onSearchChange}
         placeholder={placeholder}
         aria-label={placeholder}
         disabled={disabled}
-        leading={
-          <MagnifyingGlassIcon aria-hidden="true" className="h-3.5 w-3.5" />
-        }
       />
       {loading && <p className="text-xs fg-secondary">{loadingLabel}</p>}
       <ErrorBanner className="" error={error} />

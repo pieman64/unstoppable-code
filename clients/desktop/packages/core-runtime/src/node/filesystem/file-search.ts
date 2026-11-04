@@ -411,14 +411,31 @@ function matchFilter(
     !exclude?.(file.relativePath);
 }
 
+/**
+ * Walks Git-ignored directories after everything else, as the explorer
+ * already does for dependency trees, so a capped index reaches the files
+ * the repository tracks before generated or cached trees.
+ */
+export function deferIgnoredDirectories(
+  matcher: FileIndexMatcher,
+  isIgnored: (relativePath: string) => boolean,
+): FileIndexMatcher {
+  return {
+    isIndexExcluded: (relativePath, kind) =>
+      matcher.isIndexExcluded(relativePath, kind),
+    isTraversalDeferred: (relativePath) =>
+      matcher.isTraversalDeferred?.(relativePath) === true ||
+      isIgnored(`${relativePath}/`),
+  };
+}
+
 interface OpenWalk {
   readonly identity: string;
   readonly revision: string | undefined;
   readonly root: FilesystemSearchRoot;
   readonly walk: FileIndexWalk;
   readonly accept: ((file: IndexedFile) => boolean) | undefined;
-  readonly listIgnored: (() => Promise<readonly string[]>) | null;
-  isIgnored: ((relativePath: string) => boolean) | null;
+  readonly isIgnored: (relativePath: string) => boolean;
   touchedAt: number;
 }
 
@@ -471,20 +488,21 @@ export function createFilesystemSearchEngine(
   ): Promise<OpenWalk> {
     const { root, inputs } = await host.resolve();
     const list = inputs.listIgnoredPathEntries;
+    const isIgnored = await readIgnoredPathMatcher(
+      root.gitAware && list
+        ? (): Promise<readonly string[]> => list(root.absolutePath)
+        : null,
+    );
     return {
       identity,
       revision: host.revision,
       root,
       walk: createFileIndexWalk(root, {
-        matcher: inputs.matcher,
+        matcher: deferIgnoredDirectories(inputs.matcher, isIgnored),
         ...(inputs.readBoundary && { readBoundary: inputs.readBoundary }),
       }),
       accept: matchFilter(params, inputs.policy),
-      listIgnored:
-        root.gitAware && list
-          ? (): Promise<readonly string[]> => list(root.absolutePath)
-          : null,
-      isIgnored: null,
+      isIgnored,
       touchedAt: now(),
     };
   }
@@ -522,7 +540,6 @@ export function createFilesystemSearchEngine(
         }),
         ...(host.signal && { signal: host.signal }),
       });
-      walk.isIgnored ??= await readIgnoredPathMatcher(walk.listIgnored);
       const isIgnored = walk.isIgnored;
       const files: FilesystemSearchFile[] = [];
       const matches: WorkerFilesystemSearchMatch[] = [];

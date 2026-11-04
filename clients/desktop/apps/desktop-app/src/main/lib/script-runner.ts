@@ -3,7 +3,6 @@ import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   buildScriptShellCommand,
   ScriptExecutionWorker,
-  type ActiveScriptRun,
   type ScriptChildProcess,
   type ScriptCommandShell,
   type ScriptExecutionWorkerHost,
@@ -14,7 +13,6 @@ import {
 import { findExecutableOnPath } from '@canopy/desktop-shared/node/lib/path-lookup';
 import { buildCmdCommandLine } from '@canopy/desktop-shared/node/lib/windows-process';
 import type { ScriptRunResponse } from '@canopy/desktop-shared/types';
-import { TERMINAL_USER_CLOSE_SIGNAL } from '@canopy/desktop-shared/types';
 import { MAX_SCRIPT_TIMEOUT_SECONDS } from '@canopy/desktop-shared/scripts';
 import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
 import type { ScriptRunLogRef } from './script-log-store';
@@ -34,8 +32,6 @@ import {
 } from '../execution-accounting';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
-
-const MAX_OUTPUT_BYTES = 256 * 1024; // 256 KB
 
 /**
  * Electron main's host for the worker's script execution (CAN-4143): process
@@ -123,6 +119,12 @@ const desktopScriptHost: ScriptExecutionWorkerHost = {
     writeFileAtomically: (path, text) =>
       writeFileAtomically(path, text, { encoding: 'utf8' }),
   },
+  // Manual runs reveal their terminal, as before the move (CAN-5062).
+  revealTerminal: (tracking) =>
+    tracking.invocation?.startsWith('manual') === true,
+  // Keep the PTY backend off the import path of hooks and ordinary runs.
+  terminals: async () =>
+    (await import('../terminal/worker-terminal')).workerTerminal,
   resolvePlace: async (scope, context) =>
     (await import('./script-execution-place')).resolveScriptExecutionPlace(
       scope,
@@ -152,7 +154,7 @@ export interface RunShellScriptOptions {
    * Intended for automatic background work, not user-started scripts.
    */
   backgroundPriority?: boolean;
-  /** Back the script with a persisted worktree PTY so it can accept input. */
+  /** Run in one of the worker's terminals so the script can accept input. */
   interactive?: boolean;
   /** Visible title for an interactive terminal session. */
   terminalTitle?: string;
@@ -169,230 +171,6 @@ export function scriptTimeoutMs(
   return typeof timeoutSeconds === 'number' && timeoutSeconds > 0
     ? Math.min(timeoutSeconds, MAX_SCRIPT_TIMEOUT_SECONDS) * 1000
     : null;
-}
-
-function stringEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (value !== undefined) result[key] = value;
-  }
-  return result;
-}
-
-async function runInteractiveShellScript(
-  options: RunShellScriptOptions,
-): Promise<ScriptRunResponse> {
-  const startTime = Date.now();
-  const tracking = options.tracking;
-  if (!tracking?.projectId || !tracking.worktreeId) {
-    const output =
-      'Interactive scripts require projectId and worktreeId tracking ownership.';
-    options.onChunk?.([output]);
-    return {
-      success: false,
-      exitCode: 1,
-      output,
-      timedOut: false,
-      durationMs: Date.now() - startTime,
-    };
-  }
-  // Keep the PTY backend off the ordinary readonly runner's import path. This
-  // avoids loading terminal/native dependencies for hooks and non-interactive
-  // scripts while still sharing the tracking registry below.
-  const { workerTerminal } = await import('../terminal/worker-terminal');
-  let shell: ScriptShellCommand;
-  try {
-    shell = buildShellScriptCommand(options.script, options.shell);
-  } catch (error) {
-    const output = String(error);
-    options.onChunk?.(output.split('\n'));
-    return Promise.resolve({
-      success: false,
-      exitCode: 1,
-      output,
-      timedOut: false,
-      durationMs: Date.now() - startTime,
-    });
-  }
-  const launch = prepareBackgroundProcessLaunch(
-    shell.command,
-    shell.args,
-    options.backgroundPriority === true,
-  );
-
-  return new Promise((resolve) => {
-    let terminalId: string | null = null;
-    let settled = false;
-    let stoppedManually = false;
-    let aborted = false;
-    let timedOut = false;
-    let output = '';
-    let lineBuffer = '';
-    let timeoutTimer: NodeJS.Timeout | undefined;
-    let abortListener: (() => void) | undefined;
-    const exitResolver: {
-      resolve: (response: ScriptRunResponse) => void;
-    } = { resolve: (): void => undefined };
-    const waitForExit = new Promise<ScriptRunResponse>((done) => {
-      exitResolver.resolve = done;
-    });
-
-    const emitChunk = (chunk: Buffer): void => {
-      if (Buffer.byteLength(output, 'utf8') < MAX_OUTPUT_BYTES) {
-        output = `${output}${chunk.toString('utf8')}`;
-        if (Buffer.byteLength(output, 'utf8') > MAX_OUTPUT_BYTES) {
-          output = Buffer.from(output, 'utf8')
-            .subarray(0, MAX_OUTPUT_BYTES)
-            .toString('utf8');
-        }
-      }
-      lineBuffer += chunk.toString('utf8');
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() ?? '';
-      if (Buffer.byteLength(lineBuffer, 'utf8') > MAX_OUTPUT_BYTES) {
-        lineBuffer = Buffer.from(lineBuffer, 'utf8')
-          .subarray(0, MAX_OUTPUT_BYTES)
-          .toString('utf8');
-      }
-      if (lines.length > 0) options.onChunk?.(lines);
-    };
-
-    const finish = (exitCode: number | null, signal: string | null): void => {
-      if (settled) return;
-      settled = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (lineBuffer.length > 0) options.onChunk?.([lineBuffer]);
-      unsubscribeEvents();
-      shell.cleanup?.();
-      if (options.signal && abortListener) {
-        options.signal.removeEventListener('abort', abortListener);
-      }
-      desktopScriptWorker.registry.delete(activeScript);
-      const cancelled =
-        stoppedManually || aborted || signal === TERMINAL_USER_CLOSE_SIGNAL;
-      const response: ScriptRunResponse = {
-        success:
-          !timedOut &&
-          !aborted &&
-          !stoppedManually &&
-          exitCode === 0 &&
-          signal === null,
-        exitCode: cancelled ? null : exitCode,
-        output,
-        timedOut,
-        durationMs: Date.now() - startTime,
-      };
-      exitResolver.resolve(response);
-      resolve(response);
-    };
-
-    const unsubscribeEvents = workerTerminal.addEventListener((event): void => {
-      if (terminalId === null) return;
-      if (event.type === 'output') {
-        if (event.payload.terminalId === terminalId) {
-          emitChunk(Buffer.from(event.payload.data));
-        }
-      } else if (
-        event.type === 'exit' &&
-        event.payload.terminalId === terminalId
-      ) {
-        finish(event.payload.exitCode, event.payload.signal);
-      }
-    });
-
-    const stop = (reason: 'manual' | 'abort' | 'timeout' = 'manual'): void => {
-      if (settled || terminalId === null) return;
-      if (reason === 'manual') stoppedManually = true;
-      if (reason === 'abort') aborted = true;
-      if (reason === 'timeout') timedOut = true;
-      workerTerminal.kill(terminalId);
-    };
-    const activeScript: ActiveScriptRun = {
-      stop,
-      drain: async () => {
-        stoppedManually = true;
-        if (terminalId !== null) await workerTerminal.release(terminalId);
-        await waitForExit;
-      },
-      waitForExit,
-      tracking: options.tracking,
-    };
-
-    try {
-      const managedCommand = {
-        executable: launch.command,
-        args: launch.args,
-        env: stringEnv(options.env),
-        title:
-          options.terminalTitle ??
-          options.tracking?.script?.label ??
-          'Interactive command',
-        kind: 'script' as const,
-        focusOnSpawn:
-          options.focusOnSpawn ??
-          options.tracking?.invocation?.startsWith('manual') === true,
-      };
-      // An explicit environment is an exact process boundary, not an overlay
-      // on the ordinary worktree environment. Shared-container runs depend on
-      // this to keep Canopy-held and user-assigned secrets out of the PTY that
-      // backs an interactive published command.
-      const session = options.env
-        ? workerTerminal.create({
-            projectId: tracking.projectId,
-            worktreeId: tracking.worktreeId,
-            cols: 80,
-            rows: 24,
-            managedCommand,
-            cwd: options.cwd,
-            environment: options.env,
-          })
-        : workerTerminal.create({
-            projectId: tracking.projectId,
-            worktreeId: tracking.worktreeId,
-            cols: 80,
-            rows: 24,
-            managedCommand,
-            cwd: options.cwd,
-          });
-      terminalId = session.id;
-      if (launch.lowerPriorityAfterSpawn) {
-        workerTerminal.lowerPriority(session.id);
-      }
-    } catch (error) {
-      unsubscribeEvents();
-      shell.cleanup?.();
-      const message = String(error);
-      options.onChunk?.(message.split('\n'));
-      const response: ScriptRunResponse = {
-        success: false,
-        exitCode: 1,
-        output: message,
-        timedOut: false,
-        durationMs: Date.now() - startTime,
-      };
-      exitResolver.resolve(response);
-      resolve(response);
-      return;
-    }
-
-    desktopScriptWorker.registry.add(activeScript);
-    options.onProcessStarted?.();
-    if (options.signal) {
-      abortListener = (): void => stop('abort');
-      if (options.signal.aborted) abortListener();
-      else
-        options.signal.addEventListener('abort', abortListener, { once: true });
-    }
-    if (
-      typeof options.timeoutSeconds === 'number' &&
-      options.timeoutSeconds > 0
-    ) {
-      timeoutTimer = setTimeout(
-        () => stop('timeout'),
-        Math.min(options.timeoutSeconds, MAX_SCRIPT_TIMEOUT_SECONDS) * 1000,
-      );
-    }
-  });
 }
 
 export function buildShellScriptCommand(
@@ -469,42 +247,42 @@ export function listTrackedShellScriptsForWorktree(target: {
 
 /**
  * Run a command on this process's worker without a run log or dispatch
- * record, or in an interactive worktree PTY. Scripts run through
- * `lib/script-execution`; this remains for hook commands (CAN-4146) and
- * interactive runs (CAN-5082).
+ * record, in a process or, when interactive, in one of the worker's
+ * terminals. Scripts run through `lib/script-execution`; this remains for
+ * hook commands (CAN-4146).
  */
 export function runShellScript(
   options: RunShellScriptOptions,
 ): Promise<ScriptRunResponse> {
-  if (options.interactive === true) {
-    if (options.tracking) {
-      assertWorkspaceTargetRuntimeStartAllowed(
-        options.tracking.projectId,
-        options.tracking.worktreeId,
-      );
-    }
-    return runInteractiveShellScript(options);
-  }
-  return desktopScriptWorker
-    .runProcess({
-      script: options.script,
-      cwd: options.cwd,
-      ...(options.shell ? { shell: options.shell } : {}),
-      timeoutMs: scriptTimeoutMs(options.timeoutSeconds),
-      ...(options.onChunk ? { onChunk: options.onChunk } : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
-      ...(options.env ? { env: options.env } : {}),
-      ...(options.tracking ? { tracking: options.tracking } : {}),
-      backgroundPriority: options.backgroundPriority === true,
-      ...(options.onProcessStarted
-        ? { onProcessStarted: options.onProcessStarted }
-        : {}),
-    })
-    .then(({ success, exitCode, output, timedOut, durationMs }) => ({
-      success,
-      exitCode,
-      output,
-      timedOut,
-      durationMs,
-    }));
+  const common = {
+    script: options.script,
+    cwd: options.cwd,
+    ...(options.shell ? { shell: options.shell } : {}),
+    timeoutMs: scriptTimeoutMs(options.timeoutSeconds),
+    ...(options.onChunk ? { onChunk: options.onChunk } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.tracking ? { tracking: options.tracking } : {}),
+    backgroundPriority: options.backgroundPriority === true,
+    ...(options.onProcessStarted
+      ? { onProcessStarted: options.onProcessStarted }
+      : {}),
+  };
+  return (
+    options.interactive === true
+      ? desktopScriptWorker.runTerminal({
+          ...common,
+          ...(options.terminalTitle ? { title: options.terminalTitle } : {}),
+          ...(options.focusOnSpawn !== undefined
+            ? { focus: options.focusOnSpawn }
+            : {}),
+        })
+      : desktopScriptWorker.runProcess(common)
+  ).then(({ success, exitCode, output, timedOut, durationMs }) => ({
+    success,
+    exitCode,
+    output,
+    timedOut,
+    durationMs,
+  }));
 }

@@ -31,6 +31,7 @@ import {
   SettingsListSkeleton,
   Dot,
   StatusGlyph,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import type { FeedItem, FeedItemType } from '@canopy/protocol';
 import { FEED_ITEM_TYPES } from '@canopy/protocol';
@@ -559,20 +560,13 @@ export function TeamFeedSection({
             disabled={refreshing}
             data-testid="team-feed-refresh"
             aria-label="Refresh activity"
-            title="Refresh activity"
           >
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
             Refresh
           </Button>
         ) : (
-          <Button
-            variant="secondary"
-            size="compact"
-            onClick={toggleLive}
-            data-testid="team-feed-live-toggle"
-            aria-pressed={live}
-            aria-label={live ? 'Pause live updates' : 'Resume live updates'}
-            title={
+          <Tooltip
+            label={
               subscriptionState === 'reconnecting'
                 ? 'Reconnecting…'
                 : live
@@ -580,16 +574,25 @@ export function TeamFeedSection({
                   : 'Paused — resume updates'
             }
           >
-            {subscriptionState === 'open' ? (
-              <Dot tone="success" />
-            ) : subscriptionState === 'reconnecting' ? (
-              <StatusGlyph state="running" size={12} />
-            ) : (
-              <StatusGlyph state="paused" size={12} />
-            )}
-            {live ? <Pause size={14} /> : <Play size={14} />}
-            {live ? 'Live' : 'Paused'}
-          </Button>
+            <Button
+              variant="secondary"
+              size="compact"
+              onClick={toggleLive}
+              data-testid="team-feed-live-toggle"
+              aria-pressed={live}
+              aria-label={live ? 'Pause live updates' : 'Resume live updates'}
+            >
+              {subscriptionState === 'open' ? (
+                <Dot tone="success" />
+              ) : subscriptionState === 'reconnecting' ? (
+                <StatusGlyph state="running" size={12} />
+              ) : (
+                <StatusGlyph state="paused" size={12} />
+              )}
+              {live ? <Pause size={14} /> : <Play size={14} />}
+              {live ? 'Live' : 'Paused'}
+            </Button>
+          </Tooltip>
         )}
       </TeamPageHeaderActions>
       <PageSearchRow>

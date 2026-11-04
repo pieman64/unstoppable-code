@@ -363,6 +363,101 @@ describe('parseSendAgentMessageInputs', () => {
     }
   });
 
+  // CAN-5479: the settings a chat automation stores, as step inputs.
+  it('parses speed, Ultra fast included, and never with fast_mode', () => {
+    expect(
+      parseSendAgentMessageInputs({ ...base, speed: 'ultrafast' }),
+    ).toMatchObject({ ok: true, value: { settings: { speed: 'ultrafast' } } });
+    expect(message({ ...base, speed: 'warp' })).toBe(
+      'send-agent-message "speed" must be standard, fast or ultrafast',
+    );
+    expect(message({ ...base, speed: 'fast', fast_mode: 'true' })).toBe(
+      'send-agent-message "speed" and "fast_mode" can\'t both be set',
+    );
+  });
+
+  it('parses local plugin selections, normalized, and refuses a non-object', () => {
+    const parsed = parseSendAgentMessageInputs({
+      ...base,
+      plugin_selections: JSON.stringify({ collectionIds: ['col-1'] }),
+    });
+    expect(parsed).toMatchObject({
+      ok: true,
+      value: {
+        settings: {
+          pluginSelections: {
+            collectionIds: ['col-1'],
+            skillRefs: [],
+            pluginRefs: [],
+          },
+        },
+      },
+    });
+    for (const plugin_selections of ['[', '[]', '"x"', 'null'])
+      expect(message({ ...base, plugin_selections })).toBe(
+        'send-agent-message "plugin_selections" must be a JSON object',
+      );
+  });
+
+  it('parses a composer payload for an existing chat only', () => {
+    const payload = {
+      attachment_paths: JSON.stringify([SECRET_PATH]),
+      attachment_prompt_contexts: JSON.stringify([
+        { attachmentPath: SECRET_PATH, promptKind: 'linear-ticket' },
+      ]),
+      file_references: JSON.stringify([
+        { displayPath: 'a.ts', absolutePath: '/r/a.ts', textStart: 2 },
+      ]),
+      input_mode: 'voice',
+    };
+    expect(
+      parseSendAgentMessageInputs({ ...base, chat_id: 'c', ...payload }),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        attachmentPaths: [SECRET_PATH],
+        attachmentPromptContexts: [
+          { attachmentPath: SECRET_PATH, promptKind: 'linear-ticket' },
+        ],
+        fileReferences: [
+          { displayPath: 'a.ts', absolutePath: '/r/a.ts', textStart: 2 },
+        ],
+        inputMode: 'voice',
+      },
+    });
+    for (const [name, value] of Object.entries(payload))
+      expect(message({ ...base, [name]: value })).toBe(
+        `send-agent-message "${name}" requires "chat_id"`,
+      );
+    expect(
+      message({
+        ...base,
+        chat_id: 'c',
+        attachments: '["a"]',
+        attachment_paths: payload.attachment_paths,
+      }),
+    ).toBe(
+      'send-agent-message "attachments" and "attachment_paths" can\'t both be set',
+    );
+    expect(message({ ...base, chat_id: 'c', input_mode: 'typing' })).toBe(
+      'send-agent-message "input_mode" must be "typed" or "voice"',
+    );
+    expect(
+      message({
+        ...base,
+        chat_id: 'c',
+        attachment_prompt_contexts: '[{"attachmentPath":"a","promptKind":"x"}]',
+      }),
+    ).toContain('"attachment_prompt_contexts"');
+    expect(
+      message({
+        ...base,
+        chat_id: 'c',
+        file_references: '[{"displayPath":1}]',
+      }),
+    ).toContain('"file_references"');
+  });
+
   it('never echoes text or paths in failures', () => {
     const failures = [
       message({ ...base, text_file: SECRET_PATH }),
@@ -370,6 +465,12 @@ describe('parseSendAgentMessageInputs', () => {
       message({ ...base, plugins: SECRET_TEXT }),
       message({ ...base, chat_id: 'c', attachments: `["${SECRET_PATH}", 3]` }),
       message({ ...base, thinking_effort: SECRET_TEXT }),
+      message({
+        ...base,
+        chat_id: 'c',
+        attachment_paths: `["${SECRET_PATH}", 3]`,
+      }),
+      message({ ...base, plugin_selections: SECRET_TEXT }),
     ];
     for (const error of failures) {
       expect(error).not.toContain(SECRET_TEXT);

@@ -331,7 +331,7 @@ describe('FloatingChatRecentList', () => {
     // The heading reads as a label above quieter rows, with room below it.
     const heading = container.querySelector('h3');
     expect(heading?.className).toContain('fg-primary');
-    expect(heading?.className).toContain('pb-2');
+    expect(heading?.parentElement?.className).toContain('pb-2');
     // Rows round like the sidebar's rows.
     expect(
       container.querySelector('[data-testid="floating-chat-recent-item"]')

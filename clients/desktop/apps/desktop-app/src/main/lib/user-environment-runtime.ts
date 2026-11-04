@@ -53,7 +53,7 @@ function isUiMode(value: unknown): value is UserEnvironmentUiMode {
 }
 
 function decryptEntries(encryptedBase64: string): UserEnvironmentEntry[] {
-  const decrypted = getSecretStoragePolicy().decrypt(
+  const decrypted = getSecretStoragePolicy({ forSpawn: true }).decrypt(
     Buffer.from(encryptedBase64, 'base64'),
   );
   const parsed: unknown = JSON.parse(decrypted);
@@ -209,7 +209,7 @@ function currentMtime(): number | null {
 
 function getEnvironmentConfigForInjection(): EnvironmentConfigData {
   try {
-    const policy = getSecretStoragePolicy();
+    const policy = getSecretStoragePolicy({ forSpawn: true });
     if (cachedConfig !== null && cachedRequiresDecryption) {
       policy.assertCanRead();
       if (policy.getStatus().backend !== cachedBackend) {

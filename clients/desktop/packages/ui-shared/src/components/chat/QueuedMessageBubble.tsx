@@ -7,8 +7,10 @@ import { useAgentSentReceivingContext } from './AgentSentReceivingContext';
 import { memo, type JSX, type ReactNode } from 'react';
 import type {
   ChatTurnPhase,
+  ChatWatcherFiredInfo,
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
+  SettingsHeldChange,
 } from '@canopy/protocol/portal';
 import { QueuedMessageActions } from './QueuedMessageActions';
 import {
@@ -31,6 +33,8 @@ export interface QueuedMessageBubbleMessage {
   readonly agentSent?: AgentSentInfo;
   readonly id: string;
   readonly text: string;
+  /** The host's marker on a fired watcher's message. */
+  readonly watcherFired?: ChatWatcherFiredInfo;
   readonly reason?: string;
   readonly waitingReason?: QueuedMessageWaitingReason;
   readonly editLocked?: boolean;
@@ -40,6 +44,8 @@ export interface QueuedMessageBubbleMessage {
   /** The host holds this row: Retry renders disabled with the reason. */
   readonly retryBlockedReason?: QueuedMessageRetryBlockedReason;
   readonly steerBlockedByCapabilityChange?: boolean;
+  /** See `QueuedMessageActionsProps.settingsHeld`. */
+  readonly restartHeldChanges?: readonly SettingsHeldChange[];
 }
 
 export interface QueuedMessageBubbleProps {
@@ -81,7 +87,12 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   const receivingContext = useAgentSentReceivingContext(explicitContext);
   // A delegate's steering request or a fired watcher arrives as a hidden
   // instruction block; show its readable part under its title instead.
-  const steeringRequest = hostMessagePresentation(message.text);
+  const steeringRequest = hostMessagePresentation(
+    message.text,
+    undefined,
+    'block',
+    message.watcherFired,
+  );
   const paragraphs = (steeringRequest?.text ?? message.text).split(/\n{2,}/);
   const editHandler = message.editLocked ? undefined : onEdit;
   return (
@@ -155,6 +166,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
           }
           editLocked={message.editLocked}
           forceLocked={message.forceLocked}
+          settingsHeld={message.restartHeldChanges}
         />
       </div>
     </div>

@@ -5,6 +5,10 @@ import ts from 'typescript';
 const repositoryRoot = path.resolve(__dirname, '../../../../..');
 const nativeBoundary = 'apps/desktop-app/src/main/lib/safe-storage.ts';
 const policyBoundary = 'apps/desktop-app/src/main/lib/secure-storage-policy.ts';
+const recoveryBoundary =
+  'apps/desktop-app/src/main/lib/linux-safe-storage-recovery.ts';
+const helperBoundary =
+  'apps/desktop-app/src/main/lib/linux-safe-storage-helper.ts';
 const environmentStore =
   'apps/desktop-app/src/main/lib/user-environment-store.ts';
 const remoteStore =
@@ -18,6 +22,10 @@ const nativeNames = new Set([
   'WritableSafeStorage',
   'encryptString',
   'decryptString',
+  'probeLinuxSafeStorageRecovery',
+  'encryptWithLinuxSafeStorageRecovery',
+  'decryptWithLinuxSafeStorageRecovery',
+  'runLinuxSafeStorageHelper',
 ]);
 const bypassNames = new Set([
   'setUsePlainTextEncryption',
@@ -40,6 +48,26 @@ function memberName(node: ts.Node): string | null {
 // native adapter. Policy owns Linux selection and harness overrides; consumers
 // cannot call the adapter, access a native handle, alias the setter, or enable it.
 function isStartupPlaintextOptOut(node: ts.Node, file: string): boolean {
+  if (file === helperBoundary) {
+    const member = ts.isIdentifier(node) ? node.parent : node;
+    if (
+      !ts.isPropertyAccessExpression(member) ||
+      !ts.isIdentifier(member.expression) ||
+      member.expression.text !== 'safeStorage'
+    )
+      return false;
+    const call = member.parent;
+    if (
+      !ts.isCallExpression(call) ||
+      call.expression !== member ||
+      call.arguments.length !== 1 ||
+      call.arguments[0].kind !== ts.SyntaxKind.FalseKeyword
+    )
+      return false;
+    let owner: ts.Node | undefined = member;
+    while (owner && !ts.isFunctionDeclaration(owner)) owner = owner.parent;
+    return owner?.name?.text === 'perform' && owner.parameters.length === 0;
+  }
   if (file !== nativeBoundary) return false;
   const member = ts.isIdentifier(node) ? node.parent : node;
   if (
@@ -84,7 +112,12 @@ function violations(source: string, file: string): string[] {
     file.endsWith('tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const result: string[] = [];
-  const allowedNative = file === nativeBoundary || file === policyBoundary;
+  const allowedNative = [
+    nativeBoundary,
+    policyBoundary,
+    recoveryBoundary,
+    helperBoundary,
+  ].includes(file);
   const visit = (node: ts.Node): void => {
     // Inspect imports, destructuring and computed members as well as ordinary calls.
     const name = memberName(node);
@@ -110,6 +143,8 @@ function violations(source: string, file: string): string[] {
       isNativeStorageMember
     )
       result.push(`native:${name}`);
+    if (name === 'runLinuxSafeStorageHelper' && file !== helperBoundary)
+      result.push('helper entry outside isolated native adapter');
     if (file === policyBoundary && name === 'safeStorage')
       result.push('raw-native: safeStorage');
     if (
@@ -134,6 +169,7 @@ function violations(source: string, file: string): string[] {
           'WritableSafeStorage',
           'SafeStorageBackendState',
           'SafeStorageStatus',
+          'SafeStorageReadOptions',
           'SafeStorageWriteError',
           'getSafeStorageStatus',
           'disableSafeStoragePlainTextEncryption',
@@ -150,7 +186,15 @@ function violations(source: string, file: string): string[] {
             'getSecureStorageFailure',
             'getEnvironmentValueWritePolicy',
           ])
-        : null;
+        : file === helperBoundary
+          ? new Set(['runLinuxSafeStorageHelper'])
+          : file === recoveryBoundary
+            ? new Set([
+                'probeLinuxSafeStorageRecovery',
+                'encryptWithLinuxSafeStorageRecovery',
+                'decryptWithLinuxSafeStorageRecovery',
+              ])
+            : null;
   if (boundaryExports) {
     for (const statement of root.statements) {
       if (
@@ -169,7 +213,11 @@ function violations(source: string, file: string): string[] {
         result.push('raw boundary re-export');
     }
   }
-  if (file === nativeBoundary || file === policyBoundary) {
+  if (
+    [nativeBoundary, policyBoundary, helperBoundary, recoveryBoundary].includes(
+      file,
+    )
+  ) {
     for (const statement of root.statements) {
       if (
         ts.isVariableStatement(statement) &&
@@ -338,3 +386,52 @@ test.each([
     );
   },
 );
+
+// Recovery stays a native adapter, with no consumer-accessible native handle.
+test('isolated recovery helper only disables plaintext in its bounded operation', () => {
+  expect(
+    violations(
+      'async function perform() { safeStorage.setUsePlainTextEncryption(false); }',
+      helperBoundary,
+    ),
+  ).toEqual([]);
+  for (const statement of [
+    'safeStorage.setUsePlainTextEncryption(true);',
+    'safeStorage.setUsePlainTextEncryption(enabled);',
+    'const setter = safeStorage.setUsePlainTextEncryption; setter(false);',
+    "safeStorage['setUsePlainTextEncryption'](false);",
+  ])
+    expect(
+      violations(`async function perform() { ${statement} }`, helperBoundary),
+    ).toContain('bypass:setUsePlainTextEncryption');
+  expect(
+    violations(
+      'function unrelated() { safeStorage.setUsePlainTextEncryption(false); }',
+      helperBoundary,
+    ),
+  ).toContain('bypass:setUsePlainTextEncryption');
+});
+
+test.each([helperBoundary, recoveryBoundary])(
+  'recovery boundary cannot export native handles: %s',
+  (file) => {
+    expect(
+      violations('export function rawVault() { return safeStorage; }', file),
+    ).toContain('unexpected boundary export');
+    expect(violations('export const vault = safeStorage;', file)).toContain(
+      'exported raw storage variable',
+    );
+    expect(violations('export { safeStorage };', file)).toContain(
+      'raw boundary re-export',
+    );
+  },
+);
+
+test.each([
+  'probeLinuxSafeStorageRecovery()',
+  'encryptWithLinuxSafeStorageRecovery("fixture")',
+  'decryptWithLinuxSafeStorageRecovery(buffer)',
+  'runLinuxSafeStorageHelper()',
+])('consumers cannot bypass policy through recovery: %s', (source) => {
+  expect(violations(source, 'consumer.ts').length).toBeGreaterThan(0);
+});

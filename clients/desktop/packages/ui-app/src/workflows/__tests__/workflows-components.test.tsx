@@ -744,12 +744,7 @@ describe('WorkflowsLibraryTableSkeleton', () => {
     // Every cell holds pulsing blocks only, no text.
     for (const row of rows) {
       expect(row.textContent).toBe('');
-      expect(row.querySelectorAll('.animate-pulse').length).toBeGreaterThan(0);
-    }
-    for (const block of Array.from(
-      skeleton.querySelectorAll<HTMLElement>('.animate-pulse'),
-    )) {
-      expect(block.classList.contains('motion-reduce:animate-none')).toBe(true);
+      expect(row.querySelectorAll('[skullet-bar]').length).toBeGreaterThan(0);
     }
   });
 
@@ -758,7 +753,7 @@ describe('WorkflowsLibraryTableSkeleton', () => {
       <>
         <WorkflowsLibraryTableSkeleton compact rows={2} />
         <WorkflowsLibraryTable
-          rows={[]}
+          rows={[automationRow]}
           now={NOW}
           onOpen={jest.fn()}
           onAction={jest.fn()}
@@ -773,9 +768,13 @@ describe('WorkflowsLibraryTableSkeleton', () => {
     );
     expect(headings(skeleton)).not.toContain('Next run');
     expect(skeleton.querySelectorAll('tbody tr')).toHaveLength(2);
-    const firstCell = skeleton.querySelector('tbody td');
-    expect(firstCell?.classList.contains('px-4')).toBe(true);
-    expect(firstCell?.classList.contains('py-3')).toBe(true);
+    // The placeholder cells take the loaded cells' padding, so the rows the
+    // skeleton holds are as tall and as inset as the ones that replace it.
+    const cellPadding = (cell: Element | null): string[] =>
+      Array.from(cell?.classList ?? []).filter((name) => /^p[xy]-/.test(name));
+    expect(cellPadding(skeleton.querySelector('tbody td'))).toEqual(
+      cellPadding(table.querySelector('tbody td')),
+    );
   });
 });
 

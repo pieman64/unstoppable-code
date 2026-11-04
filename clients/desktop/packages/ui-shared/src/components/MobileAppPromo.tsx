@@ -5,6 +5,7 @@ import {
   type MobileAppStoreLink,
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
+import { Heading } from './Heading';
 
 /**
  * Presentation of a mobile-app promotion.
@@ -84,15 +85,9 @@ export function MobileAppPromo({
           </Button>
         </span>
       )}
-      <h2
-        className={
-          isSection
-            ? 'text-2xl font-semibold fg-primary'
-            : 'text-sm font-semibold fg-primary'
-        }
-      >
+      <Heading level={2} variant={isSection ? 'page' : 'title'}>
         {resolvedHeading}
-      </h2>
+      </Heading>
       <p
         className={
           isSection

@@ -9,7 +9,7 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 import { type JSX, useState } from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { UserEnvironmentEntry } from '@canopy/desktop-shared/types';
+import type { UserEnvironmentEntryView } from '@canopy/desktop-shared/types';
 
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { EnvironmentVariableEditor } from '../EnvironmentVariableEditor';
@@ -36,7 +36,7 @@ function changeInput(input: HTMLInputElement, value: string): void {
 describe('EnvironmentVariableEditor', () => {
   it('keeps key/value rows mounted when controlled parent state echoes edits', () => {
     function Harness(): JSX.Element {
-      const [variables, setVariables] = useState<UserEnvironmentEntry[]>([
+      const [variables, setVariables] = useState<UserEnvironmentEntryView[]>([
         { key: 'FOO', value: 'bar' },
       ]);
       return (
@@ -300,4 +300,154 @@ describe('EnvironmentVariableEditor', () => {
       container.remove();
     },
   );
+
+  describe('saved secrets (CAN-4411)', () => {
+    const stored = { kind: 'stored-secret', ref: 'ssr1_token' } as const;
+
+    // React tracks the last value it saw, so set it through the native setter.
+    function type(
+      field: HTMLInputElement | HTMLTextAreaElement,
+      value: string,
+    ): void {
+      const prototype =
+        field instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+      act(() => {
+        Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(
+          field,
+          value,
+        );
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+
+    function renderHarness(
+      initial: UserEnvironmentEntryView[],
+      uiMode: 'key-value' | 'bulk' = 'key-value',
+    ): {
+      container: HTMLDivElement;
+      root: Root;
+      latest: () => UserEnvironmentEntryView[];
+    } {
+      let latest = initial;
+      function Harness(): JSX.Element {
+        const [variables, setVariables] = useState(initial);
+        return (
+          <EnvironmentVariableEditor
+            variables={variables}
+            uiMode={uiMode}
+            encryptionAvailable={true}
+            onVariablesChange={(next): void => {
+              latest = next;
+              setVariables(next);
+            }}
+          />
+        );
+      }
+      const rendered = render(<Harness />);
+      return { ...rendered, latest: () => latest };
+    }
+
+    function unmount(container: HTMLDivElement, root: Root): void {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+
+    it('shows a saved secret as set, keeps it, and locks its secret mark until replaced', () => {
+      const { container, root, latest } = renderHarness([
+        { key: 'TOKEN', value: stored, secret: true },
+      ]);
+      const value = container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-value-"]',
+      );
+      const secret = container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-secret-"]',
+      );
+      const key = container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-key-"]',
+      );
+      expect(value?.value).toBe('');
+      expect(value?.placeholder).toBe('Saved. Type to replace');
+      expect(secret?.disabled).toBe(true);
+      if (!value || !key) return;
+
+      type(key, 'RENAMED');
+      expect(latest()).toEqual([
+        { key: 'RENAMED', value: stored, secret: true },
+      ]);
+
+      type(value, 'replacement');
+      expect(latest()).toEqual([
+        { key: 'RENAMED', value: 'replacement', secret: true },
+      ]);
+      expect(secret?.disabled).toBe(false);
+      unmount(container, root);
+    });
+
+    it('keeps a saved secret marked secret when its replacement is cleared', () => {
+      const { container, root, latest } = renderHarness([
+        { key: 'TOKEN', value: stored, secret: true },
+      ]);
+      const value = container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-value-"]',
+      );
+      const secret = container.querySelector<HTMLInputElement>(
+        'input[data-testid^="environment-editor-secret-"]',
+      );
+      if (!value || !secret) throw new Error('Expected editor row');
+      type(value, 'replacement');
+      act(() => {
+        secret.click();
+      });
+      expect(latest()).toEqual([{ key: 'TOKEN', value: 'replacement' }]);
+      type(value, '');
+      expect(latest()).toEqual([{ key: 'TOKEN', value: stored, secret: true }]);
+      expect(secret.checked).toBe(true);
+      unmount(container, root);
+    });
+
+    it('keeps saved secrets out of bulk text and keeps them across bulk edits', () => {
+      const { container, root, latest } = renderHarness(
+        [
+          { key: 'TOKEN', value: stored, secret: true },
+          { key: 'LEVEL', value: 'debug', secret: true },
+        ],
+        'bulk',
+      );
+      const textarea = container.querySelector<HTMLTextAreaElement>(
+        '[data-testid="environment-editor-bulk-textarea"]',
+      );
+      expect(textarea?.value).toBe('LEVEL=debug');
+      expect(
+        container.querySelector(
+          '[data-testid="environment-editor-bulk-stored"]',
+        )?.textContent,
+      ).toContain('TOKEN');
+      if (!textarea) return;
+
+      type(textarea, 'LEVEL=info\nADDED=1');
+      expect(latest()).toEqual([
+        { key: 'TOKEN', value: stored, secret: true },
+        { key: 'LEVEL', value: 'info', secret: true },
+        { key: 'ADDED', value: '1' },
+      ]);
+      // A line may not name a saved secret, so bulk editing never replaces
+      // or drops one; the editor says where to edit it instead.
+      type(textarea, 'LEVEL=info\nTOKEN=');
+      expect(
+        container.querySelector(
+          '[data-testid="environment-editor-bulk-validation"]',
+        )?.textContent,
+      ).toBe('TOKEN is a saved secret. Edit it in Key-Value.');
+      type(textarea, 'LEVEL=debug');
+      expect(latest()).toEqual([
+        { key: 'TOKEN', value: stored, secret: true },
+        { key: 'LEVEL', value: 'debug', secret: true },
+      ]);
+      unmount(container, root);
+    });
+  });
 });

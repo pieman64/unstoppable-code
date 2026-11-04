@@ -1,4 +1,4 @@
-import { type JSX, useEffect, useState } from 'react';
+import { type JSX, type ReactNode, useEffect, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@canopy/ui-shared/components';
 import {
@@ -13,6 +13,7 @@ import { brand } from '@/lib/brand';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
 import { pt } from '@/lib/platform-text';
+import { useNavigationStore } from '@/stores/navigationStore';
 import {
   SidebarFooterBanner,
   SidebarFooterBannerIcon,
@@ -34,7 +35,7 @@ interface PromptView {
   iconTone?: SidebarFooterBannerIconTone;
   label: string;
   ariaLabel: string;
-  title?: string;
+  title?: ReactNode;
   trailing?: JSX.Element;
   trailingAction?: PromptTrailingAction;
   onClick?: () => void;
@@ -50,6 +51,7 @@ interface PromptView {
  */
 export function UpdatePrompt(): JSX.Element {
   const { state } = useUpdateState();
+  const openSettings = useNavigationStore((s) => s.openSettings);
   const manualLinux = window.platform === 'linux';
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
   // Local click acknowledgement. The updater phase only advances once the
@@ -76,46 +78,70 @@ export function UpdatePrompt(): JSX.Element {
 
   let view: PromptView | null = null;
 
+  const packageManagerUpdate = manualLinux
+    ? state.info?.packageManagerUpdate
+    : undefined;
+
   if (state.phase === 'available') {
-    view = manualLinux
+    view = packageManagerUpdate
       ? {
           icon: <DownloadIcon size={16} aria-hidden="true" />,
           iconTone: 'accent',
-          label: linuxCopy.downloadLabel,
-          ariaLabel: `${linuxCopy.downloadLabel} (${versionLabel}): open the official download`,
-          title: state.info?.manualDownload
-            ? `${state.info.manualDownload.guidance} ${state.info.manualDownload.checksum.algorithm}: ${state.info.manualDownload.checksum.value}`
-            : undefined,
-          onClick: state.info?.manualDownload
-            ? (): void => {
-                const url = state.info?.manualDownload?.url;
-                if (url)
-                  void window.api.browser
-                    .openExternal({ url })
-                    .catch(() => undefined);
-              }
-            : undefined,
+          label: 'Update available',
+          ariaLabel: `Update available (${versionLabel}): open update instructions`,
+          title: (
+            <>
+              Version {versionLabel} is ready. {packageManagerUpdate.guidance}{' '}
+              <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
+                {packageManagerUpdate.command}
+              </span>
+            </>
+          ),
+          onClick: (): void => {
+            openSettings('canopy', {
+              scrollTo: 'settings-linux-update-guidance',
+            });
+          },
         }
-      : pendingAction
+      : manualLinux
         ? {
-            icon: spinner,
-            label: 'Starting download…',
-            ariaLabel: `Starting download of ${versionLabel}`,
-          }
-        : {
             icon: <DownloadIcon size={16} aria-hidden="true" />,
             iconTone: 'accent',
-            label: 'Update available',
-            ariaLabel: `Update available (${versionLabel}): start download`,
-            onClick: (): void => {
-              setPendingAction('download');
-              void window.api.update.downloadUpdate().catch(() => {
-                // Failures surface through the updater state stream as an
-                // error event, which re-renders this banner.
-                setPendingAction(null);
-              });
-            },
-          };
+            label: linuxCopy.downloadLabel,
+            ariaLabel: `${linuxCopy.downloadLabel} (${versionLabel}): open the official download`,
+            title: state.info?.manualDownload
+              ? `${state.info.manualDownload.guidance} ${state.info.manualDownload.checksum.algorithm}: ${state.info.manualDownload.checksum.value}`
+              : undefined,
+            onClick: state.info?.manualDownload
+              ? (): void => {
+                  const url = state.info?.manualDownload?.url;
+                  if (url)
+                    void window.api.browser
+                      .openExternal({ url })
+                      .catch(() => undefined);
+                }
+              : undefined,
+          }
+        : pendingAction
+          ? {
+              icon: spinner,
+              label: 'Starting download…',
+              ariaLabel: `Starting download of ${versionLabel}`,
+            }
+          : {
+              icon: <DownloadIcon size={16} aria-hidden="true" />,
+              iconTone: 'accent',
+              label: 'Update available',
+              ariaLabel: `Update available (${versionLabel}): start download`,
+              onClick: (): void => {
+                setPendingAction('download');
+                void window.api.update.downloadUpdate().catch(() => {
+                  // Failures surface through the updater state stream as an
+                  // error event, which re-renders this banner.
+                  setPendingAction(null);
+                });
+              },
+            };
   } else if (state.phase === 'downloading' && !manualLinux) {
     view = {
       icon: spinner,

@@ -715,3 +715,103 @@ it('an intentional removal preserves a newer receipt snapshot written after remo
     uninstalledLocalResourceIds: ['one'],
   });
 });
+
+it('fails closed when a row this build cannot read names the local resource', async () => {
+  const file = join(dir, 'resource-install-receipts.json');
+  const future = {
+    family: 'pipelines',
+    remoteId: 'future',
+    localResourceIds: ['local-1'],
+    ownerContext: { kind: 'organization', team: 'later-format' },
+    hash: 'h1',
+  };
+  await writeFile(
+    file,
+    JSON.stringify({ version: 1, byAccount: { b: [future] } }),
+  );
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await expect(store.findLocal('pipelines', 'local-1')).rejects.toThrow(
+    'Unreadable resource install receipt',
+  );
+  await expect(
+    store.listOrganizationContentOwners('pipelines', 'h1'),
+  ).rejects.toThrow('Unreadable resource install receipt');
+  expect(await store.findLocal('pipelines', 'local-2')).toBeUndefined();
+  expect(await store.findLocal('skills', 'local-1')).toBeUndefined();
+  expect(await store.listOrganizationContentOwners('pipelines', 'h2')).toEqual(
+    [],
+  );
+});
+
+it('fails closed on local lookups when an account entry is not a list', async () => {
+  await writeFile(
+    join(dir, 'resource-install-receipts.json'),
+    JSON.stringify({ version: 1, byAccount: { b: { receipt } } }),
+  );
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await expect(store.findLocal('skills', 'anything')).rejects.toThrow(
+    'Unreadable resource install receipt',
+  );
+  await expect(
+    store.listOrganizationContentOwners('skills', 'v1'),
+  ).rejects.toThrow('Unreadable resource install receipt');
+});
+
+it('refuses a receipt file from a newer version and never writes over it', async () => {
+  const file = join(dir, 'resource-install-receipts.json');
+  const newer = JSON.stringify({ version: 2, byAccount: {} });
+  await writeFile(file, newer);
+  const store = createResourceInstallReceiptsStore('a', dir);
+  await expect(store.findLocal('skills', 'x')).rejects.toThrow(
+    'Resource install receipt file is from a newer version',
+  );
+  await expect(store.record(receipt)).rejects.toThrow(
+    'Resource install receipt file is from a newer version',
+  );
+  expect(await readFile(file, 'utf8')).toBe(newer);
+});
+
+it('makes receipt writes and rollbacks durable', async () => {
+  const write = jest.spyOn(atomicFile, 'writeFileAtomically');
+  try {
+    const store = createResourceInstallReceiptsStore('a', dir);
+    await store.record({ ...receipt, localResourceIds: ['s1'] });
+    await store.rollbackInstall(
+      { ...receipt, localResourceIds: ['s1'] },
+      undefined,
+    );
+    expect(write).toHaveBeenCalledTimes(2);
+    for (const call of write.mock.calls)
+      expect(call[2]).toMatchObject({ durable: true, mode: 0o600 });
+  } finally {
+    write.mockRestore();
+  }
+});
+
+it('treats a receipt installed before its folder flush failed as recorded', async () => {
+  const { StorageOutcomeUnknownError } =
+    await import('@canopy/core-runtime/storage');
+  const real = atomicFile.writeFileAtomically;
+  const write = jest
+    .spyOn(atomicFile, 'writeFileAtomically')
+    .mockImplementationOnce(async (target, data, options) => {
+      await real(target, data, { ...options, durable: false });
+      throw new StorageOutcomeUnknownError(
+        'directory_flush',
+        new Error('flush failed'),
+      );
+    });
+  try {
+    const store = createResourceInstallReceiptsStore('a', dir);
+    await expect(
+      store.record({ ...receipt, localResourceIds: ['s1'] }),
+    ).resolves.toBeUndefined();
+    await store.rollbackInstall(
+      { ...receipt, localResourceIds: ['s1'] },
+      undefined,
+    );
+    expect(await store.findLocal('skills', 's1')).toBeUndefined();
+  } finally {
+    write.mockRestore();
+  }
+});

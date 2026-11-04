@@ -8,9 +8,10 @@ import type {
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
-  CenteredLoadingSpinner,
+  DataTable,
   DelayedLoadingPlaceholder,
   SettingsSelect,
+  type DataTableColumn,
 } from '@canopy/ui-shared/components';
 import { ErrorBanner } from '@/components/shared/StatusBlocks';
 import type { TabSpec } from './tab-specs';
@@ -83,10 +84,10 @@ export function MetricsBreakdownPanel({
 
   return (
     <div
-      className="rounded-xl border bg-card/60"
+      className="flex flex-col gap-2"
       data-testid={`usage-breakdown-${spec.id}`}
     >
-      <div className="flex flex-wrap items-center gap-3 border-b px-3 py-2 text-s">
+      <div className="flex flex-wrap items-center gap-3 text-s">
         <div className="flex items-center gap-2">
           <span
             id={`breakdown-metric-${spec.id}-label`}
@@ -129,17 +130,19 @@ export function MetricsBreakdownPanel({
         </div>
       </div>
       {error ? (
-        <div className="px-3 py-4">
-          <ErrorBanner error={error} className="" />
-        </div>
+        <ErrorBanner error={error} className="" />
       ) : response === null ? (
-        <div className="px-3">
-          <DelayedLoadingPlaceholder slowNote="Still loading breakdown…">
-            <CenteredLoadingSpinner className="my-8" />
-          </DelayedLoadingPlaceholder>
-        </div>
-      ) : response.rows.length === 0 ? (
-        <div className="px-3 py-4 text-s fg-secondary">{spec.emptyMessage}</div>
+        <DelayedLoadingPlaceholder slowNote="Still loading breakdown…">
+          <BreakdownTable
+            rows={[]}
+            loading
+            showStats={false}
+            groupBy={groupBy}
+            countColumnLabel={spec.countColumnLabel ?? 'Count'}
+            valueFormat={spec.valueFormat ?? 'number'}
+            emptyMessage={spec.emptyMessage}
+          />
+        </DelayedLoadingPlaceholder>
       ) : (
         <BreakdownTable
           rows={response.rows}
@@ -147,6 +150,7 @@ export function MetricsBreakdownPanel({
           groupBy={groupBy}
           countColumnLabel={spec.countColumnLabel ?? 'Count'}
           valueFormat={spec.valueFormat ?? 'number'}
+          emptyMessage={spec.emptyMessage}
         />
       )}
     </div>
@@ -155,82 +159,74 @@ export function MetricsBreakdownPanel({
 
 interface BreakdownTableProps {
   rows: ReadonlyArray<UsageBreakdownRow>;
+  loading?: boolean;
   showStats: boolean;
   groupBy: UsageGroupById;
   countColumnLabel: string;
   valueFormat: 'number' | 'currency';
+  emptyMessage: string;
 }
+
+type StatKey = 'min' | 'max' | 'avg' | 'p50' | 'p95' | 'p99';
+
+const STAT_COLUMNS: ReadonlyArray<{ key: StatKey; header: string }> = [
+  { key: 'min', header: 'Min' },
+  { key: 'max', header: 'Max' },
+  { key: 'avg', header: 'Avg' },
+  { key: 'p50', header: 'P50' },
+  { key: 'p95', header: 'P95' },
+  { key: 'p99', header: 'P99' },
+];
 
 function BreakdownTable({
   rows,
+  loading = false,
   showStats,
   groupBy,
   countColumnLabel,
   valueFormat,
+  emptyMessage,
 }: BreakdownTableProps): JSX.Element {
+  const columns: Array<DataTableColumn<UsageBreakdownRow>> = [
+    {
+      key: 'group',
+      header: 'Group',
+      render: (row) =>
+        groupBy === 'worktree' ? (
+          <WorktreeBreakdownLabel row={row} />
+        ) : (
+          row.label
+        ),
+    },
+    {
+      key: 'count',
+      header: countColumnLabel,
+      align: 'right',
+      render: (row) =>
+        valueFormat === 'currency'
+          ? formatCurrencyUsd(row.count)
+          : row.count.toLocaleString(),
+    },
+  ];
+  if (showStats) {
+    for (const stat of STAT_COLUMNS) {
+      columns.push({
+        key: stat.key,
+        header: stat.header,
+        align: 'right',
+        render: (row) => formatNumber(row.stats?.[stat.key]),
+      });
+    }
+  }
   return (
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-s">
-        <thead className="bg-secondary/30 text-xs fg-secondary">
-          <tr>
-            <th className="px-3 py-2 text-left font-medium">Group</th>
-            <th className="px-3 py-2 text-right font-medium">
-              {countColumnLabel}
-            </th>
-            {showStats && (
-              <>
-                <th className="px-3 py-2 text-right font-medium">Min</th>
-                <th className="px-3 py-2 text-right font-medium">Max</th>
-                <th className="px-3 py-2 text-right font-medium">Avg</th>
-                <th className="px-3 py-2 text-right font-medium">P50</th>
-                <th className="px-3 py-2 text-right font-medium">P95</th>
-                <th className="px-3 py-2 text-right font-medium">P99</th>
-              </>
-            )}
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {rows.map((row) => (
-            <tr key={row.key}>
-              <td className="px-3 py-2 text-left fg-primary">
-                {groupBy === 'worktree' ? (
-                  <WorktreeBreakdownLabel row={row} />
-                ) : (
-                  row.label
-                )}
-              </td>
-              <td className="px-3 py-2 text-right fg-primary">
-                {valueFormat === 'currency'
-                  ? formatCurrencyUsd(row.count)
-                  : row.count.toLocaleString()}
-              </td>
-              {showStats && (
-                <>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.min)}
-                  </td>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.max)}
-                  </td>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.avg)}
-                  </td>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.p50)}
-                  </td>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.p95)}
-                  </td>
-                  <td className="px-3 py-2 text-right fg-primary">
-                    {formatNumber(row.stats?.p99)}
-                  </td>
-                </>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Usage breakdown"
+      columns={columns}
+      rows={rows}
+      rowKey={(row) => row.key}
+      loading={loading}
+      emptyLabel={emptyMessage}
+    />
   );
 }
 

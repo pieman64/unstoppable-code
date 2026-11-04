@@ -20,6 +20,7 @@ import { useScriptActions } from '@canopy/app-state/script-actions';
 import {
   Button,
   Checkbox,
+  Disclosure,
   ErrorBanner,
   LoadingSpinner,
   Notice,
@@ -27,6 +28,7 @@ import {
   ToggleSwitch,
   EmptyStateRow,
   StatusLabel,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,
@@ -380,7 +382,9 @@ function ScriptActionsReviewBody({
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div className="min-w-0 flex-1 space-y-1">
         {layout === 'inline' ? (
-          <h3 className="text-s font-medium fg-primary">Detected scripts</h3>
+          <Heading level={3} variant="title">
+            Detected scripts
+          </Heading>
         ) : null}
         <p className="text-xs fg-secondary">
           Scripts found in this worktree and your personal aliases. Only
@@ -520,9 +524,9 @@ function ScriptActionsReviewBody({
             data-testid="script-actions-alias-opt-in"
             aria-labelledby={aliasHeadingId}
           >
-            <h4 id={aliasHeadingId} className="text-s font-medium fg-primary">
+            <Heading level={4} variant="title" id={aliasHeadingId}>
               Personal shell aliases
-            </h4>
+            </Heading>
             <p className="text-xs fg-secondary">
               Find aliases in your shell configuration, such as ~/.zshrc and
               ~/.bashrc. Files are read, never run, and each alias still needs
@@ -619,13 +623,15 @@ function ScanStatusLine({
         </p>
       ) : null}
       {snapshot.diagnostics.length > 0 ? (
-        <details className="text-xs fg-tertiary">
-          <summary className="cursor-pointer">
-            {snapshot.diagnostics.length === 1
+        <Disclosure
+          label={
+            snapshot.diagnostics.length === 1
               ? '1 file skipped'
-              : `${snapshot.diagnostics.length} files skipped`}
-          </summary>
-          <ul className="mt-1 space-y-0.5">
+              : `${snapshot.diagnostics.length} files skipped`
+          }
+          dataTestId="script-actions-skipped-files"
+        >
+          <ul className="space-y-0.5 text-xs fg-tertiary">
             {snapshot.diagnostics.map((diagnostic, index) => (
               <li
                 key={`${diagnostic.source}:${index}`}
@@ -638,7 +644,7 @@ function ScanStatusLine({
               </li>
             ))}
           </ul>
-        </details>
+        </Disclosure>
       ) : null}
     </div>
   );
@@ -714,12 +720,12 @@ function PendingSection({
             testId="script-actions-select-all"
           />
         ) : null}
-        <h4 id={headingId} className="text-s font-medium fg-primary">
+        <Heading level={4} variant="title" id={headingId}>
           Needs review
           {pending.length > 0 ? (
             <span className="ml-1 fg-tertiary">{pending.length}</span>
           ) : null}
-        </h4>
+        </Heading>
       </div>
       {pending.length === 0 ? (
         <p
@@ -875,10 +881,10 @@ function ApprovedSection({
       aria-labelledby={headingId}
       data-testid="script-actions-approved"
     >
-      <h4 id={headingId} className="text-s font-medium fg-primary">
+      <Heading level={4} variant="title" id={headingId}>
         Approved
         {count > 0 ? <span className="ml-1 fg-tertiary">{count}</span> : null}
-      </h4>
+      </Heading>
       {count === 0 ? (
         <EmptyStateRow
           testId="script-actions-approved-empty"

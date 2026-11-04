@@ -416,9 +416,13 @@ const defaultDependencies: ForkCapabilityInstallDependencies = {
     const { getAutomationsService } = await import('../../automations/service');
     return (await getAutomationsService().list()).activities;
   },
+  // A person's create, as the edit form saves it: while the chat automation
+  // pipelines experiment is on, a chat automation converts to a pipeline it
+  // owns, and one that can't keeps its native save (CAN-5479).
   createAutomation: async (request) => {
-    const { getAutomationsService } = await import('../../automations/service');
-    return getAutomationsService().create(request);
+    const { createAutomationFromForm } =
+      await import('../../automations/chat-automation-save');
+    return createAutomationFromForm(request);
   },
   deleteAutomation: async (id) => {
     const { getAutomationsService } = await import('../../automations/service');
@@ -1313,6 +1317,7 @@ async function installDefinitions(
     }
     entry.localId = created.activity.id;
     entry.createdAt = created.activity.createdAt;
+    entry.updatedAt = created.activity.updatedAt;
     await touchJournal(deps, journal);
     if (planned.document.automation.hasRunCondition)
       input.warnings.push(
@@ -1593,8 +1598,16 @@ async function finalizeJournal(
   }
 }
 
-function unchangedSinceCreate(activity: ScheduledActivity): boolean {
-  return !activity.enabled && activity.updatedAt === activity.createdAt;
+/**
+ * Whether nobody changed the automation since this attempt saved it:
+ * `savedAt` is the `updatedAt` its create returned, which a conversion to an
+ * owned workflow moves past `createdAt`.
+ */
+function unchangedSinceCreate(
+  activity: ScheduledActivity,
+  savedAt: string = activity.createdAt,
+): boolean {
+  return !activity.enabled && activity.updatedAt === savedAt;
 }
 
 /** Run one compensation step; a refusal or failure names `label` as residual. */
@@ -1674,7 +1687,7 @@ async function compensateDefinitions(
               );
         if (!activity) return true;
         claimed.add(activity.id);
-        if (!unchangedSinceCreate(activity)) return false;
+        if (!unchangedSinceCreate(activity, entry.updatedAt)) return false;
         const removed = await deps.deleteAutomation(activity.id);
         return removed.ok;
       });

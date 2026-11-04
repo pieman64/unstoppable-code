@@ -232,8 +232,9 @@ function BranchSyncButton({
     <div className="group/gitaction relative inline-flex items-center">
       {renderProgress(
         { type: 'commit-push', action },
-        <button
-          type="button"
+        <HeaderActionButton
+          tone="accent"
+          groupHover
           onClick={() => {
             // While this action is the one running, the button IS the cancel
             // control — that is what the hover ✕ in its icon slot promises.
@@ -252,7 +253,6 @@ function BranchSyncButton({
               : undefined
           }
           data-testid="pr-status-bar-branch-sync"
-          className={GIT_ACTION_ACCENT_BTN}
         >
           {isActive && !isReviewing ? (
             <RunningActionIcon
@@ -263,7 +263,7 @@ function BranchSyncButton({
             <GitCommitIcon className="h-4 w-4" />
           )}
           {label}
-        </button>,
+        </HeaderActionButton>,
         {},
       )}
       {cancellable && (
@@ -443,15 +443,14 @@ export function PullRequestActions({
 
       {plan.splitPr !== null &&
         (plan.splitPr.blockedReason === undefined ? (
-          <button
-            type="button"
+          <HeaderActionButton
+            tone="neutral"
             onClick={() => onAction({ kind: 'split-pr' })}
             data-testid="split-pr-status-bar-button"
-            className={COMMIT_PUSH_BTN}
           >
             <SplitPrIcon className="h-4 w-4" />
             Split PR
-          </button>
+          </HeaderActionButton>
         ) : (
           // Eligible but waiting: shown disabled with what it waits for,
           // as the PR card's Split does.
@@ -474,8 +473,9 @@ export function PullRequestActions({
         <span className="group/gitaction relative inline-flex items-center">
           {renderProgress(
             { type: 'commit-push', action: 'commit' },
-            <button
-              type="button"
+            <HeaderActionButton
+              tone="accent"
+              groupHover
               onClick={
                 localCommitCancellable
                   ? onCancel
@@ -492,7 +492,6 @@ export function PullRequestActions({
               }
               aria-label={localCommitCancellable ? 'Cancel commit' : undefined}
               data-testid="pr-status-bar-local-commit"
-              className={GIT_ACTION_ACCENT_BTN}
             >
               {localCommitRunning ? (
                 <RunningActionIcon
@@ -503,7 +502,7 @@ export function PullRequestActions({
                 <GitCommitIcon className="h-4 w-4" />
               )}
               {activity.commitReviewPending ? 'Review…' : 'Commit'}
-            </button>,
+            </HeaderActionButton>,
             {},
           )}
           {localCommitCancellable && (
@@ -515,8 +514,9 @@ export function PullRequestActions({
         <span className="group/gitaction relative inline-flex items-center">
           {renderProgress(
             { type: 'merge' },
-            <button
-              type="button"
+            <HeaderActionButton
+              tone="accent"
+              groupHover
               onClick={
                 localMergeCancellable
                   ? onCancel
@@ -528,7 +528,6 @@ export function PullRequestActions({
                   : busy || activity.creatingPr || activity.commitReviewPending
               }
               aria-label={localMergeCancellable ? 'Cancel merge' : undefined}
-              className={GIT_ACTION_ACCENT_BTN}
             >
               {activity.mergingLocalBranches ? (
                 <RunningActionIcon
@@ -539,7 +538,7 @@ export function PullRequestActions({
                 <GitMergeIcon className="h-4 w-4" />
               )}
               Merge
-            </button>,
+            </HeaderActionButton>,
             {},
           )}
           {localMergeCancellable && (
@@ -673,12 +672,11 @@ export function PullRequestActions({
               </>
             }
           >
-            <button
-              type="button"
+            <HeaderActionButton
+              tone="neutral"
               onClick={() => onAction({ kind: 'resolve-conflicts' })}
               disabled={activity.startingConflictResolution}
               data-testid="pr-status-bar-resolve-conflicts"
-              className={COMMIT_PUSH_BTN}
             >
               {activity.startingConflictResolution ? (
                 <ThinkingSpinner tone="primary" quiet className="mr-1" />
@@ -686,7 +684,7 @@ export function PullRequestActions({
                 <ChatIcon className="h-4 w-4" />
               )}
               Resolve, commit &amp; push
-            </button>
+            </HeaderActionButton>
           </RichHoverTooltip>
         ) : (
           <Tooltip label={plan.resolveConflicts.blockedReason}>

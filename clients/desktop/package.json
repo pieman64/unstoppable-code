@@ -104,7 +104,8 @@
     "prettier": "^3.8.1",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.0.0",
-    "vite": "^6.0.0",
+    "vite": "^6.4.2",
+    "jest-environment-node": "^30.4.1",
     "jest-environment-jsdom": "^30.2.0",
     "@jest/test-sequencer": "^30.4.1",
     "@swc/jest": "0.2.39",
@@ -441,6 +442,7 @@
       },
       {
         "id": "gpt-6.1-terra",
+        "gatewayId": "openai/gpt-6.1-terra",
         "label": "GPT 6.1 Terra",
         "family": "codex",
         "familyLabel": "Codex",

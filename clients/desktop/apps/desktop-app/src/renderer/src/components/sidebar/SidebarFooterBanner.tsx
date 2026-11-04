@@ -31,7 +31,8 @@ interface SidebarFooterBannerProps {
   surface?: 'status';
   onClick?: () => void;
   testId: string;
-  title?: string;
+  /** Hover content; only a string also becomes a static banner's native title. */
+  title?: ReactNode;
   /**
    * Optional secondary icon button rendered at the trailing edge. Only valid
    * together with `onClick`; the banner then renders as a row of two sibling
@@ -163,7 +164,7 @@ export function SidebarFooterBanner({
   return (
     <div
       className={classes}
-      title={title}
+      title={typeof title === 'string' ? title : undefined}
       data-testid={testId}
       // Non-interactive banners with an accessible label are live statuses
       // (e.g. update download progress); unlabeled ones are decorative.

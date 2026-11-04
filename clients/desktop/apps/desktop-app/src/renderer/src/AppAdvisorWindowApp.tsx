@@ -254,6 +254,7 @@ export function AppAdvisorWindowApp(): JSX.Element {
         .setOpenAppLinksInBuiltInBrowser(
           prefs.openAppLinksInBuiltInBrowser === true,
         );
+      useBrowserStore.getState().applySearchPreferences(prefs);
       useChatStore.getState().applyDeferredToolsDefaults(prefs);
       useChatStore.getState().applyModelDefaults(prefs);
       useAppAdvisorStore.getState().applyPreferences(prefs);
@@ -276,6 +277,7 @@ export function AppAdvisorWindowApp(): JSX.Element {
         .setOpenAppLinksInBuiltInBrowser(
           prefs.openAppLinksInBuiltInBrowser === true,
         );
+      useBrowserStore.getState().applySearchPreferences(prefs);
       useChatStore.getState().applyDeferredToolsDefaults(prefs);
       useChatStore.getState().applyModelDefaults(prefs);
       useAppAdvisorStore.getState().applyPreferences(prefs);

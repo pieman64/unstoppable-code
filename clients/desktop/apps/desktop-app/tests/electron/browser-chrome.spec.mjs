@@ -292,6 +292,7 @@ async function captureWorktreeArchiveFailure({
 const PAGE_ONE_TITLE = 'Canopy Browser Page One';
 const PAGE_TWO_TITLE = 'Canopy Browser Page Two';
 const LINK_TEST_TITLE = 'Link test';
+const LOCAL_SEARCH_TITLE = 'Local search results';
 const DIALOG_PAGE_TITLE = 'Canopy Browser Dialog Page';
 const LOCAL_FILE_HOME_TITLE = 'Local file fixture home';
 const LOCAL_FILE_NEIGHBOUR_TITLE = 'Local file fixture neighbour';
@@ -315,6 +316,14 @@ function startLocalPages() {
       response.writeHead(200, { 'Content-Type': 'text/html' });
       response.end(
         `<!doctype html><html><head><title>${PAGE_TWO_TITLE}</title><link rel="icon" href="/favicon-two.svg"></head><body style="background:#00f"><h1>two</h1></body></html>`,
+      );
+      return;
+    }
+    // A search engine on this computer, for the Browser-bar search flow.
+    if (request.url?.startsWith('/search?')) {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      response.end(
+        `<!doctype html><html><head><title>${LOCAL_SEARCH_TITLE}</title></head><body><h1>results</h1></body></html>`,
       );
       return;
     }
@@ -1098,6 +1107,57 @@ test.describe('repeatable Browser panels (one session per panel)', () => {
         .toBeTruthy();
     } finally {
       await closeCanopy(launched.electronApp, launched.userDataDir);
+    }
+  });
+
+  test('address-bar keywords search with a search engine added in Settings', async () => {
+    test.setTimeout(120_000);
+    const pages = await startLocalPages();
+    const { electronApp, userDataDir, window } = await seedPanelWorktree();
+    const template = `http://127.0.0.1:${pages.port}/search?q=%s`;
+    try {
+      const app = new CanopyAppDriver(window);
+      await app.openSettings();
+      await app.openSettingsSection('browser');
+      await window
+        .getByTestId('settings-browser-search-engine-name')
+        .fill('Local search');
+      await window
+        .getByTestId('settings-browser-search-engine-url')
+        .fill(template);
+      await window.getByTestId('settings-browser-search-engine-add').click();
+      await window.getByTestId('settings-browser-search-engine-select').click();
+      await window.getByRole('option', { name: 'Local search' }).click();
+      await expect
+        .poll(() =>
+          window.evaluate(async () => {
+            const preferences = await window.api.loadPreferences();
+            const chosen = preferences.inAppBrowserCustomSearchEngines?.find(
+              (engine) => engine.id === preferences.inAppBrowserSearchEngineId,
+            );
+            return chosen?.urlTemplate ?? null;
+          }),
+        )
+        .toBe(template);
+      await app.closeSettings();
+
+      const browser = await addBrowserPanel(window, 'group-chat');
+      const pane = window.getByTestId(`browser-pane-${browser.browserId}`);
+      const urlInput = pane.getByTestId('browser-url-input');
+      await expect(urlInput).toHaveAttribute(
+        'placeholder',
+        'Search Local search or type a URL',
+      );
+      await navigatePane(window, browser.browserId, 'react hooks');
+      await expect
+        .poll(() => browserViewByTitle(electronApp, LOCAL_SEARCH_TITLE))
+        .toBeTruthy();
+      await expect(urlInput).toHaveValue(
+        `http://127.0.0.1:${pages.port}/search?q=react+hooks`,
+      );
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+      await pages.close();
     }
   });
 

@@ -827,8 +827,7 @@ describe('Linux x64', () => {
 });
 
 describe('platforms that do not require Git', () => {
-  // arm64 now shares required Linux detection; preserve the optional-host contract.
-  beforeEach(() => setPlatform('linux', 's390x'));
+  beforeEach(() => setPlatform('linux', 'ppc64'));
 
   it('reports ready without probing', async () => {
     await register();

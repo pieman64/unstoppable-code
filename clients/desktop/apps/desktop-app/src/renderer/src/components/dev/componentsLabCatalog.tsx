@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { AvatarsSpecimen } from './componentsLabAvatars';
 import { ButtonsSpecimen, ListRowSpecimen } from './componentsLabButtons';
 import { ChipSection, ContextSection } from './MarkersLabPage';
 import {
@@ -19,7 +20,9 @@ import {
   TooltipSpecimen,
 } from './componentsLabLayout';
 import { LoadingSpecimen } from './componentsLabLoading';
+import { TablesSpecimen } from './componentsLabTables';
 import { PendingSpecimen } from './componentsLabPending';
+import { ProgressSpecimen } from './componentsLabProgress';
 import { SegmentedControlSpecimen, TabBarSpecimen } from './componentsLabTabs';
 import {
   ButtonStage,
@@ -206,6 +209,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: LoadingSpecimen,
   },
   {
+    id: 'progress',
+    name: 'Progress',
+    group: 'Unified',
+    note: 'ProgressBar (6px, label and value above it), ProgressRing (16px) inside a small control, and ProgressSteps as 12px status glyphs; tones, never colors.',
+    source: 'packages/ui-shared/src/components/Progress.tsx',
+    prs: [7358, 7364, 7365],
+    View: ProgressSpecimen,
+  },
+  {
     id: 'facts',
     name: 'Fact lists',
     group: 'Unified',
@@ -244,6 +256,24 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     prs: [7082],
     Stage: TooltipStage,
     View: TooltipSpecimen,
+  },
+  {
+    id: 'data-table',
+    name: 'DataTable',
+    group: 'Unified',
+    note: 'Every data table is the framed card: a 32px header band, 36px rows split by a hairline, numbers right-aligned; rows fill on hover only when they open something.',
+    source: 'packages/ui-shared/src/components/DataTable.tsx',
+    prs: [],
+    View: TablesSpecimen,
+  },
+  {
+    id: 'avatars',
+    name: 'Avatars',
+    group: 'Unified',
+    note: 'DisplayAvatar: a circle for people and a rounded square for groups, grey initials or a photo with a hairline edge, an actor glyph in the same shell; five steps from 16 to 40px.',
+    source: 'packages/ui-shared/src/components/DisplayAvatar.tsx',
+    prs: [7359, 7363, 7367],
+    View: AvatarsSpecimen,
   },
   {
     id: 'not-unified',

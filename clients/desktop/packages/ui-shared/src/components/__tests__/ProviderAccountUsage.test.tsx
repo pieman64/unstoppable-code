@@ -167,24 +167,36 @@ describe('ProviderAccountUsage', () => {
         />,
       );
     });
-    const disclosure = container.querySelector('details');
-    expect(disclosure).not.toBeNull();
-    expect(disclosure?.open).toBe(false);
-    expect(disclosure?.querySelector('summary')?.textContent).toBe('Usage');
-    expect(disclosure?.textContent).toContain('7-day Opus');
-    expect(disclosure?.textContent).toContain('$8.75 left');
+    const disclosure = container.querySelector(
+      '[data-testid="provider-account-usage"]',
+    );
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="provider-account-usage-toggle"]',
+    );
+    expect(toggle?.textContent).toBe('Usage');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('7-day Opus');
     expect(container.querySelector('[role="status"]')?.textContent).toContain(
       'Check your connection.',
     );
     expect(
-      container.querySelector('[role="status"]')?.closest('details'),
-    ).toBeNull();
+      disclosure?.contains(container.querySelector('[role="status"]')),
+    ).toBe(false);
+    act(() => toggle?.click());
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    const body = container.querySelector(
+      '[data-testid="provider-account-usage-body"]',
+    );
+    expect(body?.textContent).toContain('7-day Opus');
+    expect(body?.textContent).toContain('$8.75 left');
     act(() => {
       root.render(
         <ProviderAccountUsageDetails account={account} nowMs={NOW_MS} />,
       );
     });
-    expect(container.querySelector('details')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="provider-account-usage"]'),
+    ).toBeNull();
     expect(container.textContent).toContain('7-day Opus');
   });
 

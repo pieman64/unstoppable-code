@@ -229,9 +229,9 @@ describe('subagent conversation display', () => {
     );
     const runSegment = runButton?.parentElement;
     const runChildren = Array.from(runSegment?.children ?? []);
-    expect(rootButton?.title).toBe('Root chat');
+    expect(rootButton?.querySelector('span')?.title).toBe('Root chat');
     expect(rootButton?.querySelector('span')?.className).toContain('ph-mask');
-    expect(runButton?.title).toBe('Billing workflow');
+    expect(runButton?.querySelector('span')?.title).toBe('Billing workflow');
     expect(
       runSegment?.querySelector('[data-testid="subagent-workflow-mark"]'),
     ).not.toBeNull();
@@ -239,7 +239,7 @@ describe('subagent conversation display', () => {
       'subagent-workflow-mark',
     );
     expect(runChildren[2]).toBe(runButton);
-    expect(phaseButton?.title).toBe('Review');
+    expect(phaseButton?.querySelector('span')?.title).toBe('Review');
     expect(phaseButton?.parentElement?.className).toContain('shrink-0');
     expect(phaseButton?.className).toContain('shrink-0');
     expect(phaseButton?.className).not.toContain('truncate');

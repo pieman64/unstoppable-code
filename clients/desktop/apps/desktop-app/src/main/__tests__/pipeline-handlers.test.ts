@@ -171,8 +171,37 @@ jest.mock(
     ).pipelineWriteDispatchFake,
 );
 // The run-admission golden drives core; here a run keeps its caller copy.
+// A curated run reads the (mocked) managed revision, as core's curated source
+// does.
 jest.mock('../pipelines/run-definition-admission', () => ({
   admitStoredRunDefinition: (): Promise<null> => Promise.resolve(null),
+  admitCuratedRunDefinition: async (
+    definitionId: string,
+  ): Promise<{
+    pipeline: unknown;
+    definition: { checksum: string };
+    managed: unknown;
+    pipelinePackage?: unknown;
+  }> => {
+    const catalog = jest.requireMock<{
+      getManagedCuratedPipeline: (id: string) => Promise<{
+        info: { curatedContentHash?: string };
+        content: unknown;
+        pipelinePackage?: unknown;
+      }>;
+    }>('../pipelines/curated-pipeline-catalog');
+    const managed = await catalog.getManagedCuratedPipeline(definitionId);
+    return {
+      pipeline: managed.content,
+      definition: {
+        checksum: `sha256:${managed.info.curatedContentHash ?? ''}`,
+      },
+      managed,
+      ...(managed.pipelinePackage
+        ? { pipelinePackage: managed.pipelinePackage }
+        : {}),
+    };
+  },
 }));
 // The execution golden drives the dispatcher; here the worker host runs alone.
 jest.mock('../pipelines/pipeline-worker-dispatch', () =>
@@ -243,6 +272,7 @@ jest.mock('../automations/canopy-server-client', () => ({
 }));
 
 import * as fs from 'node:fs';
+import { resetResolvedCanopyDataDirForTests } from '@canopy/desktop-shared/canopy-paths';
 import * as os from 'node:os';
 import { getPipelineDataDir } from '../lib/paths';
 import * as path from 'node:path';
@@ -613,6 +643,7 @@ import {
 import {
   attachPipelineHandle,
   desktopPipelineWorker,
+  stagePipelineControl,
 } from '../pipelines/pipeline-worker-host';
 import { loadProjectPipelineFromDisk } from '../pipelines/project-pipeline-discovery';
 import { writePipelineAdvisorSnapshot } from '../pipelines/pipeline-advisor-store';
@@ -1313,6 +1344,81 @@ describe('project pipeline handlers', () => {
           name: 'Deploy Two',
         },
       },
+    });
+  });
+
+  describe('pipeline preference saves', () => {
+    const previousDataDir = process.env.CANOPY_DATA_DIR;
+    const locator = { type: 'file' as const, value: '/repo/review.yaml' };
+
+    beforeEach(() => {
+      process.env.CANOPY_DATA_DIR = tempDir;
+      resetResolvedCanopyDataDirForTests();
+    });
+
+    afterEach(() => {
+      if (previousDataDir === undefined) {
+        delete process.env.CANOPY_DATA_DIR;
+      } else {
+        process.env.CANOPY_DATA_DIR = previousDataDir;
+      }
+      resetResolvedCanopyDataDirForTests();
+    });
+
+    it('saves through the shared store and resolves after the write lands', async () => {
+      await expect(
+        getHandler(PIPELINE_CHANNELS.SAVE_PLUGIN_COLLECTION_PREFERENCES)(
+          undefined,
+          {
+            pipelinePreferenceLocator: locator,
+            preferences: {
+              tools: {
+                disabledDefaultKeys: ['skill:a'],
+                extraSelections: {},
+              },
+            },
+          },
+        ),
+      ).resolves.toEqual({ success: true, data: { ok: true } });
+      await expect(
+        getHandler(PIPELINE_CHANNELS.SAVE_MODEL_ALIAS_PREFERENCES)(undefined, {
+          pipelinePreferenceLocator: locator,
+          preferences: { reviewer: { mode: 'inline', base: 'claude-a' } },
+        }),
+      ).resolves.toEqual({ success: true, data: { ok: true } });
+
+      const saved: unknown = JSON.parse(
+        fs.readFileSync(
+          path.join(tempDir, 'pipeline-plugin-preferences.json'),
+          'utf8',
+        ),
+      );
+      expect(saved).toMatchObject({
+        version: 2,
+        entries: {
+          'file:/repo/review.yaml': {
+            plugin_collections: { tools: { disabledDefaultKeys: ['skill:a'] } },
+            model_aliases: { reviewer: { mode: 'inline', base: 'claude-a' } },
+          },
+        },
+      });
+    });
+
+    it('reports a refused save and leaves a newer file untouched', async () => {
+      const preferencesPath = path.join(
+        tempDir,
+        'pipeline-plugin-preferences.json',
+      );
+      const newer = JSON.stringify({ version: 3, entries: {} });
+      fs.writeFileSync(preferencesPath, newer);
+
+      await expect(
+        getHandler(PIPELINE_CHANNELS.SAVE_MODEL_ALIAS_PREFERENCES)(undefined, {
+          pipelinePreferenceLocator: locator,
+          preferences: { reviewer: { mode: 'inline', base: 'claude-a' } },
+        }),
+      ).resolves.toMatchObject({ success: false });
+      expect(fs.readFileSync(preferencesPath, 'utf8')).toBe(newer);
     });
   });
 
@@ -4521,8 +4627,8 @@ describe('project pipeline handlers', () => {
       const pipelinePackageService =
         await import('../pipelines/pipeline-package-service');
       const remove = jest
-        .spyOn(pipelinePackageService, 'removePackageInstall')
-        .mockResolvedValue(undefined);
+        .spyOn(pipelinePackageService, 'dropPackageInstallInBackground')
+        .mockImplementation(() => undefined);
       mockedSavePipeline.mockReturnValue({
         success: true,
         data: {
@@ -4562,8 +4668,8 @@ describe('project pipeline handlers', () => {
         .spyOn(pipelinePackageService, 'listPackageInstalls')
         .mockResolvedValue([]);
       const remove = jest
-        .spyOn(pipelinePackageService, 'removePackageInstall')
-        .mockResolvedValue(undefined);
+        .spyOn(pipelinePackageService, 'dropPackageInstallInBackground')
+        .mockImplementation(() => undefined);
       jest
         .mocked(pipelineService.deletePipeline)
         .mockReturnValue({ success: true, data: undefined });
@@ -4589,8 +4695,8 @@ describe('project pipeline handlers', () => {
       const pipelinePackageService =
         await import('../pipelines/pipeline-package-service');
       const remove = jest
-        .spyOn(pipelinePackageService, 'removePackageInstall')
-        .mockResolvedValue(undefined);
+        .spyOn(pipelinePackageService, 'dropPackageInstallInBackground')
+        .mockImplementation(() => undefined);
       try {
         jest
           .mocked(pipelineService.deletePipeline)
@@ -5691,6 +5797,67 @@ describe('pipeline-handlers', () => {
       },
     );
   }
+
+  it('notifies watchers once with the stored outcome when a cancelled run reports late', async () => {
+    const running = createState({
+      id: 'exec-late-report',
+      status: 'running',
+      project_id: 'project-1',
+      worktree_id: 'worktree-1',
+    });
+    const cancelled = createState({
+      ...running,
+      status: 'cancelled',
+      completed_at: '2026-05-26T12:30:00.000Z',
+    });
+    let report: ((event: ExecutionEvent) => void) | undefined;
+    mockExecutePipeline.mockImplementationOnce(
+      (
+        _pipeline,
+        options: { onEvent?: (event: ExecutionEvent) => void },
+      ): Promise<ExecutionHandle> => {
+        report = options.onEvent;
+        return Promise.resolve(createHandle(running));
+      },
+    );
+    await registeredHandlers.get(PIPELINE_CHANNELS.EXECUTE)?.(
+      {},
+      { name: 'test', on: 'dispatch', jobs: {} },
+      {
+        cwd: '/workspace/repo',
+        pipelineId: running.pipeline_id,
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+      },
+    );
+    mockCancelPipelineExecution.mockResolvedValueOnce(cancelled);
+    mockLoadExecutionState.mockResolvedValue(cancelled);
+    try {
+      await registeredHandlers.get(PIPELINE_CHANNELS.CANCEL_EXECUTION)?.(
+        {},
+        running.id,
+      );
+      // The forced cancel settled the run; its handle then ends on its own.
+      report?.({
+        executionId: running.id,
+        type: 'execution.failed',
+        state: {
+          ...running,
+          status: 'failure',
+          completed_at: '2026-05-26T12:31:00.000Z',
+        },
+        timestamp: '2026-05-26T12:31:00.000Z',
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mockHandlePipelineTerminalEvent).toHaveBeenCalledTimes(1);
+      expect(mockHandlePipelineTerminalEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: running.id, state: cancelled }),
+      );
+    } finally {
+      mockLoadExecutionState.mockReset();
+    }
+  });
 
   it('prioritizes a known PR refresh when a worktree pipeline succeeds', async () => {
     const executionState = createState({
@@ -7918,6 +8085,71 @@ describe('pipeline-handlers', () => {
     );
   });
 
+  it('delivers a resumed run to windows and watchers through the local worker', async () => {
+    const sourceState = createState({
+      id: 'exec-resumed-fan-out',
+      project_id: 'project-1',
+      worktree_id: 'wt-1',
+    });
+    const finished = createState({
+      ...sourceState,
+      status: 'success',
+      completed_at: '2026-05-26T12:30:00.000Z',
+    });
+    mockLoadExecutionState.mockResolvedValue(sourceState);
+    mockReadPreferencesFile.mockResolvedValue(makePipelinePreferences({}));
+    mockResolveLinearToken.mockResolvedValue(null);
+    mockResumePipeline.mockResolvedValue(createHandle(sourceState));
+
+    await registeredHandlers.get(PIPELINE_CHANNELS.RESUME)?.(
+      {},
+      sourceState.id,
+      {
+        cwd: '/workspace/repo',
+        statusReasonIds: ['123e4567-e89b-42d3-a456-426614174000'],
+      },
+    );
+    const options = mockResumePipeline.mock.calls[0]?.[1];
+    options?.onStepOutput?.({
+      executionId: sourceState.id,
+      jobId: 'build',
+      jobName: 'Build',
+      stepId: 'step-1',
+      stepName: 'Step 1',
+      attempt: 1,
+      stream: 'stdout',
+      data: 'hello',
+    });
+    mockLoadExecutionState.mockResolvedValue(finished);
+    options?.onEvent?.({
+      executionId: sourceState.id,
+      type: 'execution.completed',
+      timestamp: '2026-05-26T12:30:00.000Z',
+      state: finished,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mockSendToAllWindows).toHaveBeenCalledWith(
+      PIPELINE_CHANNELS.STEP_OUTPUT_EVENT,
+      expect.objectContaining({
+        executionId: sourceState.id,
+        stepId: 'step-1',
+      }),
+    );
+    expect(mockSendToAllWindows).toHaveBeenCalledWith(
+      PIPELINE_CHANNELS.EXECUTION_EVENT,
+      expect.objectContaining({
+        executionId: sourceState.id,
+        type: 'execution.completed',
+      }),
+    );
+    expect(mockHandlePipelineTerminalEvent).toHaveBeenCalledTimes(1);
+    expect(mockHandlePipelineTerminalEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: sourceState.id, state: finished }),
+    );
+    mockLoadExecutionState.mockReset();
+  });
+
   it('rejects resume requests with invalid execution ids before loading state', async () => {
     const handler = registeredHandlers.get(PIPELINE_CHANNELS.RESUME);
 
@@ -8609,5 +8841,31 @@ describe('pipeline-handlers', () => {
       expect(result).toEqual({ success: true, data: sourceState });
       expect(mockRetryPipelineExecution).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // CAN-4141: a control core cancelled before its host side ran never
+  // starts anything.
+  it('never runs the host side of a control cancelled before it starts', async () => {
+    const prepared = jest.fn();
+    const staged = stagePipelineControl('cancelled-control', prepared);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      desktopPipelineWorker.control(
+        {
+          operation: 'worker.pipeline.execution.retry',
+          params: {
+            requestId: 'cancelled-control',
+            executionId: 'exec-cancelled',
+            mode: 'failed_only',
+          },
+        },
+        aborted.signal,
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.pipeline.controlFailed' },
+    });
+    expect(prepared).not.toHaveBeenCalled();
+    expect(staged.take().error).toBeInstanceOf(Error);
   });
 });

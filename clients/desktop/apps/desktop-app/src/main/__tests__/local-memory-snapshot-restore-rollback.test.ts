@@ -7,6 +7,15 @@ const mockOutsideEdit: {
   afterRename: ((target: string) => Promise<void>) | null;
 } = { afterStage: null, afterRename: null };
 
+/** A staged memory file, not the scope's manifest or lock bookkeeping. */
+function mockIsStagedMemoryFile(path: string): boolean {
+  return (
+    path.endsWith('.tmp') &&
+    !/[\\/]\.lock[\\/]/.test(path) &&
+    !/[\\/]manifest\.json\./.test(path)
+  );
+}
+
 // A restore stages every file first, so a failed write surfaces when a staged
 // file is renamed over its target, part way through the restore.
 jest.mock('node:fs/promises', () => {
@@ -15,18 +24,19 @@ jest.mock('node:fs/promises', () => {
   return {
     ...actual,
     rename: async (from: string, to: string): Promise<void> => {
-      if (from.endsWith('.tmp') && mockWriteFailure.failOn?.(to)) {
+      const staged = mockIsStagedMemoryFile(from);
+      if (staged && mockWriteFailure.failOn?.(to)) {
         throw new Error('The disk is full');
       }
       await actual.rename(from, to);
-      if (from.endsWith('.tmp')) await mockOutsideEdit.afterRename?.(to);
+      if (staged) await mockOutsideEdit.afterRename?.(to);
     },
     writeFile: async (
       ...args: Parameters<typeof actual.writeFile>
     ): Promise<void> => {
       await actual.writeFile(...args);
       const [file] = args;
-      if (typeof file === 'string' && file.endsWith('.tmp')) {
+      if (typeof file === 'string' && mockIsStagedMemoryFile(file)) {
         await mockOutsideEdit.afterStage?.(file);
       }
     },
@@ -50,6 +60,7 @@ import {
   LOCAL_MEMORY_RESTORE_SCOPE_CHANGED_MESSAGE,
   restoreLocalMemorySnapshot,
 } from '../memory/local/snapshots';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
 
 const PROFILE_TOPIC = 'chat-history-profile.md';
 const PROFILE_LINE =
@@ -65,7 +76,10 @@ async function write(
   await writeFile(path, content, 'utf8');
 }
 
-/** Every file in the scope outside the snapshots folder, with its bytes. */
+/**
+ * Every memory file in the scope outside the snapshots folder, with its
+ * bytes; the manifest's revision is the scope's bookkeeping, not memory.
+ */
 async function scopeFiles(scopeDir: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   async function walk(directory: string): Promise<void> {
@@ -79,7 +93,7 @@ async function scopeFiles(scopeDir: string): Promise<Record<string, string>> {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) {
         if (entry.name !== '.snapshots') await walk(path);
-      } else {
+      } else if (path !== join(scopeDir, 'manifest.json')) {
         files[relative(scopeDir, path)] = await readFile(path, 'utf8');
       }
     }
@@ -111,6 +125,9 @@ describe('a snapshot restore that fails part way', () => {
     mockOutsideEdit.afterStage = null;
     mockOutsideEdit.afterRename = null;
     scopeDir = await mkdtemp(join(tmpdir(), 'local-memory-restore-rollback-'));
+    // A scope this build already gave identities, as every scope is once
+    // written: the restore under test then changes only memory files.
+    await prepareMemoryScopeForWrite(scopeDir);
   });
 
   afterEach(async () => {

@@ -6,10 +6,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import { storedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
+import { sharedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
-import { AdvancedDisclosure, Notice } from '@canopy/ui-shared';
-import { FormField, TextArea } from '@canopy/ui-shared/components';
+import { Disclosure, Notice } from '@canopy/ui-shared';
+import { FormField, TextArea, Heading } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { AutomationTargetRequirementLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { CHAT_LABEL } from '@canopy/protocol';
@@ -165,8 +165,9 @@ export function ShareAutomationModal({
   onOpenAccountSettings,
   onShared,
 }: ShareAutomationModalProps): JSX.Element {
-  // A converted chat automation shares the workflow it runs (CAN-4551).
-  const activity = useMemo(() => storedAutomationActivity(listed), [listed]);
+  // A converted chat automation shares the workflow it runs (CAN-4551); a
+  // converted package install shares the chat action it shows (CAN-5479).
+  const activity = useMemo(() => sharedAutomationActivity(listed), [listed]);
   useCurrentUiStateReporter('sharing.automationDialog', {
     open: true,
     activityId: activity.id,
@@ -1023,10 +1024,10 @@ export function ShareAutomationModal({
           packageReview ||
           (pipelineTargetContexts !== undefined &&
             pipelineTargetContexts.length > 1)) && (
-          <AdvancedDisclosure
+          <Disclosure
             dataTestId="share-automation-advanced"
             label="More details"
-            collapsedHint={runConditionCollapsedHint}
+            hint={runConditionCollapsedHint}
           >
             {pipelineTargetContexts !== undefined &&
               pipelineTargetContexts.length > 1 && (
@@ -1198,9 +1199,9 @@ export function ShareAutomationModal({
             {packageReview}
             {buildResult.ok && (
               <div data-testid="share-automation-preview">
-                <h3 className="text-s font-medium fg-primary">
+                <Heading level={3} variant="title">
                   Shared document
-                </h3>
+                </Heading>
                 <pre
                   className={`${POSTHOG_REPLAY_BLOCK_CLASS} mt-1 max-h-52 overflow-auto rounded-lg bg-secondary p-3 text-xs fg-secondary`}
                 >
@@ -1208,7 +1209,7 @@ export function ShareAutomationModal({
                 </pre>
               </div>
             )}
-          </AdvancedDisclosure>
+          </Disclosure>
         )}
       </div>
     ),

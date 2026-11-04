@@ -474,7 +474,9 @@ test('partial consolidation saves valid topics and keeps existing memory and sou
   const inboxDir = path.join(memoryDir, 'inbox');
   const topicDir = path.join(memoryDir, 'topics');
   const marker = 'Canopy-CCAN2764-PARTIAL';
-  const source = `---\ntype: inbox\n---\n\n[${marker}] Prefer a window seat and preserve the dietary preference.\n`;
+  // Seeded with an ID, so the first write's identity backfill leaves the
+  // note byte-for-byte as it was.
+  const source = `---\nid: "01K5ZQ8Q4F6X9M3N5P7R1T2V31"\ntype: inbox\n---\n\n[${marker}] Prefer a window seat and preserve the dietary preference.\n`;
   const existingTopic = '# Dietary preferences\n\nAvoid peanuts.\n';
   mkdirSync(inboxDir, { recursive: true });
   mkdirSync(topicDir, { recursive: true });
@@ -648,7 +650,8 @@ test('an unavailable chosen memory model skips consolidation and rebuild with a 
   const archiveDir = path.join(inboxDir, '.consolidated');
   const topicDir = path.join(memoryDir, 'topics');
   const index = '# Preferences\n\n- [Diet](topics/diet.md)\n';
-  const pendingNote = '---\ntype: inbox\n---\n\nPrefer a window seat.\n';
+  const pendingNote =
+    '---\nid: "01K5ZQ8Q4F6X9M3N5P7R1T2V32"\ntype: inbox\n---\n\nPrefer a window seat.\n';
   const unavailableModel = 'ollama-offline-memory-model';
   const unavailableMessage =
     "Memory consolidation was skipped: your memory model isn't available. Choose another memory model in settings, or try again once it's available.";
@@ -741,7 +744,7 @@ for (const scenario of [
     const memoryDir = path.join(userDataDir, 'memory');
     const inboxDir = path.join(memoryDir, 'inbox');
     const marker = `Canopy-CCAN2764-${scenario.id}`;
-    const source = `---\ntype: inbox\n---\n\n[${marker}] Prefer a window seat.\n`;
+    const source = `---\nid: "01K5ZQ8Q4F6X9M3N5P7R1T2V33"\ntype: inbox\n---\n\n[${marker}] Prefer a window seat.\n`;
     const originalIndex = '# Preferences\n\n- Keep this original fact.\n';
     mkdirSync(inboxDir, { recursive: true });
     writeFileSync(path.join(memoryDir, 'MEMORY.md'), originalIndex);

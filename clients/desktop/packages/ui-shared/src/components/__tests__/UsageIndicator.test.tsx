@@ -8,6 +8,7 @@ import {
   formatCreditCount,
   UsageIndicatorAccountSummary,
   type UsageIndicatorUsage,
+  getUsageRingTone,
 } from '../UsageIndicator';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../../lib/row-chips';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
@@ -1033,4 +1034,12 @@ describe('UsageIndicator', () => {
 test('a positive fractional wallet never formats as zero', () => {
   expect(formatCreditCount(0.004)).toBe('0.004');
   expect(formatCreditCount(0.000001)).toBe('0.000001');
+});
+
+test('the ring warns from 70% and turns destructive from 90%', () => {
+  expect(getUsageRingTone(10)).toBe('neutral');
+  expect(getUsageRingTone(69.9)).toBe('neutral');
+  expect(getUsageRingTone(70)).toBe('warning');
+  expect(getUsageRingTone(89.9)).toBe('warning');
+  expect(getUsageRingTone(90)).toBe('destructive');
 });

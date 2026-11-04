@@ -5020,11 +5020,15 @@ describe('chat state service', () => {
     f.target.inputDelivery.scheduleHistoryResolution(f.scope);
 
     await waitForHistoryRow(f, (row) => row.state === 'picked-up');
-    expect(
+    // The outcome is recorded after the snapshot read that follows the
+    // pickup commit, which can finish after the row reads as picked up.
+    const outcomes = (): unknown[] =>
       mockInputDeliveryOutcomes
         .filter((record) => record.inputAttemptId === attemptId)
-        .map((record) => record.inputDeliveryOutcome),
-    ).toEqual(['unknown-transport', 'history-delivered']);
+        .map((record) => record.inputDeliveryOutcome);
+    for (let attempt = 0; attempt < 100 && outcomes().length < 2; attempt += 1)
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    expect(outcomes()).toEqual(['unknown-transport', 'history-delivered']);
   });
 
   it.each(['runtime queued messages', 'ledger-only fallback'] as const)(

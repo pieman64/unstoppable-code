@@ -41,6 +41,14 @@ temporary directory.
   drains the queue at once, and any finished hook chat start drains every
   unblocked worktree.
 
+## Hooks on the initiated-work engine (CAN-4144)
+
+`hook-runner.golden.test.ts` runs the hook runner over a real
+`InitiatedWorkEngine` and a temporary operation ledger
+(`helpers/initiated-work-runtime.ts`); its expectations are unchanged. The
+target queue, cancellation generations and the archive fence now come from
+the engine.
+
 ## Changing a golden
 
 Change an expectation only for an intended behavior change, and name it in

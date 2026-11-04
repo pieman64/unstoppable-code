@@ -6,11 +6,8 @@ import {
   isPersonalCatalogProject,
   type PersonalCatalogProject,
 } from '@canopy/protocol/settings/personal-catalog';
-import { Button, Notice } from '@canopy/ui-shared/components';
-import {
-  SETTINGS_CARD_TITLE_CLASS,
-  SettingsCard,
-} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { Button, Notice, Heading } from '@canopy/ui-shared/components';
+import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
 import {
   SettingsConfirmDialog,
   useSettingsBrand,
@@ -132,13 +129,9 @@ export function PersonalCatalogCard(): JSX.Element | null {
   return (
     <SettingsCard
       title={
-        <h2
-          ref={headingRef}
-          tabIndex={-1}
-          className={SETTINGS_CARD_TITLE_CLASS}
-        >
+        <Heading level={2} variant="section" ref={headingRef} tabIndex={-1}>
           Projects shown on the web
-        </h2>
+        </Heading>
       }
       subtitle={`Your desktop shares these project names with ${brand.displayName} so you can open them from ${REMOTE_CONTROL_LABEL}.`}
       testId="personal-catalog-card"

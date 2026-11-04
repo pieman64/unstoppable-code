@@ -19,6 +19,7 @@ import type { OrgModelGateway } from '@/hooks/useOrgModelGateway';
 import { notifyModelGatewayCredentialChanged } from '@/lib/integrationConnectionEvents';
 import {
   Button,
+  DisplayAvatar,
   ProviderStatusDot,
   StatusLabel,
 } from '@canopy/ui-shared/components';
@@ -56,11 +57,13 @@ function OrgGatewayMark({
 }): JSX.Element {
   if (logoUrl) {
     return (
-      <img
-        src={logoUrl}
+      <DisplayAvatar
+        name={name}
+        image={logoUrl}
+        subject="group"
+        size="xs"
         alt={`${name} logo`}
-        data-testid="model-gateway-org-logo"
-        className="h-4 w-4 shrink-0 rounded-sm object-cover"
+        testId="model-gateway-org-logo"
       />
     );
   }

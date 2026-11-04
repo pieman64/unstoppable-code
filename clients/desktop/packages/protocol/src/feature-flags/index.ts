@@ -118,6 +118,20 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 'offered',
     description: 'Availability of the independent Files reads experiment.',
   },
+  canopyDesktopLabsDaemonTerminals: {
+    key: 'canopy-desktop-labs-daemon-terminals',
+    // Off until opted in: new terminals run in the daemon's terminal host.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the daemon terminals experiment.',
+  },
+  canopyDesktopLabsDaemonCodeGraph: {
+    key: 'canopy-desktop-labs-daemon-code-graph',
+    // Off until opted in: renderer graph builds and reads run in the daemon.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    description: 'Availability of the daemon code graph experiment.',
+  },
   canopyDesktopLabsChatAutomationPipelines: {
     key: 'canopy-desktop-labs-chat-automation-pipelines',
     // Off until opted in: an edited chat automation saves as a pipeline.
@@ -513,6 +527,13 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Shows the per-space notification choices and accepts changes to them; never disables reading or enforcing saved choices.',
   },
+  canopyCloudDurableTerminals: {
+    key: 'canopy-cloud-durable-terminals',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    description:
+      'Cloud terminals on durable sandbox terminals through the web core (worker.terminal.*), surviving a page reload',
+  },
   canopyCloudGitEnabled: {
     key: 'canopy-cloud-git-enabled',
     launchDarklyDisabledDefaultValue: false,
@@ -638,6 +659,10 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals
+    .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph
+    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -686,6 +711,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopySharedAutoModelRouting.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]: boolean;
@@ -761,6 +787,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
@@ -888,6 +920,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]:
       CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled
         .launchDarklyDisabledDefaultValue,
@@ -961,6 +996,12 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines
@@ -1091,6 +1132,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]:
       CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyCloudGitEnabled
         .launchDarklyEnabledUnavailableValue,
@@ -1137,6 +1181,8 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,

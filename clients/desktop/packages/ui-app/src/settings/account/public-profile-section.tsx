@@ -9,6 +9,8 @@ import {
   TextArea,
   TextInput,
   ToggleSwitch,
+  Tooltip,
+  Heading,
 } from '@canopy/ui-shared/components';
 
 import { useEffect, useMemo, useState, type JSX } from 'react';
@@ -199,9 +201,9 @@ export function PublicProfileSection({
           <span className="flex h-12 w-12 items-center justify-center rounded-full bg-accent-subtle fg-accent">
             <Globe size={22} aria-hidden="true" />
           </span>
-          <h2 className="mt-4 text-m font-semibold fg-primary">
+          <Heading level={2} variant="section" className="mt-4">
             Set up your public profile
-          </h2>
+          </Heading>
           <p className="mt-2 max-w-md text-s fg-secondary">
             Your public profile is a shareable page that showcases your impact,
             activity, and published work. Claim a username to publish it and
@@ -263,7 +265,6 @@ export function PublicProfileSection({
             <AvatarEditor
               name={name}
               image={image}
-              size={56}
               busy={identityEditor.busy}
               error={identityEditor.error}
               onPick={handlePickAvatar}
@@ -298,17 +299,18 @@ export function PublicProfileSection({
                   >
                     @{claimedUsername}
                   </span>
-                  <Button
-                    size="compact"
-                    variant="ghost"
-                    iconOnly
-                    onClick={() => setShowUsernameEdit(true)}
-                    aria-label="Change username"
-                    title="Change username"
-                    data-testid="public-profile-change-username"
-                  >
-                    <Pencil size={14} aria-hidden="true" />
-                  </Button>
+                  <Tooltip label="Change username">
+                    <Button
+                      size="compact"
+                      variant="ghost"
+                      iconOnly
+                      onClick={() => setShowUsernameEdit(true)}
+                      aria-label="Change username"
+                      data-testid="public-profile-change-username"
+                    >
+                      <Pencil size={14} aria-hidden="true" />
+                    </Button>
+                  </Tooltip>
                 </p>
               )}
             </div>

@@ -67,6 +67,16 @@ const mockWriteWorkspaceIndex = jest.fn();
 const mockToWorkspaceIndexEntry = jest.fn();
 jest.mock('../lib/sidebar-items', () => ({
   readAllSidebarItems: jest.fn(() => rows),
+  readAllSidebarItemsSnapshot: jest.fn(() =>
+    Promise.resolve({
+      file: { version: 1, items: [] },
+      authority: 'ok',
+      indexAuthority: 'ok',
+      indexedWorkspaceIds: [],
+      workspaceReads: new Map(),
+      storedFields: [],
+    }),
+  ),
   writeWorkspaceIndex: (...args: unknown[]): void => {
     mockWriteWorkspaceIndex(...args);
   },

@@ -1,18 +1,11 @@
 import path from 'node:path';
 import { statSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   getCanonicalCanopyToolKey,
   isCodeGraphInjectedToolKey,
 } from '@canopy/desktop-shared/lib/canopy-injected-tools';
-import {
-  CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_MAX_BYTES,
-  customLanguagesConfigPath,
-  parseCustomLanguagesConfig,
-  readBoundedCodeGraphCustomLanguageFile,
-  validateCustomLanguageEntries,
-} from '@canopy/code-graph/languages/custom-config';
+import { validateWorktreeCodeGraphLanguages } from '../code-graph/graph-reads';
 
 const getContextToolName =
   CANOPY_INJECTED_TOOL_REGISTRY.get_code_graph_context.claudeToolName;
@@ -578,27 +571,18 @@ function isEligibleSourcePath(
   );
 }
 
-export async function loadConfiguredClaudeCodeGraphSourceExtensions(
-  cwd: string,
-): Promise<readonly string[]> {
+/**
+ * The custom source extensions the worktree's graph configuration adds, as the
+ * worker validates them; none when the configuration is absent or invalid, or
+ * the worker cannot answer.
+ */
+export async function loadConfiguredClaudeCodeGraphSourceExtensions(scope: {
+  projectId: string;
+  worktreeId: string;
+}): Promise<readonly string[]> {
   try {
-    const configPath = customLanguagesConfigPath(cwd);
-    const configRealPath = await realpath(configPath);
-    const config = await readBoundedCodeGraphCustomLanguageFile(
-      configPath,
-      configRealPath,
-      CODE_GRAPH_CUSTOM_LANGUAGES_CONFIG_MAX_BYTES,
-    );
-    if (config.kind !== 'present') {
-      return [];
-    }
-    const parsed = parseCustomLanguagesConfig(config.bytes.toString('utf8'));
-    if (!parsed.ok) {
-      return [];
-    }
-    return validateCustomLanguageEntries(parsed.rawEntries).entries.flatMap(
-      (entry) => entry.extensions,
-    );
+    const validation = await validateWorktreeCodeGraphLanguages(scope);
+    return validation.languages.flatMap((language) => language.extensions);
   } catch {
     return [];
   }

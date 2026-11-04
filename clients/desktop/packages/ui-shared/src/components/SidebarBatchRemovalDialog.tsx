@@ -11,6 +11,7 @@ import {
   unitCountLabel,
   type SidebarBatchUnitLabel,
 } from './worktree-count-label';
+import { Heading } from './Heading';
 
 export type SidebarBatchRemovalDialogMode = 'archive' | 'delete';
 
@@ -287,12 +288,9 @@ function ExcludedRows({
       aria-labelledby={`${testId}-excluded-heading`}
       data-testid={`${testId}-excluded`}
     >
-      <h3
-        id={`${testId}-excluded-heading`}
-        className="text-xs font-medium fg-tertiary"
-      >
+      <Heading level={3} variant="label" id={`${testId}-excluded-heading`}>
         Not included ({excluded.length})
-      </h3>
+      </Heading>
       <ul className="flex max-h-40 flex-col gap-2 overflow-y-auto">
         {excluded.map((row) => (
           <li

@@ -106,6 +106,12 @@ describe('PipelineRunsSectionBody', () => {
     container.remove();
   });
 
+  /** The hidden group's scroll area, the first thing in the disclosure body. */
+  function hiddenGroup(): Element | null | undefined {
+    return container.querySelector('[data-testid="pipeline-hidden-body"]')
+      ?.firstElementChild;
+  }
+
   it.each([
     ['card', 'space-y-2', 'max-h-76 space-y-2 overflow-y-auto'],
     [
@@ -148,8 +154,8 @@ describe('PipelineRunsSectionBody', () => {
     // lint can read it; this keeps that literal equal to the shared constant
     // the Plans section uses.
     expect(FRAMELESS_HIDDEN_GROUP_MAX_H).toBe('max-h-60');
-    expect(disclosure?.nextElementSibling?.className).toBe(
-      `flex min-h-0 flex-col mt-2 ${FRAMELESS_HIDDEN_GROUP_MAX_H}`,
+    expect(hiddenGroup()?.className).toBe(
+      `flex min-h-0 flex-col ${FRAMELESS_HIDDEN_GROUP_MAX_H}`,
     );
   });
 
@@ -158,9 +164,8 @@ describe('PipelineRunsSectionBody', () => {
     const disclosure = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.includes('Hidden (1)'),
     );
-    expect(disclosure?.nextElementSibling?.className).toBe(
-      'flex min-h-0 flex-col mt-2 max-h-76',
-    );
+    expect(disclosure?.getAttribute('aria-expanded')).toBe('true');
+    expect(hiddenGroup()?.className).toBe('flex min-h-0 flex-col max-h-76');
   });
 
   it('uses an overlay scrollbar without reserving run-list width', () => {

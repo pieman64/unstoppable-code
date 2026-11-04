@@ -1,6 +1,16 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { normalizePluginSelections } from '@canopy/desktop-shared/lib/plugin-selections-normalization';
 import { serializePipelinePreferenceLocator } from '@canopy/desktop-shared/pipelines/plugin-collections';
+import {
+  isShareablePluginRef,
+  type ShareablePluginRef,
+} from '@canopy/desktop-shared/plugin-refs';
+import {
+  APPROVAL_MODES,
+  type ApprovalMode,
+} from '@canopy/desktop-shared/types/approvals';
+import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import type {
   PipelineAgentAuthor,
   PipelineAgentChatAddress,
@@ -24,6 +34,41 @@ export interface PipelineLocalMetadata {
    * automation is gone, or no longer runs this pipeline, is stale and ignored.
    */
   ownerAutomationId?: string;
+  /**
+   * CAN-5479: the authority the chat action of the automation that owns this
+   * pipeline set when main last generated it. An agent-originated run of
+   * exactly that revision keeps it, where D11 would refuse it; an agent's
+   * update converts back with it, never with a hand-edited pipeline's.
+   * Written by main alone, never from a request body; a person's own save
+   * of the pipeline clears it.
+   */
+  nativeGrant?: PipelineNativeGrant;
+}
+
+/**
+ * The authority a converted automation's native action set: what D11
+ * refuses an agent-originated run that creates a chat.
+ */
+export interface PipelineNativeGrantAuthority {
+  approvalMode?: ApprovalMode;
+  plugins?: ShareablePluginRef[];
+  /** An Orchestrator prompt's model. */
+  model?: string;
+  /**
+   * Local plugin selections. They reach the send step through the
+   * automation's inputs, which the content hash doesn't cover.
+   */
+  pluginSelections?: ChatTabPluginSelections;
+}
+
+/**
+ * A native grant, bound to the automation it was minted for and to the
+ * pipeline's revision and content as saved: any later write fails it closed.
+ */
+export interface PipelineNativeGrant extends PipelineNativeGrantAuthority {
+  automationId: string;
+  pipelineRevision: number;
+  contentHash: string;
 }
 
 interface PipelineLocalMetadataFile {
@@ -73,7 +118,52 @@ function normalizeEntry(value: unknown): PipelineLocalMetadata {
   }
   const ownerAutomationId = nonEmptyString(value.ownerAutomationId);
   if (ownerAutomationId) entry.ownerAutomationId = ownerAutomationId;
+  const nativeGrant = normalizeNativeGrant(value.nativeGrant);
+  if (nativeGrant) entry.nativeGrant = nativeGrant;
   return entry;
+}
+
+/** A grant with any field it can't trust is dropped whole: it fails closed. */
+function normalizeNativeGrant(value: unknown): PipelineNativeGrant | undefined {
+  if (!isRecord(value)) return undefined;
+  const automationId = nonEmptyString(value.automationId);
+  const contentHash = nonEmptyString(value.contentHash);
+  const { pipelineRevision, approvalMode, plugins, model, pluginSelections } =
+    value;
+  if (
+    !automationId ||
+    !contentHash ||
+    typeof pipelineRevision !== 'number' ||
+    !Number.isInteger(pipelineRevision)
+  )
+    return undefined;
+  const mode =
+    approvalMode === undefined
+      ? undefined
+      : APPROVAL_MODES.find((candidate) => candidate === approvalMode);
+  if (approvalMode !== undefined && mode === undefined) return undefined;
+  const refs: ShareablePluginRef[] | null | undefined =
+    plugins === undefined
+      ? undefined
+      : Array.isArray(plugins) && plugins.every(isShareablePluginRef)
+        ? plugins
+        : null;
+  if (refs === null) return undefined;
+  const grantModel = model === undefined ? undefined : nonEmptyString(model);
+  if (model !== undefined && grantModel === undefined) return undefined;
+  if (pluginSelections !== undefined && !isRecord(pluginSelections))
+    return undefined;
+  return {
+    automationId,
+    pipelineRevision,
+    contentHash,
+    ...(mode !== undefined ? { approvalMode: mode } : {}),
+    ...(refs !== undefined ? { plugins: refs } : {}),
+    ...(grantModel !== undefined ? { model: grantModel } : {}),
+    ...(pluginSelections !== undefined
+      ? { pluginSelections: normalizePluginSelections(pluginSelections) }
+      : {}),
+  };
 }
 
 /**
@@ -217,20 +307,48 @@ export function recordUserPipelineOwner(
   updateUserPipelineEntry(pipelineId, (entry) => ({ ...entry, owner }));
 }
 
-/** `null` clears the marker, as when the user saves the pipeline themselves. */
+/**
+ * `null` clears the marker, as when the user saves the pipeline themselves,
+ * and with it any native grant (CAN-5479): the person's content is then the
+ * pipeline's authority. An agent's write keeps the grant, which its new
+ * revision fails at run time.
+ */
 export function setUserPipelineAgentAuthor(
   pipelineId: string,
   author: PipelineAgentAuthor | null,
 ): void {
   const key = userPipelineKey(pipelineId);
-  if (author === null && !readMetadataFile().entries[key]?.agentAuthor) return;
-  updateUserPipelineEntry(pipelineId, (entry) => ({
-    ...(entry.owner === undefined ? {} : { owner: entry.owner }),
-    ...(author ? { agentAuthor: author } : {}),
-    ...(entry.ownerAutomationId === undefined
-      ? {}
-      : { ownerAutomationId: entry.ownerAutomationId }),
-  }));
+  const current = readMetadataFile().entries[key];
+  if (author === null && !current?.agentAuthor && !current?.nativeGrant) return;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { agentAuthor, nativeGrant, ...rest } = entry;
+    void agentAuthor;
+    return author
+      ? {
+          ...rest,
+          agentAuthor: author,
+          ...(nativeGrant === undefined ? {} : { nativeGrant }),
+        }
+      : rest;
+  });
+}
+
+/**
+ * Records, or with `null` clears, the native grant of the automation that
+ * owns the pipeline (CAN-5479). Main alone writes it, when it generates the
+ * pipeline from the automation's chat action; never from a request body.
+ */
+export function setUserPipelineNativeGrant(
+  pipelineId: string,
+  grant: PipelineNativeGrant | null,
+): void {
+  const key = userPipelineKey(pipelineId);
+  if (grant === null && !readMetadataFile().entries[key]?.nativeGrant) return;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { nativeGrant, ...rest } = entry;
+    void nativeGrant;
+    return grant === null ? rest : { ...rest, nativeGrant: grant };
+  });
 }
 
 /** `null` clears the owning automation (CAN-4551). */

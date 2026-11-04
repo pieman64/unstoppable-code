@@ -2,7 +2,6 @@
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SETTINGS_CARD_SUBTITLE_CLASS,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 
@@ -19,6 +18,7 @@ import {
   FormField,
   SettingsRowsRow,
   ToggleSwitch,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { organizationBillingPath } from '@canopy/protocol/billing';
 import {
@@ -184,7 +184,9 @@ function UsageStatsCard({
       data-testid="team-usage-settings-section"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Statistics</h2>
+        <Heading level={2} variant="section">
+          Statistics
+        </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
           Choose the minimum role that can open the statistics dashboard. It
           only ever shows aggregated counts and cost — never message content.
@@ -507,7 +509,9 @@ function EnforcedSettingsCard({
       data-testid="team-enforced-settings-section"
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <h2 className={SETTINGS_CARD_TITLE_CLASS}>Data sharing</h2>
+        <Heading level={2} variant="section">
+          Data sharing
+        </Heading>
         <p className={SETTINGS_CARD_SUBTITLE_CLASS}>
           {`Choose what agent activity members may share with ${brand.displayName} from this organization's work. Anything turned off here is not shared. Basic usage counts are still collected. Personal work follows each member's own settings.`}
         </p>

@@ -3,6 +3,7 @@ import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 import { McpServerLogo } from './McpServerLogo';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
+import { Heading } from './Heading';
 
 /** One row in a related-items section (CAN-2382). */
 export interface RelatedItemRow {
@@ -53,11 +54,13 @@ export function RelatedItemsSection({
   const list = presentation === 'list';
   return (
     <section data-testid={testId}>
-      <h3
-        className={`text-s font-semibold fg-primary ${description ? 'mb-1' : 'mb-3'}`}
+      <Heading
+        level={3}
+        variant="title"
+        className={description ? 'mb-1' : 'mb-3'}
       >
         {title}
-      </h3>
+      </Heading>
       {description && (
         <p className="text-xs fg-secondary mb-3">{description}</p>
       )}

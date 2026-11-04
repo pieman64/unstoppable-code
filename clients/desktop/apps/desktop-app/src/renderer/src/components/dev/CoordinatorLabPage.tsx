@@ -12,10 +12,13 @@ import {
 import {
   Button,
   DialogModal,
+  Disclosure,
+  Heading,
   Notice,
   OverlayScrollArea,
   RunSpinner,
   SegmentedControl,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import {
   BellIcon,
@@ -416,7 +419,9 @@ export function CoordinatorLabPage(): JSX.Element {
         <div className="mx-auto w-full max-w-260 px-10 pb-20 pt-12">
           <header className="mb-10 flex flex-wrap items-end justify-between gap-6">
             <div className="min-w-0 space-y-1">
-              <h1 className="text-xl font-medium fg-primary">Chats</h1>
+              <Heading level={1} variant="page">
+                Chats
+              </Heading>
               <p className="text-s fg-secondary">
                 Worktree {state?.worktreeId ?? 'tuatara'} · updates live
               </p>
@@ -643,29 +648,41 @@ export function CoordinatorLabPage(): JSX.Element {
             )}
             {gallery && gallery.list.length > 1 ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => step(-1)}
-                  aria-label="Previous"
-                  title="Previous (←)"
-                  className="focus-ring absolute left-4 top-1/2 z-10 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
-                >
-                  <ChevronRightIcon
-                    width={16}
-                    height={16}
-                    aria-hidden={true}
-                    className="rotate-180"
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => step(1)}
-                  aria-label="Next"
-                  title="Next (→)"
-                  className="focus-ring absolute right-4 top-1/2 z-10 flex size-9 -translate-y-1/2 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
-                >
-                  <ChevronRightIcon width={16} height={16} aria-hidden={true} />
-                </button>
+                {/* The holder places each arrow; the tooltip wraps the
+                    button inside it. */}
+                <div className="absolute left-4 top-1/2 z-10 flex -translate-y-1/2">
+                  <Tooltip label="Previous" shortcut="←">
+                    <button
+                      type="button"
+                      onClick={() => step(-1)}
+                      aria-label="Previous"
+                      className="focus-ring flex size-9 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
+                    >
+                      <ChevronRightIcon
+                        width={16}
+                        height={16}
+                        aria-hidden={true}
+                        className="rotate-180"
+                      />
+                    </button>
+                  </Tooltip>
+                </div>
+                <div className="absolute right-4 top-1/2 z-10 flex -translate-y-1/2">
+                  <Tooltip label="Next" shortcut="→">
+                    <button
+                      type="button"
+                      onClick={() => step(1)}
+                      aria-label="Next"
+                      className="focus-ring flex size-9 items-center justify-center rounded-full bg-base fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-base transition-colors hover:fg-primary"
+                    >
+                      <ChevronRightIcon
+                        width={16}
+                        height={16}
+                        aria-hidden={true}
+                      />
+                    </button>
+                  </Tooltip>
+                </div>
               </>
             ) : null}
           </DialogModal>
@@ -974,7 +991,6 @@ function ChatCard({
   onToggleReview: () => void;
   onShot: (s: Shot) => void;
 }): JSX.Element {
-  const panelId = `chat-${c.id}-details`;
   const reply = c.lastText.trim();
   const media = cardMedia(c);
   const hasReview =
@@ -1005,7 +1021,9 @@ function ChatCard({
           <StatusGlyph chat={c} group={group} />
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <h3 className="truncate text-s font-medium fg-primary">{c.title}</h3>
+          <Heading level={3} variant="title" truncate>
+            {c.title}
+          </Heading>
           <p
             className={`text-s ${
               group === 'needs'
@@ -1036,8 +1054,8 @@ function ChatCard({
         ) : null
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-4 pl-7">
-        {hasReview && !reviewOpen ? (
+      {hasReview && !reviewOpen ? (
+        <div className="pl-7">
           <button
             type="button"
             onClick={onToggleReview}
@@ -1046,50 +1064,42 @@ function ChatCard({
             <ChevronRightIcon width={14} height={14} aria-hidden={true} />
             {reviewSummary(c, media)}
           </button>
-        ) : null}
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={panelId}
-          onClick={onToggle}
-          className="focus-ring -ml-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-xs fg-secondary transition-colors hover:fg-primary"
-        >
-          <ChevronRightIcon
-            width={14}
-            height={14}
-            aria-hidden={true}
-            className={`motion-safe:transition-transform ${expanded ? 'rotate-90' : ''}`}
-          />
-          {expanded ? 'Hide details' : 'Show details'}
-        </button>
-      </div>
-
-      {expanded ? (
-        <div id={panelId} className="flex flex-col gap-4 pl-7">
-          {c.note ? (
-            <p className="text-xs text-pretty fg-secondary">{c.note}</p>
-          ) : null}
-          {c.queued.length > 0 ? (
-            <p className="text-xs fg-secondary">
-              <span className="tabular-nums">{c.queued.length}</span>{' '}
-              {c.queued.length > 1 ? 'messages are' : 'message is'} waiting to
-              be read
-            </p>
-          ) : null}
-          {group === 'running' && c.activity.length > 0 ? (
-            <Steps activity={c.activity.slice(0, 8)} now={now} />
-          ) : null}
-          {reply ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-xs fg-tertiary">
-                Last reply ·{' '}
-                <span className="tabular-nums">{ago(c.lastTextAt, now)}</span>
-              </p>
-              <Rich text={reply} />
-            </div>
-          ) : null}
         </div>
       ) : null}
+
+      <div className="pl-7">
+        <Disclosure
+          label="Details"
+          open={expanded}
+          onOpenChange={onToggle}
+          dataTestId={`coordinator-lab-chat-${c.id}-details`}
+        >
+          <div className="flex flex-col gap-4">
+            {c.note ? (
+              <p className="text-xs text-pretty fg-secondary">{c.note}</p>
+            ) : null}
+            {c.queued.length > 0 ? (
+              <p className="text-xs fg-secondary">
+                <span className="tabular-nums">{c.queued.length}</span>{' '}
+                {c.queued.length > 1 ? 'messages are' : 'message is'} waiting to
+                be read
+              </p>
+            ) : null}
+            {group === 'running' && c.activity.length > 0 ? (
+              <Steps activity={c.activity.slice(0, 8)} now={now} />
+            ) : null}
+            {reply ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs fg-tertiary">
+                  Last reply ·{' '}
+                  <span className="tabular-nums">{ago(c.lastTextAt, now)}</span>
+                </p>
+                <Rich text={reply} />
+              </div>
+            ) : null}
+          </div>
+        </Disclosure>
+      </div>
     </li>
   );
 }
@@ -1771,28 +1781,28 @@ function PictureViewer({
             {bases.map((b, i) => {
               const t = thumbFor(b);
               return (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => setBaseIndex(i)}
-                  aria-label={humanName(b)}
-                  aria-current={i === page ? 'true' : undefined}
-                  title={humanName(b)}
-                  className={`focus-ring h-11 w-16 shrink-0 overflow-hidden rounded-md bg-tertiary ring-[length:var(--border-hairline)] transition-colors ${
-                    i === page
-                      ? 'ring-2 ring-line-secondary opacity-100'
-                      : 'ring-line-base opacity-60 hover:opacity-100'
-                  }`}
-                >
-                  {t && !isVideoPath(t.path) ? (
-                    <img
-                      src={shotUrl(t)}
-                      alt=""
-                      loading="lazy"
-                      className="h-full w-full object-cover object-top"
-                    />
-                  ) : null}
-                </button>
+                <Tooltip key={b} label={humanName(b)}>
+                  <button
+                    type="button"
+                    onClick={() => setBaseIndex(i)}
+                    aria-label={humanName(b)}
+                    aria-current={i === page ? 'true' : undefined}
+                    className={`focus-ring h-11 w-16 shrink-0 overflow-hidden rounded-md bg-tertiary ring-[length:var(--border-hairline)] transition-colors ${
+                      i === page
+                        ? 'ring-2 ring-line-secondary opacity-100'
+                        : 'ring-line-base opacity-60 hover:opacity-100'
+                    }`}
+                  >
+                    {t && !isVideoPath(t.path) ? (
+                      <img
+                        src={shotUrl(t)}
+                        alt=""
+                        loading="lazy"
+                        className="h-full w-full object-cover object-top"
+                      />
+                    ) : null}
+                  </button>
+                </Tooltip>
               );
             })}
           </div>

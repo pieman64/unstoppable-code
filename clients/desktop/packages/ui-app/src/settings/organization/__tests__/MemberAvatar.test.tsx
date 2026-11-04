@@ -1,17 +1,5 @@
 import { renderToString } from 'react-dom/server';
-import { MemberAvatar, initialsOf } from '../MemberAvatar';
-
-describe('initialsOf', () => {
-  it('builds up-to-2-letter uppercase initials', () => {
-    expect(initialsOf('Grace Hopper')).toBe('GH');
-    expect(initialsOf('madonna')).toBe('M');
-  });
-
-  it('falls back to "?" when no usable characters exist', () => {
-    expect(initialsOf('')).toBe('?');
-    expect(initialsOf('   ')).toBe('?');
-  });
-});
+import { MemberAvatar } from '../MemberAvatar';
 
 describe('MemberAvatar', () => {
   it('renders the initials placeholder when no image is present', () => {
@@ -19,8 +7,6 @@ describe('MemberAvatar', () => {
       <MemberAvatar name="Grace Hopper" image={null} />,
     );
     expect(html).toContain('GH');
-    expect(html).toContain('bg-accent');
-    expect(html).toContain('fg-emphasis');
     // No <img> for the placeholder treatment.
     expect(html).not.toContain('<img');
   });

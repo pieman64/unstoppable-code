@@ -235,6 +235,7 @@ import {
   listPipelinePackageInstalls,
   removeCapabilityPackageInstall,
   removePipelinePackageInstall,
+  repinCapabilityPackageInstallLocalContent,
   upsertPipelinePackageInstall,
   upsertCapabilityPackageInstall,
 } from './pipeline-package-install-store';
@@ -690,21 +691,51 @@ async function replaceDismissalsIfCurrent(
   scopeKey: string,
   requestToken: symbol,
   records: Parameters<typeof replacePipelinePackageDismissals>[2],
-): Promise<void> {
+): Promise<'replaced' | 'refused' | 'superseded'> {
   const previous = dismissalWriteQueues.get(scopeKey) ?? Promise.resolve();
   const write = previous.then(async () => {
-    if (activeAnalysisRequests.get(scopeKey) !== requestToken) return;
-    await replacePipelinePackageDismissals(storePath, scopeKey, records);
+    if (activeAnalysisRequests.get(scopeKey) !== requestToken)
+      return 'superseded' as const;
+    return replacePipelinePackageDismissals(storePath, scopeKey, records);
   });
-  const tail = write.catch(() => undefined);
+  const tail = write.then(
+    () => undefined,
+    () => undefined,
+  );
   dismissalWriteQueues.set(scopeKey, tail);
   try {
-    await write;
+    return await write;
   } finally {
     if (dismissalWriteQueues.get(scopeKey) === tail) {
       dismissalWriteQueues.delete(scopeKey);
     }
   }
+}
+
+/**
+ * Saves a request's dismissals and returns the scope's current ones. When the
+ * store refuses the save (a newer or unreadable file), the request's own
+ * dismissals still apply to this analysis.
+ */
+async function resolveDismissedInvocations(
+  storePath: string,
+  scopeKey: string,
+  requestToken: symbol,
+  requested: Parameters<typeof replacePipelinePackageDismissals>[2] | undefined,
+): Promise<Parameters<typeof replacePipelinePackageDismissals>[2]> {
+  if (
+    requested !== undefined &&
+    (await replaceDismissalsIfCurrent(
+      storePath,
+      scopeKey,
+      requestToken,
+      requested,
+    )) === 'refused'
+  )
+    return requested;
+  return (await listPipelinePackageDismissals(storePath, scopeKey)).map(
+    ({ provider, token }) => ({ provider, token }),
+  );
 }
 
 async function buildRepoLocalInvocables(
@@ -1151,25 +1182,16 @@ export async function analyzePackageRequest(
       storedPipelinePath?.success && storedPipelinePath.data
         ? path.dirname(storedPipelinePath.data)
         : undefined;
-    const dismissalStorePath = getPipelinePackageDismissalStorePath();
-    if (
-      options.persistDismissals !== false &&
-      input.dismissedInvocations !== undefined
-    ) {
-      await replaceDismissalsIfCurrent(
-        dismissalStorePath,
-        scopeKey,
-        requestToken,
-        input.dismissedInvocations,
-      );
-    }
     const dismissedInvocations =
       options.persistDismissals === false &&
       input.dismissedInvocations !== undefined
         ? input.dismissedInvocations
-        : (
-            await listPipelinePackageDismissals(dismissalStorePath, scopeKey)
-          ).map(({ provider, token }) => ({ provider, token }));
+        : await resolveDismissedInvocations(
+            getPipelinePackageDismissalStorePath(),
+            scopeKey,
+            requestToken,
+            input.dismissedInvocations,
+          );
     const portable = await buildPortablePipelineResources({
       pipeline,
       inventory,
@@ -1221,7 +1243,7 @@ export async function analyzePackageRequest(
     });
     if (options.persistDismissals !== false)
       await replaceDismissalsIfCurrent(
-        dismissalStorePath,
+        getPipelinePackageDismissalStorePath(),
         scopeKey,
         requestToken,
         analysis.summary.dismissedInvocations ?? [],
@@ -1563,18 +1585,12 @@ export async function analyzeAutomationCapabilityPackage(
       ...childAssetsBlockers(childrenWithAssets),
       ...publicAudienceAssetsBlockers(input.audience, packagedPipelines),
     );
-    const dismissalStorePath = getPipelinePackageDismissalStorePath();
-    if (input.dismissedInvocations !== undefined) {
-      await replaceDismissalsIfCurrent(
-        dismissalStorePath,
-        scopeKey,
-        requestToken,
-        input.dismissedInvocations,
-      );
-    }
-    const dismissedInvocations = (
-      await listPipelinePackageDismissals(dismissalStorePath, scopeKey)
-    ).map(({ provider, token }) => ({ provider, token }));
+    const dismissedInvocations = await resolveDismissedInvocations(
+      getPipelinePackageDismissalStorePath(),
+      scopeKey,
+      requestToken,
+      input.dismissedInvocations,
+    );
     const analysis = await analyzeCapabilityPackage({
       // Pipeline-driving automations execute these exact bundled YAML bytes.
       // Keying the manifest to them lets the normal pipeline executor verify
@@ -1612,7 +1628,7 @@ export async function analyzeAutomationCapabilityPackage(
       ]),
     });
     await replaceDismissalsIfCurrent(
-      dismissalStorePath,
+      getPipelinePackageDismissalStorePath(),
       scopeKey,
       requestToken,
       analysis.summary.dismissedInvocations ?? [],
@@ -1687,18 +1703,12 @@ export async function analyzeSubjectCapabilityPackage(
         )
         .map((entry) => entry.id);
     }
-    const dismissalStorePath = getPipelinePackageDismissalStorePath();
-    if (input.dismissedInvocations !== undefined) {
-      await replaceDismissalsIfCurrent(
-        dismissalStorePath,
-        input.scopeKey,
-        requestToken,
-        input.dismissedInvocations,
-      );
-    }
-    const dismissedInvocations = (
-      await listPipelinePackageDismissals(dismissalStorePath, input.scopeKey)
-    ).map(({ provider, token }) => ({ provider, token }));
+    const dismissedInvocations = await resolveDismissedInvocations(
+      getPipelinePackageDismissalStorePath(),
+      input.scopeKey,
+      requestToken,
+      input.dismissedInvocations,
+    );
     const analysis = await analyzeCapabilityPackage({
       rawContent: input.rawContent,
       invocableInventory: inventory,
@@ -1730,7 +1740,7 @@ export async function analyzeSubjectCapabilityPackage(
       dismissedInvocations,
     });
     await replaceDismissalsIfCurrent(
-      dismissalStorePath,
+      getPipelinePackageDismissalStorePath(),
       input.scopeKey,
       requestToken,
       analysis.summary.dismissedInvocations ?? [],
@@ -1839,25 +1849,16 @@ export async function analyzeSkillCapabilityPackage(
       required: true,
       bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
     }));
-    const dismissalStorePath = getPipelinePackageDismissalStorePath();
-    if (
-      options.persistDismissals !== false &&
-      input.dismissedInvocations !== undefined
-    ) {
-      await replaceDismissalsIfCurrent(
-        dismissalStorePath,
-        scopeKey,
-        requestToken,
-        input.dismissedInvocations,
-      );
-    }
     const dismissedInvocations =
       options.persistDismissals === false &&
       input.dismissedInvocations !== undefined
         ? input.dismissedInvocations
-        : (
-            await listPipelinePackageDismissals(dismissalStorePath, scopeKey)
-          ).map(({ provider, token }) => ({ provider, token }));
+        : await resolveDismissedInvocations(
+            getPipelinePackageDismissalStorePath(),
+            scopeKey,
+            requestToken,
+            input.dismissedInvocations,
+          );
     const analysis = await analyzeCapabilityPackage({
       rawContent: input.rawSkill,
       invocableInventory: inventory,
@@ -1882,7 +1883,7 @@ export async function analyzeSkillCapabilityPackage(
     });
     if (options.persistDismissals !== false)
       await replaceDismissalsIfCurrent(
-        dismissalStorePath,
+        getPipelinePackageDismissalStorePath(),
         scopeKey,
         requestToken,
         analysis.summary.dismissedInvocations ?? [],
@@ -2650,8 +2651,28 @@ export async function removePackageInstall(
   );
 }
 
+/**
+ * Drops a definition's install record after an edit or delete without failing
+ * that effect. A record left behind is harmless: execution drops a record
+ * whose workflow is gone or no longer matches its pinned hash.
+ */
+export function dropPackageInstallInBackground(localPipelineId: string): void {
+  void removePackageInstall(localPipelineId).catch((error: unknown) => {
+    logMainProcessWarn(
+      '[pipelines] Could not drop a package install record',
+      error,
+    );
+  });
+}
+
+/**
+ * The installed package a stored run executes with. With the document core
+ * admitted, the install record must bind exactly that document; without one
+ * the stored file is read, as for a run core has no definition for.
+ */
 export async function resolveInstalledPipelinePackageForExecution(
   localPipelineId: string,
+  admittedDocument?: string,
 ): Promise<
   | {
       digest: string;
@@ -2667,12 +2688,15 @@ export async function resolveInstalledPipelinePackageForExecution(
   if (!install || install.distributionMode === 'definition_only') {
     return undefined;
   }
-  const pipelinePath = localPipelineService.getPipelinePath(localPipelineId);
-  if (!pipelinePath.success || !pipelinePath.data) {
-    await removePackageInstall(localPipelineId);
-    return undefined;
+  let rawPipeline = admittedDocument;
+  if (rawPipeline === undefined) {
+    const pipelinePath = localPipelineService.getPipelinePath(localPipelineId);
+    if (!pipelinePath.success || !pipelinePath.data) {
+      await removePackageInstall(localPipelineId);
+      return undefined;
+    }
+    rawPipeline = await readFile(pipelinePath.data, 'utf8');
   }
-  const rawPipeline = await readFile(pipelinePath.data, 'utf8');
   if (hashPipelinePackageYaml(rawPipeline) !== install.pipelineContentHash) {
     await removePackageInstall(localPipelineId);
     return undefined;
@@ -2982,6 +3006,25 @@ export async function resolveInstalledAutomationPipelinePackage(
     manifest,
     cachedPackagePath,
   };
+}
+
+/**
+ * Moves an automation's package install to `next` local content while it
+ * still pins `expected`, so a re-share of the automation, which hashes what
+ * the automation now shows, still matches its install (CAN-5479: a converted
+ * chat automation shows the chat action its own workflow stands for).
+ */
+export async function repinAutomationCapabilityPackageContent(
+  localAutomationId: string,
+  expected: string,
+  next: string,
+): Promise<boolean> {
+  return repinCapabilityPackageInstallLocalContent(
+    getPipelinePackageInstallStorePath(),
+    { kind: 'automation', localAutomationId },
+    expected,
+    next,
+  );
 }
 
 /**

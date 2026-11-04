@@ -19,7 +19,6 @@ import {
 } from '../icons';
 import { BundleIcon, RepoIcon } from '../icons/AppIcons';
 import { formatDate } from '../lib/format-date';
-import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import {
   ProviderSupportIcons,
   type ProviderSupportScope,
@@ -30,6 +29,14 @@ import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { SegmentedControl } from './SegmentedControl';
 import { Badge } from './Badge';
+import {
+  DataTableBody,
+  DataTableCell,
+  DataTableFrame,
+  DataTableHead,
+  DataTableHeaderCell,
+  DataTableRow,
+} from './DataTable';
 import { Button } from './Button';
 import { Checkbox, ChoiceField } from './Choice';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
@@ -394,13 +401,12 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
     if (!disabled) onToggle(row.key);
   };
   return (
-    <tr
+    <DataTableRow
       ref={measureRef}
       data-index={virtualIndex}
-      className="border-b transition-colors last:border-b-0 hover:bg-secondary/30"
       title={row.toggleReason}
     >
-      <td className="px-3 py-1 text-center">
+      <DataTableCell align="center">
         {row.selectionAction}
         {(!row.selectionAction || checked) && (
           <Checkbox
@@ -420,8 +426,8 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             }
           />
         )}
-      </td>
-      <td className="max-w-0 px-3 py-1">
+      </DataTableCell>
+      <DataTableCell overflow="wrap">
         <button
           type="button"
           onClick={handleToggle}
@@ -512,8 +518,8 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             {row.toggleReason ?? (checked ? 'Selected' : 'Available to enable')}
           </p>
         )}
-      </td>
-      <td className="max-w-0 px-3 py-1">
+      </DataTableCell>
+      <DataTableCell overflow="wrap">
         {row.source ? (
           <span className="flex items-start gap-1.5">
             <span className="mt-0.5 shrink-0 fg-secondary">
@@ -533,11 +539,11 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
         ) : (
           <span className="fg-secondary">—</span>
         )}
-      </td>
-      <td className="whitespace-nowrap px-3 py-1 fg-secondary">
+      </DataTableCell>
+      <DataTableCell>
         {row.lastUpdated ? formatDate(row.lastUpdated) : '—'}
-      </td>
-      <td className="px-3 py-1 text-right">
+      </DataTableCell>
+      <DataTableCell align="right">
         <span className="inline-flex items-center justify-end gap-1">
           {row.rowAction}
           {row.viewDisabled ? (
@@ -556,8 +562,8 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             </Button>
           )}
         </span>
-      </td>
-    </tr>
+      </DataTableCell>
+    </DataTableRow>
   );
 });
 
@@ -864,89 +870,78 @@ export function UnifiedTable({
           </p>
         )}
         {filteredRows.length > 0 && (
-          <div
-            ref={scrollRef}
-            className="min-h-0 flex-1 overflow-auto rounded-lg border"
+          <DataTableFrame
+            fill
+            scrollRef={scrollRef}
+            layout="fixed"
+            caption="Plugins, skills and MCP servers"
           >
-            <table className="w-full table-fixed text-s">
-              <colgroup>
-                <col className="w-10" />
-                <col className="w-2/5" />
-                <col className="w-3/10" />
-                <col className="w-28" />
-                <col className="w-14" />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2" />
-                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
-                    Name
-                  </th>
-                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
-                    Source
-                  </th>
-                  <th className="sticky top-0 z-10 whitespace-nowrap border-b bg-secondary px-3 py-2 text-left font-medium fg-secondary">
-                    Last updated
-                  </th>
-                  <th className="sticky top-0 z-10 border-b bg-secondary px-3 py-2" />
+            <DataTableHead sticky>
+              <DataTableHeaderCell width="2.5rem" labelHidden>
+                Selected
+              </DataTableHeaderCell>
+              <DataTableHeaderCell width="40%">Name</DataTableHeaderCell>
+              <DataTableHeaderCell width="30%">Source</DataTableHeaderCell>
+              <DataTableHeaderCell width="7rem">
+                Last updated
+              </DataTableHeaderCell>
+              <DataTableHeaderCell width="3.5rem" labelHidden>
+                Actions
+              </DataTableHeaderCell>
+            </DataTableHead>
+            <DataTableBody replay={blockRowsFromReplay ? 'block' : undefined}>
+              {paddingTop > 0 && (
+                <tr aria-hidden style={{ height: paddingTop }}>
+                  <td colSpan={COLUMN_COUNT} />
                 </tr>
-              </thead>
-              <tbody
-                className={blockRowsFromReplay ? REPLAY_BLOCK_CLASS : undefined}
-              >
-                {paddingTop > 0 && (
-                  <tr aria-hidden style={{ height: paddingTop }}>
-                    <td colSpan={COLUMN_COUNT} />
-                  </tr>
-                )}
-                {(virtualized ? virtualItems : filteredRows).map(
-                  (item, index) => {
-                    const virtualItem = virtualized ? item : undefined;
-                    const row = virtualized
-                      ? filteredRows[
-                          typeof virtualItem === 'object' &&
-                          virtualItem !== null &&
-                          'index' in virtualItem &&
-                          typeof virtualItem.index === 'number'
-                            ? virtualItem.index
-                            : -1
-                        ]
-                      : filteredRows[index];
-                    if (!row) return null;
-                    const virtualIndex =
-                      typeof virtualItem === 'object' &&
-                      virtualItem !== null &&
-                      'index' in virtualItem &&
-                      typeof virtualItem.index === 'number'
-                        ? virtualItem.index
-                        : undefined;
-                    return (
-                      <UnifiedTableRowView
-                        key={row.key}
-                        row={row}
-                        checked={selectedKeys.has(row.key)}
-                        expanded={expandedKeys.has(row.key)}
-                        onExpand={toggleExpanded}
-                        providerIconScope={providerIconScope}
-                        onToggle={stableToggle}
-                        onView={stableView}
-                        renderMcpLogo={renderMcpLogo}
-                        renderAppLogo={renderAppLogo}
-                        measureRef={virtualized ? measureRow : undefined}
-                        virtualIndex={virtualIndex}
-                        rowCheckboxTestId={rowCheckboxTestId}
-                      />
-                    );
-                  },
-                )}
-                {paddingBottom > 0 && (
-                  <tr aria-hidden style={{ height: paddingBottom }}>
-                    <td colSpan={COLUMN_COUNT} />
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+              )}
+              {(virtualized ? virtualItems : filteredRows).map(
+                (item, index) => {
+                  const virtualItem = virtualized ? item : undefined;
+                  const row = virtualized
+                    ? filteredRows[
+                        typeof virtualItem === 'object' &&
+                        virtualItem !== null &&
+                        'index' in virtualItem &&
+                        typeof virtualItem.index === 'number'
+                          ? virtualItem.index
+                          : -1
+                      ]
+                    : filteredRows[index];
+                  if (!row) return null;
+                  const virtualIndex =
+                    typeof virtualItem === 'object' &&
+                    virtualItem !== null &&
+                    'index' in virtualItem &&
+                    typeof virtualItem.index === 'number'
+                      ? virtualItem.index
+                      : undefined;
+                  return (
+                    <UnifiedTableRowView
+                      key={row.key}
+                      row={row}
+                      checked={selectedKeys.has(row.key)}
+                      expanded={expandedKeys.has(row.key)}
+                      onExpand={toggleExpanded}
+                      providerIconScope={providerIconScope}
+                      onToggle={stableToggle}
+                      onView={stableView}
+                      renderMcpLogo={renderMcpLogo}
+                      renderAppLogo={renderAppLogo}
+                      measureRef={virtualized ? measureRow : undefined}
+                      virtualIndex={virtualIndex}
+                      rowCheckboxTestId={rowCheckboxTestId}
+                    />
+                  );
+                },
+              )}
+              {paddingBottom > 0 && (
+                <tr aria-hidden style={{ height: paddingBottom }}>
+                  <td colSpan={COLUMN_COUNT} />
+                </tr>
+              )}
+            </DataTableBody>
+          </DataTableFrame>
         )}
       </div>
     </div>

@@ -19,13 +19,16 @@ import {
   ChoiceListRow,
   DelayedLoadingPlaceholder,
   DialogModal,
+  Disclosure,
   ErrorBanner,
   ErrorState,
-  LinearProgress,
+  ProgressBar,
   Notice,
   SettingsChartSkeleton,
   ThinkingSpinner,
   CopyDetailsButton,
+  Heading,
+  DataTable,
 } from '@canopy/ui-shared/components';
 import type {
   ModelRoutingBacktestEstimateV1,
@@ -256,11 +259,13 @@ export function RoutingBacktestCard({
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
           {variant === 'inset' ? (
-            <h4 className="text-s font-medium fg-primary">Estimate savings</h4>
+            <Heading level={4} variant="title">
+              Estimate savings
+            </Heading>
           ) : (
-            <h3 className="text-s font-semibold fg-primary">
+            <Heading level={3} variant="title">
               See what model routing would have saved
-            </h3>
+            </Heading>
           )}
           <p className="text-xs fg-secondary">{rangeLabel}</p>
         </div>
@@ -428,7 +433,7 @@ function RoutingBacktestProgress({
           </span>
         )}
       </div>
-      <LinearProgress percentage={percentage} label="Estimate progress" />
+      <ProgressBar value={percentage} label="Estimate progress" hideLabel />
     </div>
   );
 }
@@ -660,11 +665,11 @@ function RoutingBacktestResults({
       />
       <section className="flex flex-col gap-2">
         <div className="flex flex-col gap-0.5">
-          <h4 className="text-s font-semibold fg-primary">
+          <Heading level={4} variant="title">
             {result.bucketGranularity === 'week'
               ? 'Weekly spend'
               : 'Daily spend'}
-          </h4>
+          </Heading>
           <p
             className="text-xs fg-secondary"
             data-testid="routing-backtest-spend-description"
@@ -686,9 +691,9 @@ function RoutingBacktestResults({
       </section>
       <section className="flex flex-col gap-2">
         <div className="flex flex-col gap-0.5">
-          <h4 className="text-s font-semibold fg-primary">
+          <Heading level={4} variant="title">
             Which models answered
-          </h4>
+          </Heading>
           <p
             className="text-xs fg-secondary"
             data-testid="routing-backtest-model-share-description"
@@ -718,38 +723,37 @@ function RoutingBacktestResults({
         </Suspense>
       </section>
       {result.shifts.length > 0 ? (
-        <details data-testid="routing-backtest-details">
-          <summary className="cursor-pointer text-xs font-medium fg-primary">
-            Details
-          </summary>
-          <table className="mt-2 w-full text-xs">
-            <thead>
-              <tr className="text-left fg-secondary">
-                <th className="py-1 font-medium">What ran</th>
-                <th className="py-1 font-medium">Routed to</th>
-                <th className="py-1 text-right font-medium">Turns</th>
-                <th className="py-1 text-right font-medium">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.shifts.map((shift) => (
-                <tr
-                  key={`${shift.fromModelId}->${shift.toModelId}`}
-                  className="fg-primary"
-                >
-                  <td className="py-1">{modelLabel(shift.fromModelId)}</td>
-                  <td className="py-1">{modelLabel(shift.toModelId)}</td>
-                  <td className="py-1 text-right">
-                    {formatCount(shift.turnCount)}
-                  </td>
-                  <td className="py-1 text-right">
-                    {formatUsd(shift.baselineCostUsd)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
+        <Disclosure label="Details" dataTestId="routing-backtest-details">
+          <DataTable
+            caption="Turns routed to another model"
+            rows={result.shifts}
+            rowKey={(shift) => `${shift.fromModelId}->${shift.toModelId}`}
+            columns={[
+              {
+                key: 'from',
+                header: 'What ran',
+                render: (shift) => modelLabel(shift.fromModelId),
+              },
+              {
+                key: 'to',
+                header: 'Routed to',
+                render: (shift) => modelLabel(shift.toModelId),
+              },
+              {
+                key: 'turns',
+                header: 'Turns',
+                align: 'right',
+                render: (shift) => formatCount(shift.turnCount),
+              },
+              {
+                key: 'cost',
+                header: 'Cost',
+                align: 'right',
+                render: (shift) => formatUsd(shift.baselineCostUsd),
+              },
+            ]}
+          />
+        </Disclosure>
       ) : null}
     </div>
   );

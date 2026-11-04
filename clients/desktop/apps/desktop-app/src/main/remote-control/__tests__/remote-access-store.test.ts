@@ -59,6 +59,9 @@ jest.mock('electron', () => ({
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessWarn: jest.fn(),
 }));
+jest.mock('../../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' => 'secure',
+}));
 beforeEach(() => {
   mockPlatform = 'darwin';
   mockBackend = 'gnome_libsecret';

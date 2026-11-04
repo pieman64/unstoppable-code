@@ -1395,6 +1395,36 @@ describe('ResourceDiagnosticsPopover', () => {
     }
   });
 
+  it("shows a row's details in the shared tooltip, never a native title", () => {
+    const { container, cleanup } = renderPopover(makeSortableSnapshot());
+
+    jest.useFakeTimers();
+    try {
+      const row = container.querySelector('tbody tr');
+      expect(row?.hasAttribute('title')).toBe(false);
+      const name = row?.querySelectorAll('td')[1]?.querySelector('div');
+      act(() => {
+        name?.parentElement?.dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+      });
+      // A long hover: passing down the list does not flash every row's tip.
+      expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      act(() => {
+        jest.advanceTimersByTime(500);
+      });
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(
+        'Alpha',
+      );
+      expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(
+        'App',
+      );
+    } finally {
+      jest.useRealTimers();
+      cleanup();
+    }
+  });
+
   it('toggles name sort direction while keeping group priority fixed', () => {
     const { container, cleanup } = renderPopover(makeSortableSnapshot());
 
@@ -1541,7 +1571,8 @@ function getHeaderButton(
 function getRowSummaries(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('tbody tr')).map((row) => {
     const cells = row.querySelectorAll('td');
-    const label = cells[1]?.querySelector('span')?.textContent ?? '';
+    // The visible name; its details sit in a screen-reader-only span.
+    const label = cells[1]?.querySelector('span.fg-primary')?.textContent ?? '';
     const cpu = cells[2]?.textContent ?? '';
     const memory = cells[3]?.textContent ?? '';
     return `${label}|${cpu}|${memory}`;

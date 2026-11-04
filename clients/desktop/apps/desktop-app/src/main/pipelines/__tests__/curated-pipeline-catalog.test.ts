@@ -9,6 +9,9 @@ import {
   type PipelinePackageManifestV1,
 } from '@canopy/protocol/pipelines';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
+import type * as CorePipeline from '@canopy/core-runtime/node/pipeline';
+import type { PipelineDefinition } from '@canopy/protocol/canopy-core';
+import type * as CuratedCatalog from '../curated-pipeline-catalog';
 
 let mockCachePath = '';
 let mockDirectory = '';
@@ -54,6 +57,100 @@ const mockSelectedOwner = jest.fn<Promise<string>, []>(() =>
 jest.mock('../pipeline-owner-policy', () => ({
   selectedOwnerContext: (): Promise<string> => mockSelectedOwner(),
 }));
+// Imports and sync refreshes reach the catalog through core's curated
+// source, as the desktop dispatcher composes it.
+jest.mock('../../canopy-runtime/pipeline-definition-dispatch', () => {
+  const { createPipelineDefinitionService, PipelineDefinitionSourceError } =
+    jest.requireActual<typeof CorePipeline>(
+      '@canopy/core-runtime/node/pipeline',
+    );
+  const catalog = jest.requireActual<typeof CuratedCatalog>(
+    '../curated-pipeline-catalog',
+  );
+  // The desktop source keeps each failure's message for its callers.
+  const keepMessage = (error: unknown): never => {
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.sourceUnavailable',
+      error instanceof Error ? error.message : String(error),
+      error,
+    );
+  };
+  const unused = (): Promise<never> =>
+    Promise.reject(new Error('Only installs write in this test.'));
+  const service = createPipelineDefinitionService({
+    ports: [
+      {
+        sources: ['curated'],
+        optional: true,
+        list: (): Promise<never[]> => Promise.resolve([]),
+        read: async (
+          _source,
+          definitionId,
+        ): Promise<CorePipeline.PipelineDefinitionSourceDocument> => {
+          const { data, rawPipeline } =
+            await catalog.readManagedCuratedPipeline(definitionId);
+          return {
+            source: 'curated',
+            definitionId,
+            name: data.info.name,
+            description: data.info.description ?? '',
+            icon: data.info.icon ?? '',
+            readonly: true,
+            revision: 0,
+            owner: null,
+            createdAt: null,
+            updatedAt: null,
+            format: 'yaml',
+            text: rawPipeline,
+          };
+        },
+        remote: async (
+          _source,
+          definitionId,
+        ): Promise<CorePipeline.PipelineDefinitionRemote> => {
+          const remote = await catalog
+            .readCuratedPipelineRemote(definitionId)
+            .catch(keepMessage);
+          return {
+            ...remote,
+            packageManifest: () =>
+              (remote.packageManifest?.() ?? Promise.resolve(undefined)).catch(
+                keepMessage,
+              ),
+            install: (write, context) =>
+              remote.install(write, context).catch(keepMessage),
+          };
+        },
+      },
+    ],
+    // The id the mocked store saves every copy under.
+    createDefinitionId: (): string => 'local-copy',
+    writer: {
+      upsert: unused,
+      copy: unused,
+      delete: unused,
+      revision: (): Promise<null> => Promise.resolve(null),
+    },
+  });
+  const signal = new AbortController().signal;
+  return {
+    PIPELINE_DEFINITION_DESKTOP_CALLER: {},
+    getPipelineDefinition: (
+      definitionId: string,
+    ): Promise<PipelineDefinition> => service.get(definitionId, {}, signal),
+    importRemotePipeline: async (input: {
+      remoteDefinitionId: string;
+      expectedRemoteVersion: string | null;
+      nameOverride: string | null;
+    }): Promise<{ id: string; name: string }> => {
+      const { definition } = await service.import(
+        { ...input, targetScope: {} },
+        signal,
+      );
+      return { id: definition.definitionId, name: definition.name };
+    },
+  };
+});
 import {
   getCuratedPipeline,
   importCuratedPipeline,
@@ -310,6 +407,7 @@ it('adds a package-backed curated pipeline with its verified execution package',
 
   expect(mockSave).toHaveBeenCalledWith(
     expect.objectContaining({ rawContent: packagedDetail.rawPipeline }),
+    { id: 'local-copy' },
   );
   expect(mockUpsertPackageInstall).toHaveBeenCalledWith(
     expect.any(String),

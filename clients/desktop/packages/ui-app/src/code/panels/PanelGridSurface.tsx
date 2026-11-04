@@ -260,6 +260,14 @@ export interface PanelGridSurfaceProps {
   ) => { hideLabel: string } | undefined;
 }
 
+/**
+ * A hidden chat's transcript mounts once its tab is first shown: a worktree
+ * with many chats otherwise mounts and styles every one on each switch.
+ */
+function isChatPanelKind(kind: string): boolean {
+  return kind === 'chat';
+}
+
 export function PanelGridSurface({
   projectId,
   worktreeId,
@@ -877,6 +885,7 @@ export function PanelGridSurface({
         renderPanelContent={renderPanelContent}
         auxLayoutKeys={auxLayoutKeys}
         includeAuxWindows={includeAuxWindowContent}
+        deferHiddenContent={isChatPanelKind}
       />
     </>
   );

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as atomicFile from '../../lib/atomic-file';
 import {
   findCapabilityPackageInstallByOwner,
   insertCapabilityPackageInstallIfAbsent,
@@ -8,6 +9,7 @@ import {
   findPipelinePackageInstall,
   listPipelinePackageInstalls,
   removePipelinePackageInstall,
+  repinCapabilityPackageInstallLocalContent,
   upsertCapabilityPackageInstall,
   upsertPipelinePackageInstall,
 } from '../pipeline-package-install-store';
@@ -295,6 +297,57 @@ describe('pipeline package install store', () => {
   // whose record parser predates skill owners — hard-failed every pipeline and
   // automation package resolution. Degrading to defaults matches the repo's
   // persistence rule and is strictly less harmful than refusing to function.
+  // CAN-5479: a converted chat automation's install keeps its share check.
+  it('repins an install’s local content only while it still pins the expected hash', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pipeline-package-repin-'));
+    const storePath = join(root, 'installs.json');
+    const owner = {
+      kind: 'automation' as const,
+      localAutomationId: 'automation-1',
+    };
+    try {
+      await upsertCapabilityPackageInstall(storePath, {
+        owner,
+        localContentHash: 'b'.repeat(64),
+        pipelineContentHash: 'a'.repeat(64),
+        packageDigest: `pp:v1:${'A'.repeat(43)}`,
+        installedAt: '2026-10-29T12:00:00Z',
+      });
+      await expect(
+        repinCapabilityPackageInstallLocalContent(
+          storePath,
+          owner,
+          'a'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ).resolves.toBe(false);
+      await expect(
+        repinCapabilityPackageInstallLocalContent(
+          storePath,
+          owner,
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ).resolves.toBe(true);
+      await expect(
+        findCapabilityPackageInstallByOwner(storePath, owner),
+      ).resolves.toMatchObject({
+        localContentHash: 'c'.repeat(64),
+        packageDigest: `pp:v1:${'A'.repeat(43)}`,
+      });
+      await expect(
+        repinCapabilityPackageInstallLocalContent(
+          storePath,
+          { kind: 'automation', localAutomationId: 'missing' },
+          'c'.repeat(64),
+          'd'.repeat(64),
+        ),
+      ).resolves.toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads past a record it cannot parse instead of discarding the ledger', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pipeline-package-ledger-'));
     const storePath = join(root, 'installs.json');
@@ -406,6 +459,95 @@ describe('pipeline package install store', () => {
 
       await expect(listPipelinePackageInstalls(storePath)).resolves.toEqual([]);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it('never writes over a ledger from a newer version', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pipeline-package-ledger-'));
+    const storePath = join(root, 'installs.json');
+    try {
+      const { readdir, writeFile } = await import('node:fs/promises');
+      const newer = JSON.stringify({ version: 2, records: [], owners: {} });
+      await writeFile(storePath, newer, 'utf8');
+
+      await expect(listCapabilityPackageInstalls(storePath)).resolves.toEqual(
+        [],
+      );
+      await expect(
+        upsertCapabilityPackageInstall(storePath, {
+          owner: { kind: 'skill', localId: 'helper' },
+          pipelineContentHash: 'b'.repeat(64),
+          packageDigest: `pp:v1:${'B'.repeat(43)}`,
+          installedAt: '2026-08-30T12:02:00.000Z',
+        }),
+      ).rejects.toThrow(
+        'Pipeline package install ledger is from a newer version',
+      );
+      await expect(
+        removePipelinePackageInstall(storePath, 'pipeline-1'),
+      ).rejects.toThrow(
+        'Pipeline package install ledger is from a newer version',
+      );
+      await expect(readFile(storePath, 'utf8')).resolves.toBe(newer);
+      expect(await readdir(root)).toEqual(['installs.json']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('installs every ledger write durably', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pipeline-package-ledger-'));
+    const storePath = join(root, 'installs.json');
+    const write = jest.spyOn(atomicFile, 'writeFileAtomically');
+    try {
+      await upsertPipelinePackageInstall(storePath, {
+        localPipelineId: 'pipeline-1',
+        pipelineContentHash: 'a'.repeat(64),
+        packageDigest: `pp:v1:${'A'.repeat(43)}`,
+        installedAt: '2026-08-30T12:00:00.000Z',
+      });
+      await removePipelinePackageInstall(storePath, 'pipeline-1');
+      expect(write).toHaveBeenCalledTimes(2);
+      for (const call of write.mock.calls) {
+        expect(call[0]).toBe(storePath);
+        expect(call[2]).toMatchObject({ durable: true });
+      }
+    } finally {
+      write.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it('treats a record installed before its folder flush failed as written', async () => {
+    const { StorageOutcomeUnknownError } =
+      await import('@canopy/core-runtime/storage');
+    const root = await mkdtemp(join(tmpdir(), 'pipeline-package-ledger-'));
+    const storePath = join(root, 'installs.json');
+    const real = atomicFile.writeFileAtomically;
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementationOnce(async (target, data, options) => {
+        await real(target, data, { ...options, durable: false });
+        throw new StorageOutcomeUnknownError(
+          'directory_flush',
+          new Error('flush failed'),
+        );
+      });
+    try {
+      await expect(
+        upsertPipelinePackageInstall(storePath, {
+          localPipelineId: 'pipeline-1',
+          pipelineContentHash: 'a'.repeat(64),
+          packageDigest: `pp:v1:${'A'.repeat(43)}`,
+          installedAt: '2026-08-30T12:00:00.000Z',
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        (await listPipelinePackageInstalls(storePath)).map(
+          (record) => record.localPipelineId,
+        ),
+      ).toEqual(['pipeline-1']);
+    } finally {
+      write.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });

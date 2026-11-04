@@ -16,7 +16,6 @@ import type {
 import {
   BulkInstallButton,
   Button,
-  ControlSelect,
   ErrorBanner,
   ErrorState,
   MissingPluginsBadge,
@@ -24,7 +23,9 @@ import {
   NoticeButton,
   PluginInstallStatusCell,
   SearchField,
+  SettingsSelect,
   StatusLabel,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { MarketplaceDetailPageShell } from '../capability/MarketplaceDetailPageShell';
@@ -484,12 +485,13 @@ function MarketplaceSourceDetailBody({
           <div className="flex flex-col gap-4" aria-busy={sourceBusy}>
             {groups.recommended.length > 0 && (
               <section aria-labelledby="marketplace-source-recommended">
-                <h2
+                <Heading
+                  level={2}
+                  variant="label"
                   id="marketplace-source-recommended"
-                  className="text-xs font-medium fg-secondary"
                 >
                   Recommended ({groups.recommended.length})
-                </h2>
+                </Heading>
                 <ul className="divide-y">
                   {groups.recommended.map(renderPlugin)}
                 </ul>
@@ -497,13 +499,14 @@ function MarketplaceSourceDetailBody({
             )}
             {groups.others.length > 0 && (
               <section aria-labelledby="marketplace-source-all-plugins">
-                <h2
+                <Heading
+                  level={2}
+                  variant="label"
                   id="marketplace-source-all-plugins"
-                  className="text-xs font-medium fg-secondary"
                 >
                   {groups.recommended.length > 0 ? 'More plugins' : 'Plugins'} (
                   {groups.others.length})
-                </h2>
+                </Heading>
                 <ul className="divide-y">{groups.others.map(renderPlugin)}</ul>
               </section>
             )}
@@ -531,22 +534,18 @@ function FacetSelect({
 }: FacetSelectProps): JSX.Element | null {
   if (options.values.length === 0) return null;
   return (
-    <ControlSelect
+    <SettingsSelect
       aria-label={label}
+      width="fit"
       value={value ?? ''}
-      onChange={(event) =>
-        onChange(event.target.value === '' ? null : event.target.value)
-      }
-    >
-      <option value="">{allLabel}</option>
-      {options.hasNone && (
-        <option value={MARKETPLACE_SOURCE_FILTER_NONE}>None</option>
-      )}
-      {options.values.map((option) => (
-        <option key={option} value={option}>
-          {option}
-        </option>
-      ))}
-    </ControlSelect>
+      onValueChange={(next) => onChange(next === '' ? null : next)}
+      options={[
+        { value: '', label: allLabel },
+        ...(options.hasNone
+          ? [{ value: MARKETPLACE_SOURCE_FILTER_NONE, label: 'None' }]
+          : []),
+        ...options.values.map((option) => ({ value: option, label: option })),
+      ]}
+    />
   );
 }

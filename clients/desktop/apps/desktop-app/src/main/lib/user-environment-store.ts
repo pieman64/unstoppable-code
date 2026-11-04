@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type {
   EnvironmentConfigData,
+  EnvironmentConfigView,
   LoadEnvironmentConfigSuccessResponse,
   PersistedEnvironmentConfigFile,
   PersistedEnvironmentDefinition,
@@ -21,7 +22,6 @@ import {
   DEFAULT_USER_ENVIRONMENT,
   createDefaultEnvironmentConfig,
   normalizeEnvironmentConfig,
-  normalizeUserEnvironment,
   normalizeUserEnvironmentEntries,
   validateEnvironmentConfigUpdate,
 } from '@canopy/desktop-shared/lib/user-environment';
@@ -34,6 +34,10 @@ import {
 } from './secure-storage-policy';
 import { writeFileAtomically } from './atomic-file';
 import { migrateSecureStorageFile } from './secure-storage-migration';
+import {
+  projectEnvironmentConfig,
+  resolveEnvironmentConfigInput,
+} from './environment-secret-view';
 
 const USER_ENVIRONMENT_FILE_VERSION = 1;
 const USER_ENVIRONMENT_DIR_MODE = 0o700;
@@ -43,16 +47,6 @@ interface LegacyEnvironmentRead {
   data: UserEnvironmentData;
   canPersistMigration: boolean;
   encryptedVariablesUnavailable: boolean;
-}
-
-export interface ReadUserEnvironmentResult {
-  data: UserEnvironmentData;
-  encryptionAvailable: boolean;
-}
-
-export interface WriteUserEnvironmentResult {
-  data: UserEnvironmentData;
-  encryptionAvailable: boolean;
 }
 
 let writeQueue: Promise<void> = Promise.resolve();
@@ -426,31 +420,56 @@ async function readEnvironmentConfigData(
   return createDefaultEnvironmentConfig(now);
 }
 
-export async function readEnvironmentConfig(): Promise<LoadEnvironmentConfigSuccessResponse> {
+/** Plaintext for main's own consumers; never reply with it over IPC. */
+export async function readEnvironmentConfig(): Promise<{
+  data: EnvironmentConfigData;
+  encryptionAvailable: boolean;
+}> {
   return {
     data: await readEnvironmentConfigData(),
     encryptionAvailable: getEncryptionAvailable(),
   };
 }
 
-export async function writeEnvironmentConfig(
-  next: EnvironmentConfigData,
-): Promise<SaveEnvironmentConfigSuccessResponse> {
-  const writeOperation = writeQueue.then(async () => {
-    const current = await readEnvironmentConfigData({
-      persistLegacyMigration: false,
-    });
-    const updateValidation = validateEnvironmentConfigUpdate(current, next);
-    if (!updateValidation.ok) {
-      throw new Error(updateValidation.message);
-    }
+/** The reply form: values marked secret are stored-secret values. */
+export async function readEnvironmentConfigView(): Promise<LoadEnvironmentConfigSuccessResponse> {
+  const { data, encryptionAvailable } = await readEnvironmentConfig();
+  return { data: projectEnvironmentConfig(data), encryptionAvailable };
+}
 
-    const normalized = normalizeEnvironmentConfig(
-      next,
-      new Date().toISOString(),
-    );
-    return persistEnvironmentConfigUnlocked(normalized);
-  });
+/**
+ * Saves a config whose kept stored secrets resolve against the config on
+ * disk, inside the write queue, and replies with the saved view.
+ */
+export async function writeEnvironmentConfig(
+  next: EnvironmentConfigView,
+): Promise<SaveEnvironmentConfigSuccessResponse> {
+  const writeOperation = writeQueue.then(
+    async (): Promise<SaveEnvironmentConfigSuccessResponse> => {
+      const current = await readEnvironmentConfigData({
+        persistLegacyMigration: false,
+      });
+      const resolved = resolveEnvironmentConfigInput(next, current);
+      const updateValidation = validateEnvironmentConfigUpdate(
+        current,
+        resolved,
+      );
+      if (!updateValidation.ok) {
+        throw new Error(updateValidation.message);
+      }
+
+      const normalized = normalizeEnvironmentConfig(
+        resolved,
+        new Date().toISOString(),
+      );
+      const saved = await persistEnvironmentConfigUnlocked(normalized);
+      return {
+        ok: true,
+        data: projectEnvironmentConfig(saved.data),
+        encryptionAvailable: saved.encryptionAvailable,
+      };
+    },
+  );
   writeQueue = writeOperation.then(
     () => undefined,
     () => undefined,
@@ -458,9 +477,14 @@ export async function writeEnvironmentConfig(
   return writeOperation;
 }
 
+interface PersistedEnvironmentConfig {
+  data: EnvironmentConfigData;
+  encryptionAvailable: boolean;
+}
+
 async function persistEnvironmentConfigUnlocked(
   normalized: EnvironmentConfigData,
-): Promise<SaveEnvironmentConfigSuccessResponse> {
+): Promise<PersistedEnvironmentConfig> {
   const writePolicy = getEnvironmentValueWritePolicy();
   const encryptionAvailable = writePolicy.encryptionAvailable;
   const payload = buildPersistedEnvironmentFile(normalized, writePolicy);
@@ -475,7 +499,7 @@ async function persistEnvironmentConfigUnlocked(
   });
   await chmodIfSupported(filePath, USER_ENVIRONMENT_FILE_MODE);
 
-  return { ok: true, data: normalized, encryptionAvailable };
+  return { data: normalized, encryptionAvailable };
 }
 
 function buildPersistedEnvironmentFile(
@@ -496,7 +520,7 @@ function buildPersistedEnvironmentFile(
 
 async function persistEnvironmentConfig(
   normalized: EnvironmentConfigData,
-): Promise<SaveEnvironmentConfigSuccessResponse> {
+): Promise<PersistedEnvironmentConfig> {
   const writeOperation = writeQueue.then(() =>
     persistEnvironmentConfigUnlocked(normalized),
   );
@@ -505,61 +529,4 @@ async function persistEnvironmentConfig(
     () => undefined,
   );
   return writeOperation;
-}
-
-/**
- * @deprecated Compatibility wrapper for older user-environment callers. Reads
- * Overall from the version-2 config, migrating version-1 data in
- * memory when needed.
- */
-export async function readUserEnvironment(): Promise<ReadUserEnvironmentResult> {
-  const result = await readEnvironmentConfig();
-  const overall = result.data.environments.find(
-    (environment) => environment.id === DEFAULT_ENVIRONMENT_IDS.overall,
-  );
-  return {
-    data: {
-      uiMode: overall?.uiMode ?? 'key-value',
-      variables: overall?.variables ?? [],
-    },
-    encryptionAvailable: result.encryptionAvailable,
-  };
-}
-
-/**
- * @deprecated Compatibility wrapper for older user-environment callers. Writes
- * only Overall in the version-2 config.
- */
-export async function writeUserEnvironment(
-  next: UserEnvironmentData,
-): Promise<WriteUserEnvironmentResult> {
-  const normalized = normalizeUserEnvironment(next);
-  const writeOperation = writeQueue.then(async () => {
-    const now = new Date().toISOString();
-    const current = await readEnvironmentConfigData({
-      persistLegacyMigration: false,
-    });
-    const updated: EnvironmentConfigData = {
-      ...current,
-      environments: current.environments.map((environment) =>
-        environment.id === DEFAULT_ENVIRONMENT_IDS.overall
-          ? {
-              ...environment,
-              uiMode: normalized.uiMode,
-              variables: normalized.variables,
-              updatedAt: now,
-            }
-          : environment,
-      ),
-    };
-    return persistEnvironmentConfigUnlocked(
-      normalizeEnvironmentConfig(updated, now),
-    );
-  });
-  writeQueue = writeOperation.then(
-    () => undefined,
-    () => undefined,
-  );
-  const result = await writeOperation;
-  return { data: normalized, encryptionAvailable: result.encryptionAvailable };
 }

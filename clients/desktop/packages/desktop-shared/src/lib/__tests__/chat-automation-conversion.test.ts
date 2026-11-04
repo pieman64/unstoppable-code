@@ -5,14 +5,19 @@ import {
   type ScheduledActivity,
 } from '../../types';
 import { normalizePipeline } from '../../pipelines/normalize-pipeline';
+import { parseSendAgentMessageInputs } from '../../pipelines/host-send-agent-message';
+import { interpolateExpression } from '../../node/pipelines/executor/expression-evaluator';
+import { buildExpressionContext } from '../../node/pipelines/executor/execution-context';
 import {
   type ChatAutomationAction,
   CHAT_AUTOMATION_JOB,
+  CHAT_AUTOMATION_MODEL_ALIAS,
   chatAutomationToPipeline,
   convertibleChatAutomation,
   ownedPipelineToChatAction,
 } from '../chat-automation-conversion';
 import { validateAgentPipelineMutationPolicy } from '../agent-pipeline-policy';
+import { normalizePluginSelections } from '../plugin-selections-normalization';
 
 type Activity = Pick<
   ScheduledActivity,
@@ -42,6 +47,29 @@ const agentAuthor = {
   chat: { projectId: 'p', worktreeId: 'w', chatId: 'c' },
   recordedAt: '2026-10-29T00:00:00.000Z',
 };
+const pluginReference = {
+  kind: 'plugin' as const,
+  textStart: 0,
+  displayText: '@review',
+  plugin: { kind: 'portable' as const, ref: portablePlugin },
+};
+// Stored normalized, so the round trip returns them as they were.
+const localSelections = normalizePluginSelections({
+  collectionIds: ['col'],
+  skillRefs: [{ sourceId: 'custom:app', skillName: 'mine' }],
+  pluginRefs: [],
+});
+const attachmentPath = '/data/attachments/worktree-1/shot.png';
+const composerPayload = {
+  attachmentPaths: [attachmentPath],
+  attachmentPromptContexts: [
+    { attachmentPath, promptKind: 'linear-ticket' as const },
+  ],
+  fileReferences: [
+    { displayPath: 'src/a.ts', absolutePath: '/repo/src/a.ts', textStart: 3 },
+  ],
+  inputMode: 'voice' as const,
+};
 
 // The interface mode follows the model's provider, read from the catalog.
 beforeAll(() => {
@@ -59,6 +87,7 @@ const cowork = (): boolean => true;
 /** One converted case: its action and how its pipeline is checked. */
 const CASES: Array<{
   label: string;
+  name?: string;
   action: ChatAutomationAction;
   isCowork: (id: string) => boolean;
   steps: string[];
@@ -218,11 +247,153 @@ const CASES: Array<{
     steps: ['builtin/send-agent-message'],
     inputs: { bot_id: 'app_advisor', task_id: 'entry-1', chat_id: 'chat-1' },
   },
+  // CAN-5479: shapes that used to stay native.
+  {
+    label: 'worktree_session_prompt with attachments and voice input',
+    action: {
+      type: 'worktree_session_prompt',
+      workspaceId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      prompt: 'Look at this',
+      ...composerPayload,
+    },
+    isCowork: notCowork,
+    steps: ['builtin/send-agent-message', 'builtin/wait-for-agent-reply'],
+    inputs: {
+      project_id: 'project-1',
+      task_id: 'worktree-1',
+      chat_id: 'chat-1',
+      attachment_paths: JSON.stringify(composerPayload.attachmentPaths),
+      attachment_prompt_contexts: JSON.stringify(
+        composerPayload.attachmentPromptContexts,
+      ),
+      file_references: JSON.stringify(composerPayload.fileReferences),
+      input_mode: 'voice',
+    },
+  },
+  {
+    label: 'standalone_prompt with local plugin selections',
+    action: {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: 'Organize notes',
+      pluginSelections: localSelections,
+    },
+    isCowork: cowork,
+    steps: [
+      'builtin/create-project-entry',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: {
+      project_id: 'cowork-1',
+      plugin_selections: JSON.stringify(localSelections),
+    },
+  },
+  {
+    label: 'standalone_prompt at Ultra fast',
+    action: {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: 'Organize notes',
+      model: 'gpt-5.5',
+      modelConfig: { speed: 'ultrafast', fastMode: false },
+    },
+    isCowork: cowork,
+    steps: [
+      'builtin/create-project-entry',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: { project_id: 'cowork-1' },
+  },
+  {
+    label: 'standalone_prompt with an Agent',
+    action: {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: 'Organize notes',
+      model: 'agent_model_reviewer',
+    },
+    isCowork: cowork,
+    steps: [
+      'builtin/create-project-entry',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: { project_id: 'cowork-1' },
+  },
+  {
+    label: 'worktree_prompt with an interface mode and no model',
+    action: {
+      type: 'worktree_prompt',
+      workspaceId: 'project-1',
+      prompt: 'Review',
+      interfaceMode: 'claude-code',
+    },
+    isCowork: notCowork,
+    steps: [
+      'builtin/create-worktree',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: { project_id: 'project-1' },
+  },
+  {
+    label: 'app_advisor_prompt with expressions in its title and group',
+    name: 'Review ${{ inputs.x }} and ${{ github.ref }}}}',
+    action: {
+      type: 'app_advisor_prompt',
+      sidebarGroupName: 'Team ${{ env.HOME }}',
+      prompt: 'Review the app',
+    },
+    isCowork: notCowork,
+    steps: ['builtin/create-bot-entry', 'builtin/send-agent-message'],
+    inputs: { bot_id: 'app_advisor' },
+  },
+  {
+    label: 'standalone_prompt into a group named None',
+    action: {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      sidebarGroupName: ' None ',
+      prompt: 'Organize notes',
+    },
+    isCowork: cowork,
+    steps: [
+      'builtin/create-project-entry',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: { project_id: 'cowork-1' },
+  },
+  {
+    label: 'standalone_prompt that references a plugin',
+    action: {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: '@review the notes',
+      promptReferences: [pluginReference],
+    },
+    isCowork: cowork,
+    steps: [
+      'builtin/create-project-entry',
+      'builtin/send-agent-message',
+      'builtin/wait-for-agent-reply',
+    ],
+    inputs: { project_id: 'cowork-1' },
+  },
 ];
+
+/** A case's activity, with its own name when it has one. */
+function caseActivity(row: (typeof CASES)[number]): Activity {
+  return activity(row.action, row.name);
+}
 
 describe('chatAutomationToPipeline (CAN-4551)', () => {
   it.each(CASES)('$label: a global pipeline the runner accepts', (row) => {
-    const { pipeline, inputs } = chatAutomationToPipeline(activity(row.action));
+    const { pipeline, inputs } = chatAutomationToPipeline(caseActivity(row));
     expect(pipeline.scope).toBe('global');
     expect(inputs).toEqual(row.inputs);
     const steps = pipeline.jobs[CHAT_AUTOMATION_JOB]?.steps ?? [];
@@ -232,6 +403,21 @@ describe('chatAutomationToPipeline (CAN-4551)', () => {
     const yaml = JSON.stringify(pipeline.jobs);
     for (const value of Object.values(inputs))
       if (value !== 'app_advisor') expect(yaml).not.toContain(`"${value}"`);
+    // The send step's inputs parse as the runner will parse them.
+    const send = pipeline.jobs[CHAT_AUTOMATION_JOB]?.steps.find(
+      (step) => step.id === 'send',
+    );
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(send?.with ?? {}))
+      values[key] =
+        typeof value === 'string'
+          ? value.replace(
+              /^\$\{\{ (inputs|steps\.\w+\.outputs)\.(\w+) \}\}$/,
+              (_match, _scope: string, name: string) =>
+                inputs[name] ?? 'task-1',
+            )
+          : '';
+    expect(parseSendAgentMessageInputs(values).ok).toBe(true);
   });
 
   // CAN-4551 7c: what an agent's automation converts to passes the policy
@@ -243,8 +429,28 @@ describe('chatAutomationToPipeline (CAN-4551)', () => {
           .convertible,
     ),
   )('$label: passes the agent pipeline policy', (row) => {
-    const { pipeline } = chatAutomationToPipeline(activity(row.action));
+    const { pipeline } = chatAutomationToPipeline(caseActivity(row));
     expect(validateAgentPipelineMutationPolicy(pipeline)).toBeNull();
+  });
+
+  // The send step refuses any file references on an agent's run, even none,
+  // so an empty list converts to no input rather than '[]'.
+  it('omits an empty file reference list, which an agent’s run would refuse', () => {
+    const subject = {
+      ...activity({
+        type: 'worktree_session_prompt',
+        workspaceId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        prompt: 'Continue',
+        fileReferences: [],
+      }),
+      agentAuthor,
+    };
+    expect(convertibleChatAutomation(subject).convertible).toBe(true);
+    expect(chatAutomationToPipeline(subject).inputs).not.toHaveProperty(
+      'file_references',
+    );
   });
 
   it('keeps the prompt literal, and maps every setting onto the send step', () => {
@@ -347,6 +553,115 @@ describe('chatAutomationToPipeline (CAN-4551)', () => {
     expect(worktree?.with).not.toHaveProperty('group');
   });
 
+  // CAN-5479: local values are automation inputs, as target IDs are.
+  it('reads local plugin selections and a composer payload from automation inputs', () => {
+    expect(
+      sendInputs({
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'x',
+        pluginSelections: localSelections,
+      }),
+    ).toMatchObject({ plugin_selections: '${{ inputs.plugin_selections }}' });
+    expect(
+      sendInputs({
+        type: 'worktree_session_prompt',
+        workspaceId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+        prompt: 'x',
+        ...composerPayload,
+      }),
+    ).toMatchObject({
+      attachment_paths: '${{ inputs.attachment_paths }}',
+      attachment_prompt_contexts: '${{ inputs.attachment_prompt_contexts }}',
+      file_references: '${{ inputs.file_references }}',
+      input_mode: '${{ inputs.input_mode }}',
+    });
+  });
+
+  it('runs an Agent through a model alias the automation maps to it', () => {
+    const converted = chatAutomationToPipeline(
+      activity({
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'x',
+        model: 'agent_model_reviewer',
+      }),
+    );
+    expect(converted.pipeline.model_aliases).toEqual([
+      { id: CHAT_AUTOMATION_MODEL_ALIAS, name: 'Chat agent' },
+    ]);
+    expect(converted.modelAliasPreferences).toEqual({
+      [CHAT_AUTOMATION_MODEL_ALIAS]: {
+        mode: 'agent',
+        agent_id: 'agent_model_reviewer',
+      },
+    });
+    const send = converted.pipeline.jobs[CHAT_AUTOMATION_JOB]?.steps.find(
+      (step) => step.id === 'send',
+    );
+    expect(send?.with?.model).toBe(CHAT_AUTOMATION_MODEL_ALIAS);
+    // The local Agent id stays out of the YAML.
+    expect(JSON.stringify(converted.pipeline)).not.toContain(
+      'agent_model_reviewer',
+    );
+  });
+
+  it('sends Ultra fast as speed, and keeps fast_mode for Regular and Fast', () => {
+    const ultrafast = sendInputs({
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: 'x',
+      modelConfig: { speed: 'ultrafast', fastMode: false },
+    });
+    expect(ultrafast).toMatchObject({ speed: 'ultrafast' });
+    expect(ultrafast).not.toHaveProperty('fast_mode');
+    expect(
+      sendInputs({
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'x',
+        modelConfig: { speed: 'standard', fastMode: false },
+      }),
+    ).toMatchObject({ fast_mode: 'false' });
+  });
+
+  it('keeps an interface mode with no model, for the run to decide', () => {
+    expect(
+      sendInputs({
+        type: 'worktree_prompt',
+        workspaceId: 'project-1',
+        prompt: 'Review',
+        interfaceMode: 'claude-code',
+      }),
+    ).toMatchObject({ interface_mode: 'claude-code' });
+  });
+
+  // The create steps interpolate their title and group once: each escaped
+  // `${{` comes out as written, and nothing in the name is evaluated.
+  it('escapes expressions in a title and group so they run as written', () => {
+    const name = 'Review ${{ inputs.x }} and ${{ github.ref }}}}';
+    const group = 'Team ${{ env.HOME }}';
+    const { pipeline } = chatAutomationToPipeline(
+      activity(
+        { type: 'app_advisor_prompt', sidebarGroupName: group, prompt: 'x' },
+        name,
+      ),
+    );
+    const entry = pipeline.jobs[CHAT_AUTOMATION_JOB]?.steps[0];
+    const context = buildExpressionContext({
+      inputs: { x: 'EVALUATED' },
+      env: { HOME: 'EVALUATED' },
+    });
+    const title = entry?.with?.title;
+    const groupInput = entry?.with?.group;
+    if (typeof title !== 'string' || typeof groupInput !== 'string')
+      throw new Error('missing title or group');
+    expect(interpolateExpression(title, context)).toBe(name);
+    expect(interpolateExpression(groupInput, context)).toBe(group);
+  });
+
   it('titles a new Orchestrator Work Entry with the automation name, within its limit', () => {
     const name = 'n'.repeat(250);
     const { pipeline } = chatAutomationToPipeline(
@@ -402,6 +717,18 @@ describe('convertibleChatAutomation (CAN-4551)', () => {
       reason: 'native_send',
     },
     {
+      // Only an automation's own native send may start a chat on a pinned
+      // route; a converted run's chat creation refuses it.
+      label: 'a pinned Agent route',
+      activity: activity({
+        type: 'standalone_prompt',
+        chatProjectId: 'c',
+        prompt: 'x',
+        model: 'agent_model_reviewer@claude-sonnet-4-6',
+      }),
+      reason: 'agent_route',
+    },
+    {
       label: 'an agent-scheduled send',
       activity: {
         ...activity({
@@ -419,192 +746,57 @@ describe('convertibleChatAutomation (CAN-4551)', () => {
       reason: 'native_send',
     },
     {
-      label: 'attachments',
-      activity: activity({
-        type: 'worktree_session_prompt',
-        workspaceId: 'p',
-        worktreeId: 'w',
-        chatId: 'c',
-        prompt: 'x',
-        attachmentPaths: ['/tmp/a.png'],
-      }),
-      reason: 'composer_payload',
-    },
-    {
-      label: 'voice input',
-      activity: activity({
-        type: 'worktree_session_prompt',
-        workspaceId: 'p',
-        worktreeId: 'w',
-        chatId: 'c',
-        prompt: 'x',
-        inputMode: 'voice',
-      }),
-      reason: 'composer_payload',
-    },
-    {
-      label: 'local plugin selections',
-      activity: activity({
-        type: 'standalone_prompt',
-        chatProjectId: 'c',
-        prompt: 'x',
-        pluginSelections: {
-          collectionIds: ['col'],
-          skillRefs: [],
-          pluginRefs: [],
-        },
-      }),
-      reason: 'local_plugin_selections',
-    },
-    {
-      label: 'ultrafast speed',
-      activity: activity({
-        type: 'standalone_prompt',
-        chatProjectId: 'c',
-        prompt: 'x',
-        modelConfig: { speed: 'ultrafast' },
-      }),
-      reason: 'unsupported_speed',
-    },
-    {
-      // A global workflow has no target to restrict (CAN-4551).
-      label: 'a run restriction',
-      activity: {
-        ...activity({
-          type: 'standalone_prompt',
-          chatProjectId: 'c',
-          prompt: 'x',
-        }),
-        targetRequirement: { contexts: ['cowork'] },
-      },
-      reason: 'target_requirement',
-    },
-    {
-      // The send step refuses a raw Agent model id, which the native send runs.
-      label: 'an Agent model',
-      activity: activity({
-        type: 'standalone_prompt',
-        chatProjectId: 'c',
-        prompt: 'x',
-        model: 'agent_model_reviewer',
-      }),
-      reason: 'agent_model',
-    },
-    {
-      // The native send keeps the mode only for a Claude chat, and without a
-      // model that is known only at run time.
-      label: 'an interface mode with no model',
-      activity: activity({
-        type: 'worktree_prompt',
-        workspaceId: 'project-1',
-        prompt: 'x',
-        interfaceMode: 'claude-code',
-      }),
-      reason: 'interface_mode_unresolved',
-    },
-    {
-      label: 'an expression in an Orchestrator title',
-      activity: activity(
-        { type: 'app_advisor_prompt', prompt: 'x' },
-        'Review ${{ inputs.x }}',
-      ),
-      reason: 'expression_text',
-    },
-    {
-      // The create steps refuse `none` only at run time, so every run of the
-      // converted automation would fail; the native send accepts it.
-      label: 'a group named None',
-      activity: activity({
-        type: 'standalone_prompt',
-        chatProjectId: 'c',
-        prompt: 'x',
-        sidebarGroupName: ' None ',
-      }),
-      reason: 'reserved_group_name',
-    },
-    {
-      // The send step resolves a plugin reference without the provider and
-      // harness the native send resolves it with, so the send would fail.
-      label: 'a prompt that references a plugin',
-      activity: activity({
-        type: 'standalone_prompt',
-        chatProjectId: 'c',
-        prompt: '@review x',
-        promptReferences: [
-          {
-            kind: 'plugin',
-            textStart: 0,
-            displayText: '@review',
-            plugin: { kind: 'portable', ref: portablePlugin },
-          },
-        ],
-      }),
-      reason: 'plugin_reference',
-    },
-    {
-      // Only the native prompt actions apply an installed package's overlay.
-      label: 'an installed capability package',
-      activity: {
-        ...activity({
-          type: 'app_advisor_prompt',
-          prompt: 'x',
-        }),
-        installedFrom: {
-          remoteId: 'share-1',
-          contentHash: 'hash',
-          installedAt: '2026-10-30T00:00:00.000Z',
-          capabilityPackage: { version: 1, digest: 'sha256:package' },
-        },
-      },
-      reason: 'installed_package',
-    },
-    {
-      label: 'an agent-authored Orchestrator prompt with a model and plugins',
-      activity: {
-        ...activity({
-          type: 'app_advisor_prompt',
-          prompt: 'x',
-          model: 'gpt-5.5',
-          plugins: [portablePlugin],
-        }),
-        agentAuthor,
-      },
-      reason: 'agent_settings',
-    },
-    // D11 for a new chat: an agent-originated run chooses no plugins and no
-    // approval mode, so these stay native.
-    {
-      label: 'an agent-authored Cowork prompt with plugins',
-      activity: {
-        ...activity({
-          type: 'standalone_prompt',
-          chatProjectId: 'c',
-          prompt: 'x',
-          plugins: [portablePlugin],
-        }),
-        agentAuthor,
-      },
-      reason: 'agent_settings',
-    },
-    {
-      label: 'an agent-authored worktree prompt with an approval mode',
-      activity: {
-        ...activity({
-          type: 'worktree_prompt',
-          workspaceId: 'p',
-          prompt: 'x',
-          approvalMode: 'auto',
-        }),
-        agentAuthor,
-      },
-      reason: 'agent_settings',
-    },
-    {
       label: 'an agent-authored Cowork prompt that references a plugin',
       activity: {
         ...activity({
           type: 'standalone_prompt',
           chatProjectId: 'c',
+          prompt: '@review x',
+          promptReferences: [
+            {
+              kind: 'plugin',
+              textStart: 0,
+              displayText: '@review',
+              plugin: { kind: 'portable', ref: portablePlugin },
+            },
+          ],
+        }),
+        agentAuthor,
+      },
+      // D11: an agent's run takes no plugins through a prompt reference.
+      reason: 'agent_settings',
+    },
+    {
+      // D11: an agent's send into an existing chat changes no plugins, and
+      // the send step refuses plugin_selections there on every run.
+      label: 'an agent-authored session prompt with local plugin selections',
+      activity: {
+        ...activity({
+          type: 'worktree_session_prompt',
+          workspaceId: 'p',
+          worktreeId: 'w',
+          chatId: 'c',
+          prompt: 'x',
+          pluginSelections: {
+            collectionIds: ['col'],
+            skillRefs: [],
+            pluginRefs: [],
+          },
+        }),
+        agentAuthor,
+      },
+      reason: 'agent_settings',
+    },
+    // D11 for an existing chat: a send into it changes no authority, and no
+    // grant carries one (CAN-5479), so these stay native.
+    {
+      label: 'an agent-authored session prompt that references a plugin',
+      activity: {
+        ...activity({
+          type: 'worktree_session_prompt',
+          workspaceId: 'p',
+          worktreeId: 'w',
+          chatId: 'c',
           prompt: '@review x',
           promptReferences: [
             {
@@ -643,6 +835,67 @@ describe('convertibleChatAutomation (CAN-4551)', () => {
     expect(() => chatAutomationToPipeline(subject)).toThrow(reason);
   });
 
+  // CAN-5479: a valid run restriction is the action's own single context, so
+  // the converter ignores it; desktop main checks it before dropping it.
+  it('converts an automation with a run restriction', () => {
+    expect(
+      convertibleChatAutomation({
+        ...activity({
+          type: 'standalone_prompt',
+          chatProjectId: 'c',
+          prompt: 'x',
+        }),
+        targetRequirement: { contexts: ['cowork'] },
+      }),
+    ).toEqual({ convertible: true });
+  });
+  // CAN-5479: an agent's automation keeps the settings its native action
+  // set, through the native grant main records with its pipeline.
+  it.each([
+    {
+      label: 'Orchestrator prompt with a model and plugins',
+      action: {
+        type: 'app_advisor_prompt' as const,
+        prompt: 'x',
+        model: 'gpt-5.5',
+        plugins: [portablePlugin],
+      },
+      settings: { model: 'gpt-5.5', plugins: JSON.stringify([portablePlugin]) },
+    },
+    {
+      label: 'Cowork prompt with plugins',
+      action: {
+        type: 'standalone_prompt' as const,
+        chatProjectId: 'c',
+        prompt: 'x',
+        plugins: [portablePlugin],
+      },
+      settings: { plugins: JSON.stringify([portablePlugin]) },
+    },
+    {
+      label: 'worktree prompt with full access',
+      action: {
+        type: 'worktree_prompt' as const,
+        workspaceId: 'p',
+        prompt: 'x',
+        approvalMode: 'full-access' as const,
+      },
+      settings: { approval_mode: 'full-access' },
+    },
+  ])(
+    'converts an agent-authored $label, keeping its settings (CAN-5479)',
+    ({ action, settings }) => {
+      const subject = { ...activity(action), agentAuthor };
+      expect(convertibleChatAutomation(subject)).toEqual({
+        convertible: true,
+      });
+      const send = chatAutomationToPipeline(subject).pipeline.jobs[
+        CHAT_AUTOMATION_JOB
+      ]?.steps.find((step) => step.uses === 'builtin/send-agent-message');
+      expect(send?.with).toMatchObject(settings);
+    },
+  );
+
   it('converts an agent-authored new chat, whose settings seed a chat it creates', () => {
     expect(
       convertibleChatAutomation({
@@ -656,17 +909,120 @@ describe('convertibleChatAutomation (CAN-4551)', () => {
       }),
     ).toEqual({ convertible: true });
   });
+
+  // CAN-5479: main applies the install's package to the generated send step.
+  it('converts an installed capability package', () => {
+    const installed: Activity = {
+      ...activity({ type: 'app_advisor_prompt', prompt: 'x' }),
+      installedFrom: {
+        remoteId: 'share-1',
+        contentHash: 'hash',
+        installedAt: '2026-10-30T00:00:00.000Z',
+        capabilityPackage: { version: 1, digest: 'sha256:package' },
+      },
+    };
+    expect(convertibleChatAutomation(installed)).toEqual({
+      convertible: true,
+    });
+  });
 });
 
 describe('ownedPipelineToChatAction (CAN-4551)', () => {
   it.each(CASES)('$label: round-trips', (row) => {
-    const { pipeline, inputs } = chatAutomationToPipeline(activity(row.action));
-    const back = ownedPipelineToChatAction(pipeline, inputs, row.isCowork);
-    expect(back).not.toBeNull();
-    expect(chatAutomationToPipeline(activity(back ?? row.action))).toEqual(
-      chatAutomationToPipeline(activity(row.action)),
+    const converted = chatAutomationToPipeline(caseActivity(row));
+    const back = ownedPipelineToChatAction(
+      converted.pipeline,
+      converted.inputs,
+      row.isCowork,
+      converted.modelAliasPreferences,
     );
+    expect(back).not.toBeNull();
+    expect(
+      chatAutomationToPipeline(
+        activity(back ?? row.action, converted.pipeline.name),
+      ),
+    ).toEqual(converted);
     expect(back?.prompt).toBe(row.action.prompt);
+  });
+
+  // CAN-5479: every carried setting comes back as it was stored.
+  it.each(CASES.filter((row) => row.action.type !== 'worktree_prompt'))(
+    '$label: returns the action as stored',
+    (row) => {
+      const converted = chatAutomationToPipeline(caseActivity(row));
+      expect(
+        ownedPipelineToChatAction(
+          converted.pipeline,
+          converted.inputs,
+          row.isCowork,
+          converted.modelAliasPreferences,
+        ),
+      ).toEqual(row.action);
+    },
+  );
+
+  it('returns the automation name an escaped Orchestrator title stands for', () => {
+    const name = 'Review ${{ inputs.x }}';
+    const action: ChatAutomationAction = {
+      type: 'app_advisor_prompt',
+      sidebarGroupName: 'Team ${{ env.HOME }}',
+      prompt: 'x',
+    };
+    const { pipeline, inputs } = chatAutomationToPipeline(
+      activity(action, name),
+    );
+    // The pipeline is renamed with the automation; the title keeps the name.
+    expect(
+      ownedPipelineToChatAction(
+        { ...pipeline, name: 'Other' },
+        inputs,
+        notCowork,
+      ),
+    ).toEqual(action);
+  });
+
+  it('returns null when the Agent preference was changed or dropped', () => {
+    const converted = chatAutomationToPipeline(
+      activity({
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'x',
+        model: 'agent_model_reviewer',
+      }),
+    );
+    expect(
+      ownedPipelineToChatAction(converted.pipeline, converted.inputs, cowork),
+    ).toBeNull();
+    expect(
+      ownedPipelineToChatAction(converted.pipeline, converted.inputs, cowork, {
+        [CHAT_AUTOMATION_MODEL_ALIAS]: { mode: 'inline', base: 'gpt-5.5' },
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when a value input was edited', () => {
+    const converted = chatAutomationToPipeline(
+      activity({
+        type: 'standalone_prompt',
+        chatProjectId: 'cowork-1',
+        prompt: 'x',
+        pluginSelections: localSelections,
+      }),
+    );
+    expect(
+      ownedPipelineToChatAction(
+        converted.pipeline,
+        { ...converted.inputs, plugin_selections: '{"collectionIds":["x"]}' },
+        cowork,
+      ),
+    ).toBeNull();
+    expect(
+      ownedPipelineToChatAction(
+        converted.pipeline,
+        { project_id: 'cowork-1' },
+        cowork,
+      ),
+    ).toBeNull();
   });
 
   it('returns the original prompt byte for byte, expressions included', () => {

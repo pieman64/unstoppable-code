@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getSharedPipeline } from '../pipelines/canopy-server-client';
 import type * as AutomationSendModule from '../automations/automation-send';
 jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
@@ -89,6 +90,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import { AutomationsService } from '../automations/service';
 import { saveOwnedChatPipeline } from '../automations/chat-automation-conversion';
+import { migrateChatAutomations } from '../automations/chat-automation-migration';
+import { nativeGrantContentHash } from '../automations/chat-automation-native-grant';
 import {
   AUTOMATION_CHANGED_MEANWHILE,
   createAutomationForAgent,
@@ -126,6 +129,7 @@ import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-se
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
 import {
   removeAutomationCapabilityPackageInstall,
+  repinAutomationCapabilityPackageContent,
   resolveInstalledAutomationPackageOverlay,
   resolveInstalledAutomationPipelinePackage,
   SharedPipelinePinMismatchError,
@@ -520,6 +524,7 @@ jest.mock('../app-advisor/watchers', () => ({
 jest.mock('../lib/main-process-logging', () => ({
   logMainProcessError: jest.fn(),
   logMainProcessWarn: jest.fn(),
+  logMainProcessInfo: jest.fn(),
 }));
 
 jest.mock('../lib/preferences-store', () => ({
@@ -707,6 +712,10 @@ jest.mock('../lib/cowork-work-entries', () => ({
     mockListWorkEntryIds(projectId),
 }));
 
+jest.mock('../pipelines/pipeline-worker-dispatch', () =>
+  jest.requireActual<object>('./helpers/pipeline-worker-dispatch-double'),
+);
+
 jest.mock('../pipelines/pipeline-resume-service', () => ({
   resumePipelineExecutionFromMain: jest.fn(() =>
     Promise.resolve({
@@ -762,6 +771,7 @@ jest.mock('../pipelines/pipeline-service', () => ({
 jest.mock('../pipelines/pipeline-package-service', () => ({
   assertSharedPipelineMatchesAutomationInstallPin: jest.fn(),
   removeAutomationCapabilityPackageInstall: jest.fn(() => Promise.resolve()),
+  repinAutomationCapabilityPackageContent: jest.fn(() => Promise.resolve(true)),
   resolveInstalledAutomationPackageOverlay: jest.fn(() =>
     Promise.resolve(undefined),
   ),
@@ -8071,16 +8081,72 @@ describe('AutomationsService', () => {
 
     it('refuses an automation that stays native, saving nothing', async () => {
       await seedCowork({
-        action: { ...coworkPrompt, modelConfig: { speed: 'ultrafast' } },
+        action: {
+          type: 'worktree_prompt',
+          workspaceId: 'project-1',
+          prompt: 'x',
+          purpose: 'scheduled_task',
+        },
       });
       const { service } = makeService();
       await expect(
         service.replaceWithOwnedPipeline('activity-1', saveOwnedChatPipeline),
       ).resolves.toEqual({
         ok: false,
-        error: "This automation can't convert (unsupported_speed).",
+        error: "This automation can't convert (native_send).",
       });
       expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+    });
+
+    // CAN-5479: a valid run restriction is the chat action's own context,
+    // which a global pipeline can't carry; any other already fails natively.
+    it('drops a run restriction the chat action implies, and keeps another native', async () => {
+      await seedCowork({ targetRequirement: { contexts: ['cowork'] } });
+      const { service } = makeService();
+      const converted = await service.replaceWithOwnedPipeline(
+        'activity-1',
+        saveOwnedChatPipeline,
+      );
+      if (!converted.ok || !converted.activity)
+        throw new Error('not converted');
+      expect(converted.activity).not.toHaveProperty('targetRequirement');
+      expect((await service.list()).activities[0]).not.toHaveProperty(
+        'targetRequirement',
+      );
+
+      mockSaveUserPipeline.mockClear();
+      await seedCowork({ targetRequirement: { contexts: ['worktree'] } });
+      const fresh = makeService().service;
+      await expect(
+        fresh.replaceWithOwnedPipeline('activity-1', saveOwnedChatPipeline),
+      ).resolves.toEqual({
+        ok: false,
+        error: "This automation can't convert (target_requirement).",
+      });
+      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+    });
+
+    // CAN-5479: an Agent runs through the owned pipeline's model alias.
+    it('maps an Agent onto the owned pipeline’s model alias', async () => {
+      await seedCowork({
+        action: { ...coworkPrompt, model: 'agent_model_reviewer' },
+      });
+      const { service } = makeService();
+      const converted = await service.replaceWithOwnedPipeline(
+        'activity-1',
+        saveOwnedChatPipeline,
+      );
+      expect(converted).toMatchObject({
+        ok: true,
+        activity: {
+          action: {
+            type: 'worktree_pipeline',
+            modelAliasPreferences: {
+              chat_model: { mode: 'agent', agent_id: 'agent_model_reviewer' },
+            },
+          },
+        },
+      });
     });
 
     it('rolls the pipeline back when the automation can’t be rewritten', async () => {
@@ -8193,6 +8259,236 @@ describe('AutomationsService', () => {
       const fresh = new AutomationsService();
       await fresh.delete({ id: 'activity-2' });
       expect(mockDeleteUserPipeline).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('chat automation migration (CAN-5479)', () => {
+    const coworkPrompt: AutomationAction = {
+      type: 'standalone_prompt',
+      chatProjectId: 'cowork-1',
+      prompt: 'Organize notes',
+    };
+    const installedFrom = {
+      remoteId: 'remote-1',
+      contentHash: 'a'.repeat(64),
+      installedAt: '2026-05-28T12:00:00.000Z',
+      sourceKind: 'shared' as const,
+    };
+
+    async function seed(activities: ScheduledActivity[]): Promise<void> {
+      await writeAutomationFile({
+        version: 1,
+        updatedAt: '2026-05-28T12:00:00.000Z',
+        activities,
+        recentRuns: [],
+      });
+    }
+
+    function storedActivities(): ScheduledActivity[] {
+      const stored = JSON.parse(readFileSync(automationsFilePath, 'utf8')) as {
+        activities: ScheduledActivity[];
+      };
+      return stored.activities;
+    }
+
+    beforeEach(() => {
+      mockChatAutomationPipelines = true;
+      mockDuringExperimentRead = undefined;
+      let saved = 0;
+      mockSaveUserPipeline.mockReset();
+      mockSaveUserPipeline.mockImplementation(() => {
+        saved += 1;
+        return Promise.resolve({
+          success: true,
+          data: { id: `owned-${saved}` },
+        });
+      });
+      mockDeleteUserPipeline.mockClear();
+    });
+
+    afterEach(() => {
+      mockChatAutomationPipelines = false;
+      mockDuringExperimentRead = undefined;
+      mockSaveUserPipeline.mockReset();
+      mockSaveUserPipeline.mockImplementation(() =>
+        Promise.resolve({ success: true, data: { id: 'owned-1' } }),
+      );
+    });
+
+    // A characterization over the stored shapes the migration meets: what
+    // converts and what stays native.
+    it('converts each convertible chat automation and keeps the rest', async () => {
+      await seed([
+        activity({
+          id: 'orchestrator',
+          name: 'Daily summary',
+          ifCommand: 'echo go',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * *',
+            timezone: 'local',
+          },
+          action: appAdvisorAction(),
+        }),
+        activity({ id: 'cowork', action: coworkPrompt, enabled: false }),
+        activity({
+          id: 'legacy-cowork',
+          action: { ...coworkPrompt, chatProjectId: 'default' },
+        }),
+        activity({ id: 'installed', action: coworkPrompt, installedFrom }),
+        activity({
+          id: 'curated',
+          action: coworkPrompt,
+          installedFrom: { ...installedFrom, sourceKind: 'curated' },
+        }),
+        activity({
+          id: 'ultrafast',
+          action: { ...coworkPrompt, modelConfig: { speed: 'ultrafast' } },
+        }),
+        activity({
+          id: 'restricted',
+          action: coworkPrompt,
+          targetRequirement: { contexts: ['cowork'] },
+        }),
+        activity({
+          id: 'pipeline',
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: 'mine',
+            pipelineSource: 'user',
+          },
+        }),
+      ]);
+      mockResolveCoworkWorkspaceId.mockImplementation((projectId: string) =>
+        projectId === 'default' ? 'cowork-1' : projectId,
+      );
+      try {
+        const { service } = makeService();
+        await expect(migrateChatAutomations(service)).resolves.toEqual({
+          converted: [
+            'orchestrator',
+            'cowork',
+            'legacy-cowork',
+            'installed',
+            'curated',
+            'ultrafast',
+            'restricted',
+          ],
+          failed: [],
+        });
+      } finally {
+        mockResolveCoworkWorkspaceId.mockImplementation(
+          (projectId: string) => projectId,
+        );
+      }
+      const byId = new Map(
+        storedActivities().map((entry) => [entry.id, entry]),
+      );
+      expect(byId.get('orchestrator')).toMatchObject({
+        name: 'Daily summary',
+        ifCommand: 'echo go',
+        enabled: true,
+        schedule: { kind: 'cron', expression: '0 9 * * *' },
+        executionContext: 'personal',
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineSource: 'user',
+        },
+      });
+      expect(byId.get('cowork')).toMatchObject({
+        enabled: false,
+        action: { type: 'worktree_pipeline' },
+      });
+      expect(byId.get('legacy-cowork')?.action).toMatchObject({
+        type: 'worktree_pipeline',
+        inputs: { project_id: 'cowork-1' },
+      });
+      for (const id of ['installed', 'curated'])
+        expect(byId.get(id)?.action.type).toBe('worktree_pipeline');
+      // CAN-5479: Ultra fast and a run restriction the action implies convert.
+      expect(byId.get('ultrafast')?.action.type).toBe('worktree_pipeline');
+      expect(byId.get('restricted')?.action.type).toBe('worktree_pipeline');
+      expect(byId.get('restricted')).not.toHaveProperty('targetRequirement');
+      expect(byId.get('pipeline')?.action).toMatchObject({
+        pipelineId: 'mine',
+      });
+      expect(mockSaveUserPipeline).toHaveBeenCalledTimes(7);
+    });
+
+    it('converts nothing while the experiment is off', async () => {
+      mockChatAutomationPipelines = false;
+      await seed([activity({ action: coworkPrompt })]);
+      const { service } = makeService();
+      await expect(migrateChatAutomations(service)).resolves.toEqual({
+        converted: [],
+        failed: [],
+      });
+      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+      expect(storedActivities()[0]?.action).toEqual(coworkPrompt);
+    });
+
+    it('converts nothing once the experiment is switched off meanwhile', async () => {
+      await seed([activity({ action: coworkPrompt })]);
+      const { service } = makeService();
+      // The first read lets the sweep start; the one inside the write sees it off.
+      mockDuringExperimentRead = (): void => {
+        mockDuringExperimentRead = (): void => {
+          mockChatAutomationPipelines = false;
+        };
+      };
+      await expect(migrateChatAutomations(service)).resolves.toEqual({
+        converted: [],
+        failed: [],
+      });
+      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+      expect(storedActivities()[0]?.action).toEqual(coworkPrompt);
+    });
+
+    it('keeps a running automation native, to convert on a later startup', async () => {
+      await seed([activity({ action: coworkPrompt })]);
+      const { service } = makeService();
+      await service.list();
+      const internals = service as unknown as {
+        file: { recentRuns: ScheduledActivityRun[] } | null;
+      };
+      if (!internals.file) throw new Error('automation file was not loaded');
+      internals.file.recentRuns = [
+        run({ status: 'running', completedAt: undefined }),
+      ];
+      await expect(migrateChatAutomations(service)).resolves.toEqual({
+        converted: [],
+        failed: ['activity-1'],
+      });
+      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+      expect(storedActivities()[0]?.action).toEqual(coworkPrompt);
+    });
+
+    it('keeps an automation native when its workflow can’t be saved', async () => {
+      await seed([
+        activity({ id: 'first', action: coworkPrompt }),
+        activity({ id: 'second', action: appAdvisorAction() }),
+      ]);
+      mockSaveUserPipeline.mockResolvedValueOnce({
+        success: false,
+        error: 'Disk full',
+      });
+      const { service } = makeService();
+      await expect(migrateChatAutomations(service)).resolves.toEqual({
+        converted: ['second'],
+        failed: ['first'],
+      });
+      expect(storedActivities()[0]?.action).toEqual(coworkPrompt);
+    });
+
+    it('converts each automation once across repeated startups', async () => {
+      await seed([activity({ action: coworkPrompt })]);
+      await migrateChatAutomations(makeService().service);
+      await expect(
+        migrateChatAutomations(new AutomationsService()),
+      ).resolves.toEqual({ converted: [], failed: [] });
+      expect(mockSaveUserPipeline).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -8388,6 +8684,111 @@ describe('AutomationsService', () => {
       });
     });
 
+    // CAN-5479: a capability package install converts; its runs keep the
+    // package's checks, and its re-share keeps matching its install.
+    it('converts a capability package install, keeping its package checks and share pin', async () => {
+      const capabilityPackage = {
+        version: 1 as const,
+        digest: `pp:v1:${'A'.repeat(43)}`,
+      };
+      const installedAction: AutomationAction = {
+        ...coworkPrompt,
+        modelConfig: { fastMode: true },
+      };
+      const { service } = makeService();
+      await seedConverted(service, {
+        action: installedAction,
+        installedFrom: {
+          remoteId: 'remote-1',
+          contentHash: 'a'.repeat(64),
+          installedAt: '2026-05-28T12:00:00.000Z',
+          sourceKind: 'shared',
+          capabilityPackage,
+        },
+      });
+      // What a re-share hashes: the automation as the list shows it.
+      const [stored] = (await service.list()).activities;
+      if (!stored) throw new Error('not stored');
+      const shown = projectOwnedChatAutomation(stored);
+      expect(shown.action).toMatchObject({ type: 'standalone_prompt' });
+      const sha = (value: unknown): string =>
+        createHash('sha256').update(JSON.stringify(value)).digest('hex');
+      expect(
+        jest.mocked(repinAutomationCapabilityPackageContent),
+      ).toHaveBeenCalledWith(
+        'activity-1',
+        sha({ name: 'Morning check', action: installedAction }),
+        sha({ name: shown.name, action: shown.action }),
+      );
+
+      mockedStartPipelineExecutionFromMain.mockClear();
+      mockedResolveInstalledAutomationPackageOverlay.mockClear();
+      await expect(service.runNow({ id: 'activity-1' })).resolves.toMatchObject(
+        { ok: true, run: { status: 'success' } },
+      );
+      expect(
+        mockedResolveInstalledAutomationPackageOverlay,
+      ).toHaveBeenCalledWith('activity-1', capabilityPackage);
+      expect(mockedStartPipelineExecutionFromMain).toHaveBeenCalledTimes(1);
+
+      // A package that isn't intact fails the run before it starts.
+      mockedStartPipelineExecutionFromMain.mockClear();
+      mockedResolveInstalledAutomationPackageOverlay.mockRejectedValueOnce(
+        new Error(
+          'The installed automation capability package is missing or invalid. Reinstall the automation.',
+        ),
+      );
+      await expect(service.runNow({ id: 'activity-1' })).resolves.toMatchObject(
+        {
+          run: {
+            status: 'failure',
+            error:
+              'The installed automation capability package is missing or invalid. Reinstall the automation.',
+          },
+        },
+      );
+      expect(mockedStartPipelineExecutionFromMain).not.toHaveBeenCalled();
+    });
+
+    // An install's update brings its own provenance, which the regenerated
+    // automation stores; one that adds a package keeps it converted (CAN-5479).
+    it('regenerates an install’s pipeline with the provenance its update stores', async () => {
+      const installedFrom = {
+        remoteId: 'remote-1',
+        contentHash: 'a'.repeat(64),
+        installedAt: '2026-05-28T12:00:00.000Z',
+        sourceKind: 'shared' as const,
+      };
+      mockChatAutomationPipelines = true;
+      const { service } = makeService();
+      await seedConverted(service, { installedFrom });
+      const updated = await updateAutomationFromForm(
+        {
+          id: 'activity-1',
+          action: coworkPrompt,
+          installedFrom: {
+            ...installedFrom,
+            contentHash: 'b'.repeat(64),
+            capabilityPackage: {
+              version: 1,
+              digest: `pp:v1:${'A'.repeat(43)}`,
+            },
+          },
+        },
+        service,
+      );
+      expect(updated).toMatchObject({ ok: true });
+      const saved = (await service.list()).activities[0];
+      expect(saved?.action).toMatchObject({
+        type: 'worktree_pipeline',
+        pipelineId: 'owned-1',
+      });
+      expect(saved?.installedFrom).toMatchObject({
+        contentHash: 'b'.repeat(64),
+        capabilityPackage: { digest: `pp:v1:${'A'.repeat(43)}` },
+      });
+    });
+
     it('leaves a D4 send native', async () => {
       const action: AutomationAction = {
         type: 'worktree_session_prompt',
@@ -8458,27 +8859,198 @@ describe('AutomationsService', () => {
       expect(metadataEntry('owned-1')).not.toHaveProperty('agentAuthor');
     });
 
+    // CAN-5465: the pipeline and the inputs it reads are one write; a run
+    // never starts the new pipeline with the old destination.
+    it('starts a run that lands mid-regeneration with the old pair or the new, never a mix', async () => {
+      jest.useRealTimers();
+      const { service } = makeService();
+      await seedConverted(service);
+      mockChatAutomationPipelines = true;
+      const before = (await service.list()).activities[0]?.action;
+      if (before?.type !== 'worktree_pipeline')
+        throw new Error('not converted');
+      const old = {
+        pipeline: stored.get('owned-1')?.content,
+        inputs: before.inputs,
+      };
+      let markDispatched = (): void => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      const start =
+        mockedStartPipelineExecutionFromMain.getMockImplementation();
+      const save = mockSaveUserPipeline.getMockImplementation();
+      if (!start || !save) throw new Error('no store');
+      mockedStartPipelineExecutionFromMain.mockClear();
+      mockedStartPipelineExecutionFromMain.mockImplementationOnce((args) => {
+        markDispatched();
+        return start(args);
+      });
+      let run: Promise<AutomationMutationResponse> | undefined;
+      mockSaveUserPipeline.mockImplementation(async (...args) => {
+        const saved = await save(...args);
+        if (run === undefined) {
+          // A run starts once the regenerated pipeline is saved, before the
+          // edit's inputs are; it gets a moment to reach its dispatch.
+          run = service.runNow({ id: 'activity-1' });
+          await Promise.race([
+            dispatched,
+            new Promise((resolve) => setTimeout(resolve, 500)),
+          ]);
+        }
+        return saved;
+      });
+      const updated = await updateAutomationFromForm(
+        {
+          id: 'activity-1',
+          // Another project changes the stored action's inputs too.
+          action: {
+            ...coworkPrompt,
+            chatProjectId: 'cowork-2',
+            prompt: 'Tidy notes',
+          },
+        },
+        service,
+      );
+      expect(run).toBeDefined();
+      await run;
+      const after = (await service.list()).activities[0]?.action;
+      if (after?.type !== 'worktree_pipeline') throw new Error('not converted');
+      const next = {
+        pipeline: stored.get('owned-1')?.content,
+        inputs: after.inputs,
+      };
+      expect(next.inputs).not.toEqual(old.inputs);
+      const [started] =
+        mockedStartPipelineExecutionFromMain.mock.calls[0] ?? [];
+      if (!started) throw new Error('the run never started');
+      const seen = {
+        pipeline: started.pipeline,
+        inputs: started.options.inputs,
+      };
+      expect(updated.ok).toBe(true);
+      expect([old, next]).toContainEqual(seen);
+    });
+
+    // The update's own checks authorize the workflow it regenerates, as they
+    // did when the pipeline was saved before the update; a refusal puts the
+    // pipeline back.
+    it('authorizes the regenerated pipeline, restoring it when refused', async () => {
+      const { service } = makeService();
+      await seedConverted(service);
+      mockChatAutomationPipelines = true;
+      const before = stored.get('owned-1');
+      const seen: unknown[] = [];
+      jest
+        .spyOn(
+          service as unknown as {
+            enablingBackgroundRefusal(): Promise<string | null>;
+          },
+          'enablingBackgroundRefusal',
+        )
+        .mockImplementation(() => {
+          seen.push(stored.get('owned-1')?.content);
+          return Promise.resolve('Refused for this owner.');
+        });
+      const updated = await updateAutomationFromForm(
+        { id: 'activity-1', action: { ...coworkPrompt, prompt: 'Tidy notes' } },
+        service,
+      );
+      expect(updated).toEqual({ ok: false, error: 'Refused for this owner.' });
+      expect(seen).not.toHaveLength(0);
+      expect(JSON.stringify(seen[0])).toContain('Tidy notes');
+      expect(stored.get('owned-1')?.content).toEqual(before?.content);
+      expect((await service.list()).activities[0]?.action).toMatchObject({
+        type: 'worktree_pipeline',
+        inputs: { project_id: 'cowork-1' },
+      });
+    });
+
+    it('refuses to regenerate the pipeline while a run is in progress', async () => {
+      const { service } = makeService();
+      await seedConverted(service);
+      mockChatAutomationPipelines = true;
+      const before = stored.get('owned-1');
+      let release = (): void => undefined;
+      let markDispatched = (): void => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      const start =
+        mockedStartPipelineExecutionFromMain.getMockImplementation();
+      if (!start) throw new Error('no start');
+      mockedStartPipelineExecutionFromMain.mockImplementationOnce(
+        (args) =>
+          new Promise((resolve) => {
+            markDispatched();
+            release = (): void => resolve(start(args));
+          }),
+      );
+      const run = service.runNow({ id: 'activity-1' });
+      await dispatched;
+      const updated = await updateAutomationFromForm(
+        {
+          id: 'activity-1',
+          action: {
+            ...coworkPrompt,
+            chatProjectId: 'cowork-2',
+            prompt: 'Tidy notes',
+          },
+        },
+        service,
+      );
+      release();
+      await run;
+      expect(updated).toEqual({
+        ok: false,
+        error: 'Activity is running. Try again after the run finishes.',
+      });
+      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+      expect(stored.get('owned-1')).toEqual(before);
+    });
+
+    /** Fails the automations file's next write, after `meanwhile` runs. */
+    function failNextAutomationsWrite(
+      service: AutomationsService,
+      meanwhile: () => void = () => undefined,
+    ): void {
+      jest
+        .spyOn(
+          service as unknown as { writeFile(file: unknown): Promise<void> },
+          'writeFile',
+        )
+        .mockImplementationOnce(() => {
+          meanwhile();
+          return Promise.reject(new Error('disk full'));
+        });
+    }
+
     it('restores the pipeline when the regenerated automation can’t be stored', async () => {
       const { service } = makeService();
       await seedConverted(service);
       mockChatAutomationPipelines = true;
       const before = stored.get('owned-1')?.content;
-      jest
-        .spyOn(service, 'update')
-        .mockResolvedValueOnce({ ok: false, error: 'Refused' });
-      const updated = await updateAutomationFromForm(
-        {
-          id: 'activity-1',
-          action: { ...coworkPrompt, prompt: 'Tidy notes' },
-        },
-        service,
-      );
-      expect(updated.ok).toBe(false);
+      const action = (await service.list()).activities[0]?.action;
+      failNextAutomationsWrite(service);
+      await expect(
+        updateAutomationFromForm(
+          {
+            id: 'activity-1',
+            action: {
+              ...coworkPrompt,
+              chatProjectId: 'cowork-2',
+              prompt: 'Tidy notes',
+            },
+          },
+          service,
+        ),
+      ).rejects.toThrow('disk full');
       expect(mockSaveUserPipeline).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'owned-1' }),
         expect.anything(),
       );
       expect(stored.get('owned-1')?.content).toEqual(before);
+      expect((await service.list()).activities[0]?.action).toEqual(action);
     });
 
     it('converts back while the experiment is off, deleting the pipeline', async () => {
@@ -8575,28 +9147,30 @@ describe('AutomationsService', () => {
         chat: { projectId: 'p2', worktreeId: 'w2', chatId: 'c2' },
         recordedAt: '2026-05-29T12:00:00.000Z',
       };
-      jest.spyOn(service, 'update').mockImplementationOnce(() => {
+      failNextAutomationsWrite(service, () => {
         // Another agent rewrites the workflow before the restore.
         const entry = stored.get('owned-1');
         if (!entry) throw new Error('no pipeline');
         stored.set('owned-1', { ...entry, revision: entry.revision + 1 });
         setUserPipelineAgentAuthor('owned-1', otherAgent);
-        return Promise.resolve({ ok: false, error: 'Refused' });
       });
-      const updated = await updateAutomationFromForm(
-        {
-          id: 'activity-1',
-          action: { ...coworkPrompt, prompt: 'Tidy notes' },
-        },
-        service,
-      );
-      expect(updated.ok).toBe(false);
+      await expect(
+        updateAutomationFromForm(
+          {
+            id: 'activity-1',
+            action: { ...coworkPrompt, prompt: 'Tidy notes' },
+          },
+          service,
+        ),
+      ).rejects.toThrow('disk full');
       expect(metadataEntry('owned-1')).toMatchObject({
         agentAuthor: otherAgent,
       });
     });
 
-    it('keeps a chat automation with a run restriction native', async () => {
+    // CAN-5479: a valid run restriction is the one the chat action implies;
+    // the global pipeline can't carry it, so the conversion drops it.
+    it('converts a chat automation with a run restriction, dropping it', async () => {
       await seed({ targetRequirement: { contexts: ['cowork'] } });
       mockChatAutomationPipelines = true;
       const { service } = makeService();
@@ -8606,9 +9180,81 @@ describe('AutomationsService', () => {
       );
       expect(updated).toMatchObject({
         ok: true,
-        activity: { action: { ...coworkPrompt, prompt: 'Tidy notes' } },
+        activity: {
+          action: { ...coworkPrompt, prompt: 'Tidy notes' },
+          ownedPipeline: { chatEditable: true },
+        },
       });
-      expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+      if (!updated.ok) throw new Error('not saved');
+      expect(updated.activity).not.toHaveProperty('targetRequirement');
+      expect(mockSaveUserPipeline).toHaveBeenCalled();
+    });
+
+    it('restores the run restriction the chat action implies when converting back', async () => {
+      const { service } = makeService();
+      await seedConverted(service);
+      const edited = { ...coworkPrompt, prompt: 'Tidy notes' };
+      const updated = await updateAutomationFromForm(
+        { id: 'activity-1', action: edited },
+        service,
+      );
+      expect(updated).toMatchObject({
+        ok: true,
+        activity: {
+          action: edited,
+          targetRequirement: { contexts: ['cowork'] },
+        },
+      });
+    });
+
+    // An installed automation's form omits the restriction, which the shared
+    // update owns; restoring the implied one isn't replacing it.
+    it('converts back an installed automation, restoring its implied run restriction', async () => {
+      const { service } = makeService();
+      await seedConverted(service, {
+        installedFrom: {
+          remoteId: '4f6b0f5e-2f66-4be4-9f8e-1f0a54a1c111',
+          contentHash: 'a'.repeat(64),
+          installedAt: '2026-05-28T12:00:00.000Z',
+        },
+      });
+      const edited = { ...coworkPrompt, prompt: 'Tidy notes' };
+      const updated = await updateAutomationFromForm(
+        { id: 'activity-1', action: edited },
+        service,
+      );
+      expect(updated).toMatchObject({
+        ok: true,
+        activity: {
+          action: edited,
+          targetRequirement: { contexts: ['cowork'] },
+        },
+      });
+      expect(mockDeleteUserPipeline).toHaveBeenCalled();
+    });
+
+    it('still refuses a form save that replaces an installed automation’s run restriction', async () => {
+      const { service } = makeService();
+      await seedConverted(service, {
+        installedFrom: {
+          remoteId: '4f6b0f5e-2f66-4be4-9f8e-1f0a54a1c111',
+          contentHash: 'a'.repeat(64),
+          installedAt: '2026-05-28T12:00:00.000Z',
+        },
+      });
+      const updated = await updateAutomationFromForm(
+        {
+          id: 'activity-1',
+          action: { ...coworkPrompt, prompt: 'Tidy notes' },
+          targetRequirement: { contexts: ['worktree'] },
+        },
+        service,
+      );
+      expect(updated).toEqual({
+        ok: false,
+        error:
+          'Apply the shared update to replace this automation target requirement.',
+      });
     });
 
     it.each([true, false])(
@@ -8633,7 +9279,8 @@ describe('AutomationsService', () => {
       },
     );
 
-    it('converts back when a save adds a run restriction', async () => {
+    // CAN-5479: the restriction the action implies changes nothing to run.
+    it('stays converted when a save adds the run restriction its action implies', async () => {
       const { service } = makeService();
       await seedConverted(service);
       mockChatAutomationPipelines = true;
@@ -8650,10 +9297,12 @@ describe('AutomationsService', () => {
         ok: true,
         activity: {
           action: edited,
-          targetRequirement: { contexts: ['cowork'] },
+          ownedPipeline: { pipelineId: 'owned-1', chatEditable: true },
         },
       });
-      expect(stored.has('owned-1')).toBe(false);
+      if (!updated.ok) throw new Error('not saved');
+      expect(updated.activity).not.toHaveProperty('targetRequirement');
+      expect(stored.has('owned-1')).toBe(true);
     });
 
     it('keeps a workflow written while it is converted back', async () => {
@@ -8679,24 +9328,6 @@ describe('AutomationsService', () => {
         1,
         expect.anything(),
       );
-    });
-
-    it('restores the pipeline when storing the regenerated automation throws', async () => {
-      const { service } = makeService();
-      await seedConverted(service);
-      mockChatAutomationPipelines = true;
-      const before = stored.get('owned-1')?.content;
-      jest.spyOn(service, 'update').mockRejectedValueOnce(new Error('disk'));
-      await expect(
-        updateAutomationFromForm(
-          {
-            id: 'activity-1',
-            action: { ...coworkPrompt, prompt: 'Tidy notes' },
-          },
-          service,
-        ),
-      ).rejects.toThrow('disk');
-      expect(stored.get('owned-1')?.content).toEqual(before);
     });
 
     it('keeps the regenerated pipeline when the update throws after it was stored', async () => {
@@ -8741,17 +9372,16 @@ describe('AutomationsService', () => {
       await seedConverted(service, { agentAuthor });
       expect(metadataEntry('owned-1')).toHaveProperty('agentAuthor');
       mockChatAutomationPipelines = true;
-      jest
-        .spyOn(service, 'update')
-        .mockResolvedValueOnce({ ok: false, error: 'Refused' });
-      const updated = await updateAutomationFromForm(
-        {
-          id: 'activity-1',
-          action: { ...coworkPrompt, prompt: 'Tidy notes' },
-        },
-        service,
-      );
-      expect(updated.ok).toBe(false);
+      failNextAutomationsWrite(service);
+      await expect(
+        updateAutomationFromForm(
+          {
+            id: 'activity-1',
+            action: { ...coworkPrompt, prompt: 'Tidy notes' },
+          },
+          service,
+        ),
+      ).rejects.toThrow('disk full');
       // It was rebuilt in place, which cleared the agent author, then restored.
       expect(mockSaveUserPipeline).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'owned-1' }),
@@ -8866,8 +9496,67 @@ describe('AutomationsService', () => {
         },
       );
 
-      it('keeps an agent’s Orchestrator prompt with a model and plugins native', async () => {
+      /** The grant main records for the stored pipeline at its revision. */
+      function expectedGrant(
+        automationId: string,
+        authority: Record<string, unknown>,
+      ): Record<string, unknown> {
+        const entry = stored.get('owned-1');
+        if (!entry) throw new Error('no pipeline');
+        return {
+          automationId,
+          pipelineRevision: entry.revision,
+          contentHash: nativeGrantContentHash(entry.content),
+          ...authority,
+        };
+      }
+
+      // CAN-5479: it keeps what its native action set, through its grant.
+      it.each([
+        [
+          'an Orchestrator prompt with a model and plugins',
+          advisorWithSettings,
+          { model: 'gpt-5.5', plugins: advisorWithSettings.plugins },
+        ],
+        [
+          'a worktree prompt with full access',
+          {
+            type: 'worktree_prompt' as const,
+            workspaceId: 'project-1',
+            prompt: 'Review',
+            approvalMode: 'full-access' as const,
+          },
+          { approvalMode: 'full-access' },
+        ],
+      ])(
+        'converts an agent’s %s, granting its settings to that revision (CAN-5479)',
+        async (_label, action, authority) => {
+          mockChatAutomationPipelines = true;
+          const { service } = makeService();
+          const created = await createAutomationForAgent(
+            { name: 'Digest', schedule, action },
+            { agentAuthor },
+            service,
+          );
+          if (!created.ok || !created.activity) throw new Error('not created');
+          expect(
+            (await savedActivity(service, created.activity.id))?.action,
+          ).toMatchObject({ type: 'worktree_pipeline', pipelineId: 'owned-1' });
+          expect(metadataEntry('owned-1')).toMatchObject({
+            agentAuthor,
+            ownerAutomationId: created.activity.id,
+            nativeGrant: expectedGrant(created.activity.id, authority),
+          });
+        },
+      );
+
+      it('keeps an agent’s automation native when its grant can’t be recorded', async () => {
         mockChatAutomationPipelines = true;
+        // The saved revision can't be read back: no grant, no conversion.
+        mockedGetStoredPipelineBySource.mockReturnValue({
+          success: false,
+          error: 'unreadable',
+        });
         const { service } = makeService();
         const created = await createAutomationForAgent(
           { name: 'Digest', schedule, action: advisorWithSettings },
@@ -8878,7 +9567,11 @@ describe('AutomationsService', () => {
         expect(
           (await savedActivity(service, created.activity.id))?.action,
         ).toEqual(advisorWithSettings);
-        expect(mockSaveUserPipeline).not.toHaveBeenCalled();
+        expect(mockDeleteUserPipeline).toHaveBeenCalledWith(
+          'owned-1',
+          null,
+          expect.anything(),
+        );
       });
 
       it('stores an agent’s create natively while the experiment is off', async () => {
@@ -8925,10 +9618,11 @@ describe('AutomationsService', () => {
       );
 
       it.each([true, false])(
-        'converts back an Orchestrator prompt with settings an agent reschedules (experiment %s)',
+        'keeps an Orchestrator prompt’s settings converted when an agent reschedules it (experiment %s)',
         async (experiment) => {
           const { service } = makeService();
-          // A person converted it; their runs may carry its settings.
+          // A person converted it; their runs carry its settings, and so do
+          // the agent's now, as the native action's did (CAN-5479).
           await seedConverted(service, { action: advisorWithSettings });
           mockChatAutomationPipelines = experiment;
           const updated = await updateAutomationForAgent(
@@ -8940,11 +9634,161 @@ describe('AutomationsService', () => {
           expect(await savedActivity(service, 'activity-1')).toMatchObject({
             agentAuthor,
             schedule,
-            action: advisorWithSettings,
+            action: { type: 'worktree_pipeline', pipelineId: 'owned-1' },
           });
-          expect(stored.has('owned-1')).toBe(false);
+          expect(stored.get('owned-1')?.revision).toBe(2);
+          expect(metadataEntry('owned-1')).toMatchObject({
+            agentAuthor,
+            nativeGrant: expectedGrant('activity-1', {
+              model: 'gpt-5.5',
+              plugins: advisorWithSettings.plugins,
+            }),
+          });
         },
       );
+
+      it('converts back an agent’s change of a converted automation’s settings', async () => {
+        const { service } = makeService();
+        await seedConverted(service, { action: advisorWithSettings });
+        const changed = { ...advisorWithSettings, model: 'sonnet' };
+        const updated = await updateAutomationForAgent(
+          { id: 'activity-1', action: changed },
+          { agentAuthor },
+          service,
+        );
+        expect(updated.ok).toBe(true);
+        // Stored as the native action the agent sent; no grant carries it.
+        expect(await savedActivity(service, 'activity-1')).toMatchObject({
+          agentAuthor,
+          action: changed,
+        });
+        expect(stored.has('owned-1')).toBe(false);
+      });
+
+      // CAN-5479: an agent's `pipeline.update` of its own automation's
+      // workflow can't become authority by converting back.
+      it('converts an agent’s automation back with its own settings, never a hand edit’s', async () => {
+        const { service } = makeService();
+        await seedConverted(service, {
+          agentAuthor,
+          action: { ...coworkPrompt, approvalMode: 'auto' },
+        });
+        // The agent sets full access on the workflow's send step.
+        const entry = stored.get('owned-1');
+        const job = entry?.content.jobs.chat;
+        if (!entry || !job) throw new Error('no pipeline');
+        stored.set('owned-1', {
+          ...entry,
+          revision: entry.revision + 1,
+          content: {
+            ...entry.content,
+            jobs: {
+              chat: {
+                ...job,
+                steps: job.steps.map((step) =>
+                  step.id === 'send'
+                    ? {
+                        ...step,
+                        with: { ...step.with, approval_mode: 'full-access' },
+                      }
+                    : step,
+                ),
+              },
+            },
+          },
+        });
+        for (const experiment of [true, false]) {
+          mockChatAutomationPipelines = experiment;
+          const updated = await updateAutomationForAgent(
+            { id: 'activity-1', name: `Renamed ${String(experiment)}` },
+            { agentAuthor },
+            service,
+          );
+          expect(updated.ok).toBe(true);
+          const saved = await savedActivity(service, 'activity-1');
+          const content = JSON.stringify([
+            saved?.action,
+            stored.get('owned-1')?.content,
+          ]);
+          expect(content).not.toContain('full-access');
+          expect(content).toContain('"auto"');
+          expect(metadataEntry('owned-1')).toMatchObject({
+            nativeGrant: expectedGrant('activity-1', { approvalMode: 'auto' }),
+          });
+        }
+      });
+
+      it('converts an agent’s automation with no settings back with none, whatever a hand edit added', async () => {
+        const { service } = makeService();
+        await seedConverted(service, { agentAuthor });
+        const entry = stored.get('owned-1');
+        const job = entry?.content.jobs.chat;
+        if (!entry || !job) throw new Error('no pipeline');
+        stored.set('owned-1', {
+          ...entry,
+          revision: entry.revision + 1,
+          content: {
+            ...entry.content,
+            jobs: {
+              chat: {
+                ...job,
+                steps: job.steps.map((step) =>
+                  step.id === 'send'
+                    ? {
+                        ...step,
+                        with: { ...step.with, approval_mode: 'full-access' },
+                      }
+                    : step,
+                ),
+              },
+            },
+          },
+        });
+        const updated = await updateAutomationForAgent(
+          { id: 'activity-1', name: 'Renamed' },
+          { agentAuthor },
+          service,
+        );
+        expect(updated.ok).toBe(true);
+        expect(
+          JSON.stringify([
+            (await savedActivity(service, 'activity-1'))?.action,
+            stored.get('owned-1')?.content,
+          ]),
+        ).not.toContain('full-access');
+        expect(metadataEntry('owned-1')).not.toHaveProperty('nativeGrant');
+      });
+
+      it('restores the grant with the content a failed regenerate restores', async () => {
+        const { service } = makeService();
+        await seedConverted(service, {
+          agentAuthor,
+          action: advisorWithSettings,
+        });
+        const granted = metadataEntry('owned-1').nativeGrant;
+        expect(granted).toMatchObject({ pipelineRevision: 1 });
+        failNextAutomationsWrite(service);
+        await expect(
+          updateAutomationForAgent(
+            { id: 'activity-1', schedule },
+            { agentAuthor },
+            service,
+          ),
+        ).rejects.toThrow('disk full');
+        // Regenerated at 2, then the content restored at 3: the grant holds
+        // for the restored content, at its new revision.
+        expect(stored.get('owned-1')?.revision).toBe(3);
+        expect(metadataEntry('owned-1')).toMatchObject({
+          agentAuthor,
+          nativeGrant: expectedGrant('activity-1', {
+            model: 'gpt-5.5',
+            plugins: advisorWithSettings.plugins,
+          }),
+        });
+        expect(metadataEntry('owned-1').nativeGrant).toEqual(
+          isRecord(granted) ? { ...granted, pipelineRevision: 3 } : granted,
+        );
+      });
 
       it('finds the automation in the agent’s caller context, not the selected one', async () => {
         const { service } = makeService();
@@ -8994,43 +9838,20 @@ describe('AutomationsService', () => {
         expect(stored.get('owned-1')?.content).toEqual(before);
       });
 
-      it('keeps an agent’s Cowork prompt with plugins native', async () => {
-        mockChatAutomationPipelines = true;
-        const { service } = makeService();
-        const action: AutomationAction = {
-          ...coworkPrompt,
-          plugins: [
-            {
-              type: 'skill',
-              source: { type: 'builtin', id: 'app' },
-              skill_name: 'review',
-            },
-          ],
-        };
-        const created = await createAutomationForAgent(
-          { name: 'Digest', schedule, action },
-          { agentAuthor },
-          service,
-        );
-        if (!created.ok || !created.activity) throw new Error('not created');
-        expect(
-          (await savedActivity(service, created.activity.id))?.action,
-        ).toEqual(action);
-        expect(mockSaveUserPipeline).not.toHaveBeenCalled();
-      });
-
       it('refuses to convert back to a native action the agent may not write', async () => {
         const { service } = makeService();
         await seedConverted(service, { action: advisorWithSettings });
         const before = stored.get('owned-1');
         const authorizeNative = jest.fn(() => Promise.resolve(false));
+        // Another model than the one granted stays native (CAN-5479).
+        const changed = { ...advisorWithSettings, model: 'sonnet' };
         const updated = await updateAutomationForAgent(
-          { id: 'activity-1', schedule },
+          { id: 'activity-1', action: changed },
           { agentAuthor, authorizeNative },
           service,
         );
         expect(updated.ok).toBe(false);
-        expect(authorizeNative).toHaveBeenCalledWith(advisorWithSettings);
+        expect(authorizeNative).toHaveBeenCalledWith(changed);
         expect(await savedActivity(service, 'activity-1')).toMatchObject({
           action: { type: 'worktree_pipeline', pipelineId: 'owned-1' },
         });
@@ -9118,7 +9939,10 @@ describe('AutomationsService', () => {
             return update(...args);
           });
         const updated = await updateAutomationForAgent(
-          { id: 'activity-1', schedule },
+          {
+            id: 'activity-1',
+            action: { ...advisorWithSettings, model: 'sonnet' },
+          },
           { agentAuthor, authorizeNative },
           service,
         );

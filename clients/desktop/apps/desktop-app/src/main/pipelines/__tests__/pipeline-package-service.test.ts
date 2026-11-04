@@ -212,6 +212,7 @@ import {
 import { getAiCreditsRoutingContextWithStatus } from '../../agents/ai-credits-routing';
 import {
   copyPackageInstall,
+  dropPackageInstallInBackground,
   analyzeAutomationCapabilityPackage,
   analyzePackageRequest,
   analyzeSkillCapabilityPackage,
@@ -235,6 +236,7 @@ import {
   updateSharedPipelinePreservingPackage,
   verifySharedPipelineAutomationInstallPin,
 } from '../pipeline-package-service';
+import * as mainProcessLogging from '../../lib/main-process-logging';
 
 /** Matches request options that carry a bounded per-request timeout. */
 function withRequestTimeout(): unknown {
@@ -328,7 +330,7 @@ describe('pipeline package analysis requests', () => {
       scannedDirectories: ['/tmp/project/.claude/commands'],
     });
     jest.mocked(listPipelinePackageDismissals).mockResolvedValue([]);
-    jest.mocked(replacePipelinePackageDismissals).mockResolvedValue();
+    jest.mocked(replacePipelinePackageDismissals).mockResolvedValue('replaced');
     jest.mocked(listPipelinePackageInstalls).mockResolvedValue([]);
     jest
       .mocked(localPipelineService.listPipelines)
@@ -382,6 +384,30 @@ describe('pipeline package analysis requests', () => {
         .dismissedInvocations,
     ).toEqual(dismissedInvocations);
     expect(replacePipelinePackageDismissals).not.toHaveBeenCalled();
+  });
+
+  it('applies the requested dismissals when the store refuses to save them', async () => {
+    const dismissedInvocations: PipelinePackageInvocationDismissal[] = [
+      { provider: 'claude', token: '/ignored' },
+    ];
+    jest
+      .mocked(replacePipelinePackageDismissals)
+      .mockResolvedValueOnce('refused');
+    jest
+      .mocked(analyzePipelinePackage)
+      .mockResolvedValueOnce(
+        readyAnalysis('refused-store', dismissedInvocations),
+      );
+    await analyzePackageRequest({
+      rawPipeline,
+      pipelineId: 'local-repair',
+      dismissedInvocations,
+    });
+    expect(
+      jest.mocked(analyzePipelinePackage).mock.calls.at(-1)?.[0]
+        .dismissedInvocations,
+    ).toEqual(dismissedInvocations);
+    expect(listPipelinePackageDismissals).not.toHaveBeenCalled();
   });
 
   it('does not let a transient agent check supersede an in-flight dialog check', async () => {
@@ -661,7 +687,7 @@ describe('pipeline package analysis requests', () => {
       .mocked(replacePipelinePackageDismissals)
       .mockImplementation((_storePath, scopeKey, records) => {
         recordsByScope.set(scopeKey, records);
-        return Promise.resolve();
+        return Promise.resolve('replaced' as const);
       });
     jest
       .mocked(listPipelinePackageDismissals)
@@ -2508,7 +2534,7 @@ describe('pipeline package analysis requests', () => {
       .mocked(replacePipelinePackageDismissals)
       .mockImplementation((_storePath, scopeKey, records) => {
         recordsByScope.set(scopeKey, records);
-        return Promise.resolve();
+        return Promise.resolve('replaced' as const);
       });
     jest
       .mocked(listPipelinePackageDismissals)
@@ -2621,10 +2647,11 @@ describe('pipeline package analysis requests', () => {
         markOldWriteStarted();
         await oldWriteRelease;
         persistedTokens = records.map((record) => record.token);
+        return 'replaced' as const;
       })
       .mockImplementation((_storePath, _scopeKey, records) => {
         persistedTokens = records.map((record) => record.token);
-        return Promise.resolve();
+        return Promise.resolve('replaced' as const);
       });
     jest
       .mocked(listPipelinePackageDismissals)
@@ -4890,6 +4917,30 @@ describe('automation package dependency pipelines at run time', () => {
     );
   });
 
+  it('binds the package to the document core admitted, not a later store read', async () => {
+    // The store file changes after admission; the run keeps the admitted
+    // revision and its package.
+    await writeFile(
+      join(root, 'dep.yaml'),
+      `${dependencyYaml}# edited after admission\n`,
+      'utf8',
+    );
+    await expect(
+      resolveInstalledPipelinePackageForExecution('local-dep', dependencyYaml),
+    ).resolves.toMatchObject({ digest, rawPipeline: dependencyYaml });
+    // An admitted document the install does not bind unlinks it.
+    await expect(
+      resolveInstalledPipelinePackageForExecution(
+        'local-dep',
+        `${dependencyYaml}# admitted edit\n`,
+      ),
+    ).resolves.toBeUndefined();
+    expect(removePipelinePackageInstall).toHaveBeenCalledWith(
+      '/tmp/install-store.json',
+      'local-dep',
+    );
+  });
+
   it('still refuses a package that carries neither the pipeline nor its hash', async () => {
     jest.mocked(verifyCachedPipelinePackage).mockResolvedValue({
       ...manifest,
@@ -6149,5 +6200,31 @@ describe('container-installed pipelines', () => {
       'local-1',
     );
     expect(deleteUserPipelineLocalMetadata).toHaveBeenCalledWith('local-1');
+  });
+});
+
+describe('background package install record removal', () => {
+  it('logs a removal the install ledger refuses instead of rejecting unhandled', async () => {
+    const refusal = new Error(
+      'Pipeline package install ledger is from a newer version',
+    );
+    jest.mocked(removePipelinePackageInstall).mockRejectedValueOnce(refusal);
+    const warn = jest
+      .spyOn(mainProcessLogging, 'logMainProcessWarn')
+      .mockImplementation(() => undefined);
+    try {
+      dropPackageInstallInBackground('pipeline-1');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(removePipelinePackageInstall).toHaveBeenCalledWith(
+        expect.any(String),
+        'pipeline-1',
+      );
+      expect(warn).toHaveBeenCalledWith(
+        '[pipelines] Could not drop a package install record',
+        refusal,
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

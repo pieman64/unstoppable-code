@@ -9,8 +9,8 @@ Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
-  EnvironmentConfigData,
-  EnvironmentDefinition,
+  EnvironmentConfigView,
+  EnvironmentDefinitionView,
   LoadEnvironmentConfigResponse,
   SaveEnvironmentConfigResponse,
   SidebarItem,
@@ -29,16 +29,16 @@ interface TestApi {
   loadEnvironmentConfig: jest.Mock<Promise<LoadEnvironmentConfigResponse>, []>;
   saveEnvironmentConfig: jest.Mock<
     Promise<SaveEnvironmentConfigResponse>,
-    [EnvironmentConfigData]
+    [EnvironmentConfigView]
   >;
 }
 
-function installApi(initial: EnvironmentConfigData): TestApi {
+function installApi(initial: EnvironmentConfigView): TestApi {
   const api: TestApi = {
     loadEnvironmentConfig: jest.fn(() =>
       Promise.resolve({ data: initial, encryptionAvailable: true }),
     ),
-    saveEnvironmentConfig: jest.fn((data: EnvironmentConfigData) =>
+    saveEnvironmentConfig: jest.fn((data: EnvironmentConfigView) =>
       Promise.resolve({ ok: true as const, data, encryptionAvailable: true }),
     ),
   };
@@ -94,8 +94,8 @@ function heading(container: ParentNode): string | null | undefined {
 }
 
 function customEnvironment(
-  overrides: Partial<EnvironmentDefinition> = {},
-): EnvironmentDefinition {
+  overrides: Partial<EnvironmentDefinitionView> = {},
+): EnvironmentDefinitionView {
   return {
     id: 'staging',
     name: 'Staging',
@@ -141,7 +141,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('retries a failed read probe without saving the retained draft or duplicating notices', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const api = installApi(initial);
     const failure = {
       version: 1 as const,
@@ -179,7 +181,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('uses only the typed notice for a failed initial read', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const api = installApi(initial);
     api.loadEnvironmentConfig.mockResolvedValue({
       ok: false,
@@ -206,7 +210,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('tracks cowork assignment usage and deep-links to its Environment tab with Settings closed', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.workspaceAssignments.push({
       workspaceId: 'cowork-1',
       runtimes: { agent: 'default-agent' },
@@ -323,7 +329,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('renders the four seeded default environments and global runtime defaults modal', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     installApi(initial);
 
     const { container, root } = render(<EnvironmentsTab />);
@@ -355,7 +363,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('orders default environments before custom environments using the protected default order', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.environments = [
       customEnvironment({ id: 'aaa-custom', name: 'AAA Custom' }),
       initial.environments[3],
@@ -385,7 +395,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('blocks resolved values in session replay', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.environments = [
       ...initial.environments,
       customEnvironment({
@@ -511,7 +523,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('keeps a draft unsaved after a workspace assignment save', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     installApi(initial);
 
     const { container, root } = render(<EnvironmentsTab />);
@@ -612,7 +626,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('returns to the list after deleting the open environment', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.environments = [...initial.environments, customEnvironment()];
     installApi(initial);
 
@@ -712,7 +728,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('falls back to the list when the open environment leaves the store', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.environments = [...initial.environments, customEnvironment()];
     installApi(initial);
 
@@ -761,7 +779,9 @@ describe('EnvironmentsTab', () => {
     act(() => root.unmount());
   });
   it('retries a failed assignment save without submitting a later tab draft', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const assignment = {
       ...initial,
       workspaceAssignments: [
@@ -829,7 +849,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('marks an unchanged failed tab payload saved after exact retry', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const submitted = {
       ...initial,
       globalRuntimes: { ...initial.globalRuntimes, agent: 'default-overall' },
@@ -879,7 +901,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('keeps a newer tab draft unsaved after replaying the failed payload', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const submitted = {
       ...initial,
       globalRuntimes: { ...initial.globalRuntimes, agent: 'default-overall' },
@@ -934,7 +958,7 @@ describe('EnvironmentsTab', () => {
   it.each(['generic error', 'rejection'] as const)(
     'retains the failed payload Retry across remount after a retry %s',
     async (retryFailure) => {
-      const initial = createDefaultEnvironmentConfig(
+      const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
         '2026-01-01T00:00:00.000Z',
       );
       const submitted = {
@@ -1053,7 +1077,9 @@ describe('EnvironmentsTab', () => {
   );
 
   it('keeps a newer tab draft unsaved when it changes during an explicit save', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     const submitted = {
       ...initial,
       globalRuntimes: { ...initial.globalRuntimes, agent: 'default-overall' },
@@ -1099,7 +1125,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('keeps a newer draft dirty after a saved payload is replayed and the tab remounts', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     installApi(initial);
     const first = render(<EnvironmentsTab />);
     await flushPromises();
@@ -1131,7 +1159,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('shows unsaved variable edits after an App Advisor assignment save before opening Environments', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     initial.environments[0].variables = [{ key: 'EXAMPLE', value: 'initial' }];
     initial.environments[0].uiMode = 'bulk';
     const api = installApi(initial);
@@ -1196,7 +1226,9 @@ describe('EnvironmentsTab', () => {
   });
 
   it('keeps external assignment saves out of the tab-owned dirty baseline', async () => {
-    const initial = createDefaultEnvironmentConfig('2026-01-01T00:00:00.000Z');
+    const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
+      '2026-01-01T00:00:00.000Z',
+    );
     installApi(initial);
     const { container, root } = render(<EnvironmentsTab />);
     await flushPromises();
@@ -1238,7 +1270,7 @@ describe('EnvironmentsTab', () => {
   it.each([false, true])(
     'does not replay a previous save on remount after assignment changes: %s',
     async (changeAssignment) => {
-      const initial = createDefaultEnvironmentConfig(
+      const initial: EnvironmentConfigView = createDefaultEnvironmentConfig(
         '2026-01-01T00:00:00.000Z',
       );
       installApi(initial);

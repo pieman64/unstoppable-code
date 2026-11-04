@@ -647,6 +647,39 @@ describe('github-poller', () => {
     expect(mockHandleHookTriggeredEvent).toHaveBeenCalledTimes(1);
   });
 
+  it('starts hooks earlier repositories accepted when a later repository cannot advance', async () => {
+    const { poller, mockedFetchRepoPrTrackingData } = await importFreshPoller();
+    const registry = await import('../lib/workspace-registry');
+    const entries = await import('../lib/worktree-repo-entries');
+    const hookState = await import('../lib/github-pr-hook-state');
+    jest.mocked(registry.isMultiRepoWorkspace).mockReturnValue(true);
+    jest.mocked(entries.listWorkspaceWorktreeRepoEntries).mockResolvedValue([
+      { repoId: 'first', repoName: 'First', repoPath: '/mock/first' },
+      { repoId: 'second', repoName: 'Second', repoPath: '/mock/second' },
+    ]);
+    const snapshot = createPrSnapshot();
+    mockedFetchRepoPrTrackingData.mockResolvedValue({
+      status: null,
+      snapshot,
+      branchName: 'feature-1',
+      remote: { owner: 'acme', repo: 'repo' },
+    });
+    jest
+      .mocked(hookState.advancePrTrackingState)
+      .mockResolvedValueOnce({
+        triggers: ['pr:create'],
+        currentSnapshot: snapshot,
+        currentSnapshotPath: '/tmp/current.json',
+        previousSnapshotPath: '/tmp/previous.json',
+      })
+      .mockRejectedValueOnce(new Error('ledger unavailable'));
+    await expect(poller.refreshNow('project-a', 'worktree-a')).rejects.toThrow(
+      'ledger unavailable',
+    );
+    expect(hookState.advancePrTrackingState).toHaveBeenCalledTimes(2);
+    expect(mockHandleHookTriggeredEvent).toHaveBeenCalledTimes(1);
+  });
+
   it('sweeps every due worktree with one batched lookup after the minimum spacing', async () => {
     const { poller, mockedFetchRepoPrTrackingData } = await importFreshPoller();
 
@@ -1739,7 +1772,7 @@ describe('github-poller', () => {
   });
 
   it.each([false, true])(
-    'skips paused automatic hooks (multi-repo: %s)',
+    'leaves paused automatic hooks to the core hook source (multi-repo: %s)',
     async (multiRepo) => {
       const { poller, mockedFetchRepoPrTrackingData } =
         await importFreshPoller();
@@ -1825,27 +1858,18 @@ describe('github-poller', () => {
       poller.startPolling(() => window as never);
       await poller.refreshNow('project-a', 'worktree-a');
 
-      expect(hookRunner.runHook).not.toHaveBeenCalled();
-      for (const hookKey of pausedKeys) {
-        const repoId = hookKey.split(':')[1];
-        expect(window.webContents.send).toHaveBeenCalledWith(
-          IPC_CHANNELS.hookSkippedPaused,
-          {
-            projectId: 'project-a',
-            worktreeId: 'worktree-a',
-            hook: {
-              hookKey,
-              target: multiRepo ? 'workspace-repo' : 'project',
-              triggerName: 'pr:create',
-              label: multiRepo ? `${repoId} — PR Created` : 'PR Created',
-              actions: [{ type: 'command', command: 'echo hook' }],
-              ...(multiRepo ? { repoId, repoName: repoId } : {}),
-            },
-            triggerDisplayName: 'PR Created',
-          },
-        );
-      }
-
+      // The pause is decided where every hook fires (CAN-4146): each paused
+      // hook goes to the runner under the worktree's pause, and the poller
+      // tells the window nothing itself.
+      expect(
+        jest
+          .mocked(hookRunner.runHook)
+          .mock.calls.map(([options]) => [options.hook.hookKey, options.pause]),
+      ).toEqual(pausedKeys.map((hookKey) => [hookKey, 'enforce']));
+      expect(window.webContents.send).not.toHaveBeenCalledWith(
+        IPC_CHANNELS.hookSkippedPaused,
+        expect.anything(),
+      );
       poller.stopPolling();
     },
   );
@@ -1952,13 +1976,12 @@ describe('github-poller', () => {
       },
     ]);
     expect(events).toHaveLength(2);
-    expect(window.webContents.send).toHaveBeenCalledWith(
-      IPC_CHANNELS.hookSkippedPaused,
-      expect.objectContaining({
-        triggerDisplayName: 'PR Entered Merge Queue',
-      }),
-    );
-    expect(hookRunner.runHook).not.toHaveBeenCalled();
+    // Watchers fire whatever the pause; the core hook source decides it.
+    expect(
+      jest
+        .mocked(hookRunner.runHook)
+        .mock.calls.map(([options]) => [options.hook.hookKey, options.pause]),
+    ).toEqual([['project:pr:queue:entered', 'enforce']]);
 
     poller.stopPolling();
   });

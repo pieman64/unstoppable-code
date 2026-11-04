@@ -18,6 +18,7 @@ import {
   sourceFromProbeHead,
   updateLocalMemoryFile,
 } from '../memory/local/explorer';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
 
 jest.mock('../memory/local/parse-runner', () => ({
   parseMemoryDocumentInWorker: jest.fn(
@@ -122,6 +123,8 @@ describe('memory panel file edits', () => {
     directory = await mkdtemp(join(tmpdir(), 'memory-file-edits-'));
     await mkdir(join(directory, 'topics'));
     await mkdir(join(directory, 'inbox'));
+    // Already given note identities, so an edit changes only what it saves.
+    await prepareMemoryScopeForWrite(directory);
   });
   afterEach(async () => {
     jest.useRealTimers();

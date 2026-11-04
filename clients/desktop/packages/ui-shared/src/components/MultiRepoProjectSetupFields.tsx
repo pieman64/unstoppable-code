@@ -5,6 +5,7 @@ import { ChoiceField } from './Choice';
 import { TextInput } from './Field';
 import { FormField } from './FormField';
 import { Button } from './Button';
+import { Tooltip } from './Tooltip';
 import { GitHubIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
@@ -87,21 +88,22 @@ export function MultiRepoProjectSetupFields({
               }
             />
             {option.repositoryUrl && onOpenRepository && (
-              <Button
-                type="button"
-                iconOnly
-                size="compact"
-                variant="ghost-quiet"
-                aria-label="Open on GitHub"
-                title="Open on GitHub"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (option.repositoryUrl)
-                    onOpenRepository(option.repositoryUrl);
-                }}
-              >
-                <GitHubIcon />
-              </Button>
+              <Tooltip label="Open on GitHub">
+                <Button
+                  type="button"
+                  iconOnly
+                  size="compact"
+                  variant="ghost-quiet"
+                  aria-label="Open on GitHub"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (option.repositoryUrl)
+                      onOpenRepository(option.repositoryUrl);
+                  }}
+                >
+                  <GitHubIcon />
+                </Button>
+              </Tooltip>
             )}
           </div>
         ))}

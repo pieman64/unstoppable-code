@@ -1,6 +1,6 @@
 import { useId, type JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
-import { AdvancedDisclosure } from './AdvancedDisclosure';
+import { Disclosure } from './Disclosure';
 import { SettingsRowsRow } from './settings/SettingsRows';
 import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
 import { ErrorBanner } from './StatusBlocks';
@@ -116,12 +116,13 @@ export function PrivateMemoryAdvancedOption({
   ...cardProps
 }: PrivateMemoryAdvancedOptionProps): JSX.Element {
   return (
-    <AdvancedDisclosure
-      dataTestId={disclosureTestId}
-      collapsedHint={cardProps.checked ? PRIVATE_MEMORY_ON_HINT : null}
+    <Disclosure
+      label="Advanced"
+      dataTestId={disclosureTestId ?? 'advanced-disclosure'}
+      hint={cardProps.checked ? PRIVATE_MEMORY_ON_HINT : null}
     >
       <PrivateMemoryCard surface="inline" {...cardProps} />
-    </AdvancedDisclosure>
+    </Disclosure>
   );
 }
 

@@ -20,6 +20,7 @@ import { readAllSidebarItems } from '../../../lib/sidebar-items';
 import { readWorkspaceConfig } from '../../../lib/workspace-persistence';
 import { broadcastLocalMemoryChanged } from '../change-events';
 import { requestLocalMemoryConsolidation } from '../consolidation-scheduler';
+import { isMemoryMarkdownFileName } from '../memory-files';
 import { resolveLocalMemoryPolicy } from '../policy';
 import {
   discoverClaudeMemoryFiles,
@@ -114,7 +115,7 @@ async function scopeHasPendingStagedImports(
       withFileTypes: true,
     });
     return entries.some(
-      (entry) => entry.isFile() && entry.name.endsWith('.md'),
+      (entry) => entry.isFile() && isMemoryMarkdownFileName(entry.name),
     );
   } catch {
     return false;

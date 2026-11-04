@@ -174,6 +174,11 @@ import {
   type RunConsolidationOptions,
 } from '../memory/local/consolidation-task';
 import {
+  LOCAL_MEMORY_READ_ONLY_MESSAGE,
+  prepareMemoryScopeForWrite,
+} from '../memory/local/scope-manifest';
+import { runScopeChild } from './helpers/local-memory-scope/scope-child';
+import {
   readImportState,
   writeImportState,
 } from '../memory/local/import/ledger';
@@ -330,6 +335,8 @@ describe('local memory consolidation task', () => {
     scopeDir = await mkdtemp(join(tmpdir(), 'local-memory-consolidation-'));
     await mkdir(join(scopeDir, 'inbox'), { recursive: true });
     await mkdir(join(scopeDir, 'topics'), { recursive: true });
+    // Already given note identities, so a run changes only what it writes.
+    await prepareMemoryScopeForWrite(scopeDir);
   }, 15_000);
 
   afterEach(async () => {
@@ -1120,7 +1127,7 @@ describe('local memory consolidation task', () => {
     expect(await pathExists(join(scopeDir, 'inbox', 'note.md'))).toBe(true);
   });
 
-  it.each(['CON.md', 'lpt1.backup.md'])(
+  it.each(['CON.md', 'lpt1.backup.md', 'com0.md'])(
     'skips Windows reserved output filename %s on every host',
     async (filename) => {
       await writeFile(join(scopeDir, 'inbox', 'note.md'), 'Pending');
@@ -3876,6 +3883,65 @@ describe('local memory consolidation task', () => {
       ),
     ).toBe(false);
     expect(await pathExists(join(scopeDir, 'inbox', 'note.md'))).toBe(true);
+  });
+
+  it('cancels when another process writes memory during generation, even a note compare-before-destroy cannot see', async () => {
+    await writeFile(join(scopeDir, 'MEMORY.md'), '# Original\n', 'utf8');
+    await writeFile(join(scopeDir, 'inbox', 'note.md'), 'new fact', 'utf8');
+    let generated = false;
+
+    const result = await runLocalMemoryConsolidation({
+      scopeDir,
+      model: 'claude-haiku-4-5-20251001',
+      thinkingLevel: 'off',
+      // Another app instance edits the note this run is about to archive:
+      // its revision moves on disk, under the scope lock.
+      generate: async () => {
+        await runScopeChild(['advance', scopeDir]);
+        generated = true;
+        return { memoryMd: '# Consolidated' };
+      },
+      now: NOW,
+    });
+
+    expect(generated).toBe(true);
+    expect(result.status).toBe('cancelled');
+    await expect(readFile(join(scopeDir, 'MEMORY.md'), 'utf8')).resolves.toBe(
+      '# Original\n',
+    );
+    await expect(
+      readFile(join(scopeDir, 'inbox', 'note.md'), 'utf8'),
+    ).resolves.toBe('new fact');
+  }, 30_000);
+
+  it('refuses to consolidate a scope a newer version made read-only, before generating', async () => {
+    await writeFile(join(scopeDir, 'MEMORY.md'), '# Original\n', 'utf8');
+    await writeFile(join(scopeDir, 'inbox', 'note.md'), 'new fact', 'utf8');
+    const manifestPath = join(scopeDir, 'manifest.json');
+    const manifest = JSON.stringify({
+      ...JSON.parse(await readFile(manifestPath, 'utf8')),
+      minWriterFormat: 3,
+    });
+    await writeFile(manifestPath, manifest);
+    const generate = jest.fn(() => Promise.resolve({ memoryMd: '# New' }));
+
+    await expect(
+      runLocalMemoryConsolidation({
+        scopeDir,
+        model: 'claude-haiku-4-5-20251001',
+        thinkingLevel: 'off',
+        generate,
+        now: NOW,
+      }),
+    ).resolves.toEqual({
+      status: 'failed',
+      reason: LOCAL_MEMORY_READ_ONLY_MESSAGE,
+    });
+    expect(generate).not.toHaveBeenCalled();
+    await expect(readFile(join(scopeDir, 'MEMORY.md'), 'utf8')).resolves.toBe(
+      '# Original\n',
+    );
+    await expect(readFile(manifestPath, 'utf8')).resolves.toBe(manifest);
   });
 
   it('renames nothing when a topic is edited after the commit staged its files', async () => {

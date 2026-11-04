@@ -41,7 +41,7 @@ export {
   inviteMayAddPaidSeat,
   type InviteSeatChargeMode,
 } from './invite-seat-charge';
-export { MemberAvatar, initialsOf } from './MemberAvatar';
+export { MemberAvatar } from './MemberAvatar';
 export { OrganizationLogo } from './OrganizationLogo';
 export {
   MemberProfilePage,

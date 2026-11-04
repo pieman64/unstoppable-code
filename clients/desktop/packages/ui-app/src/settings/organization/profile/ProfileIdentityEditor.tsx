@@ -11,7 +11,10 @@ import {
 import {
   Button,
   CopyDetailsButton,
+  DISPLAY_AVATAR_SIZE_PX,
   TextInput,
+  Heading,
+  type DisplayAvatarSize,
 } from '@canopy/ui-shared/components';
 import { Camera, Pencil } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -30,7 +33,8 @@ const AVATAR_INPUT_ACCEPT = ALLOWED_AVATAR_MIME_TYPES.join(',');
 interface AvatarEditorProps {
   name: string;
   image: string | null;
-  size?: number;
+  /** A shared avatar step; defaults to the 72px profile size. */
+  size?: DisplayAvatarSize;
   busy: boolean;
   error: SettingsFailure | null;
   onPick: (file: File) => void;
@@ -45,12 +49,13 @@ interface AvatarEditorProps {
 export function AvatarEditor({
   name,
   image,
-  size = 72,
+  size = '2xl',
   busy,
   error,
   onPick,
   onRemove,
 }: AvatarEditorProps): JSX.Element {
+  const px = DISPLAY_AVATAR_SIZE_PX[size];
   const inputRef = useRef<HTMLInputElement>(null);
   const { blockClassName } = useSettingsPrivacy();
 
@@ -76,7 +81,7 @@ export function AvatarEditor({
           'group relative rounded-full disabled:cursor-not-allowed',
           blockClassName,
         )}
-        style={{ width: size, height: size }}
+        style={{ width: px, height: px }}
       >
         <MemberAvatar name={name} image={image} size={size} />
         <span
@@ -86,7 +91,7 @@ export function AvatarEditor({
           {busy ? (
             <span className="text-xs font-medium">…</span>
           ) : (
-            <Camera size={Math.max(16, Math.round(size / 4))} />
+            <Camera size={Math.max(16, Math.round(px / 4))} />
           )}
         </span>
       </button>
@@ -181,15 +186,11 @@ export function NameEditor({
   if (!editing) {
     return (
       <div className="flex flex-wrap items-center gap-2">
-        <h1
-          data-testid="profile-name"
-          className={withPrivacyClass(
-            'truncate text-xl font-semibold fg-primary',
-            blockClassName,
-          )}
-        >
-          {name}
-        </h1>
+        <Heading level={1} variant="page" truncate data-testid="profile-name">
+          <span className={blockClassName === '' ? undefined : blockClassName}>
+            {name}
+          </span>
+        </Heading>
         {aux}
         <Button
           size="compact"
@@ -268,7 +269,7 @@ interface ProfileIdentityEditorProps {
   roleBadge?: ReactNode;
   /** The remaining (read-only) meta column content. */
   children?: ReactNode;
-  avatarSize?: number;
+  avatarSize?: DisplayAvatarSize;
   /**
    * Which identity these edits write to. Defaults to the signed-in user's own
    * global profile (`{ mode: 'self' }`); pass an `org-member` target to edit
@@ -289,7 +290,7 @@ export function ProfileIdentityEditor({
   initialImage,
   roleBadge,
   children,
-  avatarSize = 72,
+  avatarSize = '2xl',
   target,
 }: ProfileIdentityEditorProps): JSX.Element {
   const [name, setName] = useState(initialName);

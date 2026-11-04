@@ -7,6 +7,19 @@ import {
   isClaudeCodeGraphToolName,
   loadConfiguredClaudeCodeGraphSourceExtensions,
 } from '../lib/claude-code-graph-steering';
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
+
+let mockWorktreeRoot = '';
+jest.mock('../lib/resolve-worktree', () => ({
+  resolveWorktreeCwd: (): string => mockWorktreeRoot,
+}));
+// Language validation needs neither the read hosts nor the build scheduler.
+jest.mock('../code-graph/read-runner', () => ({}));
+jest.mock('../code-graph/build-runner', () => ({}));
+
+beforeAll(() => {
+  installCodeGraphReadDispatcherForTests();
+});
 
 describe('Claude code-graph steering', () => {
   const cwd = '/workspace/repo';
@@ -359,9 +372,10 @@ describe('Claude code-graph steering', () => {
     ).toBe(CLAUDE_CODE_GRAPH_STEERING_CONTEXT);
   });
 
-  it('loads validated custom-language source extensions from the worktree config', async () => {
+  it('loads validated custom-language source extensions through the worker', async () => {
     const worktree = await mkdtemp(path.join(os.tmpdir(), 'graph-steering-'));
     tempDirs.push(worktree);
+    mockWorktreeRoot = worktree;
     const configDir = path.join(worktree, '.canopy', 'code-graph');
     await mkdir(configDir, { recursive: true });
     await writeFile(
@@ -380,7 +394,10 @@ describe('Claude code-graph steering', () => {
     );
 
     await expect(
-      loadConfiguredClaudeCodeGraphSourceExtensions(worktree),
+      loadConfiguredClaudeCodeGraphSourceExtensions({
+        projectId: 'project',
+        worktreeId: 'worktree',
+      }),
     ).resolves.toEqual(['.zig']);
   });
 

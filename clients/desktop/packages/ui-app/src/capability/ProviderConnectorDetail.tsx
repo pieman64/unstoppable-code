@@ -13,6 +13,7 @@ import {
   PluginConnectionRouteSection,
   RefreshSpinner,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -198,7 +199,9 @@ export function ProviderConnectorDetail({
           fallbackTestId="provider-connector-detail-logo-fallback"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold fg-primary">{displayName}</h3>
+          <Heading level={3} variant="section">
+            {displayName}
+          </Heading>
           {catalogEntry?.authorName && (
             <p className="mt-0.5 text-xs fg-secondary">
               By {catalogEntry.authorName}

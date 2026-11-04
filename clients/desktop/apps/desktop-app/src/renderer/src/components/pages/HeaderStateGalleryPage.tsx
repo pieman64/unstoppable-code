@@ -7,6 +7,7 @@ import {
   HEADER_STATE_GALLERY_PROJECT_ID,
 } from './headerStateGalleryData';
 import { useSeededHeaderGalleryState } from './headerStateGallerySeed';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * Personal reference page for the worktree header, reachable from the sidebar
@@ -130,7 +131,9 @@ function HeaderStateGalleryContent(): JSX.Element {
       data-testid="header-states-page"
     >
       <header className="px-8 pb-4 pt-8">
-        <h1 className="text-lg font-semibold">Worktree header — all states</h1>
+        <Heading level={1} variant="page">
+          Worktree header — all states
+        </Heading>
         <p className="mt-1 max-w-3xl text-xs fg-secondary">
           Personal reference for the worktree header. Every row is the real{' '}
           <code>WorktreeTopBar</code> driven by seeded state — no git, no
@@ -145,7 +148,9 @@ function HeaderStateGalleryContent(): JSX.Element {
         ) : (
           <>
             <section className="mb-12">
-              <h2 className="mb-3 text-sm font-semibold">States</h2>
+              <Heading level={2} variant="title" className="mb-3">
+                States
+              </Heading>
               <div className="flex flex-col gap-6">
                 {HEADER_GALLERY_STATES.map((state) => (
                   <div key={state.id} data-testid={`header-state-${state.id}`}>
@@ -162,9 +167,9 @@ function HeaderStateGalleryContent(): JSX.Element {
             </section>
 
             <section>
-              <h2 className="mb-1 text-sm font-semibold">
+              <Heading level={2} variant="title" className="mb-1">
                 Responsive behavior
-              </h2>
+              </Heading>
               <p className="mb-3 max-w-3xl text-xs fg-secondary">
                 The same state at shrinking widths. Copy sheds first (
                 <code>Create PR</code> → <code>PR</code>, Launch → icon at 640),
@@ -199,7 +204,9 @@ function HeaderStateGalleryContent(): JSX.Element {
             </section>
 
             <section className="mt-12" data-testid="header-state-pins">
-              <h2 className="mb-1 text-sm font-semibold">Pinned scripts</h2>
+              <Heading level={2} variant="title" className="mb-1">
+                Pinned scripts
+              </Heading>
               <p className="mb-3 max-w-3xl text-xs fg-secondary">
                 Running, idle and starting pins before the launch cluster.
                 Labels collapse to play buttons below 760, and pins drop below

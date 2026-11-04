@@ -18,6 +18,7 @@ import {
   PluginConfigurationButton,
   PluginConnectionRouteSection,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
@@ -157,7 +158,9 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
           />
         )}
         <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold fg-primary">{entry.name}</h3>
+          <Heading level={3} variant="section">
+            {entry.name}
+          </Heading>
           {entry.authorName && (
             <p className="mt-0.5 text-xs fg-secondary">
               By{' '}
@@ -253,7 +256,9 @@ function CuratedMcpTools({
       className={framed ? 'border-t pt-3' : undefined}
       data-testid="mcp-browse-tools"
     >
-      <h4 className="mb-2 text-xs font-medium fg-primary">Tools</h4>
+      <Heading level={4} variant="label" className="mb-2">
+        Tools
+      </Heading>
       {!installed ? (
         <p className="text-xs fg-secondary">
           Tools appear after you add this server.

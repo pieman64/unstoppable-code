@@ -78,7 +78,7 @@ export function PageHeader({
   titleTestId = 'page-header-title',
   className,
 }: PageHeaderProps): JSX.Element {
-  const Heading = headingLevel;
+  const HeadingTag = headingLevel;
   const showActions = actions !== undefined || reserveActions;
   return (
     <header
@@ -103,14 +103,14 @@ export function PageHeader({
         </Button>
       ) : null}
       <div className="flex min-h-7 items-center gap-2">
-        <Heading
+        <HeadingTag
           ref={headingRef}
           tabIndex={headingRef ? -1 : undefined}
           className="min-w-0 text-xl font-medium text-balance break-words fg-primary outline-none"
           data-testid={titleTestId}
         >
           {title}
-        </Heading>
+        </HeadingTag>
         {badge ? (
           <span
             className="flex shrink-0 items-center gap-1.5 text-xs fg-tertiary"

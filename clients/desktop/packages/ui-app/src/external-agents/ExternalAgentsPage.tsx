@@ -18,6 +18,7 @@ import {
   SettingsSection,
   WaitingRows,
 } from './external-agents-parts';
+import { ExternalAgentsOverviewSkeleton } from './external-agents-skeletons';
 import { externalAgentPath } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -59,29 +60,11 @@ function ExternalAgentsOverviewContent({
         data-testid="external-agents-page"
         className="flex w-full flex-col pb-16"
       >
-        <OverviewLoading />
+        <ExternalAgentsOverviewSkeleton />
       </div>
     );
   }
   return <ExternalAgentsOverviewView store={store} onOpenPath={onOpenPath} />;
-}
-
-function OverviewLoading(): JSX.Element {
-  return (
-    <div
-      data-testid="external-agents-loading"
-      role="status"
-      aria-label="Loading agents"
-      className="flex flex-col gap-3"
-    >
-      <div className="h-7 w-32 animate-pulse rounded bg-subtle" />
-      <div className="flex flex-col gap-3 rounded-lg bg-secondary px-4 py-3 ring-[length:var(--border-hairline)] ring-line-base">
-        <div className="h-4 w-2/5 animate-pulse rounded bg-subtle" />
-        <div className="h-3 w-3/5 animate-pulse rounded bg-subtle" />
-        <div className="h-3 w-4/5 animate-pulse rounded bg-subtle" />
-      </div>
-    </div>
-  );
 }
 
 function ExternalAgentsOverviewView({
@@ -159,7 +142,7 @@ function ExternalAgentsOverviewView({
           cursorClientId={overview.cursorClientId}
         />
       ) : isInitialLoading ? (
-        <OverviewLoading />
+        <ExternalAgentsOverviewSkeleton />
       ) : null}
     </div>
   );

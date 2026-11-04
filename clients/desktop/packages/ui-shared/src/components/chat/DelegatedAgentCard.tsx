@@ -32,6 +32,7 @@ import {
   hasDelegatedAgentCapabilityEntries,
 } from './delegated-agent-copy';
 import { TaskStopButton } from './TaskStopButton';
+import { Disclosure } from '../Disclosure';
 import { StatusLabel } from '../StatusLabel';
 import { Fact, FactList } from '../FactList';
 import { ThinkingSpinner } from '../ThinkingSpinner';
@@ -128,10 +129,11 @@ function DelegatedAgentChanges({
     >
       {files.length ? null : <p>{DELEGATED_AGENT_NO_CHANGES_LABEL}</p>}
       {files.map((file) => (
-        <details key={file.path} data-testid="delegated-change">
-          <summary>
-            {file.path} · {file.change}
-          </summary>
+        <Disclosure
+          key={file.path}
+          label={`${file.path} · ${file.change}`}
+          dataTestId="delegated-change"
+        >
           {file.diff ? (
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap">
               {file.diff}
@@ -140,7 +142,7 @@ function DelegatedAgentChanges({
             <p>{DELEGATED_AGENT_NO_DIFF_LABEL}</p>
           )}
           {file.diffTruncated && <p>{DELEGATED_AGENT_DIFF_SHORTENED_LABEL}</p>}
-        </details>
+        </Disclosure>
       ))}
       {omittedFiles ? (
         <p>{delegatedAgentChangesShownLabel(files.length)}</p>

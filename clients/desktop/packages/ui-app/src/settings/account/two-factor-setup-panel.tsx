@@ -4,9 +4,11 @@ import { useState, type FormEvent, type JSX } from 'react';
 import { toDataURL } from 'qrcode';
 import {
   Button,
+  Disclosure,
   ErrorBanner,
   FormField,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   SETTINGS_CARD_ROW_CLASS,
@@ -342,9 +344,9 @@ export function TwoFactorSetupPanel({
               )}
               data-testid="two-factor-qr-block"
             >
-              <h3 className="text-s font-semibold fg-primary">
+              <Heading level={3} variant="title">
                 Scan this QR code
-              </h3>
+              </Heading>
               <SettingsImage
                 src={qrDataUrl}
                 alt="Two-factor authentication QR code"
@@ -354,19 +356,16 @@ export function TwoFactorSetupPanel({
                 className="rounded-md border bg-white p-2"
               />
               {totpUri && (
-                <details className="text-s fg-secondary">
-                  <summary className="cursor-pointer font-medium fg-primary">
-                    Setup key
-                  </summary>
+                <Disclosure label="Setup key" dataTestId="two-factor-setup-key">
                   <code
                     className={withPrivacyClass(
-                      'mt-2 block overflow-x-auto rounded-md border bg-secondary px-3 py-2 font-mono text-xs fg-primary',
+                      'block overflow-x-auto rounded-md border bg-secondary px-3 py-2 font-mono text-xs fg-primary',
                       blockClassName,
                     )}
                   >
                     {totpUri}
                   </code>
-                </details>
+                </Disclosure>
               )}
             </div>
             <form
@@ -411,9 +410,9 @@ export function TwoFactorSetupPanel({
 
         {view === 'backupCodes' && backupCodes && (
           <div className={STEP_ROW_CLASS}>
-            <h3 className="text-s font-semibold fg-primary">
+            <Heading level={3} variant="title">
               Save your backup codes
-            </h3>
+            </Heading>
             <p className="text-s fg-secondary">
               These codes are shown once. Store them somewhere safe.
             </p>

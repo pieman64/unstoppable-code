@@ -26,6 +26,7 @@ import {
   readdir,
   readFile,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -50,6 +51,11 @@ import {
   setWorktreeRegistryReconciler,
 } from '../workspace-persistence';
 import { initializeSidebarItemGroups } from '../../services/sidebar-item-groups-service';
+import {
+  clearCachedGitExecutablePath,
+  detectGitExecutableShared,
+  setCachedGitExecutablePath,
+} from '../git-executable';
 import {
   createWorktreeFromSelection,
   projectWorktreeCreationRecord,
@@ -174,6 +180,80 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
 
+  // Uses real Git and filesystem effects; native Linux acceptance still runs
+  // separately. An explicit missing selection must not use system Git instead.
+  (process.platform === 'win32' ? it.skip : it).each(['x64', 'arm64'])(
+    'settles unavailable Git and creates on retry after restoring the same selected path (%s)',
+    async (arch) => {
+      const originalPlatform = process.platform;
+      const originalArch = process.arch;
+      const originalPublished = process.env.CANOPY_GIT_EXECUTABLE;
+      const originalPath = process.env.PATH;
+      const selected = path.join(root, `selected-${arch}`, 'git');
+      await mkdir(path.dirname(selected), { recursive: true });
+      try {
+        Object.defineProperty(process, 'platform', {
+          value: 'linux',
+          configurable: true,
+        });
+        Object.defineProperty(process, 'arch', {
+          value: arch,
+          configurable: true,
+        });
+        await setCachedGitExecutablePath(selected);
+        const unavailable = await detectGitExecutableShared({ force: true });
+        expect(unavailable.status).toMatchObject({
+          required: true,
+          ready: false,
+        });
+        await expect(
+          createWorktreeFromSelection({
+            workspaceId: SINGLE,
+            workspaceKind: 'single-repo',
+            branch: { kind: 'default' },
+            base: { kind: 'repository-default' },
+          }),
+        ).rejects.toThrow('Selected Git executable cannot be used');
+        expect(await readWorkspaceWorktrees(SINGLE)).toEqual([]);
+
+        await symlink('/usr/bin/git', selected);
+        // The next ordinary creation must re-probe: no separate recheck,
+        // environment change or app restart is needed after repairing Git.
+        const { record } = await createWorktreeFromSelection({
+          workspaceId: SINGLE,
+          workspaceKind: 'single-repo',
+          branch: { kind: 'default' },
+          base: { kind: 'repository-default' },
+        });
+        const ready = await detectGitExecutableShared();
+        expect(ready.status).toMatchObject({ ready: true, path: selected });
+        expect(record.setupPhase).toBe('git-ready');
+        await expectRecordPersisted(SINGLE, record);
+        expect(
+          git(getWorktreeDir(SINGLE, record.worktreeId), [
+            'branch',
+            '--show-current',
+          ]),
+        ).toBe(record.branchName);
+        expect(process.env.PATH).toBe(originalPath);
+      } finally {
+        await clearCachedGitExecutablePath();
+        Object.defineProperty(process, 'platform', {
+          value: originalPlatform,
+          configurable: true,
+        });
+        Object.defineProperty(process, 'arch', {
+          value: originalArch,
+          configurable: true,
+        });
+        if (originalPublished === undefined)
+          delete process.env.CANOPY_GIT_EXECUTABLE;
+        else process.env.CANOPY_GIT_EXECUTABLE = originalPublished;
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   it.each([
     ['single-repo', SINGLE, 'creation'],
     ['multi-repo', MULTI, 'creation'],
@@ -187,6 +267,29 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
       const createWorktree = worktreeGit.createWorktree;
       const checkouts: { path: string; branch: string }[] = [];
       let readableList: string | undefined;
+      let corruptStorage: Promise<void> | undefined;
+      let snapshotReads = 0;
+      let releaseCheckouts: () => void = () => {};
+      const bothCheckouts = new Promise<void>((resolve) => {
+        releaseCheckouts = resolve;
+      });
+      let releaseCorruption: () => void = () => {};
+      const firstCorruption = new Promise<void>((resolve) => {
+        releaseCorruption = resolve;
+      });
+      // Force the competing-read window in the multi-repo recovery case:
+      // a second snapshot read sees the first corruption, never valid storage.
+      const readSnapshot = async (): Promise<string> => {
+        const read = ++snapshotReads;
+        if (
+          workspaceKind === 'multi-repo' &&
+          caller === 'automation after storage recovery'
+        ) {
+          if (read === 1) await bothCheckouts;
+          else await firstCorruption;
+        }
+        return readFile(getWorkspaceWorktreesFilePath(workspaceId), 'utf8');
+      };
       let storageRecovered = false;
       let storageFailed: () => void = () => {};
       const unreadable = new Promise<void>((resolve) => {
@@ -195,17 +298,24 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
       const gitSpy = jest
         .spyOn(worktreeGit, 'createWorktree')
         .mockImplementation(async (...args): Promise<string> => {
-          const branch = await createWorktree(...args);
+          const branch = await createWorktree(...args).catch(
+            (error: unknown): never => {
+              releaseCheckouts();
+              throw error;
+            },
+          );
           checkouts.push({ path: args[1], branch });
-          readableList ??= await readFile(
-            getWorkspaceWorktreesFilePath(workspaceId),
-            'utf8',
-          );
-          await writeFile(
-            getWorkspaceWorktreesFilePath(workspaceId),
-            '{broken',
-          );
-          storageFailed();
+          if (checkouts.length === 2) releaseCheckouts();
+          // Assign before awaiting so every child shares one snapshot and fault.
+          await (corruptStorage ??= (async (): Promise<void> => {
+            readableList = await readSnapshot();
+            await writeFile(
+              getWorkspaceWorktreesFilePath(workspaceId),
+              '{broken',
+            );
+            releaseCorruption();
+            storageFailed();
+          })());
           return branch;
         });
       const failures: string[] = [];
@@ -285,7 +395,7 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
             expect.stringMatching(/storage.*unreadable/i),
           ]);
         }
-        expect(checkouts.length).toBeGreaterThan(0);
+        expect(checkouts).toHaveLength(workspaceKind === 'multi-repo' ? 2 : 1);
         for (const checkout of checkouts) {
           expect(git(checkout.path, ['branch', '--show-current'])).toBe(
             checkout.branch,
@@ -295,6 +405,8 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
           ).toBe('base\n');
         }
       } finally {
+        releaseCheckouts();
+        releaseCorruption();
         if (deadline) clearTimeout(deadline);
         gitSpy.mockRestore();
       }

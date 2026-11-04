@@ -710,3 +710,110 @@ test('switching back to a chat tab draws long prompts collapsed from the first f
     await closeCanopy(electronApp, userDataDir);
   }
 });
+
+test('a background chat first shown after a worktree switch keeps its draft and opens at its latest message', async () => {
+  // Hidden chats may mount only once their tab is first shown. The first
+  // visit after a relaunch and a worktree switch must look exactly as when
+  // every hidden chat mounted with its worktree.
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-chat-first-visit-'),
+  );
+  const draft = 'Background chat draft survives its first visit';
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite', 'ts-npm-next'] });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: FIRST_CHAT_ID,
+    tabs: [
+      {
+        id: FIRST_CHAT_ID,
+        title: 'First visit shown chat',
+        blocks: [{ type: 'text', text: 'Shown chat transcript' }],
+      },
+      {
+        id: SECOND_CHAT_ID,
+        title: 'First visit background chat',
+        messages: buildLongTranscript(48),
+      },
+    ],
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: OTHER_WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    activeTabId: OTHER_CHAT_ID,
+    tabs: [
+      {
+        id: OTHER_CHAT_ID,
+        title: 'Other worktree chat',
+        blocks: [{ type: 'text', text: 'Other worktree transcript' }],
+      },
+    ],
+  });
+  const worktreeRow = (window, workspaceId) =>
+    window.locator(
+      `[data-testid="worktree-row"][data-project-id="${workspaceId}"][data-worktree-id="${WORKTREE_ID}"]`,
+    );
+  const composerOf = (window) =>
+    window
+      .locator('[data-testid="panel-content-chat"]:visible')
+      .first()
+      .locator('[data-chat-composer-root]')
+      .getByRole('textbox')
+      .first();
+
+  // First launch: leave a draft in the background chat, then make the other
+  // chat the shown one so the next launch starts with the draft chat hidden.
+  const { electronApp: firstApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await firstApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await worktreeRow(window, WORKSPACE_ID).click();
+    await window.getByTestId(`panel-tab-panel-chat-${SECOND_CHAT_ID}`).click();
+    await composerOf(window).fill(draft);
+    await expect(composerOf(window)).toHaveText(draft);
+    await window.getByTestId(`panel-tab-panel-chat-${FIRST_CHAT_ID}`).click();
+    await expect(
+      window.getByTestId(`panel-tab-panel-chat-${FIRST_CHAT_ID}`),
+    ).toHaveAttribute('aria-selected', 'true');
+  } finally {
+    await closeCanopy(firstApp, userDataDir, { keepUserData: true });
+  }
+
+  const { electronApp } = await launchCanopy({ userDataDir });
+  try {
+    const window = await electronApp.firstWindow();
+    const app = new CanopyAppDriver(window);
+    await app.waitForShell({ timeout: 30_000 });
+    await app.openMainPage();
+    await worktreeRow(window, WORKSPACE_ID).click();
+    await expect(
+      window.getByText('Shown chat transcript', { exact: true }),
+    ).toBeVisible();
+    await worktreeRow(window, OTHER_WORKSPACE_ID).click();
+    await expect(
+      window.getByText('Other worktree transcript', { exact: true }),
+    ).toBeVisible();
+    await worktreeRow(window, WORKSPACE_ID).click();
+
+    // The background chat's first showing in this launch.
+    const tab = window.getByTestId(`panel-tab-panel-chat-${SECOND_CHAT_ID}`);
+    await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true');
+    await expect(composerOf(window)).toHaveText(draft);
+    const scroller = window.locator(
+      '[data-testid="chat-message-list-scroll"]:visible',
+    );
+    await expect
+      .poll(() => distanceFromBottom(scroller), { timeout: 10_000 })
+      .toBeLessThanOrEqual(1);
+    expect(
+      await scroller.evaluate((element) => element.scrollTop),
+    ).toBeGreaterThan(320);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});

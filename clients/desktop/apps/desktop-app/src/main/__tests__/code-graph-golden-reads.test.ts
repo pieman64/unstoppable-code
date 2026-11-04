@@ -12,14 +12,19 @@
  * Re-record only for an intended behavior change:
  * `RECORD_CODE_GRAPH_GOLDEN=1 pnpm test code-graph-golden`.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { CodeGraphEngine } from '@canopy/code-graph/engine';
 import { fingerprintCustomLanguageInputs } from '@canopy/code-graph/languages/custom-config';
 import { getBundledCodeGraphDir } from '@canopy/desktop-shared/pipelines/config-paths';
 import { createFixtureRepository } from '@canopy/code-graph/__tests__/golden/fixture-repository';
-import { expectCodeGraphGolden } from '@canopy/code-graph/__tests__/golden/golden-file';
+import {
+  expectCodeGraphGolden,
+  goldenPath,
+} from '@canopy/code-graph/__tests__/golden/golden-file';
+import { createCodeGraphReadService } from '@canopy/code-graph/host/read-service';
+import type { CodeGraphServiceRead } from '@canopy/code-graph/host/read-service';
 import { createGoldenNormalizer } from '@canopy/code-graph/__tests__/golden/normalize';
 import {
   GOLDEN_READ_CASES,
@@ -38,6 +43,11 @@ import type {
   CodeGraphWorkerBuildResponse,
 } from '../code-graph/build-runner';
 import { executeCodeGraphRead } from '../code-graph/read-worker';
+import { createCodeGraphReadServiceWorker } from '@canopy/code-graph/host/read-worker';
+import { createWorkerCodeGraphReadAdapter } from '../canopy-runtime/worker-code-graph-read-adapter';
+import { readWorktreeCodeGraph } from '../code-graph/graph-reads';
+import { CodeGraphReadFailureError } from '../code-graph/read-runner';
+import { installCodeGraphReadDispatcherForTests } from './helpers/code-graph-read-dispatcher';
 import type {
   CodeGraphReadCall,
   CodeGraphWorkerReadTask,
@@ -213,6 +223,36 @@ function readTask(read: GoldenGraphRead): CodeGraphWorkerReadTask {
   }
 }
 
+/** The same read as a `worker.codeGraph.query` read; `null` for a base-only read. */
+function serviceRead(read: GoldenGraphRead): CodeGraphServiceRead | null {
+  switch (read.op) {
+    case 'status':
+      return { kind: 'calls', calls: [{ method: 'status' }] };
+    case 'summary':
+      return { kind: 'summary' };
+    case 'fingerprint-metadata':
+      return { kind: 'build-stamp' };
+    case 'query':
+      return { kind: 'calls', calls: [queryCall(read)] };
+    case 'detect-changed':
+      return {
+        kind: 'detect-changed',
+        repoId: GOLDEN_REPO_ID,
+        baseRef: read.base,
+      };
+    case 'change-impact':
+      return {
+        kind: 'change-impact',
+        repoId: GOLDEN_REPO_ID,
+        baseRef: read.base,
+        ...(read.maxDepth === undefined ? {} : { maxDepth: read.maxDepth }),
+      };
+    case 'base-identity':
+    case 'validate-base':
+      return null;
+  }
+}
+
 describe('code-graph build and read goldens', () => {
   let normalize: (value: unknown) => unknown;
 
@@ -294,5 +334,60 @@ describe('code-graph build and read goldens', () => {
       results[readCase.name] = response;
     }
     expectCodeGraphGolden('reads', normalize(results));
+  });
+
+  // CAN-4150: callers read through the worker operation; its answers must be
+  // the recorded ones, refusals included.
+  it('answers every worktree read through worker.codeGraph.query as recorded', async () => {
+    const service = createCodeGraphReadService({
+      scheduler: { run: ({ request }) => executeCodeGraphRead(request) },
+      dbPath: ({ worktreeId }) => fixture.dbPaths[worktreeId as GoldenGraph],
+      hasGraph: ({ worktreeId }) =>
+        existsSync(fixture.dbPaths[worktreeId as GoldenGraph]),
+      buildState: () => 'idle',
+      worktreeRoot: () => fixture.repo,
+      repositories: () =>
+        Promise.resolve([{ repoId: GOLDEN_REPO_ID, rootPath: fixture.repo }]),
+      resourcesDir: () => fixture.resourcesDir,
+      now: () => new Date(0),
+    });
+    const uninstall = installCodeGraphReadDispatcherForTests(
+      createWorkerCodeGraphReadAdapter(() =>
+        Promise.resolve(createCodeGraphReadServiceWorker(service)),
+      ),
+    );
+    const recorded: unknown = JSON.parse(
+      readFileSync(goldenPath('reads'), 'utf8'),
+    );
+    if (typeof recorded !== 'object' || recorded === null)
+      throw new Error('The reads golden is not an object.');
+    const results: Record<string, unknown> = {};
+    const expected: Record<string, unknown> = {};
+    try {
+      for (const readCase of GOLDEN_READ_CASES) {
+        const read = serviceRead(readCase.read);
+        if (read === null || readCase.graph === 'base') continue;
+        try {
+          const { result } = await readWorktreeCodeGraph(
+            { projectId: 'golden', worktreeId: readCase.graph },
+            'query',
+            read,
+          );
+          results[readCase.name] = { ok: true, result };
+        } catch (error) {
+          if (!(error instanceof CodeGraphReadFailureError)) throw error;
+          results[readCase.name] = {
+            ok: false,
+            code: error.readFailure,
+            message: 'The retained Code Graph could not be read. Try again.',
+          };
+        }
+        expected[readCase.name] = Reflect.get(recorded, readCase.name);
+      }
+    } finally {
+      uninstall();
+    }
+    expect(Object.keys(results).length).toBeGreaterThan(20);
+    expect(normalize(results)).toEqual(expected);
   });
 });

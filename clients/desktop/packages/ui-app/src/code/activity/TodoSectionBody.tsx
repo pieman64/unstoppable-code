@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, type JSX } from 'react';
-import { ChevronIcon } from '@canopy/ui-shared/icons';
+import { Disclosure } from '@canopy/ui-shared/components';
 
 export interface TodoSectionBodyItem {
   readonly id: string;
@@ -50,24 +50,19 @@ export function TodoSectionBody({
       {/* Completed tasks (collapsible) */}
       {completedCount > 0 && (
         <div className="pt-1">
-          <button
-            type="button"
-            aria-expanded={showCompleted}
-            onClick={(): void => setShowCompleted((v) => !v)}
-            className="focus-ring flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium fg-secondary/60 transition-colors hover:fg-secondary"
-            data-testid="activity-todo-completed-toggle"
+          <Disclosure
+            label={`Completed (${completedCount})`}
+            open={showCompleted}
+            onOpenChange={setShowCompleted}
+            dataTestId="activity-todo-completed"
+            toggleTestId="activity-todo-completed-toggle"
           >
-            <ChevronIcon open={showCompleted} />
-            Completed ({completedCount})
-          </button>
-
-          {showCompleted && (
-            <div className="mt-2 space-y-1.5">
+            <div className="space-y-1.5">
               {completed.map((item) => (
                 <TodoItemRow key={item.id} item={item} />
               ))}
             </div>
-          )}
+          </Disclosure>
         </div>
       )}
     </div>

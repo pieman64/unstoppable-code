@@ -56,7 +56,7 @@ import {
   replayBlockClassFor,
 } from '@canopy/desktop-instrumentation/posthog-replay-surfaces';
 import {
-  AutomationsIcon,
+  WorkflowsIcon,
   BarChart4BarsIcon,
   LineChart1Icon,
   ChatIcon,
@@ -104,7 +104,7 @@ import {
 import { isInAppBrowserAvailable } from '@/lib/remote-control/in-app-browser-availability';
 import { CHAT_VISUALS_PANEL_TITLE } from '@canopy/ui-app/panel-layout-store';
 import { LoadingPlaceholder } from '@/components/shared/StatusBlocks';
-import { CenteredLoadingSpinner } from '@canopy/ui-shared/components';
+import { CenteredLoadingSpinner, Heading } from '@canopy/ui-shared/components';
 import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
 import { WorktreeChatSurface } from '@/components/chat/WorktreeChatSurface';
 import { getWorktreeChatSelection } from '@/components/chat/useWorktreeChatSurfaceState';
@@ -125,7 +125,6 @@ import { ActivitySectionChromeContext } from '@/components/shared/panel-section'
 import { FilesTreeTab } from '@/components/activity/FilesTreeTab';
 import { BrowserPanelSurface } from '@/components/browser/BrowserPanelSurface';
 import { UsagePanel } from '@/components/panels/usage/UsagePanel';
-import { AutomationsPanel } from '@/components/panels/automations/AutomationsPanel';
 import { usePanelWorktreeSelection } from './panel-worktree-context';
 import { usePanelHostState } from './panel-host-context';
 import {
@@ -487,9 +486,9 @@ function EmptyFileTabBody({
         data-testid="file-tab-empty-state"
       >
         <FolderIcon className="h-8 w-8 fg-secondary/60" />
-        <h3 className="text-s font-medium text-balance fg-primary">
+        <Heading level={3} variant="title">
           No file open
-        </h3>
+        </Heading>
         <p className="text-xs text-pretty fg-secondary">
           {canSearchFiles
             ? 'Pick one in the file tree, or search by name.'
@@ -1318,8 +1317,18 @@ const PanelUsageContent = memo(function PanelUsageContent(
 });
 
 /**
- * 'automations' — workspace-scoped automations and watchers (Upcoming /
- * Overview / Completed), scoped by `instance.variant`
+ * Loaded on first use: the Workflows panel reads the Workflows run feed, which
+ * startup never needs.
+ */
+const AutomationsPanel = lazy(() =>
+  import('@/components/panels/automations/AutomationsPanel').then((module) => ({
+    default: module.AutomationsPanel,
+  })),
+);
+
+/**
+ * 'automations' — the workspace Workflows panel: workflows and watchers
+ * (Schedule / Library / Runs), scoped by `instance.variant`
  * (`full` | `upcoming` | `overview` | `completed`). {@link AutomationsPanel}
  * owns section rendering, the worktree-scope toggle, and the add/detail
  * modals. An unknown/missing variant (stale persisted layout) falls back to
@@ -1335,12 +1344,20 @@ const PanelAutomationsContent = memo(function PanelAutomationsContent(
   return (
     <PanelContentFrame kind="automations" panelId={props.panelId}>
       {selectedWorktree ? (
-        <AutomationsPanel
-          panelId={props.panelId}
-          variant={variant}
-          projectId={selectedWorktree.projectId}
-          worktreeId={selectedWorktree.worktreeId}
-        />
+        <Suspense
+          fallback={
+            <DelayedLoadingPlaceholder>
+              <CenteredLoadingSpinner className="my-12" />
+            </DelayedLoadingPlaceholder>
+          }
+        >
+          <AutomationsPanel
+            panelId={props.panelId}
+            variant={variant}
+            projectId={selectedWorktree.projectId}
+            worktreeId={selectedWorktree.worktreeId}
+          />
+        </Suspense>
       ) : (
         <PanelEmptyState />
       )}
@@ -1616,9 +1633,9 @@ export const DESKTOP_PANEL_DEFINITIONS: Readonly<
   automations: {
     kind: 'automations',
     // Default title only; instance-bound tabs display the variant label
-    // ("Automations" / "Automations (Upcoming)" / …).
-    title: 'Automations',
-    icon: <AutomationsIcon size="xl" />,
+    // ("Workflows" / "Workflows (Schedule)" / …).
+    title: 'Workflows',
+    icon: <WorkflowsIcon size="xl" />,
     canPopOut: true,
     isWindowBound: false,
     singleton: SINGLETON_PANEL_KINDS.has('automations'),

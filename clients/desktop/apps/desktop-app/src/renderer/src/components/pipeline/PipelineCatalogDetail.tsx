@@ -4,6 +4,7 @@ import { RelatedItemsSection } from '@canopy/ui-shared';
 import {
   DetailPageActions,
   ExecutionActionButton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { useInstalledMarketplaces } from '@/hooks/useInstalledMarketplaces';
@@ -118,9 +119,9 @@ export function PipelineCatalogDetail({
           fit="contain"
         />
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold fg-primary">
+          <Heading level={2} variant="section">
             {pipeline.name}
-          </h2>
+          </Heading>
           <p className="mt-0.5 text-xs fg-secondary">
             {PIPELINE_SOURCE_META[pipeline.source].label}
             {sharedLines.map((line) => ` · ${line}`).join('')}
@@ -191,7 +192,9 @@ function MetadataBadges({
 }): JSX.Element {
   return (
     <section>
-      <h3 className="text-xs font-medium fg-primary">{label}</h3>
+      <Heading level={3} variant="label">
+        {label}
+      </Heading>
       {values.length === 0 ? (
         <p className="mt-1 text-xs fg-secondary">{empty}</p>
       ) : (

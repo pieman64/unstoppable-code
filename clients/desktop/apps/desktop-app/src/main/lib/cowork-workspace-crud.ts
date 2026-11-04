@@ -78,6 +78,7 @@ import {
   readAllSidebarItems,
   readAllSidebarItemsSnapshot,
   readWorkspaceIndexEntry,
+  type SidebarItemsSnapshot,
 } from './sidebar-items';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { readWorkspaceConfigDetailed } from './workspace-persistence';
@@ -314,11 +315,12 @@ export async function ensureDefaultCoworkWorkspace(
  * always-present {@link DEFAULT_COWORK_WORKSPACE_ID} home workspace exists
  * (creating it on first call if absent) — the successor to the old
  * `DEFAULT_CHAT_PROJECT_ID` guarantee. The default/home workspace always
- * sorts first; the rest sort by name.
+ * sorts first; the rest sort by name. A session snapshot can supply its
+ * discovery evidence; provisioning still runs outside that snapshot's view.
  */
-export async function listCoworkWorkspacesAsChatProjects(): Promise<
-  ChatProjectData[]
-> {
+export async function listCoworkWorkspacesAsChatProjects(
+  sidebarSnapshot?: SidebarItemsSnapshot,
+): Promise<ChatProjectData[]> {
   const context = getWorkspaceContextService().getState().context;
   if (context.kind === 'organization') {
     detachedWorkCallback(() =>
@@ -330,7 +332,7 @@ export async function listCoworkWorkspacesAsChatProjects(): Promise<
     )();
   }
   const { file: sidebarItems, indexAuthority } =
-    await readAllSidebarItemsSnapshot();
+    sidebarSnapshot ?? (await readAllSidebarItemsSnapshot());
   const { items } = sidebarItems;
   const coworkItems = items.filter(isCoworkSidebarItem);
 

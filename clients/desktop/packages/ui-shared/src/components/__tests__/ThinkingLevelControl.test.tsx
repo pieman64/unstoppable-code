@@ -17,25 +17,21 @@ Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
 const FULL_LEVELS = ['off', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 const NON_ULTRA_LEVELS = ['off', 'medium', 'high', 'xhigh', 'max'] as const;
 
-it('can use the Settings dropdown instead of the native select', () => {
-  const props = {
-    value: 'high',
-    supportedLevels: FULL_LEVELS,
-    onChange: (): void => undefined,
-    variant: 'select',
-  } as const;
-  const settings = renderToStaticMarkup(
-    <ThinkingLevelControl {...props} selectShape="capsule" />,
+it('draws the select variant as the shared Settings dropdown', () => {
+  const html = renderToStaticMarkup(
+    <ThinkingLevelControl
+      value="high"
+      supportedLevels={FULL_LEVELS}
+      onChange={(): void => undefined}
+      variant="select"
+    />,
   );
-  const native = renderToStaticMarkup(<ThinkingLevelControl {...props} />);
-  expect(settings).toContain('role="combobox"');
-  expect(settings).not.toContain('<select');
-  expect(native).toContain('<select');
-  // Dropdowns are rounded rectangles either way (2026-10-30).
-  for (const html of [settings, native]) {
-    expect(html).toContain('rounded-row');
-    expect(html).not.toContain('rounded-full');
-  }
+  // Canopy's own menu, never the operating system's.
+  expect(html).toContain('role="combobox"');
+  expect(html).not.toContain('<select');
+  // Dropdowns are rounded rectangles (2026-10-30).
+  expect(html).toContain('rounded-row');
+  expect(html).not.toContain('rounded-full');
 });
 
 function renderControl(
@@ -490,10 +486,9 @@ describe('ThinkingLevelControl', () => {
       />,
     );
 
-    expect(html).toContain(
-      '<option value="medium" selected="">Medium</option>',
-    );
-    expect(html).not.toContain('value="low"');
+    expect(html).toContain('data-value="medium"');
+    expect(html).toContain('>Medium<');
+    expect(html).not.toContain('data-value="low"');
   });
 
   it('keeps a persisted low selected in the opt-in select variant', () => {
@@ -507,7 +502,8 @@ describe('ThinkingLevelControl', () => {
       />,
     );
 
-    expect(html).toContain('<option value="low" selected="">Low</option>');
+    expect(html).toContain('data-value="low"');
+    expect(html).toContain('>Low<');
   });
 
   it('renders the project default in the cycle and select variants', () => {
@@ -530,9 +526,8 @@ describe('ThinkingLevelControl', () => {
     );
 
     expect(cycleHtml).toContain('Thinking: Default; click to cycle');
-    expect(selectHtml).toContain(
-      '<option value="" selected="">Default</option>',
-    );
+    expect(selectHtml).toContain('data-value=""');
+    expect(selectHtml).toContain('>Default<');
   });
 });
 

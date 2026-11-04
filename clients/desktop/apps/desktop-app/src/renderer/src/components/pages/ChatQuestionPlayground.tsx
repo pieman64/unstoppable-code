@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { ChatContent } from '../chat/ChatContent';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Disclosure, Heading } from '@canopy/ui-shared/components';
 import { toActiveComposerView, toActiveTranscriptView } from '../chat/types';
 import { ChatSurfaceProvider } from '@/stores/chat/surface-store';
 import { createQuestionSandbox } from './chatQuestionSandbox';
@@ -75,9 +75,9 @@ export function ChatQuestionPlayground(): JSX.Element {
         className="min-h-0 space-y-5 overflow-y-auto border-l border-line-base bg-base p-4"
       >
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-xs font-medium fg-primary">
+          <Heading level={2} variant="title">
             Playground controls
-          </h2>
+          </Heading>
           <Button
             variant="outline"
             aria-pressed={compact}
@@ -98,9 +98,9 @@ export function ChatQuestionPlayground(): JSX.Element {
           Turn still running
         </Button>
         <div>
-          <h3 className="mb-2 text-xs font-medium fg-secondary">
+          <Heading level={3} variant="label" className="mb-2">
             Trigger a question
-          </h3>
+          </Heading>
           <div className="space-y-1">
             {QUESTION_PRESETS.map((item) => (
               <button
@@ -122,7 +122,9 @@ export function ChatQuestionPlayground(): JSX.Element {
         >
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h2 className="text-s font-medium fg-primary">State machine</h2>
+              <Heading level={2} variant="title">
+                State machine
+              </Heading>
               <p className="mt-1 text-xs fg-secondary">
                 Submit or dismiss in the chat, then resolve or fail the request
                 here.
@@ -186,9 +188,9 @@ export function ChatQuestionPlayground(): JSX.Element {
           </div>
           <div className="mt-5 grid gap-4 border-t border-line-base pt-4 grid-cols-1">
             <div>
-              <h3 className="text-xs font-medium fg-secondary">
+              <Heading level={3} variant="label">
                 Event history
-              </h3>
+              </Heading>
               <ol className="mt-2 space-y-1 text-xs fg-primary">
                 {machine.events.map((event, index) => (
                   <li key={`${index}-${event}`}>
@@ -200,14 +202,11 @@ export function ChatQuestionPlayground(): JSX.Element {
                 ))}
               </ol>
             </div>
-            <details>
-              <summary className="cursor-pointer text-xs font-medium fg-secondary">
-                Response payload
-              </summary>
-              <pre className="mt-2 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-secondary p-3 text-xs fg-primary">
+            <Disclosure label="Response payload">
+              <pre className="overflow-auto whitespace-pre-wrap break-words rounded-lg bg-secondary p-3 text-xs fg-primary">
                 {JSON.stringify(safeAnswers, null, 2)}
               </pre>
-            </details>
+            </Disclosure>
           </div>
         </section>
         <p className="text-xs leading-relaxed fg-secondary">

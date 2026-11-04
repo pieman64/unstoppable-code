@@ -17,6 +17,7 @@ import {
   LoadingSpinner,
   PageHeader,
   Count,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { PlanModeIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
@@ -103,7 +104,9 @@ export function OverviewSectionHeader({
   return (
     <div className="mb-1.5 flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-2">
-        <h2 className="text-xs font-semibold fg-secondary">{title}</h2>
+        <Heading level={2} variant="label">
+          {title}
+        </Heading>
         {count !== undefined && count > 0 && (
           <span aria-label={countLabel ?? `${count} ${title.toLowerCase()}`}>
             <Count value={count} />
@@ -202,7 +205,9 @@ export function Overview({
         />
       ) : (
         <header className="mb-4">
-          <h1 className="text-lg font-semibold fg-primary">Overview</h1>
+          <Heading level={1} variant="page">
+            Overview
+          </Heading>
           <p className="text-xs fg-secondary">{OVERVIEW_DESCRIPTION}</p>
         </header>
       )}

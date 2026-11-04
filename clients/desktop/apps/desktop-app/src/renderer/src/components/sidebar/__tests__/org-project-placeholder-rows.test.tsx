@@ -768,7 +768,11 @@ it('loads only the active organization and keeps placeholders outside real proje
     if (!(destination instanceof HTMLButtonElement))
       throw new Error('Missing destination');
     expect(destination.textContent).toBe('/defaultChange');
-    expect(destination.title).toBe('/default');
+    // The truncated path, not the button, carries the full value.
+    expect(destination.hasAttribute('title')).toBe(false);
+    expect(
+      destination.querySelector('[dir="rtl"]')?.getAttribute('title'),
+    ).toBe('/default');
     expect(destination.querySelector('bdi')?.getAttribute('dir')).toBe('ltr');
     expect(destination.querySelector('[dir="rtl"]')?.className).toContain(
       'truncate',

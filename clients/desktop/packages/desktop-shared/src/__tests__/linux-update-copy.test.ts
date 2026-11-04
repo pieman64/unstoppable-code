@@ -4,7 +4,9 @@ describe('Linux manual update copy and official destination', () => {
   it('uses brand names and Linux recovery, never macOS or Windows recovery', () => {
     const copy = linuxUpdateCopy({ displayName: 'Example' });
     expect(copy.manual).toContain('Example');
-    expect(copy.unsupported).toContain('x64 or arm64 .deb');
+    expect(copy.unsupported).toContain('.deb or pacman package');
+    expect(copy.unsupported).toContain('x64 or arm64');
+    expect(copy.packageManager).toMatch(/package manager:$/);
     expect(copy.unavailable).toContain('connection');
     expect(copy.unavailable).toContain('this architecture');
     expect(copy.verification).toContain('matching your installed architecture');

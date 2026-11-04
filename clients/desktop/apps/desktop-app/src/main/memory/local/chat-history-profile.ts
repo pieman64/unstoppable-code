@@ -3,7 +3,8 @@ import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { recordMemoryEdit, withMemoryWriteLock } from './edit-coordination';
 import type { LocalMemoryHelperModel } from './helper-model';
-import { ensureOwnerOnlyDir, redactMemoryContent } from './store';
+import { assertMemoryScopeLockHeld, ensureOwnerOnlyDir } from './memory-files';
+import { redactMemoryContent } from './store';
 import { topicFileKeyIdentity } from './topic-identity';
 
 /**
@@ -776,6 +777,7 @@ async function writeOwnerOnlyFileAtomically(
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
+    await assertMemoryScopeLockHeld();
     await rename(temporaryPath, filePath);
   } catch (error) {
     await unlink(temporaryPath).catch(() => undefined);
@@ -798,6 +800,7 @@ export async function saveChatHistoryProfile(
 ): Promise<void> {
   await withMemoryWriteLock(scopeDir, async () => {
     if (refresh.profile) {
+      await recordMemoryEdit(scopeDir);
       await writeOwnerOnlyFileAtomically(
         join(scopeDir, CHAT_HISTORY_PROFILE_FILE_KEY),
         refresh.profile.topic,
@@ -815,7 +818,6 @@ export async function saveChatHistoryProfile(
           refresh.profile.indexLine,
         ),
       );
-      recordMemoryEdit(scopeDir);
     }
     await writeOwnerOnlyFileAtomically(
       join(scopeDir, STATE_FILENAME),

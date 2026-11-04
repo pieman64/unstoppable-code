@@ -37,10 +37,23 @@ export const STORAGE_OWNERSHIP = [
     "currentWriters": [
       "electron_main"
     ],
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "backupPolicy": "required_before_flip",
     "workPackage": "W6",
     "backupShape": "namespace_backup"
+  },
+  {
+    "id": "pipeline_plugin_preferences",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "desktop_cli",
+      "electron_main"
+    ],
+    "schemaVersion": 2,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "shared/node/pipelines/plugin-collection-store"
+    ]
   },
   {
     "id": "preferences",

@@ -323,15 +323,22 @@ async function scrollToUncommittedIndex({
   }, targetFraction);
 }
 
+// The full path is the native title on the row's truncated text, its first
+// child; the row itself carries no title.
 function rowForPath(section, filePath) {
   return section
-    .locator(`[data-testid="activity-changed-file"][title="${filePath}"]`)
+    .locator('[data-testid="activity-changed-file"]')
+    .filter({ has: section.page().locator(`[title="${filePath}"]`) })
     .first();
 }
 
 async function renderedFilePaths(rows) {
   return rows.evaluateAll((elements) =>
-    elements.map((element) => element.getAttribute('title')),
+    elements.map(
+      (element) =>
+        element.querySelector(':scope > [title]')?.getAttribute('title') ??
+        null,
+    ),
   );
 }
 

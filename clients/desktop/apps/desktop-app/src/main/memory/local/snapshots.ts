@@ -22,7 +22,11 @@ import {
   replaceChatHistoryProfileIndexLine,
 } from './chat-history-profile';
 import { recordMemoryEdit, withMemoryWriteLock } from './edit-coordination';
-import { ensureOwnerOnlyDir, isMemoryMarkdownFileName } from './store';
+import {
+  assertMemoryScopeLockHeld,
+  ensureOwnerOnlyDir,
+  isMemoryMarkdownFileName,
+} from './memory-files';
 import { topicIdentity } from './topic-identity';
 
 export const LOCAL_MEMORY_SNAPSHOT_RETENTION = 10;
@@ -218,6 +222,7 @@ async function pruneSnapshots(
     else if (!pinnable && id !== justMade) expired.push(id);
   }
   for (const name of [...staleStaging, ...expired]) {
+    await assertMemoryScopeLockHeld();
     await rm(join(directory, name), { recursive: true, force: true });
   }
 }
@@ -281,6 +286,7 @@ async function saveSnapshot(
       join(staging, SNAPSHOT_MANIFEST),
       `${JSON.stringify(manifest, null, 2)}\n`,
     );
+    await assertMemoryScopeLockHeld();
     await rename(staging, join(directory, id));
   } catch (error) {
     await rm(staging, { recursive: true, force: true }).catch(() => undefined);
@@ -659,6 +665,7 @@ function createLocalMemoryWriteGuard(
    */
   const verify = async (path: string): Promise<string | null> => {
     if (stopped) stop();
+    await assertMemoryScopeLockHeld();
     const key = keyFor(path);
     if (key === null) return null;
     if (!verifiedScope) {
@@ -947,6 +954,7 @@ export async function restoreLocalMemorySnapshot(
   id: string,
 ): Promise<{ previousSnapshotId: string | null }> {
   return withMemoryWriteLock(scopeDir, async () => {
+    await recordMemoryEdit(scopeDir);
     const snapshot = await readLocalMemorySnapshot(scopeDir, id);
     // Read once: the snapshot saves this state, the guard checks the scope
     // against it, and a failed restore writes it back, empty or not.
@@ -989,8 +997,6 @@ export async function restoreLocalMemorySnapshot(
         throw new Error(LOCAL_MEMORY_RESTORE_SCOPE_CHANGED_MESSAGE);
       }
       throw error;
-    } finally {
-      recordMemoryEdit(scopeDir);
     }
     return { previousSnapshotId: previous?.id ?? null };
   });

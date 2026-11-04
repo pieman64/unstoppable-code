@@ -4,6 +4,7 @@ import {
   SettingsRowsRow,
   SettingsRowsSection,
   SettingsRowsValue,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { CHAT_LABEL, ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type {
@@ -128,9 +129,9 @@ export function SharedAutomationPreview({
           className="min-w-0"
           data-testid="shared-automation-preview-heading"
         >
-          <h3 className="truncate text-base font-semibold fg-primary">
+          <Heading level={3} variant="section" truncate>
             {automation.name}
-          </h3>
+          </Heading>
           {hasMarkdownDescriptionText(automation.description) && (
             <DescriptionMarkdown
               className="mt-1"

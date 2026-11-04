@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { MoreHorizontalIcon } from '../../icons/AppIcons';
 import { LoadingSpinner } from '../LoadingSpinner';
+import { Heading } from '../Heading';
 
 export interface PanelEmptyGroupCatalogEntry {
   readonly key: string;
@@ -48,7 +49,11 @@ export function PanelEmptyGroupCatalog({
       className="flex h-full min-h-0 flex-col items-center justify-center overflow-y-auto p-4"
     >
       <div className="flex w-full max-w-64 flex-col gap-2">
-        <h2 className="px-2 text-s font-medium fg-primary">{title}</h2>
+        <div className="px-2">
+          <Heading level={2} variant="title">
+            {title}
+          </Heading>
+        </div>
         <ul className="flex flex-col">
           {entries.map((entry) => (
             <li key={entry.key}>

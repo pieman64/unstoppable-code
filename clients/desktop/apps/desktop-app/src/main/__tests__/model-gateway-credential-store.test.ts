@@ -39,6 +39,10 @@ const storage: MockSafeStorage = {
     value.toString('utf8').replace(/^encrypted:/, ''),
   ),
 };
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    'secure',
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): string => 'linux',
 }));

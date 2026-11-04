@@ -5,6 +5,7 @@ import {
   NOTICE_GALLERY_SECTIONS,
   type NoticeGalleryEntry,
 } from './noticeStateGalleryData';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * The composer preview at the top of the Notice States gallery: the real
@@ -114,7 +115,9 @@ export function NoticeComposerPreview({
       className="mb-12"
       data-testid="notice-gallery-section-composer-preview"
     >
-      <h2 className="mb-1 text-sm font-semibold">In the composer</h2>
+      <Heading level={2} variant="title" className="mb-1">
+        In the composer
+      </Heading>
       <p className="mb-3 max-w-3xl text-xs fg-secondary">
         The shipping composer at its real width, on the chat surface. Pick a
         notice to raise it where the live stack sits, directly above the input.

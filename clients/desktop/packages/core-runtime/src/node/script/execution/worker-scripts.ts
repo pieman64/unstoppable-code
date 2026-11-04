@@ -26,6 +26,12 @@ import {
   type ScriptProcessOutcome,
 } from './process-runner';
 import {
+  runScriptTerminal,
+  type RunScriptTerminalOptions,
+  type ScriptTerminalHost,
+  type ScriptTerminalPort,
+} from './terminal-runner';
+import {
   ScriptRunRegistry,
   type ScriptProcessResult,
   type StoppedScriptRun,
@@ -48,7 +54,8 @@ export interface ScriptExecutionPlace {
  * location and durability, and the projection of a portable scope and
  * context onto this worker's checkouts and environment.
  */
-export interface ScriptExecutionWorkerHost extends ScriptProcessHost {
+export interface ScriptExecutionWorkerHost
+  extends ScriptProcessHost, Pick<ScriptTerminalHost, 'revealTerminal'> {
   readonly authorityId: string;
   readonly targetId?: string;
   readonly logPaths: ScriptRunLogPaths;
@@ -61,6 +68,12 @@ export interface ScriptExecutionWorkerHost extends ScriptProcessHost {
     scope: WorkerScriptExecuteParams['scope'],
     context: WorkerScriptContext,
   ): Promise<ScriptExecutionPlace>;
+  /**
+   * This worker's `worker.terminal` port, for runs that need a terminal
+   * (CAN-5082). Loaded on first use so ordinary runs never load the PTY
+   * backend; a host without terminals refuses those runs.
+   */
+  terminals?(): Promise<ScriptTerminalPort>;
   warn?(message: string, details: Record<string, unknown>): void;
 }
 
@@ -89,6 +102,14 @@ function executionInProgressError(): CanopyOperationError {
     kind: 'conflict',
     code: 'worker.script.executionInProgress',
     message: 'A run with this execution id is already running.',
+    retry: { kind: 'never' },
+  });
+}
+
+function terminalUnavailableError(): CanopyOperationError {
+  return new CanopyOperationError({
+    kind: 'capability_unavailable',
+    message: 'This worker cannot run scripts in a terminal.',
     retry: { kind: 'never' },
   });
 }
@@ -172,8 +193,9 @@ function toExecuteResult(
 /**
  * The worker side of script execution (CAN-4143): the process runner, the
  * registry of running scripts, and the durable run log, behind
- * `worker.script.*`. Interactive terminal-backed runs (CAN-5082) and hook
- * commands (CAN-4146) still run in the host and join the same registry.
+ * `worker.script.*`. Interactive runs execute in the worker's own terminals
+ * (CAN-5082); hook commands (CAN-4146) run here without a dispatch record
+ * and join the same registry.
  */
 export class ScriptExecutionWorker {
   readonly registry = new ScriptRunRegistry();
@@ -246,6 +268,24 @@ export class ScriptExecutionWorker {
     return runScriptProcess(this.host, this.registry, options);
   }
 
+  /**
+   * Run a command in one of this worker's terminals without a run log or
+   * dispatch record: the hook runner's interactive commands until CAN-4146
+   * moves them. Refuses when the host has no terminals.
+   */
+  runTerminal(
+    options: RunScriptTerminalOptions,
+  ): Promise<ScriptProcessOutcome> {
+    const host = this.host;
+    if (!host.terminals) return Promise.reject(terminalUnavailableError());
+    return runScriptTerminal(
+      host,
+      () => host.terminals?.() ?? Promise.reject(terminalUnavailableError()),
+      this.registry,
+      options,
+    );
+  }
+
   private assertServed(scope: {
     readonly authorityId?: string;
     readonly targetId?: string;
@@ -267,6 +307,8 @@ export class ScriptExecutionWorker {
     signal?: AbortSignal,
   ): Promise<WorkerScriptExecuteResult> {
     this.assertServed(params.scope);
+    if (params.terminal && !this.host.terminals)
+      throw terminalUnavailableError();
     const { executionId, scope, record } = params;
     if (this.executing.has(executionId)) throw executionInProgressError();
     this.executing.add(executionId);
@@ -350,56 +392,71 @@ export class ScriptExecutionWorker {
       this.notify(executionId, (observer) => observer.onFinished?.(outcome));
       return toExecuteResult(executionId, outcome, recorded);
     }
+    // Lines are buffered only for a run log or a line observer: an If
+    // Command gate reads raw output and keeps its own cap.
+    const onChunk =
+      ref !== null || this.observesLines(executionId)
+        ? (lines: string[]): void => {
+            const logRef = ref;
+            if (logRef)
+              appending = appending
+                .then(() => this.logs.append({ ref: logRef, lines }))
+                .catch(() => undefined);
+            this.notify(executionId, (observer) => observer.onLines?.(lines));
+          }
+        : undefined;
+    const onProcessStarted = (): void => {
+      // The registry reaches it from here on.
+      this.starting.delete(executionId);
+      this.notify(executionId, (observer) => observer.onProcessStarted?.());
+    };
+    const tracking = logged
+      ? {
+          projectId,
+          worktreeId,
+          scriptKey: record.script.scriptKey,
+          runId: executionId,
+          script: record.script,
+          invocation: record.invocation,
+          ...(ref ? { logRef: ref } : {}),
+        }
+      : undefined;
     try {
-      outcome = await this.runProcess({
-        script: params.command,
-        cwd: place.cwd,
-        env: place.env,
-        ...(params.shell ? { shell: params.shell } : {}),
-        shellStartup: params.shellStartup,
-        timeoutMs: params.timeoutMs,
-        backgroundPriority: params.priority === 'background',
-        signal,
-        // Lines are buffered only for a run log or a line observer: an
-        // If Command gate reads raw output and keeps its own cap.
-        ...(ref !== null || this.observesLines(executionId)
-          ? {
-              onChunk: (lines: string[]): void => {
-                const logRef = ref;
-                if (logRef)
-                  appending = appending
-                    .then(() => this.logs.append({ ref: logRef, lines }))
-                    .catch(() => undefined);
-                this.notify(executionId, (observer) =>
-                  observer.onLines?.(lines),
-                );
-              },
-            }
-          : {}),
-        onData: (chunk, stream): void => {
-          this.notify(executionId, (observer) =>
-            observer.onData?.(chunk, stream),
-          );
-        },
-        onProcessStarted: (): void => {
-          // The registry reaches it from here on.
-          this.starting.delete(executionId);
-          this.notify(executionId, (observer) => observer.onProcessStarted?.());
-        },
-        ...(logged
-          ? {
-              tracking: {
-                projectId,
-                worktreeId,
-                scriptKey: record.script.scriptKey,
-                runId: executionId,
-                script: record.script,
-                invocation: record.invocation,
-                ...(ref ? { logRef: ref } : {}),
-              },
-            }
-          : {}),
-      });
+      outcome = params.terminal
+        ? await this.runTerminal({
+            script: params.command,
+            cwd: place.cwd,
+            env: place.env,
+            ...(params.shell ? { shell: params.shell } : {}),
+            shellStartup: params.shellStartup,
+            timeoutMs: params.timeoutMs,
+            backgroundPriority: params.priority === 'background',
+            signal,
+            ...(params.terminal.title !== undefined
+              ? { title: params.terminal.title }
+              : {}),
+            ...(onChunk ? { onChunk } : {}),
+            onProcessStarted,
+            ...(tracking ? { tracking } : {}),
+          })
+        : await this.runProcess({
+            script: params.command,
+            cwd: place.cwd,
+            env: place.env,
+            ...(params.shell ? { shell: params.shell } : {}),
+            shellStartup: params.shellStartup,
+            timeoutMs: params.timeoutMs,
+            backgroundPriority: params.priority === 'background',
+            signal,
+            ...(onChunk ? { onChunk } : {}),
+            onData: (chunk, stream): void => {
+              this.notify(executionId, (observer) =>
+                observer.onData?.(chunk, stream),
+              );
+            },
+            onProcessStarted,
+            ...(tracking ? { tracking } : {}),
+          });
     } catch (error) {
       // A start refused after the log began still closes the log.
       const logRef = ref;

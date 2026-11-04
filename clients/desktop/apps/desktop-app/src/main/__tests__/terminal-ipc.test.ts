@@ -35,6 +35,17 @@ jest.mock('../terminal/worker-terminal', () => ({
   },
 }));
 
+const mockSelectDaemonTerminalTarget = jest.fn<
+  Promise<null>,
+  [unknown, unknown]
+>(() => Promise.resolve(null));
+jest.mock('../terminal/daemon-terminal-route', () => ({
+  selectDaemonTerminalTarget: (
+    request: unknown,
+    context: unknown,
+  ): Promise<null> => mockSelectDaemonTerminalTarget(request, context),
+}));
+
 jest.mock('../remote-control/host/bridge-window', () => ({
   resolveRemoteBridgeSender: (
     sender: { id?: unknown } | null,
@@ -395,6 +406,71 @@ describe('registerTerminalHandlers', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  // CAN-5088: the daemon route (worker.terminal.create, worker.terminal.restore)
+  // is considered only for this app's own windows, never the bridge or Portal.
+  it('offers worker.terminal.create and worker.terminal.restore placement only to local windows', async () => {
+    jest.clearAllMocks();
+    const sender = { id: 7 };
+    const mainWindow = {
+      webContents: sender,
+      isDestroyed: (): boolean => false,
+    };
+    registerTerminalHandlers({
+      getMainWindow: () => mainWindow,
+      getAppAdvisorWindow: () => null,
+    } as never);
+    const created = {
+      id: 'terminal-1',
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      shell: '/bin/zsh',
+      shellBasename: 'zsh',
+      cwd: '/tmp',
+      createdAt: 1,
+    };
+    mockedPtyManager.create.mockReturnValue(created);
+    const request = {
+      projectId: 'project-1',
+      worktreeId: 'wt-1',
+      cols: 80,
+      rows: 24,
+    };
+    const spawnHandler = getRegisteredHandler(IPC_CHANNELS.terminalSpawn);
+
+    await spawnHandler({ sender }, request);
+    expect(mockSelectDaemonTerminalTarget).toHaveBeenCalledWith(request, {
+      localWindow: true,
+    });
+
+    mockSelectDaemonTerminalTarget.mockClear();
+    await spawnHandler({ sender: { id: 'bridge' } }, request);
+    await spawnHandler({ sender: { id: 8 } }, request);
+    expect(mockSelectDaemonTerminalTarget).not.toHaveBeenCalled();
+    expect(mockedPtyManager.create).toHaveBeenCalledTimes(3);
+
+    mockedTerminalPersistenceStore.getPersistedTerminalEntry.mockReturnValue({
+      session: { ...created, id: 'terminal-2' },
+      scrollbackLines: [],
+      exitCode: null,
+      signal: 'app-quit',
+    });
+    mockedPtyManager.list.mockReturnValue([]);
+    const restoreHandler = getRegisteredHandler(IPC_CHANNELS.terminalRestore);
+    await restoreHandler(
+      { sender },
+      { terminalId: 'terminal-2', cols: 80, rows: 24 },
+    );
+    expect(mockSelectDaemonTerminalTarget).toHaveBeenCalledWith(
+      { projectId: 'project-1', worktreeId: 'wt-1' },
+      { localWindow: true },
+    );
+    expect(mockedPtyManager.restore).toHaveBeenCalledWith({
+      terminalId: 'terminal-2',
+      cols: 80,
+      rows: 24,
+    });
   });
 
   it('forwards selected repo ids on spawn requests', async () => {

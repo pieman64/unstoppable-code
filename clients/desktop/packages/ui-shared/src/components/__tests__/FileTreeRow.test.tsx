@@ -47,8 +47,9 @@ describe('FileTreeRow', () => {
       );
       const button = container.querySelector('button');
       expect(button?.classList.contains(REPLAY_MASK_CLASS)).toBe(false);
-      expect(button?.getAttribute('title')).toBe(
-        masked ? null : 'Vendor Spend Q3',
+      expect(button?.hasAttribute('title')).toBe(false);
+      expect(container.querySelector('[title]')?.getAttribute('title')).toBe(
+        masked ? undefined : 'Vendor Spend Q3',
       );
       expect(
         container.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent ===
@@ -76,7 +77,12 @@ describe('FileTreeRow', () => {
     );
     expect(badge?.textContent).toBe('Saved copy');
     expect(button.contains(badge)).toBe(true);
-    expect(button.title).toBe('ses-a — Research <b>β</b>');
+    expect(button.hasAttribute('title')).toBe(false);
+    expect(
+      container
+        .querySelector('[data-testid="file-tree-row-secondary-label"]')
+        ?.getAttribute('title'),
+    ).toBe('ses-a — Research <b>β</b>');
     expect(button.textContent).toContain('Research <b>β</b>');
     expect(button.querySelector('b')).toBeNull();
   });

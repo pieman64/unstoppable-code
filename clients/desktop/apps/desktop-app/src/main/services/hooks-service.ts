@@ -16,10 +16,12 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
 import { validateId } from '../lib/validation';
-import { assertNotSplitLocked } from './split-lock-service';
+import { createHookKey } from '@canopy/desktop-shared/hooks';
+import type { HookIdentity } from '../lib/hook-initiated-work';
 import {
-  runHook,
+  fireHook,
   stopRunningHook,
+  type HookRunPreparation,
   type RunHookOptions,
 } from '../lib/hook-runner';
 import { PortalServiceError } from './portal-service-error';
@@ -209,7 +211,28 @@ export async function portalHookRunAvailability(
       };
 }
 
-export async function runHookCommand(
+function manualHookIdentity(request: HookRunRequest): HookIdentity {
+  const repoId =
+    request.target === 'workspace-repo' ? request.repoId : undefined;
+  return {
+    hookKey: createHookKey(request.target, request.triggerName, repoId),
+    triggerName: request.triggerName,
+    target: request.target,
+    ...(repoId !== undefined ? { repoId } : {}),
+  };
+}
+
+function noActivePrError(message: string): PortalServiceError {
+  return new PortalServiceError('execution_failed', message);
+}
+
+/**
+ * A manual or Portal hook run. It bypasses the worktree's pause explicitly;
+ * the core hook source decides its split lock (before any configuration is
+ * read), deletion fence and owner gates. A configured hook needs an active PR
+ * snapshot.
+ */
+export function runHookCommand(
   request: HookRunRequest,
   options: {
     portalCommandId?: string;
@@ -223,8 +246,83 @@ export async function runHookCommand(
 ): Promise<HookRunResponse> {
   const hookWorkspaceId =
     request.target === 'project' ? request.projectId : request.workspaceId;
-  assertNotSplitLocked(hookWorkspaceId, request.worktreeId, 'running a hook');
-  const prefs = await readPreferencesFile();
+  const occurrenceKey =
+    options.portalCommandId !== undefined
+      ? `portal:${options.portalCommandId}`
+      : undefined;
+  try {
+    validateId(hookWorkspaceId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    if (request.target === 'workspace-repo')
+      validateId(request.repoId, 'repoId');
+  } catch (error) {
+    return Promise.reject(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  }
+  return fireHook(
+    {
+      projectId: hookWorkspaceId,
+      worktreeId: request.worktreeId,
+      hook: manualHookIdentity(request),
+      invocation: 'manual',
+      pause: 'bypass',
+      ...(occurrenceKey !== undefined ? { occurrenceKey } : {}),
+      getWindow: options.getWindow ?? ((): null => null),
+    },
+    async (): Promise<HookRunPreparation> => {
+      const prefs = await readPreferencesFile();
+      const resolved = await resolveHookForRun(request);
+      if (!resolved.hook)
+        return { kind: 'unconfigured', response: NOOP_SUCCESS };
+      const snapshotRef = await readCurrentPrTrackingSnapshot({
+        projectId: resolved.workspaceId,
+        worktreeId: request.worktreeId,
+        repoStorageKey: resolved.repoStorageKey,
+      });
+      if (!snapshotRef.snapshot)
+        return {
+          kind: 'refused',
+          gate: 'activePr',
+          error: noActivePrError(
+            request.target === 'project'
+              ? 'No current PR snapshot exists for this worktree.'
+              : 'No current PR snapshot exists for this repo target.',
+          ),
+        };
+      return {
+        kind: 'ready',
+        options: resolvedHookRunOptions({
+          projectId: resolved.workspaceId,
+          worktreeId: request.worktreeId,
+          hook: resolved.hook,
+          cwd: resolved.cwd,
+          timeoutSeconds: prefs.scriptTimeoutMinutes * 60,
+          snapshotRef: { ...snapshotRef, snapshot: snapshotRef.snapshot },
+          portalCommandId: options.portalCommandId,
+          onRunUpdate: options.onRunUpdate,
+          getWindow: options.getWindow,
+          onEnqueued: options.onEnqueued,
+          onStarted: options.onStarted,
+          onOutput: options.onOutput,
+          onComplete: options.onComplete,
+        }),
+      };
+    },
+  );
+}
+
+/**
+ * The hook a run request names, resolved from the target's layered
+ * configuration, with its checkout and PR tracking location. `hook` is null
+ * when the trigger has no actions there.
+ */
+export async function resolveHookForRun(request: HookRunRequest): Promise<{
+  workspaceId: string;
+  hook: HookDescriptor | null;
+  cwd: string;
+  repoStorageKey: string;
+}> {
   if (request.target === 'project') {
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
@@ -240,33 +338,15 @@ export async function runHookCommand(
       cwd,
     );
     const actions = getResolvedHookActions(resolvedHooks, request.triggerName);
-    if (!Array.isArray(actions) || actions.length === 0) return NOOP_SUCCESS;
-    const snapshotRef = await readCurrentPrTrackingSnapshot({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      repoStorageKey: getProjectRepoStorageKey(),
-    });
-    if (!snapshotRef.snapshot) {
-      throw new PortalServiceError(
-        'execution_failed',
-        'No current PR snapshot exists for this worktree.',
-      );
-    }
-    return runResolvedHook({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      hook: createProjectHookDescriptor(request.triggerName, actions),
+    return {
+      workspaceId: request.projectId,
+      hook:
+        Array.isArray(actions) && actions.length > 0
+          ? createProjectHookDescriptor(request.triggerName, actions)
+          : null,
       cwd,
-      timeoutSeconds: prefs.scriptTimeoutMinutes * 60,
-      snapshotRef,
-      portalCommandId: options.portalCommandId,
-      onRunUpdate: options.onRunUpdate,
-      getWindow: options.getWindow,
-      onEnqueued: options.onEnqueued,
-      onStarted: options.onStarted,
-      onOutput: options.onOutput,
-      onComplete: options.onComplete,
-    });
+      repoStorageKey: getProjectRepoStorageKey(),
+    };
   }
 
   validateId(request.workspaceId, 'workspaceId');
@@ -280,33 +360,15 @@ export async function runHookCommand(
       workspaceRootPath: cwd,
     });
     const actions = getResolvedHookActions(resolvedHooks, request.triggerName);
-    if (!Array.isArray(actions) || actions.length === 0) return NOOP_SUCCESS;
-    const snapshotRef = await readCurrentPrTrackingSnapshot({
-      projectId: request.workspaceId,
-      worktreeId: request.worktreeId,
-      repoStorageKey: getWorkspaceRootRepoStorageKey(),
-    });
-    if (!snapshotRef.snapshot) {
-      throw new PortalServiceError(
-        'execution_failed',
-        'No current PR snapshot exists for this repo target.',
-      );
-    }
-    return runResolvedHook({
-      projectId: request.workspaceId,
-      worktreeId: request.worktreeId,
-      hook: createWorkspaceRootHookDescriptor(request.triggerName, actions),
+    return {
+      workspaceId: request.workspaceId,
+      hook:
+        Array.isArray(actions) && actions.length > 0
+          ? createWorkspaceRootHookDescriptor(request.triggerName, actions)
+          : null,
       cwd,
-      timeoutSeconds: prefs.scriptTimeoutMinutes * 60,
-      snapshotRef,
-      portalCommandId: options.portalCommandId,
-      onRunUpdate: options.onRunUpdate,
-      getWindow: options.getWindow,
-      onEnqueued: options.onEnqueued,
-      onStarted: options.onStarted,
-      onOutput: options.onOutput,
-      onComplete: options.onComplete,
-    });
+      repoStorageKey: getWorkspaceRootRepoStorageKey(),
+    };
   }
 
   validateId(request.repoId, 'repoId');
@@ -332,47 +394,33 @@ export async function runHookCommand(
     { workspaceRootPath, repoPath: cwd },
   );
   const actions = getResolvedHookActions(resolvedHooks, request.triggerName);
-  if (!Array.isArray(actions) || actions.length === 0) return NOOP_SUCCESS;
-  const snapshotRef = await readCurrentPrTrackingSnapshot({
-    projectId: request.workspaceId,
-    worktreeId: request.worktreeId,
-    repoStorageKey: getWorkspaceRepoStorageKey(request.repoId),
-  });
-  if (!snapshotRef.snapshot) {
-    throw new PortalServiceError(
-      'execution_failed',
-      'No current PR snapshot exists for this repo target.',
-    );
-  }
-  return runResolvedHook({
-    projectId: request.workspaceId,
-    worktreeId: request.worktreeId,
-    hook: createWorkspaceRepoHookDescriptor(
-      repo.id,
-      repo.name,
-      request.triggerName,
-      actions,
-    ),
+  return {
+    workspaceId: request.workspaceId,
+    hook:
+      Array.isArray(actions) && actions.length > 0
+        ? createWorkspaceRepoHookDescriptor(
+            repo.id,
+            repo.name,
+            request.triggerName,
+            actions,
+          )
+        : null,
     cwd,
-    timeoutSeconds: prefs.scriptTimeoutMinutes * 60,
-    snapshotRef,
-    portalCommandId: options.portalCommandId,
-    onRunUpdate: options.onRunUpdate,
-    getWindow: options.getWindow,
-    onEnqueued: options.onEnqueued,
-    onStarted: options.onStarted,
-    onOutput: options.onOutput,
-    onComplete: options.onComplete,
-  });
+    repoStorageKey: getWorkspaceRepoStorageKey(request.repoId),
+  };
 }
 
-function runResolvedHook(args: {
+function resolvedHookRunOptions(args: {
   projectId: string;
   worktreeId: string;
   hook: HookDescriptor;
   cwd: string;
   timeoutSeconds: number | null;
-  snapshotRef: Awaited<ReturnType<typeof readCurrentPrTrackingSnapshot>>;
+  snapshotRef: Awaited<ReturnType<typeof readCurrentPrTrackingSnapshot>> & {
+    snapshot: NonNullable<
+      Awaited<ReturnType<typeof readCurrentPrTrackingSnapshot>>['snapshot']
+    >;
+  };
   portalCommandId?: string;
   onRunUpdate?: (run: PortalHookRun) => void;
   getWindow?: RunHookOptions['getWindow'];
@@ -380,8 +428,7 @@ function runResolvedHook(args: {
   onStarted?: RunHookOptions['onStarted'];
   onOutput?: RunHookOptions['onOutput'];
   onComplete?: RunHookOptions['onComplete'];
-}): Promise<HookRunResponse> {
-  if (!args.snapshotRef.snapshot) return Promise.resolve(NOOP_SUCCESS);
+}): RunHookOptions {
   const emit = async (
     ref: HookRunLogRef,
     status: PortalHookRun['status'],
@@ -407,12 +454,16 @@ function runResolvedHook(args: {
     args.onRunUpdate?.(run);
     emitHookRun(run, args.portalCommandId);
   };
-  return runHook({
+  return {
     projectId: args.projectId,
     worktreeId: args.worktreeId,
     hook: args.hook,
     cwd: args.cwd,
     invocation: 'manual',
+    pause: 'bypass',
+    ...(args.portalCommandId !== undefined
+      ? { occurrenceKey: `portal:${args.portalCommandId}` }
+      : {}),
     timeoutSeconds: args.timeoutSeconds,
     currentSnapshot: args.snapshotRef.snapshot,
     currentSnapshotPath: args.snapshotRef.currentSnapshotPath,
@@ -446,7 +497,7 @@ function runResolvedHook(args: {
         ),
       );
     },
-  });
+  };
 }
 
 export async function cancelHook(

@@ -20,6 +20,8 @@ import {
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { dirname, join } from 'node:path';
 import { ChatStateV2Repository } from '../services/chat-state-v2-repository';
 import { ChatStateV2Backend } from '../services/chat-state-v2-backend';
@@ -187,6 +189,17 @@ function streamRecoveryRecord(): ReturnType<
   });
 }
 
+function isGarbageCollector(value: unknown): value is () => void {
+  return typeof value === 'function';
+}
+
+function garbageCollector(): () => void {
+  setFlagsFromString('--expose-gc');
+  const gc: unknown = runInNewContext('gc');
+  if (!isGarbageCollector(gc)) throw new Error('gc is unavailable');
+  return gc;
+}
+
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
 }
@@ -250,6 +263,28 @@ describe('v2 scope repository admission', () => {
   });
   const options = (): ChatStateV2RepositoryOptions => ({
     resolvePaths: (): typeof paths => paths,
+  });
+
+  it('does not keep a settled read result alive through the scope lease', async () => {
+    const gc = garbageCollector();
+    const repository = repositoryForTest(options());
+    // Load first and let its background work settle, so the read below is
+    // the scope's last leased operation.
+    await repository.getState(scope);
+    for (let attempt = 0; attempt < 5; attempt += 1)
+      await new Promise((resolve) => setImmediate(resolve));
+    await repository.getRevision(scope);
+    const read = new WeakRef(await repository.getState(scope));
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      // A WeakRef target stays alive until the current job ends.
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+    expect(read.deref()).toBeUndefined();
+    // The lease still orders later work on the scope.
+    await expect(repository.getRevision(scope)).resolves.toEqual(
+      expect.any(Number),
+    );
   });
 
   it('preserves per-execution outcomes through V2 restart after an unrelated next prompt', async () => {

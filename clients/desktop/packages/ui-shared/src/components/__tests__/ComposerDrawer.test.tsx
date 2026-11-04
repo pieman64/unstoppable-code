@@ -53,7 +53,7 @@ describe('ComposerDrawer', () => {
       'p-1',
       'shadow-2xs',
       '-mb-4',
-      'rounded-t-2xl',
+      'rounded-t-drawer',
       'pb-5',
     ]) {
       expect(drawer.classList).toContain(name);

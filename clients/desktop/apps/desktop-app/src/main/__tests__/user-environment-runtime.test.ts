@@ -45,6 +45,10 @@ jest.mock('../pipelines/config-paths', () => ({
 let mockBackend = 'gnome_libsecret';
 const mockAvailable = jest.fn(() => true);
 const mockDecrypt = jest.fn((encrypted: Buffer) => encrypted.toString('utf8'));
+jest.mock('../lib/linux-secret-service', () => ({
+  getLinuxSecretServiceState: (): 'secure' | 'unavailable' | 'locked' =>
+    'secure',
+}));
 jest.mock('@canopy/core-platform/host-platform', () => ({
   hostOperatingSystem: (): 'linux' => 'linux',
 }));

@@ -552,13 +552,11 @@ export {
 } from './code/shell/SidebarGuestProjectsCard';
 export {
   SidebarAccountFooter,
-  SidebarPersonAvatar,
   SidebarAccountRow,
   type SidebarAccountAttention,
   type SidebarAccountFooterProps,
   type SidebarAccountIdentity,
   type SidebarAccountIdentityTone,
-  type SidebarPersonAvatarProps,
   type SidebarAccountRowProps,
 } from './code/shell/SidebarAccountFooter';
 export {
@@ -717,6 +715,8 @@ export {
 export { OverviewCard, type OverviewCardProps } from './home/OverviewCard';
 export {
   ContinueSection,
+  useContinueAttentionPaging,
+  type ContinueAttentionPaging,
   buildContinueSectionModel,
   continueAttentionTargetKey,
   countContinueAttentionByKind,

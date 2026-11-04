@@ -7,6 +7,7 @@ import {
   PlusIcon as AppCatalogPlusIcon,
   MessageIcon as AppCatalogMessageIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface OverviewEmptyStateProps {
   onCreateWorkspace: () => void;
@@ -35,9 +36,9 @@ export function OverviewEmptyState({
       className="flex flex-1 flex-col items-center justify-center p-8"
     >
       <div className="w-full max-w-2xl text-center">
-        <h1 className="text-xl font-semibold fg-primary">
+        <Heading level={1} variant="page">
           Welcome to {brandText.appName}
-        </h1>
+        </Heading>
         <p className="mt-2 text-s fg-secondary">
           Create a project to put agents to work on your code, or start a chat
           to think something through. Your activity across every project will
@@ -49,7 +50,9 @@ export function OverviewEmptyState({
           <section className="flex flex-col gap-3 rounded-lg border bg-card p-5">
             <div className="flex items-center gap-2 fg-primary">
               <AppCatalogBranchIcon width="16" height="16" aria-hidden="true" />
-              <h2 className="text-s font-semibold">{WORKTREE_LABEL}</h2>
+              <Heading level={2} variant="title">
+                {WORKTREE_LABEL}
+              </Heading>
             </div>
             <p className="flex-1 text-xs fg-secondary">
               Create an isolated worktree and put agents to work on your
@@ -73,7 +76,9 @@ export function OverviewEmptyState({
                 height="16"
                 aria-hidden="true"
               />
-              <h2 className="text-s font-semibold">{CHAT_LABEL}</h2>
+              <Heading level={2} variant="title">
+                {CHAT_LABEL}
+              </Heading>
             </div>
             <p className="flex-1 text-xs fg-secondary">
               Chat with an agent without a repo — brainstorm, plan, or ask a

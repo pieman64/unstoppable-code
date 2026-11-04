@@ -46,6 +46,7 @@ import {
   mermaidFamilyLabel,
 } from './markdown-mermaid-export-names';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
+import { Tooltip } from './Tooltip';
 
 export interface MarkdownMermaidProps extends HTMLAttributes<HTMLElement> {
   readonly source: string;
@@ -660,22 +661,26 @@ function MarkdownMermaidComponent({
                 Show diagram
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-disabled={clipboardUnavailable !== undefined || undefined}
-              aria-describedby={
-                clipboardUnavailable ? clipboardReasonId : undefined
-              }
-              title={clipboardUnavailable}
-              disabled={!canExport}
-              aria-busy={pending === 'copy' || undefined}
-              data-testid="mermaid-copy-image"
-              onClick={copyImage}
+            <Tooltip
+              label={clipboardUnavailable}
+              disabled={clipboardUnavailable === undefined}
             >
-              {actionIcon('copy', CopyIcon)}
-              Copy image
-            </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-disabled={clipboardUnavailable !== undefined || undefined}
+                aria-describedby={
+                  clipboardUnavailable ? clipboardReasonId : undefined
+                }
+                disabled={!canExport}
+                aria-busy={pending === 'copy' || undefined}
+                data-testid="mermaid-copy-image"
+                onClick={copyImage}
+              >
+                {actionIcon('copy', CopyIcon)}
+                Copy image
+              </Button>
+            </Tooltip>
             {clipboardUnavailable && (
               <span id={clipboardReasonId} className="sr-only">
                 {clipboardUnavailable}
@@ -693,20 +698,21 @@ function MarkdownMermaidComponent({
               Save as picture…
             </Button>
             <span ref={moreAnchor} className="inline-flex">
-              <Button
-                variant="ghost"
-                size="sm"
-                iconOnly
-                aria-label="More diagram actions"
-                title="More diagram actions"
-                aria-haspopup="menu"
-                aria-expanded={moreOpen}
-                aria-controls={moreOpen ? moreMenuId : undefined}
-                data-testid="mermaid-more-actions"
-                onClick={() => setMoreOpen((open) => !open)}
-              >
-                {actionIcon('more', MoreHorizontalIcon)}
-              </Button>
+              <Tooltip label="More diagram actions" suppressed={moreOpen}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  iconOnly
+                  aria-label="More diagram actions"
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  aria-controls={moreOpen ? moreMenuId : undefined}
+                  data-testid="mermaid-more-actions"
+                  onClick={() => setMoreOpen((open) => !open)}
+                >
+                  {actionIcon('more', MoreHorizontalIcon)}
+                </Button>
+              </Tooltip>
             </span>
             <FloatingMenu
               id={moreMenuId}
@@ -739,18 +745,19 @@ function MarkdownMermaidComponent({
                 {errorToggle}
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              iconOnly
-              aria-label="Copy diagram text"
-              title="Copy diagram text"
-              data-testid="mermaid-copy-source"
-              disabled={pending !== null}
-              onClick={copyText}
-            >
-              {actionIcon('more', CopyIcon)}
-            </Button>
+            <Tooltip label="Copy diagram text">
+              <Button
+                variant="ghost"
+                size="sm"
+                iconOnly
+                aria-label="Copy diagram text"
+                data-testid="mermaid-copy-source"
+                disabled={pending !== null}
+                onClick={copyText}
+              >
+                {actionIcon('more', CopyIcon)}
+              </Button>
+            </Tooltip>
           </>
         )}
       </div>

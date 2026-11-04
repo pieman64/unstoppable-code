@@ -7,7 +7,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { useOverlayEscape } from '@canopy/ui-shared/components';
+import { Heading, useOverlayEscape } from '@canopy/ui-shared/components';
 import { SidebarNavRow } from '@/components/sidebar/SidebarNavRow';
 import { SidebarPageNav } from '@/components/sidebar/SidebarPageNav';
 import { BROWSER_NATIVE_VIEW_OVERLAY_ATTRIBUTE } from '@/lib/browserNativeOverlay';
@@ -98,12 +98,14 @@ export function ProjectSettingsFrame<T extends string>({
               repoPath={repoPath}
             />
             <div className="min-w-0">
-              <h2
+              <Heading
+                level={2}
+                variant="title"
+                truncate
                 id="project-settings-title"
-                className={`truncate text-s font-medium fg-primary ${POSTHOG_REPLAY_MASK_CLASS}`}
               >
-                {projectName}
-              </h2>
+                <span className={POSTHOG_REPLAY_MASK_CLASS}>{projectName}</span>
+              </Heading>
               <div className="text-xs fg-tertiary">Project settings</div>
             </div>
           </div>

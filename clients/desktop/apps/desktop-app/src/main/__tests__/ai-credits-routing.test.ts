@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { AI_GATEWAY_MODEL_CATALOG_VERSION } from '@canopy/protocol/ai-gateway-models';
 import { parseModelPackageConfig } from '@canopy/desktop-shared/model-config';
 import { mergeAiGatewayModelCatalog } from '@canopy/desktop-shared/ai-gateway-model-catalog';
 import {
@@ -360,6 +361,9 @@ beforeAll(() => {
     ['deepseek-v4-flash', 'deepseek/deepseek-v4-flash'],
     ['glm-5.2', 'zai/glm-5.2'],
     ['kimi-k3', 'moonshotai/kimi-k3'],
+    ['kimi-k3.1-pro', 'moonshotai/kimi-k3.1-pro'],
+    ['minimax-m3.1-flash', 'minimax/minimax-m3.1-flash'],
+    ['mercury-3', 'inception/mercury-3'],
   ].map(([id, gatewayId]) => ({
     id: id ?? '',
     gatewayId: gatewayId ?? '',
@@ -377,7 +381,10 @@ beforeAll(() => {
   }));
   const merged = mergeAiGatewayModelCatalog({
     packageConfig: config,
-    catalog: { version: 8, models: [...matched, ...apiOnly] },
+    catalog: {
+      version: AI_GATEWAY_MODEL_CATALOG_VERSION,
+      models: [...matched, ...apiOnly],
+    },
     featureFlags: { 'canopy-shared-claude-model-fable5': true },
   });
   initClaudeModels(merged.claudeModels);
@@ -427,6 +434,37 @@ describe('ai-credits-routing', () => {
       expect(entry?.gatewayId).toBe('deepseek/deepseek-v4-pro');
       expect(entry?.gatewayOnly).toBe(true);
     });
+
+    it.each([
+      ['gpt-6.1-terra', 'openai/gpt-6.1-terra', false],
+      ['kimi-k3.1-pro', 'moonshotai/kimi-k3.1-pro', true],
+      ['minimax-m3.1-flash', 'minimax/minimax-m3.1-flash', true],
+      ['mercury-3', 'inception/mercury-3', true],
+    ] as const)(
+      'routes approved %s with Responses and its exact identity',
+      (id, gatewayId, gatewayOnly) => {
+        const entry = resolveGatewayModelEntry(id);
+        expect(entry).toMatchObject({
+          gatewayId,
+          gatewayOnly,
+          recommendedHarness: 'codex',
+        });
+        if (!entry) throw new Error('Approved route missing');
+        const config = buildCodexProxyConfigObject(
+          entry,
+          buildProxyBaseUrl(CLOUD_BASE, 'codex'),
+        );
+        expect(config).toMatchObject({
+          model: gatewayId,
+          model_providers: {
+            [AI_CREDITS_CODEX_PROVIDER_ID]: {
+              wire_api: 'responses',
+              base_url: buildProxyBaseUrl(CLOUD_BASE, 'codex'),
+            },
+          },
+        });
+      },
+    );
 
     it('routes an Anthropic-family model through the claude harness', () => {
       const entry = resolveGatewayModelEntry('opus[1m]');

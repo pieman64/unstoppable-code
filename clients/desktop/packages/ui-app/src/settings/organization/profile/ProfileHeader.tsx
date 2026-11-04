@@ -9,6 +9,7 @@ import { MemberAvatar } from '../MemberAvatar';
 import { TeamRoleBadge } from '../team-role-badge';
 import { ProfileIdentityEditor } from './ProfileIdentityEditor';
 import type { ProfileEditTarget } from './use-profile-editor';
+import { Heading } from '@canopy/ui-shared/components';
 
 interface ProfileHeaderProps {
   member: MemberProfileHeader;
@@ -103,17 +104,16 @@ export function ProfileHeader({
         </ProfileIdentityEditor>
       ) : (
         <>
-          <MemberAvatar name={member.name} image={member.image} size={72} />
+          <MemberAvatar name={member.name} image={member.image} size="2xl" />
           <div className="flex min-w-0 flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1
-                className={joinClassNames(
-                  'truncate text-xl font-semibold fg-primary',
-                  blockClassName,
-                )}
-              >
-                {member.name}
-              </h1>
+              <Heading level={1} variant="page" truncate>
+                <span
+                  className={blockClassName === '' ? undefined : blockClassName}
+                >
+                  {member.name}
+                </span>
+              </Heading>
               <TeamRoleBadge role={role} />
             </div>
             {meta}

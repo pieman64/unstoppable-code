@@ -8,7 +8,7 @@
 // below `sm` it renders a stacked labeled card per charge so five columns never
 // squash into ~50px each on a phone.
 //
-// The layout swap is pure CSS (`hidden sm:table` / `sm:hidden`) rather than a
+// The layout swap is pure CSS (`hidden sm:block` / `sm:hidden`) rather than a
 // JS media-query hook, so it hydrates identically server- and client-side.
 // ---------------------------------------------------------------------------
 
@@ -22,6 +22,7 @@ import {
   resolveBillingChargeDisplayStatus,
 } from '../lib/billing-charge-display';
 import { BillingStatusPill } from './BillingStatusPill';
+import { DataTable } from './DataTable';
 
 /**
  * Browser-safe charge row shape. Mirrors the fields this component renders from
@@ -136,59 +137,77 @@ export function BillingHistoryTable({
   formatDate,
 }: BillingHistoryTableProps): JSX.Element {
   return (
-    <div className="overflow-x-auto">
-      <table className="hidden w-full text-left text-s sm:table">
-        <thead>
-          <tr className="text-xs fg-secondary">
-            <th className="py-2 pr-4 pl-2 font-medium">Date</th>
-            <th className="py-2 pr-4 font-medium">Description</th>
-            <th className="py-2 pr-4 font-medium">Card</th>
-            <th className="py-2 pr-4 font-medium">Status</th>
-            <th className="py-2 pr-2 text-right font-medium">Amount</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {charges.map((charge) => {
-            const displayStatus = displayStatusFor(charge);
-            const refundedNote = refundedNoteFor(charge, displayStatus);
-            return (
-              <tr
-                key={charge.id}
-                data-testid={`billing-history-row-${charge.id}`}
-              >
-                <td className="whitespace-nowrap py-2 pr-4 pl-2 fg-secondary">
-                  {formatDate(charge.createdAt)}
-                </td>
-                <td className="py-2 pr-4 fg-primary">
-                  {descriptionFor(charge)}
-                </td>
-                {/* Tertiary: the same card repeats on nearly every row, so it is
-                    reference detail rather than something to scan for. */}
-                <td className="whitespace-nowrap py-2 pr-4 fg-tertiary">
-                  {cardLabelFor(charge)}
-                </td>
-                <td className="py-2 pr-4">
-                  <BillingStatusPill
-                    label={humanizeBillingChargeStatus(displayStatus)}
-                    tone={billingChargeStatusTone(displayStatus)}
-                  />
-                </td>
-                <td className="whitespace-nowrap py-2 pr-2 text-right tabular-nums fg-primary">
+    <div>
+      <DataTable
+        className="hidden sm:block"
+        caption="Billing history"
+        rows={charges}
+        rowKey={(charge) => charge.id}
+        rowAttributes={(charge) => ({
+          'data-testid': `billing-history-row-${charge.id}`,
+        })}
+        columns={[
+          {
+            key: 'date',
+            header: 'Date',
+            tone: 'secondary',
+            render: (charge) => formatDate(charge.createdAt),
+          },
+          {
+            key: 'description',
+            header: 'Description',
+            tone: 'primary',
+            overflow: 'wrap',
+            render: (charge) => descriptionFor(charge),
+          },
+          // Tertiary: the same card repeats on nearly every row, so it is
+          // reference detail rather than something to scan for.
+          {
+            key: 'card',
+            header: 'Card',
+            tone: 'tertiary',
+            render: (charge) => cardLabelFor(charge),
+          },
+          {
+            key: 'status',
+            header: 'Status',
+            render: (charge) => {
+              const displayStatus = displayStatusFor(charge);
+              return (
+                <BillingStatusPill
+                  label={humanizeBillingChargeStatus(displayStatus)}
+                  tone={billingChargeStatusTone(displayStatus)}
+                />
+              );
+            },
+          },
+          {
+            key: 'amount',
+            header: 'Amount',
+            align: 'right',
+            tone: 'primary',
+            render: (charge) => {
+              const refundedNote = refundedNoteFor(
+                charge,
+                displayStatusFor(charge),
+              );
+              return (
+                <>
                   {formatUsd(charge.amountUsd)}
                   {refundedNote ? (
                     <span
-                      className="block text-xs tabular-nums fg-tertiary"
+                      className="block text-xs fg-tertiary"
                       data-testid={`billing-history-refunded-${charge.id}`}
                     >
                       {refundedNote}
                     </span>
                   ) : null}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                </>
+              );
+            },
+          },
+        ]}
+      />
 
       <ul className="flex flex-col divide-y sm:hidden">
         {charges.map((charge) => {

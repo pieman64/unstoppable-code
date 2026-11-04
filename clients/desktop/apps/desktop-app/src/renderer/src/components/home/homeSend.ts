@@ -2097,7 +2097,10 @@ async function dispatchHomeSendTo(
         useHomeComposerStore.setState({ isSending: false });
         return false;
       }
-      fail('Failed to create worktree.');
+      fail(
+        useProjectsStore.getState().worktreeError ??
+          'Failed to create worktree.',
+      );
       return false;
     }
 

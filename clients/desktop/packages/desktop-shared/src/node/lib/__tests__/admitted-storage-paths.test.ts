@@ -10,7 +10,17 @@ it.each([
   ['Preferences.JSON', 'preferences'],
   ['preferences.backup-2026-10-30T00-00-00-000Z-abc.json', 'preferences'],
   ['MIGRATIONS.json', 'startup_migrations'],
+  ['migrations.last-good.json', 'startup_migrations'],
+  [
+    'migrations.damaged-2026-11-03T10-00-00-000Z-abc.json',
+    'startup_migrations',
+  ],
   ['workspaces/ws-1/approvals.json', 'workspace_approvals'],
+  ['pipeline-plugin-preferences.json', 'pipeline_plugin_preferences'],
+  [
+    'pipeline-plugin-preferences.json.damaged-1793700000000',
+    'pipeline_plugin_preferences',
+  ],
   ['App-Workspaces/app-advisor/Approvals.json', 'workspace_approvals'],
 ])('names %s, in any case, as %s', (relative, row) => {
   expect(admittedStorageRowForPath(join(ROOT, relative), ROOT)).toBe(row);
@@ -18,9 +28,11 @@ it.each([
 
 it.each([
   'nested/preferences.json',
-  'pipeline-plugin-preferences.json',
+  'nested/pipeline-plugin-preferences.json',
+  'pipeline-plugin-preferences.json.tmp',
   'preferences.json.tmp',
   'preferences.backup-.json',
+  'migrations.damaged-.json',
   'workspaces/approvals.json',
   'workspaces/ws-1/nested/approvals.json',
   'other/ws-1/approvals.json',

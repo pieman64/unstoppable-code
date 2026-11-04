@@ -5071,7 +5071,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       });
       const nextCreating = new Set(get().creatingWorktreeForProject);
       nextCreating.add(projectId);
-      set({ projects: expanding, creatingWorktreeForProject: nextCreating });
+      set({
+        projects: expanding,
+        creatingWorktreeForProject: nextCreating,
+        worktreeError: null,
+      });
 
       try {
         if (item.type === 'multi-repo') {

@@ -15,7 +15,7 @@ import {
 } from '../pipelines/pipeline-package-service';
 jest.mock('../pipelines/pipeline-package-service', () => ({
   copyPackageInstall: jest.fn(() => Promise.resolve()),
-  removePackageInstall: jest.fn(() => Promise.resolve()),
+  dropPackageInstallInBackground: jest.fn(),
   SHARED_PACKAGE_REVIEW_REQUIRED_MESSAGE: 'Review package dependencies.',
   updateSharedPipelinePreservingPackage: jest.fn(),
 }));
@@ -125,9 +125,12 @@ jest.mock('../pipelines/instrumentation', () => ({
   ),
 }));
 
-jest.mock('../pipelines/plugin-collection-store', () => ({
-  deletePipelinePluginCollectionPreferences: jest.fn(),
-}));
+jest.mock(
+  '@canopy/desktop-shared/node/pipelines/plugin-collection-store',
+  () => ({
+    deletePipelinePluginCollectionPreferences: jest.fn(),
+  }),
+);
 
 jest.mock('../plugins/invocable-inventory-service', () => ({
   refreshInvocableInventoryAfterMutation: jest.fn(),
@@ -357,7 +360,7 @@ import {
   loadProjectPipelineFromDisk,
 } from '../pipelines/project-pipeline-discovery';
 import { withPipelineCrudTelemetry } from '../pipelines/instrumentation';
-import { deletePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
+import { deletePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import {
   dispatchAgentResourceAction,
   loadAgentGlobalPipelineById,
@@ -978,11 +981,10 @@ describe('agent resource actions', () => {
     });
     expect(pipelineStore.deletePipeline).toHaveBeenCalledTimes(1);
     expect(deletePipelinePluginCollectionPreferences).toHaveBeenCalledTimes(1);
-    expect(deletePipelinePluginCollectionPreferences).toHaveBeenCalledWith({
-      type: 'stored',
-      source: 'user',
-      value: 'pipeline-1',
-    });
+    expect(deletePipelinePluginCollectionPreferences).toHaveBeenCalledWith(
+      { type: 'stored', source: 'user', value: 'pipeline-1' },
+      'electron_main',
+    );
   });
 
   it('creates a validated pipeline and emits a resource receipt', async () => {

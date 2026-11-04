@@ -6,7 +6,11 @@ import {
   type McpServerLogoProps,
   type UnifiedEntryAlternative,
 } from '@canopy/ui-shared';
-import { Badge, ExecutionActionButton } from '@canopy/ui-shared/components';
+import {
+  Badge,
+  ExecutionActionButton,
+  Heading,
+} from '@canopy/ui-shared/components';
 import { PluginAlternatives } from './PluginAlternatives';
 
 export interface PluginCatalogDetailModel {
@@ -88,7 +92,9 @@ export function PluginCatalogDetail({
           fit="contain"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-base font-semibold fg-primary">{entry.name}</h3>
+          <Heading level={3} variant="section">
+            {entry.name}
+          </Heading>
           {entry.author && (
             <p className="mt-0.5 text-xs fg-secondary">By {entry.author}</p>
           )}
@@ -125,7 +131,9 @@ export function PluginCatalogDetail({
         </div>
       )}
       <div className="border-t pt-4">
-        <h4 className="text-sm font-medium fg-primary">Included</h4>
+        <Heading level={4} variant="title">
+          Included
+        </Heading>
         <p className="mt-1 text-xs fg-secondary">
           {componentCount > 0
             ? `${componentCount} plugin component${componentCount === 1 ? '' : 's'} available after adding.`

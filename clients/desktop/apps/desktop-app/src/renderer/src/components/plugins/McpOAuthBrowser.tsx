@@ -8,6 +8,7 @@ import { BrowserPane } from '@/components/browser/BrowserPane';
 import { ensureBrowserEventSubscription } from '@/stores/browserEventSubscription';
 import { useBrowserStore } from '@/stores/browserStore';
 import { useTryItSetupPaneStore } from '@/stores/tryItSetupPaneStore';
+import { Heading } from '@canopy/ui-shared/components';
 
 /**
  * Transient native browser beside the marketplace, with external fallback.
@@ -126,7 +127,9 @@ export function McpOAuthBrowser({
       }
     >
       <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
-        <h3 className="text-s font-medium fg-primary">{title}</h3>
+        <Heading level={3} variant="title">
+          {title}
+        </Heading>
         <div className="flex items-center gap-2">
           {allowExternalOpen && (
             <Button

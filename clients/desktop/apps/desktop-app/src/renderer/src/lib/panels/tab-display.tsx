@@ -92,6 +92,7 @@ import {
   getPanelDefinition,
 } from '@/lib/panels/registry';
 import { currentEarlyAccessTitle } from '@/lib/earlyAccessTitles';
+import { automationsPanelTabTitle } from '@/lib/panels/automations-variants';
 import { chatTabStripLabel } from '@/lib/chatTabLabel';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -187,6 +188,12 @@ export function panelTabDisplayTitle(tab: PanelTabModel): string {
     // records attributes as written, so it stays generic. The visible label
     // (`BoundSessionBreakdownTabLabel`) carries the name, masked.
     return getPanelDefinition('session-breakdown').title;
+  }
+  if (tab.kind === 'automations') {
+    // Saved tabs keep the label they were added with, so a variant's former
+    // Automations label shows its current Workflows name.
+    const label = automationsPanelTabTitle(tab.title, tab.instance?.variant);
+    if (label !== undefined) return label;
   }
   if (tab.kind === 'subagent-chat') {
     const title = tab.title.trim();

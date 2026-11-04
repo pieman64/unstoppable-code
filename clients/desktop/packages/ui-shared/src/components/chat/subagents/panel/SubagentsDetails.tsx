@@ -64,6 +64,7 @@ import {
   subagentStatusInk,
 } from '../common/SubagentStatusGlyph';
 import { Fact, FactList } from '../../../FactList';
+import { Heading } from '../../../Heading';
 
 /** Shared callback and content props for the inspector and bottom drawer. */
 export interface SubagentsDetailsProps {
@@ -126,11 +127,14 @@ function SubagentsTaskDetailsBody({
       <div className="flex flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <SubagentStatusGlyph status={node.status} size={14} />
-          <h4
-            className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate text-s font-medium fg-primary`}
+          <Heading
+            level={4}
+            variant="title"
+            truncate
+            className="min-w-0 flex-1"
           >
-            {node.title}
-          </h4>
+            <span className={REPLAY_MASK_CLASS}>{node.title}</span>
+          </Heading>
           <Button
             variant="ghost"
             size="compact"
@@ -280,11 +284,14 @@ function SubagentsWorkflowRunDetailsBody({
       <div className="flex flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <SubagentWorkflowMark size={14} />
-          <h4
-            className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate text-s font-medium fg-primary`}
+          <Heading
+            level={4}
+            variant="title"
+            truncate
+            className="min-w-0 flex-1"
           >
-            {run.title}
-          </h4>
+            <span className={REPLAY_MASK_CLASS}>{run.title}</span>
+          </Heading>
           <Button
             variant="ghost"
             size="compact"
@@ -417,11 +424,9 @@ function SubagentsWorkflowPhaseDetailsBody({
     <div className="flex flex-col gap-1.5">
       <div className="flex min-w-0 items-center gap-2">
         <SubagentWorkflowMark size={14} />
-        <h4
-          className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate text-s font-medium fg-primary`}
-        >
-          {node.title}
-        </h4>
+        <Heading level={4} variant="title" truncate className="min-w-0 flex-1">
+          <span className={REPLAY_MASK_CLASS}>{node.title}</span>
+        </Heading>
         <Button
           variant="ghost"
           size="compact"

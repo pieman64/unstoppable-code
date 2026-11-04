@@ -117,11 +117,14 @@ function readInput(
         kind: 'fingerprint-metadata',
         request: request({ kind: 'fingerprint-metadata' }),
       };
+    // The read lane no longer writes the end-of-build fingerprint: the build
+    // host stores it (CAN-5084). The case's other maintenance-class read keeps
+    // the recorded admission behavior.
     case 'persist-fingerprint':
       return {
         key,
-        kind: 'fingerprint-persist',
-        request: request({ kind: 'persist-fingerprint', fingerprint: 'f' }),
+        kind: 'fingerprint-metadata',
+        request: request({ kind: 'fingerprint-metadata' }),
       };
     case 'validate-base':
       return {
@@ -166,8 +169,6 @@ function okResult(task: CodeGraphWorkerReadTask): unknown {
           lastBuildAt: null,
         },
       };
-    case 'persist-fingerprint':
-      return { kind: 'persist-fingerprint' };
     case 'validate-base':
       return { kind: 'validate-base', value: true };
     case 'detect-changed':

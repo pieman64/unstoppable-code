@@ -1,5 +1,13 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { HookTriggerName } from '@canopy/desktop-shared/hooks';
 import {
@@ -21,6 +29,7 @@ import {
 } from '@canopy/desktop-shared/lib/pr-merge-queue';
 import { getGitHubPrStateDir, getWorktreeDataDir } from './paths';
 import { getObservabilityService } from '../observability';
+import { logMainProcessWarn } from './main-process-logging';
 
 const PROJECT_REPO_STORAGE_KEY = 'project-root';
 const MERGED_PR_CATCH_UP_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -1247,6 +1256,18 @@ export async function advancePrTrackingState(args: {
   currentSnapshot: PersistedPrSnapshotFileV1 | null;
   credentialScope?: string;
   worktreeCreatedAt?: string;
+  /**
+   * Commits an advance that fired triggers (CAN-4145): the advance is
+   * staged, `commit.accept` records it and the work it fired in one ledger
+   * write, and only then does the snapshot advance. A failed accept leaves
+   * the snapshot where it was, so the next read fires the triggers again.
+   */
+  commit?: PrAdvanceCommit;
+  /**
+   * The ledger's committed head, so an interrupted advance is settled before
+   * any later one, including an advance that fires no hooks.
+   */
+  committedHead?: PrAdvanceCommit['committedHead'];
 }): Promise<{
   triggers: HookTriggerName[];
   currentSnapshot: PersistedPrSnapshotFileV1 | null;
@@ -1258,8 +1279,18 @@ export async function advancePrTrackingState(args: {
     args.worktreeId,
     args.repoStorageKey,
   );
-  await mkdir(stateDir, { recursive: true });
+  return withPrStateLock(stateDir, async () => {
+    await mkdir(stateDir, { recursive: true });
+    const committedHead = args.committedHead ?? args.commit?.committedHead;
+    if (committedHead)
+      await settleStagedPrAdvance(stateDir, args, committedHead);
+    return advanceUnlocked(args);
+  });
+}
 
+async function advanceUnlocked(
+  args: Parameters<typeof advancePrTrackingState>[0],
+): ReturnType<typeof advancePrTrackingState> {
   const statePath = getStateFilePath(
     args.projectId,
     args.worktreeId,
@@ -1449,7 +1480,7 @@ export async function advancePrTrackingState(args: {
     }
   }
 
-  await writeTrackingFiles({
+  const files = {
     statePath,
     currentPath,
     previousPath,
@@ -1457,7 +1488,81 @@ export async function advancePrTrackingState(args: {
     previousSnapshot: credentialScopeChanged ? null : storedCurrentSnapshot,
     currentSnapshot: nextCurrentSnapshot,
     snapshotCompleteness: storedSnapshotCompleteness,
-  });
+  };
+  if (args.commit && triggers.length > 0) {
+    const stateDir = getGitHubPrStateDir(
+      args.projectId,
+      args.worktreeId,
+      args.repoStorageKey,
+    );
+    const head = randomUUID();
+    await writeTrackingFiles({
+      ...files,
+      statePath: stagedPath(statePath),
+      currentPath: stagedPath(currentPath),
+      previousPath: stagedPath(previousPath),
+    });
+    const marker: StagedPrAdvance = {
+      version: 1,
+      head,
+      current: nextCurrentSnapshot !== null,
+      previous: files.previousSnapshot !== null,
+    };
+    await writeFile(
+      join(stateDir, STAGED_ADVANCE_FILE),
+      JSON.stringify(marker),
+      'utf8',
+    );
+    try {
+      await args.commit.accept({
+        subject: prAdvanceSubject(args),
+        head,
+        triggers,
+        currentSnapshot: nextCurrentSnapshot,
+      });
+    } catch (error) {
+      // Only an advance the ledger never committed is discarded; one it
+      // committed is promoted, so its triggers do not fire twice.
+      // When the ledger cannot answer, the staging stays for the next
+      // advance to settle.
+      const committed = await args.commit
+        .committedHead(prAdvanceSubject(args))
+        .then(
+          (value): { head: string | null } => ({ head: value }),
+          () => null,
+        );
+      if (committed?.head === head)
+        await promoteStagedPrAdvance(stateDir, marker);
+      else if (committed) await discardStagedPrAdvance(stateDir);
+      throw error;
+    }
+    // The ledger commit is the advance: its hooks are accepted and start
+    // now. Files that cannot be moved yet are settled by the next advance.
+    try {
+      await promoteStagedPrAdvance(stateDir, marker);
+    } catch (error) {
+      logMainProcessWarn(
+        '[github-pr-hook-state] could not promote a committed PR advance',
+        error,
+      );
+      // Its hooks read the accepted snapshots, still staged, not the
+      // previous ones the canonical files hold.
+      const staged = async (canonical: string): Promise<string> =>
+        (await pathExists(stagedPath(canonical)))
+          ? stagedPath(canonical)
+          : canonical;
+      return {
+        triggers,
+        currentSnapshot: nextCurrentSnapshot,
+        currentSnapshotPath: await staged(currentPath),
+        previousSnapshotPath: marker.previous
+          ? await staged(previousPath)
+          : stagedPath(previousPath),
+      };
+    }
+  } else {
+    await writeTrackingFiles(files);
+  }
   invalidatePreviewLookups(nextCurrentSnapshot);
   rememberPreviewSnapshot(args, nextCurrentSnapshot);
 
@@ -1467,6 +1572,179 @@ export async function advancePrTrackingState(args: {
     currentSnapshotPath: currentPath,
     previousSnapshotPath: previousPath,
   };
+}
+
+/** The ledger source that records PR snapshot advances (CAN-4145). */
+export const PR_ADVANCE_SOURCE = 'github.pr';
+const STAGED_ADVANCE_FILE = 'advance.next.json';
+
+export interface PrAdvanceCommit {
+  /** The head the ledger last committed for a subject. */
+  committedHead: (subject: string) => Promise<string | null>;
+  /** Record the advance and the work it fired in one ledger write. */
+  accept: (advance: {
+    subject: string;
+    head: string;
+    triggers: HookTriggerName[];
+    currentSnapshot: PersistedPrSnapshotFileV1 | null;
+  }) => Promise<void>;
+}
+
+interface StagedPrAdvance {
+  version: 1;
+  head: string;
+  current: boolean;
+  previous: boolean;
+}
+
+/** One tracked repository's identity in the ledger; never a host path. */
+export function prAdvanceSubject(args: {
+  projectId: string;
+  worktreeId: string;
+  repoStorageKey: string;
+}): string {
+  return `${args.projectId}\0${args.worktreeId}\0${args.repoStorageKey}`;
+}
+
+const prStateLocks = new Map<string, Promise<unknown>>();
+
+/** Advances and staged-advance recovery for one repository run one at a time. */
+async function withPrStateLock<T>(
+  stateDir: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const prior = prStateLocks.get(stateDir) ?? Promise.resolve();
+  const next = prior.catch(() => undefined).then(run);
+  const settled = next.catch(() => undefined);
+  prStateLocks.set(stateDir, settled);
+  try {
+    return await next;
+  } finally {
+    if (prStateLocks.get(stateDir) === settled) prStateLocks.delete(stateDir);
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stagedPath(filePath: string): string {
+  return filePath.replace(/\.json$/, '.next.json');
+}
+
+function isStagedPrAdvance(value: unknown): value is StagedPrAdvance {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.head === 'string' &&
+    typeof value.current === 'boolean' &&
+    typeof value.previous === 'boolean'
+  );
+}
+
+async function promoteStagedFile(
+  staged: string,
+  target: string,
+  present: boolean,
+): Promise<void> {
+  try {
+    await rename(staged, target);
+  } catch (error) {
+    if (!isMissingPreviewFile(error)) throw error;
+    // Already promoted, or staged as absent.
+    if (!present) await rm(target, { force: true });
+  }
+}
+
+async function promoteStagedPrAdvance(
+  stateDir: string,
+  marker: StagedPrAdvance,
+): Promise<void> {
+  await promoteStagedFile(
+    join(stateDir, 'state.next.json'),
+    join(stateDir, 'state.json'),
+    true,
+  );
+  await promoteStagedFile(
+    join(stateDir, 'previous.next.json'),
+    join(stateDir, 'previous.json'),
+    marker.previous,
+  );
+  await promoteStagedFile(
+    join(stateDir, 'current.next.json'),
+    join(stateDir, 'current.json'),
+    marker.current,
+  );
+  await rm(join(stateDir, STAGED_ADVANCE_FILE), { force: true });
+}
+
+async function discardStagedPrAdvance(stateDir: string): Promise<void> {
+  await Promise.all(
+    ['state.next.json', 'current.next.json', 'previous.next.json'].map((name) =>
+      rm(join(stateDir, name), { force: true }),
+    ),
+  );
+  await rm(join(stateDir, STAGED_ADVANCE_FILE), { force: true });
+}
+
+/**
+ * Finish an advance a crash interrupted: promote it when the ledger
+ * committed its head, otherwise discard it so its triggers fire again.
+ */
+async function settleStagedPrAdvance(
+  stateDir: string,
+  location: { projectId: string; worktreeId: string; repoStorageKey: string },
+  committedHead: (subject: string) => Promise<string | null>,
+): Promise<void> {
+  let raw: string | null;
+  try {
+    raw = await readFile(join(stateDir, STAGED_ADVANCE_FILE), 'utf8');
+  } catch (error) {
+    // Any read failure other than a missing marker keeps the staging for a
+    // later settlement against the ledger.
+    if (!isMissingPreviewFile(error)) throw error;
+    raw = null;
+  }
+  let marker: StagedPrAdvance | null = null;
+  if (raw !== null) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      marker = isStagedPrAdvance(parsed) ? parsed : null;
+    } catch {
+      // A torn marker was written before any ledger commit.
+      marker = null;
+    }
+  }
+  if (!marker) {
+    await discardStagedPrAdvance(stateDir);
+    return;
+  }
+  if ((await committedHead(prAdvanceSubject(location))) === marker.head)
+    await promoteStagedPrAdvance(stateDir, marker);
+  else await discardStagedPrAdvance(stateDir);
+}
+
+/**
+ * Settle an interrupted advance of one repository before reading its
+ * snapshot, as a recovered hook run does.
+ */
+export async function settlePrTrackingState(
+  args: { projectId: string; worktreeId: string; repoStorageKey: string },
+  committedHead: (subject: string) => Promise<string | null>,
+): Promise<void> {
+  const stateDir = getGitHubPrStateDir(
+    args.projectId,
+    args.worktreeId,
+    args.repoStorageKey,
+  );
+  await withPrStateLock(stateDir, () =>
+    settleStagedPrAdvance(stateDir, args, committedHead),
+  );
 }
 
 function queuePrState(

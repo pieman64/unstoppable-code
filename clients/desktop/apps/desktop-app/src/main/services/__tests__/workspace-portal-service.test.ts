@@ -2,9 +2,21 @@ import type { SidebarItemGroup } from '@canopy/protocol/sidebar';
 jest.mock('../sidebar-item-groups-service', () => ({
   projectSidebarItemGroups: jest.fn(() => Promise.resolve(undefined)),
 }));
-jest.mock('../../lib/sidebar-items', () => ({
-  readAllSidebarItems: jest.fn(),
-}));
+jest.mock('../../lib/sidebar-items', () => {
+  const readAllSidebarItems = jest.fn<Promise<SidebarItemsFile>, []>();
+  return {
+    readAllSidebarItems,
+    readAllSidebarItemsSnapshot: (): Promise<SidebarItemsSnapshot> =>
+      readAllSidebarItems().then((file) => ({
+        file,
+        authority: 'ok',
+        indexAuthority: 'ok',
+        indexedWorkspaceIds: file.items.map((item) => item.id),
+        workspaceReads: new Map(),
+        storedFields: [],
+      })),
+  };
+});
 
 jest.mock('../../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
@@ -31,6 +43,7 @@ import { projectSidebarItemGroups } from '../sidebar-item-groups-service';
 import type {
   PortalSessionShellState,
   SidebarItem,
+  SidebarItemsFile,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { readPreferencesFile } from '../../lib/preferences-store';
@@ -39,7 +52,15 @@ import {
   spaceNotificationScopeKey,
 } from '@canopy/desktop-shared/lib/space-notification-policy';
 import { publishSpaceNotificationPolicy } from '../../lib/space-notification-gate';
-import { readAllSidebarItems } from '../../lib/sidebar-items';
+import {
+  readAllSidebarItems,
+  type SidebarItemsSnapshot,
+} from '../../lib/sidebar-items';
+import * as w5FileStore from '../../lib/w5-commit-log-file-store';
+import {
+  assertOutsideW5ReadView,
+  W5ReadViewWriteRefusedError,
+} from '../../lib/w5-read-view';
 import { getCachedWorktreeDiffStats } from '../worktree-diff-stats-cache';
 import { readWorkspaceWorktrees } from '../../lib/workspace-persistence';
 import {
@@ -121,6 +142,35 @@ describe('project portal service', () => {
   afterEach(() => {
     clearSplitPrRuntimeProjection('workspace-lock', 'worktree-lock');
     releaseSplitLock('workspace-lock', 'worktree-lock');
+  });
+
+  it('reads the sidebar in one workspace-discovering view, including the direct-store fallback', async () => {
+    const readView = jest.spyOn(w5FileStore, 'runW5ReadView');
+    mockedReadAllSidebarItems.mockImplementationOnce(() => {
+      expect(assertOutsideW5ReadView).toThrow(W5ReadViewWriteRefusedError);
+      return Promise.resolve({ version: 1, items: [] });
+    });
+    try {
+      await expect(listWorkspacePortalEntities()).resolves.toEqual([]);
+      expect(readView).toHaveBeenCalledTimes(1);
+      expect(readView).toHaveBeenCalledWith(
+        { files: [], discoverWorkspaces: true },
+        expect.any(Function),
+      );
+      expect(assertOutsideW5ReadView).not.toThrow();
+    } finally {
+      readView.mockRestore();
+    }
+  });
+
+  it('propagates sidebar read errors and closes the read view', async () => {
+    const failure = new Error('Sidebar unavailable');
+    mockedReadAllSidebarItems.mockImplementationOnce(() => {
+      expect(assertOutsideW5ReadView).toThrow(W5ReadViewWriteRefusedError);
+      return Promise.reject(failure);
+    });
+    await expect(listWorkspacePortalEntities()).rejects.toBe(failure);
+    expect(assertOutsideW5ReadView).not.toThrow();
   });
 
   it.each([undefined, 'invalid', '2026-09-06T00:00:00Z'])(

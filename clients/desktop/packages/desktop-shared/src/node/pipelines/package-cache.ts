@@ -5,6 +5,10 @@ import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import { assertValidPipelinePackage } from './package-contract';
 
 const SENTINEL = '.pipeline-package-digest';
+const STAGING_PREFIX = '.staging-';
+// Far longer than any install takes, so an install still downloading in
+// another call keeps its staging directory.
+const STALE_STAGING_MS = 24 * 60 * 60 * 1000;
 
 function digestDirectoryName(digest: string): string {
   return digest.slice('pp:v1:'.length);
@@ -16,6 +20,28 @@ async function exists(target: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Removes staging directories that an install interrupted by an exit left. */
+async function sweepStaleStaging(packageRoot: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await fs.readdir(packageRoot);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - STALE_STAGING_MS;
+  for (const name of names) {
+    if (!name.startsWith(STAGING_PREFIX)) continue;
+    const staging = path.join(packageRoot, name);
+    try {
+      const stats = await fs.lstat(staging);
+      if (stats.isDirectory() && stats.mtimeMs < cutoff)
+        await fs.rm(staging, { recursive: true, force: true });
+    } catch {
+      // Best effort: the next install sweeps again.
+    }
   }
 }
 
@@ -64,7 +90,8 @@ export async function installPipelinePackageAtomically(
     await fs.rm(destination, { recursive: true, force: true });
   }
   await fs.mkdir(packageRoot, { recursive: true });
-  const staging = path.join(packageRoot, `.staging-${randomUUID()}`);
+  await sweepStaleStaging(packageRoot);
+  const staging = path.join(packageRoot, `${STAGING_PREFIX}${randomUUID()}`);
   await fs.mkdir(path.join(staging, 'blobs'), { recursive: true });
   try {
     const entriesByHash = new Map<string, number>();

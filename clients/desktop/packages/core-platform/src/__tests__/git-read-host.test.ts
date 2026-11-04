@@ -639,8 +639,8 @@ describe('createGitReadHost selections (Git receipt)', () => {
     expect(pairs(host)).toEqual([['/opt/homebrew/bin/git', 'git version 2.51.0']]); // prettier-ignore
   });
 
-  it('reports the unvalidated Linux snapshot Git on unsupported architectures with no version', async () => {
-    const { host, resolve } = fakeHost(createWorld('linux'), {}, { arch: 's390x' }); // prettier-ignore
+  it('reports the unvalidated Linux snapshot Git on an unsupported architecture with no version', async () => {
+    const { host, resolve } = fakeHost(createWorld('linux'), {}, { arch: 'ppc64' }); // prettier-ignore
     await expect(resolve('/saved/git')).resolves.toEqual({ resolved: 'git' });
     expect(pairs(host)).toEqual([['git', null]]);
   });
@@ -846,6 +846,7 @@ describe('createGitReadHost login PATH', () => {
   );
 
   it.each([
+    ['linux', 'ppc64', []],
     ['linux', 'arm64', ['linux-login-shell-path']],
     ['win32', 'x64', []],
     ['darwin', 'arm64', ['macos-login-shell-path']],
@@ -2146,13 +2147,13 @@ describe('deliberate divergences (R6 §2.7), each named', () => {
         return Promise.resolve('/opt/saved/git');
       };
       const plain = createWorld('linux');
-      const { host } = fakeHost(plain, {}, { arch: 's390x' });
+      const { host } = fakeHost(plain, {}, { arch: 'ppc64' });
       await expect(host.port.checkIgnoredPaths(request(readSaved))).resolves.toEqual(new Set(['git'])); // prettier-ignore
       const overridden = createWorld('linux');
       const second = fakeHost(
         overridden,
         { environment: snapshotFor('linux', { CANOPY_GIT_EXECUTABLE: ' /env/git ' }) }, // prettier-ignore
-        { arch: 's390x' },
+        { arch: 'ppc64' },
       );
       await expect(second.host.port.checkIgnoredPaths(request(readSaved))).resolves.toEqual(new Set(['/env/git'])); // prettier-ignore
       expect(reads).toEqual([]);

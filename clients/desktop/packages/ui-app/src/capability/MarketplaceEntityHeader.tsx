@@ -9,6 +9,7 @@ import {
   McpServerLogo,
   type McpServerLogoProps,
 } from '@canopy/ui-shared';
+import { Heading } from '@canopy/ui-shared/components';
 
 export interface MarketplaceEntityHeaderProps {
   privateName?: boolean;
@@ -46,13 +47,13 @@ export function MarketplaceEntityHeader({
         fit="contain"
       />
       <div className="min-w-0 flex-1">
-        <h1 id={titleId} className="text-xl font-semibold fg-primary">
+        <Heading level={1} variant="page" id={titleId}>
           {privateName ? (
             <span className={REPLAY_MASK_CLASS}>{name}</span>
           ) : (
             name
           )}
-        </h1>
+        </Heading>
         {hasMarkdownDescriptionText(description) && (
           <DescriptionMarkdown className="mt-2" dataTestId="share-description">
             {description}

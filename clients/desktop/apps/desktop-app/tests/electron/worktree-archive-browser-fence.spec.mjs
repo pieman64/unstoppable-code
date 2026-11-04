@@ -1,9 +1,9 @@
 // A crashed worktree deletion leaves that worktree's browser profile fenced
 // (retirement_pending with a dead initiator) and, when its checkout is also
 // gone, the fence's outcome is uncertain. That uncertainty must stay scoped to
-// its own worktree: startup recovery of the affected worktree adopts the
-// crashed retirement, and deleting any other worktree succeeds, instead of
-// every deletion failing with "The browser task archive outcome is uncertain".
+// its own worktree: deleting any other worktree succeeds, and retrying the
+// affected worktree's deletion adopts the crashed retirement, instead of every
+// deletion failing with "The browser task archive outcome is uncertain".
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -40,8 +40,12 @@ async function requestWorktreeDeletion(window, row) {
 
 test('a crashed deletion fences only its own browser profile and never blocks worktree deletion', async () => {
   test.setTimeout(240_000);
-  const { userDataDir, workspace, original, otherId } =
+  const { userDataDir, workspace, worktreesPath, original, otherId } =
     seedArchiveActivityFixture();
+  const persistedWorktreeIds = () =>
+    JSON.parse(readFileSync(worktreesPath, 'utf8')).worktrees.map(
+      (worktree) => worktree.id,
+    );
   const first = await launchCanopy({ userDataDir });
   try {
     const window = await first.electronApp.firstWindow();
@@ -115,15 +119,34 @@ test('a crashed deletion fences only its own browser profile and never blocks wo
     await app.openMainPage();
     const uncertain = window.getByText(/archive outcome is uncertain/);
 
-    // Startup recovery retries the interrupted deletion of the missing
-    // checkout; it adopts the crashed browser retirement and completes.
+    // Startup keeps an interrupted deletion for the user to retry; it never
+    // finishes one on its own.
     const stuckRow = worktreeRow(window, workspace.id, original.id);
-    await expect(stuckRow).toHaveCount(0, { timeout: 60_000 });
+    await expect(stuckRow).toBeVisible({ timeout: 30_000 });
+    expect(persistedWorktreeIds()).toContain(original.id);
+    expect(browserRetirementState(userDataDir, workspace.id, original.id)).toBe(
+      'prepared',
+    );
 
+    // The crashed deletion's fence does not hold any other worktree.
     const otherRow = worktreeRow(window, workspace.id, otherId);
     await expect(otherRow).toBeVisible({ timeout: 30_000 });
     await requestWorktreeDeletion(window, otherRow);
     await expect(otherRow).toHaveCount(0, { timeout: 60_000 });
+
+    // Retrying redoes the deletion, which crashed before its capture. It
+    // adopts the crashed browser retirement and completes.
+    await requestWorktreeDeletion(window, stuckRow);
+    await expect(stuckRow).toHaveCount(0, { timeout: 60_000 });
+    await expect
+      .poll(() => persistedWorktreeIds(), { timeout: 60_000 })
+      .not.toContain(original.id);
+    await expect
+      .poll(
+        () => browserRetirementState(userDataDir, workspace.id, original.id),
+        { timeout: 30_000 },
+      )
+      .toBe('committed');
     await expect(uncertain).toHaveCount(0);
   } finally {
     await closeCanopy(second.electronApp, userDataDir);

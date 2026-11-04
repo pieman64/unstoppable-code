@@ -279,3 +279,28 @@ it('removes staged package files when context expires before the durable rename'
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it('sweeps staging directories an interrupted install left behind', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pipeline-package-sweep-'));
+  try {
+    const packages = join(root, 'packages');
+    const stale = join(packages, '.staging-interrupted');
+    const active = join(packages, '.staging-in-progress');
+    await fs.mkdir(join(stale, 'blobs'), { recursive: true });
+    await fs.mkdir(join(active, 'blobs'), { recursive: true });
+    const dayAndAnHourAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await fs.utimes(stale, dayAndAnHourAgo, dayAndAnHourAgo);
+    const value = manifest();
+    const installed = await installPipelinePackageAtomically({
+      packagesRoot: root,
+      digest: computePipelinePackageDigestSync(value),
+      manifest: value,
+      fetchBlob: () => Promise.resolve(bytes),
+    });
+    expect((await readdir(packages)).sort()).toEqual(
+      ['.staging-in-progress', basename(installed)].sort(),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

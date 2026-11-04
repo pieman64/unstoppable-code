@@ -16,6 +16,7 @@ import {
   isNavigableTranscriptHref,
   type MarkdownOptions,
   TRANSCRIPT_LINK_CLASS,
+  Tooltip,
 } from '@canopy/ui-shared/components';
 import {
   parseFileLinkLineSuffix,
@@ -147,21 +148,22 @@ function TranscriptFileLinkAnchor(props: AnchorProps): JSX.Element {
   // A button, not an anchor: a path has no meaning as a site URL, so an
   // `href` would let middle-click or copy-link navigate to a 404.
   return (
-    <button
-      type="button"
-      className={FILE_LINK_CLASSES}
-      title={href}
-      data-testid="markdown-file-link"
-      data-file-link-state={state}
-      data-file-link-line={
-        location === null ? undefined : lineAttribute(location)
-      }
-      aria-busy={state === 'opening' || undefined}
-      disabled={state === 'opening'}
-      onClick={onClick}
-    >
-      {children}
-    </button>
+    <Tooltip label={href} contentClassName="max-w-96 break-all" replayBlock>
+      <button
+        type="button"
+        className={FILE_LINK_CLASSES}
+        data-testid="markdown-file-link"
+        data-file-link-state={state}
+        data-file-link-line={
+          location === null ? undefined : lineAttribute(location)
+        }
+        aria-busy={state === 'opening' || undefined}
+        disabled={state === 'opening'}
+        onClick={onClick}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

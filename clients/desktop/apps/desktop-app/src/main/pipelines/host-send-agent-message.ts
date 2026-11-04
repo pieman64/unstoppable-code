@@ -20,6 +20,8 @@
  * never logged, never echoed in errors and never journaled.
  */
 import { randomUUID } from 'node:crypto';
+import { realpath, stat } from 'node:fs/promises';
+import * as path from 'node:path';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
@@ -43,26 +45,43 @@ import { mapConfiguredPromptText } from '@canopy/protocol/configured-prompt-refe
 import {
   APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
+  getExecutionHarnessForModel,
   getProviderForModel,
   hasAnySelections,
+  isInheritingAgentModel,
+  modelConfigForProviderSupportsFastMode,
   resolveKnownModel,
   type AgentModelConfig,
   type AgentProviderType,
+  type ChatAttachmentPromptContext,
   type ChatSendAutomationDispatch,
   type ChatSendTurnOverride,
   type ChatTabPluginSelections,
   type FileReference,
+  type ModelHarness,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
 import { AGENT_MODEL_PREFIX } from '@canopy/desktop-shared/types/agent-models';
-import type { PipelineChatSendRecord } from '@canopy/desktop-shared/types/pipeline';
+import type {
+  PipelineChatSendRecord,
+  PipelinePackageCapabilityOverlay,
+} from '@canopy/desktop-shared/types/pipeline';
 import { z } from 'zod';
 import { dispatchPipelineProjectBotAction } from '../agent-actions/desktop-project-bot-port';
 import {
   pipelineTrustedCaller,
   type PipelineTrustedCaller,
 } from '../agent-messaging/pipeline-caller';
-import type { PipelineNewChatSeed } from '../agent-messaging/send-orchestration';
+import type {
+  PipelineNativeGrantSeed,
+  PipelineNewChatSeed,
+} from '../agent-messaging/send-orchestration';
+import {
+  resolvePipelineNativeGrant,
+  sameNativeGrantAuthority,
+} from '../automations/chat-automation-native-grant';
+import type { PipelineNativeGrant } from './pipeline-local-metadata-store';
+import type { ExistingTabDispatchOptions } from '../agent-messaging/turn-override';
 import type { PipelineSenderSource } from '../agent-messaging/sender-context';
 import { ADVISOR_ACCESS_DISABLED_MESSAGE } from '../lib/app-advisor-project-agent-access';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
@@ -105,6 +124,10 @@ export interface SendAgentMessageHostDeps {
   ) => Promise<boolean>;
   /** Injected in tests; the decision C re-check delay. */
   transcriptRecheckMs?: number;
+  /** Injected in tests; defaults to the owned pipeline's verified grant. */
+  resolveNativeGrant?: (
+    caller: PipelineHostActionCaller,
+  ) => Promise<PipelineNativeGrant | undefined>;
 }
 
 /** The resolved target: where its tabs live, and how it is named. */
@@ -167,6 +190,11 @@ const STEER_FAILED_MESSAGE =
 
 const AGENT_AUTHORITY_MESSAGE =
   "Agent-started pipelines can't change an existing chat's model, plan mode, approval mode, or plugins.";
+
+const AGENT_FILE_REFERENCES_MESSAGE =
+  'Agent-started pipelines can\'t send "file_references". Use "text_references" instead.';
+
+const ATTACHMENT_PATHS_MESSAGE = `${LABEL} "attachment_paths" must name files in the task's attachments folder`;
 
 function failure(
   target: SendTarget,
@@ -363,16 +391,30 @@ const AUTHORITY_SETTINGS: Record<
   model: (settings) => settings.model !== undefined,
   plan_mode: (settings) => settings.planMode !== undefined,
   plugins: (settings) => (settings.plugins?.length ?? 0) > 0,
+  plugin_selections: (settings) => settings.pluginSelections !== undefined,
 };
 
+/**
+ * The turn's model config. A `speed` sets both fields, as a stored speed does;
+ * on a provider without Codex speeds it is Regular, as the native send
+ * resolves it. An existing chat's override resolves the provider itself.
+ */
 function modelConfigOf(
   settings: SendAgentMessageSettings,
+  providerType?: AgentProviderType,
 ): AgentModelConfig | undefined {
+  const speed =
+    settings.speed !== undefined &&
+    providerType !== undefined &&
+    !modelConfigForProviderSupportsFastMode(providerType)
+      ? 'standard'
+      : settings.speed;
   const config: AgentModelConfig = {
     ...(settings.thinkingEffort !== undefined
       ? { thinkingLevel: settings.thinkingEffort }
       : {}),
     ...(settings.fastMode !== undefined ? { fastMode: settings.fastMode } : {}),
+    ...(speed !== undefined ? { speed, fastMode: speed === 'fast' } : {}),
   };
   return Object.keys(config).length > 0 ? config : undefined;
 }
@@ -391,6 +433,8 @@ interface ResolvedSend {
   composition?: {
     fileReferences?: FileReference[];
     attachmentPaths?: string[];
+    attachmentPromptContexts?: ChatAttachmentPromptContext[];
+    inputMode?: 'typed' | 'voice';
   };
   turnOverride?: ChatSendTurnOverride;
   newChatSeed?: PipelineNewChatSeed;
@@ -400,6 +444,8 @@ interface ResolvedSend {
   newChat?: true;
   /** The banner, usage source and presentation of a run an automation started. */
   automationDispatch?: ChatSendAutomationDispatch;
+  /** The seed settings the run's native grant covers (CAN-5479). */
+  nativeGrant?: PipelineNativeGrantSeed;
 }
 
 interface ResolvedSettings {
@@ -410,20 +456,27 @@ interface ResolvedSettings {
   model?: string;
 }
 
-/** An existing chat's per-turn override; refusals are worded for automations, so they read as validation. */
-async function resolveExistingChat(
+/** An existing chat's settings and the override the request resolves to. */
+interface ExistingChatOverride {
+  tab: ExistingTabDispatchOptions;
+  override: ChatSendTurnOverride;
+}
+
+/**
+ * An existing chat's per-turn override, before the prompt's references bind
+ * against the runtime it selects; refusals are worded for automations, so
+ * they read as validation.
+ */
+async function resolveExistingChatOverride(
   target: SendTarget,
   chatId: string,
   settings: SendAgentMessageSettings,
-  referencedPluginSelections: ChatTabPluginSelections | undefined,
-): Promise<ResolvedSettings> {
+): Promise<ExistingChatOverride> {
   const [chatService, turn] = await Promise.all([
     import('../services/chat-service'),
     import('../agent-messaging/turn-override'),
   ]);
-  let tab: Awaited<
-    ReturnType<typeof chatService.buildExistingTabDispatchOptions>
-  >;
+  let tab: ExistingTabDispatchOptions;
   try {
     tab = await chatService.buildExistingTabDispatchOptions(
       target.tabsProjectId,
@@ -440,9 +493,8 @@ async function resolveExistingChat(
     throw error;
   }
   const modelConfig = modelConfigOf(settings);
-  let override: ChatSendTurnOverride;
   try {
-    override = await turn.resolveChatTurnOverride(
+    const override = await turn.resolveChatTurnOverride(
       { projectId: target.tabsProjectId, worktreeId: target.taskId, chatId },
       tab,
       {
@@ -455,11 +507,61 @@ async function resolveExistingChat(
           ? { approvalMode: settings.approvalMode }
           : {}),
         ...(settings.plugins?.length ? { plugins: settings.plugins } : {}),
+        ...(settings.pluginSelections
+          ? { pluginSelections: settings.pluginSelections }
+          : {}),
       },
+    );
+    return { tab, override };
+  } catch (error) {
+    throw validation(messageOf(error));
+  }
+}
+
+/** The runtime an existing chat's turn runs on, for its prompt's references. */
+function existingChatRuntime({ tab, override }: ExistingChatOverride): {
+  providerType?: AgentProviderType;
+  executionHarness?: ModelHarness;
+  selectedRepoId?: string;
+} {
+  const providerType = override.providerType ?? tab.providerType;
+  const executionHarness =
+    override.executionHarness ??
+    tab.executionHarness ??
+    (tab.model ? getExecutionHarnessForModel(tab.model) : undefined);
+  return {
+    ...(providerType !== undefined ? { providerType } : {}),
+    ...(executionHarness !== undefined ? { executionHarness } : {}),
+    ...(tab.selectedRepoId !== undefined
+      ? { selectedRepoId: tab.selectedRepoId }
+      : {}),
+  };
+}
+
+/**
+ * The override with the prompt's plugins joined after it, as the native
+ * session send joins them; then a terminal chat refuses settings it would not
+ * apply. The port commits the override before delivery, so this must run
+ * first (CAN-4549 parity).
+ */
+async function finishExistingChat(
+  target: SendTarget,
+  chatId: string,
+  { tab, override: resolved }: ExistingChatOverride,
+  referencedPluginSelections: ChatTabPluginSelections | undefined,
+): Promise<ResolvedSettings> {
+  let override = resolved;
+  if (referencedPluginSelections) {
+    const { mergePluginSelections } =
+      await import('../lib/plugin-selection-utils');
+    const pluginSelections = mergePluginSelections(
+      resolved.pluginSelections ?? tab.pluginSelections,
       referencedPluginSelections,
     );
-    // A terminal chat refuses settings it would not apply. The port commits
-    // the override before delivery, so this must run first (CAN-4549 parity).
+    if (pluginSelections) override = { ...resolved, pluginSelections };
+  }
+  const chatService = await import('../services/chat-service');
+  try {
     await chatService.assertTerminalChatAcceptsSettings(
       { projectId: target.tabsProjectId, worktreeId: target.taskId, chatId },
       {
@@ -554,32 +656,141 @@ async function automationPluginDefaults(
   return defaults && hasAnySelections(defaults) ? defaults : undefined;
 }
 
-/** A new chat's seed; the orchestration applies the agent-originated and bot seed rules. */
-async function resolveNewChat(
+/** A new chat's named model, validated, with the provider it runs on. */
+interface NewChatModel {
+  model?: string;
+  providerType?: AgentProviderType;
+  executionHarness?: ModelHarness;
+}
+
+/**
+ * The new chat's model: a known model with an available provider. An Agent
+ * that inherits the default model is pinned to the destination's default to
+ * find that provider, as the native send pins it (CAN-5479).
+ */
+async function resolveNewChatModel(
   settings: SendAgentMessageSettings,
-  referencedPluginSelections: ChatTabPluginSelections | undefined,
-  pluginDefaults?: ChatTabPluginSelections,
-): Promise<ResolvedSettings> {
-  let model: string | undefined;
-  let providerType: AgentProviderType | undefined;
-  if (settings.model !== undefined) {
-    model = resolveKnownModel(settings.model);
-    if (model === undefined) {
-      throw validation(`${LABEL} "model" isn't a model this app knows`);
+  target: SendTarget,
+): Promise<NewChatModel> {
+  if (settings.model === undefined) return {};
+  const known = resolveKnownModel(settings.model);
+  if (known === undefined) {
+    throw validation(`${LABEL} "model" isn't a model this app knows`);
+  }
+  let model = known;
+  if (isInheritingAgentModel(known)) {
+    const { pinInheritingAgentToDestination } =
+      await import('../agents/agent-default-model');
+    try {
+      model = await pinInheritingAgentToDestination(
+        known,
+        target.kind === 'bot' ? APP_ADVISOR_PROJECT_ID : target.id,
+      );
+    } catch (error) {
+      throw validation(messageOf(error));
     }
-    // A known Agent whose base model is unavailable has no provider.
-    providerType = getProviderForModel(model);
-    if (providerType === undefined) {
-      throw validation(`${LABEL} "model" isn't available right now`);
-    }
-    if (settings.interfaceMode !== undefined && providerType !== 'claude') {
+  }
+  // A known Agent whose base model is unavailable has no provider.
+  const providerType = getProviderForModel(model);
+  if (providerType === undefined) {
+    throw validation(`${LABEL} "model" isn't available right now`);
+  }
+  const executionHarness = getExecutionHarnessForModel(model);
+  return {
+    // Project chat creation takes the Agent itself, never a route, and pins
+    // it to the project's default itself; an Orchestrator chat takes it as
+    // pinned here.
+    model: target.kind === 'bot' ? model : known,
+    providerType,
+    ...(executionHarness !== undefined ? { executionHarness } : {}),
+  };
+}
+
+/**
+ * The runtime the destination's default model gives a new chat that names no
+ * model: the Orchestrator's default, else the surface's lane default. Only a
+ * send that needs it resolves it; lane resolution can be slow. `undefined`
+ * when no default is dispatchable.
+ */
+async function resolveDefaultRuntime(
+  target: SendTarget,
+): Promise<NewChatModel | undefined> {
+  const [{ readPreferencesFile }, lanes] = await Promise.all([
+    import('../lib/preferences-store'),
+    import('../lib/default-model-lane-resolver'),
+  ]);
+  const preferences = await readPreferencesFile();
+  const model =
+    target.kind === 'bot'
+      ? await lanes.resolveAppAdvisorDefaultModel(preferences)
+      : (
+          await lanes.resolveOptionalLaneAwareDefaultSelection(
+            preferences,
+            target.workspaceType === 'cowork' ? 'chat' : 'worktree',
+            { workspaceId: target.id },
+          )
+        ).selection?.model;
+  if (model === undefined) return undefined;
+  const providerType = getProviderForModel(model);
+  if (providerType === undefined) return undefined;
+  const executionHarness = getExecutionHarnessForModel(model);
+  return {
+    providerType,
+    ...(executionHarness !== undefined ? { executionHarness } : {}),
+  };
+}
+
+/**
+ * The interface mode a new chat starts in. A run an automation started keeps
+ * it only for a Claude chat, as the native send did, in the form a Claude chat
+ * persists; others refuse it for a model that isn't Claude.
+ */
+async function newChatInterfaceMode(
+  settings: SendAgentMessageSettings,
+  named: NewChatModel,
+  defaults: NewChatModel | undefined,
+  automation: boolean,
+): Promise<SendAgentMessageSettings['interfaceMode']> {
+  const mode = settings.interfaceMode;
+  if (mode === undefined) return undefined;
+  if (!automation) {
+    if (named.providerType !== undefined && named.providerType !== 'claude') {
       throw validation(
         `${LABEL} "interface_mode" applies only to Claude models`,
       );
     }
+    return mode;
   }
+  const providerType = named.providerType ?? defaults?.providerType;
+  if (providerType !== 'claude') return undefined;
+  const { getPersistedClaudeChatInterfaceMode } =
+    await import('../lib/claude-tui-chats');
+  return getPersistedClaudeChatInterfaceMode(mode);
+}
+
+/** A new chat's seed; the orchestration applies the agent-originated and bot seed rules. */
+async function resolveNewChat(
+  settings: SendAgentMessageSettings,
+  named: NewChatModel,
+  /** The default model's runtime, when the send resolved it. */
+  defaults: NewChatModel | undefined,
+  automation: boolean,
+  referencedPluginSelections: ChatTabPluginSelections | undefined,
+  pluginDefaults?: ChatTabPluginSelections,
+): Promise<ResolvedSettings> {
+  const { model, providerType } = named;
+  const interfaceMode = await newChatInterfaceMode(
+    settings,
+    named,
+    defaults,
+    automation,
+  );
   let selections: ChatTabPluginSelections | undefined;
-  if (settings.plugins?.length || referencedPluginSelections) {
+  if (
+    settings.plugins?.length ||
+    settings.pluginSelections ||
+    referencedPluginSelections
+  ) {
     const [{ resolveAutomationPromptPlugins }, { mergePluginSelections }] =
       await Promise.all([
         import('../agent-messaging/turn-override'),
@@ -590,7 +801,7 @@ async function resolveNewChat(
       direct = await resolveAutomationPromptPlugins(
         pluginDefaults,
         settings.plugins,
-        undefined,
+        settings.pluginSelections,
       );
     } catch (error) {
       throw validation(messageOf(error));
@@ -599,7 +810,10 @@ async function resolveNewChat(
       ? mergePluginSelections(direct, referencedPluginSelections)
       : direct;
   }
-  const modelConfig = modelConfigOf(settings);
+  const modelConfig = modelConfigOf(
+    settings,
+    providerType ?? defaults?.providerType,
+  );
   const seed: PipelineNewChatSeed = {
     ...(model !== undefined ? { model } : {}),
     ...(providerType !== undefined ? { providerType } : {}),
@@ -609,9 +823,7 @@ async function resolveNewChat(
       ? { approvalMode: settings.approvalMode }
       : {}),
     ...(selections ? { pluginSelections: selections } : {}),
-    ...(settings.interfaceMode !== undefined
-      ? { interfaceMode: settings.interfaceMode }
-      : {}),
+    ...(interfaceMode !== undefined ? { interfaceMode } : {}),
   };
   return {
     // Any seed setting forces a new chat; without one an empty chat is reused.
@@ -622,21 +834,47 @@ async function resolveNewChat(
 }
 
 /**
+ * A converted capability package install's package, for the chat its
+ * generated send step creates (CAN-5479), resolved again for each send so no
+ * package path is kept. A package that isn't intact fails the step, as it
+ * failed the native prompt.
+ */
+async function automationPackageOverlay(
+  caller: PipelineHostActionCaller,
+  target: SendTarget,
+): Promise<PipelinePackageCapabilityOverlay | undefined> {
+  if (target.chatId !== undefined) return undefined;
+  const { ownedPipelineSendPackageOverlay } =
+    await import('../automations/owned-pipeline-package');
+  try {
+    return await ownedPipelineSendPackageOverlay(caller);
+  } catch (error) {
+    throw new PipelineHostRefusal('target_not_ready', messageOf(error));
+  }
+}
+
+/**
  * A run an automation started sends as the automation's own chat actions did
  * (CAN-4551): the `automation_info` banner, the automation usage source, the
- * run's owner, and a scheduled run's chat staying behind the current tab.
+ * run's owner, a scheduled run's chat staying behind the current tab and, for
+ * a converted install, its package.
  */
-function automationRunDispatch(caller: PipelineHostActionCaller): {
+async function automationRunDispatch(
+  caller: PipelineHostActionCaller,
+  target: SendTarget,
+): Promise<{
   automationDispatch?: ChatSendAutomationDispatch;
-} {
+}> {
   const { initiator } = caller;
   if (initiator?.kind !== 'automation') return {};
+  const packageOverlay = await automationPackageOverlay(caller, target);
   return {
     automationDispatch: {
       version: 1,
       automationName: initiator.automationName || initiator.automationId,
       presentation: initiator.background ? 'background' : 'foreground',
       executionContext: caller.executionContext ?? 'personal',
+      ...(packageOverlay ? { packageOverlay } : {}),
     },
   };
 }
@@ -673,12 +911,168 @@ function withGateOutput(
   };
 }
 
+/**
+ * `attachment_paths`, each an existing file inside the target task's
+ * attachments folder by realpath: no `..`, no symlink out, never the folder
+ * itself. The paths are sent as written, so attachment prompt contexts still
+ * name them. Messages never echo a path.
+ */
+async function containAttachmentPaths(
+  target: SendTarget,
+  paths: readonly string[],
+): Promise<string[]> {
+  // No files to contain: a task need not have an attachments folder yet.
+  if (paths.length === 0) return [];
+  // The folder chat delivery reads: the Orchestrator's and Cowork's managed
+  // folders, else the worktree's.
+  const { resolveAgentAttachmentsDir } =
+    await import('../lib/agent-attachments');
+  let root: string;
+  try {
+    root = await realpath(
+      resolveAgentAttachmentsDir(target.tabsProjectId, target.taskId),
+    );
+  } catch {
+    throw validation(ATTACHMENT_PATHS_MESSAGE);
+  }
+  for (const value of paths) {
+    if (!path.isAbsolute(value) || value.split(/[\\/]/).includes('..')) {
+      throw validation(ATTACHMENT_PATHS_MESSAGE);
+    }
+    let real: string;
+    let isFile = false;
+    try {
+      real = await realpath(value);
+      isFile = (await stat(real)).isFile();
+    } catch {
+      throw validation(ATTACHMENT_PATHS_MESSAGE);
+    }
+    const relative = path.relative(root, real);
+    if (
+      !isFile ||
+      relative === '' ||
+      path.isAbsolute(relative) ||
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`)
+    ) {
+      throw validation(ATTACHMENT_PATHS_MESSAGE);
+    }
+  }
+  return [...paths];
+}
+
+function hasPluginReference(inputs: ResolvedSendAgentMessageInputs): boolean {
+  return (
+    inputs.textReferences?.some((reference) => reference.kind === 'plugin') ??
+    false
+  );
+}
+
+/** The text with its references bound against the runtime the turn runs on. */
+async function resolvePromptText(
+  inputs: ResolvedSendAgentMessageInputs,
+  workspace: { projectId: string; worktreeId: string },
+  runtime: {
+    providerType?: AgentProviderType;
+    executionHarness?: ModelHarness;
+    selectedRepoId?: string;
+  },
+): Promise<{
+  text: string;
+  fileReferences?: FileReference[];
+  referencedPluginSelections?: ChatTabPluginSelections;
+}> {
+  if (!inputs.textReferences?.length) return { text: inputs.text };
+  const { resolveConfiguredPrompt } =
+    await import('../lib/configured-prompt-resolution');
+  try {
+    // A plugin reference binds to the provider and harness, as the native
+    // send binds it (CAN-5479).
+    const resolved = await resolveConfiguredPrompt({
+      ...workspace,
+      ...runtime,
+      prompt: inputs.text,
+      promptReferences: inputs.textReferences,
+    });
+    return {
+      text: resolved.prompt,
+      ...(resolved.fileReferences
+        ? { fileReferences: resolved.fileReferences }
+        : {}),
+      ...(resolved.referencedPluginSelections
+        ? { referencedPluginSelections: resolved.referencedPluginSelections }
+        : {}),
+    };
+  } catch (error) {
+    // Its messages can carry reference paths; log the type only.
+    logMainProcessWarn(`[pipeline-host] ${LABEL} references unresolved`, {
+      errorType: errorType(error),
+    });
+    throw validation(
+      `${LABEL} "text_references" names a file or plugin that isn't available`,
+    );
+  }
+}
+
+/**
+ * The new chat's seed settings a native grant covers (CAN-5479): only when
+ * the step asks for exactly the grant's authority, which the generated step
+ * does, and brings no plugin through its references. Anything else is left
+ * to D11.
+ */
+function grantedSeed(
+  inputs: ResolvedSendAgentMessageInputs,
+  target: SendTarget,
+  seed: PipelineNewChatSeed | undefined,
+  grant: PipelineNativeGrant | undefined,
+): PipelineNativeGrantSeed | undefined {
+  const { settings } = inputs;
+  if (
+    grant === undefined ||
+    seed === undefined ||
+    target.chatId !== undefined ||
+    inputs.textReferences?.some((reference) => reference.kind === 'plugin') ||
+    !sameNativeGrantAuthority(
+      {
+        ...(settings.approvalMode !== undefined
+          ? { approvalMode: settings.approvalMode }
+          : {}),
+        ...(settings.plugins !== undefined
+          ? { plugins: settings.plugins }
+          : {}),
+        // A project chat's model isn't D11 authority.
+        ...(target.kind === 'bot' && settings.model !== undefined
+          ? { model: settings.model }
+          : {}),
+        ...(settings.pluginSelections !== undefined
+          ? { pluginSelections: settings.pluginSelections }
+          : {}),
+      },
+      grant,
+    )
+  )
+    return undefined;
+  const covered: PipelineNativeGrantSeed = {
+    ...(seed.approvalMode !== undefined
+      ? { approvalMode: seed.approvalMode }
+      : {}),
+    ...(seed.pluginSelections !== undefined
+      ? { pluginSelections: seed.pluginSelections }
+      : {}),
+    ...(target.kind === 'bot' && seed.model !== undefined
+      ? { model: seed.model }
+      : {}),
+  };
+  return Object.keys(covered).length > 0 ? covered : undefined;
+}
+
 /** Settings, references and plugin authorization; no effects. */
 async function resolveSend(
   inputs: ResolvedSendAgentMessageInputs,
   caller: PipelineHostActionCaller,
   target: SendTarget,
   agentOriginated: boolean,
+  grant: PipelineNativeGrant | undefined,
 ): Promise<ResolvedSend> {
   const { settings } = inputs;
   // D11: the orchestration's `changesAuthority` is the backstop, and also
@@ -695,6 +1089,18 @@ async function resolveSend(
       AGENT_AUTHORITY_MESSAGE,
     );
   }
+  // Legacy file references name absolute paths no step contains; an agent's
+  // run binds files through `text_references`, which stay in the workspace.
+  if (agentOriginated && inputs.fileReferences !== undefined) {
+    throw new PipelineHostRefusal(
+      'authorization_conflict',
+      AGENT_FILE_REFERENCES_MESSAGE,
+    );
+  }
+  const attachmentPaths =
+    inputs.attachmentPaths !== undefined
+      ? await containAttachmentPaths(target, inputs.attachmentPaths)
+      : inputs.attachments;
   // Bot prompts resolve against the Orchestrator workspace, as automations do.
   const workspace =
     target.kind === 'project'
@@ -703,45 +1109,70 @@ async function resolveSend(
           projectId: APP_ADVISOR_PROJECT_ID,
           worktreeId: APP_ADVISOR_WORKTREE_ID,
         };
-  let text = inputs.text;
-  let fileReferences: FileReference[] | undefined;
-  let referencedPluginSelections: ChatTabPluginSelections | undefined;
-  if (inputs.textReferences?.length) {
-    const { resolveConfiguredPrompt } =
-      await import('../lib/configured-prompt-resolution');
-    try {
-      const resolved = await resolveConfiguredPrompt({
-        ...workspace,
-        prompt: inputs.text,
-        promptReferences: inputs.textReferences,
-      });
-      text = resolved.prompt;
-      fileReferences = resolved.fileReferences;
-      referencedPluginSelections = resolved.referencedPluginSelections;
-    } catch (error) {
-      // Its messages can carry reference paths; log the type only.
-      logMainProcessWarn(`[pipeline-host] ${LABEL} references unresolved`, {
-        errorType: errorType(error),
-      });
-      throw validation(
-        `${LABEL} "text_references" names a file or plugin that isn't available`,
-      );
-    }
+  const automation = caller.initiator?.kind === 'automation';
+  let prompt: Awaited<ReturnType<typeof resolvePromptText>>;
+  let resolvedSettings: ResolvedSettings;
+  if (target.chatId !== undefined) {
+    const existing = await resolveExistingChatOverride(
+      target,
+      target.chatId,
+      settings,
+    );
+    prompt = await resolvePromptText(
+      inputs,
+      workspace,
+      existingChatRuntime(existing),
+    );
+    resolvedSettings = await finishExistingChat(
+      target,
+      target.chatId,
+      existing,
+      prompt.referencedPluginSelections,
+    );
+  } else {
+    const named = await resolveNewChatModel(settings, target);
+    // With no model, the default model decides what a plugin reference binds
+    // to and, in a run an automation started, whether a Claude interface mode
+    // and Ultra fast apply (CAN-5479).
+    const defaults =
+      named.providerType === undefined &&
+      (hasPluginReference(inputs) ||
+        (automation &&
+          (settings.interfaceMode !== undefined ||
+            settings.speed === 'ultrafast')))
+        ? await resolveDefaultRuntime(target)
+        : undefined;
+    const runtime = named.providerType !== undefined ? named : defaults;
+    prompt = await resolvePromptText(inputs, workspace, {
+      ...(runtime?.providerType !== undefined
+        ? { providerType: runtime.providerType }
+        : {}),
+      ...(runtime?.executionHarness !== undefined
+        ? { executionHarness: runtime.executionHarness }
+        : {}),
+    });
+    resolvedSettings = await resolveNewChat(
+      await withAutomationThinking(
+        named.model !== undefined
+          ? { ...settings, model: named.model }
+          : settings,
+        caller,
+        target,
+      ),
+      named,
+      defaults,
+      automation,
+      prompt.referencedPluginSelections,
+      await automationPluginDefaults(caller, target),
+    );
   }
-  const resolvedSettings =
-    target.chatId !== undefined
-      ? await resolveExistingChat(
-          target,
-          target.chatId,
-          settings,
-          referencedPluginSelections,
-        )
-      : await resolveNewChat(
-          await withAutomationThinking(settings, caller, target),
-          referencedPluginSelections,
-          await automationPluginDefaults(caller, target),
-        );
 
+  const nativeGrant = grantedSeed(
+    inputs,
+    target,
+    resolvedSettings.newChatSeed,
+    grant,
+  );
   const { selections, model } = resolvedSettings;
   const hasSelections =
     selections !== undefined && hasAnySelections(selections);
@@ -770,27 +1201,31 @@ async function resolveSend(
     }
   }
 
+  // Resolved file references win over legacy ones, as in the native send.
+  const fileReferences = prompt.fileReferences ?? inputs.fileReferences;
   const composition = {
     ...(fileReferences?.length ? { fileReferences } : {}),
-    ...(inputs.attachments?.length
-      ? { attachmentPaths: inputs.attachments }
+    ...(attachmentPaths?.length ? { attachmentPaths } : {}),
+    ...(inputs.attachmentPromptContexts?.length
+      ? { attachmentPromptContexts: inputs.attachmentPromptContexts }
       : {}),
+    ...(inputs.inputMode !== undefined ? { inputMode: inputs.inputMode } : {}),
   };
   return {
-    text,
+    text: prompt.text,
     ...(Object.keys(composition).length > 0 ? { composition } : {}),
-    ...(inputs.replaceEmptyChat === true &&
-    caller.initiator?.kind === 'automation'
+    ...(inputs.replaceEmptyChat === true && automation
       ? { reuseStarterChat: true }
       : {}),
     ...(inputs.newChat === true ? { newChat: true } : {}),
-    ...automationRunDispatch(caller),
+    ...(await automationRunDispatch(caller, target)),
     ...(resolvedSettings.turnOverride
       ? { turnOverride: resolvedSettings.turnOverride }
       : {}),
     ...(resolvedSettings.newChatSeed
       ? { newChatSeed: resolvedSettings.newChatSeed }
       : {}),
+    ...(nativeGrant ? { nativeGrant } : {}),
   };
 }
 
@@ -1046,6 +1481,9 @@ async function dispatchSend(
           ...(resolved.newChatSeed
             ? { newChatSeed: resolved.newChatSeed }
             : {}),
+          ...(resolved.nativeGrant
+            ? { nativeGrant: resolved.nativeGrant }
+            : {}),
           ...(resolved.reuseStarterChat ? { reuseStarterChat: true } : {}),
           ...(resolved.newChat ? { newChat: true } : {}),
           ...(resolved.automationDispatch
@@ -1267,6 +1705,7 @@ async function runOperation(
   signal: AbortSignal,
   controls: PipelineHostActionControls,
   fingerprint: string,
+  grant: PipelineNativeGrant | undefined,
 ): Promise<PipelineHostActionResult> {
   const { artifactsDir } = controls;
   const trusted = pipelineTrustedCaller(caller);
@@ -1304,6 +1743,7 @@ async function runOperation(
     caller,
     target,
     trusted.agentOrigin !== undefined,
+    grant,
   );
 
   const settled: Settled = {};
@@ -1437,12 +1877,21 @@ export async function runSendAgentMessageHostAction(
   }
   if (signal.aborted) throw abortError();
   const key = caller.idempotencyKey;
-  // The raised request (`text_file` already read) and the run's owner and
-  // agent origin, before any main-side resolution.
+  // CAN-5479: what a converted agent automation's native action set, when
+  // it holds for this very run. Only an agent's automation has one to read.
+  const grant =
+    caller.agentOrigin !== undefined && caller.initiator?.kind === 'automation'
+      ? await (deps.resolveNativeGrant ?? resolvePipelineNativeGrant)(caller)
+      : undefined;
+  if (signal.aborted) throw abortError();
+  // The raised request (`text_file` already read), the run's owner and
+  // agent origin, and its grant, before any main-side resolution: a replay
+  // after the grant stopped holding is a different request.
   const fingerprint = createSendFingerprint({
     inputs,
     owner: caller.executionContext ?? 'personal',
     agentOrigin: caller.agentOrigin,
+    ...(grant !== undefined ? { nativeGrant: grant } : {}),
   });
   let operation = liveOperations.get(key);
   if (operation && operation.fingerprint !== fingerprint) {
@@ -1479,6 +1928,7 @@ export async function runSendAgentMessageHostAction(
         signal,
         operationControls,
         fingerprint,
+        grant,
       ),
     };
     liveOperations.set(key, created);

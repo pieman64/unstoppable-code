@@ -34,9 +34,17 @@ import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { assertNotSplitLocked } from './split-lock-service';
 import {
   isBlockedManagedEnvName,
+  isRestorableExitSignal,
   type WorkerTerminalEvent,
 } from '@canopy/core-runtime/node/terminal';
-import { workerTerminal } from '../terminal/worker-terminal';
+import {
+  desktopTerminalEnvironmentFor,
+  desktopTerminalShells,
+  workerTerminal,
+} from '../terminal/worker-terminal';
+import type { DaemonTerminalRouteContext } from '../terminal/daemon-terminal-route';
+import { terminalPersistenceStore } from '../terminal/persistence';
+import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
 import { createPortalEvent } from '../portal/portal-event-bus';
 import { getBundledClaudeBinaryPath } from '../pipelines/config-paths';
 import { detectGitExecutable } from '../lib/git-executable';
@@ -322,10 +330,8 @@ export function spawnTerminal(request: TerminalSpawnRequest): TerminalSession {
   return spawnTerminalWithEnvironment(request);
 }
 
-function spawnTerminalWithEnvironment(
-  request: TerminalSpawnRequest,
-  environmentOverride?: NodeJS.ProcessEnv,
-): TerminalSession {
+/** The checks every terminal a request opens passes, wherever it runs. */
+function validateSpawnRequest(request: TerminalSpawnRequest): void {
   try {
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
@@ -355,6 +361,13 @@ function spawnTerminalWithEnvironment(
       'Managed terminal commands cannot set a shell profile or initial command',
     );
   }
+}
+
+function spawnTerminalWithEnvironment(
+  request: TerminalSpawnRequest,
+  environmentOverride?: NodeJS.ProcessEnv,
+): TerminalSession {
+  validateSpawnRequest(request);
   let relativeCwd: string | undefined;
   if (request.relativeCwd !== undefined && request.relativeCwd !== '') {
     try {
@@ -439,6 +452,7 @@ async function authorizeRelativeTerminalTarget(
  */
 export async function spawnTerminalAfterShellPrewarm(
   request: TerminalSpawnRequest,
+  route?: DaemonTerminalRouteContext,
 ): Promise<TerminalSession> {
   await authorizeRelativeTerminalTarget(request);
   if (
@@ -448,14 +462,140 @@ export async function spawnTerminalAfterShellPrewarm(
   ) {
     await workerTerminal.prewarmShell();
   }
+  if (route?.localWindow) {
+    const placed = await spawnDaemonTerminal(request, route);
+    if (placed) return placed;
+  }
   return spawnTerminal(request);
+}
+
+/**
+ * A renderer terminal in the daemon's terminal host when the
+ * daemon-terminals experiment selects it (CAN-5088), after the checks the
+ * in-process engine runs; `null` keeps it in process. A daemon that can't be
+ * reached opens it in process with the background service warning, and one
+ * that cannot start its terminal host opens it in process too; any other
+ * refusal from a reached daemon fails the request.
+ */
+async function spawnDaemonTerminal(
+  request: TerminalSpawnRequest,
+  route: DaemonTerminalRouteContext,
+): Promise<TerminalSession | null> {
+  // Renderer ids pass the shared validators before any routing or path work.
+  validateSpawnRequest(request);
+  const routing = await import('../terminal/daemon-terminal-route');
+  const target = await routing.selectDaemonTerminalTarget(request, route);
+  if (!target) return null;
+  const shell = desktopTerminalShells.profile(request.terminalProfileId);
+  try {
+    // Held until the terminal is mirrored, so archiving waits for it.
+    return await withWorkspaceTargetRuntimeStartReservation(
+      request.projectId,
+      request.worktreeId,
+      () =>
+        routing.getDaemonTerminals().create({
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          scope: target.scope,
+          cwdRootId: target.cwdRootId,
+          cwdRelativePath: '',
+          cwd: target.rootPath,
+          shell,
+          environment: desktopTerminalEnvironmentFor(
+            request.projectId,
+            request.worktreeId,
+          ),
+          cols: request.cols,
+          rows: request.rows,
+          ...(request.terminalProfileId !== undefined && {
+            profileId: request.terminalProfileId,
+          }),
+          ...(request.initialCommand !== undefined && {
+            initialCommand: request.initialCommand,
+          }),
+        }),
+    );
+  } catch (error) {
+    if (routing.noteDaemonTerminalFallback(error)) return null;
+    throw error;
+  }
+}
+
+// The newest scrollback a recreated daemon terminal replays (its window's size).
+const DAEMON_RESTORE_SCROLLBACK_MAX_CHARS = 1024 * 1024;
+
+/**
+ * Restarts a persisted shell in the daemon when the experiment selects its
+ * worktree, as the engine restarts one in process; `null` leaves it to the
+ * engine, which also refuses a terminal that is not restorable.
+ */
+async function restoreDaemonTerminal(
+  request: TerminalRestoreRequest,
+  route: DaemonTerminalRouteContext,
+): Promise<TerminalSession | null> {
+  const persisted = terminalPersistenceStore.getPersistedTerminalEntry(
+    request.terminalId,
+  );
+  if (
+    !persisted ||
+    (persisted.session.kind ?? 'shell') !== 'shell' ||
+    !isRestorableExitSignal(persisted.signal)
+  )
+    return null;
+  const { session } = persisted;
+  const routing = await import('../terminal/daemon-terminal-route');
+  const target = await routing.selectDaemonTerminalTarget(
+    { projectId: session.projectId, worktreeId: session.worktreeId },
+    route,
+  );
+  if (!target) return null;
+  const scrollback = persisted.scrollbackLines.join('\n');
+  const directory = routing.daemonRestoreDirectory(
+    target.rootPath,
+    session.cwd,
+  );
+  try {
+    return await withWorkspaceTargetRuntimeStartReservation(
+      session.projectId,
+      session.worktreeId,
+      () =>
+        routing.getDaemonTerminals().recreate({
+          terminalId: request.terminalId,
+          projectId: session.projectId,
+          worktreeId: session.worktreeId,
+          scope: target.scope,
+          cwdRootId: target.cwdRootId,
+          cwdRelativePath: directory.cwdRelativePath,
+          cwd: directory.cwd,
+          shell: desktopTerminalShells.persisted(session),
+          environment: desktopTerminalEnvironmentFor(
+            session.projectId,
+            session.worktreeId,
+          ),
+          cols: request.cols,
+          rows: request.rows,
+          createdAt: Date.now(),
+          scrollback:
+            scrollback.length > DAEMON_RESTORE_SCROLLBACK_MAX_CHARS
+              ? scrollback.slice(-DAEMON_RESTORE_SCROLLBACK_MAX_CHARS)
+              : scrollback,
+          ...(session.initialCommand !== undefined && {
+            initialCommand: session.initialCommand,
+          }),
+        }),
+    );
+  } catch (error) {
+    if (routing.noteDaemonTerminalFallback(error)) return null;
+    throw error;
+  }
 }
 
 export async function spawnTerminalForRenderer(
   request: TerminalSpawnRequest,
+  route?: DaemonTerminalRouteContext,
 ): Promise<TerminalSession> {
   if (request.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID) {
-    return spawnTerminalAfterShellPrewarm(request);
+    return spawnTerminalAfterShellPrewarm(request, route);
   }
   if (request.relativeCwd !== undefined && request.relativeCwd !== '') {
     throw new TerminalServiceError(
@@ -527,8 +667,18 @@ export async function spawnTerminalForRenderer(
 export async function restoreTerminalForRenderer(
   request: TerminalRestoreRequest,
   session: TerminalSession | undefined,
+  route?: DaemonTerminalRouteContext,
 ): Promise<TerminalSession> {
   if (session?.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+    // A live daemon terminal stays there; a persisted one goes where the
+    // experiment sends the next terminal.
+    const daemon = workerTerminal.daemonTerminals;
+    if (daemon?.has(request.terminalId))
+      return daemon.reattach(request.terminalId, request.cols, request.rows);
+    if (route?.localWindow && !workerTerminal.get(request.terminalId)) {
+      const restored = await restoreDaemonTerminal(request, route);
+      if (restored) return restored;
+    }
     return workerTerminal.restore({
       terminalId: request.terminalId,
       cols: request.cols,

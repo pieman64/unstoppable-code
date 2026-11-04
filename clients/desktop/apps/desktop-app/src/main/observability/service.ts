@@ -3623,12 +3623,16 @@ export class ObservabilityService {
   }
 
   loadSnapshot(): AgentObservabilitySnapshot {
+    return { ...this.loadAuditOverview(), usage: this.buildUsageOverview() };
+  }
+
+  /** The snapshot without provider account usage, which stays host-fed. */
+  loadAuditOverview(): Omit<AgentObservabilitySnapshot, 'usage'> {
     return {
       version: 1,
       historicalMode: 'forward-only',
       retentionDays: this.retentionDays,
       recentEntries: [...this.recentEntries].sort(compareEntries),
-      usage: this.buildUsageOverview(),
     };
   }
 

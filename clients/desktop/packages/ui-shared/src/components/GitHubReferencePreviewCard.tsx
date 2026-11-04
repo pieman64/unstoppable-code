@@ -7,10 +7,10 @@ import type {
 import { formatRelativeTime } from '../lib/format-relative-time';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { PersonIcon } from '../icons/AppIcons';
-import { DisplayAvatar } from './DisplayAvatar';
+import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
 import { GroupedDiffStats } from './GroupedDiffStats';
 import { CometSpinner } from './CometSpinner';
-import { SKELETON_BLOCK_CLASS } from './SkeletonBlock';
+import { useSkeletonBone } from './SkeletonBlock';
 import {
   PR_STATUS_LINES,
   prStatusLineKind,
@@ -199,9 +199,9 @@ function StatusLayoutItemCard({
                 name={preview.author}
                 image={preview.authorAvatarUrl}
                 size="xs"
-                fallback={
+                glyph={
                   <PersonIcon
-                    size={14}
+                    size={DISPLAY_AVATAR_GLYPH_SIZE.xs}
                     drawnStrokeWidth={CARD_ICON_STROKE_PX}
                   />
                 }
@@ -239,12 +239,8 @@ const FILE_COUNT_FORMAT = new Intl.NumberFormat('en-US');
 
 /** One shaded block of the loading card; the classes give its size and shape. */
 function Bone({ className }: { className: string }): JSX.Element {
-  return (
-    <span
-      aria-hidden="true"
-      className={`${SKELETON_BLOCK_CLASS} ${className}`}
-    />
-  );
+  const bone = useSkeletonBone<HTMLSpanElement>();
+  return <span {...bone} className={`block ${className}`} />;
 }
 
 /**

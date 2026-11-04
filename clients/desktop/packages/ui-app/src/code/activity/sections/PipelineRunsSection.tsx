@@ -6,8 +6,8 @@ import type {
   PortalPipelineRunProjection,
 } from '@canopy/protocol/portal';
 import {
-  CompletedRunsDisclosure,
   DagProgressBar,
+  Disclosure,
   StatusBadge,
   type DagJobMeta,
   type DagJobStatus,
@@ -213,10 +213,11 @@ export function PipelineRunsSection({
         />
       ))}
       {completed.length > 0 && (
-        <CompletedRunsDisclosure
-          count={completed.length}
-          expanded={completedExpanded}
-          onToggle={(): void => setCompletedExpanded((value) => !value)}
+        <Disclosure
+          label={`Completed (${completed.length})`}
+          open={completedExpanded}
+          onOpenChange={setCompletedExpanded}
+          dataTestId="activity-pipeline-runs-completed"
         >
           {completed.map((run) => (
             <PipelineRunRow
@@ -224,7 +225,7 @@ export function PipelineRunsSection({
               run={run}
             />
           ))}
-        </CompletedRunsDisclosure>
+        </Disclosure>
       )}
     </div>
   );

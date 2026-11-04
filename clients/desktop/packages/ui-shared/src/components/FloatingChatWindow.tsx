@@ -16,6 +16,7 @@ import { DropdownMenuItem } from './DropdownMenu';
 import { FloatingMenu } from './FloatingMenu';
 import { PickerTriggerChevron } from './PickerMenu';
 import { TitlebarIconButton } from './TitlebarIconButton';
+import { Heading } from './Heading';
 
 /**
  * Where the floating chat sits. `panel` fills a transparent native panel its
@@ -414,7 +415,11 @@ export function FloatingChatRecentList({
       data-testid="floating-chat-recent"
       className="flex flex-col text-s"
     >
-      <h3 className="px-2 pb-2 text-s font-normal fg-primary">Recent chats</h3>
+      <div className="px-2 pb-2">
+        <Heading level={3} variant="title">
+          Recent chats
+        </Heading>
+      </div>
       {items.map((item) => (
         <button
           key={item.id}

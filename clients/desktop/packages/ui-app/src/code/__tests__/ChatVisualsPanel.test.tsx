@@ -163,9 +163,10 @@ it('masks each visual title in session replay and keeps the entry recorded', () 
   act(() => root.render(<ChatVisualsPanel sourceKey="chat-a" />));
   expect(items()).toHaveLength(2);
   for (const item of items()) {
-    expect(
-      item.querySelector('h3')?.classList.contains(REPLAY_MASK_CLASS),
-    ).toBe(true);
+    const heading = item.querySelector('h3');
+    expect(heading?.querySelector(`.${REPLAY_MASK_CLASS}`)?.textContent).toBe(
+      heading?.textContent,
+    );
     expect(item.closest(`.${REPLAY_BLOCK_CLASS}`)).toBeNull();
   }
 });

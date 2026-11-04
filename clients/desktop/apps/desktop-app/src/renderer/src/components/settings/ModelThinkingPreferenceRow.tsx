@@ -209,7 +209,6 @@ export function ModelThinkingPreferenceRow({
                     }
                   }}
                   variant="select"
-                  selectShape="capsule"
                   selectFill
                   disabled={disabled || !modelAvailable}
                   testId={testIdPrefix ? `${testIdPrefix}-thinking` : undefined}

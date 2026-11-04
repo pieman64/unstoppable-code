@@ -26,6 +26,8 @@ import {
   memoryEditRevision,
   withMemoryWriteLock,
 } from '../memory/local/edit-coordination';
+import { prepareMemoryScopeForWrite } from '../memory/local/scope-manifest';
+import { nextMemoryRevision } from './helpers/local-memory-scope/revision';
 import { readConsolidationState } from '../memory/local/consolidation-state';
 import {
   LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE,
@@ -664,9 +666,12 @@ describe('refreshChatHistoryProfile', () => {
   });
 
   it('marks the write as a memory edit so a consolidation already in flight does not overwrite it', async () => {
-    const before = memoryEditRevision(memoryDir());
+    await prepareMemoryScopeForWrite(memoryDir());
+    const before = await memoryEditRevision(memoryDir());
     await refreshChatHistoryProfile(EXAMPLE_INPUT, { generate, now });
-    expect(memoryEditRevision(memoryDir())).toBe(before + 1);
+    expect(await memoryEditRevision(memoryDir())).toBe(
+      nextMemoryRevision(before),
+    );
   });
 
   it('does not ask the model again when the titles have not changed', async () => {
@@ -719,13 +724,19 @@ describe('refreshChatHistoryProfile', () => {
   it('records the refresh under the memory write lock', async () => {
     generate.mockResolvedValue({ output: { facts: [] }, finalize });
     let release: () => void = () => undefined;
+    let holding: () => void = () => undefined;
+    const holdingLock = new Promise<void>((resolve) => {
+      holding = resolve;
+    });
     const held = withMemoryWriteLock(
       memoryDir(),
       () =>
         new Promise<void>((resolve) => {
           release = resolve;
+          holding();
         }),
     );
+    await holdingLock;
     const refresh = refreshChatHistoryProfile(EXAMPLE_INPUT, {
       generate,
       now,

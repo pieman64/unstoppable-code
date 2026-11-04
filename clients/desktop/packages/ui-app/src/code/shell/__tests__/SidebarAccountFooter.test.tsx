@@ -6,7 +6,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   SidebarAccountFooter,
-  SidebarPersonAvatar,
   SidebarAccountRow,
 } from '../SidebarAccountFooter';
 
@@ -466,74 +465,5 @@ describe('SidebarAccountFooter', () => {
         'Ada Lovelace, Enterprise plan, usage warning',
       );
     });
-  });
-});
-
-describe('SidebarPersonAvatar', () => {
-  let container: HTMLElement;
-  let root: Root;
-
-  beforeEach(() => {
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  function render(
-    props: Partial<Parameters<typeof SidebarPersonAvatar>[0]> = {},
-  ): void {
-    act(() => {
-      root.render(
-        <SidebarPersonAvatar
-          name="Ada Lovelace"
-          image="https://example.com/ada.png"
-          {...props}
-        />,
-      );
-    });
-  }
-
-  const byTestId = (testId: string): HTMLElement | null =>
-    container.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-
-  it('draws the person as a 16px round avatar, the size of a row icon', () => {
-    render();
-    const avatar = byTestId('sidebar-person-avatar');
-    expect(avatar?.tagName).toBe('IMG');
-    expect(avatar?.getAttribute('src')).toBe('https://example.com/ada.png');
-    expect(avatar?.getAttribute('alt')).toBe('');
-    expect(avatar?.classList.contains(REPLAY_BLOCK_CLASS)).toBe(true);
-    expect(avatar?.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(['h-4', 'w-4', 'rounded-full']),
-    );
-  });
-
-  it('falls back to the initial for a missing, unsafe, or broken image', () => {
-    render({ image: null });
-    expect(byTestId('sidebar-person-avatar')).toBeNull();
-    expect(byTestId('sidebar-person-avatar-initial')?.textContent).toBe('A');
-    expect(
-      byTestId('sidebar-person-avatar-initial')?.classList.contains(
-        REPLAY_BLOCK_CLASS,
-      ),
-    ).toBe(true);
-
-    render({ image: 'file:///etc/passwd' });
-    expect(byTestId('sidebar-person-avatar')).toBeNull();
-
-    render({ image: 'https://example.com/broken.png' });
-    act(() => {
-      byTestId('sidebar-person-avatar')?.dispatchEvent(new Event('error'));
-    });
-    expect(byTestId('sidebar-person-avatar')).toBeNull();
-    expect(
-      byTestId('sidebar-person-avatar-initial')?.className.split(/\s+/),
-    ).toEqual(
-      expect.arrayContaining(['h-4', 'w-4', 'rounded-full', 'bg-muted']),
-    );
   });
 });

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { parsePipelineText } from '@canopy/desktop-shared/pipelines/parse-pipeline';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
@@ -224,7 +225,7 @@ import {
 import { isPipelineLocalMetadataReadable } from '../pipelines/pipeline-local-metadata-store';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
-import { normalizePipelinePluginCollectionPreferences } from '../pipelines/plugin-collection-store';
+import { normalizePipelinePluginCollectionPreferences } from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import * as pipelineStore from '../pipelines/pipeline-service';
 import type {
@@ -241,6 +242,10 @@ import type {
 import { readPreferencesFile } from '../lib/preferences-store';
 import { lastChatSendRunResult } from './pipeline-run-chat-sends';
 import { deleteOwnedPipeline } from './owned-pipeline';
+import {
+  repinConvertedPackageInstall,
+  verifyOwnedPipelinePackage,
+} from './owned-pipeline-package';
 import type { OwnedPipelineReplacement } from './chat-automation-conversion';
 import {
   assertAgentRouteModel,
@@ -435,9 +440,30 @@ export interface AutomationTrustedWrite {
    * trusted caller (an agent's project owner). Ignored for other actions.
    */
   owner?: string;
+  /**
+   * The request's run restriction is the one its chat action implies, which
+   * main restores when a converted automation goes back to native
+   * (CAN-5479). It replaces no restriction an install set, so an install's
+   * guard lets it through.
+   */
+  restoresImpliedTargetRequirement?: true;
 }
 
-/** A trusted create: the write's facts, an agent sender and its guard. */
+/** A trusted update: the write's facts, and a write that lands with it. */
+export interface AutomationTrustedUpdate extends AutomationTrustedWrite {
+  /**
+   * Regenerates a converted automation's owned pipeline for the update's
+   * action (CAN-5465). It runs inside the queued mutation, before the
+   * target and authorization checks that read the pipeline, and is refused
+   * while a run is in progress, so a run starts with the old pipeline and
+   * inputs or the new ones, never a mix. It answers the action it saved,
+   * which must be the update's; it is rolled back when the update is
+   * refused or the activity isn't stored.
+   */
+  regeneratesOwnedPipeline?: () => Promise<OwnedPipelineReplacement>;
+}
+
+/** A trusted create:the write's facts, an agent sender and its guard. */
 export interface AutomationTrustedCreate extends AutomationTrustedWrite {
   agentScheduledSend?: AgentScheduledSend;
   /** Rechecked inside the queue, so an owner change while waiting is seen. */
@@ -1123,6 +1149,20 @@ function getAutomationProviderForModel(model: ChatModel): AgentProviderType {
   return requireProviderForModel(model);
 }
 
+const ACTIVITY_RUNNING_RETRY =
+  'Activity is running. Try again after the run finishes.';
+
+/** Puts back the pipeline a conversion or regeneration saved. */
+function rollBackOwnedPipeline(
+  replacement: OwnedPipelineReplacement,
+): Promise<void> {
+  return replacement.rollback().catch(() =>
+    logMainProcessError('Failed to roll back an automation’s workflow', {
+      operation: 'rollback-owned-pipeline',
+    }),
+  );
+}
+
 function isActivityRunning(file: AutomationsFile, activityId: string): boolean {
   return file.recentRuns.some(
     (run) => run.activityId === activityId && run.status === 'running',
@@ -1689,6 +1729,18 @@ export class AutomationsService {
     return file.activities
       .filter((activity) => activity.installedFrom !== undefined)
       .map(cloneActivity);
+  }
+
+  /**
+   * Every activity, across all contexts, for the chat automation migration
+   * (CAN-5479). Unfiltered and side-effect free: each conversion re-reads its
+   * automation inside the write queue.
+   */
+  async listActivitiesForChatAutomationMigration(): Promise<
+    ScheduledActivity[]
+  > {
+    const file = await this.ensureFile();
+    return file.activities.map(cloneActivity);
   }
 
   async list(): Promise<AutomationsListResponse> {
@@ -2676,7 +2728,7 @@ export class AutomationsService {
     request: AutomationUpdateRequest,
     authorize?: (activity: ScheduledActivity) => Promise<boolean>,
     callerContext?: WorkspaceContext,
-    trusted: AutomationTrustedWrite = {},
+    trusted: AutomationTrustedUpdate = {},
   ): Promise<AutomationMutationResponse> {
     if (!isRecord(request) || typeof request.id !== 'string') {
       return { ok: false, error: 'Automation id is required.' };
@@ -2717,7 +2769,15 @@ export class AutomationsService {
     );
     if (dependenciesError) return { ok: false, error: dependenciesError };
 
-    return this.enqueueMutation(async () => {
+    // A regenerated pipeline stays only once the activity that runs it is
+    // written; a refusal or failure before then puts it back (CAN-5465).
+    const regeneration: { saved?: OwnedPipelineReplacement; written: boolean } =
+      { written: false };
+    const rollBackUnwritten = async (): Promise<void> => {
+      if (regeneration.saved && !regeneration.written)
+        await rollBackOwnedPipeline(regeneration.saved);
+    };
+    const mutate = async (): Promise<AutomationMutationResponse> => {
       const file = await this.ensureFile();
       const activity = file.activities.find((entry) => entry.id === request.id);
       if (!activity) return { ok: false, error: 'Activity not found.' };
@@ -2734,7 +2794,34 @@ export class AutomationsService {
           error:
             "An agent-scheduled message can't become another kind of automation. Delete it and create a new one.",
         };
+      if (
+        trusted.regeneratesOwnedPipeline &&
+        isActivityRunning(file, activity.id)
+      )
+        return { ok: false, error: ACTIVITY_RUNNING_RETRY };
       await assertAutomationContext(activity, callerContext);
+      // Saved before the checks below, which read the pipeline it writes.
+      if (trusted.regeneratesOwnedPipeline) {
+        try {
+          regeneration.saved = await trusted.regeneratesOwnedPipeline();
+        } catch (error) {
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        if (
+          request.action === undefined ||
+          !isDeepStrictEqual(
+            normalizeAutomationAction(regeneration.saved.action),
+            normalizeAutomationAction(request.action),
+          )
+        )
+          return {
+            ok: false,
+            error: 'The workflow saved isn’t the one this automation runs.',
+          };
+      }
       const turnsOn = request.enabled === true && !activity.enabled;
       let effectiveEnabled = request.enabled ?? activity.enabled;
       const normalizedRequestedAction = request.action
@@ -2754,7 +2841,11 @@ export class AutomationsService {
       const effectiveGlobal = isGlobalPipelineAutomationAction(effectiveAction);
       if (effectiveGlobal) candidate.executionContext ??= 'personal';
       if (request.targetRequirement !== undefined) {
-        if (activity.installedFrom && !request.installedFrom) {
+        if (
+          activity.installedFrom &&
+          !request.installedFrom &&
+          !trusted.restoresImpliedTargetRequirement
+        ) {
           return {
             ok: false,
             error:
@@ -2989,6 +3080,7 @@ export class AutomationsService {
           if (index !== -1) file.activities[index] = stored;
           throw error;
         }
+        regeneration.written = true;
         this.surfaces?.onChange?.(await contextSnapshot(file));
         if (request.installedFrom !== undefined) {
           // Applying a shared update re-registers the new hash.
@@ -3005,6 +3097,16 @@ export class AutomationsService {
         return { ok: true, activity: cloneActivity(activity) };
       } finally {
         releaseTarget();
+      }
+    };
+    return this.enqueueMutation(async () => {
+      try {
+        const response = await mutate();
+        await rollBackUnwritten();
+        return response;
+      } catch (error) {
+        await rollBackUnwritten();
+        throw error;
       }
     });
   }
@@ -3081,10 +3183,7 @@ export class AutomationsService {
       const activity = file.activities[index];
       if (!activity) return { ok: false, error: 'Activity not found.' };
       if (isActivityRunning(file, activityId))
-        return {
-          ok: false,
-          error: 'Activity is running. Try again after the run finishes.',
-        };
+        return { ok: false, error: ACTIVITY_RUNNING_RETRY };
       let replacement: OwnedPipelineReplacement;
       try {
         replacement = await save(cloneActivity(activity));
@@ -3101,21 +3200,22 @@ export class AutomationsService {
           activity.executionContext ?? replacement.executionContext,
         updatedAt: new Date().toISOString(),
       };
+      // A global pipeline takes no run restriction; `save` checked it is the
+      // one the chat action implies, which converting back restores.
+      delete converted.targetRequirement;
       try {
         file.activities[index] = converted;
         await this.writeFile(file);
       } catch (error) {
         file.activities[index] = activity;
-        await replacement.rollback().catch(() =>
-          logMainProcessError('Failed to roll back an automation’s workflow', {
-            operation: 'rollback-owned-pipeline',
-          }),
-        );
+        await rollBackOwnedPipeline(replacement);
         return {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         };
       }
+      // A capability package install keeps matching what it now shows.
+      await repinConvertedPackageInstall(activity, converted);
       // The stored automation now runs the pipeline, so a failed
       // notification keeps both; the next change republishes.
       try {
@@ -4239,6 +4339,10 @@ export class AutomationsService {
             activity.installedFrom.capabilityPackage,
           )
         : undefined;
+    // A converted install's package is verified before its run starts, as
+    // its native prompt's was; the generated send step applies it (CAN-5479).
+    if (action.type === 'worktree_pipeline')
+      await verifyOwnedPipelinePackage(activity);
     switch (action.type) {
       case 'app_advisor_prompt': {
         if (!this.surfaces) {

@@ -16,6 +16,7 @@ import {
   McpServerLogo,
   Notice,
   NoticeButton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   ChevronDownIcon,
@@ -28,6 +29,7 @@ import {
   SettingsSection,
   ExternalAgentsUnavailable,
 } from './external-agents-parts';
+import { ExternalAgentConfirmationSkeleton } from './external-agents-skeletons';
 import { EXTERNAL_AGENTS_PATH, externalAgentPath } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -107,16 +109,7 @@ function ExternalAgentConfirmationLoading({
 }): JSX.Element {
   return (
     <ConfirmationPageColumn status="loading">
-      <div
-        data-testid="external-agent-confirmation-loading"
-        role="status"
-        aria-label="Loading request"
-        className="flex w-full flex-col gap-3"
-      >
-        <div className="h-16 animate-pulse rounded-lg bg-secondary" />
-        <div className="h-32 animate-pulse rounded-lg bg-secondary" />
-        <div className="h-40 animate-pulse rounded-lg bg-secondary" />
-      </div>
+      <ExternalAgentConfirmationSkeleton />
       <OpenExternalAgents onOpenPath={onOpenPath} />
     </ConfirmationPageColumn>
   );
@@ -204,9 +197,9 @@ function ExternalAgentConfirmationDetails({
           shape="squircle"
         />
         <div className="min-w-0 space-y-1">
-          <h1 className="text-xl font-medium text-pretty fg-primary">
+          <Heading level={1} variant="page">
             {action.confirmation.action}
-          </h1>
+          </Heading>
           {pending ? (
             <p className="text-s text-pretty fg-secondary">
               {`${action.clientName} asked to do this for you. Nothing happens unless you confirm.`}

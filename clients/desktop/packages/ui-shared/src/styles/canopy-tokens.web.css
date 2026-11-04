@@ -1,4 +1,5 @@
 /* Web retains the default appearance and the named marketing theme. */
 @import './workspace-layout-picker.css';
+@import 'skullet/styles.css';
 @import './generated-theme-tokens.web.css';
 @import './canopy-tokens-core.css';

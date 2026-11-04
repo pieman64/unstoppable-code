@@ -1,14 +1,14 @@
 import type { JSX } from 'react';
-import { LinearProgress } from './LinearProgress';
+import { ProgressBar, type ProgressTone } from './Progress';
 
 /**
- * Meter fill: the accent for the used share, turning to warning and then
+ * Meter tone: the accent for the used share, turning to warning and then
  * destructive as it nears the limit.
  */
-function getMeterBarClass(percentage: number): string {
-  if (percentage >= 90) return 'bg-destructive';
-  if (percentage >= 70) return 'bg-warning';
-  return 'bg-accent';
+function getMeterTone(percentage: number): ProgressTone {
+  if (percentage >= 90) return 'destructive';
+  if (percentage >= 70) return 'warning';
+  return 'accent';
 }
 
 /** 44px tap floor on touch hardware (DESIGN.md), untouched on a mouse. */
@@ -29,11 +29,12 @@ export function UsageMeter({
   label: string;
 }): JSX.Element {
   return (
-    <LinearProgress
-      percentage={percentage}
-      barColor={getMeterBarClass(percentage)}
-      height="h-1.5"
+    // The row above the meter names it and shows its percent.
+    <ProgressBar
+      value={percentage}
+      tone={getMeterTone(percentage)}
       label={label}
+      hideLabel
     />
   );
 }

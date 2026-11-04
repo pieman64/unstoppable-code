@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, type JSX, type ReactNode } from 'react';
+import { useCallback, useId, useState, type JSX, type ReactNode } from 'react';
 import {
   HomeSection,
   SuggestionRow,
@@ -10,6 +10,7 @@ import { Button } from '@canopy/ui-shared/components';
 import {
   ApprovalAskIcon,
   ChatIcon,
+  ChevronDownMediumIcon,
   CircleCheckIcon,
   CloseMediumIcon,
   HistoryIcon,
@@ -63,6 +64,10 @@ export interface ContinueSectionInterrupted {
   readonly onResume: () => void;
   readonly onDismiss: () => void;
 }
+
+/** Attention rows shown before Show more, and how many each click adds. */
+export const CONTINUE_FIRST_PAGE_ROWS = 5;
+export const CONTINUE_SHOW_MORE_ROWS = 10;
 
 function defaultInterruptedLabel(count: number): string {
   return `Resume ${count} interrupted session${count === 1 ? '' : 's'}`;
@@ -131,6 +136,26 @@ export interface ContinueSectionProps {
    * shows, since capping would hide results with no way to reach them.
    */
   readonly onOpenUnreadOverflow?: () => void;
+  /**
+   * Hosts that also read the model (App Advisor) own how many attention rows
+   * are shown; the section keeps its own count otherwise.
+   */
+  readonly attentionPaging?: ContinueAttentionPaging;
+}
+
+export interface ContinueAttentionPaging {
+  readonly shownRows: number;
+  readonly onShowMore: () => void;
+}
+
+/** Section-owned paging: 5 rows, then 10 more per Show more. */
+export function useContinueAttentionPaging(): ContinueAttentionPaging {
+  const [shownRows, setShownRows] = useState(CONTINUE_FIRST_PAGE_ROWS);
+  const onShowMore = useCallback(
+    (): void => setShownRows((count) => count + CONTINUE_SHOW_MORE_ROWS),
+    [],
+  );
+  return { shownRows, onShowMore };
 }
 
 function attentionIcon(item: ContinueAttentionItem): ReactNode {
@@ -214,8 +239,11 @@ export function ContinueSection({
   onOpenLastViewed,
   interrupted = null,
   onOpenUnreadOverflow,
+  attentionPaging,
 }: ContinueSectionProps): JSX.Element | null {
   const headingId = useId();
+  const ownPaging = useContinueAttentionPaging();
+  const paging = attentionPaging ?? ownPaging;
   const interruptedVisible = interrupted !== null && interrupted.count > 0;
   const interruptedSession = interrupted?.session ?? null;
   const model = buildContinueSectionModel({
@@ -224,6 +252,7 @@ export function ContinueSection({
     interruptedVisible,
     interruptedTarget: interruptedSession?.mergeTarget ?? null,
     hasUnreadOverflowDestination: onOpenUnreadOverflow !== undefined,
+    shownAttentionRows: paging.shownRows,
   });
   if (!model.visible) return <>{children}</>;
 
@@ -313,20 +342,29 @@ export function ContinueSection({
             </SuggestionRowTrailing>
           </li>
         ) : null}
-        {model.needsInput.map((item) => (
+        {model.shownAttention.map((item) => (
           <AttentionRow
             key={rowKey(item)}
             item={item}
             onOpen={onOpenAttention}
           />
         ))}
-        {model.unread.map((item) => (
-          <AttentionRow
-            key={rowKey(item)}
-            item={item}
-            onOpen={onOpenAttention}
-          />
-        ))}
+        {/* Right under the rows it reveals, before Last viewed. */}
+        {/* Deviation from docs/design/interaction.md ("Show more" opens with
+            Disclosure): Continue pages its rows with one more SuggestionRow,
+            so the control keeps the rows' pitch (Daniil, 2026-11-03). */}
+        {model.hiddenAttentionCount > 0 ? (
+          <li>
+            <SuggestionRow
+              icon={<ChevronDownMediumIcon size={16} aria-hidden="true" />}
+              tone="muted"
+              data-testid="home-continue-show-more"
+              onClick={paging.onShowMore}
+            >
+              Show more
+            </SuggestionRow>
+          </li>
+        ) : null}
         {model.unreadOverflowCount > 0 && onOpenUnreadOverflow ? (
           <li>
             <SuggestionRow

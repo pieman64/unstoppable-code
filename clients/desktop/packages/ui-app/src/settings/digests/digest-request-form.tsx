@@ -12,6 +12,7 @@ import {
   ErrorBanner,
   FormField,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   SettingsOperationError,
@@ -256,7 +257,9 @@ export function DigestRequestForm({
       className="rounded-xl border bg-depth p-5"
       data-testid={`${testIdPrefix}-digest-request`}
     >
-      <h3 className="text-s font-semibold fg-primary">Request a digest</h3>
+      <Heading level={3} variant="title">
+        Request a digest
+      </Heading>
       <p
         className="mt-1 text-xs fg-secondary"
         data-testid={`${testIdPrefix}-digest-request-intro`}

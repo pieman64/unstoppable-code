@@ -97,6 +97,14 @@ export interface PanelContentRootProps {
   renderPanelContent: (args: RenderPanelContentArgs) => ReactNode;
   auxLayoutKeys?: readonly string[];
   includeAuxWindows?: boolean;
+  /**
+   * Kinds whose hidden content mounts only once the tab has been shown.
+   * Showing a worktree otherwise mounts, styles and lays out every hidden
+   * tab of it; a tab that has been shown stays mounted, so switching back
+   * keeps its state. Hosts opt in per kind: content that must run while
+   * hidden (a browser page, a terminal) keeps mounting up front.
+   */
+  deferHiddenContent?: (kind: string) => boolean;
 }
 
 function ownerKeyOf(layoutKey: string): string {
@@ -108,6 +116,8 @@ function containerKey(ownerKey: string, panelId: string): string {
 }
 
 const panelContentContainers = new Map<string, HTMLElement>();
+// Container keys whose content has been on screen (see `deferHiddenContent`).
+const shownPanelContent = new Set<string>();
 
 /**
  * Lazily creates containers in the opener realm (doc-13). Document access
@@ -140,6 +150,7 @@ export function resetPanelContentContainersForTests(): void {
     element.remove();
   });
   panelContentContainers.clear();
+  shownPanelContent.clear();
 }
 
 function collectLivePanelKeys(
@@ -163,6 +174,7 @@ export function PanelContentRoot({
   renderPanelContent,
   auxLayoutKeys = [],
   includeAuxWindows = true,
+  deferHiddenContent,
 }: PanelContentRootProps): JSX.Element {
   const layouts = usePanelLayoutStore((state) => state.layouts);
 
@@ -176,6 +188,9 @@ export function PanelContentRoot({
       }
     });
     for (const key of stale) panelContentContainers.delete(key);
+    shownPanelContent.forEach((key) => {
+      if (!live.has(key)) shownPanelContent.delete(key);
+    });
   }, [layouts]);
 
   const mountedLayoutKeys: string[] = [];
@@ -208,6 +223,13 @@ export function PanelContentRoot({
       for (const tab of group.tabs) {
         const isActiveTab = tab.panelId === group.activePanelId;
         const isVisible = isActiveTab && isGroupVisible && isGroupExpanded;
+        const key = containerKey(ownerKey, tab.panelId);
+        if (isVisible) shownPanelContent.add(key);
+        else if (
+          deferHiddenContent?.(tab.kind) === true &&
+          !shownPanelContent.has(key)
+        )
+          continue;
         portals.push(
           createPortal(
             <PanelHostContext.Provider value={layoutHostState}>
@@ -230,7 +252,7 @@ export function PanelContentRoot({
               </PanelWorktreeContext.Provider>
             </PanelHostContext.Provider>,
             acquirePanelContentElement(ownerKey, tab.panelId),
-            containerKey(ownerKey, tab.panelId),
+            key,
           ),
         );
       }

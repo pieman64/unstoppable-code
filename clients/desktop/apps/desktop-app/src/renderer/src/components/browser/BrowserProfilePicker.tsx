@@ -16,7 +16,7 @@ import {
   SettingsIcon,
   Tooltip,
 } from '@canopy/ui-shared';
-import { ControlSelect, FormField } from '@canopy/ui-shared/components';
+import { FormField, SettingsSelect } from '@canopy/ui-shared/components';
 import type {
   BrowserProfileRecord,
   BrowserTaskSlot,
@@ -81,7 +81,7 @@ export function BrowserProfilePicker({
   const [notice, setNotice] = useState('');
   const [nextOffset, setNextOffset] = useState<number>();
   const button = useRef<HTMLButtonElement>(null);
-  const selectionRef = useRef<HTMLSelectElement>(null);
+  const selectionRef = useRef<HTMLButtonElement>(null);
   // Escape and an outside press close the popover, except while an
   // operation is in flight: closing mid-switch would hide the progress and
   // error the user still needs to see. Meanwhile an outside press is ignored
@@ -99,7 +99,7 @@ export function BrowserProfilePicker({
     selected === 'task'
       ? { kind: 'task' }
       : { kind: 'named', profileId: selected };
-  /** The profile this tab is using right now, in `<select>` value form. */
+  /** The profile this tab is using right now, as a dropdown value. */
   const currentValue =
     snapshot.profile?.selection.kind === 'named'
       ? snapshot.profile.resolvedProfileId
@@ -276,43 +276,36 @@ export function BrowserProfilePicker({
           <div className="space-y-1.5">
             <FormField label="Use profile">
               {(fieldControl) => (
-                // The operating system's menu on purpose: this popover sits
-                // over the page's native browser view, and only an OS menu
-                // draws above that view. Canopy's own menu (`Select`,
-                // `SettingsSelect`) would open underneath the page.
-                <ControlSelect
+                <SettingsSelect
                   {...fieldControl}
                   ref={selectionRef}
-                  fill
+                  width="fill"
                   data-testid="browser-profile-selection"
                   value={selected}
-                  onChange={(event) => select(event.target.value)}
+                  onValueChange={select}
                   disabled={busy}
-                >
-                  <option value="task">Task (this task only)</option>
-                  {selected !== 'task' &&
-                    !profiles.some(
-                      (profile) => profile.profileId === selected,
-                    ) && <option value={selected}>Unavailable profile</option>}
-                  {profiles
-                    .filter((profile) => profile.kind === 'named')
-                    .map((profile) => {
-                      const qualifier = profileNameQualifier(
-                        profile,
-                        colliding,
-                      );
-                      return (
-                        <option
-                          key={profile.profileId}
-                          value={profile.profileId}
-                        >
-                          {qualifier
+                  options={[
+                    { value: 'task', label: 'Task (this task only)' },
+                    ...(selected !== 'task' &&
+                    !profiles.some((profile) => profile.profileId === selected)
+                      ? [{ value: selected, label: 'Unavailable profile' }]
+                      : []),
+                    ...profiles
+                      .filter((profile) => profile.kind === 'named')
+                      .map((profile) => {
+                        const qualifier = profileNameQualifier(
+                          profile,
+                          colliding,
+                        );
+                        return {
+                          value: profile.profileId,
+                          label: qualifier
                             ? `${profile.displayName} · ${qualifier}`
-                            : profile.displayName}
-                        </option>
-                      );
-                    })}
-                </ControlSelect>
+                            : profile.displayName,
+                        };
+                      }),
+                  ]}
+                />
               )}
             </FormField>
             {nextOffset !== undefined && (

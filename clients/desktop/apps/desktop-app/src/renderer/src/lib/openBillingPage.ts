@@ -23,7 +23,10 @@ import {
   resolveCreditsBillingTarget,
   type ModelLibraryUnlockSource,
 } from '@canopy/protocol/billing';
-import { MODEL_LIBRARY_UNLOCK_COPY } from '@canopy/ui-shared/components';
+import {
+  CONTACT_ORG_ADMIN_COPY,
+  MODEL_LIBRARY_UNLOCK_COPY,
+} from '@canopy/ui-shared/components';
 import { hostedSettingsOpenable } from '@/components/settings/hosted/hosted-settings-availability';
 import { announceAiCreditsChanged } from '@/lib/aiCreditsChanged';
 import { brandText } from '@/lib/brand';
@@ -62,11 +65,9 @@ import {
 
 /**
  * Copy for an org member whose org carries the credit-pool capability but has no
- * spendable headroom right now. They cannot buy credits themselves, so every
- * banner shows this instead of a purchase CTA.
+ * spendable headroom right now. Defined once with the shared recovery copy.
  */
-export const CONTACT_ORG_ADMIN_COPY =
-  'Contact your org admin to increase your spend quota.';
+export { CONTACT_ORG_ADMIN_COPY };
 
 /**
  * Copy for a member of an org that has LOST the `teams` capability (CAN-2311).

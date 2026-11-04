@@ -293,7 +293,7 @@ describe('McpTab proxy port UI', () => {
       });
       for (const value of values()) {
         expect(value.classList.contains('invisible')).toBe(false);
-        expect(value.querySelector('.animate-pulse')).toBeInstanceOf(
+        expect(value.querySelector('[skullet-bar]')).toBeInstanceOf(
           HTMLElement,
         );
       }

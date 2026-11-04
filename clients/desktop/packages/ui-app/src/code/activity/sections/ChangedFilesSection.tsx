@@ -32,6 +32,7 @@ import {
   LoadingSpinner,
   Notice,
   Button,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { toDiffFileStatus } from '../../file/diff-status';
 
@@ -221,7 +222,6 @@ function FileRow({
           : ''
       }`}
       data-testid="activity-changed-file"
-      title={tooltip}
       role={select ? 'button' : undefined}
       tabIndex={select ? 0 : undefined}
       onClick={select}
@@ -253,9 +253,12 @@ function FileRow({
           : undefined
       }
     >
+      {/* The full path on the truncated text, not the row: a row's help is a
+          shared tooltip, a cut-off value keeps its native title. */}
       <div
         className="flex min-w-0 flex-1 items-baseline text-s"
         data-testid={openDataTestId}
+        title={tooltip}
       >
         <span className="min-w-0 shrink truncate fg-secondary">{dir}</span>
         <span className="max-w-full shrink-0 truncate fg-primary/80">
@@ -507,18 +510,21 @@ function ChangedFilesGroupHeading({
   const isCapped = item.total > item.budget;
   const reportsTotal = isCapped || item.exactTotal;
   return (
-    <h4
-      className="mb-1 px-3 text-2xs font-medium fg-secondary"
-      {...(reportsTotal ? { 'data-total': String(item.total) } : {})}
-    >
-      {changedFilesHeadingText(
-        item.label,
-        item.total,
-        item.budget,
-        item.truncated,
-        item.exactTotal,
-      )}
-    </h4>
+    <div className="mb-1 px-3">
+      <Heading
+        level={4}
+        variant="label"
+        {...(reportsTotal ? { 'data-total': String(item.total) } : {})}
+      >
+        {changedFilesHeadingText(
+          item.label,
+          item.total,
+          item.budget,
+          item.truncated,
+          item.exactTotal,
+        )}
+      </Heading>
+    </div>
   );
 }
 
@@ -1596,9 +1602,11 @@ export function ChangedFilesSection({
       {uncommitted.length > 0 && (
         <div>
           {committed.length > 0 && (
-            <h4 className="mb-1 px-3 text-2xs font-medium fg-secondary">
-              Uncommitted
-            </h4>
+            <div className="mb-1 px-3">
+              <Heading level={4} variant="label">
+                Uncommitted
+              </Heading>
+            </div>
           )}
           {uncommitted.map((file) => (
             <FileRow
@@ -1626,9 +1634,11 @@ export function ChangedFilesSection({
       )}
       {committed.length > 0 && (
         <div>
-          <h4 className="mb-1 px-3 text-2xs font-medium fg-secondary">
-            Committed
-          </h4>
+          <div className="mb-1 px-3">
+            <Heading level={4} variant="label">
+              Committed
+            </Heading>
+          </div>
           {committed.map((file) => (
             <FileRow
               key={changedFileRowKey(file)}

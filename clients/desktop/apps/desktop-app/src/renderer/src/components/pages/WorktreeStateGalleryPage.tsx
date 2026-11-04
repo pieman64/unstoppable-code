@@ -1,4 +1,4 @@
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import {
   Fragment,
   useCallback,
@@ -366,9 +366,9 @@ function LeadingPriorityCard(): JSX.Element {
     >
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="text-sm font-semibold fg-primary">
+          <Heading level={2} variant="title">
             Leading icon priority
-          </h2>
+          </Heading>
           <p className="mt-1 text-xs leading-relaxed fg-secondary">
             Drag to build your proposed order. Items above the divider claim the
             leading slot (top wins); items below stay subtitle-only. This is a
@@ -474,9 +474,9 @@ export function WorktreeStateGalleryPage(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-12">
         <div className="mx-auto max-w-5xl space-y-8">
           <div className="space-y-2">
-            <h1 className="text-2xl font-semibold fg-primary">
+            <Heading level={1} variant="page">
               Worktree States
-            </h1>
+            </Heading>
             <p className="text-s fg-secondary">
               Every state the sidebar worktree row can express, rendered by the
               real shared component with direct props. Hover any row to see the
@@ -499,7 +499,9 @@ export function WorktreeStateGalleryPage(): JSX.Element {
             data-testid="state-color-legend"
             className="rounded-xl border bg-base p-4"
           >
-            <h2 className="text-sm font-semibold fg-primary">Color legend</h2>
+            <Heading level={2} variant="title">
+              Color legend
+            </Heading>
             <ul className="mt-3 grid grid-cols-1 gap-x-8 gap-y-2 md:grid-cols-2">
               {LEGEND_ENTRIES.map((entry) => (
                 <li key={entry.title} className="flex items-start gap-2.5">
@@ -526,9 +528,9 @@ export function WorktreeStateGalleryPage(): JSX.Element {
               data-testid={`gallery-section-${sectionSlug(section.title)}`}
               className="rounded-xl border bg-base p-4"
             >
-              <h2 className="text-sm font-semibold fg-primary">
+              <Heading level={2} variant="title">
                 {section.title}
-              </h2>
+              </Heading>
               {section.description && (
                 <p className="mt-1 text-xs leading-relaxed fg-secondary">
                   {section.description}

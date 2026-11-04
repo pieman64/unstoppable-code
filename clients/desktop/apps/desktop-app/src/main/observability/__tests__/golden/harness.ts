@@ -517,9 +517,22 @@ export interface GoldenAggregates {
   };
 }
 
+/** The reads the aggregates capture, served directly or through core. */
+export type GoldenAggregateReader = Pick<
+  GoldenObservabilityIngest,
+  | 'loadHistory'
+  | 'loadUsageMetrics'
+  | 'loadUsageTabSummary'
+  | 'loadUsageMetricsView'
+  | 'loadUsageTimeseries'
+  | 'getPipelineOutputDiagnostics'
+> & {
+  loadSnapshot(): Pick<AgentObservabilitySnapshot, 'recentEntries'>;
+};
+
 /** Every read the ingest serves over what it stored. */
 export async function captureAggregates(
-  ingest: GoldenObservabilityIngest,
+  ingest: GoldenAggregateReader,
 ): Promise<GoldenAggregates> {
   const tabSummaries: Record<string, UsageTabSummaryResponse> = {};
   for (const tab of TABS) {

@@ -14,6 +14,7 @@ import {
 import { Button } from './Button';
 import { DetailMoreMenu } from './DetailMoreMenu';
 import { EyeOffIcon } from '../icons/AppIcons';
+import { Heading } from './Heading';
 
 interface HomeSectionsContextValue {
   hidden: ReadonlySet<string>;
@@ -185,17 +186,19 @@ export function HomeSection({
     >
       <div className="mx-4 flex flex-col gap-2 border-b-[length:var(--border-hairline)] border-line-quaternary pb-3">
         <div className="flex min-h-7 items-center gap-2">
-          <h2
+          <Heading
+            level={2}
+            variant="section"
             ref={(node): void => {
               heading.current = node;
               context?.registerHeading(sectionId, node);
             }}
             tabIndex={-1}
             id={id}
-            className="min-w-0 flex-1 text-m font-medium fg-primary"
+            className="min-w-0 flex-1"
           >
             {title}
-          </h2>
+          </Heading>
           {/* Shown while the section is hovered or focused, or its menu is
               open (the menu portals out of the section); always on touch.
               It bleeds 6px past the divider into the column a row's

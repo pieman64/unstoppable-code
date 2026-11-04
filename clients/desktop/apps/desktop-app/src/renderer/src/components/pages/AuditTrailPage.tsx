@@ -50,6 +50,7 @@ import { LoadingSpinner } from '@/components/shared/loading';
 import {
   EmptyState,
   ErrorState,
+  Heading,
   StatusLabel,
 } from '@canopy/ui-shared/components';
 import { useContentSearch } from '@/hooks/useContentSearch';
@@ -1054,9 +1055,9 @@ export function AuditTrailPage(): JSX.Element {
                     data-testid="audit-transcript-injected-prompts"
                   >
                     <div>
-                      <h3 className="text-s font-semibold fg-primary">
+                      <Heading level={3} variant="title">
                         Injected prompts
-                      </h3>
+                      </Heading>
                       <p className="text-xs fg-secondary">
                         Prompts {brandText.appName} injected outside the user's
                         original text.

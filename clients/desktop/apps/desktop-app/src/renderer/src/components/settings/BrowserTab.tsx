@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Notice, ToggleSwitch } from '@canopy/ui-shared';
 import type { DefaultBrowserRegistrationStatus } from '@canopy/desktop-shared/types';
 import { BrowserProfilesSettings } from './BrowserProfilesSettings';
+import { BrowserSearchEngineSettings } from './BrowserSearchEngineSettings';
 import {
   SettingsGroup,
   SettingsPage,
@@ -160,7 +161,7 @@ export function BrowserTab(): JSX.Element {
   return (
     <SettingsPage
       title="Browser"
-      description="Choose where links open and which sites the built-in browser can load."
+      description="Choose where links open, which sites the built-in browser can load, and how it searches."
       dataTestId="settings-tab-browser"
     >
       <SettingsSection title="Built-in browser">
@@ -224,6 +225,8 @@ export function BrowserTab(): JSX.Element {
           />
         </SettingsGroup>
       </SettingsSection>
+
+      <BrowserSearchEngineSettings />
 
       <BrowserProfilesSettings />
     </SettingsPage>

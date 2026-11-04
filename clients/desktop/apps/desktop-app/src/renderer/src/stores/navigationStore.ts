@@ -179,6 +179,12 @@ export interface PipelineEditDeepLink {
   source?: 'bundled' | 'user' | 'curated';
   sharedRemoteId?: string;
   /**
+   * The worktree `cwd` belongs to, when the opener knows it. A Workflows panel
+   * in a pop-out window opens its own checkout's pipeline while the main
+   * window may show another worktree, so the editor cannot derive it there.
+   */
+  worktree?: { projectId: string; worktreeId: string };
+  /**
    * Plugins-page unified entry id that opened this pipeline (a related-item
    * click on a skill/plugin detail page, CAN-2382). When set, the pipeline
    * editor's Back returns to that entry's detail instead of the pipeline

@@ -40,7 +40,7 @@ export const QueuedMessageReason = memo(function QueuedMessageReason(
     if (props.layout === 'inline') {
       const text = QUEUED_MESSAGE_WAITING_REASON_COPY[props.waitingReason];
       return (
-        <Tooltip label={text}>
+        <Tooltip label={text} allowShrink>
           <span
             className="min-w-0 truncate text-xs fg-tertiary"
             data-testid="queued-message-waiting-reason"

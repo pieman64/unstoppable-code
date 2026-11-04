@@ -295,3 +295,24 @@ describe('runFindShortcut', () => {
     expect(returnFocus).not.toBe(document.activeElement);
   });
 });
+
+it('opens a registered PDF surface inside a dialog without targeting the background', () => {
+  const dialog = document.createElement('div');
+  dialog.setAttribute('role', 'dialog');
+  const pdf = surface('file', 'pdf');
+  dialog.append(pdf);
+  document.body.append(dialog);
+  register('file', 'pdf', pdf);
+  register('chat', 'background');
+  const event = cmdF(pdf);
+  expect(
+    runFindShortcut(event, () => ({ mode: 'chat', scopeKey: 'background' })),
+  ).toBe(true);
+  expect(useSurfaceFindStore.getState().activeScope.file).toBe('pdf');
+  expect(
+    runFindShortcut(cmdF(dialog), () => ({
+      mode: 'chat',
+      scopeKey: 'background',
+    })),
+  ).toBe(false);
+});

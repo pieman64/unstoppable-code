@@ -338,6 +338,27 @@ describe('pipelineSenderIdentity', () => {
   });
 });
 
+describe('parseAgentSenderProvenance (cloud chat)', () => {
+  // A cloud chat's sender is the hosted server's; desktop never accepts one
+  // as provenance for a send it revalidates.
+  it('refuses a cloud chat sender', () => {
+    expect(
+      parseAgentSenderProvenance({
+        version: 1,
+        capturedAt: '2026-10-26T00:00:00.000Z',
+        acceptedInputId: 'accepted-input',
+        sender: {
+          kind: 'cloud_chat',
+          projectId: 'workspace-1',
+          taskId: 'task-1',
+          chatId: 'chat-1',
+        },
+        owner: { kind: 'personal' },
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('parseAgentSenderProvenance (pipeline)', () => {
   const base = {
     version: 1,

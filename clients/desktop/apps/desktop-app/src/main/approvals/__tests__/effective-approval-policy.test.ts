@@ -199,6 +199,8 @@ describe('effective approval policy', () => {
           'preferences.generation.json',
           'preferences.backup-*.json',
           'migrations.json',
+          'migrations.last-good.json',
+          'migrations.damaged-*.json',
         ].map((name) => fold(path.join(dataDir, name))),
       ),
     );

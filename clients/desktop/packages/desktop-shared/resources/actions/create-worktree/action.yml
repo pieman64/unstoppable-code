@@ -35,7 +35,7 @@ inputs:
     required: false
     default: skip
   group:
-    description: Optional sidebar group name to put the new worktree in; created when missing. Desktop app only.
+    description: Optional sidebar group name to put the new worktree in; created when missing. Any name, none included, is a group to join. Desktop app only.
     required: false
 outputs:
   project_id:

@@ -49,6 +49,7 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   ForwardIcon,
@@ -543,9 +544,9 @@ function HarnessColumn({
     >
       <div className="mb-2 flex items-center gap-2 px-2">
         <AgentProviderIcon provider={harness} central width={14} height={14} />
-        <h2 id={headingId} className="text-s font-medium fg-primary">
+        <Heading level={2} variant="title" id={headingId}>
           {harnessLabel(harness)}
-        </h2>
+        </Heading>
       </div>
       {onConnect ? (
         <div className="px-2 py-4">

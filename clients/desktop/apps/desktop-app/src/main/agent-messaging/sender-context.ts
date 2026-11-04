@@ -284,13 +284,20 @@ function buildHiddenInstruction(
           taskId: sender.taskId,
           chatId: sender.chatId,
         }
-      : {
-          kind: sender.kind,
-          projectType: sender.projectType,
-          projectId: sender.projectId,
-          taskId: sender.taskId,
-          chatId: sender.chatId,
-        };
+      : sender.kind === 'cloud_chat'
+        ? {
+            kind: sender.kind,
+            projectId: sender.projectId,
+            taskId: sender.taskId,
+            chatId: sender.chatId,
+          }
+        : {
+            kind: sender.kind,
+            projectType: sender.projectType,
+            projectId: sender.projectId,
+            taskId: sender.taskId,
+            chatId: sender.chatId,
+          };
   const facts = safeJson({
     sender: canonicalSender,
     owner,
@@ -935,7 +942,10 @@ export function parseAgentSenderProvenance(
       acceptedInputId: value.acceptedInputId,
     };
   }
-  if (!isProjectOwnerContext(owner)) return null;
+  // A cloud chat's send never reaches a desktop chat.
+  if (sender.kind === 'cloud_chat' || !isProjectOwnerContext(owner)) {
+    return null;
+  }
   return {
     sender,
     owner,

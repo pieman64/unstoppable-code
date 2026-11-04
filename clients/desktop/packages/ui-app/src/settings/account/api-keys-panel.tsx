@@ -17,6 +17,7 @@ import {
   SettingsListSkeleton,
   TextInput,
   EmptyStateRow,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { Copy, Plus, Trash2 } from '@canopy/ui-shared/icons/AppIcons';
 import { formatDateTime } from '@canopy/ui-shared/lib';
@@ -247,7 +248,9 @@ export function ApiKeysManager({
       <div className={SETTINGS_CARD_ROW_CLASS}>
         <div className="min-w-0">
           {showHeading && (
-            <h2 className="text-xl font-semibold fg-primary">API keys</h2>
+            <Heading level={2} variant="page">
+              API keys
+            </Heading>
           )}
           <p className="max-w-xl text-xs text-pretty fg-secondary">
             Create manual API keys for {brandDisplayName} clients and review

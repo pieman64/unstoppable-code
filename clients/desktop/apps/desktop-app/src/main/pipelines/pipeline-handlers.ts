@@ -17,7 +17,6 @@ import {
   authorizeProjectPipelineRequest,
   assertStoredPipelineContext,
   readStoredPipelineContext,
-  recordSharedPipelineInstall,
   filterStoredPipelineContexts,
   filterProjectPipelineContexts,
 } from './pipeline-install-context';
@@ -31,7 +30,6 @@ import {
 } from './resource-lanes';
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
 import {
-  getManagedCuratedPipeline,
   startManagedCuratedPipelineSync,
   stopManagedCuratedPipelineSync,
 } from './curated-pipeline-catalog';
@@ -156,9 +154,6 @@ import {
   loadExecutionState,
   prepareMatrixJobRetryState,
   prepareMatrixVariantCancellation,
-  rerunPipelineExecution,
-  retryPipelineExecution,
-  retryMatrixJobExecution,
   MatrixExecutorInactiveError,
   saveExecutionState,
   setExecutionHidden,
@@ -202,7 +197,7 @@ import {
   normalizePipelinePluginCollectionPreferences,
   savePipelineModelAliasPreferences,
   savePipelinePluginCollectionPreferences,
-} from './plugin-collection-store';
+} from '@canopy/desktop-shared/node/pipelines/plugin-collection-store';
 import {
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
@@ -260,11 +255,21 @@ import {
   withPipelineTransientRetryState,
 } from './transient-error-retry-scheduler';
 import { broadcastPipelineExecutionEvent } from './pipeline-execution-event-broadcaster';
-import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
-import { admitStoredRunDefinition } from './run-definition-admission';
-import { setPipelineCancelBroadcast } from './pipeline-worker-host';
+import {
+  admitCuratedRunDefinition,
+  admitStoredRunDefinition,
+} from './run-definition-admission';
+import {
+  setPipelineExecutionFanOut,
+  settlePipelineExecutionEvent,
+  type PipelineControlSettlement,
+  type PipelineExecutionFanOut,
+  pipelineExecutorControls,
+} from './pipeline-worker-host';
+import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import {
   cancelPipelineThroughLocalWorker,
+  controlPipelineThroughLocalWorker,
   followExecutionHandle,
   startPipelineThroughLocalWorker,
 } from './pipeline-worker-dispatch';
@@ -272,6 +277,7 @@ import { isSharedPipelineLocalId } from '@canopy/protocol/pipelines';
 import {
   deleteUserPipeline,
   duplicatePipelineDefinition,
+  importRemotePipeline,
   listDesktopPipelines,
   PIPELINE_DEFINITION_DESKTOP_CALLER,
   pipelineWriteErrorMessage,
@@ -286,7 +292,6 @@ import {
   getPackageReadiness,
   installPublicPackageShare,
   listPackageInstalls,
-  removePackageInstall,
   resolveInstalledPipelinePackageForExecution,
   downloadSharedPipelinePackageForExecution,
   assertSharedPipelineMatchesAutomationInstallPin,
@@ -446,8 +451,8 @@ function trackExecutionWithAdvisor(
   reservationId: string = handle.id,
 ): void {
   trackExecution(handle, onSettled, reservationId);
-  // A started or resumed execution's subscribers and run record follow its
-  // handle. Retry, rerun and start-over get run records with CAN-4141.
+  // A started, resumed or replayed execution's subscribers and run record
+  // follow its handle.
   followExecutionHandle(handle);
   getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
   attachPipelineRunObservers(handle);
@@ -1149,90 +1154,23 @@ export function registerPipelineHandlers(): void {
         setUserPipelineAgentAuthor(savedId, null);
       };
       if (pipelineResourceContextEnabled() && input.sourceRemoteId) {
-        const id = input.id ?? randomUUID();
-        const previous = input.id ? service.getPipeline(id) : undefined;
-        const previousRaw = input.id ? service.getPipelineText(id) : undefined;
-        let savedDefinition = false;
-        let savedId = id;
-        let undoReceipt: (() => Promise<void>) | undefined;
+        // Core reads and validates the share itself, never the renderer's
+        // copy, and installs it with its receipt and subscription.
         try {
           validateId(input.sourceRemoteId, 'sourceRemoteId');
-          const detail = await getSharedPipeline(input.sourceRemoteId);
-          const sharedContent = parsePipelineText(detail.rawPipeline);
-          const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
-            sharedContent,
-            ownerContext,
-          );
-          if (ownerRefusal !== null)
-            return { success: false, error: ownerRefusal };
-          if (
-            input.id &&
-            (!previous?.success ||
-              !previous.data ||
-              !previousRaw?.success ||
-              !previousRaw.data)
-          )
-            throw new Error('Workflow unavailable (unknown-provenance)');
-          savedDefinition = Boolean(input.id);
-          const result = service.savePipeline(
-            {
-              ...input,
-              id,
-              content: sharedContent,
-              rawContent: detail.rawPipeline,
-            },
-            input.id ? undefined : { id },
-          );
-          if (!result.success || !result.data)
-            throw new Error(result.error ?? 'Failed to save the workflow');
-          savedDefinition = true;
-          savedId = result.data.id;
-          if (result.data.id !== id)
-            throw new Error('Pipeline create identity mismatch');
-          await recordSharedPipelineInstall(detail, id, (undo) => {
-            undoReceipt = undo;
+          const installed = await importRemotePipeline({
+            remoteDefinitionId: buildSharedPipelineId(
+              CANOPY_CLOUD_SERVER_ID,
+              input.sourceRemoteId,
+            ),
+            expectedRemoteVersion: null,
+            nameOverride: input.name,
+            ...(input.id ? { definitionId: input.id } : {}),
           });
-          if (input.id) await removePackageInstall(id);
-          recordSharedItemInstall({
-            kind: 'pipeline',
-            remoteId: detail.id,
-            sourceKind: 'shared',
-            contentHash: detail.contentHash,
-            localId: id,
-          });
-          recordUserSave(id);
-          notifyDesktopInventoryChanged(['pipelines']);
-          return result;
+          recordUserSave(installed.id);
+          return { success: true, data: installed };
         } catch (error) {
-          const rollbackErrors: string[] = [];
-          try {
-            if (savedDefinition) {
-              if (previous?.data && previousRaw?.data) {
-                const restored = service.savePipeline({
-                  ...previous.data.info,
-                  content: previous.data.content,
-                  rawContent: previousRaw.data,
-                });
-                if (!restored.success)
-                  throw new Error(
-                    restored.error ?? 'Failed to restore workflow',
-                  );
-              } else {
-                const removed = service.deletePipeline(savedId);
-                if (!removed.success)
-                  throw new Error(
-                    removed.error ?? 'Failed to roll back workflow',
-                  );
-              }
-            }
-            await undoReceipt?.();
-          } catch (rollbackError) {
-            rollbackErrors.push(toErrorMessage(rollbackError));
-          }
-          return {
-            success: false,
-            error: [toErrorMessage(error), ...rollbackErrors].join('; '),
-          };
+          return { success: false, error: pipelineWriteErrorMessage(error) };
         }
       }
       const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
@@ -1981,15 +1919,16 @@ export function registerPipelineHandlers(): void {
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SAVE_MODEL_ALIAS_PREFERENCES,
-    (
+    async (
       _event,
       request: SaveModelAliasPreferencesRequest,
-    ):
+    ): Promise<
       | {
           success: true;
           data: SaveModelAliasPreferencesResponse;
         }
-      | { success: false; error: string } => {
+      | { success: false; error: string }
+    > => {
       try {
         if (!request.pipelinePreferenceLocator) {
           return {
@@ -2013,9 +1952,10 @@ export function registerPipelineHandlers(): void {
                 ),
               )
             : normalizedPreferences;
-        savePipelineModelAliasPreferences(
+        await savePipelineModelAliasPreferences(
           request.pipelinePreferenceLocator,
           preferences,
+          'electron_main',
         );
         return { success: true, data: { ok: true } };
       } catch (error) {
@@ -2028,15 +1968,16 @@ export function registerPipelineHandlers(): void {
   );
   registerIpcHandler(
     PIPELINE_CHANNELS.SAVE_PLUGIN_COLLECTION_PREFERENCES,
-    (
+    async (
       _event,
       request: SavePluginCollectionPreferencesRequest,
-    ):
+    ): Promise<
       | {
           success: true;
           data: SavePluginCollectionPreferencesResponse;
         }
-      | { success: false; error: string } => {
+      | { success: false; error: string }
+    > => {
       try {
         if (!request.pipelinePreferenceLocator) {
           return {
@@ -2044,9 +1985,10 @@ export function registerPipelineHandlers(): void {
             data: { ok: false, reason: 'missing-locator' },
           };
         }
-        savePipelinePluginCollectionPreferences(
+        await savePipelinePluginCollectionPreferences(
           request.pipelinePreferenceLocator,
           normalizePipelinePluginCollectionPreferences(request.preferences),
+          'electron_main',
         );
         return { success: true, data: { ok: true } };
       } catch (error) {
@@ -2148,9 +2090,10 @@ async function buildReplayBaseBranchEnv(
   });
 }
 
-function emitExecutionEvent(
+/** The desktop's own observers of an execution event; watchers settle apart. */
+function fanOutExecutionEvent(
   getWindow: () => BrowserWindow | null,
-  event: Parameters<NonNullable<ExecutionOptions['onEvent']>>[0],
+  event: ExecutionEvent,
 ): void {
   notePipelineExecutionEvent(event, getWindow);
   createDesktopPipelineObservabilityFeed().onExecutionEvent(event);
@@ -2168,18 +2111,16 @@ function emitExecutionEvent(
       event.state.worktree_id,
     ).catch(() => undefined);
   }
-  if (
-    event.type === 'execution.paused' ||
-    event.state.status === 'success' ||
-    event.state.status === 'failure' ||
-    event.state.status === 'cancelled'
-  ) {
-    void Promise.resolve(
-      getAppAdvisorWatcherService().handlePipelineTerminalEvent(event),
-    ).catch(() => undefined);
-  }
-  void getWindow;
   broadcastPipelineExecutionEvent(event);
+}
+
+/** An event an entry point reports itself rather than through the worker. */
+function emitExecutionEvent(
+  getWindow: () => BrowserWindow | null,
+  event: ExecutionEvent,
+): void {
+  fanOutExecutionEvent(getWindow, event);
+  void settlePipelineExecutionEvent(event).catch(() => undefined);
 }
 
 function emitStepOutputEvent(
@@ -2191,18 +2132,18 @@ function emitStepOutputEvent(
   sendToAllWindows(PIPELINE_CHANNELS.STEP_OUTPUT_EVENT, event);
 }
 
-function getCancelExecutionEventType(
-  status: ExecutionState['status'],
-): ExecutionEvent['type'] | null {
-  if (status === 'cancelled') {
-    return 'execution.cancelled';
-  }
-
-  if (status === 'success' || status === 'failure') {
-    return 'execution.updated';
-  }
-
-  return null;
+function pipelineExecutionFanOut(
+  getWindow: () => BrowserWindow | null,
+): PipelineExecutionFanOut {
+  return {
+    onEvent: (event) => fanOutExecutionEvent(getWindow, event),
+    onStepOutput: (event) => emitStepOutputEvent(getWindow, event),
+    onSettled: (event) => {
+      void Promise.resolve(
+        getAppAdvisorWatcherService().handlePipelineTerminalEvent(event),
+      ).catch(() => undefined);
+    },
+  };
 }
 
 /** The nested pipeline executions an execution started. */
@@ -2217,22 +2158,7 @@ export async function cancelPipelineExecutionFromMain(args: {
   return cancelPipelineThroughLocalWorker(args.executionId);
 }
 
-function broadcastCancelledExecution(
-  getWindow: () => BrowserWindow | null,
-): (state: ExecutionState) => void {
-  return (state) => {
-    const eventType = getCancelExecutionEventType(state.status);
-    if (eventType === null) return;
-    emitExecutionEvent(getWindow, {
-      executionId: state.id,
-      type: eventType,
-      state,
-      timestamp: new Date().toISOString(),
-    });
-  };
-}
-
-setPipelineCancelBroadcast(broadcastCancelledExecution(() => null));
+setPipelineExecutionFanOut(pipelineExecutionFanOut(() => null));
 
 // Renderer EXECUTE is also tunneled for Portal remote control, so `portal`
 // stays a foreground usage source here. Its recorded identity is still `user`:
@@ -2482,15 +2408,66 @@ async function withReplayTargetRuntimeStartReservation<T>(
   return operation();
 }
 
-export async function retryPipelineExecutionFromMain(args: {
+type RetryPipelineExecutionArgs = {
   executionId: string;
   portalCommandId?: string;
   getWindow: () => BrowserWindow | null;
   onEvent?: ExecutionOptions['onEvent'];
   onStepOutput?: ExecutionOptions['onStepOutput'];
-}): Promise<
-  { success: true; data: ExecutionState } | { success: false; error: string }
-> {
+};
+
+type ReplayResult =
+  | { success: true; data: ExecutionState }
+  | { success: false; error: string };
+
+/**
+ * Run a replay entry point's host side as a recovery control through core
+ * and the local worker (CAN-4141), keeping its `{ success }` result.
+ */
+async function replayThroughLocalWorker(
+  control: PipelineControlRequest,
+  replay: () => Promise<ReplayResult>,
+): Promise<ReplayResult> {
+  try {
+    const { state } = await controlPipelineThroughLocalWorker(
+      control,
+      async () => {
+        const result = await replay();
+        if (!result.success) throw new Error(result.error);
+        return { outcome: 'started', state: result.data };
+      },
+    );
+    return { success: true, data: state };
+  } catch (error) {
+    return { success: false, error: formatPipelineExecutionError(error) };
+  }
+}
+
+/** Retry an execution's failed work in place, as a recovery control. */
+export async function retryPipelineExecutionFromMain(
+  args: RetryPipelineExecutionArgs,
+): Promise<ReplayResult> {
+  try {
+    validateId(args.executionId, 'executionId');
+  } catch (error) {
+    return { success: false, error: formatPipelineExecutionError(error) };
+  }
+  return replayThroughLocalWorker(
+    {
+      operation: 'worker.pipeline.execution.retry',
+      params: {
+        requestId: args.portalCommandId ?? randomUUID(),
+        executionId: args.executionId,
+        mode: 'failed_only',
+      },
+    },
+    () => retryOnLocalWorker(args),
+  );
+}
+
+async function retryOnLocalWorker(
+  args: RetryPipelineExecutionArgs,
+): Promise<ReplayResult> {
   const { executionId, getWindow } = args;
   let releaseResourceGuard: (() => void) | null = null;
   let ownsExecutionReservation = false;
@@ -2532,7 +2509,7 @@ export async function retryPipelineExecutionFromMain(args: {
         state.project_id,
       );
       const authorization = await authorizePipelineReplay(state);
-      const handle = await retryPipelineExecution(executionId, {
+      const handle = await pipelineExecutorControls.retry(executionId, {
         cwd,
         ...authorization,
         agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
@@ -2552,14 +2529,8 @@ export async function retryPipelineExecutionFromMain(args: {
           userSecretEnv: pipelineRuntimeEnv.secretEnv,
         }),
         runtime,
-        onEvent: (event) => {
-          emitExecutionEvent(getWindow, event);
-          args.onEvent?.(event);
-        },
-        onStepOutput: (event) => {
-          emitStepOutputEvent(getWindow, event);
-          args.onStepOutput?.(event);
-        },
+        onEvent: args.onEvent,
+        onStepOutput: args.onStepOutput,
       });
       trackExecutionWithAdvisor(
         handle,
@@ -2583,16 +2554,43 @@ export async function retryPipelineExecutionFromMain(args: {
   }
 }
 
+/** Retry a matrix job or chosen variants, as a recovery control. */
 export async function retryMatrixJobFromMain(args: {
   request: RetryMatrixJobRequest;
   getWindow: () => BrowserWindow | null;
 }): Promise<ExecutionState> {
-  const { request, getWindow } = args;
+  const { request } = args;
   validateId(request.executionId, 'executionId');
   validatePipelineRuntimeIdentifier(request.jobId, 'jobId');
   for (const variantJobId of request.variantJobIds ?? []) {
     validatePipelineRuntimeIdentifier(variantJobId, 'variantJobId');
   }
+  const { state } = await controlPipelineThroughLocalWorker(
+    {
+      operation: 'worker.pipeline.matrixJob.retry',
+      params: {
+        requestId: randomUUID(),
+        executionId: request.executionId,
+        jobId: request.jobId,
+        mode: request.mode,
+        ...(request.variantJobIds?.length
+          ? { variantJobIds: request.variantJobIds }
+          : {}),
+      },
+    },
+    async () => ({
+      outcome: 'started',
+      state: await retryMatrixJobOnLocalWorker(args),
+    }),
+  );
+  return state;
+}
+
+async function retryMatrixJobOnLocalWorker(args: {
+  request: RetryMatrixJobRequest;
+  getWindow: () => BrowserWindow | null;
+}): Promise<ExecutionState> {
+  const { request, getWindow } = args;
   const retryKey = `${request.executionId}\0${request.jobId}`;
   if (
     activeMatrixRetryJobs.has(retryKey) ||
@@ -2637,7 +2635,7 @@ export async function retryMatrixJobFromMain(args: {
         state.project_id,
       );
       const authorization = await authorizePipelineReplay(state);
-      const handle = await retryMatrixJobExecution(request, {
+      const handle = await pipelineExecutorControls.retryMatrixJob(request, {
         cwd,
         ...authorization,
         agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
@@ -2654,8 +2652,6 @@ export async function retryMatrixJobFromMain(args: {
           userSecretEnv: pipelineRuntimeEnv.secretEnv,
         }),
         runtime,
-        onEvent: (event) => emitExecutionEvent(getWindow, event),
-        onStepOutput: (event) => emitStepOutputEvent(getWindow, event),
       });
       trackExecutionWithAdvisor(handle, runtime, getWindow, () => {
         activeMatrixRetryJobs.delete(retryKey);
@@ -2671,6 +2667,10 @@ export async function retryMatrixJobFromMain(args: {
   }
 }
 
+/**
+ * Cancel one matrix variant as a recovery control. A paused run the cancel
+ * leaves ready to continue is resumed afterwards, as its own control.
+ */
 export async function cancelMatrixVariantFromMain(args: {
   request: CancelMatrixVariantRequest;
   getWindow: () => BrowserWindow | null;
@@ -2679,13 +2679,70 @@ export async function cancelMatrixVariantFromMain(args: {
   validateId(request.executionId, 'executionId');
   validatePipelineRuntimeIdentifier(request.jobId, 'jobId');
   validatePipelineRuntimeIdentifier(request.variantJobId, 'variantJobId');
+  let storedRun = false;
+  const { outcome, state: cancelled } = await controlPipelineThroughLocalWorker(
+    {
+      operation: 'worker.pipeline.matrixVariant.cancel',
+      params: {
+        requestId: randomUUID(),
+        executionId: request.executionId,
+        jobId: request.jobId,
+        variantJobId: request.variantJobId,
+      },
+    },
+    async () => {
+      const settled = await cancelMatrixVariantOnLocalWorker(args);
+      storedRun = settled.stored;
+      return settled;
+    },
+  );
+  if (!storedRun || outcome !== 'updated' || cancelled.status !== 'pending')
+    return cancelled;
+
+  const runtime = createMonitoredElectronExecutionRuntime(getWindow);
+  try {
+    const resumed = await resumePipelineExecutionFromMain({
+      executionId: request.executionId,
+      initiationSource: 'automation',
+      getWindow,
+    });
+    return resumed.state;
+  } catch (error) {
+    const resumable = structuredClone(cancelled);
+    resumable.status = 'paused';
+    resumable.completed_at = undefined;
+    beginExecutionPause(resumable);
+    await saveExecutionState(resumable, runtime.executionsDir);
+    emitExecutionEvent(getWindow, {
+      executionId: resumable.id,
+      type: 'execution.updated',
+      state: resumable,
+      timestamp: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+/**
+ * The local worker's side of a variant cancel: a live run cancels it in
+ * place; otherwise the stored run records it (`stored`).
+ */
+async function cancelMatrixVariantOnLocalWorker(args: {
+  request: CancelMatrixVariantRequest;
+  getWindow: () => BrowserWindow | null;
+}): Promise<PipelineControlSettlement & { stored: boolean }> {
+  const { request, getWindow } = args;
   const active = getActiveExecutionHandle(request.executionId);
   if (active?.cancelMatrixVariant) {
     try {
-      return await active.cancelMatrixVariant(
-        request.jobId,
-        request.variantJobId,
-      );
+      return {
+        outcome: 'updated',
+        stored: false,
+        state: await active.cancelMatrixVariant(
+          request.jobId,
+          request.variantJobId,
+        ),
+      };
     } catch (error) {
       if (!(error instanceof MatrixExecutorInactiveError)) throw error;
       const latest = active.getState();
@@ -2694,7 +2751,7 @@ export async function cancelMatrixVariantFromMain(args: {
           latest.jobs[request.variantJobId]?.status ?? '',
         )
       ) {
-        return latest;
+        return { outcome: 'updated', stored: false, state: latest };
       }
     }
   }
@@ -2754,29 +2811,7 @@ export async function cancelMatrixVariantFromMain(args: {
       'matrix-variant-cancellation',
     );
   }
-  if (cancelled.status !== 'pending') return cancelled;
-
-  try {
-    const resumed = await resumePipelineExecutionFromMain({
-      executionId: request.executionId,
-      initiationSource: 'automation',
-      getWindow,
-    });
-    return resumed.state;
-  } catch (error) {
-    const resumable = structuredClone(cancelled);
-    resumable.status = 'paused';
-    resumable.completed_at = undefined;
-    beginExecutionPause(resumable);
-    await saveExecutionState(resumable, runtime.executionsDir);
-    emitExecutionEvent(getWindow, {
-      executionId: resumable.id,
-      type: 'execution.updated',
-      state: resumable,
-      timestamp: new Date().toISOString(),
-    });
-    throw error;
-  }
+  return { outcome: 'updated', stored: true, state: cancelled };
 }
 
 /**
@@ -3052,13 +3087,16 @@ async function startPipelineExecutionFromMainInternal(args: {
           ? executionOptions.pipelineId
           : undefined;
     if (curatedId) {
-      const managed = await getManagedCuratedPipeline(curatedId);
+      // A curated run executes the revision core reads and validates, with
+      // the package that same read installed, never the caller's copy.
+      const admitted = await admitCuratedRunDefinition(curatedId);
+      const managed = admitted.managed;
       if (
         pipelinePreferenceLocator?.type === 'stored' &&
         pipelinePreferenceLocator.source === 'curated' &&
         pipelinePreferenceLocator.contentHash !== undefined &&
-        pipelinePreferenceLocator.contentHash !==
-          managed.info.curatedContentHash
+        `sha256:${pipelinePreferenceLocator.contentHash}` !==
+          admitted.definition.checksum
       ) {
         throw new Error(
           'This curated workflow changed after you opened it. Reopen the launch dialog to review its updated inputs and try again.',
@@ -3078,7 +3116,7 @@ async function startPipelineExecutionFromMainInternal(args: {
         };
       }
       if (
-        !getTriggerTypes(managed.content.on).includes(
+        !getTriggerTypes(admitted.pipeline.on).includes(
           executionOptions.eventName ?? 'dispatch',
         )
       ) {
@@ -3086,8 +3124,8 @@ async function startPipelineExecutionFromMainInternal(args: {
           'This curated workflow no longer supports the selected trigger. Reopen the launch dialog and choose another workflow.',
         );
       }
-      pipelineContent = managed.content;
-      curatedPipelinePackage = managed.pipelinePackage;
+      pipelineContent = admitted.pipeline;
+      curatedPipelinePackage = admitted.pipelinePackage;
       pipelineFileDir = managed.info.filePath
         ? path.dirname(managed.info.filePath)
         : undefined;
@@ -3389,6 +3427,7 @@ async function startPipelineExecutionFromMainInternal(args: {
     const ownerContext = parseWorkspaceContext(ownerResult.owner);
     if (!ownerContext)
       throw new Error(backgroundExecutionDeniedMessage('unsupported-target'));
+    let admittedDocument: string | undefined;
     // A stored run executes the definition core validates, never the copy
     // its caller sent; an id core doesn't know is an inline definition. Only
     // a source main has itself loaded above opts out, never a caller's
@@ -3409,7 +3448,10 @@ async function startPipelineExecutionFromMainInternal(args: {
             ? {}
             : { projectId: targetProjectId },
       );
-      if (admitted) pipelineContent = admitted.pipeline;
+      if (admitted) {
+        pipelineContent = admitted.pipeline;
+        admittedDocument = admitted.definition.document;
+      }
     }
     if (storedPipelineId !== undefined && topLevelGlobal) {
       const resource = await readStoredPipelineContext(
@@ -3495,10 +3537,13 @@ async function startPipelineExecutionFromMainInternal(args: {
     const pipelineRuntimeEnv = await resolvePipelineRuntimeEnv(
       executionOptions.projectId,
     );
+    // An installed package binds the document core admitted, so a store
+    // edit after admission never pairs it with another revision.
     const pipelinePackage =
       !curatedId && !sharedPipeline && !pipelineFilePath
         ? await resolveInstalledPipelinePackageForExecution(
             executionOptions.pipelineId,
+            admittedDocument,
           )
         : undefined;
     // Assets and the data dir resolve before the first step, so a missing
@@ -3558,14 +3603,8 @@ async function startPipelineExecutionFromMainInternal(args: {
         userSecretEnv: pipelineRuntimeEnv.secretEnv,
       }),
       runtime,
-      onEvent: (event) => {
-        emitExecutionEvent(args.getWindow, event);
-        args.onEvent?.(event);
-      },
-      onStepOutput: (event) => {
-        emitStepOutputEvent(args.getWindow, event);
-        args.onStepOutput?.(event);
-      },
+      onEvent: args.onEvent,
+      onStepOutput: args.onStepOutput,
     });
     trackExecutionWithAdvisor(
       handle,
@@ -3601,17 +3640,23 @@ async function startPipelineExecutionFromMainInternal(args: {
   }
 }
 
-export async function rerunPipelineExecutionFromMain(args: {
+type RerunPipelineExecutionArgs = {
   executionId: string;
   rerunExecutionId?: string;
   initiationSource?: 'user' | 'automation' | 'portal';
   getWindow: () => BrowserWindow | null;
   onEvent?: ExecutionOptions['onEvent'];
   onStepOutput?: ExecutionOptions['onStepOutput'];
-}): Promise<
-  { success: true; data: ExecutionState } | { success: false; error: string }
-> {
-  const { executionId, getWindow } = args;
+};
+
+/**
+ * Start an execution over as a new one, as a recovery control; core
+ * records the new execution's run.
+ */
+export async function rerunPipelineExecutionFromMain(
+  args: RerunPipelineExecutionArgs,
+): Promise<ReplayResult> {
+  const { executionId } = args;
   try {
     validateId(executionId, 'executionId');
     if (args.rerunExecutionId) {
@@ -3623,6 +3668,28 @@ export async function rerunPipelineExecutionFromMain(args: {
   } catch (error) {
     return { success: false, error: formatPipelineExecutionError(error) };
   }
+  const rerunExecutionId = args.rerunExecutionId ?? randomUUID();
+  return replayThroughLocalWorker(
+    {
+      operation: 'worker.pipeline.execution.retry',
+      params: {
+        requestId: randomUUID(),
+        executionId,
+        mode: 'from_start',
+        newExecutionId: rerunExecutionId,
+        ...(args.initiationSource
+          ? { initiationSource: args.initiationSource }
+          : {}),
+      },
+    },
+    () => rerunOnLocalWorker({ ...args, rerunExecutionId }),
+  );
+}
+
+async function rerunOnLocalWorker(
+  args: RerunPipelineExecutionArgs,
+): Promise<ReplayResult> {
+  const { executionId, getWindow } = args;
 
   if (activeRerunSources.has(executionId)) {
     return {
@@ -3666,7 +3733,7 @@ export async function rerunPipelineExecutionFromMain(args: {
       reserveExecution(reservedRerunExecutionId);
       rerunExecutionId = reservedRerunExecutionId;
       const authorization = await authorizePipelineReplay(state);
-      const handle = await rerunPipelineExecution(executionId, {
+      const handle = await pipelineExecutorControls.rerun(executionId, {
         cwd,
         ...authorization,
         agentTerminalMode: await shouldUsePipelineAgentTerminalMode(
@@ -3685,14 +3752,8 @@ export async function rerunPipelineExecutionFromMain(args: {
           userSecretEnv: pipelineRuntimeEnv.secretEnv,
         }),
         runtime,
-        onEvent: (event) => {
-          emitExecutionEvent(getWindow, event);
-          args.onEvent?.(event);
-        },
-        onStepOutput: (event) => {
-          emitStepOutputEvent(getWindow, event);
-          args.onStepOutput?.(event);
-        },
+        onEvent: args.onEvent,
+        onStepOutput: args.onStepOutput,
       });
       trackExecutionWithAdvisor(
         handle,
@@ -3723,7 +3784,7 @@ export async function rerunPipelineExecutionFromMain(args: {
 export function registerExecutionHandlers(
   getWindow: () => BrowserWindow | null,
 ): void {
-  setPipelineCancelBroadcast(broadcastCancelledExecution(getWindow));
+  setPipelineExecutionFanOut(pipelineExecutionFanOut(getWindow));
   registerIpcHandler(
     PIPELINE_CHANNELS.EXECUTE,
     async (

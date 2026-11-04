@@ -24,7 +24,8 @@ import {
   MAX_RETAINED_HOOK_RUNS_PER_HOOK,
   startHookRunLog,
 } from '../lib/hook-log-store';
-import * as runLogStore from '../lib/run-log-store';
+// The hook store reads tails through the shared run-log files (CAN-4144).
+import * as runLogStore from '@canopy/core-runtime/node/script/execution/run-log-files';
 import {
   listHookRuns,
   loadWorktreeHookRuns,

@@ -30,7 +30,7 @@ import {
   useWorkspaceReadinessLaunchStore,
 } from '@/stores/workspaceReadinessLaunchStore';
 import { Button, LoadingSpinner } from '../shared';
-import { ErrorBanner } from '@canopy/ui-shared/components';
+import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 
 interface WorkspaceReadinessRecommendationsProps {
   workspaceId: string;
@@ -293,9 +293,9 @@ export function WorkspaceReadinessRecommendations({
           )}
         </span>
         <div className="min-w-0 flex-1">
-          <h3 className="text-s font-medium fg-primary">
+          <Heading level={3} variant="title">
             Repository readiness
-          </h3>
+          </Heading>
           {loadState === 'loading' && (
             <div className="mt-1 flex items-center gap-2 text-xs fg-secondary">
               <LoadingSpinner />
@@ -322,9 +322,9 @@ export function WorkspaceReadinessRecommendations({
         <div className="mt-4 space-y-4">
           {groupedIssues.map(([repoName, repoIssues]) => (
             <div key={repoName}>
-              <h4 className="mb-2 text-xs font-medium fg-secondary">
+              <Heading level={4} variant="label" className="mb-2">
                 {repoName}
-              </h4>
+              </Heading>
               <div className="space-y-2">
                 {repoIssues.map((issue) => {
                   const key = `${targetKey}:${issue.code === 'recovery-required' ? workspaceReadinessIssueKey(issue) : `${issue.repoId ?? 'project'}:${issue.code}`}`;

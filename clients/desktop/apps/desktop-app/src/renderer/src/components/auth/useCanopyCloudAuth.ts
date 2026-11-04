@@ -444,11 +444,14 @@ export function useCanopyCloudAuth({
     let cancelled = false;
     const refreshAccount = (): void => {
       // A completion from an unmounted surface can arrive before this draft's
-      // debounce fires. Refresh the account without replacing its input/timer.
+      // debounce fires, or while its newer save is queued behind another write.
+      // Refresh the account without replacing that unsent input/timer.
       const preserveEditor =
         preserveEditorDuringDispatchRef.current ||
         (pendingApiKeyFlushRef.current &&
-          lastApiKeyWriteRef.current?.sequence !== apiKeySaveSequence.current);
+          (lastApiKeyWriteRef.current?.sequence !==
+            apiKeySaveSequence.current ||
+            lastApiKeyWriteRef.current?.outcome.state === 'queued'));
       const editSequence = apiKeySaveSequence.current;
       const sequence = ++accountReadSequenceRef.current;
       void Promise.all([
@@ -659,19 +662,43 @@ export function useCanopyCloudAuth({
 
       try {
         const replacingGuest = isGuestAccount(accountRef.current);
-        lastSubmittedApiKeyRef.current = apiKey;
-        claimCloudCredentialWrite();
-        const write = window.api.saveCanopyCloudApiKey({ apiKey });
+        const priorWrite = lastApiKeyWriteRef.current;
+        const outcome: { state: 'queued' | 'submitted' | 'skipped' } = {
+          state: 'queued',
+        };
+        const generation = claimCloudCredentialWrite();
+        const submitLatest = (): Promise<Awaited<
+          ReturnType<typeof window.api.saveCanopyCloudApiKey>
+        > | null> => {
+          if (
+            generation !== cloudCredentialWriteGeneration ||
+            sequence !== apiKeySaveSequence.current ||
+            latestApiKeyInputRef.current.trim() !== apiKey
+          ) {
+            outcome.state = 'skipped';
+            return Promise.resolve(null);
+          }
+          outcome.state = 'submitted';
+          lastSubmittedApiKeyRef.current = apiKey;
+          return window.api.saveCanopyCloudApiKey({ apiKey });
+        };
+        // The previous save must finish its persistence and identity transition
+        // before this candidate captures the expected account. Register queued
+        // ownership now so unmount does not submit the same draft twice.
+        const write = priorWrite
+          ? priorWrite.settled.then(submitLatest)
+          : submitLatest();
         lastApiKeyWriteRef.current = {
           candidate: apiKey,
           sequence,
-          outcome: { state: 'submitted' },
+          outcome,
           settled: write.then(
             () => undefined,
             () => undefined,
           ),
         };
         const result = await write;
+        if (!result) return;
         const isLatest =
           sequence === apiKeySaveSequence.current &&
           latestApiKeyInputRef.current.trim() === apiKey;
@@ -810,11 +837,14 @@ export function useCanopyCloudAuth({
       const pendingApiKey = latestApiKeyInputRef.current.trim();
       const priorWrite = lastApiKeyWriteRef.current;
       if (lastSubmittedApiKeyRef.current === pendingApiKey) return;
+      // A skipped write of this same revision was superseded elsewhere.
+      // Closing its editor must not reclaim authority over that newer intent.
       if (
         priorWrite?.candidate === pendingApiKey &&
         ((priorWrite.outcome.state === 'submitted' &&
           lastSubmittedApiKeyRef.current !== null) ||
-          (priorWrite.outcome.state === 'queued' &&
+          ((priorWrite.outcome.state === 'queued' ||
+            priorWrite.outcome.state === 'skipped') &&
             priorWrite.sequence === apiKeySaveSequence.current))
       )
         return;

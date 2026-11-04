@@ -4,18 +4,24 @@ import type {
   NativeAiCreditsAvailability,
 } from '@canopy/desktop-shared/types';
 import { brandText } from '@/lib/brand';
-import {
-  CONTACT_ORG_ADMIN_COPY,
-  resolveAiCreditsCoverage,
-} from '@/lib/openBillingPage';
+import { resolveAiCreditsCoverage } from '@/lib/openBillingPage';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import {
   AiCreditsArrivedNotice,
   AI_CREDITS_PURCHASE_LABEL,
   AI_CREDITS_REOPEN_BILLING_LABEL,
-  Notice,
+  CreditsRecoveryNotice,
+  DISPATCH_DEAD_END_COPY,
+  MESSAGE_QUEUED_TITLE,
   NoticeButton,
+  POLICY_BILLING_DEAD_END_COPY,
+  POLICY_ONLY_DEAD_END_COPY,
+  QUEUED_MESSAGE_RETAINED_COPY,
+  creditsOnlyDeadEndCopy,
+  failedTurnCopy,
   noticeButtonClassName,
+  notSignedInCopy,
+  type CreditsRecoveryCopy,
 } from '@canopy/ui-shared/components';
 import { TimeslotIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -721,12 +727,6 @@ export function NoBillingSourceBanner({
     return pendingHandoff !== null ? <span hidden>{actions}</span> : null;
   }
 
-  const detail = showContactAdmin ? (
-    <span data-testid="chat-input-no-billing-source-contact-admin">
-      {CONTACT_ORG_ADMIN_COPY}
-    </span>
-  ) : undefined;
-
   // Copy branches on WHICH trigger fired. The runtime signal means a turn
   // already failed, so the past tense is the accurate account; reusing the
   // pre-flight "not signed in" line would also be plainly wrong for the case
@@ -757,11 +757,8 @@ export function NoBillingSourceBanner({
   //
   // Each arm is a short title (the state) plus the message that follows it on
   // the same line (the consequence or remedy); the buttons name the actions.
-  const copy: { title: string; message: string } = policyOnlyDeadEnd
-    ? {
-        title: 'No model available',
-        message: `Your organization's model policy doesn't allow any model you can run right now, so ask your organization admin to allow a model you can use.`,
-      }
+  const copy: CreditsRecoveryCopy = policyOnlyDeadEnd
+    ? POLICY_ONLY_DEAD_END_COPY
     : // Mid-purchase, the step the user is on replaces the dead end they
       // already acted on (CAN-5162).
       visibleHandoff !== null
@@ -770,34 +767,19 @@ export function NoBillingSourceBanner({
         // resolver only returns it when `lanesNeeded` is empty, which is
         // exactly `policyOnlyDeadEnd` above.
         creditsOnlyDeadEnd
-        ? {
-            title: 'AI Credits required',
-            message: `Your organization only allows models that require ${brandText.appName} AI Credits.`,
-          }
+        ? creditsOnlyDeadEndCopy(brandText.appName)
         : policyRestricted &&
             noDispatchableModel?.missing === 'both' &&
             noDispatchableModel.hasPolicyAllowedLane !== false
-          ? {
-              title: 'No model available',
-              message: `Your organization's allowed models all need a billing source you don't have yet.`,
-            }
+          ? POLICY_BILLING_DEAD_END_COPY
           : // Every remaining dispatch dead end keeps the copy ECW-9091
             // shipped: without a policy the resolver's verdict is about
             // payment, and the CTAs below name the remedy.
             dispatchDeadEnd
-            ? {
-                title: 'No billing source',
-                message: 'No available model can be paid for right now.',
-              }
+            ? DISPATCH_DEAD_END_COPY
             : runtimeSignalActive
-              ? {
-                  title: 'Message not sent',
-                  message: `Your ${brandText.appName} AI Credits didn't cover that message.`,
-                }
-              : {
-                  title: `Not signed in to ${providerLabel}`,
-                  message: `You have no ${brandText.appName} AI Credits to cover this chat either.`,
-                };
+              ? failedTurnCopy(brandText.appName)
+              : notSignedInCopy({ appName: brandText.appName, providerLabel });
 
   // Same precedence as the copy: a dispatch dead end, then a failed turn. A
   // pure org-policy dead end is not a credits state, so it records no view.
@@ -839,7 +821,7 @@ export function NoBillingSourceBanner({
           You can send it now.
         </AiCreditsArrivedNotice>
       ) : visible && !standDown && !awaitingCard ? (
-        <Notice
+        <CreditsRecoveryNotice
           ref={attachNotice}
           // Waiting on a purchase is not a warning; only a failed check is.
           intent={
@@ -854,11 +836,12 @@ export function NoBillingSourceBanner({
             : {})}
           title={
             queuedCreditHeld && !policyOnlyDeadEnd
-              ? 'Message queued'
+              ? MESSAGE_QUEUED_TITLE
               : copy.title
           }
           data-testid="chat-input-no-billing-source-banner"
-          {...(detail !== undefined ? { detail } : {})}
+          contactAdmin={showContactAdmin}
+          contactAdminTestId="chat-input-no-billing-source-contact-admin"
           {...(actions !== undefined
             ? {
                 actions,
@@ -870,9 +853,9 @@ export function NoBillingSourceBanner({
             : {})}
         >
           {queuedCreditHeld && !policyOnlyDeadEnd
-            ? 'Your queued message is still saved. Add credits, then click Try again.'
+            ? QUEUED_MESSAGE_RETAINED_COPY
             : copy.message}
-        </Notice>
+        </CreditsRecoveryNotice>
       ) : null}
       {/* Rendered as a SIBLING of the `role="status"` element, not inside it.
           `DialogModal` does not portal, so nesting the modal here would make a

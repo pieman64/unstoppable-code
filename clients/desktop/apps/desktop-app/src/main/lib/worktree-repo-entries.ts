@@ -1,11 +1,13 @@
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
   type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import type { CodeGraphRepositoryInput } from '@canopy/desktop-shared/types/code-graph';
+import {
+  codeGraphBuildRepositories,
+  listCodeGraphWorktreeRepositories,
+} from '@canopy/code-graph/host/worktree-repositories';
 import { isGitRepo } from './git';
 import { readWorkspaceConfig } from './workspace-persistence';
 
@@ -32,39 +34,28 @@ async function loadWorkspaceWorktreeRepoEntries(
   const config = await readWorkspaceConfig(workspaceId).catch(
     (): WorkspaceConfigFile => emptyConfig,
   );
-  const repoEntries: WorktreeRepoEntry[] = [];
-
-  const hasWorkspaceRootRepo =
-    config.type === 'multi-repo' &&
-    (Boolean(config.sourceRepoPath) || (await isGitRepo(worktreePath)));
-
-  if (hasWorkspaceRootRepo) {
-    repoEntries.push({
-      repoId: WORKSPACE_ROOT_REPO_ID,
-      repoName: WORKSPACE_ROOT_REPO_NAME,
-      repoPath: worktreePath,
-    });
-  }
-
   const repoNameById = new Map(
     config.repos.map((repo) => [repo.id, repo.name]),
   );
-  const reposDir = join(worktreePath, 'repos');
-  const entries = await readdir(reposDir, { withFileTypes: true }).catch(
-    () => [],
+  const repositories = await listCodeGraphWorktreeRepositories(
+    worktreePath,
+    {
+      multiRepo: config.type === 'multi-repo',
+      hasSourceRepo:
+        config.type === 'multi-repo' && Boolean(config.sourceRepoPath),
+    },
+    isGitRepo,
   );
-
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    repoEntries.push({
-      repoId: entry.name,
-      repoName: repoNameById.get(entry.name) ?? entry.name,
-      repoPath: join(reposDir, entry.name),
-    });
-  }
+  const repoEntries = repositories.map(
+    (repository): WorktreeRepoEntry => ({
+      repoId: repository.repoId,
+      repoName:
+        repository.repoId === WORKSPACE_ROOT_REPO_ID
+          ? WORKSPACE_ROOT_REPO_NAME
+          : (repoNameById.get(repository.repoId) ?? repository.repoId),
+      repoPath: repository.rootPath,
+    }),
+  );
 
   return { config, entries: repoEntries };
 }
@@ -86,14 +77,12 @@ export async function resolveWorktreeCodeGraphRepositories(
     workspaceId,
     worktreePath,
   );
-  if (entries.length === 0) {
-    if (config.type === 'multi-repo') {
-      return [];
-    }
-    return [{ repoId: WORKSPACE_ROOT_REPO_ID, rootPath: worktreePath }];
-  }
-  return entries.map((entry) => ({
-    repoId: entry.repoId,
-    rootPath: entry.repoPath,
-  }));
+  return codeGraphBuildRepositories(
+    worktreePath,
+    config.type === 'multi-repo',
+    entries.map((entry) => ({
+      repoId: entry.repoId,
+      rootPath: entry.repoPath,
+    })),
+  );
 }

@@ -1,3 +1,4 @@
+import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
 import type {
   ExecutionHandle,
   ExecutionOptions,
@@ -15,12 +16,15 @@ import {
   stagePipelineLaunch,
   pipelineCancelMark,
   readPipelineCancelCapture,
+  stagePipelineControl,
+  type PipelineControlLaunch,
+  type PipelineControlSettlement,
 } from '../../pipelines/pipeline-worker-host';
 
 /*
  * `pipeline-worker-dispatch` without a dispatcher, for suites that compose
  * no desktop runtime: the real worker host runs each start and cancel, but
- * no core run records are written.
+ * no core run records are written. Recovery controls run the same way.
  */
 
 export function followExecutionHandle(handle: ExecutionHandle): void {
@@ -70,6 +74,23 @@ export async function cancelPipelineThroughLocalWorker(
   }
   const capture = readPipelineCancelCapture(executionId, mark);
   if (capture.state) return capture.state;
+  throw capture.error instanceof Error
+    ? capture.error
+    : new Error(String(capture.error));
+}
+
+export async function controlPipelineThroughLocalWorker(
+  control: PipelineControlRequest,
+  launch: PipelineControlLaunch,
+): Promise<PipelineControlSettlement> {
+  const staged = stagePipelineControl(control.params.requestId, launch);
+  try {
+    await desktopPipelineWorker.control(control, new AbortController().signal);
+  } catch {
+    // The capture keeps the entry point's own error.
+  }
+  const capture = staged.take();
+  if (capture.settlement) return capture.settlement;
   throw capture.error instanceof Error
     ? capture.error
     : new Error(String(capture.error));

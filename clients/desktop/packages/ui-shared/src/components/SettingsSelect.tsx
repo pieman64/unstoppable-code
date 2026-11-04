@@ -2,11 +2,13 @@
 
 import {
   Fragment,
+  useCallback,
   useId,
   useRef,
   useState,
   type JSX,
   type ReactNode,
+  type Ref,
 } from 'react';
 import { ChevronDownIcon } from '../icons/AppIcons';
 import { Button } from './Button';
@@ -80,6 +82,11 @@ export interface SettingsSelectProps<Value extends string = string> {
   readonly 'aria-invalid'?: boolean;
   readonly 'data-testid'?: string;
   /**
+   * The trigger, like `Select`'s ref: a host that opens a surface on the
+   * dropdown (a popover's first field) focuses it through this ref.
+   */
+  readonly ref?: Ref<HTMLButtonElement>;
+  /**
    * Host-owned replay markers for option labels that name user content: the
    * block class for personal data, the mask class for user-authored titles
    * such as project names. They go on the label text only (the chosen label
@@ -139,6 +146,7 @@ export function SettingsSelect<Value extends string>({
   'aria-describedby': ariaDescribedBy,
   'aria-invalid': ariaInvalid,
   'data-testid': dataTestId,
+  ref,
   replayPrivacy,
 }: SettingsSelectProps<Value>): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -146,6 +154,14 @@ export function SettingsSelect<Value extends string>({
   // not pop the menu back open and take focus.
   if (disabled && open) setOpen(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
+  const setTrigger = useCallback(
+    (node: HTMLButtonElement | null): void => {
+      anchorRef.current = node;
+      if (typeof ref === 'function') ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
   const listId = useId();
   const triggerId = useId();
   const flat = settingsSelectOptions(options);
@@ -214,7 +230,7 @@ export function SettingsSelect<Value extends string>({
     <>
       <span className={wrapperClassName}>
         <Button
-          ref={anchorRef}
+          ref={setTrigger}
           id={id ?? triggerId}
           // A dropdown is a field: the 28px rounded rectangle, not the
           // capsule of the actions beside it.

@@ -19,6 +19,7 @@ import {
   Fact,
   FactList,
   SettingsTableSkeleton,
+  Heading,
 } from '@canopy/ui-shared/components';
 import {
   formatCardLabel,
@@ -46,7 +47,6 @@ import { formatPlanDate } from '@canopy/protocol/settings/plan-display';
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
-  SETTINGS_CARD_TITLE_CLASS,
   SettingsCard,
 } from '@canopy/ui-shared/components/settings/SettingsCard';
 import { BillingCardBodySkeleton } from './billing-card-body-skeleton';
@@ -373,7 +373,9 @@ function PlanCard({
         <div className={SETTINGS_CARD_GROUP_CLASS}>
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+              <Heading level={2} variant="section">
+                Subscription plan
+              </Heading>
               {loading ? (
                 <BillingCardBodySkeleton className="mt-3" />
               ) : (
@@ -491,7 +493,9 @@ function PlanCard({
           <div className="flex min-w-0 flex-1 items-stretch justify-between gap-3">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className={SETTINGS_CARD_TITLE_CLASS}>Subscription plan</h2>
+                <Heading level={2} variant="section">
+                  Subscription plan
+                </Heading>
                 <PlanPill
                   planDisplayName={planName}
                   dataTestId="team-billing-plan-pill"

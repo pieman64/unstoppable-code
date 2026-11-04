@@ -79,6 +79,15 @@ export type PipelineNewChatSeed = Pick<
 >;
 
 /**
+ * The seed settings a native grant covers (CAN-5479): what D11 refuses an
+ * agent-originated run's new chat. `model` only for an Orchestrator chat.
+ */
+export type PipelineNativeGrantSeed = Pick<
+  PipelineNewChatSeed,
+  'approvalMode' | 'pluginSelections' | 'model'
+>;
+
+/**
  * Host-step replays: fixed IDs, so a resend finds the original receipt.
  * `create_task` actions cannot replay: their task ID is not pinned here, so
  * the host step refuses them. Pin it before routing one through fixed IDs.
@@ -146,6 +155,14 @@ export interface AgentChatSendContext {
   >;
   fixedIds?: AgentSendFixedIds;
   newChatSeed?: PipelineNewChatSeed;
+  /**
+   * Trusted, main-only (CAN-5479): the seed settings a converted agent
+   * automation's native grant covers, which the send step verified against
+   * the run. A creation keeps them where D11 would refuse them, only for a
+   * step in a run an automation started, and only while the seed carries
+   * exactly these. Never set for agent actions.
+   */
+  nativeGrant?: PipelineNativeGrantSeed;
   /**
    * Host-step creations: called with the chosen chat before its first message
    * is sent, so a replay can pass it back as `fixedIds.tabId`.

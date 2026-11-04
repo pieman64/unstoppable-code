@@ -9,6 +9,7 @@ import {
   showGuestMergeFailureToast,
 } from '@/components/auth/guestMergeFailure';
 import { brandText } from '@/lib/brand';
+import { Heading } from '@canopy/ui-shared/components';
 
 export interface CloudSignInGateProps {
   /**
@@ -51,9 +52,9 @@ export function CloudSignInGate({
           <div className="flex flex-col items-center gap-4 text-center">
             <BrandLogo size={72} className="select-none fg-accent" />
             <div className="flex flex-col items-center gap-2">
-              <h1 className="text-2xl font-semibold">
+              <Heading level={1} variant="page">
                 Welcome to {brandText.appName}
-              </h1>
+              </Heading>
               <p className="text-s fg-secondary">
                 Connect your account to start building.
               </p>

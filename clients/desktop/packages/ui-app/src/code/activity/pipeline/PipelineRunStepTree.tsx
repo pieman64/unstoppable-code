@@ -1,6 +1,7 @@
 'use client';
 
 import { type JSX } from 'react';
+import { ListRow } from '@canopy/ui-shared/components';
 import {
   pipelineRunDetailStatusClassName,
   pipelineRunStepKey,
@@ -42,30 +43,25 @@ function StepButton({
   indented: boolean;
 }): JSX.Element {
   const active = isSelected(entry, selected);
-  return (
-    <button
-      type="button"
-      // `ring-*` rather than `border-*`: the unlayered base border rule
-      // repaints every `border-<color>` utility in this repo (CAN-2734).
-      className={`flex w-full items-center justify-between gap-2 rounded-md py-1.5 pr-2 text-left text-xs transition-colors ${
-        indented ? 'pl-5' : 'pl-2'
-      } ${
-        active
-          ? 'bg-fg-primary/[0.08] ring-1 ring-line-accent'
-          : 'hover:bg-fg-primary/[0.06]'
-      }`}
+  const row = (
+    <ListRow
+      selected={active}
       aria-pressed={active}
       data-testid={`portal-pipeline-step-${entry.job_id}-${entry.step.step_id}`}
       onClick={(): void =>
         onSelect({ job_id: entry.job_id, step_id: entry.step.step_id })
       }
+      trailing={
+        <span className={pipelineRunDetailStatusClassName(entry.step.status)}>
+          {entry.step.status}
+        </span>
+      }
     >
-      <span className="truncate font-medium fg-primary">{entry.step.name}</span>
-      <span className={pipelineRunDetailStatusClassName(entry.step.status)}>
-        {entry.step.status}
-      </span>
-    </button>
+      {entry.step.name}
+    </ListRow>
   );
+  // A matrix variant's steps sit one level in, under the variant's heading.
+  return indented ? <div className="pl-3">{row}</div> : row;
 }
 
 /**

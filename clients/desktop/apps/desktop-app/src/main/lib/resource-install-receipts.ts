@@ -13,7 +13,7 @@ import {
   type InstallReceipt,
 } from '@canopy/desktop-shared/lib/resource-context-policy';
 import { isSameWorkspaceContext } from '@canopy/protocol/workspace-context';
-import { writeFileAtomically } from './atomic-file';
+import { writeStoreFileDurably } from './durable-store-write';
 import { getDataDir } from './paths';
 
 interface ReceiptFile {
@@ -72,10 +72,15 @@ function mergedUninstalledIds(
     : undefined;
 }
 
+interface ReadReceiptFile extends ReceiptFile {
+  /** Accounts whose entry is not a list; non-strict reads skip them. */
+  unreadableAccounts: string[];
+}
+
 async function readReceipts(
   file: string,
   strict = false,
-): Promise<ReceiptFile> {
+): Promise<ReadReceiptFile> {
   let raw: string;
   try {
     raw = await readFile(file, 'utf8');
@@ -86,7 +91,7 @@ async function readReceipts(
       'code' in error &&
       error.code === 'ENOENT'
     )
-      return { version: 1, byAccount: {} };
+      return { version: 1, byAccount: {}, unreadableAccounts: [] };
     throw error;
   }
   let value: unknown;
@@ -94,6 +99,15 @@ async function readReceipts(
     value = JSON.parse(raw);
   } catch {
     throw new Error('Invalid resource install receipt file');
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'version' in value &&
+    typeof value.version === 'number' &&
+    value.version > 1
+  ) {
+    throw new Error('Resource install receipt file is from a newer version');
   }
   if (
     typeof value !== 'object' ||
@@ -107,10 +121,12 @@ async function readReceipts(
   ) {
     throw new Error('Invalid resource install receipt file');
   }
+  const unreadableAccounts: string[] = [];
   const entries = Object.entries(value.byAccount).map(
     ([account, receipts]: [string, unknown]): [string, unknown[]] => {
       if (!Array.isArray(receipts)) {
         if (strict) throw new Error('Invalid resource install receipt file');
+        unreadableAccounts.push(account);
         return [account, []];
       }
       // Mutations retain raw rows, including malformed or future-version data.
@@ -118,7 +134,38 @@ async function readReceipts(
       return [account, receipts];
     },
   );
-  return { version: 1, byAccount: Object.fromEntries(entries) };
+  return {
+    version: 1,
+    byAccount: Object.fromEntries(entries),
+    unreadableAccounts,
+  };
+}
+
+/**
+ * Provenance lookups fail closed: a row this build cannot read may still
+ * record an organization origin for the resource being looked up.
+ */
+function assertNoUnreadableProvenance(
+  state: ReadReceiptFile,
+  family: string,
+  names: (row: Record<string, unknown>) => boolean,
+): void {
+  const unreadable =
+    state.unreadableAccounts.length > 0 ||
+    Object.values(state.byAccount).some((rows) =>
+      rows.some(
+        (row) =>
+          !isInstallReceipt(row) &&
+          typeof row === 'object' &&
+          row !== null &&
+          !Array.isArray(row) &&
+          (!('family' in row) ||
+            typeof row.family !== 'string' ||
+            row.family === family) &&
+          names(Object.fromEntries(Object.entries(row))),
+      ),
+    );
+  if (unreadable) throw new Error('Unreadable resource install receipt');
 }
 
 // One writer per file across account-bound handles; account switches cannot
@@ -283,7 +330,7 @@ export function createResourceInstallReceiptsStore(
             byAccount: Object.fromEntries(accounts),
           };
           await mkdir(dataDir, { recursive: true });
-          await writeFileAtomically(
+          await writeStoreFileDurably(
             file,
             `${JSON.stringify(updated, null, 2)}\n`,
             { mode: 0o600 },
@@ -390,11 +437,14 @@ export function createResourceInstallReceiptsStore(
                 : {}),
             };
           });
-          state.byAccount[accountId] = next;
+          const updated: ReceiptFile = {
+            version: 1,
+            byAccount: { ...state.byAccount, [accountId]: next },
+          };
           await mkdir(dataDir, { recursive: true });
-          await writeFileAtomically(
+          await writeStoreFileDurably(
             file,
-            `${JSON.stringify(state, null, 2)}\n`,
+            `${JSON.stringify(updated, null, 2)}\n`,
             { mode: 0o600 },
           );
         },
@@ -424,6 +474,13 @@ export function createResourceInstallReceiptsStore(
     ): Promise<{ accountId: string; receipt: InstallReceipt } | undefined> {
       await writes.get(file);
       const state = await readReceipts(file);
+      assertNoUnreadableProvenance(
+        state,
+        family,
+        (row) =>
+          Array.isArray(row.localResourceIds) &&
+          row.localResourceIds.includes(localId),
+      );
       for (const [ownerAccount, receipts] of Object.entries(state.byAccount)) {
         const receipt = receipts
           .filter(isInstallReceipt)
@@ -442,6 +499,7 @@ export function createResourceInstallReceiptsStore(
     async listOrganizationContentOwners(family, hash): Promise<string[]> {
       await writes.get(file);
       const state = await readReceipts(file);
+      assertNoUnreadableProvenance(state, family, (row) => row.hash === hash);
       return Array.from(
         new Set(
           Object.values(state.byAccount).flatMap((rows) =>

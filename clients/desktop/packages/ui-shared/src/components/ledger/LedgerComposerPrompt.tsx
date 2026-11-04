@@ -1,6 +1,7 @@
 'use client';
 
 import { useId, type JSX } from 'react';
+import { Tooltip } from '../Tooltip';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import type { LedgerDensity } from './ledger-entry-slots';
 
@@ -46,17 +47,25 @@ export function LedgerComposerPrompt({
         // The person writing is the one on this device.
         localUser
       />
-      <button
-        type="button"
-        data-testid={testId}
-        disabled={disabled}
-        title={reason}
-        aria-describedby={disabled ? reasonId : undefined}
-        onClick={onOpen}
-        className={`focus-ring min-w-0 flex-1 truncate rounded-full bg-subtle px-4 py-2 text-left fg-tertiary enabled:hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40 ${page ? 'text-s' : 'text-xs'}`}
+      {/* Unavailable, the prompt stays focusable (aria-disabled, not
+          disabled) so hover and keyboard focus both show the reason. */}
+      <Tooltip
+        label={reason}
+        disabled={!disabled}
+        allowShrink
+        className="flex-1"
       >
-        {label}
-      </button>
+        <button
+          type="button"
+          data-testid={testId}
+          aria-disabled={disabled || undefined}
+          aria-describedby={disabled ? reasonId : undefined}
+          onClick={disabled ? undefined : onOpen}
+          className={`focus-ring min-w-0 flex-1 truncate rounded-full bg-subtle px-4 py-2 text-left fg-tertiary ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-secondary'} ${page ? 'text-s' : 'text-xs'}`}
+        >
+          {label}
+        </button>
+      </Tooltip>
       {disabled && (
         <span id={reasonId} className="sr-only">
           {reason}

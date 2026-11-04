@@ -265,9 +265,11 @@ it('refuses plugins that references bring to an agent-originated run, before any
   jest.mocked(resolveConfiguredPrompt).mockResolvedValue({
     prompt: 'Use the plugin',
     referencedPluginSelections: {
+      collectionIds: [],
+      skillRefs: [],
       pluginRefs: [{ marketplaceId: 'm', pluginName: 'p' }],
     },
-  } as Awaited<ReturnType<typeof resolveConfiguredPrompt>>);
+  });
 
   const result = await send(
     inputs({

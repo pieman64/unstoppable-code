@@ -1,9 +1,9 @@
 'use client';
 
-import type { JSX } from 'react';
-import { DropdownMenuLabel } from '@canopy/ui-shared/components';
+import { useState, type JSX } from 'react';
+import { DisplayAvatar, DropdownMenuLabel } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { SidebarPersonAvatar } from './SidebarAccountFooter';
+import { isDisplayableAvatarUrl } from './SidebarAccountFooter';
 
 export interface SidebarAccountMenuHeaderProps {
   readonly name: string;
@@ -21,16 +21,31 @@ export function SidebarAccountMenuHeader({
   email,
   image,
 }: SidebarAccountMenuHeaderProps): JSX.Element | null {
+  // The URL that failed to load, so a later, different URL still renders.
+  const [failedImage, setFailedImage] = useState<string | null>(null);
   const shownName = name.trim();
   const shownEmail = email.trim();
   if (shownName === '' && shownEmail === '') return null;
+  const showImage =
+    !!image && failedImage !== image && isDisplayableAvatarUrl(image);
   return (
     <DropdownMenuLabel
       spacing="relaxed"
       data-testid="sidebar-account-menu-header-identity"
     >
       <span className="flex min-w-0 items-center gap-2">
-        <SidebarPersonAvatar name={shownName || shownEmail} image={image} />
+        {/* The person as a 16px avatar, the size of a menu row's icon. */}
+        <DisplayAvatar
+          name={shownName || shownEmail}
+          image={showImage ? image : null}
+          size="xs"
+          testId={
+            showImage
+              ? 'sidebar-person-avatar'
+              : 'sidebar-person-avatar-initial'
+          }
+          onImageError={setFailedImage}
+        />
         <span className="flex min-w-0 flex-1 flex-col">
           {shownName !== '' ? (
             <span

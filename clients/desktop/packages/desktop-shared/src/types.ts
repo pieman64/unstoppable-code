@@ -394,7 +394,6 @@ import type {
   DeepLinkResolveShareResponse,
   PublicShareSnapshot as ProtocolPublicShareSnapshot,
 } from '@canopy/protocol/share-deep-link';
-import type { UserEnvironmentEntry } from './types/user-environment';
 import type { ResolvedCanopyDataDir } from '@canopy/protocol/brand';
 import type {
   DesktopSettingsDeepLink,
@@ -619,13 +618,11 @@ import type {
   McpHttpAuthPreference,
 } from './types/mcp-servers';
 import type {
-  EnvironmentConfigData,
+  EnvironmentConfigView,
   EnvironmentRuntime,
   LoadEnvironmentConfigResponse,
-  LoadUserEnvironmentResponse,
   SaveEnvironmentConfigResponse,
-  SaveUserEnvironmentResponse,
-  UserEnvironmentData,
+  UserEnvironmentEntryView,
 } from './types/user-environment';
 import type { ChatModel } from './types/chat-models';
 import type { BillingLane } from './lib/default-model-lane';
@@ -842,6 +839,7 @@ export * from './types/code-review';
 
 export * from './types/approvals';
 export * from './types/remote-control';
+export * from './types/stored-secrets';
 export * from './types/activation-journey';
 
 export type {
@@ -915,14 +913,16 @@ export type {
 export type {
   DefaultEnvironmentKind,
   EnvironmentConfigData,
+  EnvironmentConfigView,
   EnvironmentDefinition,
+  EnvironmentDefinitionView,
   EnvironmentUsage,
+  EnvironmentValue,
   EnvironmentRuntime,
   EnvironmentRuntimeAssignments,
   LoadEnvironmentConfigErrorResponse,
   LoadEnvironmentConfigResponse,
   LoadEnvironmentConfigSuccessResponse,
-  LoadUserEnvironmentResponse,
   PersistedEnvironmentConfigFile,
   PersistedEnvironmentDefinition,
   ResolveEnvironmentRequest,
@@ -930,9 +930,9 @@ export type {
   SaveEnvironmentConfigErrorResponse,
   SaveEnvironmentConfigResponse,
   SaveEnvironmentConfigSuccessResponse,
-  SaveUserEnvironmentResponse,
   UserEnvironmentData,
   UserEnvironmentEntry,
+  UserEnvironmentEntryView,
   UserEnvironmentUiMode,
   WorkspaceEnvironmentAssignment,
 } from './types/user-environment';
@@ -2688,6 +2688,11 @@ export interface UpdateInfoData {
     url: string;
     guidance: string;
     checksum: { algorithm: 'SHA-512' | 'SHA-256'; value: string };
+  };
+  /** Repository-installed Linux packages update only through the system package manager. */
+  packageManagerUpdate?: {
+    guidance: string;
+    command: string;
   };
 }
 
@@ -6615,6 +6620,16 @@ export interface NativeProviderAccountRecord {
   subscriptionRestoredAt?: number;
 }
 
+/**
+ * A Browser-bar search engine, as in Chrome: a name and a URL template whose
+ * `%s` is replaced with the encoded search words.
+ */
+export interface BrowserSearchEngine {
+  readonly id: string;
+  readonly name: string;
+  readonly urlTemplate: string;
+}
+
 export interface PreferencesData extends TerminalDrawerPreferences {
   /** Last confirmed native account per billed provider, main-owned (CAN-4200). */
   nativeProviderAccounts?: Partial<
@@ -7289,6 +7304,14 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * Defaults to `false`, allowing any valid HTTP(S) URL or local file.
    */
   inAppBrowserLocalServersOnly?: boolean;
+  /**
+   * The search engine the Browser bar uses when what was typed is not an
+   * address: a built-in engine id or one of
+   * {@link inAppBrowserCustomSearchEngines}. An unknown id searches Google.
+   */
+  inAppBrowserSearchEngineId?: string;
+  /** Search engines the user added, each a name and a `%s` URL template. */
+  inAppBrowserCustomSearchEngines?: BrowserSearchEngine[];
   /**
    * Routes ordinary app content links to the selected worktree's built-in
    * browser. Authentication and explicit external-browser actions bypass it.
@@ -16472,7 +16495,8 @@ export interface SharedContainerRunStatusRequest {
 
 export interface SharedContainerRunEnvironmentRequest {
   containerId: string;
-  values: UserEnvironmentEntry[];
+  /** New plaintext values, or stored-secret values to keep. */
+  values: UserEnvironmentEntryView[];
 }
 
 export interface SharedContainerRunRefreshRequest extends SharedContainerRunStatusRequest {
@@ -16484,7 +16508,8 @@ export interface SharedContainerRunStatus {
   allowedAt?: string;
   publisherUserId?: string;
   run?: SharedContainerRevisionRunConfig;
-  values: UserEnvironmentEntry[];
+  /** Every non-empty value is a stored-secret value. */
+  values: UserEnvironmentEntryView[];
   unsetRequiredEnv: string[];
   runCopySizeBytes: string;
   /** A committed copy exists for an older revision, or recovery is pending. */
@@ -16814,12 +16839,13 @@ export interface SharedContainersApi {
   /**
    * Persists the recipient's own values for the publisher-declared names.
    * Encrypted at rest and scoped to this container; main rejects any name the
-   * revision did not declare. Resolves with the normalized entries as they
-   * were stored, which callers adopt rather than keeping their own draft.
+   * revision did not declare. Resolves with the stored entries, each
+   * non-empty value as a stored-secret value, which callers adopt rather than
+   * keeping their own draft.
    */
   saveRunEnvironment(
     request: SharedContainerRunEnvironmentRequest,
-  ): Promise<UserEnvironmentEntry[]>;
+  ): Promise<UserEnvironmentEntryView[]>;
   /**
    * Rebuilds the writable run copy from the sealed replica. Rejects while
    * terminals or script runs are live unless `stopRunning` is set, because the
@@ -20863,19 +20889,6 @@ export interface CanopyApi {
     cb: (event: AutoArchiveNotification) => void,
   ) => () => void;
   /**
-   * @deprecated Use {@link CanopyApi.loadEnvironmentConfig} instead. Retained
-   * only as a compatibility wrapper for older integrations. The legacy
-   * Settings Environment section is retired/redirected; new renderer code must
-   * use the environment-config APIs.
-   */
-  loadUserEnvironment: () => Promise<LoadUserEnvironmentResponse>;
-  /**
-   * @deprecated Use {@link CanopyApi.saveEnvironmentConfig} instead.
-   */
-  saveUserEnvironment: (
-    data: UserEnvironmentData,
-  ) => Promise<SaveUserEnvironmentResponse>;
-  /**
    * Load the Environments-page configuration file (v2): the environment
    * tree, the global per-runtime assignments, and per-workspace overrides.
    * Surfaces whether the host OS has encryption available so the renderer
@@ -20883,13 +20896,13 @@ export interface CanopyApi {
    */
   loadEnvironmentConfig: () => Promise<LoadEnvironmentConfigResponse>;
   /**
-   * Persist the Environments-page configuration file (v2). The backend
-   * normalizes and re-encrypts variables before writing to disk, then
-   * returns the canonical post-save shape so the renderer can refresh local
-   * state without re-loading from disk.
+   * Persist the Environments-page configuration file (v2). Stored-secret
+   * values keep the value they name. The backend normalizes and re-encrypts
+   * variables before writing to disk, then returns the post-save view so the
+   * renderer can refresh local state without re-loading from disk.
    */
   saveEnvironmentConfig: (
-    data: EnvironmentConfigData,
+    data: EnvironmentConfigView,
   ) => Promise<SaveEnvironmentConfigResponse>;
   showOsNotification: (
     request: OsNotificationShowRequest,
@@ -24527,12 +24540,6 @@ export type AppAdvisorAction =
   | { type: 'settings.set_ledger_agent_recording_enabled'; enabled: boolean }
   /** Settings → Plugins → "Suggest skills for repeated requests" (CAN-385). */
   | { type: 'settings.set_skill_suggestions_enabled'; enabled: boolean }
-  /**
-   * Opt in to (or out of) the daily free AI Credits drip for the connected
-   * cloud account. Routes through the same renderer helper as the Settings
-   * toggle and the Home onboarding card.
-   */
-  | { type: 'settings.set_daily_credit_drip'; enabled: boolean }
   /**
    * Local memory model: the same model and thinking preferences as the Memory
    * model row on the Memory settings tab.
@@ -29550,12 +29557,8 @@ export const IPC_CHANNELS = {
   workerStarted: 'workers:started',
   workerUpdated: 'workers:updated',
   workerExited: 'workers:exited',
-  userEnvironmentLoad: 'user-environment:load',
-  userEnvironmentSave: 'user-environment:save',
-  // Environments page (version 2) — the source of truth for environment
-  // configuration. The user-environment channels above remain compatibility
-  // wrappers for older callers and project Overall through the v2
-  // `environments.json` store.
+  // Environments page (version 2): the source of truth for environment
+  // configuration. Replies carry stored-secret values, never secret text.
   environmentConfigLoad: 'environment-config:load',
   environmentConfigSave: 'environment-config:save',
   // Code-graph build lifecycle — broadcast from the single off-main

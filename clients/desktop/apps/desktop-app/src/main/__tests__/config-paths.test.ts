@@ -453,6 +453,20 @@ describe.each(['x64', 'arm64'])('Linux %s login-shell PATH', (arch) => {
     process.env = { ...originalEnv };
   });
 
+  it('refreshes ARM64 login PATH on the next explicit recheck', async () => {
+    Object.defineProperty(process, 'arch', {
+      value: 'arm64',
+      configurable: true,
+    });
+    mockShellResolution(marked('/first/bin:/usr/bin'));
+    await prewarmLoginShellPath();
+    expect(getLoginShellPath()).toBe('/first/bin:/usr/bin');
+    mockShellResolution(marked('/restored/bin:/usr/bin'));
+    await prewarmLoginShellPath({ force: true });
+    expect(getLoginShellPath()).toBe('/restored/bin:/usr/bin');
+    expect(mockExecFile).toHaveBeenCalledTimes(2);
+  });
+
   it('runs the account and shell lookups through an installed probe', async () => {
     delete process.env.SHELL;
     const probe = jest.fn<
@@ -488,7 +502,7 @@ describe.each(['x64', 'arm64'])('Linux %s login-shell PATH', (arch) => {
     async (platform) => {
       setPlatform(platform);
       Object.defineProperty(process, 'arch', {
-        value: 'arm64',
+        value: platform === 'linux' ? 's390x' : 'arm64',
         configurable: true,
       });
       mockShellResolution('/mac/bin:/usr/bin\n');

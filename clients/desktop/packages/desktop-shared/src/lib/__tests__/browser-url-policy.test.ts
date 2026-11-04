@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import {
+  classifyBrowserBarInput,
   classifyInAppBrowserInput,
   isAllowedInAppBrowserUrl,
   isFileBrowserUrl,
@@ -189,6 +190,108 @@ describe('shared browser URL policy', () => {
     expect(classifyInAppBrowserInput('/tmp/index.html', true)).toEqual({
       kind: 'ok',
       url: 'file:///tmp/index.html',
+    });
+  });
+
+  const GOOGLE = 'https://www.google.com/search?q=%s';
+
+  it('searches for keywords instead of treating them as a host', () => {
+    const searches: ReadonlyArray<readonly [string, string]> = [
+      ['  react hooks  ', 'https://www.google.com/search?q=react+hooks'],
+      ['canopy', 'https://www.google.com/search?q=canopy'],
+      ['node.js tutorial', 'https://www.google.com/search?q=node.js+tutorial'],
+      ['c++ & rust?', 'https://www.google.com/search?q=c%2B%2B+%26+rust%3F'],
+      ['react: hooks', 'https://www.google.com/search?q=react%3A+hooks'],
+      // A leading `?` searches even what reads as an address, as in Chrome.
+      ['? example.com', 'https://www.google.com/search?q=example.com'],
+    ];
+    for (const [input, url] of searches) {
+      expect(classifyBrowserBarInput(input, false, GOOGLE)).toEqual({
+        kind: 'ok',
+        url,
+      });
+    }
+  });
+
+  it('searches with the chosen engine template', () => {
+    expect(
+      classifyBrowserBarInput(
+        'react hooks',
+        false,
+        'https://duckduckgo.com/?q=%s',
+      ),
+    ).toEqual({ kind: 'ok', url: 'https://duckduckgo.com/?q=react+hooks' });
+    expect(
+      classifyBrowserBarInput(
+        'react hooks',
+        false,
+        'https://en.wikipedia.org/wiki/Special:Search/%s',
+      ),
+    ).toEqual({
+      kind: 'ok',
+      url: 'https://en.wikipedia.org/wiki/Special:Search/react%20hooks',
+    });
+  });
+
+  it('keeps addresses and paths out of search', () => {
+    const urls: ReadonlyArray<readonly [string, string]> = [
+      ['example.com', 'http://example.com'],
+      ['example.com/a b', 'http://example.com/a b'],
+      ['localhost', 'http://localhost'],
+      ['LOCALHOST/admin', 'http://LOCALHOST/admin'],
+      ['web:3000', 'http://web:3000'],
+      ['[::1]', 'http://[::1]'],
+      // Local addresses keep navigating when their path has a space.
+      ['localhost:3000/a b', 'http://localhost:3000/a b'],
+      ['localhost/my page', 'http://localhost/my page'],
+      ['web:3000/a b', 'http://web:3000/a b'],
+      ['[::1]:8080/x y', 'http://[::1]:8080/x y'],
+      ['https://example.com/?q=a b', 'https://example.com/?q=a b'],
+      ['/tmp/My Site/index.html', 'file:///tmp/My%20Site/index.html'],
+      ['about:blank', 'about:blank'],
+    ];
+    for (const [input, url] of urls) {
+      expect(classifyBrowserBarInput(input, false, GOOGLE)).toEqual({
+        kind: 'ok',
+        url,
+      });
+    }
+    expect(
+      classifyBrowserBarInput('javascript:alert(1)', false, GOOGLE),
+    ).toEqual({
+      kind: 'unsupported',
+    });
+    expect(classifyBrowserBarInput('', false, GOOGLE)).toEqual({
+      kind: 'unsupported',
+    });
+    expect(classifyBrowserBarInput('?', false, GOOGLE)).toEqual({
+      kind: 'unsupported',
+    });
+  });
+
+  it('never searches for agent or start-page input', () => {
+    expect(classifyInAppBrowserInput('react hooks', false)).toEqual({
+      kind: 'unsupported',
+    });
+    expect(classifyInAppBrowserInput('canopy', false)).toEqual({
+      kind: 'ok',
+      url: 'http://canopy',
+    });
+  });
+
+  it('refuses a remote search while local-only browsing is on', () => {
+    expect(classifyBrowserBarInput('react hooks', true, GOOGLE)).toEqual({
+      kind: 'blocked-by-local-only',
+    });
+    expect(
+      classifyBrowserBarInput(
+        'react hooks',
+        true,
+        'http://localhost:8080/search?q=%s',
+      ),
+    ).toEqual({
+      kind: 'ok',
+      url: 'http://localhost:8080/search?q=react+hooks',
     });
   });
 });

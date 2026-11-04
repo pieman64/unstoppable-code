@@ -2719,7 +2719,7 @@ Version: 1.1.1
 License: ISC
 
 picomatch
-Version: 4.0.4
+Version: 4.0.7
 License: MIT
 
 pkce-challenge
@@ -2960,6 +2960,10 @@ License: MIT
 
 side-channel
 Version: 1.1.0
+License: MIT
+
+skullet
+Version: 0.0.3
 License: MIT
 
 slate-dom

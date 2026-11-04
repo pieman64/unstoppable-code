@@ -1,5 +1,5 @@
 import { type JSX, type ReactNode } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, Heading } from '@canopy/ui-shared/components';
 import { ChevronRightIcon } from '@canopy/ui-shared/icons';
 import { ToggleSwitch } from '@canopy/ui-shared/components';
 import { CalendarViewPicker } from './CalendarViewPicker';
@@ -64,12 +64,14 @@ export function CalendarToolbar({
           <ChevronRightIcon width={16} height={16} />
         </Button>
       </div>
-      <h2
+      <Heading
+        level={2}
+        variant="title"
         data-testid="automations-calendar-title"
-        className="min-w-0 grow text-s font-semibold fg-primary"
+        className="min-w-0 grow"
       >
         {title}
-      </h2>
+      </Heading>
       {filters}
       <div className="flex items-center gap-1.5 text-xs fg-secondary">
         <ToggleSwitch

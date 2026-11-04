@@ -5,7 +5,7 @@ import type {
   CodeGraphStatement,
 } from '@canopy/code-graph/store/database';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -165,64 +165,6 @@ describe('code graph read worker', () => {
       );
     } finally {
       recorder.restore();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('persists the worktree fingerprint and reports completion from metadata', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'code-graph-read-persist-'));
-    writeFileSync(path.join(dir, 'fixture.ts'), 'export function work(){}');
-    const dbPath = path.join(dir, '.graph/graph.db');
-    const engine = await CodeGraphEngine.open({
-      dbPath,
-      repositories: [{ repoId: 'fixture', rootPath: dir }],
-    });
-    try {
-      await engine.buildOrUpdate();
-    } finally {
-      engine.close();
-    }
-
-    try {
-      await expect(
-        executeCodeGraphRead({
-          dbPath,
-          task: { kind: 'persist-fingerprint', fingerprint: 'end-digest' },
-        }),
-      ).resolves.toEqual({ ok: true, result: { kind: 'persist-fingerprint' } });
-      await expect(
-        executeCodeGraphRead({
-          dbPath,
-          task: { kind: 'fingerprint-metadata' },
-        }),
-      ).resolves.toMatchObject({
-        ok: true,
-        result: {
-          kind: 'fingerprint-metadata',
-          value: { fingerprint: 'end-digest', completed: true },
-        },
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses to create a database when persisting a fingerprint', async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), 'code-graph-read-missing-'));
-    const dbPath = path.join(dir, 'graph.db');
-    try {
-      await expect(
-        executeCodeGraphRead({
-          dbPath,
-          task: { kind: 'persist-fingerprint', fingerprint: 'digest' },
-        }),
-      ).resolves.toEqual({
-        ok: false,
-        code: 'database-error',
-        message: 'The retained Code Graph could not be read. Try again.',
-      });
-      expect(existsSync(dbPath)).toBe(false);
-    } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });

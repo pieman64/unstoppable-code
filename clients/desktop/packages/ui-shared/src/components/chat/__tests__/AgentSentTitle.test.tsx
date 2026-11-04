@@ -84,6 +84,24 @@ describe('AgentSentTitle', () => {
       title(bot, { kind: 'project', projectId: 'project' }).textContent,
     ).toBe('Weekly summary·App Advisor');
   });
+  it('names a cloud chat sender, with its project only from another project', () => {
+    const cloudChat: ChatAgentSentInfo = {
+      sender: {
+        kind: 'cloud_chat',
+        projectId: 'workspace',
+        taskId: 'task',
+        chatId: 'chat',
+      },
+      chatTitle: 'Billing fix',
+      projectLabel: 'Payments',
+    };
+    expect(
+      title(cloudChat, { kind: 'project', projectId: 'workspace' }).textContent,
+    ).toBe('Billing fix');
+    expect(
+      title(cloudChat, { kind: 'project', projectId: 'other' }).textContent,
+    ).toBe('Billing fix·Payments');
+  });
   it('omits App Advisor for Advisor to Advisor, but not another bot', () => {
     expect(title(bot, { kind: 'bot', botId: 'app_advisor' }).textContent).toBe(
       'Weekly summary',

@@ -1,14 +1,13 @@
 /**
  * Pure data derivation for the workspace Automations panel: workspace/worktree
- * scoping of automations and watchers, the Upcoming occurrence window, and the
- * merged Completed history. Dependency-free (no stores, no React) so every
+ * scoping of automations and watchers, the Schedule occurrence window, and the
+ * scope rules the Runs section hands the Workflows run feed. Dependency-free (no stores, no React) so every
  * rule here is unit-testable in plain Node.
  */
 import type {
   AppAdvisorWatcherSummary,
   AutomationAction,
   ScheduledActivity,
-  ScheduledActivityRun,
 } from '@canopy/desktop-shared/types';
 import {
   enumerateAutomationOccurrences,
@@ -17,7 +16,10 @@ import {
 import {
   pipelineAutomationTaskId,
   pipelineAutomationWorkspaceId,
+  resolveAutomationPipelineTarget,
 } from '@canopy/desktop-shared/lib/automation-pipeline-target';
+import type { RunFeedInput } from '@/lib/workflows/run-feed';
+import type { PipelineInfo } from '@canopy/desktop-shared/types/pipeline';
 
 /** Scope the panel filters by: the owning workspace and (optionally) worktree. */
 export interface AutomationsPanelScope {
@@ -40,8 +42,8 @@ export const UPCOMING_MIN_ENTRIES = 5;
  * while bounding malformed or future trigger implementations.
  */
 export const UPCOMING_MAX_OCCURRENCES_PER_ACTIVITY = 20;
-/** Cap on merged Completed rows rendered by the panel. */
-export const COMPLETED_MAX_ENTRIES = 50;
+/** Cap on Runs rows rendered by the panel. */
+export const RUNS_MAX_ROWS = 50;
 
 /**
  * The workspace an automation action targets, or `undefined` for actions with
@@ -97,15 +99,50 @@ export function automationActionWorktreeId(
   }
 }
 
+/**
+ * The inputs of a workflow this automation owns and stores as a global
+ * pipeline (CAN-4551 / CAN-5479). A converted chat automation runs a workflow
+ * with no project of its own; the chat's workspace (`project_id`) and existing
+ * task (`task_id`) are inputs the conversion wrote. `undefined` for anything
+ * else, including a global pipeline the automation does not own.
+ */
+function ownedGlobalWorkflowInputs(
+  activity: ScheduledActivity,
+): Readonly<Record<string, string>> | undefined {
+  const stored = activity.ownedPipeline?.storedAction;
+  if (stored?.type !== 'worktree_pipeline') return undefined;
+  return resolveAutomationPipelineTarget(stored)?.kind === 'global'
+    ? stored.inputs
+    : undefined;
+}
+
+function activityWorkspaceId(activity: ScheduledActivity): string | undefined {
+  return (
+    automationActionWorkspaceId(activity.action) ??
+    ownedGlobalWorkflowInputs(activity)?.project_id
+  );
+}
+
+/**
+ * For an owned workflow, `task_id` is a worktree in a code workspace and a
+ * Work Entry in a cowork one, which never narrows to a worktree.
+ */
+function activityWorktreeId(activity: ScheduledActivity): string | undefined {
+  return (
+    automationActionWorktreeId(activity.action) ??
+    ownedGlobalWorkflowInputs(activity)?.task_id
+  );
+}
+
 function activityMatchesScope(
   activity: ScheduledActivity,
   scope: AutomationsPanelScope,
 ): boolean {
-  if (automationActionWorkspaceId(activity.action) !== scope.projectId) {
+  if (activityWorkspaceId(activity) !== scope.projectId) {
     return false;
   }
   if (!scope.worktreeOnly) return true;
-  return automationActionWorktreeId(activity.action) === scope.worktreeId;
+  return activityWorktreeId(activity) === scope.worktreeId;
 }
 
 /** Activities targeting the scope's workspace (and worktree when narrowed). */
@@ -180,6 +217,46 @@ function watcherMatchesScope(
   }
   if (!scope.worktreeOnly) return true;
   return watcherTargetWorktreeId(watcher) === scope.worktreeId;
+}
+
+/**
+ * The Workflows run feed's scope rules for this panel (`buildWorkflowRunRows`).
+ * Workflows and watchers keep the panel's own scope. A pipeline run belongs to
+ * the workspace (and worktree) it ran in; a run with no project, such as a
+ * global workflow's, shows only through the scheduled run that owns it. A run
+ * whose workflow is gone is placed by where it ran.
+ */
+export function panelRunFeedPredicates(
+  scope: AutomationsPanelScope,
+  activities: readonly ScheduledActivity[],
+): Pick<
+  RunFeedInput,
+  'activityInScope' | 'orphanRunInScope' | 'executionInScope' | 'watcherInScope'
+> {
+  const activitiesById = new Map(
+    activities.map((activity) => [activity.id, activity]),
+  );
+  const inScope = (
+    workspaceId: string | undefined,
+    worktreeId: string | undefined,
+  ): boolean =>
+    workspaceId === scope.projectId &&
+    (!scope.worktreeOnly || worktreeId === scope.worktreeId);
+  return {
+    activityInScope: (activity) => activityMatchesScope(activity, scope),
+    orphanRunInScope: (run) =>
+      inScope(
+        run.result?.projectId ?? run.target?.workspaceId,
+        run.result?.worktreeId ?? run.target?.worktreeId,
+      ),
+    executionInScope: (execution) =>
+      inScope(execution.project_id, execution.worktree_id),
+    // A watcher still watching is listed in Library, and a fire still being
+    // delivered is not history yet; Runs shows finished fires.
+    watcherInScope: (watcher) =>
+      (watcher.status === 'fired' || watcher.status === 'delivery_failed') &&
+      watcherMatchesScope(watcher, scope, activitiesById),
+  };
 }
 
 /** Watchers whose target observes the scope's workspace (and worktree). */
@@ -309,79 +386,54 @@ export function formatTimeUntil(now: Date, occursAt: Date): string {
   return `in ${Math.floor(hours / 24)}d`;
 }
 
-/** One row of the Completed section (merged automation runs + watcher fires). */
-export type CompletedEntry =
-  | {
-      kind: 'automation-run';
-      key: string;
-      name: string;
-      // `missed` is deliberately absent: missed occurrences are archive-only
-      // and never enter the `recentRuns` hot window this list reads.
-      status: 'success' | 'failure' | 'skipped' | 'canceled';
-      completedAt: Date;
-      run: ScheduledActivityRun;
-      /** The owning activity, when it still exists. */
-      activity?: ScheduledActivity;
-    }
-  | {
-      kind: 'watcher-fire';
-      key: string;
-      name: string;
-      status: 'success' | 'failure';
-      completedAt: Date;
-      watcher: AppAdvisorWatcherSummary;
-    };
+/** The Library's type filter: every kind, or one. */
+export type LibraryTypeFilter =
+  | 'all'
+  | 'automations'
+  | 'pipelines'
+  | 'watchers';
+
+/** One Library row: a scheduled workflow, an on-demand workflow or a watcher. */
+export type LibraryRow =
+  | { kind: 'automation'; activity: ScheduledActivity }
+  | { kind: 'pipeline'; pipeline: PipelineInfo }
+  | { kind: 'watcher'; watcher: AppAdvisorWatcherSummary };
 
 /**
- * The Completed section rows: finished (non-running) runs of the scoped
- * activities merged with the scoped completed watcher fires, newest first,
- * capped at {@link COMPLETED_MAX_ENTRIES}.
- *
- * `scopedActivities` doubles as the scope filter for runs — a run whose
- * activity was deleted (or falls outside the scope) is dropped, because runs
- * carry no target of their own.
+ * The Library rows: the scoped scheduled workflows, the workspace's own
+ * on-demand workflows (project pipelines; user, bundled and shared ones belong
+ * to no workspace and stay on the Workflows page), then the scoped watchers,
+ * narrowed by type and by a case-insensitive name match.
  */
-export function buildCompletedEntries(
-  recentRuns: ScheduledActivityRun[],
-  scopedActivities: ScheduledActivity[],
-  scopedCompletedWatchers: AppAdvisorWatcherSummary[],
-): CompletedEntry[] {
-  const activitiesById = new Map(
-    scopedActivities.map((activity) => [activity.id, activity]),
-  );
-  const entries: CompletedEntry[] = [];
-  for (const run of recentRuns) {
-    if (run.status === 'running' || run.status === 'missed') continue;
-    const activity = activitiesById.get(run.activityId);
-    if (!activity) continue;
-    const completedAtMs = Date.parse(run.completedAt ?? run.startedAt);
-    if (!Number.isFinite(completedAtMs)) continue;
-    entries.push({
-      kind: 'automation-run',
-      key: `run:${run.id}`,
-      name: run.activityName || activity.name,
-      status: run.status,
-      completedAt: new Date(completedAtMs),
-      run,
-      activity,
-    });
+export function buildLibraryRows(input: {
+  activities: readonly ScheduledActivity[];
+  pipelines: readonly PipelineInfo[];
+  watchers: readonly AppAdvisorWatcherSummary[];
+  typeFilter: LibraryTypeFilter;
+  search: string;
+}): LibraryRow[] {
+  const needle = input.search.trim().toLowerCase();
+  const matches = (name: string): boolean =>
+    needle.length === 0 || name.toLowerCase().includes(needle);
+  const shows = (kind: Exclude<LibraryTypeFilter, 'all'>): boolean =>
+    input.typeFilter === 'all' || input.typeFilter === kind;
+  const rows: LibraryRow[] = [];
+  if (shows('automations')) {
+    for (const activity of input.activities) {
+      if (matches(activity.name)) rows.push({ kind: 'automation', activity });
+    }
   }
-  for (const watcher of scopedCompletedWatchers) {
-    // A fire whose message is still being delivered is not history yet.
-    if (watcher.status === 'firing') continue;
-    const completedAtMs = Date.parse(
-      watcher.completedAt ?? watcher.firedAt ?? watcher.createdAt,
-    );
-    if (!Number.isFinite(completedAtMs)) continue;
-    entries.push({
-      kind: 'watcher-fire',
-      key: `watcher:${watcher.id}`,
-      name: watcher.label,
-      status: watcher.status === 'delivery_failed' ? 'failure' : 'success',
-      completedAt: new Date(completedAtMs),
-      watcher,
-    });
+  if (shows('pipelines')) {
+    for (const pipeline of input.pipelines) {
+      if (pipeline.source === 'project' && matches(pipeline.name)) {
+        rows.push({ kind: 'pipeline', pipeline });
+      }
+    }
   }
-  entries.sort((a, b) => b.completedAt.getTime() - a.completedAt.getTime());
-  return entries.slice(0, COMPLETED_MAX_ENTRIES);
+  if (shows('watchers')) {
+    for (const watcher of input.watchers) {
+      if (matches(watcher.label)) rows.push({ kind: 'watcher', watcher });
+    }
+  }
+  return rows;
 }

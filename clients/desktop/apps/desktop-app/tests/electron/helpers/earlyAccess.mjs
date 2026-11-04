@@ -48,12 +48,14 @@ export async function setAllLabsFeatures(page, enabled) {
     const snapshot = await window.api.experiments.getSnapshot();
     const features = snapshot.experiments.filter(
       (entry) =>
-        // Files reads was never bundled; enabling it would contact the daemon.
-        // Chat automation pipelines would convert the chat automations a
+        // Files reads, daemon terminals and the daemon code graph were never
+        // bundled; enabling them would contact the daemon. Chat automation pipelines would convert the chat automations a
         // legacy spec saves.
         ![
           'early-access',
           'daemon-files-reads',
+          'daemon-terminals',
+          'daemon-code-graph',
           'chat-automation-pipelines',
         ].includes(entry.id) &&
         entry.pages.length === 0 &&

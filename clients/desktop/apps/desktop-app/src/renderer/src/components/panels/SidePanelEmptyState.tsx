@@ -5,7 +5,7 @@ import {
   type PanelEmptyGroupCatalogEntry,
 } from '@canopy/ui-shared/components/panels';
 import {
-  AutomationsIcon,
+  WorkflowsIcon,
   FilesIcon,
   TerminalIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -153,8 +153,8 @@ export function PanelSurfacePicker({
   const automations = firstOf('automations');
   if (automations !== undefined) {
     entries.push({
-      ...row('automations', automations, 'Automations'),
-      icon: <AutomationsIcon size={14} />,
+      ...row('automations', automations, 'Workflows'),
+      icon: <WorkflowsIcon size={14} />,
     });
   }
 

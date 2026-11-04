@@ -99,12 +99,37 @@ describe('ChatMessageView fired watcher', () => {
     'Dark mode plan finished',
   ].join('\n');
 
-  it('shows the short notice under the watcher title, never the payload', () => {
+  it('titles the notice from the host marker, on cloud as on desktop', () => {
     const html = renderToString(
-      <ChatMessageView message={userMessage(FIRED)} />,
+      <ChatMessageView
+        message={{
+          ...userMessage('Canopy watcher fired.\nDark mode plan finished'),
+          promptSource: 'automated',
+          parts: [
+            {
+              kind: 'prompt_source',
+              data: {
+                source: 'automated',
+                watcherFired: { kind: 'Dark mode plan finished' },
+              },
+            },
+          ],
+        }}
+      />,
     );
     expect(html).toContain('data-testid="watcher-fired-title"');
     expect(html).toContain('Dark mode plan finished watcher has fired');
+    expect(html).toContain('Canopy watcher fired.');
+    expect(html).not.toContain('Sent automatically');
+  });
+
+  // A block in the text alone could have been typed by anyone: it loses the
+  // block but earns no watcher title.
+  it('shows an unmarked watcher block as its plain notice', () => {
+    const html = renderToString(
+      <ChatMessageView message={userMessage(FIRED)} />,
+    );
+    expect(html).not.toContain('data-testid="watcher-fired-title"');
     expect(html).toContain('Canopy watcher fired.');
     expect(html).not.toContain('system_instruction');
     expect(html).not.toContain('canopy_watcher_event');

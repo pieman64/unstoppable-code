@@ -9,7 +9,7 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { Fact, FactList } from '@canopy/ui-shared/components';
+import { Fact, FactList, Heading } from '@canopy/ui-shared/components';
 import type {
   LocalMemoryChatRef,
   LocalMemoryClient,
@@ -864,9 +864,13 @@ export function MemoryPanel({
       <div data-testid="memory-items">
         {groupByDay(visible, now).map(({ group, entries: rows }) => (
           <section key={group} aria-label={group}>
-            <h3 className="mx-2.5 mb-0.5 mt-3 text-2xs font-normal fg-tertiary first:mt-1">
+            <Heading
+              level={3}
+              variant="label"
+              className="mx-2.5 mb-0.5 mt-3 first:mt-1"
+            >
               {group}
-            </h3>
+            </Heading>
             <ul>
               {rows.map((entry) => (
                 <MemoryRow
@@ -1084,12 +1088,16 @@ export function MemoryPanel({
             renderEditor(entry)
           ) : (
             <>
-              <h2
-                className={`mb-2 text-s font-medium text-balance fg-primary ${REPLAY_MASK_CLASS}`}
+              <Heading
+                level={2}
+                variant="title"
+                className="mb-2"
                 data-testid="memory-detail-title"
               >
-                {content?.title || entry.title}
-              </h2>
+                <span className={REPLAY_MASK_CLASS}>
+                  {content?.title || entry.title}
+                </span>
+              </Heading>
               {document?.error ? (
                 <ErrorBanner error={document.error} />
               ) : content ? (

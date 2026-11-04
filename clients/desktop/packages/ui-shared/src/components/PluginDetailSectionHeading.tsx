@@ -1,4 +1,5 @@
 import type { JSX, ReactNode } from 'react';
+import { Heading } from './Heading';
 
 export interface PluginDetailSectionHeadingProps {
   as?: 'h3' | 'span';
@@ -7,18 +8,30 @@ export interface PluginDetailSectionHeadingProps {
   children: ReactNode;
 }
 
+const TEST_ID = 'plugin-detail-section-heading';
+
 export function PluginDetailSectionHeading({
-  as: Element = 'h3',
+  as = 'h3',
   id,
   children,
 }: PluginDetailSectionHeadingProps): JSX.Element {
+  // `span` names a `<button>` or `<summary>` toggle, where a heading element
+  // is not allowed. It carries the `title` heading's exact classes, so the
+  // README toggle and the component sections read as one treatment.
+  if (as === 'span') {
+    return (
+      <span
+        id={id}
+        className="text-s font-medium fg-primary text-pretty"
+        data-testid={TEST_ID}
+      >
+        {children}
+      </span>
+    );
+  }
   return (
-    <Element
-      id={id}
-      className="text-s font-semibold fg-primary"
-      data-testid="plugin-detail-section-heading"
-    >
+    <Heading level={3} variant="title" id={id} data-testid={TEST_ID}>
       {children}
-    </Element>
+    </Heading>
   );
 }

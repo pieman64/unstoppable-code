@@ -1201,7 +1201,8 @@ describe('SidebarAccountMenu', () => {
       );
       expect(identity?.className).not.toContain('fg-warning');
       expect(identity?.className).not.toContain('fg-destructive-strong');
-      expect(avatar?.className).toContain(
+      // The mask sits on the avatar's frame, cutting the dot's halo out.
+      expect(avatar?.parentElement?.className).toContain(
         'sidebar-account-avatar-attention-mask',
       );
       expect(rowDot?.className).toContain('bg-warning');
@@ -1853,7 +1854,9 @@ describe('SidebarAccountMenu', () => {
       );
       expect(avatar?.getAttribute('alt')).toBe('Ada Lovelace');
       expect(avatar?.getAttribute('referrerpolicy')).toBe('no-referrer');
-      expect(avatar?.className).toContain('h-4 w-4 rounded-full object-cover');
+      expect(avatar?.className.split(/\s+/)).toEqual(
+        expect.arrayContaining(['h-4', 'w-4', 'rounded-full', 'object-cover']),
+      );
       expect(
         container.querySelector('[data-testid="sidebar-account-initials"]'),
       ).toBeNull();

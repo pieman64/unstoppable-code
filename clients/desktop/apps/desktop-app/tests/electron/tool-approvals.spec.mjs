@@ -1079,14 +1079,20 @@ for (const { deferredUserOutput, nativeAgent } of [
         )
           await header.click();
         const groups = window.getByTestId('chat-tool-step-group');
-        await expect(groups).toHaveCount(2);
+        // The safety notice keeps its single call visible. The remaining two
+        // calls share a summary with one user denial and one ordinary error.
+        await expect(groups).toHaveCount(1);
         const counts = async (id) =>
           (await window.getByTestId(id).allTextContents()).reduce(
             (sum, value) => sum + Number(value.match(/\d+/)?.[0] ?? 0),
             0,
           );
-        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(2);
+        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(1);
         await expect.poll(() => counts('chat-tool-step-failed')).toBe(1);
+        await expect(safetyRow).toBeVisible();
+        await expect(safetyRow.getByTestId('tool-call-blocked')).toHaveText(
+          /^blocked by safety rule/,
+        );
         for (const group of await groups.all()) {
           const toggle = group.locator('button[aria-expanded]').first();
           if ((await toggle.getAttribute('aria-expanded')) !== 'true')
@@ -1100,8 +1106,9 @@ for (const { deferredUserOutput, nativeAgent } of [
         ).toHaveCount(1);
         for (const group of await groups.all())
           await group.locator('button[aria-expanded]').first().click();
-        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(2);
+        await expect.poll(() => counts('chat-tool-step-blocked')).toBe(1);
         await expect.poll(() => counts('chat-tool-step-failed')).toBe(1);
+        await expect(safetyRow).toBeVisible();
       }
     } finally {
       await closeCanopy(electronApp, userDataDir);

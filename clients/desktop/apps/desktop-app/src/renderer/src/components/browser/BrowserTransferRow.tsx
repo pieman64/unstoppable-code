@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState, type JSX } from 'react';
 import type { BrowserTransfer } from '@canopy/desktop-shared/types';
-import { Button, LinearProgress } from '@canopy/ui-shared';
+import { Button, ProgressBar } from '@canopy/ui-shared';
 import { isActiveTransfer, useBrowserStore } from '@/stores/browserStore';
 import { stageBrowserDownload } from '@/lib/browserChatStaging';
 import {
@@ -122,18 +122,19 @@ export function BrowserTransferRow({
         )}
       </div>
       {transferMoving(transfer) && (
-        <LinearProgress
-          percentage={percentage ?? 0}
+        <ProgressBar
+          value={percentage ?? 0}
           indeterminate={
             percentage === null &&
             (transfer.status === 'in_progress' || transfer.status === 'staging')
           }
-          barColor={
+          tone={
             transfer.status === 'in_progress' || transfer.status === 'staging'
-              ? 'bg-fg-info'
-              : 'bg-fg-secondary'
+              ? 'accent'
+              : 'neutral'
           }
           label={`${status} ${name}`}
+          hideLabel
         />
       )}
       <div className="min-w-0 truncate text-2xs tabular-nums fg-secondary">

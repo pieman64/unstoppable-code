@@ -13,6 +13,7 @@ const operation = z.enum([
   'core.pipeline.definition.delete',
   'core.pipeline.definition.duplicate',
   'core.pipeline.definition.setEnabled',
+  'core.pipeline.definition.import',
 ]);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const id = z.string().min(1).max(512);
@@ -32,6 +33,7 @@ const LedgerSchema = z.object({
           revision,
           enabled: z.boolean().optional(),
           sourceDefinitionId: id.optional(),
+          remoteVersion: z.string().max(256).optional(),
         }),
         z.object({
           kind: z.literal('enablement'),

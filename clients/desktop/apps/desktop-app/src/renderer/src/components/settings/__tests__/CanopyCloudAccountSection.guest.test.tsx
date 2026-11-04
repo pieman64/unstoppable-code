@@ -21,8 +21,8 @@ import { CanopyCloudAccountSection } from '../CanopyCloudAccountSection';
 jest.mock('../TelemetrySharingControls', () => ({
   TelemetrySharingControls: (): JSX.Element => <></>,
 }));
-jest.mock('../TelemetryDisclosure', () => ({
-  TelemetryDisclosure: (): JSX.Element => <></>,
+jest.mock('../TelemetrySharingIntro', () => ({
+  TelemetrySharingIntro: (): JSX.Element => <></>,
 }));
 
 const GUEST_SYNTHETIC_EMAIL =

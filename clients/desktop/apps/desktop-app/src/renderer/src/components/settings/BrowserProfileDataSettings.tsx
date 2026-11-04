@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
-  AdvancedDisclosure,
   Button,
   ConfirmDialog,
+  Disclosure,
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared';
@@ -465,7 +465,7 @@ export function BrowserProfileDataSettings({
           </div>
         </SettingsRow>
         {!!inventory?.cookieDomains.length && (
-          <AdvancedDisclosure
+          <Disclosure
             label={`${inventory.cookieDomains.length} ${
               inventory.cookieDomains.length === 1
                 ? 'cookie domain'
@@ -480,7 +480,7 @@ export function BrowserProfileDataSettings({
                 </li>
               ))}
             </ul>
-          </AdvancedDisclosure>
+          </Disclosure>
         )}
         {preview && (
           <ConfirmDialog

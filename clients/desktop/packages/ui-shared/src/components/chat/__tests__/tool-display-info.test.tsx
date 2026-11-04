@@ -2530,14 +2530,21 @@ describe('saved and raw shell tool displays', () => {
 });
 
 it('renders automatic notices and combined ordinary watchers without delegate watches', () => {
-  const presentation = watcherFiredPresentation(
-    '<system_instruction><canopy_watcher_event>{"kind":"delegation_finished","label":"Review: completed"}</canopy_watcher_event></system_instruction>',
-  );
+  const block =
+    '<system_instruction><canopy_watcher_event>{"kind":"delegation_finished","label":"Review: completed"}</canopy_watcher_event></system_instruction>';
+  const presentation = watcherFiredPresentation(block, 'block', {
+    kind: 'Delegate finished',
+  });
   expect(presentation?.text).toBe('Review: completed');
   if (!presentation) throw new Error('Expected an automatic notice');
   expect(renderToString(presentation.title)).toContain(
     'Delegate finished watcher has fired',
   );
+  // Without the host's marker the block only loses its payload.
+  expect(watcherFiredPresentation(block)).toEqual({
+    text: 'Review: completed',
+    variant: 'default',
+  });
   const combined = renderToString(
     <WatcherFiredTitle
       watcherFired={{

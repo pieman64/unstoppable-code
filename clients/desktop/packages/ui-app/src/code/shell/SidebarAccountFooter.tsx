@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
-import { FloatingMenu } from '@canopy/ui-shared/components';
+import { DisplayAvatar, FloatingMenu } from '@canopy/ui-shared/components';
 import { PersonIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
@@ -111,7 +111,8 @@ export interface SidebarAccountFooterProps {
   };
 }
 
-function isDisplayableAvatarUrl(url: string): boolean {
+/** Only an http(s) avatar URL is rendered; anything else shows the initial. */
+export function isDisplayableAvatarUrl(url: string): boolean {
   try {
     const { protocol } = new URL(url);
     return protocol === 'https:' || protocol === 'http:';
@@ -156,7 +157,6 @@ export function SidebarAccountRow({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuId = useId();
   const labelId = useId();
-  const initial = identity.name.trim().charAt(0).toUpperCase() || '?';
   const attentionMask = attention
     ? 'sidebar-account-avatar-attention-mask'
     : '';
@@ -207,22 +207,21 @@ export function SidebarAccountRow({
             className="focus-ring flex h-full min-w-0 flex-1 items-center gap-2 rounded-row text-left"
           >
             <span className="relative inline-flex h-4 w-4 shrink-0 items-center justify-center fg-secondary">
-              {showAvatar ? (
-                <img
-                  src={identity.image ?? undefined}
-                  alt={identity.name}
-                  referrerPolicy="no-referrer"
-                  data-testid={testIds?.avatar ?? 'sidebar-account-avatar'}
-                  className={`${REPLAY_BLOCK_CLASS} h-4 w-4 rounded-full object-cover ${attentionMask}`}
-                  onError={() => setFailedImage(identity.image ?? null)}
-                />
-              ) : identity.signedIn ? (
-                <span
-                  data-testid={testIds?.initials ?? 'sidebar-account-initials'}
-                  aria-hidden="true"
-                  className={`${REPLAY_BLOCK_CLASS} inline-flex h-4 w-4 items-center justify-center rounded-full bg-secondary text-3xs font-medium uppercase fg-primary ${attentionMask}`}
-                >
-                  {initial}
+              {identity.signedIn ? (
+                // The mask cuts the attention dot's halo out of the avatar.
+                <span className={`flex ${attentionMask}`}>
+                  <DisplayAvatar
+                    name={identity.name}
+                    image={showAvatar ? identity.image : null}
+                    size="xs"
+                    alt={showAvatar ? identity.name : ''}
+                    testId={
+                      showAvatar
+                        ? (testIds?.avatar ?? 'sidebar-account-avatar')
+                        : (testIds?.initials ?? 'sidebar-account-initials')
+                    }
+                    onImageError={setFailedImage}
+                  />
                 </span>
               ) : (
                 <PersonIcon
@@ -279,46 +278,6 @@ export function SidebarAccountRow({
         {menu(closeMenu)}
       </FloatingMenu>
     </div>
-  );
-}
-
-export interface SidebarPersonAvatarProps {
-  /** The signed-in person's name; its initial is the fallback. */
-  readonly name: string;
-  /** Remote avatar. Only http(s) is rendered; anything else falls back. */
-  readonly image?: string | null;
-}
-
-/**
- * The signed-in person as a 16px round avatar, the size of a menu row's
- * icon, with their initial when there is no usable picture (the account
- * menu's identity header).
- */
-export function SidebarPersonAvatar({
-  name,
-  image,
-}: SidebarPersonAvatarProps): JSX.Element {
-  // The URL that failed to load, so a later, different URL still renders.
-  const [failedImage, setFailedImage] = useState<string | null>(null);
-  const showImage =
-    !!image && failedImage !== image && isDisplayableAvatarUrl(image);
-  return showImage ? (
-    <img
-      src={image}
-      alt=""
-      referrerPolicy="no-referrer"
-      data-testid="sidebar-person-avatar"
-      className={`${REPLAY_BLOCK_CLASS} h-4 w-4 shrink-0 rounded-full object-cover`}
-      onError={() => setFailedImage(image)}
-    />
-  ) : (
-    <span
-      aria-hidden="true"
-      data-testid="sidebar-person-avatar-initial"
-      className={`${REPLAY_BLOCK_CLASS} inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-muted text-3xs font-medium uppercase fg-primary`}
-    >
-      {name.trim().charAt(0).toUpperCase() || '?'}
-    </span>
   );
 }
 

@@ -100,6 +100,8 @@ describe('Labs resolution', () => {
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key,
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatAutomationPipelines.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,

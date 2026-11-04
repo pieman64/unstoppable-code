@@ -115,6 +115,15 @@ describe('policy files a global data-directory allow cannot reach silently', () 
     ],
     ['migrations ledger', (): string => getMigrationsFilePath()],
     [
+      'last-good migrations ledger',
+      (): string => join(dataDir, 'migrations.last-good.json'),
+    ],
+    [
+      'kept damaged migrations ledger',
+      (): string =>
+        join(dataDir, 'migrations.damaged-2026-11-03T10-00-00-000Z-abc.json'),
+    ],
+    [
       'existing preferences backup',
       (): string =>
         join(dataDir, 'preferences.backup-2026-10-22T00-00-00-000Z.json'),

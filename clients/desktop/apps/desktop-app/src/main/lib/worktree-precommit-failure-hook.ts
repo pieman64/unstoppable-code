@@ -4,10 +4,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
 import type { HookAction, HookScope } from '@canopy/desktop-shared/hooks';
-import {
-  getHookTriggerDisplayName,
-  type HookTriggerName,
-} from '@canopy/desktop-shared/hooks';
+import type { HookTriggerName } from '@canopy/desktop-shared/hooks';
 import { isMultiRepoWorkspace } from './workspace-registry';
 import { readWorkspaceConfig } from './workspace-persistence';
 import {
@@ -25,8 +22,8 @@ import {
   resolveWorkspaceRootHooks,
 } from './hook-resolver';
 import { runHook } from './hook-runner';
+import { readPausedHookKeys } from './hook-initiated-work';
 import { resolveWorktreeCwd } from './resolve-worktree';
-import { readAllSidebarItems } from './sidebar-items';
 import { readPreferencesFile } from './preferences-store';
 import { sendToWindow } from './window-send';
 import {
@@ -136,17 +133,6 @@ async function resolveFailureHook(args: {
     : null;
 }
 
-async function readPausedHookKeys(
-  projectId: string,
-  worktreeId: string,
-): Promise<Set<string>> {
-  const { items } = await readAllSidebarItems();
-  const item = items.find((candidate) => candidate.id === projectId);
-  const worktrees = item && item.type !== 'cowork' ? item.worktrees : [];
-  const worktree = worktrees.find((candidate) => candidate.id === worktreeId);
-  return new Set(worktree?.pausedHookKeys ?? []);
-}
-
 export async function triggerWorktreePrecommitFailureHook(args: {
   projectId: string;
   worktreeId: string;
@@ -178,10 +164,11 @@ export async function triggerWorktreePrecommitFailureHook(args: {
           )
     : undefined;
 
+  // What the watchers are told; the core hook source decides the pause.
   const pausedHookKeys = await readPausedHookKeys(
     args.projectId,
     args.worktreeId,
-  ).catch(() => new Set<string>());
+  ).catch((): ReadonlySet<string> => new Set<string>());
   const fallbackHookKey = hookKeyForScope({
     scope,
     triggerName: WORKTREE_PRECOMMIT_FAILURE_TRIGGER,
@@ -221,18 +208,6 @@ export async function triggerWorktreePrecommitFailureHook(args: {
     return;
   }
 
-  if (paused) {
-    sendToWindow(args.getWindow?.() ?? null, IPC_CHANNELS.hookSkippedPaused, {
-      projectId: args.projectId,
-      worktreeId: args.worktreeId,
-      hook,
-      triggerDisplayName: getHookTriggerDisplayName(
-        WORKTREE_PRECOMMIT_FAILURE_TRIGGER,
-      ),
-    });
-    return;
-  }
-
   const prefs = await readPreferencesFile();
   void runHook({
     projectId: args.projectId,
@@ -240,6 +215,7 @@ export async function triggerWorktreePrecommitFailureHook(args: {
     hook,
     cwd: args.repo.repoPath,
     invocation: 'automatic',
+    pause: 'enforce',
     timeoutSeconds: prefs.scriptTimeoutMinutes * 60,
     env,
     getWindow: args.getWindow ?? ((): null => null),

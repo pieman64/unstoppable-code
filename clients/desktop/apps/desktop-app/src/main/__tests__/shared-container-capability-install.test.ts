@@ -89,6 +89,7 @@ import {
   skillInvocationRenames,
 } from '../shared-containers/capability-package/install-plan';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
+import { createAutomationFromForm } from '../automations/chat-automation-save';
 import {
   setWorktreeHooksPaused,
   updateWorkspaceHooks,
@@ -104,6 +105,10 @@ const mockGetRevisionPackage = jest.fn<Promise<unknown>, unknown[]>();
 jest.mock('../shared-containers/canopy-server-client', () => ({
   getSharedContainerRevisionPackage: (...args: unknown[]): Promise<unknown> =>
     mockGetRevisionPackage(...args),
+}));
+// CAN-5479: a fork's automations are saved as a person's form create.
+jest.mock('../automations/chat-automation-save', () => ({
+  createAutomationFromForm: jest.fn(),
 }));
 // Hooks are workspace configuration: the installer must never reach either
 // hook boundary. Mocked so any call would be observed.
@@ -1611,6 +1616,25 @@ describe('installForkCapabilityPackage', () => {
       ]);
     });
 
+    it('removes automations the create converted to workflows', async () => {
+      const world = newWorld(pkg);
+      world.failAt = 'defaults';
+      // Converting to an owned workflow rewrites the automation after its
+      // create, so the saved automation is newer than its creation (CAN-5479).
+      world.afterCreate = (kind): void => {
+        if (kind !== 'automation') return;
+        const created = world.automations[world.automations.length - 1];
+        if (created) created.updatedAt = tick();
+      };
+      const warnings = await installForkCapabilityPackage(
+        { request: forkRequest(pkg.digest), response: CODE_RESPONSE },
+        depsFor(world),
+      );
+      expect(warnings).toEqual([FAILED_PACKAGE_WARNING]);
+      expectNothingInstalled(world);
+      expect(world.journalHistory.at(-1)?.status).toBe('rolled-back');
+    });
+
     it('keeps objects the user changed during the attempt and names them', async () => {
       const world = newWorld(pkg);
       world.failAt = 'defaults';
@@ -2457,6 +2481,34 @@ describe('installForkCapabilityPackage', () => {
 // the resources bound to that step. A step that runs a packaged child
 // pipeline or project action must see it there, nested children included,
 // or the run falls back to the recipient's own pipelines and actions.
+// A fork's chat automation converts like any a person creates, while the
+// chat automation pipelines experiment is on; one that can't keeps the
+// native save (CAN-5479).
+describe('the default automation creation', () => {
+  it('saves through the form create, which converts chat automations', async () => {
+    const request = {
+      name: 'Review',
+      schedule: {
+        kind: 'cron' as const,
+        expression: '0 9 * * *',
+        timezone: 'local' as const,
+      },
+      action: {
+        type: 'standalone_prompt' as const,
+        chatProjectId: 'cowork-1',
+        prompt: 'Review',
+      },
+      enabled: false,
+    };
+    const response = { ok: true as const };
+    jest.mocked(createAutomationFromForm).mockResolvedValue(response);
+    await expect(
+      defaultForkCapabilityInstallDependencies().createAutomation(request),
+    ).resolves.toBe(response);
+    expect(createAutomationFromForm).toHaveBeenCalledWith(request);
+  });
+});
+
 describe('container-installed pipeline package at run time', () => {
   const RUNTIME_PIPELINE_YAML = [
     'name: Ship',

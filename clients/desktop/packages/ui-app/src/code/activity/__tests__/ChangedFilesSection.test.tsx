@@ -216,6 +216,7 @@ describe('ChangedFilesSection', () => {
     expect(
       document.activeElement
         ?.closest('[data-testid="activity-changed-file"]')
+        ?.querySelector('[title]')
         ?.getAttribute('title'),
     ).toBe('src/z.ts');
     act(() => root.unmount());

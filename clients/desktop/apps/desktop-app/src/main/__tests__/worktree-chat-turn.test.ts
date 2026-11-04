@@ -10715,6 +10715,20 @@ describe('browser handoff acceptance and trusted turn origin', () => {
     },
   );
 
+  it.each(['user', 'portal', 'automation', 'hook'] as const)(
+    'restores %s file-presentation provenance when a cowork turn continues after settlement',
+    async (source) => {
+      await dispatchWorktreeChatTurn(baseOptions({ initiationSource: source }));
+      const session = getMockSession(0);
+      session.__onEvent({ type: 'result', is_error: false });
+      await flushSessionEventCommits();
+      expect(capturePresentationTurn(origin)).toBeUndefined();
+      session.__onEvent({ type: 'assistant', message: 'continued output' });
+      await flushSessionEventCommits();
+      expect(capturePresentationTurn(origin)?.source).toBe(source);
+    },
+  );
+
   it('records provenance when an untrusted IPC request omits userMessageId', async () => {
     // IPC payloads are not schema-checked at runtime, so a request can omit
     // the id. With no captured turn, undefined === undefined must not be read

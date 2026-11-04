@@ -165,7 +165,7 @@ test('the marketplace shows one Linear card and Add connects the account and ins
     await expect(card).toBeVisible();
     await expect(
       window.getByTestId('plugins-includes-mcp-catalog:linear'),
-    ).toHaveText('Includes Linear skills');
+    ).toHaveCount(0);
     await expect(
       window.getByTestId('plugins-entry-curated:linear'),
     ).toHaveCount(0);

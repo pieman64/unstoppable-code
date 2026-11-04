@@ -91,6 +91,7 @@
     "./llm-gateway": "./src/llm-gateway/index.ts",
     "./local-memory": "./src/local-memory/index.ts",
     "./memory": "./src/memory/index.ts",
+    "./memory-sync": "./src/memory-sync/index.ts",
     "./plugins": "./src/plugins/index.ts",
     "./configured-prompt-references": "./src/configured-prompt-references/index.ts",
     "./plugins/catalog": "./src/plugins/catalog.ts",

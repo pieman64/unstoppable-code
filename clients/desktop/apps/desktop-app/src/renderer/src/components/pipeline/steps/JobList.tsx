@@ -16,7 +16,7 @@ import {
 } from '@dnd-kit/sortable';
 import type { Pipeline, Step } from '@canopy/desktop-shared/types/pipeline';
 import type { Selection } from '../../../hooks/usePipelineEditor';
-import { Badge, EmptyState } from '@canopy/ui-shared/components';
+import { Badge, EmptyState, Heading } from '@canopy/ui-shared/components';
 import { JobCard } from './JobCard';
 
 interface JobListProps {
@@ -176,9 +176,9 @@ export function JobList({
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b">
-        <h3 className="text-xs font-medium fg-secondary ">
+        <Heading level={3} variant="label">
           Jobs ({jobOrder.length})
-        </h3>
+        </Heading>
       </div>
 
       {/* Job list */}

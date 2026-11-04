@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { writeStoreFileDurably } from '../lib/durable-store-write';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 export interface PipelinePackageDismissalRecord {
   scopeKey: string;
@@ -9,12 +10,27 @@ export interface PipelinePackageDismissalRecord {
   dismissedAt: string;
 }
 
-interface PipelinePackageDismissalStoreV1 {
-  version: 1;
+/**
+ * `damaged`: not JSON or not the v1 envelope; the next replacement copies it
+ * aside first. `newer` (a later version) and `unreadable` (the read itself
+ * failed) read as no dismissals and are never written over.
+ */
+type DismissalStoreStatus =
+  | 'ok'
+  | 'missing'
+  | 'damaged'
+  | 'newer'
+  | 'unreadable';
+
+interface DismissalStoreRead {
+  status: DismissalStoreStatus;
   records: PipelinePackageDismissalRecord[];
+  /** Rows this build cannot read, carried verbatim through replacements. */
+  unknown: unknown[];
 }
 
 const mutationQueues = new Map<string, Promise<void>>();
+const refusalsWarned = new Set<string>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -36,50 +52,73 @@ function isDismissalRecord(
   );
 }
 
-async function readStore(
-  storePath: string,
-): Promise<PipelinePackageDismissalStoreV1> {
+async function readStore(storePath: string): Promise<DismissalStoreRead> {
   let raw: string;
   try {
     raw = await readFile(storePath, 'utf8');
   } catch (error) {
-    if (
+    const missing =
       typeof error === 'object' &&
       error !== null &&
       'code' in error &&
-      error.code === 'ENOENT'
-    ) {
-      return { version: 1, records: [] };
-    }
-    throw error;
+      error.code === 'ENOENT';
+    return {
+      status: missing ? 'missing' : 'unreadable',
+      records: [],
+      unknown: [],
+    };
   }
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(raw);
-    if (
-      !isRecord(value) ||
-      value.version !== 1 ||
-      !Array.isArray(value.records) ||
-      !value.records.every(isDismissalRecord)
-    ) {
-      throw new Error('invalid shape');
-    }
-    return { version: 1, records: value.records };
+    value = JSON.parse(raw);
   } catch {
-    throw new Error('Invalid pipeline package dismissal store');
+    return { status: 'damaged', records: [], unknown: [] };
   }
+  if (
+    isRecord(value) &&
+    typeof value.version === 'number' &&
+    value.version > 1
+  ) {
+    return { status: 'newer', records: [], unknown: [] };
+  }
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.records))
+    return { status: 'damaged', records: [], unknown: [] };
+  const records: PipelinePackageDismissalRecord[] = [];
+  const unknown: unknown[] = [];
+  for (const record of value.records) {
+    if (isDismissalRecord(record)) records.push(record);
+    else unknown.push(record);
+  }
+  return { status: 'ok', records, unknown };
+}
+
+function warnRefusedOnce(
+  storePath: string,
+  status: DismissalStoreStatus,
+): void {
+  if (refusalsWarned.has(storePath)) return;
+  refusalsWarned.add(storePath);
+  logMainProcessWarn(
+    `[pipelines] Package dismissals are not saved: the store is ${
+      status === 'newer' ? 'from a newer version' : 'unreadable'
+    }`,
+  );
 }
 
 async function writeStore(
   storePath: string,
-  store: PipelinePackageDismissalStoreV1,
+  current: DismissalStoreRead,
+  records: PipelinePackageDismissalRecord[],
 ): Promise<void> {
   await mkdir(path.dirname(storePath), { recursive: true });
-  const temporaryPath = `${storePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(store, null, 2)}\n`, {
-    encoding: 'utf8',
-    flag: 'wx',
-  });
-  await rename(temporaryPath, storePath);
+  // Copied, not moved: if the replacement fails, the damaged file stays put.
+  if (current.status === 'damaged')
+    await copyFile(storePath, `${storePath}.damaged-${Date.now()}`);
+  await writeStoreFileDurably(
+    storePath,
+    `${JSON.stringify({ version: 1, records: [...records, ...current.unknown] }, null, 2)}\n`,
+    { encoding: 'utf8' },
+  );
 }
 
 async function mutateStore<T>(
@@ -114,7 +153,7 @@ export async function replacePipelinePackageDismissals(
   storePath: string,
   scopeKey: string,
   dismissals: Array<{ provider: 'claude' | 'codex'; token: string }>,
-): Promise<void> {
+): Promise<'replaced' | 'refused'> {
   if (!scopeKey) throw new Error('Invalid pipeline package dismissal scope');
   const unique = new Map(
     dismissals.map((dismissal) => [
@@ -135,8 +174,12 @@ export async function replacePipelinePackageDismissals(
   ) {
     throw new Error('Invalid pipeline package dismissal record');
   }
-  await mutateStore(storePath, async () => {
+  return mutateStore(storePath, async () => {
     const store = await readStore(storePath);
+    if (store.status === 'newer' || store.status === 'unreadable') {
+      warnRefusedOnce(storePath, store.status);
+      return 'refused';
+    }
     const existing = new Map(
       store.records
         .filter((record) => record.scopeKey === scopeKey)
@@ -147,12 +190,10 @@ export async function replacePipelinePackageDismissals(
       ([key, dismissal]): PipelinePackageDismissalRecord =>
         existing.get(key) ?? { scopeKey, ...dismissal, dismissedAt },
     );
-    await writeStore(storePath, {
-      version: 1,
-      records: [
-        ...store.records.filter((record) => record.scopeKey !== scopeKey),
-        ...scopedRecords,
-      ],
-    });
+    await writeStore(storePath, store, [
+      ...store.records.filter((record) => record.scopeKey !== scopeKey),
+      ...scopedRecords,
+    ]);
+    return 'replaced';
   });
 }

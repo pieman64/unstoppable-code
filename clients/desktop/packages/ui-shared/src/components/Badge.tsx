@@ -9,11 +9,18 @@ import {
   LABEL_COUNT_CLASS,
   type BadgeSize,
   type BadgeTone,
+  type BadgeVariant,
   type CountTone,
   type DotTone,
 } from '../lib/badge';
 
-export type { BadgeSize, BadgeTone, CountTone, DotTone } from '../lib/badge';
+export type {
+  BadgeSize,
+  BadgeTone,
+  BadgeVariant,
+  CountTone,
+  DotTone,
+} from '../lib/badge';
 
 export interface BadgeProps {
   children: ReactNode;
@@ -28,6 +35,8 @@ export interface BadgeProps {
   icon?: AppIcon;
   /** Quieter fill and ink for a completed or de-emphasised row. */
   muted?: boolean;
+  /** `solid` is the environment label (DEV); everything else stays `tint`. */
+  variant?: BadgeVariant;
   /** Placement classes appended after the shared geometry and tone. */
   className?: string;
   title?: string;
@@ -45,17 +54,19 @@ export function Badge({
   size = 'regular',
   icon: Icon,
   muted = false,
+  variant = 'tint',
   className,
   title,
   'data-testid': testId,
 }: BadgeProps): JSX.Element {
-  const base = badgeClassName(tone, { muted, size });
+  const base = badgeClassName(tone, { muted, size, variant });
   const icon = BADGE_ICON_BY_SIZE[size];
   return (
     <span
       data-testid={testId}
       data-badge-tone={tone}
       data-badge-size={size === 'compact' ? size : undefined}
+      data-badge-variant={variant === 'solid' ? variant : undefined}
       title={title}
       className={className ? `${base} ${className}` : base}
     >

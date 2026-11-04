@@ -29,6 +29,18 @@ describe('Badge', () => {
     },
   );
 
+  it('renders the solid variant as a 20px full-fill label with a nested corner', () => {
+    expect(
+      renderToStaticMarkup(
+        <Badge tone="warning" variant="solid">
+          DEV
+        </Badge>,
+      ),
+    ).toBe(
+      '<span data-badge-tone="warning" data-badge-variant="solid" class="inline-flex h-5 shrink-0 items-center whitespace-nowrap rounded-[max(6px,calc(var(--radius-row)-4px))] px-1.5 text-3xs font-medium leading-none bg-warning fg-emphasis">DEV</span>',
+    );
+  });
+
   it('never uses a border, ring, accent, uppercase or semibold', () => {
     const tones = [
       'neutral',

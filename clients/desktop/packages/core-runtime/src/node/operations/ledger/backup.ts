@@ -232,7 +232,9 @@ export async function backupOperationLedger(
 }
 
 /** Tables a restore replaces, children before the rows they reference. */
-const RESTORED_TABLES = [
+/** Every ledger table, so a restore rewinds all of them. */
+export const RESTORED_TABLES = [
+  'initiated_work_heads',
   'delegations',
   'delegation_leases',
   'execution_targets',

@@ -10,6 +10,8 @@ import {
   WORKER_PIPELINE_STREAM_DEFINITIONS,
   type CanopyCallerDescriptor,
   type WorkerPipelineCancelMode,
+  type WorkerPipelineControlOutcome,
+  type WorkerPipelineControlResult,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionEventsItem,
   type WorkerPipelineExecutionStartParams,
@@ -23,6 +25,8 @@ import { LocalWorkerExecution, OperationService } from '../../../operations';
 import { OperationLedger } from '../../../operations/ledger';
 import {
   CORE_PIPELINE_CANCEL_KIND,
+  CORE_PIPELINE_CONTROL_KIND,
+  CORE_PIPELINE_RECOVERY_KIND,
   CORE_PIPELINE_RUN_KIND,
   CorePipelineRuns,
 } from '../core-pipeline-runs';
@@ -30,7 +34,10 @@ import {
   PipelineDrainTimeoutError,
   createWorkerPipelineHandlers,
   pipelineExecutionNotFoundError,
+  pipelineCheckpointFailedError,
+  pipelineControlFailedError,
   pipelineLaunchUnavailableError,
+  type PipelineControlRequest,
   type PipelineExecutionObserver,
   type PipelineExecutionWorker,
 } from '../worker-pipelines';
@@ -40,6 +47,22 @@ const EXECUTION_INSTRUCTIONS = {
     WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.execution.start'],
   'worker.pipeline.execution.cancel':
     WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.execution.cancel'],
+  'worker.pipeline.execution.resume':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.execution.resume'],
+  'worker.pipeline.execution.retry':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.execution.retry'],
+  'worker.pipeline.matrixJob.retry':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.matrixJob.retry'],
+  'worker.pipeline.matrixVariant.cancel':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
+      'worker.pipeline.matrixVariant.cancel'
+    ],
+  'worker.pipeline.recovery.sweep':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS['worker.pipeline.recovery.sweep'],
+  'worker.pipeline.recovery.checkpoint':
+    WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
+      'worker.pipeline.recovery.checkpoint'
+    ],
 };
 const EXECUTION_STREAMS = {
   'worker.pipeline.execution.events':
@@ -87,6 +110,22 @@ class FakeWorker implements PipelineExecutionWorker {
   drainTimesOut = false;
   /** When set, starts wait for it. */
   startGate: Promise<void> | null = null;
+  /** When set, cancels wait for it. */
+  cancelGate: Promise<void> | null = null;
+  /** Controls core prepared, by request id: the outcome and the status they leave. */
+  readonly controls = new Map<
+    string,
+    {
+      outcome: WorkerPipelineControlOutcome;
+      status: WorkerPipelineExecution['status'];
+    }
+  >();
+  /** The executions each sweep looked at, in order. */
+  readonly swept: string[][] = [];
+  /** When set, the shutdown checkpoint fails with it. */
+  checkpointFails = false;
+  /** The request id of every control the worker ran, in order. */
+  readonly controlled: string[] = [];
   /** Runs as a subscription is made, before it is registered. */
   beforeObserve: (() => void) | null = null;
   private readonly observers = new Map<
@@ -106,6 +145,44 @@ class FakeWorker implements PipelineExecutionWorker {
     });
   }
 
+  control(
+    request: PipelineControlRequest,
+  ): Promise<WorkerPipelineControlResult> {
+    const { requestId } = request.params;
+    const prepared = this.controls.get(requestId);
+    if (!prepared) return Promise.reject(pipelineLaunchUnavailableError());
+    this.controls.delete(requestId);
+    this.controlled.push(requestId);
+    if (prepared.status === 'failure' && prepared.outcome === 'stale_noop')
+      return Promise.reject(pipelineControlFailedError(new Error('refused')));
+    const executionId =
+      request.operation === 'worker.pipeline.execution.retry' &&
+      request.params.newExecutionId !== undefined
+        ? request.params.newExecutionId
+        : request.params.executionId;
+    const next = execution(executionId, prepared.status);
+    if (
+      prepared.outcome !== 'stale_noop' &&
+      prepared.outcome !== 'already_running'
+    )
+      this.executions.set(executionId, next);
+    return Promise.resolve({ outcome: prepared.outcome, execution: next });
+  }
+
+  sweep(params: { executionIds: string[] }): Promise<{ failureCount: number }> {
+    this.swept.push(params.executionIds);
+    return Promise.resolve({
+      failureCount: params.executionIds.filter((id) => id.startsWith('bad'))
+        .length,
+    });
+  }
+
+  checkpoint(): Promise<{ checkpointedCount: number }> {
+    if (this.checkpointFails)
+      return Promise.reject(pipelineCheckpointFailedError(new Error('stuck')));
+    return Promise.resolve({ checkpointedCount: this.executions.size });
+  }
+
   get(executionId: string): Promise<WorkerPipelineExecution | null> {
     return Promise.resolve(this.executions.get(executionId) ?? null);
   }
@@ -122,10 +199,12 @@ class FakeWorker implements PipelineExecutionWorker {
     this.modes.push(mode);
     if (mode === 'drain' && this.drainTimesOut)
       return Promise.reject(new PipelineDrainTimeoutError());
-    this.cancelled.push(executionId);
-    const cancelled = { ...current, status: 'cancelled' as const };
-    this.emit(executionId, 'execution.cancelled', 'cancelled');
-    return Promise.resolve(cancelled);
+    return (this.cancelGate ?? Promise.resolve()).then(() => {
+      this.cancelled.push(executionId);
+      const cancelled = { ...current, status: 'cancelled' as const };
+      this.emit(executionId, 'execution.cancelled', 'cancelled');
+      return cancelled;
+    });
   }
 
   observe(
@@ -195,6 +274,7 @@ interface Harness {
   operations: OperationService;
   localWorker: LocalWorkerExecution;
   runs: CorePipelineRuns;
+  receipts: ReturnType<typeof createWorkerExecutorReceipts>;
 }
 
 function harness(options: { now?: () => number } = {}): Harness {
@@ -236,7 +316,7 @@ function harness(options: { now?: () => number } = {}): Harness {
     void dispatcher.shutdown();
     operations.close();
   });
-  return { worker, dispatcher, operations, localWorker, runs };
+  return { worker, dispatcher, operations, localWorker, runs, receipts };
 }
 
 const params = (executionId: string): WorkerPipelineExecutionStartParams => ({
@@ -481,6 +561,584 @@ describe('core pipeline runs', () => {
       status: 'failed',
       error: { code: 'worker.pipeline.executionNotFound' },
     });
+  });
+});
+
+describe('core pipeline recovery controls', () => {
+  const origin = { kind: 'client' as const, sourceId: 'local-desktop-user' };
+  const owner = { kind: 'principal' as const, id: 'local-desktop-user' };
+  const resume = (
+    h: Harness,
+    executionId: string,
+    requestId: string,
+  ): ReturnType<CorePipelineRuns['control']> =>
+    h.runs.control({
+      control: {
+        operation: 'worker.pipeline.execution.resume',
+        params: {
+          requestId,
+          executionId,
+          pauseResponses: [
+            {
+              checkpointId: 'checkpoint-1',
+              jobId: 'review',
+              stepId: 'approve',
+              answers: { approved: true },
+            },
+          ],
+          initiationSource: 'user',
+        },
+      },
+      origin,
+      owner,
+    });
+  const controlsOf = async (
+    h: Harness,
+    runId: string,
+  ): Promise<Awaited<ReturnType<OperationService['get']>>[]> =>
+    (
+      await h.operations.list({
+        kinds: [CORE_PIPELINE_CONTROL_KIND],
+        parentOperationId: runId,
+        limit: 10,
+      })
+    ).items;
+  const runsOf = async (h: Harness, executionId: string): Promise<string[]> =>
+    (
+      await h.operations.list({
+        kinds: [CORE_PIPELINE_RUN_KIND],
+        scope: { executionId },
+        limit: 10,
+      })
+    ).items.map((run) => run.operationId);
+
+  it('resumes a paused run under its own run record', async () => {
+    const h = harness();
+    h.worker.launches.add('run-20');
+    const started = await start(h, 'run-20');
+    h.worker.emit('run-20', 'execution.paused', 'paused');
+    await settle();
+    h.worker.controls.set('answer-1', {
+      outcome: 'started',
+      status: 'running',
+    });
+    await expect(resume(h, 'run-20', 'answer-1')).resolves.toMatchObject({
+      status: 'completed',
+      operationId: started.operationId,
+      outcome: 'started',
+      execution: { executionId: 'run-20', status: 'running' },
+    });
+    expect(
+      (await h.localWorker.listDelegations(started.operationId)).map(
+        (delegation) => delegation.operation.name,
+      ),
+    ).toEqual(['worker.pipeline.execution.start']);
+    const controls = await controlsOf(h, started.operationId);
+    expect(controls).toEqual([
+      expect.objectContaining({
+        kind: CORE_PIPELINE_CONTROL_KIND,
+        status: 'completed',
+        outcome: { outcome: 'started' },
+      }),
+    ]);
+    expect(
+      (await h.localWorker.listDelegations(controls[0]?.operationId ?? '')).map(
+        (delegation) => [delegation.operation.name, delegation.idempotencyKey],
+      ),
+    ).toEqual([['worker.pipeline.execution.resume', 'answer-1']]);
+    expect(await runsOf(h, 'run-20')).toEqual([started.operationId]);
+    h.worker.emit('run-20', 'execution.completed', 'success');
+    await settle();
+    expect((await h.operations.get(started.operationId))?.status).toBe(
+      'completed',
+    );
+  });
+
+  it('carries a long pasted pause answer, as the executor always took', async () => {
+    const h = harness();
+    h.worker.executions.set('paused-2', execution('paused-2', 'paused'));
+    h.worker.controls.set('long-1', { outcome: 'started', status: 'running' });
+    await expect(
+      h.runs.control({
+        control: {
+          operation: 'worker.pipeline.execution.resume',
+          params: {
+            requestId: 'long-1',
+            executionId: 'paused-2',
+            pauseResponses: [
+              {
+                checkpointId: 'checkpoint-1',
+                jobId: 'review',
+                stepId: 'notes',
+                answers: { notes: 'x'.repeat(200_000) },
+              },
+            ],
+            initiationSource: 'user',
+          },
+        },
+        origin,
+        owner,
+      }),
+    ).resolves.toMatchObject({ status: 'completed', outcome: 'started' });
+  });
+
+  it('never runs a control twice for one request id', async () => {
+    const h = harness();
+    h.worker.launches.add('run-21');
+    const started = await start(h, 'run-21');
+    h.worker.emit('run-21', 'execution.paused', 'paused');
+    await settle();
+    h.worker.controls.set('answer-2', {
+      outcome: 'started',
+      status: 'running',
+    });
+    const first = await resume(h, 'run-21', 'answer-2');
+    h.worker.controls.set('answer-2', {
+      outcome: 'started',
+      status: 'running',
+    });
+    const again = await resume(h, 'run-21', 'answer-2');
+    expect(again).toEqual(first);
+    expect(h.worker.controlled).toEqual(['answer-2']);
+    expect(await controlsOf(h, started.operationId)).toHaveLength(1);
+  });
+
+  it('replays a repeated request id after its run finished', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-2', execution('failed-2', 'failure'));
+    h.worker.controls.set('retry-2', { outcome: 'started', status: 'running' });
+    const retry = (): ReturnType<CorePipelineRuns['control']> =>
+      h.runs.control({
+        control: {
+          operation: 'worker.pipeline.execution.retry',
+          params: {
+            requestId: 'retry-2',
+            executionId: 'failed-2',
+            mode: 'failed_only',
+          },
+        },
+        origin,
+        owner,
+      });
+    const first = await retry();
+    h.worker.emit('failed-2', 'execution.failed', 'failure');
+    await settle();
+    expect((await h.operations.get(first.operationId))?.status).toBe('failed');
+    h.worker.controls.set('retry-2', { outcome: 'started', status: 'running' });
+    const again = await retry();
+    expect(again).toMatchObject({
+      status: 'completed',
+      operationId: first.operationId,
+    });
+    expect(h.worker.controlled).toEqual(['retry-2']);
+    expect(await runsOf(h, 'failed-2')).toEqual([first.operationId]);
+  });
+
+  it('never settles a newer run from a replayed control', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-3', execution('failed-3', 'failure'));
+    const retry = (
+      requestId: string,
+    ): ReturnType<CorePipelineRuns['control']> =>
+      h.runs.control({
+        control: {
+          operation: 'worker.pipeline.execution.retry',
+          params: { requestId, executionId: 'failed-3', mode: 'failed_only' },
+        },
+        origin,
+        owner,
+      });
+    // The first retry failed at once.
+    h.worker.controls.set('retry-3', { outcome: 'started', status: 'failure' });
+    const first = await retry('retry-3');
+    await settle();
+    expect((await h.operations.get(first.operationId))?.status).toBe('failed');
+    h.worker.controls.set('retry-4', { outcome: 'started', status: 'running' });
+    const second = await retry('retry-4');
+    expect(second.operationId).not.toBe(first.operationId);
+    await expect(retry('retry-3')).resolves.toMatchObject({
+      operationId: first.operationId,
+      execution: { status: 'failure' },
+    });
+    await settle();
+    expect((await h.operations.get(second.operationId))?.status).toBe(
+      'running',
+    );
+  });
+
+  it('replays a control redelivered after a restart', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-5', execution('failed-5', 'failure'));
+    h.worker.controls.set('retry-5', { outcome: 'started', status: 'running' });
+    const retry = (
+      runs: CorePipelineRuns,
+    ): ReturnType<CorePipelineRuns['control']> =>
+      runs.control({
+        control: {
+          operation: 'worker.pipeline.execution.retry',
+          params: {
+            requestId: 'retry-5',
+            executionId: 'failed-5',
+            mode: 'failed_only',
+          },
+        },
+        origin,
+        owner,
+      });
+    const first = await retry(h.runs);
+    // A relaunched core holds no runs in memory; the ledger keeps receipts.
+    h.operations.close();
+    const operations = new OperationService({
+      openLedger: (): OperationLedger =>
+        OperationLedger.open(join(dir, 'operation-ledger.sqlite')),
+    });
+    cleanup.push(() => operations.close());
+    const relaunched = new CorePipelineRuns({
+      operations,
+      localWorker: new LocalWorkerExecution({
+        operations,
+        transport: createDirectLocalWorkerTransport({
+          dispatcher: h.dispatcher,
+          instructions: EXECUTION_INSTRUCTIONS,
+          caller,
+          receipts: h.receipts,
+        }),
+      }),
+      worker: h.worker,
+    });
+    h.worker.controls.set('retry-5', { outcome: 'started', status: 'running' });
+    await expect(retry(relaunched)).resolves.toMatchObject({
+      status: 'completed',
+      operationId: first.operationId,
+    });
+    expect(h.worker.controlled).toEqual(['retry-5']);
+  });
+
+  it('finishes a run being cancelled that a new control replaces', async () => {
+    const h = harness();
+    h.worker.launches.add('run-30');
+    const started = await start(h, 'run-30');
+    h.worker.emit('run-30', 'execution.paused', 'paused');
+    await settle();
+    let open = (): void => undefined;
+    h.worker.cancelGate = new Promise((resolve) => {
+      open = resolve;
+    });
+    await h.operations.cancel(started.operationId, {
+      reason: 'Another window cancelled it.',
+      requestedBy: 'window-b',
+    });
+    h.worker.controls.set('answer-30', {
+      outcome: 'started',
+      status: 'running',
+    });
+    const resumed = await resume(h, 'run-30', 'answer-30');
+    expect(resumed.operationId).not.toBe(started.operationId);
+    open();
+    await settle();
+    expect((await h.operations.get(started.operationId))?.status).toBe(
+      'cancelled',
+    );
+    expect((await h.operations.get(resumed.operationId))?.status).toBe(
+      'cancelled',
+    );
+  });
+
+  it('finishes a run whose control ended its execution without running it', async () => {
+    const h = harness();
+    h.worker.launches.add('run-31');
+    const started = await start(h, 'run-31');
+    h.worker.emit('run-31', 'execution.paused', 'paused');
+    h.worker.detach('run-31');
+    await settle();
+    h.worker.controls.set('variant-31', {
+      outcome: 'updated',
+      status: 'cancelled',
+    });
+    await expect(
+      h.runs.control({
+        control: {
+          operation: 'worker.pipeline.matrixVariant.cancel',
+          params: {
+            requestId: 'variant-31',
+            executionId: 'run-31',
+            jobId: 'build',
+            variantJobId: 'build-1',
+          },
+        },
+        origin,
+        owner,
+      }),
+    ).resolves.toMatchObject({
+      operationId: started.operationId,
+      outcome: 'updated',
+    });
+    await settle();
+    expect((await h.operations.get(started.operationId))?.status).toBe(
+      'cancelled',
+    );
+  });
+
+  it('follows a run a concurrent control started after their shared run ended', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-6', execution('failed-6', 'failure'));
+    h.worker.controls.set('retry-6a', {
+      outcome: 'started',
+      status: 'failure',
+    });
+    h.worker.controls.set('retry-6b', {
+      outcome: 'started',
+      status: 'running',
+    });
+    const retry = (
+      requestId: string,
+    ): ReturnType<CorePipelineRuns['control']> =>
+      h.runs.control({
+        control: {
+          operation: 'worker.pipeline.execution.retry',
+          params: { requestId, executionId: 'failed-6', mode: 'failed_only' },
+        },
+        origin,
+        owner,
+      });
+    await Promise.all([retry('retry-6a'), retry('retry-6b')]);
+    await settle();
+    const statuses = await Promise.all(
+      (await runsOf(h, 'failed-6')).map(
+        async (id) => (await h.operations.get(id))?.status,
+      ),
+    );
+    expect(statuses).toContain('running');
+    h.worker.emit('failed-6', 'execution.completed', 'success');
+    await settle();
+    const after = await Promise.all(
+      (await runsOf(h, 'failed-6')).map(
+        async (id) => (await h.operations.get(id))?.status,
+      ),
+    );
+    expect(after).not.toContain('running');
+  });
+
+  it('records no second run for an execution that ended before its control replied', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-7', execution('failed-7', 'failure'));
+    h.worker.controls.set('retry-7', { outcome: 'started', status: 'running' });
+    // The control's own run follows the execution and sees it end before
+    // the reply, whose snapshot still says running, reaches core.
+    const realControl = h.worker.control.bind(h.worker);
+    h.worker.control = async (
+      request,
+    ): Promise<WorkerPipelineControlResult> => {
+      const reply = await realControl(request);
+      h.runs.reattach('failed-7');
+      await settle();
+      h.worker.emit('failed-7', 'execution.completed', 'success');
+      await settle();
+      return reply;
+    };
+    await h.runs.control({
+      control: {
+        operation: 'worker.pipeline.execution.retry',
+        params: {
+          requestId: 'retry-7',
+          executionId: 'failed-7',
+          mode: 'failed_only',
+        },
+      },
+      origin,
+      owner,
+    });
+    await settle();
+    expect(await runsOf(h, 'failed-7')).toHaveLength(1);
+  });
+
+  it('records one run for concurrent controls of an execution', async () => {
+    const h = harness();
+    h.worker.executions.set('paused-3', execution('paused-3', 'paused'));
+    h.worker.controls.set('answer-a', {
+      outcome: 'started',
+      status: 'running',
+    });
+    h.worker.controls.set('answer-b', {
+      outcome: 'stale_noop',
+      status: 'running',
+    });
+    const [a, b] = await Promise.all([
+      resume(h, 'paused-3', 'answer-a'),
+      resume(h, 'paused-3', 'answer-b'),
+    ]);
+    expect(a.operationId).toBe(b.operationId);
+    expect(await runsOf(h, 'paused-3')).toEqual([a.operationId]);
+    await settle();
+    expect((await h.operations.get(a.operationId))?.status).toBe('running');
+    h.worker.emit('paused-3', 'execution.completed', 'success');
+    await settle();
+    expect((await h.operations.get(a.operationId))?.status).toBe('completed');
+  });
+
+  it('records a run for a control of an execution this process holds no run for', async () => {
+    const h = harness();
+    h.worker.executions.set('failed-1', execution('failed-1', 'failure'));
+    h.worker.controls.set('retry-1', { outcome: 'started', status: 'running' });
+    const retried = await h.runs.control({
+      control: {
+        operation: 'worker.pipeline.execution.retry',
+        params: {
+          requestId: 'retry-1',
+          executionId: 'failed-1',
+          mode: 'failed_only',
+        },
+      },
+      origin,
+      owner,
+    });
+    expect(retried).toMatchObject({ status: 'completed', outcome: 'started' });
+    expect(await h.operations.get(retried.operationId)).toMatchObject({
+      kind: CORE_PIPELINE_RUN_KIND,
+      status: 'running',
+      scope: { executionId: 'failed-1' },
+    });
+    h.worker.emit('failed-1', 'execution.paused', 'paused');
+    await settle();
+    expect((await h.operations.get(retried.operationId))?.status).toBe(
+      'paused',
+    );
+    h.worker.emit('failed-1', 'execution.failed', 'failure');
+    await settle();
+    expect(await h.operations.get(retried.operationId)).toMatchObject({
+      status: 'failed',
+    });
+  });
+
+  it('records a start over as the run of its new execution', async () => {
+    const h = harness();
+    h.worker.executions.set('old-1', execution('old-1', 'failure'));
+    h.worker.controls.set('over-1', { outcome: 'started', status: 'running' });
+    const restarted = await h.runs.control({
+      control: {
+        operation: 'worker.pipeline.execution.retry',
+        params: {
+          requestId: 'over-1',
+          executionId: 'old-1',
+          mode: 'from_start',
+          newExecutionId: 'new-1',
+        },
+      },
+      origin,
+      owner,
+    });
+    expect(restarted).toMatchObject({
+      status: 'completed',
+      execution: { executionId: 'new-1' },
+    });
+    expect(await runsOf(h, 'new-1')).toEqual([restarted.operationId]);
+    expect(await runsOf(h, 'old-1')).toEqual([]);
+  });
+
+  it('finishes a control run that started nothing with its outcome', async () => {
+    const h = harness();
+    h.worker.executions.set('done-1', execution('done-1', 'success'));
+    h.worker.controls.set('stale-1', {
+      outcome: 'stale_noop',
+      status: 'success',
+    });
+    const stale = await resume(h, 'done-1', 'stale-1');
+    expect(stale).toMatchObject({ status: 'completed', outcome: 'stale_noop' });
+    await settle();
+    expect(await h.operations.get(stale.operationId)).toMatchObject({
+      status: 'completed',
+      outcome: { outcome: 'stale_noop' },
+    });
+    // A later control records a run of its own.
+    h.worker.controls.set('variant-1', {
+      outcome: 'updated',
+      status: 'paused',
+    });
+    const updated = await h.runs.control({
+      control: {
+        operation: 'worker.pipeline.matrixVariant.cancel',
+        params: {
+          requestId: 'variant-1',
+          executionId: 'done-1',
+          jobId: 'build',
+          variantJobId: 'build-1',
+        },
+      },
+      origin,
+      owner,
+    });
+    expect(updated.operationId).not.toBe(stale.operationId);
+    await settle();
+    expect(await h.operations.get(updated.operationId)).toMatchObject({
+      status: 'completed',
+      outcome: { outcome: 'updated' },
+    });
+  });
+
+  it('fails the run of a control the worker refused or had no launch for', async () => {
+    const h = harness();
+    h.worker.executions.set('paused-1', execution('paused-1', 'paused'));
+    h.worker.controls.set('refused-1', {
+      outcome: 'stale_noop',
+      status: 'failure',
+    });
+    const refused = await resume(h, 'paused-1', 'refused-1');
+    expect(refused).toMatchObject({
+      status: 'failed',
+      error: { code: 'worker.pipeline.controlFailed' },
+    });
+    const unprepared = await resume(h, 'paused-1', 'unprepared-1');
+    expect(unprepared).toMatchObject({
+      status: 'failed',
+      error: { code: 'worker.pipeline.launchUnavailable' },
+    });
+    await settle();
+    for (const { operationId } of [refused, unprepared])
+      expect((await h.operations.get(operationId))?.status).toBe('failed');
+  });
+});
+
+// CAN-4141: the startup orphan sweep and the shutdown checkpoint.
+describe('core pipeline recovery', () => {
+  it('records the startup sweep with its worker dispatch under it', async () => {
+    const h = harness();
+    const swept = await h.runs.sweep(['orphan-1', 'bad-2'], 'sweep-1');
+    expect(swept).toMatchObject({
+      status: 'completed',
+      result: { failureCount: 1 },
+    });
+    expect(h.worker.swept).toEqual([['orphan-1', 'bad-2']]);
+    expect(await h.operations.get(swept.operationId)).toMatchObject({
+      kind: CORE_PIPELINE_RECOVERY_KIND,
+      status: 'completed',
+      origin: { kind: 'system', sourceId: 'startup-sweep' },
+    });
+    expect(
+      (await h.localWorker.listDelegations(swept.operationId)).map(
+        (delegation) => [delegation.operation.name, delegation.idempotencyKey],
+      ),
+    ).toEqual([['worker.pipeline.recovery.sweep', 'sweep-1']]);
+    // A repeat of the same request replays the recorded sweep.
+    await expect(
+      h.runs.sweep(['orphan-1', 'bad-2'], 'sweep-1'),
+    ).resolves.toEqual(swept);
+    expect(h.worker.swept).toHaveLength(1);
+  });
+
+  it('records a shutdown checkpoint that left a run unpaused as failed', async () => {
+    const h = harness();
+    h.worker.executions.set('live-1', execution('live-1', 'running'));
+    await expect(h.runs.checkpoint()).resolves.toMatchObject({
+      status: 'completed',
+      result: { checkpointedCount: 1 },
+    });
+    h.worker.checkpointFails = true;
+    const failed = await h.runs.checkpoint();
+    expect(failed).toMatchObject({
+      status: 'failed',
+      error: { code: 'worker.pipeline.checkpointFailed' },
+    });
+    expect((await h.operations.get(failed.operationId))?.status).toBe('failed');
   });
 });
 

@@ -149,8 +149,8 @@ function isSelectableDiffSource(
 const SETUP_RUN_START_GRACE_MS = 10_000;
 
 const LazyPdfPreview = lazy(() =>
-  import('@canopy/ui-rich/pdf').then((module) => ({
-    default: module.PdfPreview,
+  import('@canopy/ui-app/pdf-preview').then((module) => ({
+    default: module.FindablePdfPreview,
   })),
 );
 

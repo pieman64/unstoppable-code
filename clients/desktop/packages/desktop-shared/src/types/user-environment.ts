@@ -1,4 +1,12 @@
 import type { SecureStorageFailure } from './secure-storage';
+import type { SecretValueInput, StoredSecretErrorCode } from './stored-secrets';
+
+/**
+ * A variable value. Main holds plaintext (`string`); replies to the renderer
+ * carry a {@link import('./stored-secrets').StoredSecretValue} in place of
+ * every non-empty value marked secret, and saves accept either form.
+ */
+export type EnvironmentValue = SecretValueInput;
 
 /**
  * Which editor the renderer presents by default for user-configured
@@ -27,9 +35,9 @@ export type DefaultEnvironmentKind =
   | 'pipeline';
 
 /** A single user-configured environment variable. */
-export interface UserEnvironmentEntry {
+export interface UserEnvironmentEntry<V extends EnvironmentValue = string> {
   key: string;
-  value: string;
+  value: V;
   /**
    * When true, pipeline runtime resolution exposes this variable through
    * spawn-only secretEnv instead of persisted execution env. Other runtimes
@@ -48,14 +56,14 @@ export interface UserEnvironmentEntry {
  * `variables` and `uiMode` edited but their `id`, `name`, `parentId`,
  * `isDefault`, and `defaultKind` are kept at the canonical seed values.
  */
-export interface EnvironmentDefinition {
+export interface EnvironmentDefinition<V extends EnvironmentValue = string> {
   id: string;
   name: string;
   parentId: string | null;
   isDefault: boolean;
   defaultKind?: DefaultEnvironmentKind;
   uiMode: UserEnvironmentUiMode;
-  variables: UserEnvironmentEntry[];
+  variables: UserEnvironmentEntry<V>[];
   createdAt: string;
   updatedAt: string;
 }
@@ -89,19 +97,23 @@ export interface WorkspaceEnvironmentAssignment {
 }
 
 /**
- * Wire shape for the full environment config: the tree of environments,
- * the global runtime assignment triple, and the list of per-workspace
- * overrides. This is the canonical shape both the renderer and main process
- * agree on — persisted file shapes (see {@link PersistedEnvironmentConfigFile})
- * keep variables encrypted at rest, but on the wire they travel as
- * plaintext.
+ * The full environment config: the tree of environments, the global runtime
+ * assignment triple, and the list of per-workspace overrides. Main works on
+ * the plaintext form; the wire carries {@link EnvironmentConfigView}, where
+ * values marked secret are stored-secret values. Persisted file shapes (see
+ * {@link PersistedEnvironmentConfigFile}) keep variables encrypted at rest.
  */
-export interface EnvironmentConfigData {
+export interface EnvironmentConfigData<V extends EnvironmentValue = string> {
   version: 2;
-  environments: EnvironmentDefinition[];
+  environments: EnvironmentDefinition<V>[];
   globalRuntimes: EnvironmentRuntimeAssignments;
   workspaceAssignments: WorkspaceEnvironmentAssignment[];
 }
+
+/** The environment config as it crosses IPC, in both directions. */
+export type EnvironmentConfigView = EnvironmentConfigData<EnvironmentValue>;
+export type EnvironmentDefinitionView = EnvironmentDefinition<EnvironmentValue>;
+export type UserEnvironmentEntryView = UserEnvironmentEntry<EnvironmentValue>;
 
 /**
  * IPC response from `loadEnvironmentConfig`. Surfaces whether the host OS
@@ -109,7 +121,7 @@ export interface EnvironmentConfigData {
  * would not be encrypted at rest.
  */
 export interface LoadEnvironmentConfigSuccessResponse {
-  data: EnvironmentConfigData;
+  data: EnvironmentConfigView;
   /**
    * True when the native environment-value availability decision returns true.
    * This is distinct from permission to write tokens.
@@ -135,7 +147,7 @@ export type LoadEnvironmentConfigResponse =
 /** Successful IPC response from `saveEnvironmentConfig`. */
 export interface SaveEnvironmentConfigSuccessResponse {
   ok: true;
-  data: EnvironmentConfigData;
+  data: EnvironmentConfigView;
   encryptionAvailable: boolean;
 }
 
@@ -143,6 +155,8 @@ export interface SaveEnvironmentConfigSuccessResponse {
 export interface SaveEnvironmentConfigErrorResponse {
   ok: false;
   error: string;
+  /** Set when a kept stored secret could not be honoured. */
+  storedSecretError?: StoredSecretErrorCode;
   secureStorageFailure?: SecureStorageFailure;
 }
 
@@ -176,13 +190,13 @@ export interface ResolveEnvironmentRequest {
  *  - `inheritedEnvironmentIds`: ids walked above the leaf, leaf-most first.
  *    Empty when the leaf has no parent.
  */
-export interface ResolvedEnvironment {
+export interface ResolvedEnvironment<V extends EnvironmentValue = string> {
   environmentId: string | null;
   environmentName: string | null;
-  variables: UserEnvironmentEntry[];
-  publicApplied: Record<string, string>;
-  secretApplied: Record<string, string>;
-  applied: Record<string, string>;
+  variables: UserEnvironmentEntry<V>[];
+  publicApplied: Record<string, V>;
+  secretApplied: Record<string, V>;
+  applied: Record<string, V>;
   inheritedEnvironmentIds: string[];
 }
 
@@ -245,61 +259,19 @@ export interface PersistedEnvironmentConfigFile {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy compatibility shapes
+// Legacy version-1 file shape
 //
-// These are the version-1 wire shapes for `user-environment.json`. They are
-// kept so the legacy IPC handlers, renderer settings tab, and main-process
-// migrator can continue to read/write the old file until the Environments
-// page migration is complete in the renderer.
+// `user-environment.json` predates the Environments page. Main still reads it
+// once to migrate it into `environments.json`; nothing else uses it.
 // ---------------------------------------------------------------------------
 
 /**
- * Legacy user-configured environment variables that Canopy injects into
- * spawned agent sessions, helper agents, and pipelines via
- * `getEnhancedEnv()`.
+ * Contents of the legacy version-1 `user-environment.json`: the variables
+ * that became the Overall environment.
  *
- * The `uiMode` is purely a renderer preference; it does not affect which
- * variables are applied at runtime.
- *
- * This is the wire shape: variables travel plaintext between main and the
- * renderer over IPC, and are encrypted at rest by main via Electron
- * `safeStorage` before being written to disk.
- *
- * @deprecated Use {@link EnvironmentConfigData} (version 2) instead. This
- * shape backs the version-1 `user-environment.json` file and is preserved
- * during the Environments migration so existing callers compile.
+ * @deprecated Read only by the version-2 migration.
  */
 export interface UserEnvironmentData {
   uiMode: UserEnvironmentUiMode;
   variables: UserEnvironmentEntry[];
-}
-
-/**
- * IPC response from the legacy `loadUserEnvironment`. Surfaces whether the
- * host OS has encryption available so the renderer can warn users when
- * saved values would not be encrypted at rest.
- *
- * @deprecated Use {@link LoadEnvironmentConfigResponse} instead.
- */
-export interface LoadUserEnvironmentResponse {
-  data: UserEnvironmentData;
-  /**
-   * True when the native environment-value availability decision returns true.
-   * This is distinct from permission to write tokens.
-   * Explicit native unavailability or missing storage permits the historical
-   * plaintext environment fallback, but never overwrites unreadable ciphertext.
-   * Probe failures and denied backends with native availability do not permit
-   * plaintext conversion.
-   */
-  encryptionAvailable: boolean;
-}
-
-/**
- * IPC response from the legacy `saveUserEnvironment`.
- *
- * @deprecated Use {@link SaveEnvironmentConfigResponse} instead.
- */
-export interface SaveUserEnvironmentResponse {
-  data: UserEnvironmentData;
-  encryptionAvailable: boolean;
 }

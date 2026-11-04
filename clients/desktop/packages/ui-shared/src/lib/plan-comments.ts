@@ -6,15 +6,6 @@
 /** Author kinds carried on the wire for a plan comment. */
 export type PlanReviewAuthorKind = 'user' | 'agent' | 'remote';
 
-// The initials rule and the deterministic color hash live in
-// `display-avatar.ts` now that the share target pickers render the same
-// avatar. Re-exported under their original names so every existing caller
-// (desktop thread, web plan page) keeps working against one implementation.
-export {
-  displayInitials as planCommentInitials,
-  displayAvatarColor as planCommentAvatarColor,
-} from './display-avatar';
-
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;

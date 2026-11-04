@@ -46,6 +46,7 @@ import {
   ErrorBanner,
   StatusLabel,
   TextInput,
+  Heading,
 } from '@canopy/ui-shared/components';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
@@ -361,7 +362,9 @@ function TerminalProviderAuthPanel({
     <div className={containerSpacing} data-testid={`auth-panel-${provider}`}>
       <div className="flex items-center gap-2">
         {logo}
-        <h2 className="text-m font-medium fg-primary">{name}</h2>
+        <Heading level={2} variant="section">
+          {name}
+        </Heading>
         {statusDot}
         <Button
           onClick={(): void => setLoginOpen(true)}
@@ -870,7 +873,9 @@ function GitHubAuthPanel({
       )}
       <div className="flex items-center gap-2">
         {githubIcon}
-        <h2 className="text-m font-medium fg-primary">GitHub</h2>
+        <Heading level={2} variant="section">
+          GitHub
+        </Heading>
         {statusDot}
         {/* Primary CTA pinned top-right (matches the other account tiles). */}
         {connectButton}

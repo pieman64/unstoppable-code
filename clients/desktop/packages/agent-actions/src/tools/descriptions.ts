@@ -108,7 +108,10 @@ export function setupWatchersDescription(
   capabilities?: AgentActionDescriptionCapabilities,
 ): string {
   if (workspaceChatWatchersOnly(capabilities)) {
-    return `Create one or more watchers that notify this same chat when a targeted chat in the current project finishes its turn. Use trigger worktree_chat_completion and supply the full target ids (projectId, worktreeId, chatId); a chat cannot watch itself. Set armForNextCompletion:true to arm an idle target for its next completed turn; otherwise idle targets are rejected. Identical active watchers are deduped unless allowDuplicate is true. The notification arrives in this chat as a visible message, usually within about a minute of the target finishing. A watcher fires once and expires after 24 hours. The destination chat is always captured server-side; never provide destination ids, session ids, or display metadata.`;
+    const arrival = visibleFollowUps(capabilities)
+      ? 'The notification arrives in this chat as a visible message,'
+      : 'The notification arrives in this chat as a short visible notice, with its event details in a hidden system instruction,';
+    return `Create one or more watchers that notify this same chat when a targeted chat in the current project finishes its turn. Use trigger worktree_chat_completion and supply the full target ids (projectId, worktreeId, chatId); a chat cannot watch itself. Set armForNextCompletion:true to arm an idle target for its next completed turn; otherwise idle targets are rejected. Identical active watchers are deduped unless allowDuplicate is true. ${arrival} usually within about a minute of the target finishing. A watcher fires once and expires after 24 hours. The destination chat is always captured server-side; never provide destination ids, session ids, or display metadata.`;
   }
   if (offersCanonicalChatWatchers(capabilities?.watcherTriggers)) {
     return `Create one or more watchers that notify this same chat when: matching pipeline executions in its worktree or cowork project pause/reach a terminal state; matching worktree hook triggers fire automatically; a targeted chat (in any project) finishes its turn or a new chat starts in a targeted worktree/cowork project; or a targeted automation's run completes (failed/skipped runs fire immediately, successful runs fire when a dispatched chat turn ends or a dispatched pipeline completes). Pipeline pause notifications leave the watcher active; terminal notifications consume it. Hook watchers are worktree-only and also fire when the hook is paused or no hook action is configured; manual hook runs do not fire watchers. For pipeline and hook watchers ${brand.displayName} applies the current projectId and worktreeId server-side — do not provide them. For project_task_chat_completion supply target {projectId,taskId,chatId}; for bot_task_chat_completion supply {botId,taskId,chatId}. For project_new_chat_started supply {projectId,taskId?}; for bot_new_chat_started supply {botId,taskId?}. Canonical chat targets must not include kind or destination fields; a chat cannot watch itself. Set armForNextCompletion:true only on a chat-completion watcher to arm an idle target for its next completed turn; otherwise idle targets are rejected. For automation_run supply target.automationId. The destination chat is always captured server-side; never provide destination ids, session ids, or display metadata.`;
@@ -131,12 +134,16 @@ const SPLIT_AGENT_CAUTION =
 export const START_FORKED_AGENT_DESCRIPTION = `Fork this chat at its current mid-turn snapshot into a new chat in the same worktree, show Continue as the user message, deliver followUpInstruction in a hidden system instruction identifying the fork, and start it immediately. ${SPLIT_AGENT_CAUTION}`;
 export const START_BRANCHED_AGENT_DESCRIPTION = `Fork this chat at its current mid-turn snapshot into a new worktree that is a child branch of the current branch. Queue a visible Continue user message until normal worktree setup completes, then start it automatically. A hidden system instruction supplies followUpInstruction, identifies the fresh branch and new working directory without naming the new branch, and marks the originating worktree location and branch as read-only references; all changes must stay in the new working directory. Returns the new worktreeId and chatId. ${SPLIT_AGENT_CAUTION}`;
 const START_FORKED_AGENT_VISIBLE_DESCRIPTION = `Fork this chat at its current mid-turn snapshot into a new independent chat in a new worktree, then post followUpInstruction there as a visible message that starts it immediately. ${SPLIT_AGENT_CAUTION}`;
+const START_FORKED_AGENT_NEW_WORKTREE_DESCRIPTION = `Fork this chat at its current mid-turn snapshot into a new independent chat in a new worktree, show Continue as the user message, deliver followUpInstruction in a hidden system instruction identifying the fork, and start it immediately. A followUpInstruction too long for a hidden instruction (about 7,800 characters) is posted as the visible message instead. ${SPLIT_AGENT_CAUTION}`;
 
 export function startForkedAgentDescription(
   capabilities?: AgentActionDescriptionCapabilities,
 ): string {
-  return visibleFollowUps(capabilities)
-    ? START_FORKED_AGENT_VISIBLE_DESCRIPTION
+  if (visibleFollowUps(capabilities)) {
+    return START_FORKED_AGENT_VISIBLE_DESCRIPTION;
+  }
+  return workspaceChatWatchersOnly(capabilities)
+    ? START_FORKED_AGENT_NEW_WORKTREE_DESCRIPTION
     : START_FORKED_AGENT_DESCRIPTION;
 }
 

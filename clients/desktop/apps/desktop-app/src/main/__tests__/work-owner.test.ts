@@ -1,6 +1,7 @@
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { AI_CREDITS_WORK_OWNER_HEADER } from '@canopy/protocol/llm-gateway';
+import type { WorkspaceOwnerManifestRead } from '../services/workspace-owner-projection';
 import {
   APP_ADVISOR_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
@@ -392,6 +393,94 @@ describe('work owner', () => {
   });
 
   describe('createAiCreditsScopeOwnerResolver', () => {
+    it('projects snapshot evidence with the same binding, link policy and per-chat precedence as fresh reads', async () => {
+      mockNavigationContext = CONTEXT_A;
+      const captured = {
+        projectId: 'linked-to-a',
+        worktreeId: 'entry-0',
+        chatId: 'chat-captured',
+        executionContext: serializeWorkspaceContext(PERSONAL),
+      };
+      captureSessionWorkOwner(captured);
+      await resolveSessionWorkOwner(captured);
+      const scopes = [
+        ...['linked-to-a', 'b-owned', 'cowork', 'personal'].map(
+          (projectId) => ({
+            kind: 'work' as const,
+            projectId,
+            worktreeId: 'entry-0',
+            chatId: 'uncaptured-chat',
+          }),
+        ),
+        { kind: 'work' as const, ...captured },
+      ];
+      const expected = await Promise.all(
+        scopes.map(resolveAiCreditsScopeOwner),
+      );
+      const evidence = new Map<string, WorkspaceOwnerManifestRead>(
+        Object.entries(WORKSPACES).map(
+          ([id, target]): [string, WorkspaceOwnerManifestRead] => [
+            id,
+            {
+              authority: 'ok',
+              ownerMalformed: false,
+              memoryMalformed: false,
+              config: {
+                version: 1,
+                type: target.workspaceType ?? 'single-repo',
+                repos: [],
+                ...(target.workspaceOwner.kind === 'organization'
+                  ? {
+                      owner: {
+                        type: 'organization',
+                        organizationId: target.workspaceOwner.organizationId,
+                        projectId: ORG_A,
+                        instanceId: ORG_B,
+                        bindingGeneration: 1,
+                      },
+                    }
+                  : {}),
+              },
+            },
+          ],
+        ),
+      );
+      mockResolveBackgroundWorkspaceTarget.mockClear();
+      const resolve = createAiCreditsScopeOwnerResolver(evidence);
+      expect(await Promise.all(scopes.map(resolve))).toEqual(expected);
+      expect(expected).toEqual([
+        CONTEXT_A,
+        { kind: 'organization', organizationId: ORG_B },
+        PERSONAL,
+        PERSONAL,
+        PERSONAL,
+      ]);
+      expect(mockResolveBackgroundWorkspaceTarget).not.toHaveBeenCalled();
+      // Execution/authorization still obtains fresh authority, never this map.
+      await resolveWorkOwner({ projectId: 'b-owned' }, CONTEXT_A);
+      expect(mockResolveBackgroundWorkspaceTarget).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['absent', 'unreadable', 'malformed', 'missing'] as const)(
+      'omits %s snapshot provenance instead of guessing or reading live',
+      async (state) => {
+        mockNavigationContext = CONTEXT_A;
+        const evidence = new Map<string, WorkspaceOwnerManifestRead>();
+        if (state !== 'missing')
+          evidence.set('cowork', {
+            config: { version: 1, type: 'cowork', repos: [] },
+            authority: state === 'malformed' ? 'ok' : state,
+            ownerMalformed: state === 'malformed',
+            memoryMalformed: false,
+          });
+        const resolve = createAiCreditsScopeOwnerResolver(evidence);
+        expect(
+          await resolve({ kind: 'work', projectId: 'cowork' }),
+        ).toBeUndefined();
+        expect(mockResolveBackgroundWorkspaceTarget).not.toHaveBeenCalled();
+      },
+    );
+
     it('reads owner authority once per project for a listing and keeps per-chat captures', async () => {
       mockNavigationContext = CONTEXT_A;
       const captured = {

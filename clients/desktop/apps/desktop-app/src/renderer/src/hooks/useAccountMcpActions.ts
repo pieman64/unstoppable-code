@@ -18,9 +18,11 @@ import {
 } from '@canopy/desktop-shared/types/mcp-servers';
 import type {
   AccountMcpConnectionSummary,
+  AccountMcpSecretSource,
   McpServerIndexEntry,
   StartAccountMcpConnectionRequest,
 } from '@canopy/desktop-shared/types/mcp-servers';
+import type { SecretValueInput } from '@canopy/desktop-shared/types/stored-secrets';
 
 interface PendingConnection {
   /** Settles after cancellation rollback and owned-key release. */
@@ -32,7 +34,8 @@ interface PendingConnection {
   releasePromise?: Promise<void>;
 }
 export interface AccountMcpConnectOptions {
-  bearerToken?: string;
+  /** Text, or a device server's saved token named by `secretSource`. */
+  bearerToken?: SecretValueInput;
   endpointUrl?: string;
   oauthClient?: AccountMcpOAuthClientCredentials;
   /** Account the credentials were captured under; see McpServersTab. */
@@ -41,7 +44,9 @@ export interface AccountMcpConnectOptions {
   customUrl?: string;
   displayName?: string;
   /** Extra upstream headers stored with a new custom connection. */
-  headers?: Record<string, string>;
+  headers?: Record<string, SecretValueInput>;
+  /** The device server whose saved secrets the request keeps. */
+  secretSource?: AccountMcpSecretSource;
   /** Pending-flow key; defaults to the server key, then the custom URL. */
   pendingKey?: string;
   /** Receives the message for a recognized failure the caller shows itself. */
@@ -234,6 +239,7 @@ export function useAccountMcpActions(
       const credentials = {
         configId,
         ...(options.bearerToken ? { bearerToken: options.bearerToken } : {}),
+        ...(options.secretSource ? { secretSource: options.secretSource } : {}),
         ...(options.oauthClient ? { oauthClient: options.oauthClient } : {}),
         ...(expectedAccountId ? { expectedAccountId } : {}),
         ...(options.browser ? { browser: options.browser } : {}),
