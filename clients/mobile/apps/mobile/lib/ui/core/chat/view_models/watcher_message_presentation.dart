@@ -27,3 +27,34 @@ import 'visible_message_parts.dart';
   }
   return null;
 }
+
+/// A fired watcher's message whose event block the host stored apart from its
+/// visible [notice], as cloud chats deliver it. The host's [marker] names the
+/// watcher when it sent one; otherwise the stored [event] block does. A block
+/// inline in the text alone could have been typed by anyone, so it is only
+/// hidden and earns no watcher title.
+({String text, ChatWatcherFiredInfo? watcherFired})?
+storedWatcherMessagePresentation(
+  String notice, {
+  ChatWatcherFiredInfo? marker,
+  String? event,
+}) {
+  final legacy = watcherMessagePresentation(notice);
+  if (marker == null && event == null) {
+    return legacy == null ? null : (text: legacy.text, watcherFired: null);
+  }
+  final fromEvent = event == null
+      ? null
+      : visibleMessageParts(event)
+            .where((part) => part.kind == VisibleMessagePartKind.watcher)
+            .firstOrNull
+            ?.watcherFired;
+  return (
+    text: legacy?.text ?? notice,
+    watcherFired:
+        marker ??
+        fromEvent ??
+        legacy?.watcherFired ??
+        const ChatWatcherFiredInfo(kind: 'Watcher'),
+  );
+}

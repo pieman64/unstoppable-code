@@ -281,17 +281,75 @@ class _PipelineRunDotTrackState extends State<PipelineRunDotTrack>
   }
 }
 
+/// The same dots inline, for a background tray row, mirroring the desktop's
+/// `DagProgressDots`: no tier chips, a hairline between tiers, and no
+/// scrolling. Overflow is clipped, and the strip is hidden from semantics
+/// because the row names the run's state and its inspector holds the track.
+class PipelineRunDotStrip extends StatelessWidget {
+  const PipelineRunDotStrip({
+    super.key,
+    required this.executionId,
+    required this.tiers,
+  });
+
+  final String executionId;
+  final List<List<PipelineRunDot>> tiers;
+
+  static const double dotSize = 8;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = Theme.of(context).colorScheme.onSurface;
+    return ExcludeSemantics(
+      child: UnconstrainedBox(
+        alignment: AlignmentDirectional.centerStart,
+        constrainedAxis: Axis.vertical,
+        clipBehavior: Clip.hardEdge,
+        child: Row(
+          key: ValueKey('pipeline-run-dot-strip:$executionId'),
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var index = 0; index < tiers.length; index++) ...[
+              if (index > 0)
+                Container(
+                  key: ValueKey('pipeline-run-dot-strip-hairline:$index'),
+                  width: 6,
+                  height: 1,
+                  margin: const EdgeInsets.symmetric(horizontal: 4),
+                  color: ink.withValues(alpha: 0.2),
+                ),
+              for (final (dotIndex, dot) in tiers[index].indexed) ...[
+                if (dotIndex > 0) const SizedBox(width: 3),
+                _Dot(
+                  testKey: ValueKey(
+                    'pipeline-run-strip-dot:$executionId:${dot.jobId}',
+                  ),
+                  status: dot.status,
+                  pulse: kAlwaysCompleteAnimation,
+                  size: dotSize,
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _Dot extends StatelessWidget {
   const _Dot({
     super.key,
     required this.testKey,
     required this.status,
     required this.pulse,
+    this.size = PipelineRunDotTrack.dotSize,
   });
 
   final Key testKey;
   final PipelineRunDotStatus status;
   final Animation<double> pulse;
+  final double size;
 
   @override
   Widget build(BuildContext context) {
@@ -309,8 +367,8 @@ class _Dot extends StatelessWidget {
     };
     final dot = Container(
       key: testKey,
-      width: PipelineRunDotTrack.dotSize,
-      height: PipelineRunDotTrack.dotSize,
+      width: size,
+      height: size,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
     if (status != PipelineRunDotStatus.running) return dot;

@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/data/models/remote_chat.dart';
+import 'package:mobile/data/models/remote_pipeline_run.dart';
 import 'package:mobile/data/models/remote_session.dart';
 import 'package:mobile/data/repositories/turn_feedback_repository.dart';
 import 'package:mobile/ui/core/theme.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/turn_feedback_controller.dart';
 import 'package:mobile/ui/features/remote/views/remote_chat_screen.dart';
+import 'package:mobile/ui/features/remote/views/remote_pipeline_run_screen.dart';
 import 'package:provider/provider.dart';
 
 import '../../../support/fake_remote_control_repository.dart';
@@ -22,6 +24,7 @@ RemoteSessionSnapshot traySnapshot({
   int tasks = 1,
   String taskStatus = 'running',
   String? runStatus,
+  List<Map<String, dynamic>> runPauses = const [],
   List<ChatPart> parts = const [],
 }) => RemoteSessionSnapshot(
   workspaces: const [],
@@ -58,6 +61,7 @@ RemoteSessionSnapshot traySnapshot({
           'status': runStatus,
           'workspaceLocalId': 'ws',
           'worktreeLocalId': 'wt',
+          'pendingPauses': runPauses,
           'chatTurns': [
             {
               'chatId': 'chat',
@@ -505,4 +509,106 @@ void main() {
       vm.dispose();
     },
   );
+
+  group('pipeline run actions', () {
+    Future<(FakeRemoteControlRepository, RemoteControlViewModel)> open(
+      WidgetTester tester, {
+      required String status,
+      List<Map<String, dynamic>> pauses = const [],
+      bool capable = true,
+    }) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final repo = FakeRemoteControlRepository()
+        ..supportsPipelineDispatch = capable
+        ..snapshotBuilder = () =>
+            traySnapshot(tasks: 0, runStatus: status, runPauses: pauses);
+      final vm = RemoteControlViewModel(repository: repo);
+      await tester.runAsync(() => vm.connect('123456'));
+      await tester.pumpWidget(trayScreenHost(vm));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('background-tray-toggle')));
+      await tester.pump();
+      return (repo, vm);
+    }
+
+    Future<void> close(WidgetTester tester, RemoteControlViewModel vm) async {
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      vm.dispose();
+    }
+
+    testWidgets('Stop cancels the run through its Portal command', (
+      tester,
+    ) async {
+      final (repo, vm) = await open(tester, status: 'running');
+      await tester.tap(find.bySemanticsLabel('Stop run'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      expect(repo.pipelineRunActions.single.executionId, 'run');
+      expect(
+        repo.pipelineRunActions.single.action,
+        RemotePipelineRunAction.cancel,
+      );
+      await close(tester, vm);
+    });
+
+    testWidgets('Stop is hidden without the pipeline capability', (
+      tester,
+    ) async {
+      final (repo, vm) = await open(tester, status: 'running', capable: false);
+      expect(find.text('Review pipeline'), findsOneWidget);
+      expect(find.bySemanticsLabel('Stop run'), findsNothing);
+      expect(repo.pipelineRunActions, isEmpty);
+      await close(tester, vm);
+    });
+
+    testWidgets('Resume sends resume for an action pause', (tester) async {
+      final (repo, vm) = await open(
+        tester,
+        status: 'paused',
+        pauses: [
+          {'id': 'p', 'kind': 'action', 'jobId': 'j', 'stepId': 's'},
+        ],
+      );
+      await tester.tap(find.bySemanticsLabel('Resume run'));
+      await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+      await tester.pump();
+      expect(
+        repo.pipelineRunActions.single.action,
+        RemotePipelineRunAction.resume,
+      );
+      await close(tester, vm);
+    });
+
+    testWidgets('Respond and capability-less Resume open the run', (
+      tester,
+    ) async {
+      for (final (kind, label, capable) in [
+        ('input', 'Respond to run', true),
+        ('action', 'Resume run', false),
+      ]) {
+        final (repo, vm) = await open(
+          tester,
+          status: 'paused',
+          capable: capable,
+          pauses: [
+            {
+              'id': 'p',
+              'kind': kind,
+              'jobId': 'j',
+              'stepId': 's',
+              'request': {'message': 'Ship it?'},
+            },
+          ],
+        );
+        await tester.tap(find.bySemanticsLabel(label));
+        await tester.pumpAndSettle();
+        expect(find.byType(RemotePipelineRunScreen), findsOneWidget);
+        expect(repo.pipelineRunActions, isEmpty);
+        await close(tester, vm);
+      }
+    });
+  });
 }

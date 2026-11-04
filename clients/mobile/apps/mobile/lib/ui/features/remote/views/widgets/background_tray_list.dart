@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/features/remote/view_models/background_tray/items.dart';
 import 'package:mobile/ui/features/remote/view_models/background_tray/summary.dart';
-import 'background_tray_header.dart';
 import 'background_tray_activity_row.dart';
+import 'background_tray_run_row.dart';
 
 class BackgroundTrayList extends StatefulWidget {
   const BackgroundTrayList({
@@ -14,10 +12,12 @@ class BackgroundTrayList extends StatefulWidget {
     required this.summary,
     required this.now,
     this.onOpenAgent,
+    this.runControls,
   });
   final BackgroundTraySummary summary;
   final int now;
   final ValueChanged<BackgroundTrayAgentTarget>? onOpenAgent;
+  final BackgroundTrayRunControls? runControls;
 
   @override
   State<BackgroundTrayList> createState() => _BackgroundTrayListState();
@@ -182,78 +182,13 @@ class _BackgroundTrayListState extends State<BackgroundTrayList> {
         onOpenAgent: widget.onOpenAgent,
       );
     }
-    final kind = switch (item.kind) {
-      BackgroundTrayRunKind.pipeline => BackgroundTrayKind.pipeline,
-      BackgroundTrayRunKind.github => BackgroundTrayKind.github,
-      BackgroundTrayRunKind.githubPr => BackgroundTrayKind.githubPr,
-    };
-    final detail = [
-      item.question,
-      item.note,
-      item.repository,
-      item.statusLabel,
-    ].whereType<String>().where((s) => s.isNotEmpty).join('\n');
-    final canInspect = detail.isNotEmpty;
-    return Column(
+    return BackgroundTrayRunRow(
       key: key,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Semantics(
-          button: canInspect,
-          expanded: canInspect ? open : null,
-          child: InkWell(
-            onTap: canInspect ? () => _toggle(id) : null,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 44),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                child: Row(
-                  children: [
-                    if (canInspect) ...[
-                      CanopyIcon(
-                        glyph: open
-                            ? CanopyGlyph.chevronDownSmall
-                            : CanopyGlyph.chevronRightSmall,
-                        size: 14,
-                        tint: colors.foregroundMuted,
-                      ),
-                      const SizedBox(width: 4),
-                    ],
-                    CanopyIcon(
-                      glyph: backgroundTrayGlyph(kind),
-                      size: 14,
-                      tint: colors.foregroundSecondary,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        item.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTypography.bodySmall.copyWith(
-                          color: colors.foregroundSecondary,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-        if (open && canInspect)
-          Padding(
-            key: ValueKey('background-tray-inspector-${item.id}'),
-            padding: const EdgeInsets.fromLTRB(30, 0, 8, 12),
-            child: Text(
-              detail,
-              style: AppTypography.bodySmall.copyWith(
-                color: colors.foregroundMuted,
-              ),
-            ),
-          ),
-      ],
+      run: item,
+      now: widget.now,
+      open: open,
+      onToggle: () => _toggle(id),
+      controls: widget.runControls,
     );
   }
 }

@@ -1,7 +1,9 @@
 # Unstoppable Code mobile app
 
 This folder is the source for the Unstoppable Code iOS and Android app at one
-released version. It builds on its own: you don't need any other part of this
+exported revision, either a release or a development snapshot from main. Releases
+have a `source-mobile/<version>` tag; snapshots have no tag and may appear before
+the first release. It builds on its own: you don't need any other part of this
 repository, an account, or any credentials.
 
 ## What you need
@@ -45,6 +47,11 @@ To try the app, start an emulator or simulator and run `flutter run` from
 - **Not for distribution:** these are debug and simulator builds. Release
   signing, store uploads, and our app identifiers aren't included, so use your
   own if you publish a fork.
+
+## Reporting issues
+
+See [CONTRIBUTING.md](../../CONTRIBUTING.md). Please say that you built from
+source and which public commit or `source-mobile/*` tag you used.
 
 ## License
 

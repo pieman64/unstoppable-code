@@ -386,9 +386,16 @@ class CloudTranscriptMapper {
       final at = DateTime.fromMillisecondsSinceEpoch(message.createdAtMs);
       if (message.role != 'ASSISTANT') {
         final user = message.role == 'USER';
-        // A fired watcher posts its instruction block into the user turn;
-        // show only its notice under the watcher title.
-        final watcher = user ? watcherMessagePresentation(message.text) : null;
+        // A fired watcher stores its event block apart from its notice;
+        // older turns carried it inline. Show only the notice under the
+        // watcher title.
+        final watcher = user
+            ? storedWatcherMessagePresentation(
+                message.text,
+                marker: message.watcherFired,
+                event: message.watcherEvent,
+              )
+            : null;
         _rows[message.id] = CloudTranscriptMessage(
           messageId: message.id,
           chatId: chatId,

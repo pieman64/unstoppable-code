@@ -227,13 +227,45 @@ void main() {
         '</system_instruction>\n\nCanopy watcher fired.\n'
         'Chat completion: Notes';
     final s = ready(
-      messages: [v2Message(id: 'watcher', seq: 1, text: envelope)],
+      messages: [
+        {
+          ...v2Message(id: 'watcher', seq: 1, text: envelope),
+          'watcherFired': {'kind': 'Chat completion: Notes'},
+        },
+      ],
     );
     final row = CloudTranscriptMapper(
       chatId: 'chat-1',
     ).hydrate(conversationBootstrap(s), preserveSequenceOrder: true).single;
     expect(row.text, 'Canopy watcher fired.\nChat completion: Notes');
     expect(row.watcherFired?.kind, 'Chat completion: Notes');
+  });
+
+  test('a v2 watcher wake keeps its title from the stored hidden event '
+      '(REG-3117)', () {
+    const event =
+        '<system_instruction>\n<canopy_watcher_event>\n'
+        '{"label": "Chat completion: Notes"}\n</canopy_watcher_event>\n'
+        '</system_instruction>';
+    const notice = 'Canopy watcher fired.\nChat completion: Notes';
+    final s = ready(
+      messages: [
+        {
+          ...v2Message(id: 'watcher', seq: 1, text: notice),
+          'additionalContext': [
+            {'kind': 'canopy-watcher-event', 'modelContent': event},
+          ],
+        },
+        v2Message(id: 'typed', request: 'r2', seq: 2, text: notice),
+      ],
+    );
+    final rows = CloudTranscriptMapper(
+      chatId: 'chat-1',
+    ).hydrate(conversationBootstrap(s), preserveSequenceOrder: true);
+    expect(rows.map((row) => row.text), [notice, notice]);
+    expect(rows.first.watcherFired?.kind, 'Chat completion: Notes');
+    // The notice alone, typed by a person, is not a watcher wake.
+    expect(rows.last.watcherFired, isNull);
   });
 
   test('agent task replies stay out of the root transcript (CAN-5208)', () {

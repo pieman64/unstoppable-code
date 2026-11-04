@@ -1,4 +1,5 @@
 @import './workspace-layout-picker.css';
+@import 'skullet/styles.css';
 /* Shared UI design tokens
  *
  * Shared design tokens, theme blocks, and animation keyframes used by both the

@@ -213,33 +213,36 @@ String _cloudWatcherText(String label) => [
   label,
 ].join('\n');
 
-List<ChatMessage> _cloudWatcherTranscript(String userText) =>
-    CloudTranscriptMapper(chatId: 'chat-1').hydrate(
-      CloudChatBootstrap(
-        messages: [
-          CloudCoreMessage(
-            id: 'u-w',
-            role: 'USER',
-            text: userText,
-            cost: const CloudCoreCost(kind: CloudCoreCostKind.zero),
-            costBilledViaLlmProxy: false,
-            createdAtMs: 1789890000000,
-            artifacts: const [],
-          ),
-          CloudCoreMessage(
-            id: 'a-w',
-            role: 'ASSISTANT',
-            text: 'Reviewed the finished chat.',
-            sourceKey: 'turn-1',
-            cost: const CloudCoreCost(kind: CloudCoreCostKind.zero),
-            costBilledViaLlmProxy: false,
-            createdAtMs: 1789890001000,
-            artifacts: const [],
-          ),
-        ],
-        toolActivity: const [],
+List<ChatMessage> _cloudWatcherTranscript(
+  String userText, {
+  ChatWatcherFiredInfo? watcherFired,
+}) => CloudTranscriptMapper(chatId: 'chat-1').hydrate(
+  CloudChatBootstrap(
+    messages: [
+      CloudCoreMessage(
+        id: 'u-w',
+        role: 'USER',
+        text: userText,
+        cost: const CloudCoreCost(kind: CloudCoreCostKind.zero),
+        costBilledViaLlmProxy: false,
+        createdAtMs: 1789890000000,
+        artifacts: const [],
+        watcherFired: watcherFired,
       ),
-    );
+      CloudCoreMessage(
+        id: 'a-w',
+        role: 'ASSISTANT',
+        text: 'Reviewed the finished chat.',
+        sourceKey: 'turn-1',
+        cost: const CloudCoreCost(kind: CloudCoreCostKind.zero),
+        costBilledViaLlmProxy: false,
+        createdAtMs: 1789890001000,
+        artifacts: const [],
+      ),
+    ],
+    toolActivity: const [],
+  ),
+);
 
 /// A Remote Control user row as the desktop sends it (`PortalChatMessage`).
 RemoteChatMessage _remoteUserRow(
@@ -3034,6 +3037,9 @@ void main() {
         tester,
         messages: _cloudWatcherTranscript(
           _cloudWatcherText('Chat completion: Plan the mobile launch'),
+          watcherFired: const ChatWatcherFiredInfo(
+            kind: 'Chat completion: Plan the mobile launch',
+          ),
         ),
       );
 

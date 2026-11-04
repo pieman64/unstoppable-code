@@ -216,6 +216,11 @@
    * reads as a row, not a pill. Owned by the row primitives; a control nested
    * inside a row takes this less its inset. */
   --radius-row: 10px;
+  /* The composer drawer's rows: a 28px capsule button's 14px corner plus
+   * the row's 4px inset, so the buttons sit nested in the row (a closed 36px
+   * row is itself a capsule). The drawer adds its own 4px padding. */
+  --radius-drawer-row: calc(14px + 4px);
+  --radius-drawer: calc(var(--radius-drawer-row) + 4px);
   --radius-full: 9999px;
 
   /* Shadows - from UI Kit. These must live in Tailwind's theme namespace;
@@ -232,6 +237,12 @@
   --shadow-field: var(--effect-ring-base);
   --shadow-field-focus:
     0 0 0 1px var(--fg-tertiary), 0 0 0 4px var(--line-base);
+  /* An invalid field keeps one colour family: the destructive edge at rest,
+   * and the focus geometry (edge + soft halo) in destructive roles while
+   * focused, replacing the neutral focus rather than stacking on it. */
+  --shadow-field-invalid: inset 0 0 0 1px var(--line-destructive);
+  --shadow-field-invalid-focus:
+    0 0 0 1px var(--line-destructive), 0 0 0 4px var(--bg-destructive-subtle);
   --shadow-focus: var(--effect-ring-focus);
   --shadow-tooltip: var(--shadow-tooltip);
 
@@ -253,6 +264,10 @@
   /* CometSpinner: one unhurried turn of the comet ring every 1.2s, the
    * dot spinners' cycle. */
   --animate-comet-spin: comet-spin 1.2s linear infinite;
+  /* ProgressBar while indeterminate: a third of the track sweeps across it
+   * and leaves before the next pass, on the dot spinners' cycle. */
+  --animate-progress-indeterminate: progress-indeterminate 1.2s
+    cubic-bezier(0.4, 0, 0.2, 1) infinite;
 
   @keyframes accordion-down {
     from {
@@ -333,6 +348,15 @@
     }
     to {
       transform: translateX(0);
+    }
+  }
+
+  @keyframes progress-indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
     }
   }
 
@@ -1157,6 +1181,72 @@ body {
   outline-offset: 2px;
 }
 
+/* An invalid dropdown (a `combobox` trigger or a native `select`) draws its
+ * focus with the destructive field halo (`DROPDOWN_INVALID_CLASS`), so the
+ * accent outline stays off: one colour family. Any other invalid element
+ * keeps the outline, since it may have no halo of its own. Unlayered like the
+ * rule above, which a utility cannot override. */
+:is(select, [role='combobox']).focus-ring[aria-invalid='true']:focus-visible {
+  outline: none;
+}
+
+/* A DataTable wider than its card scrolls inside it (CAN-4258). The side
+ * that hides columns fades, so the overflow stays discoverable while overlay
+ * scrollbars are hidden at rest; `DataTableFrame` sets the attribute only
+ * while the table is wider than the card. The focused region drops the fade
+ * so its inset ring stays whole. */
+.data-table-scroll {
+  --data-table-fade: 2rem;
+}
+
+.data-table-scroll[data-overflow='end'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black calc(100% - var(--data-table-fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - var(--data-table-fade)),
+    transparent
+  );
+}
+
+.data-table-scroll[data-overflow='start'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--data-table-fade)
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--data-table-fade)
+  );
+}
+
+.data-table-scroll[data-overflow='both'] {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--data-table-fade),
+    black calc(100% - var(--data-table-fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--data-table-fade),
+    black calc(100% - var(--data-table-fade)),
+    transparent
+  );
+}
+
+.data-table-scroll[data-overflow]:focus-visible {
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
 /* The same ring drawn inside the control, for full-bleed rows in a scrolling
  * or clipping container (a job list, a tree), where an outside ring would be
  * cut off at the container's edges. Use with `focus-ring`. */
@@ -1575,6 +1665,36 @@ body {
   }
 }
 
+/* Skeletons (`SkeletonBlock`, `Skeleton`) draw through skullet, whose
+ * stylesheet the token entry points import. Its blocks and measured bones read
+ * these properties: the muted surface in every theme, a slow pulse rather than
+ * a sweep, and capsule bars over text. They are set on skullet's own elements,
+ * not the root, so a surface that redefines `--bg-muted` reaches its
+ * skeletons. The pulse never starts under reduced motion; the fill stays. */
+[skullet-bar],
+[skullet-loading],
+[skullet-rect] {
+  --skullet-base: var(--bg-muted);
+  --skullet-highlight: var(--bg-subtle);
+  --skullet-animation: pulse;
+  --skullet-speed: slow;
+  --skullet-radius: 9999px;
+}
+
+/* An element kept as itself inside a measured skeleton (`SKELETON_KEEP`)
+ * sits outside skullet's scope, but would still inherit the transparent text
+ * fill its container gets. Each kept element draws in its own ink. */
+[skullet-loading] [skullet-own] {
+  -webkit-text-fill-color: currentcolor;
+}
+
+/* skullet draws a measured icon as one block at the icon's own corners,
+ * which are square; it takes the small radius, like an icon tile. The
+ * radius only reaches the unseen measured copy. */
+[skullet-loading] svg {
+  border-radius: var(--radius-sm);
+}
+
 /* A busy button's hidden label (`canopy-reserved-label`): `LoadingButton`
  * lays its resting and busy labels in one grid cell so the button keeps one
  * width, and draws the label that is not showing from `data-reserved-label`,
@@ -1752,4 +1872,14 @@ body {
   color: var(--fg-secondary);
   background-image: none;
   -webkit-text-fill-color: currentColor;
+}
+
+/* Allow inactive transcript subtrees to skip rendering while interactive rows
+   retain their focus-ring paint and enlarged touch hit areas. */
+@utility content-auto {
+  content-visibility: auto;
+}
+
+@utility content-visible {
+  content-visibility: visible;
 }

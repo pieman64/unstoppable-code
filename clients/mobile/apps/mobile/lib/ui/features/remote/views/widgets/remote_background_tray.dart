@@ -2,11 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/remote_chat.dart';
+import 'package:mobile/data/models/remote_pipeline_run.dart';
+import 'package:mobile/ui/features/remote/view_models/background_tray/items.dart';
+import 'package:mobile/ui/features/remote/view_models/background_tray/run_presentation.dart';
 import 'package:mobile/ui/features/remote/view_models/background_tray/view_model.dart';
 import 'package:mobile/ui/features/remote/view_models/remote_control_view_model.dart';
 import 'package:provider/provider.dart';
 import '../remote_background_agent_chat_screen.dart';
+import '../remote_pipeline_run_screen.dart';
 import 'background_tray.dart';
+import 'background_tray_run_row.dart';
 
 /// Keeps tray projection, its clock and session lifetime out of the chat route.
 class RemoteBackgroundTray extends StatefulWidget {
@@ -112,6 +117,61 @@ class _RemoteBackgroundTrayState extends State<RemoteBackgroundTray> {
     _changed();
   }
 
+  /// Stop and Resume use the run's Portal commands, as the web Portal's Stop
+  /// does: only with the pipeline capability and a live session. Without
+  /// them, Resume opens the run, where Respond always goes.
+  BackgroundTrayRunControls? _runControls() {
+    final source = _source;
+    if (source == null) return null;
+    final target = widget.target;
+    final canCommand = source.supportsPipelineDispatch && source.isConnected;
+    void open(BackgroundTrayRun run) {
+      final pipelineRun = run.pipelineRun;
+      if (pipelineRun == null) return;
+      pushRemotePipelineRunScreen(
+        context,
+        workspaceLocalId: target.workspaceLocalId,
+        worktreeLocalId: target.worktreeLocalId,
+        run: pipelineRun,
+      );
+    }
+
+    void submit(BackgroundTrayRun run, RemotePipelineRunAction action) {
+      final executionId = run.pipelineRun?.localId;
+      if (executionId == null) return;
+      unawaited(
+        source.submitPipelineRunAction(
+          workspaceLocalId: target.workspaceLocalId,
+          worktreeLocalId: target.worktreeLocalId,
+          executionId: executionId,
+          action: action,
+        ),
+      );
+    }
+
+    return BackgroundTrayRunControls(
+      canStop: canCommand,
+      isPending: (run) => switch (run.pipelineRun?.localId) {
+        final id? => source.pendingPipelineRunAction(id) != null,
+        null => false,
+      },
+      onOpen: open,
+      onAction: (run, action) => switch (action) {
+        BackgroundTrayRunAction.stop => submit(
+          run,
+          RemotePipelineRunAction.cancel,
+        ),
+        BackgroundTrayRunAction.resume when canCommand => submit(
+          run,
+          RemotePipelineRunAction.resume,
+        ),
+        BackgroundTrayRunAction.resume ||
+        BackgroundTrayRunAction.respond => open(run),
+        BackgroundTrayRunAction.dismiss => _tray.dismissRun(run.id),
+      },
+    );
+  }
+
   @override
   void dispose() {
     _source?.removeListener(_sync);
@@ -141,6 +201,7 @@ class _RemoteBackgroundTrayState extends State<RemoteBackgroundTray> {
         ),
       );
     },
+    runControls: _runControls(),
     active: widget.active,
     expanded: _tray.expanded,
     onExpandedChanged: _tray.setExpanded,

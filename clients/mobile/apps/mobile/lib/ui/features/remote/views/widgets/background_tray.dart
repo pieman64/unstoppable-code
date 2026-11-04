@@ -8,6 +8,7 @@ import 'package:mobile/ui/features/remote/view_models/background_tray/summary.da
 import 'package:mobile/ui/features/remote/view_models/background_tray/items.dart';
 import 'background_tray_header.dart';
 import 'background_tray_list.dart';
+import 'background_tray_run_row.dart';
 
 /// Portal drawer shell. Expansion is owned by the mounted chat, never persisted.
 class BackgroundTray extends StatefulWidget {
@@ -19,11 +20,13 @@ class BackgroundTray extends StatefulWidget {
     required this.now,
     this.active = true,
     this.onOpenAgent,
+    this.runControls,
   });
   final BackgroundTraySummary summary;
   final bool active;
   final int now;
   final ValueChanged<BackgroundTrayAgentTarget>? onOpenAgent;
+  final BackgroundTrayRunControls? runControls;
   final bool expanded;
   final ValueChanged<bool> onExpandedChanged;
 
@@ -127,6 +130,7 @@ class _BackgroundTrayState extends State<BackgroundTray> {
                         summary: summary,
                         now: widget.now,
                         onOpenAgent: widget.onOpenAgent,
+                        runControls: widget.runControls,
                       ),
                     ),
                   ),

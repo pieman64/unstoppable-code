@@ -4,6 +4,8 @@
 /// strings so Dart never rounds values whose range belongs to another system.
 library;
 
+import 'package:mobile/data/models/chat_message.dart';
+
 String _string(Object? value, [String fallback = '']) =>
     value is String ? value : fallback;
 String? _optionalString(Object? value) => value is String ? value : null;
@@ -229,6 +231,8 @@ final class CloudCoreMessage {
     this.sourceKey,
     this.reasoningText,
     this.taskId,
+    this.watcherFired,
+    this.watcherEvent,
   });
 
   final String id;
@@ -249,6 +253,13 @@ final class CloudCoreMessage {
 
   /// Set on an agent task (subagent) reply, which is not a root message.
   final String? taskId;
+
+  /// The host's marker on a user message a fired watcher delivered.
+  final ChatWatcherFiredInfo? watcherFired;
+
+  /// The watcher event block a fired watcher stored with its user message as
+  /// a hidden context item, apart from the visible notice in [text].
+  final String? watcherEvent;
 
   factory CloudCoreMessage.fromJson(Map<String, dynamic> json) =>
       CloudCoreMessage(
@@ -274,7 +285,24 @@ final class CloudCoreMessage {
         sourceKey: _optionalString(json['sourceKey']),
         reasoningText: _optionalString(json['reasoningText']),
         taskId: _taskId(json),
+        watcherFired: json['role'] == 'USER'
+            ? ChatWatcherFiredInfo.fromJsonOrNull(json['watcherFired'])
+            : null,
+        watcherEvent: json['role'] == 'USER'
+            ? _watcherEvent(json['additionalContext'])
+            : null,
       );
+}
+
+const _watcherEventContextKind = 'canopy-watcher-event';
+
+String? _watcherEvent(Object? additionalContext) {
+  for (final item in _maps(additionalContext)) {
+    if (item['kind'] == _watcherEventContextKind) {
+      return _string(item['modelContent']);
+    }
+  }
+  return null;
 }
 
 String? _taskId(Map<String, dynamic> json) {

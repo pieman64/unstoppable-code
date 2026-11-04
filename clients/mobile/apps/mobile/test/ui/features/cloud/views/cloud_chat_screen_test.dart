@@ -64,6 +64,7 @@ void main() {
       String? requestId,
       List<Map<String, dynamic>> contentBlocks = const [],
       int createdAtMs = 1789890000000,
+      ChatWatcherFiredInfo? watcherFired,
     }) => CloudCoreMessage(
       id: id,
       role: role,
@@ -75,6 +76,7 @@ void main() {
       costBilledViaLlmProxy: false,
       createdAtMs: createdAtMs,
       artifacts: const [],
+      watcherFired: watcherFired,
     );
 
     CloudChatBootstrap conversation({
@@ -1653,6 +1655,7 @@ void main() {
                 '</canopy_watcher_event>\n</system_instruction>\n\n'
                 'Canopy watcher fired.\n$label',
             createdAtMs: 1789890001000,
+            watcherFired: const ChatWatcherFiredInfo(kind: label),
           ),
         ],
         toolActivity: const [],

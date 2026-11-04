@@ -285,12 +285,15 @@ void main() {
       repository.conversation = v2Snapshot(
         messages: [
           v2Message(id: 'human', text: 'Watch the release chat.'),
-          v2Message(
-            id: 'watcher',
-            request: 'r2',
-            seq: 2,
-            text: _cloudEnvelope(),
-          ),
+          {
+            ...v2Message(
+              id: 'watcher',
+              request: 'r2',
+              seq: 2,
+              text: _cloudEnvelope(),
+            ),
+            'watcherFired': {'kind': _cloudLabel},
+          },
         ],
       );
     } else {
@@ -308,6 +311,9 @@ void main() {
               costBilledViaLlmProxy: false,
               createdAtMs: id == 'human' ? 1789890000000 : 1789890001000,
               artifacts: const [],
+              watcherFired: id == 'human'
+                  ? null
+                  : const ChatWatcherFiredInfo(kind: _cloudLabel),
             ),
         ],
         toolActivity: const [],

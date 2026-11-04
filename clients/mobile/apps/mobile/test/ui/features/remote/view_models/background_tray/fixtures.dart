@@ -114,6 +114,7 @@ RemotePipelineRun pipeline(
   bool hidden = false,
   String? parent,
   List<RemotePipelinePauseCheckpoint> pauses = const [],
+  List<RemotePipelineRunJob>? jobs,
 }) => RemotePipelineRun(
   localId: id,
   pipelineName: 'Pipeline $id',
@@ -124,6 +125,7 @@ RemotePipelineRun pipeline(
   parentExecutionId: parent,
   startedAt: '2026-10-25T10:00:00Z',
   pendingPauses: pauses,
+  jobs: jobs,
   chatTurns: linked
       ? [
           RemotePipelineRunChatTurn(
